@@ -28,8 +28,16 @@ impl Mem {
     }
 }
 
+pub fn sample_pid(pid: u32) -> Result<Mem, String> {
+    let path = format!("/proc/{pid}/smaps_rollup");
+    sample_path(&path)
+}
+
 pub fn sample() -> Result<Mem, String> {
-    let path = "/proc/self/smaps_rollup";
+    sample_path("/proc/self/smaps_rollup")
+}
+
+fn sample_path(path: &str) -> Result<Mem, String> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         format!(
             "{path}: {e}. Refusing to report memory: an RSS fallback would double-count \

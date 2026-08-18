@@ -8,11 +8,15 @@
 //!            sample minus the post-discard sample, because an idle session is nothing but its
 //!            journal and the production journal lives in DynamoDB, not this process), then
 //!            delete-all -> memory returned (PD-13 gate: >=97% with explicit malloc_trim).
+//!            The server runs in its OWN process and is sampled via /proc/<pid>: client-side
+//!            buffers (reqwest pools, driver vecs) must not pollute the brain's numbers.
 //!            Linux-only by construction (smaps_rollup; run on the production target).
 //!   turns    K concurrent sessions x M turns, unpaced -> turns/s, per-turn latency, admission
 //!            latency (POST -> turn.started), and with --tool-rounds 0 the platform-added TTFT
 //!            (POST -> first assistant.delta byte at the client; the provider is instant, so
-//!            everything measured is us).
+//!            everything measured is us). In-process server: no memory sampling here.
+//!   serve    (internal) the server child for `density`: composes the brain, prints
+//!            `READY <base> <pid>`, parks. /bench/trim and /bench/guards ride next to the API.
 //!   ci       the CI gate suite: fixed small profiles with thresholds; exits non-zero listing
 //!            every gate that failed.
 
@@ -39,7 +43,7 @@ use serde_json::{Value, json};
     about = "benchmark gates: density, reclaim, turns/s, TTFT"
 )]
 struct Args {
-    /// density | turns | ci
+    /// density | turns | ci | serve (internal)
     arm: String,
     /// Sessions (density: resident count; turns: concurrency K).
     #[arg(long, default_value_t = 128)]
@@ -56,10 +60,13 @@ struct Args {
     /// Assistant text bytes in the final round (what bulks a fold).
     #[arg(long, default_value_t = 8192)]
     text_bytes: usize,
-    /// Gate thresholds (used by `ci`; also enforced on other arms when set).
     /// Fully inspect 1 request in N (scan/parse cross-check + arrival record).
     #[arg(long, default_value_t = 1)]
     inspect_every: u64,
+    /// Idle residency before a session actor discards its fold (the `serve` arm).
+    #[arg(long, default_value_t = 3600)]
+    idle_discard_s: u64,
+    /// Gate thresholds (used by `ci`; also enforced on other arms when set).
     #[arg(long)]
     gate_max_kib_per_session: Option<f64>,
     #[arg(long)]
@@ -72,15 +79,23 @@ struct Args {
     gate_min_turns_per_sec: Option<f64>,
 }
 
-/// One composed brain served over loopback HTTP, plus handles on the instruments.
-struct Bench {
+const TOKEN: &str = "bench-token";
+
+/// The client's view of a bench server (in-process or child).
+#[derive(Clone)]
+struct Api {
     base: String,
-    token: String,
     http: reqwest::Client,
+}
+
+/// An in-process bench server, with direct handles on the instruments.
+struct Bench {
+    api: Api,
     fake: Arc<FakeProvider>,
     hand: Arc<echo::EchoHand>,
 }
 
+/// Compose the brain + the bench sidecar routes and serve on a loopback port.
 async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     fake.set_mode(FakeMode::Policy {
@@ -110,33 +125,77 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         Arc::new(echo::EchoFactory { hand: hand.clone() }),
         Some(Arc::new(move |_| factory_fake.clone() as Arc<dyn Provider>)),
     );
-    let token = "bench-token".to_string();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base = format!("http://{}", listener.local_addr()?);
     let app = brain::api::router(brain::api::AppState {
         brain,
-        token: token.clone(),
-    });
+        token: TOKEN.into(),
+    })
+    .merge(bench_routes(fake.clone(), hand.clone()));
     tokio::spawn(async move {
         axum::serve(brain::api::nodelay(listener), app)
             .await
             .expect("bench server");
     });
     Ok(Bench {
-        base,
-        token,
-        http: reqwest::Client::new(),
+        api: Api {
+            base,
+            http: reqwest::Client::new(),
+        },
         fake,
         hand,
     })
 }
 
-impl Bench {
+/// The bench sidecar: /bench/trim (malloc_trim now) and /bench/guards (instrument counters
+/// checked server-side, so a child process can be audited over the wire).
+fn bench_routes(fake: Arc<FakeProvider>, hand: Arc<echo::EchoHand>) -> axum::Router {
+    use axum::extract::Query;
+    use axum::http::StatusCode;
+    use axum::routing::{get, post};
+    #[derive(serde::Deserialize)]
+    struct Expect {
+        model: u64,
+        tools: u64,
+    }
+    let (f, h) = (fake.clone(), hand.clone());
+    axum::Router::new()
+        .route(
+            "/bench/trim",
+            post(move || {
+                let freed = brain::reclaim::arena_return();
+                async move { format!("{freed}") }
+            }),
+        )
+        .route(
+            "/bench/guards",
+            get(move |Query(exp): Query<Expect>| {
+                let mismatches = f.policy_scan_mismatches.load(Ordering::SeqCst);
+                let model = f.call_count.load(Ordering::SeqCst);
+                let tools = h.calls.load(Ordering::SeqCst);
+                async move {
+                    if mismatches == 0 && model == exp.model && tools == exp.tools {
+                        (StatusCode::NO_CONTENT, String::new())
+                    } else {
+                        (
+                            StatusCode::CONFLICT,
+                            format!(
+                                "mismatches={mismatches} model={model} (want {}) tools={tools} (want {})",
+                                exp.model, exp.tools
+                            ),
+                        )
+                    }
+                }
+            }),
+        )
+}
+
+impl Api {
     async fn create_session(&self) -> anyhow::Result<String> {
         let r = self
             .http
             .post(format!("{}/v1/sessions", self.base))
-            .bearer_auth(&self.token)
+            .bearer_auth(TOKEN)
             .json(&json!({
                 "model": {"provider": "anthropic", "name": "bench", "api_key": "sk-bench"},
             }))
@@ -151,12 +210,45 @@ impl Bench {
         let r = self
             .http
             .delete(format!("{}/v1/sessions/{sid}", self.base))
-            .bearer_auth(&self.token)
+            .bearer_auth(TOKEN)
             .send()
             .await?;
         anyhow::ensure!(r.status().as_u16() == 204, "delete {sid}: {}", r.status());
         Ok(())
     }
+
+    /// Ask the server to malloc_trim, so a sample taken right after is post-trim.
+    async fn trim(&self) -> anyhow::Result<()> {
+        let r = self
+            .http
+            .post(format!("{}/bench/trim", self.base))
+            .send()
+            .await?;
+        anyhow::ensure!(r.status().is_success(), "trim: {}", r.status());
+        Ok(())
+    }
+
+    /// Server-side instrument audit; Err carries the server's account of the disagreement.
+    async fn guards(&self, expect_model: u64, expect_tools: u64) -> anyhow::Result<()> {
+        let r = self
+            .http
+            .get(format!(
+                "{}/bench/guards?model={expect_model}&tools={expect_tools}",
+                self.base
+            ))
+            .send()
+            .await?;
+        let status = r.status().as_u16();
+        anyhow::ensure!(status == 204, "guards fired: {}", r.text().await?);
+        Ok(())
+    }
+}
+
+fn expected_counts(sessions: usize, turns: usize, args: &Args) -> (u64, u64) {
+    (
+        (sessions * turns * (args.tool_rounds as usize + 1)) as u64,
+        (sessions * turns * args.tool_rounds as usize * args.parallel) as u64,
+    )
 }
 
 /// A live SSE reader over one session's event stream.
@@ -167,14 +259,14 @@ struct EventStream {
 }
 
 impl EventStream {
-    async fn open(b: &Bench, sid: &str) -> anyhow::Result<EventStream> {
-        let resp = b
+    async fn open(api: &Api, sid: &str) -> anyhow::Result<EventStream> {
+        let resp = api
             .http
             .get(format!(
                 "{}/v1/sessions/{sid}/events?after=0&follow=true",
-                b.base
+                api.base
             ))
-            .bearer_auth(&b.token)
+            .bearer_auth(TOKEN)
             .send()
             .await?;
         anyhow::ensure!(resp.status().is_success(), "events: {}", resp.status());
@@ -218,15 +310,15 @@ struct TurnSamples {
 
 /// Drive one session for `turns` sequential turns; every latency is measured at the client
 /// through real HTTP+SSE.
-async fn drive_session(b: &Bench, sid: &str, turns: usize) -> anyhow::Result<TurnSamples> {
-    let mut es = EventStream::open(b, sid).await?;
+async fn drive_session(api: &Api, sid: &str, turns: usize) -> anyhow::Result<TurnSamples> {
+    let mut es = EventStream::open(api, sid).await?;
     let mut out = TurnSamples::default();
     for _ in 0..turns {
         let t0 = Instant::now();
-        let r = b
+        let r = api
             .http
-            .post(format!("{}/v1/sessions/{sid}/messages", b.base))
-            .bearer_auth(&b.token)
+            .post(format!("{}/v1/sessions/{sid}/messages", api.base))
+            .bearer_auth(TOKEN)
             .json(&json!({"content": "go"}))
             .send()
             .await?;
@@ -258,24 +350,31 @@ async fn drive_session(b: &Bench, sid: &str, turns: usize) -> anyhow::Result<Tur
     Ok(out)
 }
 
-/// The instrument guards: a fake that mis-served or a loop that mis-counted invalidates every
-/// number, so the run refuses instead of reporting.
-fn guards(b: &Bench, sessions: usize, turns: usize, args: &Args) -> anyhow::Result<()> {
-    let mismatches = b.fake.policy_scan_mismatches.load(Ordering::SeqCst);
-    anyhow::ensure!(mismatches == 0, "fake scan/parse mismatches: {mismatches}");
-    let expect_model = (sessions * turns * (args.tool_rounds as usize + 1)) as u64;
-    let got_model = b.fake.call_count.load(Ordering::SeqCst);
-    anyhow::ensure!(
-        got_model == expect_model,
-        "model calls: expected {expect_model}, got {got_model}"
-    );
-    let expect_tools = (sessions * turns * args.tool_rounds as usize * args.parallel) as u64;
-    let got_tools = b.hand.calls.load(Ordering::SeqCst);
-    anyhow::ensure!(
-        got_tools == expect_tools,
-        "tool calls: expected {expect_tools}, got {got_tools}"
-    );
-    Ok(())
+/// Create K sessions and drive them all concurrently for M turns each.
+async fn drive_all(
+    api: &Api,
+    k: usize,
+    turns: usize,
+) -> anyhow::Result<(TurnSamples, f64, Vec<String>)> {
+    let mut sids = Vec::with_capacity(k);
+    for _ in 0..k {
+        sids.push(api.create_session().await?);
+    }
+    let wall = Instant::now();
+    let mut set = tokio::task::JoinSet::new();
+    for sid in &sids {
+        let api = api.clone();
+        let sid = sid.clone();
+        set.spawn(async move { drive_session(&api, &sid, turns).await });
+    }
+    let mut all = TurnSamples::default();
+    while let Some(r) = set.join_next().await {
+        let s = r??;
+        all.turn_ms.extend(s.turn_ms);
+        all.admit_ms.extend(s.admit_ms);
+        all.ttft_ms.extend(s.ttft_ms);
+    }
+    Ok((all, wall.elapsed().as_secs_f64(), sids))
 }
 
 struct GateBook {
@@ -313,28 +412,16 @@ fn fmt_summary(name: &str, s: &stats::Summary) -> String {
 async fn arm_turns(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
     let b = serve(args, Duration::from_secs(3600)).await?;
     let k = args.sessions;
-    let mut sids = Vec::with_capacity(k);
-    for _ in 0..k {
-        sids.push(b.create_session().await?);
-    }
-    let wall = Instant::now();
-    let mut set = tokio::task::JoinSet::new();
-    let b = Arc::new(b);
-    for sid in &sids {
-        let b = b.clone();
-        let sid = sid.clone();
-        let turns = args.turns;
-        set.spawn(async move { drive_session(&b, &sid, turns).await });
-    }
-    let mut all = TurnSamples::default();
-    while let Some(r) = set.join_next().await {
-        let s = r??;
-        all.turn_ms.extend(s.turn_ms);
-        all.admit_ms.extend(s.admit_ms);
-        all.ttft_ms.extend(s.ttft_ms);
-    }
-    let wall_s = wall.elapsed().as_secs_f64();
-    guards(&b, k, args.turns, args)?;
+    let (all, wall_s, _sids) = drive_all(&b.api, k, args.turns).await?;
+    let (em, et) = expected_counts(k, args.turns, args);
+    let mismatches = b.fake.policy_scan_mismatches.load(Ordering::SeqCst);
+    anyhow::ensure!(mismatches == 0, "fake scan/parse mismatches: {mismatches}");
+    let (gm, gt) = (
+        b.fake.call_count.load(Ordering::SeqCst),
+        b.hand.calls.load(Ordering::SeqCst),
+    );
+    anyhow::ensure!(gm == em, "model calls: expected {em}, got {gm}");
+    anyhow::ensure!(gt == et, "tool calls: expected {et}, got {gt}");
 
     let turns_per_sec = (k * args.turns) as f64 / wall_s;
     let turn = stats::summarize(&all.turn_ms);
@@ -363,47 +450,81 @@ async fn arm_turns(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The server child for `density`: parent samples /proc/<pid> while this process holds ONLY
+/// the brain (and its instruments). Parked until killed.
+async fn arm_serve(args: &Args) -> anyhow::Result<()> {
+    let b = serve(args, Duration::from_secs(args.idle_discard_s)).await?;
+    println!("READY {} {}", b.api.base, std::process::id());
+    // An unflushed READY line deadlocks the parent.
+    use std::io::Write as _;
+    std::io::stdout().flush().ok();
+    loop {
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+    }
+}
+
 async fn arm_density(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
-    let idle = Duration::from_secs(3);
-    let b = serve(args, idle).await?;
+    let idle_s = 3u64;
+    // The brain under measurement lives in its own process.
+    let exe = std::env::current_exe()?;
+    let mut child = tokio::process::Command::new(exe)
+        .args([
+            "serve",
+            "--tool-rounds",
+            &args.tool_rounds.to_string(),
+            "--parallel",
+            &args.parallel.to_string(),
+            "--text-bytes",
+            &args.text_bytes.to_string(),
+            "--inspect-every",
+            &args.inspect_every.to_string(),
+            "--idle-discard-s",
+            &idle_s.to_string(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let stdout = child.stdout.take().expect("child stdout");
+    let mut reader = tokio::io::BufReader::new(stdout);
+    let mut ready = String::new();
+    use tokio::io::AsyncBufReadExt as _;
+    tokio::time::timeout(Duration::from_secs(30), reader.read_line(&mut ready))
+        .await
+        .map_err(|_| anyhow::anyhow!("server child never became ready"))??;
+    let mut parts = ready.trim().split(' ');
+    anyhow::ensure!(parts.next() == Some("READY"), "child said: {ready}");
+    let base = parts.next().unwrap_or_default().to_string();
+    let pid: u32 = parts.next().unwrap_or_default().parse()?;
+    let api = Api {
+        base,
+        http: reqwest::Client::new(),
+    };
+    let sample = |api: Api| async move {
+        api.trim().await?;
+        mem::sample_pid(pid).map_err(anyhow::Error::msg)
+    };
+
     let n = args.sessions;
-
-    brain::reclaim::arena_return();
-    let m_base = mem::sample().map_err(anyhow::Error::msg)?;
-
-    let mut sids = Vec::with_capacity(n);
-    for _ in 0..n {
-        sids.push(b.create_session().await?);
-    }
-    let b = Arc::new(b);
-    let mut set = tokio::task::JoinSet::new();
-    for sid in &sids {
-        let b = b.clone();
-        let sid = sid.clone();
-        let turns = args.turns;
-        set.spawn(async move { drive_session(&b, &sid, turns).await });
-    }
-    while let Some(r) = set.join_next().await {
-        r??;
-    }
-    guards(&b, n, args.turns, args)?;
+    let m_base = sample(api.clone()).await?;
+    let (_all, _wall, sids) = drive_all(&api, n, args.turns).await?;
+    let (em, et) = expected_counts(n, args.turns, args);
+    api.guards(em, et).await?;
 
     // Resident: every actor alive, fold cached. Sample immediately (discard is 3s away).
-    brain::reclaim::arena_return();
-    let m_resident = mem::sample().map_err(anyhow::Error::msg)?;
+    let m_resident = sample(api.clone()).await?;
 
     // Discarded: actors exited, journal still holds every record (as DynamoDB would,
     // off-process, in production). The difference is what a resident session actually costs.
-    tokio::time::sleep(idle + Duration::from_secs(4)).await;
-    brain::reclaim::arena_return();
-    let m_discarded = mem::sample().map_err(anyhow::Error::msg)?;
+    tokio::time::sleep(Duration::from_secs(idle_s + 4)).await;
+    let m_discarded = sample(api.clone()).await?;
 
+    // Delete everything; what the process keeps above baseline is the reclaim gate.
     for sid in &sids {
-        b.delete_session(sid).await?;
+        api.delete_session(sid).await?;
     }
     tokio::time::sleep(Duration::from_secs(1)).await;
-    brain::reclaim::arena_return();
-    let m_final = mem::sample().map_err(anyhow::Error::msg)?;
+    let m_final = sample(api.clone()).await?;
+    child.kill().await.ok();
 
     let per = |a: u64, z: u64| (a.saturating_sub(z)) as f64 / n as f64 / 1024.0;
     let kib_private = per(m_resident.private_bytes(), m_discarded.private_bytes());
@@ -426,7 +547,7 @@ async fn arm_density(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
         args.turns, args.tool_rounds, args.parallel, args.text_bytes
     );
     println!(
-        "  private MiB: base {:.1} -> resident {:.1} -> discarded {:.1} -> deleted {:.1}",
+        "  server private MiB: base {:.1} -> resident {:.1} -> discarded {:.1} -> deleted {:.1}",
         m_base.private_bytes() as f64 / 1048576.0,
         m_resident.private_bytes() as f64 / 1048576.0,
         m_discarded.private_bytes() as f64 / 1048576.0,
@@ -505,6 +626,7 @@ fn main() -> anyhow::Result<()> {
         match args.arm.as_str() {
             "turns" => arm_turns(&args, &mut book).await?,
             "density" => arm_density(&args, &mut book).await?,
+            "serve" => return arm_serve(&args).await,
             "ci" => return arm_ci(&args).await,
             other => anyhow::bail!("unknown arm {other}: use density | turns | ci"),
         }
