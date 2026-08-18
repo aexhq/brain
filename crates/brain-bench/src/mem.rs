@@ -33,10 +33,6 @@ pub fn sample_pid(pid: u32) -> Result<Mem, String> {
     sample_path(&path)
 }
 
-pub fn sample() -> Result<Mem, String> {
-    sample_path("/proc/self/smaps_rollup")
-}
-
 fn sample_path(path: &str) -> Result<Mem, String> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         format!(

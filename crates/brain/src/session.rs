@@ -349,56 +349,58 @@ impl Brain {
         tx
     }
 
+    /// Deliver a command to the session's actor, retrying ONCE against a fresh actor when the
+    /// send itself fails. A failed send means the actor closed its inbox while exiting on the
+    /// idle timer — the command never entered the channel, so retrying cannot double-apply.
+    /// A dropped REPLY stays an error: the command may have partially run.
+    async fn deliver<R>(
+        self: &Arc<Self>,
+        session_id: &str,
+        build: impl Fn(oneshot::Sender<R>) -> Command,
+    ) -> Result<R> {
+        for _ in 0..2 {
+            let tx = self.sender_or_spawn(session_id).await?;
+            let (reply, rx) = oneshot::channel();
+            if tx.send(build(reply)).await.is_err() {
+                continue;
+            }
+            return rx
+                .await
+                .map_err(|_| BrainError::Journal("actor dropped the reply".into()));
+        }
+        Err(BrainError::NoSuchSession(session_id.into()))
+    }
+
     pub async fn message(
         self: &Arc<Self>,
         session_id: &str,
         content: MessageRequestContent,
     ) -> Result<(String, u64)> {
         let blocks = content_blocks(content)?;
-        let tx = self.sender_or_spawn(session_id).await?;
-        let (reply, rx) = oneshot::channel();
-        tx.send(Command::Message {
-            content: blocks,
+        self.deliver(session_id, |reply| Command::Message {
+            content: blocks.clone(),
             reply,
         })
-        .await
-        .map_err(|_| BrainError::NoSuchSession(session_id.into()))?;
-        rx.await
-            .map_err(|_| BrainError::Journal("actor dropped the reply".into()))?
+        .await?
     }
 
     pub async fn cancel(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
-        let tx = self.sender_or_spawn(session_id).await?;
-        let (reply, rx) = oneshot::channel();
-        tx.send(Command::Cancel { reply })
-            .await
-            .map_err(|_| BrainError::NoSuchSession(session_id.into()))?;
-        let doc = rx
-            .await
-            .map_err(|_| BrainError::Journal("actor dropped the reply".into()))??;
+        let doc = self
+            .deliver(session_id, |reply| Command::Cancel { reply })
+            .await??;
         Ok(session_doc(session_id, &doc))
     }
 
     pub async fn end(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
-        let tx = self.sender_or_spawn(session_id).await?;
-        let (reply, rx) = oneshot::channel();
-        tx.send(Command::End { reply })
-            .await
-            .map_err(|_| BrainError::NoSuchSession(session_id.into()))?;
-        let doc = rx
-            .await
-            .map_err(|_| BrainError::Journal("actor dropped the reply".into()))??;
+        let doc = self
+            .deliver(session_id, |reply| Command::End { reply })
+            .await??;
         Ok(session_doc(session_id, &doc))
     }
 
     pub async fn delete(self: &Arc<Self>, session_id: &str) -> Result<()> {
-        let tx = self.sender_or_spawn(session_id).await?;
-        let (reply, rx) = oneshot::channel();
-        tx.send(Command::Delete { reply })
-            .await
-            .map_err(|_| BrainError::NoSuchSession(session_id.into()))?;
-        rx.await
-            .map_err(|_| BrainError::Journal("actor dropped the reply".into()))?
+        self.deliver(session_id, |reply| Command::Delete { reply })
+            .await?
     }
 
     pub async fn persist(
@@ -408,18 +410,13 @@ impl Brain {
         path: String,
         media_type: Option<String>,
     ) -> Result<ArtifactDoc> {
-        let tx = self.sender_or_spawn(session_id).await?;
-        let (reply, rx) = oneshot::channel();
-        tx.send(Command::Persist {
-            name,
-            path,
-            media_type,
+        self.deliver(session_id, |reply| Command::Persist {
+            name: name.clone(),
+            path: path.clone(),
+            media_type: media_type.clone(),
             reply,
         })
-        .await
-        .map_err(|_| BrainError::NoSuchSession(session_id.into()))?;
-        rx.await
-            .map_err(|_| BrainError::Journal("actor dropped the reply".into()))?
+        .await?
     }
 
     /// GET never hydrates: a resident actor answers from memory, otherwise the head is read
@@ -640,6 +637,16 @@ async fn actor(
             _ = tokio::time::sleep(brain.cfg.idle_discard), if running.is_none() => {
                 // Idle: discard the fold, release the lease, drop the adapter. The substrate
                 // does its own idling; the journal holds everything.
+                //
+                // The exit is a CLOSE-THEN-DRAIN, not a break: the idle timer and an incoming
+                // command can be ready in the same select round, and a command already
+                // buffered in the channel when we exit would have its reply dropped — the
+                // caller sees "actor dropped the reply" (a 500) at exactly the discard
+                // boundary. close() refuses NEW sends (the caller's send fails and it retries
+                // against a fresh actor); everything already buffered still drains through
+                // the normal arms above (they rehydrate on demand), and recv() then yields
+                // None, which is the loop's exit.
+                rx.close();
                 if let Some(r) = resident.take() {
                     r.st.hand.idle();
                     let _ = brain.journal.release(&session_id, &r.st.lease).await;
@@ -651,7 +658,6 @@ async fn actor(
                         tracing::debug!(freed, "malloc_trim after session drop");
                     }
                 }
-                break;
             }
         }
     }
