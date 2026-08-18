@@ -26,6 +26,7 @@ pub mod outbound;
 pub mod provider;
 pub mod reclaim;
 pub mod session;
+pub mod subagent;
 pub mod tools;
 pub mod turn;
 

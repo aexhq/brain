@@ -137,6 +137,19 @@ pub struct Entry {
     pub record: Record,
 }
 
+impl Record {
+    /// The agent an activity record belongs to; `None` for session-level records.
+    pub fn agent(&self) -> Option<&str> {
+        match self {
+            Record::Assistant { agent, .. }
+            | Record::Usage { agent, .. }
+            | Record::ToolCall { agent, .. }
+            | Record::ToolResult { agent, .. } => Some(agent),
+            _ => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Fold
 // ---------------------------------------------------------------------------------------------
@@ -163,13 +176,35 @@ impl Fold {
     }
 
     pub fn apply(&mut self, record: &Record) {
+        // Subagent records (slice 8) never enter the ROOT history: a child's assistant
+        // message is not the parent's, and -- load-bearing -- a child record landing
+        // between two root tool results of one batch must not flush them into separate
+        // user messages (providers require one user message per result batch). The
+        // parent's own `task` ToolCall/ToolResult carry the parent's agent id and fold
+        // normally.
+        if let Some(agent) = record.agent()
+            && agent != "root"
+        {
+            return;
+        }
         match record {
             Record::UserMessage { content, .. } => {
-                self.flush_results();
-                self.history.push(Message {
-                    role: Role::User,
-                    content: content.clone(),
-                });
+                if self.pending_results.is_empty() {
+                    self.history.push(Message {
+                        role: Role::User,
+                        content: content.clone(),
+                    });
+                } else {
+                    // A recovered/cancelled turn may end immediately after its
+                    // tool results. Merge the next real user text into that same
+                    // user message so provider histories still alternate roles.
+                    let mut merged = std::mem::take(&mut self.pending_results);
+                    merged.extend(content.clone());
+                    self.history.push(Message {
+                        role: Role::User,
+                        content: merged,
+                    });
+                }
             }
             Record::TurnStarted { .. } => self.turns += 1,
             Record::Assistant { content, .. } => {
@@ -823,6 +858,79 @@ mod tests {
         ]));
         assert_eq!(f.history.len(), 3);
         assert_eq!(f.history[2].role, Role::User);
+    }
+
+    #[test]
+    fn subagent_records_never_split_or_pollute_root_history() {
+        let mut child_assistant = assistant("t1", vec![ContentBlock::text("child")]);
+        if let Record::Assistant { agent, .. } = &mut child_assistant {
+            *agent = "agt_child".into();
+        }
+        let mut child_result = result("child-call", "child-out", false);
+        if let Record::ToolResult { agent, .. } = &mut child_result {
+            *agent = "agt_child".into();
+        }
+        let f = fold(&entries(vec![
+            user("t1", "go"),
+            assistant(
+                "t1",
+                vec![
+                    ContentBlock::ToolUse {
+                        id: "c1".into(),
+                        name: "task".into(),
+                        input: serde_json::json!({}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "c2".into(),
+                        name: "task".into(),
+                        input: serde_json::json!({}),
+                    },
+                ],
+            ),
+            result("c1", "one", false),
+            child_assistant,
+            child_result,
+            result("c2", "two", false),
+            assistant("t1", vec![ContentBlock::text("done")]),
+        ]));
+        assert_eq!(f.history.len(), 4);
+        assert_eq!(f.history[2].content.len(), 2);
+        assert!(f.history.iter().all(|message| {
+            message
+                .content
+                .iter()
+                .all(|block| !matches!(block, ContentBlock::Text { text } if text == "child"))
+        }));
+    }
+
+    #[test]
+    fn next_user_text_merges_with_an_interrupted_tool_result() {
+        let f = fold(&entries(vec![
+            user("t1", "start"),
+            assistant(
+                "t1",
+                vec![ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "task".into(),
+                    input: serde_json::json!({}),
+                }],
+            ),
+            result("c1", "subagent interrupted", true),
+            Record::TurnCompleted {
+                turn: "t1".into(),
+                stop_reason: "interrupted".into(),
+                rounds: 1,
+                tool_calls: 1,
+            },
+            user("t2", "continue"),
+        ]));
+        assert_eq!(f.history.len(), 3);
+        assert_eq!(f.history[2].role, Role::User);
+        assert!(matches!(
+            &f.history[2].content[..],
+            [ContentBlock::ToolResult { is_error: true, .. }, ContentBlock::Text { text }]
+                if text == "continue"
+        ));
     }
 
     #[test]

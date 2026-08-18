@@ -21,6 +21,7 @@ substrate — a k8s pod, an SSH box, another cloud — implements the traits and
 | `brain::journal` | journal semantics (fence on claim only, (session, seq) idempotency barrier, fold/replay) + the in-memory reference store |
 | `brain::local` | the local substrate: the seven manifest tools in subprocesses against per-session directories |
 | `brain::turn` | the tool loop: journal-before-dispatch, bounded-parallel adapter calls, bounded tail-retained output, graceful cancel |
+| `brain::subagent` | self-similar in-process `task` children: depth ≤3, 12 lifetime identities, shared hand/MCP, root-serialized journal commits |
 | `brain::session` | sessions as spawned tasks: hydrate-act-commit-discard actors, admission, `malloc_trim` on drop; `Brain::with_parts` composition |
 | `brain::api` | session API v1 (axum): create/message/events(SSE)/cancel/end/delete/persist/artifacts |
 | `brain-aws` | the AWS adapter set: `DynamoJournal`, `KmsCustody`, `LambdaFactory` (MicroVM launch/resume/sync/wall survival) |
@@ -77,7 +78,7 @@ documented on the traits; the shared journal tests define the store semantics.
 ## Build and test
 
 ```
-cargo test --workspace                              # unit + local-mode e2e + leakage gate (no cloud)
+cargo test --workspace                              # unit + local/MCP/task e2e + leakage gate (no cloud)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p brain-bench --release -- ci            # the benchmark gates (density arm needs Linux)
 cargo run --bin m0        # the AWS-mode M0 gate; needs AWS + provider keys (bin/m0.rs header)

@@ -123,6 +123,9 @@ pub struct Limits {
     /// Maximum tool calls dispatched concurrently from one assistant message.
     /// p90 batch size is 4; this is not sized for 64.
     pub max_parallel_tools: usize,
+    /// Maximum `task` subagent identities minted over the session's LIFETIME (D11).
+    /// Counted from journaled `task` tool calls, so the cap survives re-materialise.
+    pub max_subagent_identities: u32,
 }
 
 impl Default for Limits {
@@ -132,6 +135,7 @@ impl Default for Limits {
             max_fanout: 16,
             max_rounds: 128,
             max_parallel_tools: 8,
+            max_subagent_identities: 12,
         }
     }
 }
@@ -242,6 +246,31 @@ impl SealedPrefix {
             what,
         }
     }
+    /// The uniform child prefix for `task` subagents (slice-8 spec): the parent's
+    /// prefix verbatim minus the session-singleton `todo` (two writers would
+    /// interleave one list). The child keeps `task` itself -- depth is enforced at
+    /// dispatch, so one uniform child prefix serves every depth. Derived
+    /// deterministically from the sealed prefix: the SESSION digest is unchanged
+    /// and replay reconstructs children exactly.
+    pub(crate) fn task_child(&self) -> SealedPrefix {
+        SealedPrefix {
+            digest: self.digest.clone(),
+            system_prompt: self.system_prompt.clone(),
+            tools: self
+                .tools
+                .iter()
+                .filter(|t| t.name != "todo")
+                .cloned()
+                .collect(),
+            mcp_servers: self.mcp_servers.clone(),
+            model: self.model.clone(),
+            dialect: self.dialect,
+            sampling: self.sampling.clone(),
+            limits: self.limits,
+            subagents: self.subagents.clone(),
+        }
+    }
+
     /// Heap bytes owned by the prefix. Shared across every session that seals
     /// the same definition, so it is charged once to the host, not per session.
     pub fn heap_bytes(&self) -> usize {
@@ -475,6 +504,36 @@ mod tests {
         let child2 = AgentDef::new("child v2", "test-model", Dialect::AnthropicMessages);
         let p2 = def().subagent("explore", child2);
         assert_ne!(prefix_digest(&p2), d1);
+    }
+
+    #[test]
+    fn task_child_keeps_the_sealed_identity_but_removes_todo() {
+        let sealed = AgentDef::new("parent", "test-model", Dialect::AnthropicMessages)
+            .tool(crate::tools::task_decl())
+            .tool(ToolDecl {
+                name: "todo".into(),
+                description: "todo".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                route: ToolRoute::Brain,
+            })
+            .tool(ToolDecl {
+                name: "read".into(),
+                description: "read".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                route: ToolRoute::Hand,
+            })
+            .seal();
+        let child = sealed.task_child();
+        assert_eq!(child.digest(), sealed.digest());
+        assert_eq!(child.limits, sealed.limits);
+        assert_eq!(
+            child
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["task", "read"]
+        );
     }
 
     #[test]

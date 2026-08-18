@@ -29,6 +29,7 @@ use crate::{BrainError, Result, Shared};
 use aex_contracts::session::EventStream;
 use futures_util::StreamExt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -44,16 +45,21 @@ pub struct TurnState {
     /// Sealed MCP dispatch state, rebuilt at hydrate from the prefix doc. `None` when the
     /// session declares no MCP servers.
     pub mcp: Option<Arc<crate::mcp::McpRuntime>>,
-    /// The next seq to allocate. Ephemeral events (deltas, tool output) consume seqs too;
-    /// every commit persists the high-water mark.
-    pub next_seq: u64,
+    /// The next seq to allocate, shared with concurrently running subagents. Ephemeral
+    /// events (deltas, tool output) consume seqs too; every commit persists the
+    /// high-water mark.
+    pub seq: Seq,
+    /// Session-lifetime count of minted `task` subagent identities (D11 cap), seeded
+    /// from the journal at hydrate so it survives re-materialise.
+    pub identities: Arc<AtomicU64>,
 }
 
+/// The session's seq allocator: atomic because subagents mint concurrently with the root.
+pub type Seq = Arc<AtomicU64>;
+
 impl TurnState {
-    pub fn take_seq(&mut self) -> u64 {
-        let s = self.next_seq;
-        self.next_seq += 1;
-        s
+    pub fn take_seq(&self) -> u64 {
+        self.seq.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Refreshes the head's adapter-owned fields. Runs before every commit so the journal
@@ -105,7 +111,7 @@ impl TurnRun {
     async fn commit(&self, st: &mut TurnState, records: Vec<(u64, Record)>) -> Result<()> {
         st.snapshot_hand();
         st.head.updated_ms = crate::wall_ms();
-        let high_water = st.next_seq - 1;
+        let high_water = st.seq.load(Ordering::Relaxed).saturating_sub(1);
         let mut lease = st.lease.clone();
         self.journal
             .commit(&self.session_id, &mut lease, &records, &st.head, high_water)
@@ -141,7 +147,7 @@ impl TurnRun {
             }
 
             // One model round.
-            let (message, stop) = match self.model_round(st).await {
+            let (mut message, stop) = match self.root_round(st).await {
                 Ok(v) => v,
                 Err(BrainError::Cancelled) => {
                     return self.complete(st, "cancelled", rounds, tool_calls).await;
@@ -152,14 +158,7 @@ impl TurnRun {
 
             // Journal the decision: the complete assistant message and every tool intent --
             // one durable write, BEFORE dispatch.
-            let calls: Vec<(String, String, serde_json::Value)> = message
-                .tool_uses()
-                .map(|(_, name, input)| (crate::mint_id("op", 16), name.to_string(), input.clone()))
-                .collect();
-            let provider_ids: Vec<String> = message
-                .tool_uses()
-                .map(|(id, _, _)| id.to_string())
-                .collect();
+            let calls = mint_tool_calls(&mut message);
 
             let mut records = Vec::new();
             let assistant_seq = st.take_seq();
@@ -207,7 +206,7 @@ impl TurnRun {
                     o.content.clone()
                 };
                 blocks.push(ContentBlock::ToolResult {
-                    tool_use_id: provider_ids[i].clone(),
+                    tool_use_id: calls[i].0.clone(),
                     content: content.clone(),
                     is_error: o.is_error,
                 });
@@ -280,62 +279,26 @@ impl TurnRun {
         })
     }
 
-    /// One streamed model round: request built from (sealed prefix, history), deltas fanned
-    /// out live, only the complete message returned.
-    async fn model_round(&self, st: &mut TurnState) -> Result<(Message, StopReason)> {
-        let req = self.provider.build_request(
-            &self.prefix,
+    /// One streamed model round for the ROOT agent. The streaming itself is shared with
+    /// subagents ([`model_round`]); the root wrapper journals the Usage record directly,
+    /// while children route theirs through the root-owned coordinator.
+    async fn root_round(&self, st: &mut TurnState) -> Result<(Message, StopReason)> {
+        let (message, stop, usage) = model_round(
+            RoundCtx {
+                provider: &self.provider,
+                prefix: &self.prefix,
+                session: &self.session,
+                permits: &self.model_permits,
+                cancel: &self.cancel,
+                hub: &self.hub,
+                session_id: &self.session_id,
+                turn_id: &self.turn_id,
+                agent: "root",
+                seq: &st.seq,
+            },
             &st.history,
-            &self.session.key,
-            &self.session.base_url,
-        )?;
-        let _permit = self
-            .model_permits
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| BrainError::Overloaded)?;
-
-        let mut stream = tokio::select! {
-            s = self.provider.stream(req) => s?,
-            () = self.cancel.cancelled() => return Err(BrainError::Cancelled),
-        };
-        let mut acc = Accumulator::default();
-        loop {
-            let ev = tokio::select! {
-                ev = stream.next() => ev,
-                () = self.cancel.cancelled() => return Err(BrainError::Cancelled),
-            };
-            match ev {
-                Some(Ok(ev)) => {
-                    if let ProviderEvent::TextDelta { text, .. } = &ev {
-                        let seq = st.take_seq();
-                        if let Some(e) = crate::events::delta_event(
-                            &self.session_id,
-                            seq,
-                            &self.turn_id,
-                            "root",
-                            text.clone(),
-                        ) {
-                            self.hub.publish(&self.session_id, e);
-                        }
-                    }
-                    // Drain to EOF -- never break on the first terminal. The Anthropic wire
-                    // folds `message_start`'s usage as an early MessageDone{Unknown}; the real
-                    // stop_reason arrives in message_delta near the end. Breaking early turns
-                    // a whole message into an empty one.
-                    acc.push(ev);
-                }
-                Some(Err(e)) => return Err(e),
-                None => break,
-            }
-        }
-        if !acc.saw_terminal {
-            return Err(BrainError::Protocol(
-                "provider stream ended without a terminal message event".into(),
-            ));
-        }
-        let (message, stop, usage) = acc.finish()?;
+        )
+        .await?;
         // Usage rides its own record so `model.usage` has its own seq, keeping per-round
         // granularity even when the round produced no tool calls.
         let seq = st.take_seq();
@@ -353,16 +316,12 @@ impl TurnRun {
             )],
         )
         .await?;
-        if stop == StopReason::ToolUse && message.tool_uses().next().is_none() {
-            return Err(BrainError::Protocol(
-                "provider reported stop_reason=tool_use with no tool_use block".into(),
-            ));
-        }
         Ok((message, stop))
     }
 
     /// Dispatches one assistant message's calls through the adapter, bounded-parallel.
-    /// Results come back in CALL order, every slot filled.
+    /// Results come back in CALL order, every slot filled. `task` children send decisions to
+    /// the root-owned commit coordinator and wait for durability before dispatch.
     async fn dispatch_batch(
         &self,
         st: &mut TurnState,
@@ -406,20 +365,58 @@ impl TurnRun {
         }
 
         let batch = calls.len() > 1;
-        let sem = Arc::new(Semaphore::new(self.prefix.limits.max_parallel_tools));
+        let sem = Arc::new(Semaphore::new(self.prefix.limits.max_parallel_tools.max(1)));
+        // Children cannot own the session lease. They send record batches here
+        // and block until this root-owned loop has committed them.
+        let (child_journal, mut child_commits) = crate::subagent::ChildJournal::channel();
+        let child_prefix: Option<Shared<SealedPrefix>> = calls
+            .iter()
+            .any(|(_, name, _)| name == "task")
+            .then(|| Arc::new(self.prefix.task_child()));
         let mut join = tokio::task::JoinSet::new();
         for (idx, (op_id, name, input)) in calls.iter().cloned().enumerate() {
             let route = self.prefix.tool(&name).map(|t| t.route);
+            let permit = sem.clone();
             match route {
                 None => {
                     // Undeclared: never dispatched, still answered.
                     join.spawn(async move {
+                        let _permit = permit.acquire_owned().await;
                         (idx, CallOutcome::failed(crate::tools::undeclared(&name)))
+                    });
+                }
+                Some(ToolRoute::Brain) if name == "task" => {
+                    // A self-similar child agent, in-process, inside this turn (slice 8).
+                    let ctx = Arc::new(crate::subagent::SubagentCtx {
+                        session_id: self.session_id.clone(),
+                        turn_id: self.turn_id.clone(),
+                        prefix: child_prefix
+                            .as_ref()
+                            .expect("task call created the child prefix")
+                            .clone(),
+                        session: self.session.clone(),
+                        provider: self.provider.clone(),
+                        provider_name: self.provider_name.clone(),
+                        hub: self.hub.clone(),
+                        cancel: self.cancel.clone(),
+                        model_permits: self.model_permits.clone(),
+                        history_budget_bytes: self.history_budget_bytes,
+                        seq: st.seq.clone(),
+                        hand: st.hand.clone(),
+                        mcp: st.mcp.clone(),
+                        identities: st.identities.clone(),
+                        journal: child_journal.clone(),
+                    });
+                    join.spawn(async move {
+                        let _permit = permit.acquire_owned().await;
+                        let outcome = crate::subagent::run_task(ctx, 1, op_id, input).await;
+                        (idx, outcome)
                     });
                 }
                 Some(ToolRoute::Brain) => {
                     let todo = st.todo.clone();
                     join.spawn(async move {
+                        let _permit = permit.acquire_owned().await;
                         let t0 = Instant::now();
                         let (content, is_error) = if name == "todo" {
                             todo.execute(&input)
@@ -450,6 +447,7 @@ impl TurnRun {
                     let runtime = st.mcp.clone();
                     let cancel = self.cancel.clone();
                     join.spawn(async move {
+                        let _permit = permit.acquire_owned().await;
                         let out = match &runtime {
                             Some(rt) => rt.call(&name, &input, &cancel).await,
                             None => CallOutcome::failed(
@@ -461,32 +459,15 @@ impl TurnRun {
                 }
                 Some(ToolRoute::Hand) => {
                     let hand = st.hand.clone();
-                    let sem = sem.clone();
                     let cancel = self.cancel.clone();
-                    let hub = self.hub.clone();
-                    let sid = self.session_id.clone();
-                    let turn = self.turn_id.clone();
-                    let seq_base = st.next_seq + idx as u64 * 4096;
+                    // Each streaming call reserves its own ephemeral seq window for
+                    // `tool.output` events. Coarse but safe: durable seqs continue after the
+                    // window; replay has gaps, ids never collide.
+                    let seq_base = st.seq.fetch_add(4096, Ordering::Relaxed);
+                    let sink =
+                        output_sink(&self.hub, &self.session_id, &self.turn_id, &op_id, seq_base);
                     join.spawn(async move {
-                        let _p = sem.acquire().await;
-                        let out_seq = Arc::new(std::sync::atomic::AtomicU64::new(seq_base));
-                        let sink: crate::adapter::OutputSink = {
-                            let (sid2, turn2, op2) = (sid.clone(), turn.clone(), op_id.clone());
-                            Arc::new(move |stream: &str, offset: u64, text: String| {
-                                let stream = if stream == "stderr" {
-                                    EventStream::Stderr
-                                } else {
-                                    EventStream::Stdout
-                                };
-                                let seq =
-                                    out_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                if let Some(e) = crate::events::output_event(
-                                    &sid2, seq, &turn2, &op2, stream, offset, text,
-                                ) {
-                                    hub.publish(&sid2, e);
-                                }
-                            })
-                        };
+                        let _permit = permit.acquire_owned().await;
                         let out = hand
                             .call(
                                 CallRequest {
@@ -504,35 +485,185 @@ impl TurnRun {
                 }
             }
         }
-
-        // Reserve an ephemeral seq window for the sinks' tool.output events. Coarse but safe:
-        // durable seqs continue after the window; replay has gaps, ids never collide.
-        if calls.iter().any(|(_, name, _)| {
-            matches!(
-                self.prefix.tool(name).map(|t| t.route),
-                Some(ToolRoute::Hand)
-            )
-        }) {
-            st.next_seq += calls.len() as u64 * 4096;
-        }
+        drop(child_journal);
 
         let mut done: Vec<Option<CallOutcome>> =
             std::iter::repeat_with(|| None).take(calls.len()).collect();
-        while let Some(joined) = join.join_next().await {
-            match joined {
-                Ok((idx, out)) => done[idx] = Some(out),
-                Err(e) => {
-                    if let Some(slot) = done.iter_mut().find(|s| s.is_none()) {
-                        *slot = Some(CallOutcome::failed(format!(
-                            "tool task did not complete: {e}"
-                        )));
+        let mut commits_open = true;
+        while !join.is_empty() || commits_open {
+            tokio::select! {
+                request = child_commits.recv(), if commits_open => {
+                    match request {
+                        Some(request) => {
+                            let records = request
+                                .records
+                                .into_iter()
+                                .map(|record| (st.take_seq(), record))
+                                .collect();
+                            if let Err(error) = self.commit(st, records).await {
+                                join.abort_all();
+                                // Dropping the ack unblocks the child while the root
+                                // propagates the durable-write failure.
+                                drop(request.committed);
+                                return Err(error);
+                            }
+                            let _ = request.committed.send(());
+                        }
+                        None => commits_open = false,
+                    }
+                }
+                joined = join.join_next(), if !join.is_empty() => {
+                    match joined {
+                        Some(Ok((idx, out))) => done[idx] = Some(out),
+                        Some(Err(e)) => {
+                            if let Some(slot) = done.iter_mut().find(|s| s.is_none()) {
+                                *slot = Some(CallOutcome::failed(format!(
+                                    "tool task did not complete: {e}"
+                                )));
+                            }
+                        }
+                        None => break,
                     }
                 }
             }
         }
+
         Ok(done
             .into_iter()
             .map(|o| o.unwrap_or_else(|| CallOutcome::failed("tool produced no result")))
             .collect())
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shared with subagents
+// ---------------------------------------------------------------------------------------------
+
+/// Everything one streamed model round needs, borrowed. The root and every subagent go
+/// through this one function so the streaming rules (drain to EOF, complete-message-only)
+/// cannot drift between them.
+pub(crate) struct RoundCtx<'a> {
+    pub provider: &'a Arc<dyn Provider>,
+    pub prefix: &'a SealedPrefix,
+    pub session: &'a SessionConfig,
+    pub permits: &'a Arc<Semaphore>,
+    pub cancel: &'a CancellationToken,
+    pub hub: &'a Arc<EventHub>,
+    pub session_id: &'a str,
+    pub turn_id: &'a str,
+    pub agent: &'a str,
+    pub seq: &'a Seq,
+}
+
+/// Replaces provider-local tool-use ids with the brain-minted call ids that
+/// own journal, SSE, and hand attribution. The normalized assistant message
+/// and its following results then stay internally linked after cold replay.
+pub(crate) fn mint_tool_calls(message: &mut Message) -> Vec<(String, String, serde_json::Value)> {
+    message
+        .content
+        .iter_mut()
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, name, input } => {
+                let call = crate::mint_id("op", 16);
+                *id = call.clone();
+                Some((call, name.clone(), input.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// One streamed model round: request built from (sealed prefix, history), deltas fanned
+/// out live under the caller's agent id, only the complete message returned. The caller
+/// journals the usage through its own path (the root directly; children through the
+/// root-owned commit coordinator).
+pub(crate) async fn model_round(
+    ctx: RoundCtx<'_>,
+    history: &[Message],
+) -> Result<(Message, StopReason, crate::message::Usage)> {
+    let req =
+        ctx.provider
+            .build_request(ctx.prefix, history, &ctx.session.key, &ctx.session.base_url)?;
+    let _permit = tokio::select! {
+        permit = ctx.permits.clone().acquire_owned() => {
+            permit.map_err(|_| BrainError::Overloaded)?
+        }
+        () = ctx.cancel.cancelled() => return Err(BrainError::Cancelled),
+    };
+
+    let mut stream = tokio::select! {
+        s = ctx.provider.stream(req) => s?,
+        () = ctx.cancel.cancelled() => return Err(BrainError::Cancelled),
+    };
+    let mut acc = Accumulator::default();
+    loop {
+        let ev = tokio::select! {
+            ev = stream.next() => ev,
+            () = ctx.cancel.cancelled() => return Err(BrainError::Cancelled),
+        };
+        match ev {
+            Some(Ok(ev)) => {
+                if let ProviderEvent::TextDelta { text, .. } = &ev {
+                    let seq = ctx.seq.fetch_add(1, Ordering::Relaxed);
+                    if let Some(e) = crate::events::delta_event(
+                        ctx.session_id,
+                        seq,
+                        ctx.turn_id,
+                        ctx.agent,
+                        text.clone(),
+                    ) {
+                        ctx.hub.publish(ctx.session_id, e);
+                    }
+                }
+                // Drain to EOF -- never break on the first terminal. The Anthropic wire
+                // folds `message_start`'s usage as an early MessageDone{Unknown}; the real
+                // stop_reason arrives in message_delta near the end. Breaking early turns
+                // a whole message into an empty one.
+                acc.push(ev);
+            }
+            Some(Err(e)) => return Err(e),
+            None => break,
+        }
+    }
+    if !acc.saw_terminal {
+        return Err(BrainError::Protocol(
+            "provider stream ended without a terminal message event".into(),
+        ));
+    }
+    let (message, stop, usage) = acc.finish()?;
+    if stop == StopReason::ToolUse && message.tool_uses().next().is_none() {
+        return Err(BrainError::Protocol(
+            "provider reported stop_reason=tool_use with no tool_use block".into(),
+        ));
+    }
+    Ok((message, stop, usage))
+}
+
+/// The `tool.output` event sink for one streaming hand call, publishing under a reserved
+/// ephemeral seq window. Shared by the root dispatcher and subagents.
+pub(crate) fn output_sink(
+    hub: &Arc<EventHub>,
+    session_id: &str,
+    turn_id: &str,
+    op_id: &str,
+    seq_base: u64,
+) -> crate::adapter::OutputSink {
+    let hub = hub.clone();
+    let (sid, turn, op) = (
+        session_id.to_string(),
+        turn_id.to_string(),
+        op_id.to_string(),
+    );
+    let out_seq = Arc::new(AtomicU64::new(seq_base));
+    Arc::new(move |stream: &str, offset: u64, text: String| {
+        let stream = if stream == "stderr" {
+            EventStream::Stderr
+        } else {
+            EventStream::Stdout
+        };
+        let seq = out_seq.fetch_add(1, Ordering::Relaxed);
+        if let Some(e) = crate::events::output_event(&sid, seq, &turn, &op, stream, offset, text) {
+            hub.publish(&sid, e);
+        }
+    })
 }

@@ -15,7 +15,9 @@ use crate::adapter::{HandAdapter, HandFactory, HandSpec, SeedFile};
 use crate::compact::DEFAULT_HISTORY_BUDGET_BYTES;
 use crate::config::{AgentDef, Dialect, GenOpts, ProviderKey, SessionConfig};
 use crate::events::EventHub;
-use crate::journal::{ArtifactDoc, FailureDoc, Head, HeadDoc, Journal, Lease, PrefixDoc, Record};
+use crate::journal::{
+    ArtifactDoc, Entry, FailureDoc, Head, HeadDoc, Journal, Lease, PrefixDoc, Record,
+};
 use crate::keys::{KeyCustody, blob_from_b64, blob_to_b64};
 use crate::local::LocalFactory;
 use crate::message::{ContentBlock, Message};
@@ -542,6 +544,62 @@ struct Resident {
     key: ProviderKey,
 }
 
+#[derive(Debug)]
+struct PendingTask {
+    seq: u64,
+    turn: String,
+    agent: String,
+    call: String,
+}
+
+/// Finds `task` intents with no result. Once a new owner can claim the
+/// session, the in-process child that owned each intent is gone and must never
+/// be replayed.
+fn pending_tasks(entries: &[Entry]) -> Vec<PendingTask> {
+    let mut pending = HashMap::<String, PendingTask>::new();
+    for entry in entries {
+        match &entry.record {
+            Record::ToolCall {
+                turn,
+                agent,
+                call,
+                name,
+                detach,
+                ..
+            } if name == "task" && !detach => {
+                pending.insert(
+                    call.clone(),
+                    PendingTask {
+                        seq: entry.seq,
+                        turn: turn.clone(),
+                        agent: agent.clone(),
+                        call: call.clone(),
+                    },
+                );
+            }
+            Record::ToolResult { call, .. } => {
+                pending.remove(call);
+            }
+            _ => {}
+        }
+    }
+    let mut pending: Vec<_> = pending.into_values().collect();
+    pending.sort_by_key(|task| task.seq);
+    pending
+}
+
+fn task_identity_count(entries: &[Entry]) -> u64 {
+    entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.record,
+                Record::ToolCall { name, detach: false, .. } if name == "task"
+            )
+        })
+        .count() as u64
+}
+
 async fn actor(
     brain: Arc<Brain>,
     session_id: String,
@@ -563,8 +621,7 @@ async fn actor(
             Ok(mut r) => {
                 match r.st.hand.ensure_ready().await {
                     Ok(_) => {
-                        let seq = r.st.next_seq;
-                        r.st.next_seq += 1;
+                        let seq = r.st.take_seq();
                         let rec = Record::State {
                             state: r.st.head.state.clone(),
                             turn: None,
@@ -756,11 +813,110 @@ async fn ensure_resident<'a>(
 /// Rebuilds a resident session from the journal: claim -> read -> fold -> decrypt -> open
 /// the adapter from its persisted state.
 async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
-    let head = brain.journal.claim(session_id).await?;
+    let mut head = brain.journal.claim(session_id).await?;
     if head.doc.state == "deleted" {
         return Err(BrainError::SessionDeleted(session_id.into()));
     }
-    let entries = brain.journal.read_records(session_id, 0).await?;
+    let mut entries = brain.journal.read_records(session_id, 0).await?;
+
+    // A successfully claimed session has no live previous owner. Any task
+    // intent without a result belonged to an in-process child that disappeared
+    // with that owner: answer it as interrupted, never replay it. Nested task
+    // results remain audit-only because Fold excludes non-root agents.
+    let interrupted = pending_tasks(&entries);
+    if !interrupted.is_empty() {
+        let active_turn = head.doc.turn.clone();
+        let interrupted_root_turn = active_turn.as_deref().is_some_and(|turn| {
+            interrupted
+                .iter()
+                .any(|task| task.agent == "root" && task.turn == turn)
+        });
+        let mut next_seq = head.last_seq + 1;
+        let mut records = Vec::with_capacity(interrupted.len() + 2);
+        for task in &interrupted {
+            records.push((
+                next_seq,
+                Record::ToolResult {
+                    turn: task.turn.clone(),
+                    agent: task.agent.clone(),
+                    call: task.call.clone(),
+                    name: "task".into(),
+                    outcome: "interrupted".into(),
+                    content: "subagent interrupted while the session was not resident".into(),
+                    is_error: true,
+                    exit_code: None,
+                    duration_ms: 0,
+                    truncated: false,
+                },
+            ));
+            next_seq += 1;
+        }
+        if interrupted_root_turn {
+            let turn = active_turn.expect("checked above");
+            let rounds = entries
+                .iter()
+                .filter(|entry| {
+                    matches!(
+                        &entry.record,
+                        Record::Assistant { turn: record_turn, agent, .. }
+                            if record_turn == &turn && agent == "root"
+                    )
+                })
+                .count() as u64;
+            let tool_calls = entries
+                .iter()
+                .filter(|entry| {
+                    matches!(
+                        &entry.record,
+                        Record::ToolCall { turn: record_turn, agent, .. }
+                            if record_turn == &turn && agent == "root"
+                    )
+                })
+                .count() as u64;
+            records.push((
+                next_seq,
+                Record::TurnCompleted {
+                    turn: turn.clone(),
+                    stop_reason: "interrupted".into(),
+                    rounds,
+                    tool_calls,
+                },
+            ));
+            next_seq += 1;
+            records.push((
+                next_seq,
+                Record::State {
+                    state: "idle".into(),
+                    turn: Some(turn),
+                },
+            ));
+            next_seq += 1;
+            head.doc.state = "idle".into();
+            head.doc.turn = None;
+        }
+        head.doc.updated_ms = crate::wall_ms();
+
+        let mut lease = Lease {
+            fence: head.fence,
+            last_seq: head.last_seq,
+        };
+        let high_water = next_seq - 1;
+        brain
+            .journal
+            .commit(session_id, &mut lease, &records, &head.doc, high_water)
+            .await?;
+        let now = crate::wall_ms();
+        for (seq, record) in &records {
+            if let Some(event) =
+                crate::events::derive(session_id, *seq, now, record, &head.doc.hand_info)
+            {
+                brain.hub.publish(session_id, event);
+            }
+        }
+        head.last_seq = lease.last_seq;
+        entries = brain.journal.read_records(session_id, 0).await?;
+    }
+
     let fold = crate::journal::fold(&entries);
     let key = brain
         .custody
@@ -768,6 +924,10 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
         .await?;
     let mcp = build_mcp_runtime(brain, session_id, &head.doc).await?;
     let hand = brain.open_adapter(session_id, &head.doc).await?;
+    // Every journaled `task` intent minted one child identity, including an
+    // interrupted call. Rebuilding the count here makes the D11 lifetime cap
+    // survive discard and process restart.
+    let identities = task_identity_count(&entries);
     Ok(Resident {
         st: TurnState {
             history: fold.history,
@@ -779,7 +939,8 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             },
             todo: Arc::new(TodoState::default()),
             mcp,
-            next_seq: head.last_seq + 1,
+            seq: Arc::new(std::sync::atomic::AtomicU64::new(head.last_seq + 1)),
+            identities: Arc::new(std::sync::atomic::AtomicU64::new(identities)),
         },
         key,
     })
@@ -824,7 +985,10 @@ async fn commit(
 ) -> Result<()> {
     st.snapshot_hand();
     st.head.updated_ms = crate::wall_ms();
-    let high_water = st.next_seq - 1;
+    let high_water = st
+        .seq
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .saturating_sub(1);
     let mut lease = st.lease.clone();
     brain
         .journal
@@ -862,8 +1026,7 @@ async fn admit(
     if r.st.hand.must_release() {
         tracing::info!(session = %session_id, "substrate wall: releasing before the turn");
         let _ = r.st.hand.release().await;
-        let seq = r.st.next_seq;
-        r.st.next_seq += 1;
+        let seq = r.st.take_seq();
         let rec = Record::State {
             state: r.st.head.state.clone(),
             turn: None,
@@ -872,10 +1035,8 @@ async fn admit(
     }
 
     let turn_id = crate::mint_id("trn", 24);
-    let user_seq = r.st.next_seq;
-    r.st.next_seq += 1;
-    let started_seq = r.st.next_seq;
-    r.st.next_seq += 1;
+    let user_seq = r.st.take_seq();
+    let started_seq = r.st.take_seq();
     r.st.head.state = "active".into();
     r.st.head.turn = Some(turn_id.clone());
     r.st.head.turns += 1;
@@ -896,10 +1057,23 @@ async fn admit(
         ),
     ];
     commit(brain, session_id, &mut r.st, records).await?;
-    r.st.history.push(Message {
-        role: crate::message::Role::User,
-        content,
-    });
+    if let Some(last) = r.st.history.last_mut()
+        && last.role == crate::message::Role::User
+        && !last.content.is_empty()
+        && last
+            .content
+            .iter()
+            .all(|block| matches!(block, ContentBlock::ToolResult { .. }))
+    {
+        // A recovered/cancelled turn can stop after tool results. Put the new
+        // prompt in that same user message to retain provider role alternation.
+        last.content.extend(content);
+    } else {
+        r.st.history.push(Message {
+            role: crate::message::Role::User,
+            content,
+        });
+    }
 
     // e.g. the speculative resume (F-4): substrate traffic now, hidden behind the model round.
     r.st.hand.on_message_admitted();
@@ -978,10 +1152,8 @@ async fn fail_turn_now(
         BrainError::Fenced => return Ok(()), // a newer owner exists; nothing to write
         _ => ("internal", false),
     };
-    let failed_seq = st.next_seq;
-    st.next_seq += 1;
-    let state_seq = st.next_seq;
-    st.next_seq += 1;
+    let failed_seq = st.take_seq();
+    let state_seq = st.take_seq();
     if session_fatal {
         st.head.state = "failed".into();
         st.head.failure = Some(FailureDoc {
@@ -1031,8 +1203,7 @@ async fn end_session(
         }
         r.st.head.ended = true;
         r.st.head.state = "idle".into();
-        let seq = r.st.next_seq;
-        r.st.next_seq += 1;
+        let seq = r.st.take_seq();
         let rec = Record::State {
             state: "idle".into(),
             turn: None,
@@ -1054,8 +1225,7 @@ async fn delete_session(
         mcp.close().await;
     }
     r.st.head.state = "deleted".into();
-    let seq = r.st.next_seq;
-    r.st.next_seq += 1;
+    let seq = r.st.take_seq();
     let rec = Record::State {
         state: "deleted".into(),
         turn: None,
@@ -1332,5 +1502,46 @@ mod tests {
         assert_eq!(dialect_of("anthropic"), Dialect::AnthropicMessages);
         assert_eq!(dialect_of("deepseek"), Dialect::OpenAiChat);
         assert_eq!(dialect_of("openai"), Dialect::OpenAiChat);
+    }
+
+    #[test]
+    fn pending_task_scan_tracks_results_and_the_lifetime_count() {
+        let task = |seq: u64, agent: &str, call: &str, detach: bool| Entry {
+            seq,
+            ts_ms: 0,
+            record: Record::ToolCall {
+                turn: "trn_test".into(),
+                agent: agent.into(),
+                call: call.into(),
+                name: "task".into(),
+                input: serde_json::json!({}),
+                detach,
+            },
+        };
+        let entries = vec![
+            task(1, "root", "op_pending", false),
+            task(2, "agt_child", "op_answered", false),
+            Entry {
+                seq: 3,
+                ts_ms: 0,
+                record: Record::ToolResult {
+                    turn: "trn_test".into(),
+                    agent: "agt_child".into(),
+                    call: "op_answered".into(),
+                    name: "task".into(),
+                    outcome: "completed".into(),
+                    content: "done".into(),
+                    is_error: false,
+                    exit_code: None,
+                    duration_ms: 1,
+                    truncated: false,
+                },
+            },
+            task(4, "root", "op_detached", true),
+        ];
+        let pending = pending_tasks(&entries);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].call, "op_pending");
+        assert_eq!(task_identity_count(&entries), 2);
     }
 }

@@ -4,8 +4,8 @@
 //! schemas are rendered to the model exactly as the hand serves them, so the manifest digest
 //! the brain seals at create is the digest the hand must answer in `hello` (I1).
 //!
-//! Brain-side tools (`todo` in M0) run in-process. `task` subagents, MCP and the managed web
-//! tools are M1: asking for them at create is a typed rejection, never a silent no-op.
+//! Brain-side tools (`todo`, and since slice 8 `task`) run in-process. The managed web tools
+//! are still M1: asking for them at create is a typed rejection, never a silent no-op.
 
 use crate::config::{ToolDecl, ToolRoute};
 use crate::{BrainError, Result};
@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// The default tool set when `tools` is omitted at create. The contract's full default adds
-/// `task`; that lands with subagents in M1 and is documented as such.
+/// The default tool set when `tools` is omitted at create: all hand tools + `task` + `todo`,
+/// exactly as the contract documents.
 pub fn default_builtins() -> Vec<BuiltinTool> {
     vec![
         BuiltinTool::Bash,
@@ -25,6 +25,7 @@ pub fn default_builtins() -> Vec<BuiltinTool> {
         BuiltinTool::Glob,
         BuiltinTool::Grep,
         BuiltinTool::Ls,
+        BuiltinTool::Task,
         BuiltinTool::Todo,
     ]
 }
@@ -70,11 +71,12 @@ pub fn resolve(builtins: &[BuiltinTool]) -> Result<Vec<ToolDecl>> {
     for b in builtins {
         let name = builtin_name(b);
         match b {
-            BuiltinTool::Task | BuiltinTool::WebSearch | BuiltinTool::WebFetch => {
+            BuiltinTool::WebSearch | BuiltinTool::WebFetch => {
                 return Err(BrainError::Invalid(format!(
                     "tool {name} is not available yet (M1); remove it from tools.builtin"
                 )));
             }
+            BuiltinTool::Task => decls.push(task_decl()),
             BuiltinTool::Todo => decls.push(todo_decl()),
             _ => {
                 let spec = manifest
@@ -105,6 +107,45 @@ pub fn manifest_digest() -> String {
     aex_contracts::tools::TOOL_MANIFEST_V1_DIGEST
         .trim()
         .to_string()
+}
+
+// ---------------------------------------------------------------------------------------------
+// task -- brain-side: a self-similar child agent inside the parent's turn (slice-8 spec)
+// ---------------------------------------------------------------------------------------------
+
+/// The model-supplied input of one `task` call.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskInput {
+    /// Short label for events and dashboards; never sent to the child.
+    pub description: String,
+    /// The child's seed user message.
+    pub prompt: String,
+}
+
+pub fn task_decl() -> ToolDecl {
+    ToolDecl {
+        name: "task".into(),
+        description: concat!(
+            "Delegate a self-contained piece of work to a subagent. The subagent has the ",
+            "same tools and workspace as you (except task-list state), works autonomously ",
+            "from your prompt alone, and returns only its final report -- so the prompt ",
+            "must carry every detail it needs."
+        )
+        .into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "minLength": 1, "maxLength": 100,
+                                "description": "A short (3-7 word) label for this delegation."},
+                "prompt": {"type": "string", "minLength": 1,
+                           "description": "The complete, self-contained task for the subagent."}
+            },
+            "required": ["description", "prompt"],
+            "additionalProperties": false
+        }),
+        route: ToolRoute::Brain,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -213,7 +254,7 @@ mod tests {
         assert_eq!(
             names(&decls),
             vec![
-                "bash", "read", "write", "edit", "glob", "grep", "ls", "todo"
+                "bash", "read", "write", "edit", "glob", "grep", "ls", "task", "todo"
             ]
         );
         let manifest = aex_contracts::tools::manifest_v1();
@@ -225,15 +266,12 @@ mod tests {
         );
         assert!(matches!(decls[0].route, ToolRoute::Hand));
         assert!(matches!(decls[7].route, ToolRoute::Brain));
+        assert!(matches!(decls[8].route, ToolRoute::Brain));
     }
 
     #[test]
     fn m1_tools_are_refused_loudly() {
-        for t in [
-            BuiltinTool::Task,
-            BuiltinTool::WebSearch,
-            BuiltinTool::WebFetch,
-        ] {
+        for t in [BuiltinTool::WebSearch, BuiltinTool::WebFetch] {
             assert!(matches!(resolve(&[t]), Err(BrainError::Invalid(_))));
         }
     }
