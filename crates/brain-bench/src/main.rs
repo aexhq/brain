@@ -587,9 +587,12 @@ async fn arm_density(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
     }
     child.kill().await.ok();
     if finals.len() > 1 {
-        let creep_mib = (*finals.last().expect("nonempty") as f64 - finals[0] as f64)
+        // Cycle 1 -> 2 includes one-time warmup (arena growth, runtime slabs); the creep that
+        // matters is the tail. A leak climbs every cycle; a plateau wobbles or declines.
+        let from = if finals.len() >= 3 { 1 } else { 0 };
+        let creep_mib = (*finals.last().expect("nonempty") as f64 - finals[from] as f64)
             / 1048576.0
-            / (finals.len() - 1) as f64;
+            / (finals.len() - 1 - from) as f64;
         println!(
             "  steady state over {} cycles: post-delete floor {:?} MiB -> creep {:+.1} MiB/cycle",
             finals.len(),
