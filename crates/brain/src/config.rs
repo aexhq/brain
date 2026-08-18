@@ -72,11 +72,11 @@ pub enum ToolRoute {
     Brain,
     /// Forwarded over the brain->hand ABI.
     Hand,
-    /// Forwarded to the connector tier, which holds the MCP credentials and
-    /// makes the outbound call. The brain never dials a user-controlled URL
-    /// (`design-decisions.md` §1.11): that would be SSRF originating in the
-    /// trusted tier.
-    Connector,
+    /// A sealed remote MCP tool: the brain makes the outbound call itself
+    /// behind the one `Outbound` seam with its SSRF guard (ARCHITECTURE-v1
+    /// D14 -- which supersedes §1.11's connector tier; there is no separate
+    /// connector in MVP).
+    Mcp,
 }
 
 /// An MCP server as declared at session start. Digested, because attaching one
@@ -85,8 +85,9 @@ pub enum ToolRoute {
 pub struct McpServerDecl {
     pub name: String,
     pub url: String,
-    /// `2025-03-26` (session-bound) or `2026-07-28` (stateless). Both are carried
-    /// because the connector must speak both; only the name reaches the digest.
+    /// The NEGOTIATED protocol revision, sealed at create: `2026-07-28` for the
+    /// stateless spec, an initialization-era date for the legacy adapter. All
+    /// three fields reach the digest.
     pub spec_version: String,
 }
 
@@ -457,7 +458,7 @@ mod tests {
     fn routing_and_limits_are_not_digested() {
         let base = prefix_digest(&def());
         let mut d = def();
-        d.tools[0].route = ToolRoute::Connector;
+        d.tools[0].route = ToolRoute::Mcp;
         d.limits.max_fanout = 999;
         assert_eq!(
             prefix_digest(&d),

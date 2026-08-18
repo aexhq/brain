@@ -256,6 +256,11 @@ pub struct HeadDoc {
     pub prefix: PrefixDoc,
     /// Custody blob of the BYOK key, base64. Never the plaintext.
     pub key_b64: String,
+    /// Custody blob of the per-server MCP header maps (`{server: {header: value}}`), base64.
+    /// Present only when a declared server carries headers. Never the plaintext -- the
+    /// contract marks `McpServerConfig.headers` writeOnly.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub mcp_secrets_b64: String,
     pub manifest_digest: String,
     /// The contract-facing hand snapshot, refreshed from the adapter on every commit --
     /// what `session.updated` replay and `GET /sessions/{id}` serve.
@@ -319,6 +324,15 @@ pub struct PrefixDoc {
     pub reasoning_effort: Option<String>,
     /// Builtin tool names, in declaration order (order is cache-visible).
     pub tools: Vec<String>,
+    /// Declared MCP servers with their negotiated spec versions. Digested via the sealed
+    /// prefix; empty for sessions without MCP.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp: Vec<McpServerDoc>,
+    /// The FULL resolved MCP tool declarations, sealed at create. Carrying the schemas here
+    /// is what makes rehydration deterministic and I/O-free: a server-side schema drift can
+    /// change nothing until the customer forks a new session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_tools: Vec<McpToolDoc>,
     pub hand_enabled: bool,
     pub shape: String,
     pub sync_interval_seconds: u64,
@@ -326,6 +340,30 @@ pub struct PrefixDoc {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+}
+
+/// One declared MCP server, minus its credentials (those live in custody via
+/// `HeadDoc::mcp_secrets_b64`). `spec_version` is the NEGOTIATED protocol revision --
+/// `2026-07-28` for the stateless spec, an initialization-era date for the legacy adapter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServerDoc {
+    pub name: String,
+    pub url: String,
+    pub spec_version: String,
+}
+
+/// One sealed MCP tool: the namespaced name the model sees, the routing identity
+/// (server + remote name), and the schema rendered verbatim into every request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpToolDoc {
+    /// `server__tool`, validated against the provider tool-name rule at create.
+    pub name: String,
+    pub server: String,
+    pub remote_name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
 }
 
 /// One persisted artifact: metadata only; the bytes live wherever the adapter put them
@@ -858,6 +896,8 @@ mod tests {
                 temperature: None,
                 reasoning_effort: None,
                 tools: vec!["bash".into()],
+                mcp: vec![],
+                mcp_tools: vec![],
                 hand_enabled: true,
                 shape: "1gb".into(),
                 sync_interval_seconds: 600,
@@ -865,6 +905,7 @@ mod tests {
                 metadata: HashMap::new(),
             },
             key_b64: "AAAA".into(),
+            mcp_secrets_b64: String::new(),
             manifest_digest: "d".into(),
             hand_info: HeadDoc::initial_hand_info("1gb"),
             hand_state: serde_json::Value::Null,
@@ -896,6 +937,8 @@ mod tests {
                 temperature: None,
                 reasoning_effort: None,
                 tools: vec![],
+                mcp: vec![],
+                mcp_tools: vec![],
                 hand_enabled: false,
                 shape: "1gb".into(),
                 sync_interval_seconds: 600,
@@ -903,6 +946,7 @@ mod tests {
                 metadata: HashMap::new(),
             },
             key_b64: String::new(),
+            mcp_secrets_b64: String::new(),
             manifest_digest: String::new(),
             hand_info: HeadDoc::initial_hand_info("1gb"),
             hand_state: serde_json::Value::Null,

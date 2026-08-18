@@ -84,6 +84,7 @@ async fn the_whole_local_loop_over_real_http() {
         max_concurrent_turns: 8,
         idle_discard: Duration::from_secs(300),
         history_budget_bytes: 1 << 20,
+        ..BrainConfig::default()
     };
 
     // The model, scripted: write a file, run bash over it, then finish. Everything else in

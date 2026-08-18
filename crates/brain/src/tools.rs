@@ -182,17 +182,6 @@ impl TodoState {
     }
 }
 
-/// Routes MCP declarations: sealed at create in the contract, unavailable until M1.
-pub fn reject_mcp(mcp: &[aex_contracts::session::McpServerConfig]) -> Result<()> {
-    if mcp.is_empty() {
-        Ok(())
-    } else {
-        Err(BrainError::Invalid(
-            "MCP servers are not available yet (M1); remove tools.mcp".into(),
-        ))
-    }
-}
-
 /// The per-call metadata the dispatcher carries; also what error text the model sees when a
 /// tool cannot run at all.
 pub fn undeclared(name: &str) -> String {

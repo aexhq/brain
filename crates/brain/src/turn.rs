@@ -41,6 +41,9 @@ pub struct TurnState {
     pub lease: Lease,
     pub hand: Arc<dyn HandAdapter>,
     pub todo: Arc<TodoState>,
+    /// Sealed MCP dispatch state, rebuilt at hydrate from the prefix doc. `None` when the
+    /// session declares no MCP servers.
+    pub mcp: Option<Arc<crate::mcp::McpRuntime>>,
     /// The next seq to allocate. Ephemeral events (deltas, tool output) consume seqs too;
     /// every commit persists the high-water mark.
     pub next_seq: u64,
@@ -440,14 +443,20 @@ impl TurnRun {
                         )
                     });
                 }
-                Some(ToolRoute::Connector) => {
+                Some(ToolRoute::Mcp) => {
+                    // Sealed MCP tools dispatch through the session's McpRuntime. The runtime
+                    // was built at hydrate; a call for a session that somehow has none (or a
+                    // tool the runtime no longer knows) is answered as an error, never a panic.
+                    let runtime = st.mcp.clone();
+                    let cancel = self.cancel.clone();
                     join.spawn(async move {
-                        (
-                            idx,
-                            CallOutcome::failed(format!(
-                                "tool {name} routes to the connector tier (M1)"
-                            )),
-                        )
+                        let out = match &runtime {
+                            Some(rt) => rt.call(&name, &input, &cancel).await,
+                            None => CallOutcome::failed(
+                                "MCP dispatch state is missing for this session".to_string(),
+                            ),
+                        };
+                        (idx, out)
                     });
                 }
                 Some(ToolRoute::Hand) => {

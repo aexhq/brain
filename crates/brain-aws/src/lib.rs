@@ -23,6 +23,14 @@ use std::sync::Arc;
 /// [`lambda::HandPlaneConfig::from_env`] plus `AEX_JOURNAL_TABLE` and `AEX_KMS_KEY_ID`).
 /// Fails fast on anything missing: production is configured, never guessed.
 pub async fn brain_from_env(cfg: BrainConfig) -> Result<Arc<Brain>> {
+    // D14: production never runs with a permissive SSRF guard. The local-mode constructor
+    // defaults this to true; the AWS composition refuses to start with it rather than carry
+    // a developer convenience into the trusted tier.
+    if cfg.outbound_allow_private {
+        return Err(brain::BrainError::Invalid(
+            "AEX_OUTBOUND_ALLOW_PRIVATE may not be true in AEX_MODE=aws (SSRF guard, D14)".into(),
+        ));
+    }
     let get = |k: &str| {
         std::env::var(k).map_err(|_| brain::BrainError::Invalid(format!("{k} is not set")))
     };

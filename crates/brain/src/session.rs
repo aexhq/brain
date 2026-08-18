@@ -44,6 +44,17 @@ pub struct BrainConfig {
     /// Idle residency before the actor discards its fold and exits.
     pub idle_discard: Duration,
     pub history_budget_bytes: usize,
+    /// Whether brain-originated requests to user-controlled URLs (MCP) may reach loopback /
+    /// private / link-local addresses. `false` is the production invariant (the SSRF guard,
+    /// D14); [`Brain::local`] defaults it to `true` so a developer's MCP server on
+    /// `127.0.0.1` works zero-config, and `brain-aws` refuses to start with `true`.
+    pub outbound_allow_private: bool,
+    /// Per-server budget for the create-time MCP probe + `tools/list`.
+    pub mcp_create_timeout: Duration,
+    /// Deadline for one MCP tool call.
+    pub mcp_call_timeout: Duration,
+    /// Bound on one MCP tool result as shown to the model.
+    pub mcp_max_result_bytes: usize,
 }
 
 impl Default for BrainConfig {
@@ -53,11 +64,26 @@ impl Default for BrainConfig {
             max_concurrent_turns: env_num("AEX_MAX_TURNS", 64),
             idle_discard: Duration::from_secs(env_num("AEX_IDLE_DISCARD_SECONDS", 900) as u64),
             history_budget_bytes: DEFAULT_HISTORY_BUDGET_BYTES,
+            outbound_allow_private: env_bool("AEX_OUTBOUND_ALLOW_PRIVATE", false),
+            mcp_create_timeout: Duration::from_millis(
+                env_num("AEX_MCP_CREATE_TIMEOUT_MS", 10_000) as u64
+            ),
+            mcp_call_timeout: Duration::from_millis(
+                env_num("AEX_MCP_CALL_TIMEOUT_MS", 60_000) as u64
+            ),
+            mcp_max_result_bytes: env_num("AEX_MCP_MAX_RESULT_BYTES", 128 * 1024),
         }
     }
 }
 
 fn env_num(k: &str, default: usize) -> usize {
+    std::env::var(k)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_bool(k: &str, default: bool) -> bool {
     std::env::var(k)
         .ok()
         .and_then(|s| s.parse().ok())
@@ -87,6 +113,9 @@ pub struct Brain {
     pub hand_factory: Arc<dyn HandFactory>,
     pub hub: Arc<EventHub>,
     pub model_permits: Arc<Semaphore>,
+    /// The D14 egress seam: every brain-originated request to a user-controlled URL (MCP)
+    /// goes through this client and its SSRF guard.
+    pub outbound: crate::outbound::Outbound,
     provider_factory: ProviderFactory,
     turn_permits: Arc<Semaphore>,
     sessions: Mutex<HashMap<String, mpsc::Sender<Command>>>,
@@ -136,6 +165,7 @@ impl Brain {
             provider_factory: provider_factory.unwrap_or_else(default_provider_factory),
             hub: Arc::new(EventHub::new()),
             sessions: Mutex::new(HashMap::new()),
+            outbound: crate::outbound::Outbound::new(cfg.outbound_allow_private),
             cfg,
         })
     }
@@ -146,6 +176,13 @@ impl Brain {
         let data_dir = data_dir.into();
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| BrainError::Invalid(format!("data dir: {e}")))?;
+        // Local mode is permissive-by-default toward private addresses: a developer's MCP
+        // server lives on 127.0.0.1. Setting AEX_OUTBOUND_ALLOW_PRIVATE explicitly wins;
+        // this is a composition choice of THIS constructor, never of the guard itself.
+        let mut cfg = cfg;
+        if std::env::var("AEX_OUTBOUND_ALLOW_PRIVATE").is_err() {
+            cfg.outbound_allow_private = true;
+        }
         let owner = format!("brain-{}", crate::mint_id("i", 12));
         Ok(Self::with_parts(
             cfg,
@@ -198,12 +235,45 @@ impl Brain {
             return Err(BrainError::Invalid("metadata: at most 16 pairs".into()));
         }
         let tools_cfg = req.tools.clone().unwrap_or_default();
-        crate::tools::reject_mcp(&tools_cfg.mcp)?;
         let builtins = tools_cfg
             .builtin
             .clone()
             .unwrap_or_else(crate::tools::default_builtins);
         let decls = crate::tools::resolve(&builtins)?;
+
+        // Resolve the declared MCP servers NOW: the tool list is sealed at create (§1.12),
+        // so `tools/list` runs here, concurrently per server, and never again for this
+        // session. Strict: an unreachable server fails the create.
+        let mcp = if tools_cfg.mcp.is_empty() {
+            crate::mcp::ResolvedMcp {
+                servers: Vec::new(),
+                tools: Vec::new(),
+            }
+        } else {
+            crate::mcp::resolve_at_create(
+                &self.outbound,
+                &tools_cfg.mcp,
+                self.cfg.mcp_create_timeout,
+            )
+            .await?
+        };
+        // Per-server headers are credentials: custody, never the journal plaintext.
+        let mcp_headers: HashMap<String, HashMap<String, String>> = tools_cfg
+            .mcp
+            .iter()
+            .filter(|c| !c.headers.is_empty())
+            .map(|c| (c.name.to_string(), c.headers.clone()))
+            .collect();
+        let mcp_secrets_b64 = if mcp_headers.is_empty() {
+            String::new()
+        } else {
+            let json = serde_json::to_string(&mcp_headers)?;
+            let blob = self
+                .custody
+                .encrypt(&session_id, &ProviderKey::new(json))
+                .await?;
+            blob_to_b64(&blob)
+        };
         let hand_cfg = req.hand.clone().unwrap_or_default();
         let shape = match hand_cfg.shape {
             None => "1gb".to_string(),
@@ -241,6 +311,8 @@ impl Brain {
                 .as_ref()
                 .map(|r| format!("{r:?}").to_lowercase()),
             tools: crate::tools::names(&decls),
+            mcp: mcp.servers,
+            mcp_tools: mcp.tools,
             hand_enabled: hand_cfg.enabled,
             shape: shape.clone(),
             sync_interval_seconds: hand_cfg.sync_interval_seconds.max(60) as u64,
@@ -273,6 +345,7 @@ impl Brain {
             ended: false,
             prefix,
             key_b64: blob_to_b64(&blob),
+            mcp_secrets_b64,
             manifest_digest,
             hand_info: HeadDoc::initial_hand_info(&shape),
             hand_state,
@@ -649,6 +722,11 @@ async fn actor(
                 rx.close();
                 if let Some(r) = resident.take() {
                     r.st.hand.idle();
+                    // Best-effort teardown of any live legacy MCP sessions (v2 has no session
+                    // to tear down; close() is a no-op). Never blocks the discard.
+                    if let Some(mcp) = &r.st.mcp {
+                        mcp.close().await;
+                    }
                     let _ = brain.journal.release(&session_id, &r.st.lease).await;
                     let freed: usize = r.st.history.iter().map(|m| m.heap_bytes()).sum();
                     drop(r);
@@ -688,6 +766,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
         .custody
         .decrypt(session_id, &blob_from_b64(&head.doc.key_b64)?)
         .await?;
+    let mcp = build_mcp_runtime(brain, session_id, &head.doc).await?;
     let hand = brain.open_adapter(session_id, &head.doc).await?;
     Ok(Resident {
         st: TurnState {
@@ -699,10 +778,42 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                 last_seq: head.last_seq,
             },
             todo: Arc::new(TodoState::default()),
+            mcp,
             next_seq: head.last_seq + 1,
         },
         key,
     })
+}
+
+/// Rebuilds the session's MCP dispatch state from the sealed prefix doc: decrypt the header
+/// custody blob (if any), rebuild the connections. Zero network I/O -- the tool list was
+/// sealed at create.
+async fn build_mcp_runtime(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    doc: &HeadDoc,
+) -> Result<Option<Arc<crate::mcp::McpRuntime>>> {
+    if doc.prefix.mcp.is_empty() {
+        return Ok(None);
+    }
+    let secrets: HashMap<String, HashMap<String, String>> = if doc.mcp_secrets_b64.is_empty() {
+        HashMap::new()
+    } else {
+        let plain = brain
+            .custody
+            .decrypt(session_id, &blob_from_b64(&doc.mcp_secrets_b64)?)
+            .await?;
+        serde_json::from_str(plain.expose())
+            .map_err(|e| BrainError::Custody(format!("mcp secrets blob is not valid: {e}")))?
+    };
+    Ok(Some(Arc::new(crate::mcp::McpRuntime::build(
+        &brain.outbound,
+        &doc.prefix.mcp,
+        &doc.prefix.mcp_tools,
+        &secrets,
+        brain.cfg.mcp_call_timeout,
+        brain.cfg.mcp_max_result_bytes,
+    )?)))
 }
 
 async fn commit(
@@ -915,6 +1026,9 @@ async fn end_session(
             tracing::warn!(session = %session_id, error = %e, "end checkpoint failed");
         }
         r.st.hand.release().await?;
+        if let Some(mcp) = &r.st.mcp {
+            mcp.close().await;
+        }
         r.st.head.ended = true;
         r.st.head.state = "idle".into();
         let seq = r.st.next_seq;
@@ -936,6 +1050,9 @@ async fn delete_session(
     let r = ensure_resident(brain, session_id, resident).await?;
     // Release compute without a checkpoint: the workspace is about to be deleted anyway.
     let _ = r.st.hand.release().await;
+    if let Some(mcp) = &r.st.mcp {
+        mcp.close().await;
+    }
     r.st.head.state = "deleted".into();
     let seq = r.st.next_seq;
     r.st.next_seq += 1;
@@ -1052,6 +1169,23 @@ pub fn build_prefix(
     );
     for d in decls {
         def = def.tool(d);
+    }
+    // Sealed MCP tools render after the builtins, in create order, from the schemas the doc
+    // carries -- no I/O, so the digest is a pure function of the doc (same doc, same digest).
+    for t in &p.mcp_tools {
+        def = def.tool(crate::config::ToolDecl {
+            name: t.name.clone(),
+            description: t.description.clone(),
+            input_schema: t.input_schema.clone(),
+            route: crate::config::ToolRoute::Mcp,
+        });
+    }
+    for s in &p.mcp {
+        def = def.mcp(crate::config::McpServerDecl {
+            name: s.name.clone(),
+            url: s.url.clone(),
+            spec_version: s.spec_version.clone(),
+        });
     }
     def = def.sampling(GenOpts {
         max_tokens: p.max_output_tokens.unwrap_or(4096) as u32,
@@ -1178,6 +1312,8 @@ mod tests {
             temperature: Some(0.5),
             reasoning_effort: None,
             tools: vec!["bash".into(), "todo".into()],
+            mcp: vec![],
+            mcp_tools: vec![],
             hand_enabled: true,
             shape: "1gb".into(),
             sync_interval_seconds: 600,
