@@ -205,9 +205,17 @@ impl TurnRun {
             let mut result_records = Vec::new();
             let mut blocks = Vec::with_capacity(calls.len());
             for (i, o) in outcomes.iter().enumerate() {
+                // Providers reject an EMPTY tool_result that carries is_error (the Anthropic
+                // wire refuses it outright), and an empty success reads as ambiguity anyway:
+                // say what happened.
+                let content = if o.content.is_empty() {
+                    format!("[{}: no output]", o.outcome)
+                } else {
+                    o.content.clone()
+                };
                 blocks.push(ContentBlock::ToolResult {
                     tool_use_id: provider_ids[i].clone(),
-                    content: o.content.clone(),
+                    content: content.clone(),
                     is_error: o.is_error,
                 });
                 result_records.push((
@@ -218,7 +226,7 @@ impl TurnRun {
                         call: calls[i].0.clone(),
                         name: calls[i].1.clone(),
                         outcome: o.outcome.clone(),
-                        content: o.content.clone(),
+                        content,
                         is_error: o.is_error,
                         exit_code: o.exit_code,
                         duration_ms: o.duration_ms,
@@ -324,14 +332,20 @@ impl TurnRun {
                             self.hub.publish(&self.session_id, e);
                         }
                     }
+                    // Drain to EOF -- never break on the first terminal. The Anthropic wire
+                    // folds `message_start`'s usage as an early MessageDone{Unknown}; the real
+                    // stop_reason arrives in message_delta near the end. Breaking early turns
+                    // a whole message into an empty one.
                     acc.push(ev);
-                    if acc.saw_terminal {
-                        break;
-                    }
                 }
                 Some(Err(e)) => return Err(e),
                 None => break,
             }
+        }
+        if !acc.saw_terminal {
+            return Err(BrainError::Protocol(
+                "provider stream ended without a terminal message event".into(),
+            ));
         }
         let (message, stop, usage) = acc.finish()?;
         // Usage rides its own record so `model.usage` has its own seq. Committed with the
@@ -401,17 +415,10 @@ impl TurnRun {
             st.hand.hold_up();
         }
 
-        let lane = if calls.len() > 1 {
-            LaneRef {
-                id: crate::mint_id("lane", 12)
-                    .parse()
-                    .map_err(|_| BrainError::Invalid("lane id".into()))?,
-                mode: LaneMode::Ephemeral,
-                parent: Some("0".parse().expect("root lane id")),
-            }
-        } else {
-            hand_client::root_lane()
-        };
+        // A lane serializes its operations, so parallel calls each fork their OWN ephemeral
+        // lane off the caller's (shared cwd/env snapshot, mutations discarded). A single call
+        // runs on the persistent root lane.
+        let batch = calls.len() > 1;
 
         let sem = Arc::new(Semaphore::new(self.prefix.limits.max_parallel_tools));
         let mut join = tokio::task::JoinSet::new();
@@ -476,6 +483,17 @@ impl TurnRun {
                     });
                 }
                 Some(ToolRoute::Hand) => {
+                    let lane = if batch {
+                        LaneRef {
+                            id: crate::mint_id("lane", 12)
+                                .parse()
+                                .map_err(|_| BrainError::Invalid("lane id".into()))?,
+                            mode: LaneMode::Ephemeral,
+                            parent: Some("0".parse().expect("root lane id")),
+                        }
+                    } else {
+                        hand_client::root_lane()
+                    };
                     let Some(client) = st.hand.client() else {
                         join.spawn(async move {
                             (
@@ -494,7 +512,6 @@ impl TurnRun {
                     };
                     let sem = sem.clone();
                     let cancel = self.cancel.clone();
-                    let lane = lane.clone();
                     let hub = self.hub.clone();
                     let sid = self.session_id.clone();
                     let turn = self.turn_id.clone();

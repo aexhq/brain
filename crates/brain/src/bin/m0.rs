@@ -303,6 +303,13 @@ async fn run() -> anyhow::Result<()> {
         std::env::var("AEX_M0_ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-haiku-4-5".into());
     let deepseek_model =
         std::env::var("AEX_M0_DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
+    let deepseek_provider =
+        std::env::var("AEX_M0_DEEPSEEK_PROVIDER").unwrap_or_else(|_| "deepseek".into());
+    // Optional base-URL overrides: the dialects are certified by their WIRE format, and a
+    // gateway serving the identical format (e.g. Vercel AI Gateway) is a real endpoint with
+    // real streaming, tools and usage. Direct provider hosts are simply the empty default.
+    let anthropic_base = std::env::var("AEX_M0_ANTHROPIC_BASE_URL").ok();
+    let deepseek_base = std::env::var("AEX_M0_DEEPSEEK_BASE_URL").ok();
 
     let mut timings: Vec<(String, u128)> = Vec::new();
     macro_rules! step {
@@ -320,7 +327,7 @@ async fn run() -> anyhow::Result<()> {
         .post(
             "/v1/sessions",
             json!({
-                "model": { "provider": "anthropic", "name": anthropic_model, "api_key": anthropic_key },
+                "model": { "provider": "anthropic", "name": anthropic_model, "api_key": anthropic_key, "base_url": anthropic_base },
                 "system_prompt": "You are a build agent. Use bash to do exactly what is asked; be brief in prose.",
                 "metadata": { "purpose": "m0-gate" }
             }),
@@ -536,13 +543,15 @@ async fn run() -> anyhow::Result<()> {
     step!("end", t);
 
     // ---- Pass 2: DeepSeek over the OpenAI dialect (real key, real endpoint). -----------------
-    println!("== pass 2: deepseek ({deepseek_model}, openai chat completions dialect) ==");
+    println!(
+        "== pass 2: {deepseek_provider}/{deepseek_model} (openai chat completions dialect) =="
+    );
     let t = Instant::now();
     let (status, ses2) = api
         .post(
             "/v1/sessions",
             json!({
-                "model": { "provider": "deepseek", "name": deepseek_model, "api_key": deepseek_key },
+                "model": { "provider": deepseek_provider, "name": deepseek_model, "api_key": deepseek_key, "base_url": deepseek_base },
                 "system_prompt": "You are a build agent. Use bash to do exactly what is asked; be brief in prose."
             }),
         )

@@ -1441,7 +1441,7 @@ dependencies = [
 [[package]]
 name = "hand-client"
 version = "0.1.0"
-source = "git+https://github.com/aexhq/hands?tag=hands-v0.1.0#499c78572d22ae0b72b98d685d775f5d82d351f0"
+source = "git+https://github.com/aexhq/hands?tag=hands-v0.1.1#29c8d09c492dd1efda07d83aa4474d9d64db2456"
 dependencies = [
  "aex-contracts",
  "futures-util",
@@ -1455,7 +1455,7 @@ dependencies = [
 [[package]]
 name = "hand-lambda"
 version = "0.1.0"
-source = "git+https://github.com/aexhq/hands?tag=hands-v0.1.0#499c78572d22ae0b72b98d685d775f5d82d351f0"
+source = "git+https://github.com/aexhq/hands?tag=hands-v0.1.1#29c8d09c492dd1efda07d83aa4474d9d64db2456"
 dependencies = [
  "aex-contracts",
  "anyhow",

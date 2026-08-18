@@ -826,7 +826,11 @@ async fn finish_turn(
             Err(e) => tracing::warn!(session = %session_id, error = %e, "turn-end sync failed"),
         }
     }
-    st.hand.let_idle();
+    // Disconnect between turns: an open ABI WebSocket carries the guest's heartbeat through
+    // the endpoint every few seconds, which counts as traffic and defeats the 180 s idle
+    // suspend forever. Connection loss is not hand loss (I10): the VM stays up, AWS suspends
+    // it when truly idle, and the next message reconnects through the speculative resume.
+    st.hand.disconnect();
 }
 
 async fn fail_turn_now(
@@ -1016,6 +1020,8 @@ async fn do_persist(
     r.st.head.artifacts.retain(|a| a.name != name);
     r.st.head.artifacts.push(doc.clone());
     commit(brain, session_id, &mut r.st, vec![]).await?;
+    // Same idle rule as turn end: no open connection while nothing is running.
+    r.st.hand.disconnect();
     Ok(doc)
 }
 

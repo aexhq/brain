@@ -10,8 +10,8 @@ license = "Apache-2.0"
 [workspace.dependencies]
 # Contracts and the hand, pinned by tag: the wire formats are owned by their repos.
 aex-contracts = { git = "https://github.com/aexhq/aex", tag = "aex-contracts-v0.1.0" }
-hand-client = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.0" }
-hand-lambda = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.0" }
+hand-client = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.1" }
+hand-lambda = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.1" }
 
 anyhow = "1"
 async-trait = "0.1"

@@ -238,8 +238,14 @@ impl SessionHand {
                 "hand is disabled for this session".into(),
             ));
         }
-        if self.live.is_some() {
-            return Ok(None);
+        if let Some(l) = &self.live {
+            if !l.client.is_closed() {
+                return Ok(None);
+            }
+            // The WebSocket died since the last call (suspend, wall, transport). A closed
+            // client never recovers: drop it and let the diagnosis below decide.
+            self.live = None;
+            self.keepalive = None;
         }
         let mut lost: Option<LostReport> = None;
 
