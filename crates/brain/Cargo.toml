@@ -4,24 +4,17 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The aex brain: the LLM harness that owns sessions, the journal, the provider seam and the tool loop."
+description = "The aex brain core: sessions, the journal semantics, the sealed prefix, the provider dialects, the tool loop and the session API -- substrate-generic, composed via adapters."
 
 [dependencies]
 aex-contracts = { workspace = true }
-hand-client = { workspace = true }
-hand-lambda = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
-aws-config = { workspace = true }
-aws-sdk-dynamodb = { workspace = true }
-aws-sdk-kms = { workspace = true }
-aws-sdk-s3 = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
-clap = { workspace = true }
 futures-util = { workspace = true }
 globset = { workspace = true }
 hex = { workspace = true }
@@ -35,7 +28,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 walkdir = { workspace = true }
 zeroize = { workspace = true }
 

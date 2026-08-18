@@ -22,6 +22,10 @@
 use brain::api::{AppState, serve};
 use brain::session::{Brain, BrainConfig};
 
+fn is_local() -> bool {
+    matches!(std::env::var("AEX_MODE").as_deref(), Err(_) | Ok("local"))
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -34,8 +38,12 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let cfg = BrainConfig::from_env().map_err(|e| anyhow::anyhow!("{e}"))?;
-    let local = matches!(cfg.mode, brain::session::ModeConfig::Local { .. });
+    let cfg = BrainConfig::default();
+    let local = is_local();
+    match std::env::var("AEX_MODE").as_deref() {
+        Err(_) | Ok("local") | Ok("aws") => {}
+        Ok(other) => anyhow::bail!("AEX_MODE must be local or aws, got {other}"),
+    }
     let token = match std::env::var("AEX_API_TOKEN") {
         Ok(t) => t,
         Err(_) if local => {
@@ -48,7 +56,14 @@ async fn run() -> anyhow::Result<()> {
     let addr: std::net::SocketAddr = std::env::var("AEX_LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:8700".into())
         .parse()?;
-    let brain = Brain::new(cfg).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let brain = if local {
+        let data_dir = std::env::var("AEX_DATA_DIR").unwrap_or_else(|_| "./aex-data".into());
+        Brain::local(data_dir, cfg).map_err(|e| anyhow::anyhow!("{e}"))?
+    } else {
+        brain_aws::brain_from_env(cfg)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+    };
     if local {
         tracing::warn!(
             "LOCAL MODE: in-memory journal (sessions do not survive restarts); tools run in              subprocesses on THIS machine -- process separation, not a sandbox. Use only with              prompts you trust; production isolation is AEX_MODE=aws (MicroVMs)."

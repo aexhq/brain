@@ -294,7 +294,7 @@ async fn artifact_of(
     session_id: &str,
     doc: &crate::journal::ArtifactDoc,
 ) -> Artifact {
-    let url = state.brain.artifact_url(doc).await;
+    let url = state.brain.artifact_url(session_id, doc).await;
     Artifact {
         bytes: doc.bytes,
         created_at: crate::events::ts(doc.created_ms),
@@ -358,7 +358,7 @@ async fn stream_events(
     let follow = q.follow;
     // `session.updated` replay renders the hand as it is NOW (session facts live on HEAD, not
     // in the record); historical hand snapshots are not kept.
-    let info = crate::hand::hand_info(&head.doc);
+    let info = head.doc.hand_info.clone();
     let stream = async_stream::stream! {
         // Subscribe BEFORE replaying so no event falls between journal and live tail.
         let mut rx = brain.hub.subscribe(&id);
@@ -424,7 +424,7 @@ pub async fn replay(
     after: u64,
 ) -> crate::Result<Vec<session::Event>> {
     let head = brain.journal.get_head(session_id).await?;
-    let info = crate::hand::hand_info(&head.doc);
+    let info = head.doc.hand_info.clone();
     let entries = brain.journal.read_records(session_id, after).await?;
     let mut out = Vec::new();
     for e in &entries {

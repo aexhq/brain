@@ -1,0 +1,21 @@
+[package]
+name = "brain-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The composed aex brain server: local mode by default, AWS mode by configuration."
+
+[dependencies]
+brain = { workspace = true }
+brain-aws = { workspace = true }
+hand-lambda = { workspace = true }
+aws-sdk-lambdamicrovms = "1"
+
+anyhow = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

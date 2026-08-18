@@ -278,15 +278,11 @@ async fn run() -> anyhow::Result<()> {
         std::env::set_var("AEX_API_TOKEN", &token);
         std::env::set_var("AEX_LISTEN", "127.0.0.1:8701");
     }
-    // The gate is the AWS-mode gate by definition.
-    unsafe {
-        std::env::set_var("AEX_MODE", "aws");
-    }
-    let cfg = brain::session::BrainConfig::from_env().map_err(|e| anyhow::anyhow!("{e}"))?;
-    let brain::session::ModeConfig::Aws { hand: hand_cfg, .. } = cfg.mode.clone() else {
-        anyhow::bail!("m0 requires AEX_MODE=aws");
-    };
-    let brain_arc = brain::session::Brain::new(cfg.clone())
+    // The gate is the AWS-composition gate by definition.
+    let cfg = brain::session::BrainConfig::default();
+    let hand_cfg =
+        brain_aws::lambda::HandPlaneConfig::from_env().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let brain_arc = brain_aws::brain_from_env(cfg)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let state = brain::api::AppState {

@@ -1,24 +1,21 @@
 //! BYOK key custody.
 //!
 //! The contract promise on `ModelConfig.api_key` is "Encrypted per session, never returned,
-//! never logged". Here that means: the plaintext exists in memory only while a session is
-//! resident; at rest it is a KMS ciphertext in the journal HEAD, bound to its session by
-//! encryption context so a ciphertext copied onto another session's row will not decrypt.
+//! never logged". [`KeyCustody`] is the seam: the plaintext exists in memory only while a
+//! session is resident; at rest the journal HEAD carries whatever opaque blob the custody
+//! adapter produced, bound to its session id (a blob copied onto another session's row must
+//! not decrypt). `brain-aws` carries the KMS implementation; [`PlainCustody`] is the local /
+//! test one.
 //!
 //! Custody never pools per-tenant state (ARCHITECTURE-v1 §2.9: a shared token accountant is
 //! how P1 leaked accounting across tenants) -- there is nothing here but stateless calls.
 
 use crate::config::ProviderKey;
 use crate::{BrainError, Result};
-use aws_sdk_kms::primitives::Blob;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
-
-/// Where the session id goes in the KMS encryption context. Decrypt with a different session
-/// id fails inside KMS, not in our code.
-const CONTEXT_KEY: &str = "aex:session";
 
 #[async_trait::async_trait]
 pub trait KeyCustody: Send + Sync {
@@ -28,64 +25,9 @@ pub trait KeyCustody: Send + Sync {
     async fn decrypt(&self, session_id: &str, blob: &[u8]) -> Result<ProviderKey>;
 }
 
-/// Production custody: AWS KMS `Encrypt`/`Decrypt` with a per-plane key.
-///
-/// A provider key is well under the 4 KiB KMS direct-encrypt bound, so no envelope scheme is
-/// needed; the ciphertext itself carries the key id.
-pub struct KmsCustody {
-    kms: aws_sdk_kms::Client,
-    key_id: String,
-}
-
-impl KmsCustody {
-    pub fn new(kms: aws_sdk_kms::Client, key_id: impl Into<String>) -> Self {
-        Self {
-            kms,
-            key_id: key_id.into(),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl KeyCustody for KmsCustody {
-    async fn encrypt(&self, session_id: &str, key: &ProviderKey) -> Result<Vec<u8>> {
-        let out = self
-            .kms
-            .encrypt()
-            .key_id(&self.key_id)
-            .plaintext(Blob::new(key.expose().as_bytes()))
-            .encryption_context(CONTEXT_KEY, session_id)
-            .send()
-            .await
-            .map_err(|e| BrainError::Custody(format!("kms encrypt: {e}")))?;
-        out.ciphertext_blob()
-            .map(|b| b.as_ref().to_vec())
-            .ok_or_else(|| BrainError::Custody("kms encrypt returned no ciphertext".into()))
-    }
-
-    async fn decrypt(&self, session_id: &str, blob: &[u8]) -> Result<ProviderKey> {
-        let out = self
-            .kms
-            .decrypt()
-            .ciphertext_blob(Blob::new(blob))
-            .encryption_context(CONTEXT_KEY, session_id)
-            .send()
-            .await
-            .map_err(|e| BrainError::Custody(format!("kms decrypt: {e}")))?;
-        let pt = out
-            .plaintext()
-            .ok_or_else(|| BrainError::Custody("kms decrypt returned no plaintext".into()))?;
-        // Zeroized intermediate: the only durable copy of the plaintext is inside ProviderKey,
-        // whose Debug is redacting and which is dropped with the session.
-        let buf = Zeroizing::new(pt.as_ref().to_vec());
-        let s = std::str::from_utf8(&buf)
-            .map_err(|_| BrainError::Custody("decrypted key is not utf-8".into()))?;
-        Ok(ProviderKey::new(s))
-    }
-}
-
-/// Test custody: an obfuscated but NOT cryptographically protected blob, bound to the session
-/// id so binding bugs still surface in tests. Never constructed by the server binary.
+/// Local/test custody: an obfuscated but NOT cryptographically protected blob, bound to the
+/// session id so binding bugs still surface. Used by local mode, where the journal never
+/// rests on disk anyway; production custody is a real KMS (see `brain-aws`).
 pub struct PlainCustody;
 
 impl PlainCustody {

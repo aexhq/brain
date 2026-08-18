@@ -6,36 +6,20 @@
 //! (`events::derive`), and `seq` is both the journal order and the SSE `id:`.
 //!
 //! Concurrency rules (donor: aex-brain-domain, kept because each one answers a real outage):
-//! - the item key is the idempotency barrier: every record put is conditioned
-//!   `attribute_not_exists(sk)` -- a redelivered decision loses the put, it never duplicates;
+//! - the (session, seq) key is the idempotency barrier: a redelivered decision loses the
+//!   write, it never duplicates;
 //! - the fence advances on claim only, never on renew (renewing must not fence out the owner);
-//! - a conditional failure on commit means a newer owner exists: the local fold is stale and
-//!   must be discarded, never patched;
-//! - `BatchWriteItem` is never used for records (it cannot be conditioned).
+//! - a `Fenced` failure on commit means a newer owner exists: the local fold is stale and
+//!   must be discarded, never patched.
+//!
+//! Persistence is a seam: [`JournalStore`]. [`MemoryStore`] is the reference backend;
+//! `brain-aws` carries the DynamoDB one; custom backends implement the trait.
 
 use crate::message::{ContentBlock, Message, Role, StopReason, Usage};
 use crate::{BrainError, Result};
-use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};
-use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem, Update};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-
-/// Zero-padded so lexicographic order is numeric order. Without the padding `E#10` sorts
-/// before `E#9` and a paged read replays out of sequence.
-fn record_sk(seq: u64) -> String {
-    format!("E#{seq:020}")
-}
-
-fn session_pk(session_id: &str) -> String {
-    format!("S#{session_id}")
-}
-
-/// How long a lease lives without renewal, and how much longer a steal waits beyond expiry.
-/// The grace absorbs clock skew between instances; the fence, not the clock, decides whether
-/// a stale owner can write.
-pub const LEASE_MS: u64 = 60_000;
-pub const STEAL_GRACE_MS: u64 = 5_000;
 
 /// Bound on the tool-result content a single record may carry. DynamoDB items cap at 400 KiB;
 /// this leaves generous room for the envelope and the parallel records of one decision.
@@ -266,17 +250,47 @@ pub struct HeadDoc {
     pub updated_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_ms: Option<u64>,
-    /// True once `end` ran: the hand is released for good, the workspace is kept.
+    /// True once `end` ran: compute released for good, the workspace is kept.
     #[serde(default)]
     pub ended: bool,
     pub prefix: PrefixDoc,
-    /// KMS ciphertext of the BYOK key, base64. Never the plaintext.
+    /// Custody blob of the BYOK key, base64. Never the plaintext.
     pub key_b64: String,
     pub manifest_digest: String,
-    pub hand: HandDoc,
-    pub sync: SyncDoc,
+    /// The contract-facing hand snapshot, refreshed from the adapter on every commit --
+    /// what `session.updated` replay and `GET /sessions/{id}` serve.
+    pub hand_info: aex_contracts::session::HandInfo,
+    /// The hand adapter's own durable state. Opaque to the core: persisted verbatim, handed
+    /// back on the next `HandFactory::open`.
+    #[serde(default)]
+    pub hand_state: serde_json::Value,
+    /// Workspace bytes as the adapter last reported them. Storage info, never billing
+    /// authority (I9).
+    #[serde(default)]
+    pub workspace_bytes: u64,
     #[serde(default)]
     pub artifacts: Vec<ArtifactDoc>,
+}
+
+impl HeadDoc {
+    /// The hand snapshot before any adapter has reported: preparing, on the given shape.
+    pub fn initial_hand_info(shape: &str) -> aex_contracts::session::HandInfo {
+        use aex_contracts::session::{HandInfo, HandShape, HandState};
+        HandInfo {
+            generation: None,
+            last_sync_at: None,
+            live_jobs: None,
+            shape: match shape {
+                "2gb" => HandShape::X2gb,
+                "4gb" => HandShape::X4gb,
+                "8gb" => HandShape::X8gb,
+                _ => HandShape::X1gb,
+            },
+            started_at: None,
+            state: HandState::Preparing,
+            wall_deadline_at: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -312,71 +326,15 @@ pub struct PrefixDoc {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
-    /// Seed files staged to S3 at create; applied on the first hello, captured by the first
-    /// sync. Content never enters DynamoDB (400 KiB item cap; 1 MiB files).
-    #[serde(default)]
-    pub seed_files: Vec<SeedFileDoc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SeedFileDoc {
-    pub path: String,
-    pub s3_key: String,
-    pub bytes: u64,
-    pub sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<i64>,
-}
-
-/// The hand as the brain last knew it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HandDoc {
-    pub state: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub microvm_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
-    /// Incarnation count across the session's life (HandInfo.generation).
-    pub incarnations: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub launched_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wall_deadline_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_version: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SyncDoc {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manifest_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub synced_ms: Option<u64>,
-    /// Packs referenced by the last manifest, as the hand reported. Drives the "ask for a
-    /// full sync when the chain grows" policy.
-    #[serde(default)]
-    pub packs_referenced: u64,
-    /// Total workspace bytes as of the last sync (the hand's manifest total). Storage info,
-    /// not billing authority (I9).
-    #[serde(default)]
-    pub bytes_total: u64,
-}
-
-/// One persisted artifact: metadata only; the bytes live in S3.
+/// One persisted artifact: metadata only; the bytes live wherever the adapter put them
+/// (`location` is adapter-defined and fed back to `HandFactory::artifact_url`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactDoc {
     pub name: String,
-    pub s3_key: String,
+    pub location: String,
     pub bytes: u64,
     pub sha256: String,
     pub media_type: String,
@@ -399,52 +357,88 @@ pub struct Head {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Store: one wrapper, two backends
+// Store: the persistence seam
 // ---------------------------------------------------------------------------------------------
 //
-// `dynamodb` is the production backend (durable, fenced, multi-instance). `memory` is the
-// local-mode backend: the SAME conditional semantics -- fence on claim only, the (session,
-// seq) key as the idempotency barrier, Fenced on any superseded write -- over a process-local
-// map. It is deliberately not durable: local mode trades persistence for zero setup, and the
-// startup banner says so. Code above this line (records, fold, head) is backend-blind.
+// [`JournalStore`] is the adapter trait: any backend that can honour these semantics can
+// carry the journal. The semantics are not negotiable --
+// - `create` refuses an existing session;
+// - `claim` is the ONLY operation that advances the fence; it fails (`Fenced`) while another
+//   live owner holds the lease, and may steal an expired one (plus grace);
+// - `commit` is atomic: all records plus the head update land or nothing does; it fails
+//   `Fenced` when the owner/fence does not match OR any record seq already exists (the
+//   (session, seq) key is the idempotency barrier -- a redelivered decision loses the write,
+//   it never duplicates);
+// - `release` with a stale fence is a silent no-op (the releaser was superseded).
+//
+// Built-ins: [`MemoryStore`] here (local mode: full semantics, no durability) and
+// `brain_aws::DynamoJournal` (production). The shared tests in this module run against any
+// store; run them against yours.
 
+/// Key shape shared by every backend that keys records textually: zero-padded so that
+/// lexicographic order is numeric order (`E#10` must not sort before `E#9`).
+pub fn record_sk(seq: u64) -> String {
+    format!("E#{seq:020}")
+}
+
+pub fn session_pk(session_id: &str) -> String {
+    format!("S#{session_id}")
+}
+
+/// How long a lease lives without renewal, and how much longer a steal waits beyond expiry.
+/// The grace absorbs clock skew between instances; the fence, not the clock, decides whether
+/// a stale owner can write.
+pub const LEASE_MS: u64 = 60_000;
+pub const STEAL_GRACE_MS: u64 = 5_000;
+
+#[async_trait::async_trait]
+pub trait JournalStore: Send + Sync {
+    async fn create(
+        &self,
+        session_id: &str,
+        doc: &HeadDoc,
+        first: &Record,
+        owner: &str,
+        now_ms: u64,
+    ) -> Result<()>;
+    async fn claim(&self, session_id: &str, owner: &str, now_ms: u64) -> Result<Head>;
+    async fn get_head(&self, session_id: &str) -> Result<Head>;
+    async fn read_records(&self, session_id: &str, after: u64) -> Result<Vec<Entry>>;
+    #[allow(clippy::too_many_arguments)]
+    async fn commit(
+        &self,
+        session_id: &str,
+        owner: &str,
+        fence: u64,
+        records: &[(u64, Record)],
+        doc: &HeadDoc,
+        high_water: u64,
+        now_ms: u64,
+    ) -> Result<()>;
+    async fn release(&self, session_id: &str, owner: &str, fence: u64) -> Result<()>;
+    async fn purge(&self, session_id: &str) -> Result<u64>;
+    async fn list_sessions(&self, limit: usize) -> Result<Vec<Head>>;
+}
+
+/// The journal as the rest of the brain sees it: a store plus this instance's owner
+/// identity. All fence/lease bookkeeping the caller needs rides in [`Lease`].
 #[derive(Clone)]
 pub struct Journal {
-    backend: Backend,
-    /// This brain instance's identity as a lease owner.
+    store: Arc<dyn JournalStore>,
     owner: String,
 }
 
-#[derive(Clone)]
-enum Backend {
-    Dynamo {
-        db: aws_sdk_dynamodb::Client,
-        table: String,
-    },
-    Memory(Arc<MemoryStore>),
-}
-
 impl Journal {
-    pub fn new(
-        db: aws_sdk_dynamodb::Client,
-        table: impl Into<String>,
-        owner: impl Into<String>,
-    ) -> Self {
+    pub fn new(store: Arc<dyn JournalStore>, owner: impl Into<String>) -> Self {
         Self {
-            backend: Backend::Dynamo {
-                db,
-                table: table.into(),
-            },
+            store,
             owner: owner.into(),
         }
     }
 
-    /// The local-mode journal: full semantics, no durability, no AWS.
+    /// The local-mode journal: full semantics, no durability, no dependencies.
     pub fn new_memory(owner: impl Into<String>) -> Self {
-        Self {
-            backend: Backend::Memory(Arc::new(MemoryStore::default())),
-            owner: owner.into(),
-        }
+        Self::new(Arc::new(MemoryStore::default()), owner)
     }
 
     pub fn owner(&self) -> &str {
@@ -455,150 +449,34 @@ impl Journal {
     /// multi-instance fencing; production instances each construct their own `Journal`.
     pub fn cloned_as(&self, owner: impl Into<String>) -> Journal {
         Journal {
-            backend: self.backend.clone(),
+            store: self.store.clone(),
             owner: owner.into(),
         }
     }
 
-    pub fn is_memory(&self) -> bool {
-        matches!(self.backend, Backend::Memory(_))
-    }
-
-    /// Creates the session: HEAD plus the first record, atomically, refused if it exists.
     pub async fn create(&self, session_id: &str, doc: &HeadDoc, first: &Record) -> Result<()> {
-        let now = crate::wall_ms();
-        let (db, table) = match &self.backend {
-            Backend::Memory(m) => return m.create(session_id, doc, first, &self.owner, now),
-            Backend::Dynamo { db, table } => (db, table),
-        };
-        let head = Put::builder()
-            .table_name(table)
-            .item("pk", AttributeValue::S(session_pk(session_id)))
-            .item("sk", AttributeValue::S("HEAD".into()))
-            .item("owner_id", AttributeValue::S(self.owner.clone()))
-            .item("fence", AttributeValue::N("1".into()))
-            .item(
-                "lease_expires_ms",
-                AttributeValue::N((now + LEASE_MS).to_string()),
-            )
-            .item("last_seq", AttributeValue::N("1".into()))
-            .item("doc", AttributeValue::S(serde_json::to_string(doc)?))
-            .condition_expression("attribute_not_exists(sk)")
-            .build()
-            .map_err(|e| BrainError::Journal(format!("head put: {e}")))?;
-        let rec = record_put(table, session_id, 1, now, first)?;
-        db.transact_write_items()
-            .transact_items(TransactWriteItem::builder().put(head).build())
-            .transact_items(TransactWriteItem::builder().put(rec).build())
-            .send()
+        self.store
+            .create(session_id, doc, first, &self.owner, crate::wall_ms())
             .await
-            .map_err(|e| match conditional_failure(&e) {
-                true => BrainError::Invalid(format!("session {session_id} already exists")),
-                false => BrainError::Journal(format!("create: {}", describe(&e))),
-            })?;
-        Ok(())
     }
 
-    /// Claims (or re-claims) ownership. One round trip: the conditional update returns the
-    /// head, so becoming owner and learning the state are the same call.
     pub async fn claim(&self, session_id: &str) -> Result<Head> {
-        let now = crate::wall_ms();
-        let (db, table) = match &self.backend {
-            Backend::Memory(m) => return m.claim(session_id, &self.owner, now),
-            Backend::Dynamo { db, table } => (db, table),
-        };
-        let out = db
-            .update_item()
-            .table_name(table)
-            .key("pk", AttributeValue::S(session_pk(session_id)))
-            .key("sk", AttributeValue::S("HEAD".into()))
-            .condition_expression(
-                "attribute_exists(pk) AND (attribute_not_exists(lease_expires_ms) \
-                 OR lease_expires_ms < :stealable OR owner_id = :me)",
-            )
-            .update_expression("SET owner_id = :me, lease_expires_ms = :expires ADD fence :one")
-            .expression_attribute_values(":me", AttributeValue::S(self.owner.clone()))
-            .expression_attribute_values(
-                ":stealable",
-                AttributeValue::N(now.saturating_sub(STEAL_GRACE_MS).to_string()),
-            )
-            .expression_attribute_values(
-                ":expires",
-                AttributeValue::N((now + LEASE_MS).to_string()),
-            )
-            .expression_attribute_values(":one", AttributeValue::N("1".into()))
-            .return_values(aws_sdk_dynamodb::types::ReturnValue::AllNew)
-            .send()
+        self.store
+            .claim(session_id, &self.owner, crate::wall_ms())
             .await
-            .map_err(|e| match conditional_failure(&e) {
-                true => BrainError::Fenced,
-                false => match not_found(&e) {
-                    true => BrainError::NoSuchSession(session_id.into()),
-                    false => BrainError::Journal(format!("claim: {}", describe(&e))),
-                },
-            })?;
-        let attrs = out
-            .attributes()
-            .ok_or_else(|| BrainError::Journal("claim returned no head".into()))?;
-        parse_head(session_id, attrs)
     }
 
-    /// Reads the head without claiming. Strongly consistent (session facts, not a cache).
     pub async fn get_head(&self, session_id: &str) -> Result<Head> {
-        let (db, table) = match &self.backend {
-            Backend::Memory(m) => return m.get_head(session_id),
-            Backend::Dynamo { db, table } => (db, table),
-        };
-        let out = db
-            .get_item()
-            .table_name(table)
-            .key("pk", AttributeValue::S(session_pk(session_id)))
-            .key("sk", AttributeValue::S("HEAD".into()))
-            .consistent_read(true)
-            .send()
-            .await
-            .map_err(|e| BrainError::Journal(format!("get head: {}", describe(&e))))?;
-        let attrs = out
-            .item()
-            .ok_or_else(|| BrainError::NoSuchSession(session_id.into()))?;
-        parse_head(session_id, attrs)
+        self.store.get_head(session_id).await
     }
 
-    /// Reads records `after < seq`, in order, paged, strongly consistent.
     pub async fn read_records(&self, session_id: &str, after: u64) -> Result<Vec<Entry>> {
-        let (db, table) = match &self.backend {
-            Backend::Memory(m) => return m.read_records(session_id, after),
-            Backend::Dynamo { db, table } => (db, table),
-        };
-        let mut entries = Vec::new();
-        let mut start_key = None;
-        loop {
-            let out = db
-                .query()
-                .table_name(table)
-                .key_condition_expression("pk = :pk AND sk BETWEEN :lo AND :hi")
-                .expression_attribute_values(":pk", AttributeValue::S(session_pk(session_id)))
-                .expression_attribute_values(":lo", AttributeValue::S(record_sk(after + 1)))
-                .expression_attribute_values(":hi", AttributeValue::S(record_sk(u64::MAX)))
-                .consistent_read(true)
-                .set_exclusive_start_key(start_key)
-                .send()
-                .await
-                .map_err(|e| BrainError::Journal(format!("read: {}", describe(&e))))?;
-            for item in out.items() {
-                entries.push(parse_entry(item)?);
-            }
-            start_key = out.last_evaluated_key().cloned();
-            if start_key.is_none() {
-                return Ok(entries);
-            }
-        }
+        self.store.read_records(session_id, after).await
     }
 
-    /// One decision, one durable write. Puts every record (each `attribute_not_exists(sk)`)
-    /// and updates HEAD (fenced) in a single transaction. `high_water` is the highest seq
-    /// allocated by the session -- including ephemeral (never-journaled) event seqs -- so a
-    /// rehydrated session never re-issues an id a client may already have seen.
+    /// One decision, one durable write. `high_water` is the highest seq allocated by the
+    /// session -- including ephemeral (never-journaled) event seqs -- so a rehydrated
+    /// session never re-issues an id a client may already have seen.
     pub async fn commit(
         &self,
         session_id: &str,
@@ -607,172 +485,34 @@ impl Journal {
         doc: &HeadDoc,
         high_water: u64,
     ) -> Result<()> {
-        let now = crate::wall_ms();
-        let (db, table) = match &self.backend {
-            Backend::Memory(m) => {
-                m.commit(
-                    session_id,
-                    &self.owner,
-                    lease.fence,
-                    records,
-                    doc,
-                    high_water,
-                    now,
-                )?;
-                lease.last_seq = high_water;
-                return Ok(());
-            }
-            Backend::Dynamo { db, table } => (db, table),
-        };
-        let mut tx = db.transact_write_items();
-        for (seq, record) in records {
-            let put = record_put(table, session_id, *seq, now, record)?;
-            tx = tx.transact_items(TransactWriteItem::builder().put(put).build());
-        }
-        let update = Update::builder()
-            .table_name(table)
-            .key("pk", AttributeValue::S(session_pk(session_id)))
-            .key("sk", AttributeValue::S("HEAD".into()))
-            .condition_expression("fence = :fence AND owner_id = :me")
-            // Deliberately no `ADD fence`: renewing must not fence out the renewer.
-            .update_expression("SET last_seq = :hw, doc = :doc, lease_expires_ms = :expires")
-            .expression_attribute_values(":fence", AttributeValue::N(lease.fence.to_string()))
-            .expression_attribute_values(":me", AttributeValue::S(self.owner.clone()))
-            .expression_attribute_values(":hw", AttributeValue::N(high_water.to_string()))
-            .expression_attribute_values(":doc", AttributeValue::S(serde_json::to_string(doc)?))
-            .expression_attribute_values(
-                ":expires",
-                AttributeValue::N((now + LEASE_MS).to_string()),
+        self.store
+            .commit(
+                session_id,
+                &self.owner,
+                lease.fence,
+                records,
+                doc,
+                high_water,
+                crate::wall_ms(),
             )
-            .build()
-            .map_err(|e| BrainError::Journal(format!("head update: {e}")))?;
-        tx = tx.transact_items(TransactWriteItem::builder().update(update).build());
-        tx.send().await.map_err(|e| match conditional_failure(&e) {
-            true => BrainError::Fenced,
-            false => BrainError::Journal(format!("commit: {}", describe(&e))),
-        })?;
+            .await?;
         lease.last_seq = high_water;
         Ok(())
     }
 
-    /// Releases the lease. A conditional failure maps to Ok: a release that lost its fence
-    /// has already been superseded.
     pub async fn release(&self, session_id: &str, lease: &Lease) -> Result<()> {
-        let (db, table) = match &self.backend {
-            Backend::Memory(m) => return m.release(session_id, &self.owner, lease.fence),
-            Backend::Dynamo { db, table } => (db, table),
-        };
-        let r = db
-            .update_item()
-            .table_name(table)
-            .key("pk", AttributeValue::S(session_pk(session_id)))
-            .key("sk", AttributeValue::S("HEAD".into()))
-            .condition_expression("fence = :fence AND owner_id = :me")
-            .update_expression("REMOVE owner_id, lease_expires_ms")
-            .expression_attribute_values(":fence", AttributeValue::N(lease.fence.to_string()))
-            .expression_attribute_values(":me", AttributeValue::S(self.owner.clone()))
-            .send()
-            .await;
-        match r {
-            Ok(_) => Ok(()),
-            Err(e) if conditional_failure(&e) => Ok(()),
-            Err(e) => Err(BrainError::Journal(format!("release: {}", describe(&e)))),
-        }
+        self.store
+            .release(session_id, &self.owner, lease.fence)
+            .await
     }
 
-    /// Deletes every item of the session. Plain deletes: delete is the one irreversible
-    /// transition and the caller has already committed `state = deleted`.
     pub async fn purge(&self, session_id: &str) -> Result<u64> {
-        let (db, table) = match &self.backend {
-            Backend::Memory(m) => return m.purge(session_id),
-            Backend::Dynamo { db, table } => (db, table),
-        };
-        let mut deleted = 0u64;
-        let mut start_key = None;
-        loop {
-            let out = db
-                .query()
-                .table_name(table)
-                .key_condition_expression("pk = :pk")
-                .expression_attribute_values(":pk", AttributeValue::S(session_pk(session_id)))
-                .projection_expression("pk, sk")
-                .consistent_read(true)
-                .set_exclusive_start_key(start_key)
-                .send()
-                .await
-                .map_err(|e| BrainError::Journal(format!("purge query: {}", describe(&e))))?;
-            for item in out.items() {
-                let sk = item
-                    .get("sk")
-                    .and_then(|v| v.as_s().ok())
-                    .cloned()
-                    .unwrap_or_default();
-                db.delete_item()
-                    .table_name(table)
-                    .key("pk", AttributeValue::S(session_pk(session_id)))
-                    .key("sk", AttributeValue::S(sk))
-                    .send()
-                    .await
-                    .map_err(|e| BrainError::Journal(format!("purge delete: {}", describe(&e))))?;
-                deleted += 1;
-            }
-            start_key = out.last_evaluated_key().cloned();
-            if start_key.is_none() {
-                return Ok(deleted);
-            }
-        }
+        self.store.purge(session_id).await
     }
 
-    /// Lists session heads. Dev-plane listing; an index arrives with the control plane
-    /// (slice 4).
     pub async fn list_sessions(&self, limit: usize) -> Result<Vec<Head>> {
-        let (db, table) = match &self.backend {
-            Backend::Memory(m) => return m.list_sessions(limit),
-            Backend::Dynamo { db, table } => (db, table),
-        };
-        let mut heads = Vec::new();
-        let mut start_key = None;
-        loop {
-            let out = db
-                .scan()
-                .table_name(table)
-                .filter_expression("sk = :head")
-                .expression_attribute_values(":head", AttributeValue::S("HEAD".into()))
-                .set_exclusive_start_key(start_key)
-                .send()
-                .await
-                .map_err(|e| BrainError::Journal(format!("list: {}", describe(&e))))?;
-            for item in out.items() {
-                let pk = item
-                    .get("pk")
-                    .and_then(|v| v.as_s().ok())
-                    .cloned()
-                    .unwrap_or_default();
-                let sid = pk.strip_prefix("S#").unwrap_or(&pk).to_string();
-                heads.push(parse_head(&sid, item)?);
-                if heads.len() >= limit {
-                    return Ok(heads);
-                }
-            }
-            start_key = out.last_evaluated_key().cloned();
-            if start_key.is_none() {
-                return Ok(heads);
-            }
-        }
+        self.store.list_sessions(limit).await
     }
-}
-
-fn record_put(table: &str, session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Result<Put> {
-    Put::builder()
-        .table_name(table)
-        .item("pk", AttributeValue::S(session_pk(session_id)))
-        .item("sk", AttributeValue::S(record_sk(seq)))
-        .item("kind", AttributeValue::S(record.kind_name().into()))
-        .item("ts_ms", AttributeValue::N(ts_ms.to_string()))
-        .item("body", AttributeValue::S(serde_json::to_string(record)?))
-        .condition_expression("attribute_not_exists(sk)")
-        .build()
-        .map_err(|e| BrainError::Journal(format!("record put: {e}")))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -788,19 +528,21 @@ struct MemSession {
     records: std::collections::BTreeMap<u64, (u64, Record)>,
 }
 
+/// The reference store: exact semantics, zero durability, zero dependencies.
 #[derive(Default)]
 pub struct MemoryStore {
     sessions: std::sync::Mutex<HashMap<String, MemSession>>,
 }
 
-impl MemoryStore {
-    fn create(
+#[async_trait::async_trait]
+impl JournalStore for MemoryStore {
+    async fn create(
         &self,
         session_id: &str,
         doc: &HeadDoc,
         first: &Record,
         owner: &str,
-        now: u64,
+        now_ms: u64,
     ) -> Result<()> {
         let mut map = self.sessions.lock().expect("memory journal");
         if map.contains_key(session_id) {
@@ -809,7 +551,7 @@ impl MemoryStore {
             )));
         }
         let mut records = std::collections::BTreeMap::new();
-        records.insert(1, (now, first.clone()));
+        records.insert(1, (now_ms, first.clone()));
         map.insert(
             session_id.to_string(),
             MemSession {
@@ -817,14 +559,14 @@ impl MemoryStore {
                 fence: 1,
                 last_seq: 1,
                 owner: Some(owner.to_string()),
-                lease_expires_ms: now + LEASE_MS,
+                lease_expires_ms: now_ms + LEASE_MS,
                 records,
             },
         );
         Ok(())
     }
 
-    fn claim(&self, session_id: &str, owner: &str, now: u64) -> Result<Head> {
+    async fn claim(&self, session_id: &str, owner: &str, now_ms: u64) -> Result<Head> {
         let mut map = self.sessions.lock().expect("memory journal");
         let s = map
             .get_mut(session_id)
@@ -832,13 +574,13 @@ impl MemoryStore {
         let claimable = match &s.owner {
             None => true,
             Some(o) if o == owner => true,
-            Some(_) => s.lease_expires_ms < now.saturating_sub(STEAL_GRACE_MS),
+            Some(_) => s.lease_expires_ms < now_ms.saturating_sub(STEAL_GRACE_MS),
         };
         if !claimable {
             return Err(BrainError::Fenced);
         }
         s.owner = Some(owner.to_string());
-        s.lease_expires_ms = now + LEASE_MS;
+        s.lease_expires_ms = now_ms + LEASE_MS;
         s.fence += 1;
         Ok(Head {
             session_id: session_id.to_string(),
@@ -848,7 +590,7 @@ impl MemoryStore {
         })
     }
 
-    fn get_head(&self, session_id: &str) -> Result<Head> {
+    async fn get_head(&self, session_id: &str) -> Result<Head> {
         let map = self.sessions.lock().expect("memory journal");
         let s = map
             .get(session_id)
@@ -861,7 +603,7 @@ impl MemoryStore {
         })
     }
 
-    fn read_records(&self, session_id: &str, after: u64) -> Result<Vec<Entry>> {
+    async fn read_records(&self, session_id: &str, after: u64) -> Result<Vec<Entry>> {
         let map = self.sessions.lock().expect("memory journal");
         let s = map
             .get(session_id)
@@ -876,8 +618,7 @@ impl MemoryStore {
             .collect())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn commit(
+    async fn commit(
         &self,
         session_id: &str,
         owner: &str,
@@ -885,7 +626,7 @@ impl MemoryStore {
         records: &[(u64, Record)],
         doc: &HeadDoc,
         high_water: u64,
-        now: u64,
+        now_ms: u64,
     ) -> Result<()> {
         let mut map = self.sessions.lock().expect("memory journal");
         let s = map
@@ -894,21 +635,21 @@ impl MemoryStore {
         if s.fence != fence || s.owner.as_deref() != Some(owner) {
             return Err(BrainError::Fenced);
         }
-        // The (session, seq) key is the idempotency barrier, exactly as in DynamoDB: a
-        // duplicate seq means a superseded writer.
+        // The (session, seq) key is the idempotency barrier: a duplicate seq means a
+        // superseded writer.
         if records.iter().any(|(seq, _)| s.records.contains_key(seq)) {
             return Err(BrainError::Fenced);
         }
         for (seq, record) in records {
-            s.records.insert(*seq, (now, record.clone()));
+            s.records.insert(*seq, (now_ms, record.clone()));
         }
         s.doc = doc.clone();
         s.last_seq = high_water;
-        s.lease_expires_ms = now + LEASE_MS; // renew; deliberately no fence bump
+        s.lease_expires_ms = now_ms + LEASE_MS; // renew; deliberately no fence bump
         Ok(())
     }
 
-    fn release(&self, session_id: &str, owner: &str, fence: u64) -> Result<()> {
+    async fn release(&self, session_id: &str, owner: &str, fence: u64) -> Result<()> {
         let mut map = self.sessions.lock().expect("memory journal");
         if let Some(s) = map.get_mut(session_id)
             && s.fence == fence
@@ -920,7 +661,7 @@ impl MemoryStore {
         Ok(())
     }
 
-    fn purge(&self, session_id: &str) -> Result<u64> {
+    async fn purge(&self, session_id: &str) -> Result<u64> {
         let mut map = self.sessions.lock().expect("memory journal");
         Ok(match map.remove(session_id) {
             Some(s) => s.records.len() as u64 + 1,
@@ -928,7 +669,7 @@ impl MemoryStore {
         })
     }
 
-    fn list_sessions(&self, limit: usize) -> Result<Vec<Head>> {
+    async fn list_sessions(&self, limit: usize) -> Result<Vec<Head>> {
         let map = self.sessions.lock().expect("memory journal");
         Ok(map
             .iter()
@@ -940,78 +681,6 @@ impl MemoryStore {
                 last_seq: s.last_seq,
             })
             .collect())
-    }
-}
-
-fn parse_head(session_id: &str, attrs: &HashMap<String, AttributeValue>) -> Result<Head> {
-    let n = |k: &str| -> Result<u64> {
-        attrs
-            .get(k)
-            .and_then(|v| v.as_n().ok())
-            .and_then(|s| s.parse().ok())
-            .ok_or_else(|| BrainError::Journal(format!("head missing numeric {k}")))
-    };
-    let doc_s = attrs
-        .get("doc")
-        .and_then(|v| v.as_s().ok())
-        .ok_or_else(|| BrainError::Journal("head missing doc".into()))?;
-    let doc: HeadDoc = serde_json::from_str(doc_s)
-        .map_err(|e| BrainError::Journal(format!("head doc does not parse: {e}")))?;
-    Ok(Head {
-        session_id: session_id.to_string(),
-        doc,
-        fence: n("fence")?,
-        last_seq: n("last_seq")?,
-    })
-}
-
-fn parse_entry(item: &HashMap<String, AttributeValue>) -> Result<Entry> {
-    let sk = item
-        .get("sk")
-        .and_then(|v| v.as_s().ok())
-        .ok_or_else(|| BrainError::Journal("record missing sk".into()))?;
-    let seq: u64 = sk
-        .strip_prefix("E#")
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| BrainError::Journal(format!("record sk malformed: {sk}")))?;
-    let ts_ms = item
-        .get("ts_ms")
-        .and_then(|v| v.as_n().ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let body = item
-        .get("body")
-        .and_then(|v| v.as_s().ok())
-        .ok_or_else(|| BrainError::Journal(format!("record {seq} missing body")))?;
-    let record: Record = serde_json::from_str(body)
-        .map_err(|e| BrainError::Journal(format!("record {seq} does not parse: {e}")))?;
-    Ok(Entry { seq, ts_ms, record })
-}
-
-fn conditional_failure<E: ProvideErrorMetadata, R>(e: &SdkError<E, R>) -> bool {
-    // TransactWriteItems surfaces condition failures inside TransactionCanceledException;
-    // single-item writes surface ConditionalCheckFailedException directly.
-    match e {
-        SdkError::ServiceError(s) => matches!(
-            s.err().code(),
-            Some("ConditionalCheckFailedException") | Some("TransactionCanceledException")
-        ),
-        _ => false,
-    }
-}
-
-fn not_found<E: ProvideErrorMetadata, R>(e: &SdkError<E, R>) -> bool {
-    matches!(e, SdkError::ServiceError(s) if s.err().code() == Some("ResourceNotFoundException"))
-}
-
-fn describe<E: ProvideErrorMetadata, R>(e: &SdkError<E, R>) -> String {
-    match e {
-        SdkError::ServiceError(s) => format!(
-            "{}: {}",
-            s.err().code().unwrap_or("service error"),
-            s.err().message().unwrap_or("")
-        ),
-        other => other.to_string(),
     }
 }
 
@@ -1194,12 +863,12 @@ mod tests {
                 sync_interval_seconds: 600,
                 env: HashMap::new(),
                 metadata: HashMap::new(),
-                seed_files: vec![],
             },
             key_b64: "AAAA".into(),
             manifest_digest: "d".into(),
-            hand: HandDoc::default(),
-            sync: SyncDoc::default(),
+            hand_info: HeadDoc::initial_hand_info("1gb"),
+            hand_state: serde_json::Value::Null,
+            workspace_bytes: 0,
             artifacts: vec![],
         };
         let s = serde_json::to_string(&doc).unwrap();
@@ -1232,12 +901,12 @@ mod tests {
                 sync_interval_seconds: 600,
                 env: HashMap::new(),
                 metadata: HashMap::new(),
-                seed_files: vec![],
             },
             key_b64: String::new(),
             manifest_digest: String::new(),
-            hand: HandDoc::default(),
-            sync: SyncDoc::default(),
+            hand_info: HeadDoc::initial_hand_info("1gb"),
+            hand_state: serde_json::Value::Null,
+            workspace_bytes: 0,
             artifacts: vec![],
         }
     }

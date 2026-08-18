@@ -9,8 +9,9 @@
 
 use brain::config::Dialect;
 use brain::journal::Journal;
+use brain::local::LocalFactory;
 use brain::provider::fake::{FakeProvider, Scripted};
-use brain::session::{Brain, BrainConfig, ModeConfig, RuntimeMode};
+use brain::session::{Brain, BrainConfig};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -79,9 +80,6 @@ async fn wait_for<F: Fn(&[(String, Value)]) -> bool>(
 async fn the_whole_local_loop_over_real_http() {
     let tmp = TempDir::new();
     let cfg = BrainConfig {
-        mode: ModeConfig::Local {
-            data_dir: tmp.0.clone(),
-        },
         max_concurrent_model_rounds: 8,
         max_concurrent_turns: 8,
         idle_discard: Duration::from_secs(300),
@@ -107,9 +105,7 @@ async fn the_whole_local_loop_over_real_http() {
         cfg,
         Journal::new_memory("brain-test"),
         Arc::new(brain::keys::PlainCustody),
-        RuntimeMode::Local {
-            data_dir: tmp.0.clone(),
-        },
+        Arc::new(LocalFactory::new(tmp.0.clone())),
         Some(Arc::new(move |_| {
             factory_fake.clone() as Arc<dyn brain::provider::Provider>
         })),

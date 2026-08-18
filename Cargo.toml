@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brain"]
+members = ["crates/brain", "crates/brain-aws", "crates/brain-server"]
 resolver = "2"
 
 [workspace.package]
@@ -10,6 +10,8 @@ license = "Apache-2.0"
 [workspace.dependencies]
 # Contracts and the hand, pinned by tag: the wire formats are owned by their repos.
 aex-contracts = { git = "https://github.com/aexhq/aex", tag = "aex-contracts-v0.1.0" }
+brain = { path = "crates/brain" }
+brain-aws = { path = "crates/brain-aws" }
 hand-client = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.1" }
 hand-lambda = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.1" }
 

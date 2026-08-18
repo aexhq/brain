@@ -829,18 +829,11 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
- "aws-config",
- "aws-sdk-dynamodb",
- "aws-sdk-kms",
- "aws-sdk-s3",
  "axum",
  "base64",
  "chrono",
- "clap",
  "futures-util",
  "globset",
- "hand-client",
- "hand-lambda",
  "hex",
  "libc",
  "rand 0.9.5",
@@ -853,9 +846,51 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "walkdir",
  "zeroize",
+]
+
+[[package]]
+name = "brain-aws"
+version = "0.1.0"
+dependencies = [
+ "aex-contracts",
+ "anyhow",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "aws-sdk-kms",
+ "aws-sdk-s3",
+ "base64",
+ "brain",
+ "hand-client",
+ "hand-lambda",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "brain-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws-sdk-lambdamicrovms",
+ "brain",
+ "brain-aws",
+ "futures-util",
+ "hand-lambda",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -11,11 +11,12 @@
 //! owned by `aexhq/aex` (`aex-contracts`, session API + ABI v1) and consumed by
 //! tag -- never re-described here.
 
+pub mod adapter;
 pub mod api;
 pub mod compact;
 pub mod config;
 pub mod events;
-pub mod hand;
+
 pub mod journal;
 pub mod keys;
 pub mod local;

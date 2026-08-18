@@ -1,0 +1,188 @@
+//! The adapter seams: everything substrate-specific lives behind these traits.
+//!
+//! The brain core is generic — it owns sessions, the journal semantics, the sealed prefix,
+//! the provider dialects, the turn loop and the API. WHERE tools run, WHERE the journal
+//! persists and WHERE keys rest are adapters:
+//!
+//! - [`HandFactory`] / [`HandAdapter`] — tool execution + workspace lifecycle,
+//! - [`crate::journal::JournalStore`] — journal persistence,
+//! - [`crate::keys::KeyCustody`] — BYOK key custody,
+//! - [`crate::session::ProviderFactory`] — model providers.
+//!
+//! Built-ins: the local adapters in this crate (in-memory journal, subprocess tools) and the
+//! AWS set in `brain-aws` (DynamoDB, KMS, Lambda MicroVM). A custom substrate implements
+//! these traits and hands them to `Brain::with_parts` — no core change, no fork. The
+//! `custom_adapter` integration test is the living example.
+//!
+//! Contract an adapter must hold:
+//! - `call` runs ONE tool call to a terminal outcome, streams output through the sink as it
+//!   happens, honours the cancel token, and NEVER returns an empty `content` (providers
+//!   reject empty error results; say what happened);
+//! - all methods take `&self`: parallel `call`s race, adapters carry their own interior
+//!   mutability;
+//! - everything an adapter must remember across process restarts goes in [`Self::state`]
+//!   (opaque JSON, persisted in the journal head and handed back on [`HandFactory::open`]);
+//! - a lost substrate is reported via `ensure_ready` (the core journals `hand_lost`; work is
+//!   never replayed, I10) — never by hanging.
+
+use crate::Result;
+use aex_contracts::session::HandInfo;
+use serde_json::Value;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+
+/// A live output chunk sink: (stream, byte offset, text). The core turns these into
+/// `tool.output` events; adapters never mint event seqs themselves.
+pub type OutputSink = Arc<dyn Fn(&str, u64, String) + Send + Sync>;
+
+/// One tool call as the adapter sees it.
+#[derive(Debug, Clone)]
+pub struct CallRequest {
+    /// Brain-minted, durable, unique per attempt (the ABI operation id for remote hands).
+    pub call_id: String,
+    pub tool: String,
+    pub input: Value,
+    /// True when this call is one of several dispatched from a single assistant message.
+    /// Substrates with lane semantics isolate parallel calls from each other.
+    pub parallel: bool,
+}
+
+/// What one call produced. `outcome` uses the contract vocabulary:
+/// `completed | failed | cancelled | deadline_exceeded | interrupted`.
+#[derive(Debug, Clone)]
+pub struct CallOutcome {
+    pub outcome: String,
+    pub content: String,
+    pub is_error: bool,
+    pub exit_code: Option<i64>,
+    pub duration_ms: u64,
+    pub truncated: bool,
+}
+
+impl CallOutcome {
+    pub fn failed(content: impl Into<String>) -> Self {
+        CallOutcome {
+            outcome: "failed".into(),
+            content: content.into(),
+            is_error: true,
+            exit_code: None,
+            duration_ms: 0,
+            truncated: false,
+        }
+    }
+}
+
+/// Why a substrate was lost (surfaced as the `hand.lost` event; never replayed).
+#[derive(Debug, Clone)]
+pub struct LostReport {
+    pub reason: String,
+}
+
+/// A persisted artifact's metadata. `location` is adapter-defined (an S3 key, a local path);
+/// the core stores it verbatim and hands it back for [`HandFactory::artifact_url`].
+#[derive(Debug, Clone)]
+pub struct ArtifactMeta {
+    pub bytes: u64,
+    pub sha256: String,
+    pub media_type: String,
+    pub location: String,
+}
+
+/// The create-time facts an adapter may care about.
+#[derive(Debug, Clone)]
+pub struct HandSpec {
+    pub session_id: String,
+    pub hand_enabled: bool,
+    /// `1gb` etc. — advisory; adapters refuse what they cannot offer, loudly, at create.
+    pub shape: String,
+    pub env: std::collections::HashMap<String, String>,
+    /// The sealed tool-manifest digest; remote hands must serve exactly this set (I1).
+    pub manifest_digest: String,
+}
+
+/// A seed file staged at session create.
+pub struct SeedFile<'a> {
+    pub path: &'a str,
+    pub bytes: &'a [u8],
+    pub mode: Option<i64>,
+}
+
+/// One session's tool-execution substrate. Opened per residency by the factory; all state
+/// that must outlive the process goes through [`Self::state`].
+#[async_trait::async_trait]
+pub trait HandAdapter: Send + Sync {
+    /// Makes the substrate ready to execute calls (launch, reconnect, re-materialise...).
+    /// Returns a report when a PREVIOUS incarnation was lost on the way.
+    async fn ensure_ready(&self) -> Result<Option<LostReport>>;
+
+    /// Executes one call to a terminal outcome. Must stream via `sink` and honour `cancel`.
+    async fn call(
+        &self,
+        req: CallRequest,
+        cancel: CancellationToken,
+        sink: OutputSink,
+    ) -> CallOutcome;
+
+    /// Fired at message admission, before the model round (e.g. speculative resume).
+    fn on_message_admitted(&self) {}
+
+    /// The turn is over: release connections, let the substrate idle/suspend.
+    fn idle(&self) {}
+
+    /// The workspace durability point (turn end). Remote substrates sync; local ones no-op.
+    async fn checkpoint(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// True when compute must be released before more work is admitted (e.g. a platform
+    /// lifetime wall). The core then calls [`Self::release`] and journals the transition.
+    fn must_release(&self) -> bool {
+        false
+    }
+
+    /// Releases compute, keeps the workspace restorable. (`end`, wall.)
+    async fn release(&self) -> Result<()>;
+
+    /// The results of these calls are durably journaled; the substrate may forget them
+    /// (remote hands release spill files here). Default: nothing to forget.
+    async fn acknowledge(&self, _call_ids: &[String]) {}
+
+    /// Workspace bytes as last known, for `StorageInfo`. Never billing authority (I9).
+    fn workspace_bytes(&self) -> u64 {
+        0
+    }
+
+    /// Copies a workspace file into durable artifact storage.
+    async fn persist(
+        &self,
+        name: &str,
+        path: &str,
+        media_type: Option<&str>,
+    ) -> Result<ArtifactMeta>;
+
+    /// The contract-facing snapshot for `session.updated` / `GET /sessions/{id}`.
+    fn hand_info(&self) -> HandInfo;
+
+    /// Adapter-owned durable state; persisted in the journal head on every commit and handed
+    /// back verbatim on the next `open`.
+    fn state(&self) -> Value;
+}
+
+/// Opens and disposes per-session adapters.
+#[async_trait::async_trait]
+pub trait HandFactory: Send + Sync {
+    /// Called once at session create: stage seed files, validate the spec (refuse an
+    /// unsupported shape loudly), return the adapter's initial state.
+    async fn create(&self, spec: &HandSpec, seeds: &[SeedFile<'_>]) -> Result<Value>;
+
+    /// Opens the adapter for a residency, from the state the last commit persisted.
+    async fn open(&self, spec: &HandSpec, state: Value) -> Result<Arc<dyn HandAdapter>>;
+
+    /// Deletes everything the substrate stored for this session (workspace, artifacts).
+    async fn purge(&self, session_id: &str) -> Result<()>;
+
+    /// A retrievable URL for a persisted artifact, if this substrate can mint one.
+    async fn artifact_url(&self, _session_id: &str, _location: &str) -> Option<String> {
+        None
+    }
+}

@@ -13,6 +13,10 @@
 //! `/home/agent/...` both resolve into the session's directory; other absolute paths are
 //! refused (hygiene, not security).
 
+use crate::adapter::{
+    ArtifactMeta, CallOutcome, CallRequest, HandAdapter, HandFactory, HandSpec, LostReport,
+    OutputSink, SeedFile,
+};
 use crate::{BrainError, Result};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -28,15 +32,6 @@ const MAX_STREAM_BYTES: usize = 1024 * 1024;
 /// Default and ceiling for bash's `timeout_ms`.
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
-
-/// What one local call produced. Field-compatible with the turn loop's outcome record.
-pub struct LocalOutcome {
-    pub outcome: &'static str,
-    pub content: String,
-    pub is_error: bool,
-    pub exit_code: Option<i64>,
-    pub duration_ms: u64,
-}
 
 /// One session's local workspace.
 pub struct LocalHand {
@@ -85,8 +80,8 @@ impl LocalHand {
         std::fs::write(&target, bytes).map_err(|e| BrainError::Invalid(format!("seed {path}: {e}")))
     }
 
-    /// Copies a workspace file into the artifacts directory; returns (bytes, sha256, path).
-    pub fn persist(&self, name: &str, path: &str) -> Result<(u64, String, PathBuf)> {
+    /// Copies a workspace file into the artifacts directory.
+    pub fn persist_file(&self, name: &str, path: &str) -> Result<(u64, String, PathBuf)> {
         if name.contains('/') || name.contains('\\') || name.contains("..") {
             return Err(BrainError::Invalid(
                 "artifact name must be a plain filename".into(),
@@ -144,20 +139,21 @@ impl LocalHand {
     }
 
     /// Executes one tool call. `emit` receives (stream_name, offset, chunk) for live output.
-    pub async fn call(
+    pub async fn execute(
         self: &Arc<Self>,
         tool: &str,
         input: Value,
         cancel: &CancellationToken,
         emit: impl Fn(&str, u64, String) + Send + Sync + 'static,
-    ) -> LocalOutcome {
+    ) -> CallOutcome {
         let t0 = Instant::now();
-        let done = |content: String, is_error: bool, exit: Option<i64>, t0: Instant| LocalOutcome {
-            outcome: if is_error { "failed" } else { "completed" },
+        let done = |content: String, is_error: bool, exit: Option<i64>, t0: Instant| CallOutcome {
+            outcome: (if is_error { "failed" } else { "completed" }).into(),
             content,
             is_error,
             exit_code: exit,
             duration_ms: t0.elapsed().as_millis() as u64,
+            truncated: false,
         };
         match tool {
             "bash" => self.bash(input, cancel, emit, t0).await,
@@ -197,13 +193,14 @@ impl LocalHand {
         cancel: &CancellationToken,
         emit: impl Fn(&str, u64, String) + Send + Sync + 'static,
         t0: Instant,
-    ) -> LocalOutcome {
-        let fail = |msg: String| LocalOutcome {
-            outcome: "failed",
+    ) -> CallOutcome {
+        let fail = |msg: String| CallOutcome {
+            outcome: "failed".into(),
             content: msg,
             is_error: true,
             exit_code: None,
             duration_ms: t0.elapsed().as_millis() as u64,
+            truncated: false,
         };
         let Some(command) = input.get("command").and_then(|v| v.as_str()) else {
             return fail("bash: input.command is required".into());
@@ -306,12 +303,13 @@ impl LocalHand {
         } else {
             ("completed", true)
         };
-        LocalOutcome {
-            outcome,
+        CallOutcome {
+            outcome: outcome.into(),
             content,
             is_error,
             exit_code,
             duration_ms: t0.elapsed().as_millis() as u64,
+            truncated: false,
         }
     }
 
@@ -680,6 +678,113 @@ async fn collect_stream(
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// The adapter implementation
+// ---------------------------------------------------------------------------------------------
+
+/// Opens [`LocalHand`]s under one data directory. This is the zero-config default factory.
+pub struct LocalFactory {
+    pub data_dir: PathBuf,
+}
+
+impl LocalFactory {
+    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            data_dir: data_dir.into(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl HandFactory for LocalFactory {
+    async fn create(&self, spec: &HandSpec, seeds: &[SeedFile<'_>]) -> Result<serde_json::Value> {
+        let h = LocalHand::open(&self.data_dir, &spec.session_id)?;
+        for s in seeds {
+            h.seed(s.path, s.bytes, s.mode)?;
+        }
+        Ok(serde_json::json!({ "v": 1 }))
+    }
+
+    async fn open(
+        &self,
+        spec: &HandSpec,
+        _state: serde_json::Value,
+    ) -> Result<Arc<dyn HandAdapter>> {
+        Ok(LocalHand::open(&self.data_dir, &spec.session_id)?)
+    }
+
+    async fn purge(&self, session_id: &str) -> Result<()> {
+        LocalHand::purge(&self.data_dir, session_id);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl HandAdapter for LocalHand {
+    async fn ensure_ready(&self) -> Result<Option<LostReport>> {
+        // The directories exist from `open`; a local workspace cannot be "lost".
+        Ok(None)
+    }
+
+    async fn call(
+        &self,
+        req: CallRequest,
+        cancel: CancellationToken,
+        sink: OutputSink,
+    ) -> CallOutcome {
+        // `execute` wants an Arc for its blocking tasks; re-wrap cheaply (paths only).
+        let this = Arc::new(LocalHand {
+            session_id: self.session_id.clone(),
+            root: self.root.clone(),
+            artifacts: self.artifacts.clone(),
+        });
+        this.execute(
+            &req.tool,
+            req.input,
+            &cancel,
+            move |stream, offset, text| sink(stream, offset, text),
+        )
+        .await
+    }
+
+    async fn release(&self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn persist(
+        &self,
+        name: &str,
+        path: &str,
+        media_type: Option<&str>,
+    ) -> Result<ArtifactMeta> {
+        let (bytes, sha256, target) = self.persist_file(name, path)?;
+        Ok(ArtifactMeta {
+            bytes,
+            sha256,
+            media_type: media_type.unwrap_or("application/octet-stream").to_string(),
+            location: target.to_string_lossy().to_string(),
+        })
+    }
+
+    fn hand_info(&self) -> aex_contracts::session::HandInfo {
+        use aex_contracts::session::{HandInfo, HandShape, HandState};
+        HandInfo {
+            generation: Some(1),
+            last_sync_at: None,
+            live_jobs: Some(0),
+            shape: HandShape::X1gb,
+            started_at: None,
+            state: HandState::Ready,
+            wall_deadline_at: None,
+        }
+    }
+
+    fn state(&self) -> serde_json::Value {
+        // The workspace directory is self-describing; nothing to remember.
+        serde_json::json!({ "v": 1 })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -725,7 +830,7 @@ mod tests {
         let (_g, h) = hand();
         let cancel = CancellationToken::new();
         let out = h
-            .call(
+            .execute(
                 "write",
                 json!({"path": "x.txt", "content": "one\ntwo\nthree"}),
                 &cancel,
@@ -736,7 +841,7 @@ mod tests {
         assert!(out.content.contains("bytes_written"));
 
         let out = h
-            .call(
+            .execute(
                 "read",
                 json!({"path": "x.txt", "offset": 2, "limit": 1}),
                 &cancel,
@@ -747,7 +852,7 @@ mod tests {
         assert!(out.content.contains("\"total_lines\":3"));
 
         let out = h
-            .call(
+            .execute(
                 "edit",
                 json!({"path": "x.txt", "old_string": "two", "new_string": "TWO"}),
                 &cancel,
@@ -756,12 +861,12 @@ mod tests {
             .await;
         assert!(!out.is_error, "{}", out.content);
         let out = h
-            .call("read", json!({"path": "x.txt"}), &cancel, |_, _, _| {})
+            .execute("read", json!({"path": "x.txt"}), &cancel, |_, _, _| {})
             .await;
         assert!(out.content.contains("TWO"));
 
         // A non-unique edit without replace_all is a typed failure the model can react to.
-        h.call(
+        h.execute(
             "write",
             json!({"path": "y.txt", "content": "a a"}),
             &cancel,
@@ -769,7 +874,7 @@ mod tests {
         )
         .await;
         let out = h
-            .call(
+            .execute(
                 "edit",
                 json!({"path": "y.txt", "old_string": "a", "new_string": "b"}),
                 &cancel,
@@ -785,11 +890,11 @@ mod tests {
         let (_g, h) = hand();
         let cancel = CancellationToken::new();
         for i in 0..5 {
-            h.call("write", json!({"path": format!("src/f{i}.rs"), "content": format!("fn f{i}() {{}} // needle")}), &cancel, |_, _, _| {})
+            h.execute("write", json!({"path": format!("src/f{i}.rs"), "content": format!("fn f{i}() {{}} // needle")}), &cancel, |_, _, _| {})
                 .await;
         }
         let out = h
-            .call(
+            .execute(
                 "glob",
                 json!({"pattern": "src/*.rs"}),
                 &cancel,
@@ -798,7 +903,7 @@ mod tests {
             .await;
         assert!(out.content.contains("src/f0.rs") && out.content.contains("src/f4.rs"));
         let out = h
-            .call(
+            .execute(
                 "glob",
                 json!({"pattern": "src/*.rs", "max_results": 2}),
                 &cancel,
@@ -808,7 +913,7 @@ mod tests {
         assert!(out.content.contains("\"truncated\":true"));
 
         let out = h
-            .call(
+            .execute(
                 "grep",
                 json!({"pattern": "needle", "mode": "count"}),
                 &cancel,
@@ -817,7 +922,7 @@ mod tests {
             .await;
         assert!(out.content.contains("src/f0.rs: 1"), "{}", out.content);
         let out = h
-            .call(
+            .execute(
                 "grep",
                 json!({"pattern": "needle", "mode": "content", "glob": "src/f1.rs"}),
                 &cancel,
@@ -827,7 +932,7 @@ mod tests {
         assert!(out.content.contains("src/f1.rs:1:"), "{}", out.content);
 
         let out = h
-            .call("ls", json!({"depth": 2}), &cancel, |_, _, _| {})
+            .execute("ls", json!({"depth": 2}), &cancel, |_, _, _| {})
             .await;
         assert!(out.content.contains("src/") && out.content.contains("src/f0.rs"));
     }
@@ -839,7 +944,7 @@ mod tests {
         let chunks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = chunks.clone();
         let out = h
-            .call(
+            .execute(
                 "bash",
                 json!({"command": "echo local-ok && echo err-line >&2 && exit 3"}),
                 &cancel,
@@ -870,7 +975,7 @@ mod tests {
         });
         let t0 = Instant::now();
         let out = h
-            .call(
+            .execute(
                 "bash",
                 json!({"command": "sleep 30"}),
                 &cancel,
@@ -887,7 +992,7 @@ mod tests {
         h.seed("data/in.txt", b"seeded", None).unwrap();
         let cancel = CancellationToken::new();
         let out = h
-            .call(
+            .execute(
                 "read",
                 json!({"path": "data/in.txt"}),
                 &cancel,
@@ -895,10 +1000,10 @@ mod tests {
             )
             .await;
         assert!(out.content.contains("seeded"));
-        let (bytes, sha, target) = h.persist("in.txt", "data/in.txt").unwrap();
+        let (bytes, sha, target) = h.persist_file("in.txt", "data/in.txt").unwrap();
         assert_eq!(bytes, 6);
         assert_eq!(sha.len(), 64);
         assert!(target.exists());
-        assert!(h.persist("../evil", "data/in.txt").is_err());
+        assert!(h.persist_file("../evil", "data/in.txt").is_err());
     }
 }
