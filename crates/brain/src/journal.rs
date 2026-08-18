@@ -19,6 +19,7 @@ use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem, Update};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Zero-padded so lexicographic order is numeric order. Without the padding `E#10` sorts
 /// before `E#9` and a paged read replays out of sequence.
@@ -398,15 +399,29 @@ pub struct Head {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Store
+// Store: one wrapper, two backends
 // ---------------------------------------------------------------------------------------------
+//
+// `dynamodb` is the production backend (durable, fenced, multi-instance). `memory` is the
+// local-mode backend: the SAME conditional semantics -- fence on claim only, the (session,
+// seq) key as the idempotency barrier, Fenced on any superseded write -- over a process-local
+// map. It is deliberately not durable: local mode trades persistence for zero setup, and the
+// startup banner says so. Code above this line (records, fold, head) is backend-blind.
 
 #[derive(Clone)]
 pub struct Journal {
-    db: aws_sdk_dynamodb::Client,
-    table: String,
+    backend: Backend,
     /// This brain instance's identity as a lease owner.
     owner: String,
+}
+
+#[derive(Clone)]
+enum Backend {
+    Dynamo {
+        db: aws_sdk_dynamodb::Client,
+        table: String,
+    },
+    Memory(Arc<MemoryStore>),
 }
 
 impl Journal {
@@ -416,8 +431,18 @@ impl Journal {
         owner: impl Into<String>,
     ) -> Self {
         Self {
-            db,
-            table: table.into(),
+            backend: Backend::Dynamo {
+                db,
+                table: table.into(),
+            },
+            owner: owner.into(),
+        }
+    }
+
+    /// The local-mode journal: full semantics, no durability, no AWS.
+    pub fn new_memory(owner: impl Into<String>) -> Self {
+        Self {
+            backend: Backend::Memory(Arc::new(MemoryStore::default())),
             owner: owner.into(),
         }
     }
@@ -426,11 +451,28 @@ impl Journal {
         &self.owner
     }
 
+    /// The same store under a different owner identity. Exists to test (and later simulate)
+    /// multi-instance fencing; production instances each construct their own `Journal`.
+    pub fn cloned_as(&self, owner: impl Into<String>) -> Journal {
+        Journal {
+            backend: self.backend.clone(),
+            owner: owner.into(),
+        }
+    }
+
+    pub fn is_memory(&self) -> bool {
+        matches!(self.backend, Backend::Memory(_))
+    }
+
     /// Creates the session: HEAD plus the first record, atomically, refused if it exists.
     pub async fn create(&self, session_id: &str, doc: &HeadDoc, first: &Record) -> Result<()> {
         let now = crate::wall_ms();
+        let (db, table) = match &self.backend {
+            Backend::Memory(m) => return m.create(session_id, doc, first, &self.owner, now),
+            Backend::Dynamo { db, table } => (db, table),
+        };
         let head = Put::builder()
-            .table_name(&self.table)
+            .table_name(table)
             .item("pk", AttributeValue::S(session_pk(session_id)))
             .item("sk", AttributeValue::S("HEAD".into()))
             .item("owner_id", AttributeValue::S(self.owner.clone()))
@@ -444,9 +486,8 @@ impl Journal {
             .condition_expression("attribute_not_exists(sk)")
             .build()
             .map_err(|e| BrainError::Journal(format!("head put: {e}")))?;
-        let rec = self.record_put(session_id, 1, now, first)?;
-        self.db
-            .transact_write_items()
+        let rec = record_put(table, session_id, 1, now, first)?;
+        db.transact_write_items()
             .transact_items(TransactWriteItem::builder().put(head).build())
             .transact_items(TransactWriteItem::builder().put(rec).build())
             .send()
@@ -462,10 +503,13 @@ impl Journal {
     /// head, so becoming owner and learning the state are the same call.
     pub async fn claim(&self, session_id: &str) -> Result<Head> {
         let now = crate::wall_ms();
-        let out = self
-            .db
+        let (db, table) = match &self.backend {
+            Backend::Memory(m) => return m.claim(session_id, &self.owner, now),
+            Backend::Dynamo { db, table } => (db, table),
+        };
+        let out = db
             .update_item()
-            .table_name(&self.table)
+            .table_name(table)
             .key("pk", AttributeValue::S(session_pk(session_id)))
             .key("sk", AttributeValue::S("HEAD".into()))
             .condition_expression(
@@ -501,10 +545,13 @@ impl Journal {
 
     /// Reads the head without claiming. Strongly consistent (session facts, not a cache).
     pub async fn get_head(&self, session_id: &str) -> Result<Head> {
-        let out = self
-            .db
+        let (db, table) = match &self.backend {
+            Backend::Memory(m) => return m.get_head(session_id),
+            Backend::Dynamo { db, table } => (db, table),
+        };
+        let out = db
             .get_item()
-            .table_name(&self.table)
+            .table_name(table)
             .key("pk", AttributeValue::S(session_pk(session_id)))
             .key("sk", AttributeValue::S("HEAD".into()))
             .consistent_read(true)
@@ -517,15 +564,18 @@ impl Journal {
         parse_head(session_id, attrs)
     }
 
-    /// Reads records `after < seq <= last`, in order, paged, strongly consistent.
+    /// Reads records `after < seq`, in order, paged, strongly consistent.
     pub async fn read_records(&self, session_id: &str, after: u64) -> Result<Vec<Entry>> {
+        let (db, table) = match &self.backend {
+            Backend::Memory(m) => return m.read_records(session_id, after),
+            Backend::Dynamo { db, table } => (db, table),
+        };
         let mut entries = Vec::new();
         let mut start_key = None;
         loop {
-            let out = self
-                .db
+            let out = db
                 .query()
-                .table_name(&self.table)
+                .table_name(table)
                 .key_condition_expression("pk = :pk AND sk BETWEEN :lo AND :hi")
                 .expression_attribute_values(":pk", AttributeValue::S(session_pk(session_id)))
                 .expression_attribute_values(":lo", AttributeValue::S(record_sk(after + 1)))
@@ -558,13 +608,29 @@ impl Journal {
         high_water: u64,
     ) -> Result<()> {
         let now = crate::wall_ms();
-        let mut tx = self.db.transact_write_items();
+        let (db, table) = match &self.backend {
+            Backend::Memory(m) => {
+                m.commit(
+                    session_id,
+                    &self.owner,
+                    lease.fence,
+                    records,
+                    doc,
+                    high_water,
+                    now,
+                )?;
+                lease.last_seq = high_water;
+                return Ok(());
+            }
+            Backend::Dynamo { db, table } => (db, table),
+        };
+        let mut tx = db.transact_write_items();
         for (seq, record) in records {
-            let put = self.record_put(session_id, *seq, now, record)?;
+            let put = record_put(table, session_id, *seq, now, record)?;
             tx = tx.transact_items(TransactWriteItem::builder().put(put).build());
         }
         let update = Update::builder()
-            .table_name(&self.table)
+            .table_name(table)
             .key("pk", AttributeValue::S(session_pk(session_id)))
             .key("sk", AttributeValue::S("HEAD".into()))
             .condition_expression("fence = :fence AND owner_id = :me")
@@ -592,10 +658,13 @@ impl Journal {
     /// Releases the lease. A conditional failure maps to Ok: a release that lost its fence
     /// has already been superseded.
     pub async fn release(&self, session_id: &str, lease: &Lease) -> Result<()> {
-        let r = self
-            .db
+        let (db, table) = match &self.backend {
+            Backend::Memory(m) => return m.release(session_id, &self.owner, lease.fence),
+            Backend::Dynamo { db, table } => (db, table),
+        };
+        let r = db
             .update_item()
-            .table_name(&self.table)
+            .table_name(table)
             .key("pk", AttributeValue::S(session_pk(session_id)))
             .key("sk", AttributeValue::S("HEAD".into()))
             .condition_expression("fence = :fence AND owner_id = :me")
@@ -614,13 +683,16 @@ impl Journal {
     /// Deletes every item of the session. Plain deletes: delete is the one irreversible
     /// transition and the caller has already committed `state = deleted`.
     pub async fn purge(&self, session_id: &str) -> Result<u64> {
+        let (db, table) = match &self.backend {
+            Backend::Memory(m) => return m.purge(session_id),
+            Backend::Dynamo { db, table } => (db, table),
+        };
         let mut deleted = 0u64;
         let mut start_key = None;
         loop {
-            let out = self
-                .db
+            let out = db
                 .query()
-                .table_name(&self.table)
+                .table_name(table)
                 .key_condition_expression("pk = :pk")
                 .expression_attribute_values(":pk", AttributeValue::S(session_pk(session_id)))
                 .projection_expression("pk, sk")
@@ -635,9 +707,8 @@ impl Journal {
                     .and_then(|v| v.as_s().ok())
                     .cloned()
                     .unwrap_or_default();
-                self.db
-                    .delete_item()
-                    .table_name(&self.table)
+                db.delete_item()
+                    .table_name(table)
                     .key("pk", AttributeValue::S(session_pk(session_id)))
                     .key("sk", AttributeValue::S(sk))
                     .send()
@@ -652,16 +723,19 @@ impl Journal {
         }
     }
 
-    /// Lists session ids by scanning HEAD items. Dev-plane listing; an index arrives with the
-    /// control plane (slice 4).
+    /// Lists session heads. Dev-plane listing; an index arrives with the control plane
+    /// (slice 4).
     pub async fn list_sessions(&self, limit: usize) -> Result<Vec<Head>> {
+        let (db, table) = match &self.backend {
+            Backend::Memory(m) => return m.list_sessions(limit),
+            Backend::Dynamo { db, table } => (db, table),
+        };
         let mut heads = Vec::new();
         let mut start_key = None;
         loop {
-            let out = self
-                .db
+            let out = db
                 .scan()
-                .table_name(&self.table)
+                .table_name(table)
                 .filter_expression("sk = :head")
                 .expression_attribute_values(":head", AttributeValue::S("HEAD".into()))
                 .set_exclusive_start_key(start_key)
@@ -686,18 +760,186 @@ impl Journal {
             }
         }
     }
+}
 
-    fn record_put(&self, session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Result<Put> {
-        Put::builder()
-            .table_name(&self.table)
-            .item("pk", AttributeValue::S(session_pk(session_id)))
-            .item("sk", AttributeValue::S(record_sk(seq)))
-            .item("kind", AttributeValue::S(record.kind_name().into()))
-            .item("ts_ms", AttributeValue::N(ts_ms.to_string()))
-            .item("body", AttributeValue::S(serde_json::to_string(record)?))
-            .condition_expression("attribute_not_exists(sk)")
-            .build()
-            .map_err(|e| BrainError::Journal(format!("record put: {e}")))
+fn record_put(table: &str, session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Result<Put> {
+    Put::builder()
+        .table_name(table)
+        .item("pk", AttributeValue::S(session_pk(session_id)))
+        .item("sk", AttributeValue::S(record_sk(seq)))
+        .item("kind", AttributeValue::S(record.kind_name().into()))
+        .item("ts_ms", AttributeValue::N(ts_ms.to_string()))
+        .item("body", AttributeValue::S(serde_json::to_string(record)?))
+        .condition_expression("attribute_not_exists(sk)")
+        .build()
+        .map_err(|e| BrainError::Journal(format!("record put: {e}")))
+}
+
+// ---------------------------------------------------------------------------------------------
+// The in-memory backend
+// ---------------------------------------------------------------------------------------------
+
+struct MemSession {
+    doc: HeadDoc,
+    fence: u64,
+    last_seq: u64,
+    owner: Option<String>,
+    lease_expires_ms: u64,
+    records: std::collections::BTreeMap<u64, (u64, Record)>,
+}
+
+#[derive(Default)]
+pub struct MemoryStore {
+    sessions: std::sync::Mutex<HashMap<String, MemSession>>,
+}
+
+impl MemoryStore {
+    fn create(
+        &self,
+        session_id: &str,
+        doc: &HeadDoc,
+        first: &Record,
+        owner: &str,
+        now: u64,
+    ) -> Result<()> {
+        let mut map = self.sessions.lock().expect("memory journal");
+        if map.contains_key(session_id) {
+            return Err(BrainError::Invalid(format!(
+                "session {session_id} already exists"
+            )));
+        }
+        let mut records = std::collections::BTreeMap::new();
+        records.insert(1, (now, first.clone()));
+        map.insert(
+            session_id.to_string(),
+            MemSession {
+                doc: doc.clone(),
+                fence: 1,
+                last_seq: 1,
+                owner: Some(owner.to_string()),
+                lease_expires_ms: now + LEASE_MS,
+                records,
+            },
+        );
+        Ok(())
+    }
+
+    fn claim(&self, session_id: &str, owner: &str, now: u64) -> Result<Head> {
+        let mut map = self.sessions.lock().expect("memory journal");
+        let s = map
+            .get_mut(session_id)
+            .ok_or_else(|| BrainError::NoSuchSession(session_id.into()))?;
+        let claimable = match &s.owner {
+            None => true,
+            Some(o) if o == owner => true,
+            Some(_) => s.lease_expires_ms < now.saturating_sub(STEAL_GRACE_MS),
+        };
+        if !claimable {
+            return Err(BrainError::Fenced);
+        }
+        s.owner = Some(owner.to_string());
+        s.lease_expires_ms = now + LEASE_MS;
+        s.fence += 1;
+        Ok(Head {
+            session_id: session_id.to_string(),
+            doc: s.doc.clone(),
+            fence: s.fence,
+            last_seq: s.last_seq,
+        })
+    }
+
+    fn get_head(&self, session_id: &str) -> Result<Head> {
+        let map = self.sessions.lock().expect("memory journal");
+        let s = map
+            .get(session_id)
+            .ok_or_else(|| BrainError::NoSuchSession(session_id.into()))?;
+        Ok(Head {
+            session_id: session_id.to_string(),
+            doc: s.doc.clone(),
+            fence: s.fence,
+            last_seq: s.last_seq,
+        })
+    }
+
+    fn read_records(&self, session_id: &str, after: u64) -> Result<Vec<Entry>> {
+        let map = self.sessions.lock().expect("memory journal");
+        let s = map
+            .get(session_id)
+            .ok_or_else(|| BrainError::NoSuchSession(session_id.into()))?;
+        Ok(s.records
+            .range((after + 1)..)
+            .map(|(seq, (ts_ms, record))| Entry {
+                seq: *seq,
+                ts_ms: *ts_ms,
+                record: record.clone(),
+            })
+            .collect())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit(
+        &self,
+        session_id: &str,
+        owner: &str,
+        fence: u64,
+        records: &[(u64, Record)],
+        doc: &HeadDoc,
+        high_water: u64,
+        now: u64,
+    ) -> Result<()> {
+        let mut map = self.sessions.lock().expect("memory journal");
+        let s = map
+            .get_mut(session_id)
+            .ok_or_else(|| BrainError::NoSuchSession(session_id.into()))?;
+        if s.fence != fence || s.owner.as_deref() != Some(owner) {
+            return Err(BrainError::Fenced);
+        }
+        // The (session, seq) key is the idempotency barrier, exactly as in DynamoDB: a
+        // duplicate seq means a superseded writer.
+        if records.iter().any(|(seq, _)| s.records.contains_key(seq)) {
+            return Err(BrainError::Fenced);
+        }
+        for (seq, record) in records {
+            s.records.insert(*seq, (now, record.clone()));
+        }
+        s.doc = doc.clone();
+        s.last_seq = high_water;
+        s.lease_expires_ms = now + LEASE_MS; // renew; deliberately no fence bump
+        Ok(())
+    }
+
+    fn release(&self, session_id: &str, owner: &str, fence: u64) -> Result<()> {
+        let mut map = self.sessions.lock().expect("memory journal");
+        if let Some(s) = map.get_mut(session_id)
+            && s.fence == fence
+            && s.owner.as_deref() == Some(owner)
+        {
+            s.owner = None;
+            s.lease_expires_ms = 0;
+        }
+        Ok(())
+    }
+
+    fn purge(&self, session_id: &str) -> Result<u64> {
+        let mut map = self.sessions.lock().expect("memory journal");
+        Ok(match map.remove(session_id) {
+            Some(s) => s.records.len() as u64 + 1,
+            None => 0,
+        })
+    }
+
+    fn list_sessions(&self, limit: usize) -> Result<Vec<Head>> {
+        let map = self.sessions.lock().expect("memory journal");
+        Ok(map
+            .iter()
+            .take(limit)
+            .map(|(sid, s)| Head {
+                session_id: sid.clone(),
+                doc: s.doc.clone(),
+                fence: s.fence,
+                last_seq: s.last_seq,
+            })
+            .collect())
     }
 }
 
@@ -964,5 +1206,144 @@ mod tests {
         let back: HeadDoc = serde_json::from_str(&s).unwrap();
         assert_eq!(back.prefix.model, "claude");
         assert_eq!(back.state, "idle");
+    }
+
+    fn head_doc() -> HeadDoc {
+        HeadDoc {
+            state: "idle".into(),
+            failure: None,
+            turn: None,
+            turns: 0,
+            created_ms: 1,
+            updated_ms: 1,
+            last_message_ms: None,
+            ended: false,
+            prefix: PrefixDoc {
+                system_prompt: None,
+                provider: "anthropic".into(),
+                model: "m".into(),
+                base_url: None,
+                max_output_tokens: None,
+                temperature: None,
+                reasoning_effort: None,
+                tools: vec![],
+                hand_enabled: false,
+                shape: "1gb".into(),
+                sync_interval_seconds: 600,
+                env: HashMap::new(),
+                metadata: HashMap::new(),
+                seed_files: vec![],
+            },
+            key_b64: String::new(),
+            manifest_digest: String::new(),
+            hand: HandDoc::default(),
+            sync: SyncDoc::default(),
+            artifacts: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_journal_full_lifecycle() {
+        let j = Journal::new_memory("brain-a");
+        let doc = head_doc();
+        j.create(
+            "ses_m",
+            &doc,
+            &Record::State {
+                state: "idle".into(),
+                turn: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            j.create(
+                "ses_m",
+                &doc,
+                &Record::State {
+                    state: "idle".into(),
+                    turn: None
+                }
+            )
+            .await,
+            Err(BrainError::Invalid(_))
+        ));
+
+        let head = j.claim("ses_m").await.unwrap();
+        assert_eq!(head.fence, 2, "claim bumps the fence");
+        assert_eq!(head.last_seq, 1);
+
+        let mut lease = Lease {
+            fence: head.fence,
+            last_seq: head.last_seq,
+        };
+        let rec = (2u64, Record::TurnStarted { turn: "t1".into() });
+        j.commit("ses_m", &mut lease, std::slice::from_ref(&rec), &doc, 3)
+            .await
+            .unwrap();
+        assert_eq!(
+            lease.last_seq, 3,
+            "high water persisted, ephemeral seq included"
+        );
+
+        let entries = j.read_records("ses_m", 0).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].seq, 2);
+
+        // Re-committing the same seq is a superseded write, exactly like DynamoDB.
+        assert!(matches!(
+            j.commit("ses_m", &mut lease, std::slice::from_ref(&rec), &doc, 4)
+                .await,
+            Err(BrainError::Fenced)
+        ));
+
+        assert_eq!(j.purge("ses_m").await.unwrap(), 3);
+        assert!(matches!(
+            j.get_head("ses_m").await,
+            Err(BrainError::NoSuchSession(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn memory_journal_fences_out_a_stale_owner() {
+        let a = Journal::new_memory("brain-a");
+        let b = a.cloned_as("brain-b");
+        let doc = head_doc();
+        a.create(
+            "ses_f",
+            &doc,
+            &Record::State {
+                state: "idle".into(),
+                turn: None,
+            },
+        )
+        .await
+        .unwrap();
+        let head_a = a.claim("ses_f").await.unwrap();
+        let mut lease_a = Lease {
+            fence: head_a.fence,
+            last_seq: head_a.last_seq,
+        };
+
+        // B cannot steal while A's lease is live...
+        assert!(matches!(b.claim("ses_f").await, Err(BrainError::Fenced)));
+
+        // ...but after A releases, B claims with a HIGHER fence, and A's writes are dead.
+        a.release("ses_f", &lease_a).await.unwrap();
+        let head_b = b.claim("ses_f").await.unwrap();
+        assert!(head_b.fence > head_a.fence);
+        let rec = (2u64, Record::TurnStarted { turn: "t".into() });
+        assert!(matches!(
+            a.commit("ses_f", &mut lease_a, std::slice::from_ref(&rec), &doc, 2)
+                .await,
+            Err(BrainError::Fenced)
+        ));
+        let mut lease_b = Lease {
+            fence: head_b.fence,
+            last_seq: head_b.last_seq,
+        };
+        b.commit("ses_f", &mut lease_b, std::slice::from_ref(&rec), &doc, 2)
+            .await
+            .unwrap();
     }
 }

@@ -8,6 +8,12 @@
   session's life (D11); absent ≠ zero on usage (D10); tool intents journal before dispatch and
   results journal before `release`; a lost hand is `hand_lost`, interrupted, never replayed (I10);
   the brain mints every presigned URL (I8); never attach an execution role to a hand MicroVM.
-* The brain is host-side Rust and builds/tests on any OS. `bin/m0` needs real AWS
-  (eu-west-1 dev plane) and real provider keys.
+* The brain is host-side Rust and builds/tests on any OS. Two runtime modes behind one seam
+  (`session::ModeConfig` / `hand::HandRuntime` / the `Journal` backends): `local` (default —
+  in-memory journal, subprocess tools, NOT a sandbox, NOT durable) and `aws` (the product:
+  MicroVMs, DynamoDB, KMS, S3). Never let a local-mode convenience weaken an aws-mode
+  invariant; the aws paths must stay byte-identical when local mode changes.
+* `tests/local_e2e.rs` drives the whole loop (HTTP + SSE + journal + real subprocess tools)
+  with a scripted provider and runs in CI. `bin/m0` is the AWS gate: real AWS (eu-west-1 dev
+  plane) + real provider keys.
 * Fail fast; plain English in comments. Commit style: `area: imperative summary`.

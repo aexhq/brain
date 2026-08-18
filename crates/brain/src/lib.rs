@@ -18,6 +18,7 @@ pub mod events;
 pub mod hand;
 pub mod journal;
 pub mod keys;
+pub mod local;
 pub mod message;
 pub mod provider;
 pub mod reclaim;

@@ -15,7 +15,7 @@
 
 use crate::config::{SealedPrefix, SessionConfig, ToolRoute};
 use crate::events::EventHub;
-use crate::hand::SessionHand;
+use crate::hand::HandRuntime;
 use crate::journal::{self, HeadDoc, Journal, Lease, Record};
 use crate::message::{ContentBlock, Message, StopReason};
 use crate::provider::{Accumulator, Provider, ProviderEvent};
@@ -48,7 +48,7 @@ pub struct TurnState {
     pub history: Vec<Message>,
     pub head: HeadDoc,
     pub lease: Lease,
-    pub hand: SessionHand,
+    pub hand: HandRuntime,
     pub todo: Arc<TodoState>,
     /// The next seq to allocate. Ephemeral events (deltas, tool output) consume seqs too;
     /// every commit persists the high-water mark.
@@ -69,7 +69,7 @@ pub struct TurnRun {
     pub turn_id: String,
     pub prefix: Shared<SealedPrefix>,
     pub session: SessionConfig,
-    pub provider: Box<dyn Provider>,
+    pub provider: Arc<dyn Provider>,
     pub provider_name: String,
     pub journal: Journal,
     pub hub: Arc<EventHub>,
@@ -477,6 +477,49 @@ impl TurnRun {
                                 is_error: true,
                                 exit_code: None,
                                 duration_ms: 0,
+                                truncated: false,
+                            },
+                        )
+                    });
+                }
+                Some(ToolRoute::Hand) if st.hand.local().is_some() => {
+                    let hand = st.hand.local().expect("guarded").clone();
+                    let cancel = self.cancel.clone();
+                    let hub = self.hub.clone();
+                    let sid = self.session_id.clone();
+                    let turn = self.turn_id.clone();
+                    let sem = sem.clone();
+                    let seq_base = st.next_seq + idx as u64 * 4096;
+                    join.spawn(async move {
+                        let _p = sem.acquire().await;
+                        let out_seq = Arc::new(std::sync::atomic::AtomicU64::new(seq_base));
+                        let emit = {
+                            let hub = hub.clone();
+                            let (sid, turn, op) = (sid.clone(), turn.clone(), op_id.clone());
+                            move |stream: &str, offset: u64, text: String| {
+                                let stream = if stream == "stderr" {
+                                    EventStream::Stderr
+                                } else {
+                                    EventStream::Stdout
+                                };
+                                let seq =
+                                    out_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if let Some(e) = crate::events::output_event(
+                                    &sid, seq, &turn, &op, stream, offset, text,
+                                ) {
+                                    hub.publish(&sid, e);
+                                }
+                            }
+                        };
+                        let out = hand.call(&name, input, &cancel, emit).await;
+                        (
+                            idx,
+                            CallOutcome {
+                                outcome: out.outcome.into(),
+                                content: out.content,
+                                is_error: out.is_error,
+                                exit_code: out.exit_code,
+                                duration_ms: out.duration_ms,
                                 truncated: false,
                             },
                         )

@@ -33,5 +33,6 @@ export AEX_SESSIONS_BUCKET=aex-dev-sessions-522921482290
 export AEX_HAND_IMAGE=aex-hands-dev-1gb
 export AEX_HAND_IMAGE_VERSION=2.0
 export AEX_API_TOKEN=m0-dev-token
+export AEX_MODE=aws
 cd "$(dirname "$0")/.."
 exec cargo run --bin m0 "$@"

@@ -651,6 +651,113 @@ pub fn hand_info(head: &HeadDoc) -> aex_contracts::session::HandInfo {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// The runtime seam: one enum, two ways to run tools
+// ---------------------------------------------------------------------------------------------
+
+/// How this session executes tools. `Remote` is the product path (Lambda MicroVM, full
+/// suspend/sync/wall policy). `Local` is the zero-setup default: tools run on the operator's
+/// machine against a per-session directory -- process separation, NOT a sandbox; every
+/// lifecycle policy that exists to manage a remote VM is a no-op because there is nothing to
+/// manage (the workspace is a local directory and durable by nature).
+pub enum HandRuntime {
+    Remote(SessionHand),
+    Local(Arc<crate::local::LocalHand>),
+}
+
+impl HandRuntime {
+    pub fn local(&self) -> Option<&Arc<crate::local::LocalHand>> {
+        match self {
+            HandRuntime::Local(h) => Some(h),
+            HandRuntime::Remote(_) => None,
+        }
+    }
+
+    pub async fn ensure_ready(&mut self, head: &mut HeadDoc) -> Result<Option<LostReport>> {
+        match self {
+            HandRuntime::Remote(h) => h.ensure_ready(head).await,
+            HandRuntime::Local(_) => {
+                if head.hand.state != "ready" {
+                    head.hand.state = "ready".into();
+                    head.hand.incarnations = head.hand.incarnations.max(1);
+                    head.hand.generation_id = Some("local".into());
+                    head.hand.launched_ms =
+                        head.hand.launched_ms.or_else(|| Some(crate::wall_ms()));
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    pub fn client(&self) -> Option<Arc<HandClient>> {
+        match self {
+            HandRuntime::Remote(h) => h.client(),
+            HandRuntime::Local(_) => None,
+        }
+    }
+
+    pub fn is_connected(&self) -> bool {
+        match self {
+            HandRuntime::Remote(h) => h.is_connected(),
+            // No connection to manage; also gates the turn-end sync, which is meaningless
+            // for a workspace that already lives on disk.
+            HandRuntime::Local(_) => false,
+        }
+    }
+
+    pub async fn sync(
+        &mut self,
+        head: &mut HeadDoc,
+        reason: SyncReason,
+    ) -> Result<Option<SyncDone>> {
+        match self {
+            HandRuntime::Remote(h) => h.sync(head, reason).await,
+            HandRuntime::Local(_) => Ok(None),
+        }
+    }
+
+    pub async fn release(&mut self, head: &mut HeadDoc, sync_first: bool) -> Result<()> {
+        match self {
+            HandRuntime::Remote(h) => h.release(head, sync_first).await,
+            HandRuntime::Local(_) => {
+                head.hand.state = "released".into();
+                Ok(())
+            }
+        }
+    }
+
+    pub fn wall_due(&self, head: &HeadDoc) -> bool {
+        match self {
+            HandRuntime::Remote(h) => h.wall_due(head),
+            HandRuntime::Local(_) => false,
+        }
+    }
+
+    pub fn disconnect(&mut self) {
+        if let HandRuntime::Remote(h) = self {
+            h.disconnect();
+        }
+    }
+
+    pub fn hold_up(&mut self) {
+        if let HandRuntime::Remote(h) = self {
+            h.hold_up();
+        }
+    }
+
+    pub fn let_idle(&mut self) {
+        if let HandRuntime::Remote(h) = self {
+            h.let_idle();
+        }
+    }
+
+    pub fn speculative_resume(&self, head: &HeadDoc) {
+        if let HandRuntime::Remote(h) = self {
+            h.speculative_resume(head);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

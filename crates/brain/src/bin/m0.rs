@@ -278,7 +278,14 @@ async fn run() -> anyhow::Result<()> {
         std::env::set_var("AEX_API_TOKEN", &token);
         std::env::set_var("AEX_LISTEN", "127.0.0.1:8701");
     }
+    // The gate is the AWS-mode gate by definition.
+    unsafe {
+        std::env::set_var("AEX_MODE", "aws");
+    }
     let cfg = brain::session::BrainConfig::from_env().map_err(|e| anyhow::anyhow!("{e}"))?;
+    let brain::session::ModeConfig::Aws { hand: hand_cfg, .. } = cfg.mode.clone() else {
+        anyhow::bail!("m0 requires AEX_MODE=aws");
+    };
     let brain_arc = brain::session::Brain::new(cfg.clone())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -296,7 +303,7 @@ async fn run() -> anyhow::Result<()> {
         http: reqwest::Client::new(),
         token,
     };
-    let control = hand_lambda::control::Control::from_env(&cfg.hand.region).await;
+    let control = hand_lambda::control::Control::from_env(&hand_cfg.region).await;
     let anthropic_key = std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY")?;
     let deepseek_key = std::env::var("DEEPSEEK_API_KEY").context("DEEPSEEK_API_KEY")?;
     let anthropic_model =

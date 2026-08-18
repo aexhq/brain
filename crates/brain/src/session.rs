@@ -9,13 +9,15 @@
 use crate::compact::DEFAULT_HISTORY_BUDGET_BYTES;
 use crate::config::{AgentDef, Dialect, GenOpts, ProviderKey, SessionConfig};
 use crate::events::EventHub;
-use crate::hand::{HandPlane, HandPlaneConfig, SessionHand, hand_info};
+use crate::hand::{HandPlane, HandPlaneConfig, HandRuntime, SessionHand, hand_info};
 use crate::journal::{
     ArtifactDoc, FailureDoc, HandDoc, Head, HeadDoc, Journal, Lease, PrefixDoc, Record,
     SeedFileDoc, SyncDoc,
 };
 use crate::keys::{KeyCustody, blob_from_b64, blob_to_b64};
+use crate::local::LocalHand;
 use crate::message::{ContentBlock, Message};
+use crate::provider::Provider;
 use crate::tools::TodoState;
 use crate::turn::{TurnRun, TurnState};
 use crate::{BrainError, Result};
@@ -26,17 +28,30 @@ use aex_contracts::session::{
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+/// Which backends this process runs on.
+#[derive(Debug, Clone)]
+pub enum ModeConfig {
+    /// The product path: DynamoDB journal, KMS custody, Lambda MicroVM hands, S3 storage.
+    Aws {
+        journal_table: String,
+        kms_key_id: String,
+        hand: HandPlaneConfig,
+    },
+    /// The zero-setup default: in-memory journal (NOT durable), local tool execution
+    /// (process separation, NOT a sandbox), per-session directories under `data_dir`.
+    Local { data_dir: PathBuf },
+}
+
 /// Process configuration.
 #[derive(Debug, Clone)]
 pub struct BrainConfig {
-    pub journal_table: String,
-    pub kms_key_id: String,
-    pub hand: HandPlaneConfig,
+    pub mode: ModeConfig,
     /// Admission: concurrent model rounds across the process.
     pub max_concurrent_model_rounds: usize,
     /// Admission: concurrent active turns across the process.
@@ -47,19 +62,49 @@ pub struct BrainConfig {
 }
 
 impl BrainConfig {
+    /// `AEX_MODE=local` (the default) or `AEX_MODE=aws`. Local needs nothing; aws fails fast
+    /// on any missing backend variable -- production is configured, never guessed.
     pub fn from_env() -> Result<Self> {
         let get =
             |k: &str| std::env::var(k).map_err(|_| BrainError::Invalid(format!("{k} is not set")));
+        let mode = match std::env::var("AEX_MODE").as_deref() {
+            Err(_) | Ok("local") => ModeConfig::Local {
+                data_dir: PathBuf::from(
+                    std::env::var("AEX_DATA_DIR").unwrap_or_else(|_| "./aex-data".into()),
+                ),
+            },
+            Ok("aws") => ModeConfig::Aws {
+                journal_table: get("AEX_JOURNAL_TABLE")?,
+                kms_key_id: get("AEX_KMS_KEY_ID")?,
+                hand: HandPlaneConfig::from_env()?,
+            },
+            Ok(other) => {
+                return Err(BrainError::Invalid(format!(
+                    "AEX_MODE must be local or aws, got {other}"
+                )));
+            }
+        };
         Ok(Self {
-            journal_table: get("AEX_JOURNAL_TABLE")?,
-            kms_key_id: get("AEX_KMS_KEY_ID")?,
-            hand: HandPlaneConfig::from_env()?,
+            mode,
             max_concurrent_model_rounds: env_num("AEX_MAX_MODEL_ROUNDS", 64),
             max_concurrent_turns: env_num("AEX_MAX_TURNS", 64),
             idle_discard: Duration::from_secs(env_num("AEX_IDLE_DISCARD_SECONDS", 900) as u64),
             history_budget_bytes: DEFAULT_HISTORY_BUDGET_BYTES,
         })
     }
+}
+
+/// The resolved runtime the process actually holds.
+pub enum RuntimeMode {
+    Aws { plane: Arc<HandPlane> },
+    Local { data_dir: PathBuf },
+}
+
+/// How turns obtain a provider. Overridable so tests can inject the scripted fake.
+pub type ProviderFactory = Arc<dyn Fn(Dialect) -> Arc<dyn Provider> + Send + Sync>;
+
+fn default_provider_factory() -> ProviderFactory {
+    Arc::new(|d| Arc::from(crate::provider::for_dialect(d)))
 }
 
 fn env_num(k: &str, default: usize) -> usize {
@@ -82,9 +127,10 @@ pub struct Brain {
     pub cfg: BrainConfig,
     pub journal: Journal,
     pub custody: Arc<dyn KeyCustody>,
-    pub plane: Arc<HandPlane>,
+    pub runtime: RuntimeMode,
     pub hub: Arc<EventHub>,
     pub model_permits: Arc<Semaphore>,
+    provider_factory: ProviderFactory,
     turn_permits: Arc<Semaphore>,
     sessions: Mutex<HashMap<String, mpsc::Sender<Command>>>,
 }
@@ -116,49 +162,103 @@ enum Command {
 
 impl Brain {
     pub async fn new(cfg: BrainConfig) -> Result<Arc<Self>> {
-        let aws = aws_config::from_env()
-            .region(aws_config::Region::new(cfg.hand.region.clone()))
-            .load()
-            .await;
         let owner = format!("brain-{}", crate::mint_id("i", 12));
-        let journal = Journal::new(
-            aws_sdk_dynamodb::Client::new(&aws),
-            &cfg.journal_table,
-            owner,
-        );
-        let custody: Arc<dyn KeyCustody> = Arc::new(crate::keys::KmsCustody::new(
-            aws_sdk_kms::Client::new(&aws),
-            &cfg.kms_key_id,
-        ));
-        let plane = Arc::new(HandPlane::from_env(cfg.hand.clone()).await);
-        Ok(Arc::new(Self {
-            model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
-            turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
+        let (journal, custody, runtime): (Journal, Arc<dyn KeyCustody>, RuntimeMode) =
+            match &cfg.mode {
+                ModeConfig::Aws {
+                    journal_table,
+                    kms_key_id,
+                    hand,
+                } => {
+                    let aws = aws_config::from_env()
+                        .region(aws_config::Region::new(hand.region.clone()))
+                        .load()
+                        .await;
+                    (
+                        Journal::new(aws_sdk_dynamodb::Client::new(&aws), journal_table, owner),
+                        Arc::new(crate::keys::KmsCustody::new(
+                            aws_sdk_kms::Client::new(&aws),
+                            kms_key_id,
+                        )),
+                        RuntimeMode::Aws {
+                            plane: Arc::new(HandPlane::from_env(hand.clone()).await),
+                        },
+                    )
+                }
+                ModeConfig::Local { data_dir } => {
+                    std::fs::create_dir_all(data_dir)
+                        .map_err(|e| BrainError::Invalid(format!("AEX_DATA_DIR: {e}")))?;
+                    (
+                        Journal::new_memory(owner),
+                        Arc::new(crate::keys::PlainCustody),
+                        RuntimeMode::Local {
+                            data_dir: data_dir.clone(),
+                        },
+                    )
+                }
+            };
+        Ok(Self::assemble(
+            cfg,
             journal,
             custody,
-            plane,
-            hub: Arc::new(EventHub::new()),
-            sessions: Mutex::new(HashMap::new()),
-            cfg,
-        }))
+            runtime,
+            default_provider_factory(),
+        ))
     }
 
-    /// For tests: a brain over injected planes.
+    /// For tests: a brain over injected parts.
     pub fn with_parts(
         cfg: BrainConfig,
         journal: Journal,
         custody: Arc<dyn KeyCustody>,
-        plane: Arc<HandPlane>,
+        runtime: RuntimeMode,
+        provider_factory: Option<ProviderFactory>,
+    ) -> Arc<Self> {
+        Self::assemble(
+            cfg,
+            journal,
+            custody,
+            runtime,
+            provider_factory.unwrap_or_else(default_provider_factory),
+        )
+    }
+
+    fn assemble(
+        cfg: BrainConfig,
+        journal: Journal,
+        custody: Arc<dyn KeyCustody>,
+        runtime: RuntimeMode,
+        provider_factory: ProviderFactory,
     ) -> Arc<Self> {
         Arc::new(Self {
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
             journal,
             custody,
-            plane,
+            runtime,
+            provider_factory,
             hub: Arc::new(EventHub::new()),
             sessions: Mutex::new(HashMap::new()),
             cfg,
+        })
+    }
+
+    /// A presigned (aws) or absent (local) download URL for an artifact.
+    pub async fn artifact_url(&self, doc: &ArtifactDoc) -> Option<String> {
+        match &self.runtime {
+            RuntimeMode::Aws { plane } => plane.presign_get(&doc.s3_key).await.ok(),
+            RuntimeMode::Local { .. } => None,
+        }
+    }
+
+    fn hand_runtime(&self, session_id: &str) -> Result<HandRuntime> {
+        Ok(match &self.runtime {
+            RuntimeMode::Aws { plane } => {
+                HandRuntime::Remote(SessionHand::new(plane.clone(), session_id.to_string()))
+            }
+            RuntimeMode::Local { data_dir } => {
+                HandRuntime::Local(LocalHand::open(data_dir, session_id)?)
+            }
         })
     }
 
@@ -198,7 +298,8 @@ impl Brain {
             }
         };
 
-        // Stage seed files to S3 (content never enters the journal).
+        // Stage seed files. Aws: to S3, applied on the first hello (content never enters the
+        // journal). Local: straight onto disk -- the workspace is already its durable form.
         let mut seeds = Vec::with_capacity(req.files.len());
         for (i, f) in req.files.iter().enumerate() {
             let bytes = base64::engine::general_purpose::STANDARD
@@ -207,24 +308,31 @@ impl Brain {
             if bytes.len() > 1024 * 1024 {
                 return Err(BrainError::Invalid(format!("files[{i}] exceeds 1 MiB")));
             }
-            let key = crate::hand::seed_key(&session_id, i);
-            let sha = hex::encode(Sha256::digest(&bytes));
-            self.plane
-                .s3
-                .put_object()
-                .bucket(&self.plane.cfg.bucket)
-                .key(&key)
-                .body(bytes.clone().into())
-                .send()
-                .await
-                .map_err(|e| BrainError::Journal(format!("seed upload: {e}")))?;
-            seeds.push(SeedFileDoc {
-                path: f.path.clone(),
-                s3_key: key,
-                bytes: bytes.len() as u64,
-                sha256: sha,
-                mode: f.mode,
-            });
+            match &self.runtime {
+                RuntimeMode::Aws { plane } => {
+                    let key = crate::hand::seed_key(&session_id, i);
+                    let sha = hex::encode(Sha256::digest(&bytes));
+                    plane
+                        .s3
+                        .put_object()
+                        .bucket(&plane.cfg.bucket)
+                        .key(&key)
+                        .body(bytes.clone().into())
+                        .send()
+                        .await
+                        .map_err(|e| BrainError::Journal(format!("seed upload: {e}")))?;
+                    seeds.push(SeedFileDoc {
+                        path: f.path.clone(),
+                        s3_key: key,
+                        bytes: bytes.len() as u64,
+                        sha256: sha,
+                        mode: f.mode,
+                    });
+                }
+                RuntimeMode::Local { data_dir } => {
+                    LocalHand::open(data_dir, &session_id)?.seed(&f.path, &bytes, f.mode)?;
+                }
+            }
         }
 
         // Encrypt the BYOK key; the plaintext never reaches the journal.
@@ -672,7 +780,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                 fence: head.fence,
                 last_seq: head.last_seq,
             },
-            hand: SessionHand::new(brain.plane.clone(), session_id.to_string()),
+            hand: brain.hand_runtime(session_id)?,
             todo: Arc::new(TodoState::default()),
             next_seq: head.last_seq + 1,
         },
@@ -788,7 +896,7 @@ fn turn_run(
         turn_id: turn_id.to_string(),
         prefix,
         session,
-        provider: crate::provider::for_dialect(dialect),
+        provider: (brain.provider_factory)(dialect),
         provider_name: r.st.head.prefix.provider.clone(),
         journal: brain.journal.clone(),
         hub: brain.hub.clone(),
@@ -929,11 +1037,16 @@ async fn delete_session(
     };
     commit(brain, session_id, &mut r.st, vec![(seq, rec)]).await?;
 
-    // Purge storage: S3 prefix, then the journal items. The state=deleted commit above is the
+    // Purge storage, then the journal items. The state=deleted commit above is the
     // irreversible line; purge is cleanup.
-    let prefix = format!("sessions/{session_id}/");
-    if let Err(e) = purge_s3_prefix(&brain.plane, &prefix).await {
-        tracing::warn!(session = %session_id, error = %e, "s3 purge incomplete");
+    match &brain.runtime {
+        RuntimeMode::Aws { plane } => {
+            let prefix = format!("sessions/{session_id}/");
+            if let Err(e) = purge_s3_prefix(plane, &prefix).await {
+                tracing::warn!(session = %session_id, error = %e, "s3 purge incomplete");
+            }
+        }
+        RuntimeMode::Local { data_dir } => LocalHand::purge(data_dir, session_id),
     }
     brain.journal.purge(session_id).await?;
     brain.hub.drop_session(session_id);
@@ -982,12 +1095,33 @@ async fn do_persist(
     use aex_contracts::abi::{PersistItem, PersistRequest as AbiPersist, PersistSource};
     let r = ensure_resident(brain, session_id, resident).await?;
     r.st.hand.ensure_ready(&mut r.st.head).await?;
+
+    // Local: copy into the session's artifacts directory, no URLs anywhere.
+    if let Some(local) = r.st.hand.local().cloned() {
+        let (bytes, sha256, target) = local.persist(&name, &path)?;
+        let doc = ArtifactDoc {
+            name: name.clone(),
+            s3_key: target.to_string_lossy().to_string(),
+            bytes,
+            sha256,
+            media_type: media_type.unwrap_or_else(|| "application/octet-stream".into()),
+            created_ms: crate::wall_ms(),
+        };
+        r.st.head.artifacts.retain(|a| a.name != name);
+        r.st.head.artifacts.push(doc.clone());
+        commit(brain, session_id, &mut r.st, vec![]).await?;
+        return Ok(doc);
+    }
+
+    let RuntimeMode::Aws { plane } = &brain.runtime else {
+        return Err(BrainError::HandUnavailable("no hand runtime".into()));
+    };
     let client =
         r.st.hand
             .client()
             .ok_or_else(|| BrainError::HandUnavailable("no hand".into()))?;
     let key = crate::hand::artifact_key(session_id, &name);
-    let put_url = brain.plane.presign_put(&key).await?;
+    let put_url = plane.presign_put(&key).await?;
     let resp = client
         .persist(AbiPersist {
             items: vec![PersistItem {

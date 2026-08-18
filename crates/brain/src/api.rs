@@ -294,7 +294,7 @@ async fn artifact_of(
     session_id: &str,
     doc: &crate::journal::ArtifactDoc,
 ) -> Artifact {
-    let url = state.brain.plane.presign_get(&doc.s3_key).await.ok();
+    let url = state.brain.artifact_url(doc).await;
     Artifact {
         bytes: doc.bytes,
         created_at: crate::events::ts(doc.created_ms),
