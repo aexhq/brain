@@ -1,0 +1,45 @@
+[workspace]
+members = ["crates/brain"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# Contracts and the hand, pinned by tag: the wire formats are owned by their repos.
+aex-contracts = { git = "https://github.com/aexhq/aex", tag = "aex-contracts-v0.1.0" }
+hand-client = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.0" }
+hand-lambda = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.0" }
+
+anyhow = "1"
+async-trait = "0.1"
+async-stream = "0.3"
+aws-config = "1"
+aws-sdk-dynamodb = "1"
+aws-sdk-kms = "1"
+aws-sdk-s3 = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+clap = { version = "4", features = ["derive"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+hex = "0.4"
+libc = "0.2"
+rand = "0.9"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "signal"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zeroize = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

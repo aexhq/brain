@@ -1,0 +1,405 @@
+//! OpenAI-compatible Chat Completions adapter.
+//!
+//! This is the dialect the benchmark drives, because `experiments/agentfeat/
+//! lib/oc-fake.mjs` already speaks it for OpenCode: pointing all three runtimes
+//! at one fake is what makes the head-to-head a comparison rather than three
+//! separate measurements.
+
+use super::sse::SseDecoder;
+use super::{ModelRequest, Provider, ProviderEvent};
+use crate::config::{Dialect, ProviderKey, SealedPrefix};
+use crate::message::{ContentBlock, Message, Role, StopReason, Usage};
+use crate::{BrainError, Result};
+use futures_util::stream::BoxStream;
+use serde_json::{Map, Value, json};
+
+#[derive(Debug, Default)]
+pub struct OpenAiChat;
+
+impl OpenAiChat {
+    /// Render ONE provider-neutral message into the dialect's array elements.
+    ///
+    /// Split out of `body` so that the pre-rendered transcript store
+    /// (`provider::render`) and the reference builder share one renderer rather
+    /// than two that must be kept in step. The byte-identity test in
+    /// `provider::render` would catch a divergence; this makes one impossible.
+    ///
+    /// One neutral message is **not** always one element: a user message
+    /// carrying N `tool_result` blocks becomes N `tool` messages, plus a
+    /// separate `user` message if it also carried text.
+    pub fn render_one(m: &Message) -> Result<Vec<Value>> {
+        let mut messages: Vec<Value> = Vec::new();
+        match m.role {
+            Role::Assistant => {
+                let mut text = String::new();
+                let mut calls = Vec::new();
+                for b in &m.content {
+                    match b {
+                        ContentBlock::Text { text: t } => text.push_str(t),
+                        ContentBlock::ToolUse { id, name, input } => calls.push(json!({
+                            "id": id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": serde_json::to_string(input)?}
+                        })),
+                        ContentBlock::ToolResult { .. } => {
+                            return Err(BrainError::Protocol(
+                                "a tool_result block cannot appear in an assistant message".into(),
+                            ));
+                        }
+                    }
+                }
+                let mut o = Map::new();
+                o.insert("role".into(), json!("assistant"));
+                o.insert(
+                    "content".into(),
+                    if text.is_empty() {
+                        Value::Null
+                    } else {
+                        json!(text)
+                    },
+                );
+                if !calls.is_empty() {
+                    o.insert("tool_calls".into(), json!(calls));
+                }
+                messages.push(Value::Object(o));
+            }
+            Role::User => {
+                // One Anthropic user message carrying N tool_result blocks
+                // becomes N OpenAI `tool` messages. Text blocks in the same
+                // message become a separate user message, in order.
+                let mut text = String::new();
+                for b in &m.content {
+                    match b {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } => {
+                            // The dialect has no `is_error`. Dropping the
+                            // signal entirely is what makes a failed
+                            // fan-out read as a success, so it is carried
+                            // in-band and marked, never silently lost.
+                            let payload = if *is_error {
+                                format!("ERROR: {content}")
+                            } else {
+                                content.clone()
+                            };
+                            messages.push(json!({
+                                "role":"tool",
+                                "tool_call_id": tool_use_id,
+                                "content": payload
+                            }));
+                        }
+                        ContentBlock::Text { text: t } => text.push_str(t),
+                        ContentBlock::ToolUse { .. } => {
+                            return Err(BrainError::Protocol(
+                                "a tool_use block cannot appear in a user message".into(),
+                            ));
+                        }
+                    }
+                }
+                if !text.is_empty() {
+                    messages.push(json!({"role":"user","content":text}));
+                }
+            }
+        }
+        Ok(messages)
+    }
+
+    pub fn body(prefix: &SealedPrefix, history: &[Message]) -> Result<Value> {
+        let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 1);
+        messages.push(json!({"role":"system","content":prefix.system_prompt}));
+
+        for m in history {
+            messages.extend(Self::render_one(m)?);
+        }
+
+        let tools: Vec<Value> = prefix
+            .tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type":"function",
+                    "function":{
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    }
+                })
+            })
+            .collect();
+
+        let mut body = Map::new();
+        body.insert("model".into(), json!(prefix.model));
+        body.insert("stream".into(), json!(true));
+        body.insert("max_tokens".into(), json!(prefix.sampling.max_tokens));
+        if !tools.is_empty() {
+            body.insert("tools".into(), json!(tools));
+        }
+        body.insert("messages".into(), json!(messages));
+        if let Some(t) = prefix.sampling.temperature {
+            body.insert("temperature".into(), json!(t));
+        }
+        if !prefix.sampling.stop_sequences.is_empty() {
+            body.insert("stop".into(), json!(prefix.sampling.stop_sequences));
+        }
+        // Ask for usage on the final chunk. Without it several
+        // OpenAI-compatible servers report nothing at all -- which is absent,
+        // and absent must not become zero downstream.
+        body.insert("stream_options".into(), json!({"include_usage": true}));
+        Ok(Value::Object(body))
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for OpenAiChat {
+    fn dialect(&self) -> Dialect {
+        Dialect::OpenAiChat
+    }
+
+    fn build_request(
+        &self,
+        prefix: &SealedPrefix,
+        history: &[Message],
+        key: &ProviderKey,
+        base_url: &str,
+    ) -> Result<ModelRequest> {
+        let body = serde_json::to_vec(&Self::body(prefix, history)?)?;
+        Ok(ModelRequest {
+            method: "POST",
+            url: format!("{}/v1/chat/completions", base_url.trim_end_matches('/')),
+            headers: vec![
+                ("content-type".into(), "application/json".into()),
+                ("accept".into(), "text/event-stream".into()),
+                ("authorization".into(), format!("Bearer {}", key.expose())),
+            ],
+            body,
+        })
+    }
+
+    async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
+        crate::provider::http_stream(req, decode).await
+    }
+}
+
+pub fn decode(_event: Option<&str>, data: &str) -> Result<Vec<ProviderEvent>> {
+    if data.trim() == "[DONE]" {
+        return Ok(vec![]);
+    }
+    let v: Value = serde_json::from_str(data)
+        .map_err(|e| BrainError::Protocol(format!("openai frame: {e}")))?;
+    if let Some(err) = v.get("error") {
+        return Err(BrainError::Protocol(format!("provider error frame: {err}")));
+    }
+    let mut out = Vec::new();
+
+    // Usage arrives on a chunk that may have no choices at all.
+    let usage = usage_of(v.get("usage"));
+    let choices = v.get("choices").and_then(|c| c.as_array());
+
+    if let Some(choices) = choices {
+        for ch in choices {
+            let delta = ch.get("delta").unwrap_or(&Value::Null);
+            if let Some(t) = delta.get("content").and_then(|c| c.as_str())
+                && !t.is_empty()
+            {
+                out.push(ProviderEvent::TextDelta {
+                    index: 0,
+                    text: t.to_string(),
+                });
+            }
+            if let Some(calls) = delta.get("tool_calls").and_then(|c| c.as_array()) {
+                for c in calls {
+                    // `index` is what makes N parallel calls in one assistant
+                    // message distinguishable. +1 so index 0 stays reserved for
+                    // the text block.
+                    let idx = c.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize + 1;
+                    let f = c.get("function").unwrap_or(&Value::Null);
+                    let id = c.get("id").and_then(|s| s.as_str());
+                    let name = f.get("name").and_then(|s| s.as_str());
+                    if let (Some(id), Some(name)) = (id, name) {
+                        out.push(ProviderEvent::ToolUseStart {
+                            index: idx,
+                            id: id.to_string(),
+                            name: name.to_string(),
+                        });
+                    }
+                    if let Some(a) = f.get("arguments").and_then(|s| s.as_str())
+                        && !a.is_empty()
+                    {
+                        out.push(ProviderEvent::ToolInputDelta {
+                            index: idx,
+                            partial_json: a.to_string(),
+                        });
+                    }
+                }
+            }
+            if let Some(fr) = ch.get("finish_reason").and_then(|f| f.as_str()) {
+                out.push(ProviderEvent::MessageDone {
+                    stop_reason: map_stop(Some(fr)),
+                    usage,
+                });
+            }
+        }
+    }
+
+    // A usage-only chunk (stream_options.include_usage) still has to be folded.
+    if usage != Usage::default()
+        && !out
+            .iter()
+            .any(|e| matches!(e, ProviderEvent::MessageDone { .. }))
+    {
+        out.push(ProviderEvent::MessageDone {
+            stop_reason: StopReason::Unknown,
+            usage,
+        });
+    }
+    Ok(out)
+}
+
+fn map_stop(s: Option<&str>) -> StopReason {
+    match s {
+        Some("stop") => StopReason::EndTurn,
+        Some("tool_calls") | Some("function_call") => StopReason::ToolUse,
+        Some("length") => StopReason::MaxTokens,
+        _ => StopReason::Unknown,
+    }
+}
+
+fn usage_of(u: Option<&Value>) -> Usage {
+    let Some(u) = u else {
+        return Usage::default();
+    };
+    let g = |k: &str| u.get(k).and_then(|v| v.as_u64());
+    Usage {
+        input_tokens: g("prompt_tokens"),
+        output_tokens: g("completion_tokens"),
+        // OpenAI reports cache reads nested. Absent stays absent.
+        cache_read_input_tokens: u
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|v| v.as_u64()),
+        cache_creation_input_tokens: None,
+    }
+}
+
+pub fn decode_stream(bytes: &[u8]) -> Result<Vec<ProviderEvent>> {
+    let mut d = SseDecoder::default();
+    let mut out = Vec::new();
+    for ev in d.feed(bytes)? {
+        out.extend(decode(ev.event.as_deref(), &ev.data)?);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AgentDef, ToolDecl, ToolRoute};
+    use crate::provider::Accumulator;
+
+    fn prefix() -> std::sync::Arc<SealedPrefix> {
+        AgentDef::new("sys", "fake-1", Dialect::OpenAiChat)
+            .tool(ToolDecl {
+                name: "read".into(),
+                description: "read".into(),
+                input_schema: json!({"type":"object"}),
+                route: ToolRoute::Hand,
+            })
+            .seal()
+    }
+
+    #[test]
+    fn parallel_tool_calls_in_one_message_stay_distinct() {
+        // The exact shape oc-fake.mjs emits: ONE delta carrying all N calls.
+        let raw = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[\
+            {\"index\":0,\"id\":\"c0\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"i\\\":0}\"}},\
+            {\"index\":1,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"i\\\":1}\"}},\
+            {\"index\":2,\"id\":\"c2\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"i\\\":2}\"}},\
+            {\"index\":3,\"id\":\"c3\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"i\\\":3}\"}}\
+            ]},\"finish_reason\":null}]}\n\n\
+            data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
+        let mut acc = Accumulator::new();
+        for e in decode_stream(raw.as_bytes()).unwrap() {
+            acc.push(e);
+        }
+        let (msg, stop, _) = acc.finish().unwrap();
+        assert_eq!(stop, StopReason::ToolUse);
+        let uses: Vec<_> = msg.tool_uses().collect();
+        assert_eq!(uses.len(), 4, "p90 batch size is 4; all four must survive");
+        for (i, (id, name, input)) in uses.iter().enumerate() {
+            assert_eq!(*id, &format!("c{i}"));
+            assert_eq!(*name, "read");
+            assert_eq!(input["i"], i as i64);
+        }
+    }
+
+    #[test]
+    fn tool_results_become_tool_role_messages_and_keep_the_error_signal() {
+        let p = prefix();
+        let h = vec![
+            Message::user_text("go"),
+            Message::assistant(vec![ContentBlock::ToolUse {
+                id: "c0".into(),
+                name: "read".into(),
+                input: json!({}),
+            }]),
+            Message::tool_results(vec![ContentBlock::ToolResult {
+                tool_use_id: "c0".into(),
+                content: "child 3 of 4 failed".into(),
+                is_error: true,
+            }]),
+        ];
+        let v: Value = serde_json::from_slice(
+            &OpenAiChat
+                .build_request(&p, &h, &ProviderKey::new("k"), "http://x")
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        let msgs = v["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[1]["role"], "user");
+        assert_eq!(msgs[2]["role"], "assistant");
+        assert_eq!(msgs[2]["tool_calls"][0]["id"], "c0");
+        assert_eq!(msgs[3]["role"], "tool");
+        assert_eq!(msgs[3]["tool_call_id"], "c0");
+        assert!(
+            msgs[3]["content"].as_str().unwrap().starts_with("ERROR:"),
+            "the error signal must survive a dialect with no is_error field"
+        );
+    }
+
+    #[test]
+    fn usage_only_chunk_is_folded_and_absent_stays_absent() {
+        let raw =
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3}}\n\n";
+        let evs = decode_stream(raw.as_bytes()).unwrap();
+        match &evs[0] {
+            ProviderEvent::MessageDone { usage, stop_reason } => {
+                assert_eq!(usage.input_tokens, Some(9));
+                assert_eq!(usage.cache_read_input_tokens, None);
+                assert_eq!(*stop_reason, StopReason::Unknown);
+            }
+            other => panic!("expected MessageDone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_real_zero_cached_tokens_survives() {
+        // The exact bug LANDSCAPE §2 documents in five products: testing
+        // truthiness drops a genuine 0, which is the finding, not the absence.
+        let raw = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\n";
+        let evs = decode_stream(raw.as_bytes()).unwrap();
+        match &evs[0] {
+            ProviderEvent::MessageDone { usage, .. } => {
+                assert_eq!(
+                    usage.cache_read_input_tokens,
+                    Some(0),
+                    "a reported zero must be Some(0), never None"
+                );
+            }
+            other => panic!("expected MessageDone, got {other:?}"),
+        }
+    }
+}
