@@ -877,6 +877,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-bench"
+version = "0.1.0"
+dependencies = [
+ "aex-contracts",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "brain",
+ "bytes",
+ "clap",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "brain-server"
 version = "0.1.0"
 dependencies = [

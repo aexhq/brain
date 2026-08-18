@@ -1,0 +1,27 @@
+[package]
+name = "brain-bench"
+version = "0.1.0"
+description = "Benchmark gates: density, reclaim, throughput, platform-added TTFT"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "brain-bench"
+path = "src/main.rs"
+
+[dependencies]
+brain.workspace = true
+aex-contracts.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+clap.workspace = true
+bytes.workspace = true

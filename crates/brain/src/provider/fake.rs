@@ -144,10 +144,14 @@ impl FakeProvider {
     ///
     /// The full-parse version of this (below) costs several milliseconds on a
     /// 122 K-token request, which is more than the brain loop PD-11 is trying to
-    /// measure. This is a backwards scan for the last `"role":"user"` followed
-    /// by a forward count of `"role":"assistant"` — microseconds, and still
-    /// derived purely from the request, so K concurrent sessions still cannot
-    /// interfere.
+    /// measure. This byte scan is microseconds, and still derived purely from
+    /// the request, so K concurrent sessions cannot interfere.
+    ///
+    /// A turn boundary is a REAL user message. On the Anthropic wire, tool
+    /// results also ride in `role:"user"` messages (as `tool_result` blocks) —
+    /// treating those as boundaries resets the round count every tool round and
+    /// the policy emits tool calls until the round cap (the slice-5 bench hit
+    /// exactly that: 2,560 model calls where 60 were expected).
     ///
     /// It is a heuristic on bytes, so it is **cross-checked against the full
     /// parse on every inspected request** and any disagreement increments
@@ -155,10 +159,43 @@ impl FakeProvider {
     /// fake that mis-reads the round serves the wrong turn, and every count
     /// downstream is then wrong in a way that looks entirely plausible.
     fn assistants_this_turn_scan(body: &[u8]) -> u32 {
-        const USER: &[u8] = b"\"role\":\"user\"";
-        const ASSISTANT: &[u8] = b"\"role\":\"assistant\"";
-        let from = rfind(body, USER).map_or(0, |i| i + USER.len());
-        count_from(&body[from..], ASSISTANT) as u32
+        const ROLE: &[u8] = b"\"role\":\"";
+        const TOOL_RESULT: &[u8] = b"\"tool_result\"";
+        // One forward pass: every role key, classified by the byte after the quote. `u` = user,
+        // `a` = assistant. A message's content may serialize BEFORE its role key (serde_json
+        // sorts keys) or after (declared order), so the window that surely contains message
+        // i's own content — and no tool-result content from a sibling that matters — is
+        // (end of role i-1, start of role i+1). A tool result always sits between two
+        // assistant messages (or ends the list), so a REAL user's window never contains
+        // another message's `tool_result` block in either layout.
+        let mut roles: Vec<(usize, u8)> = Vec::new();
+        let mut at = 0;
+        while let Some(j) = find_from(&body[at..], ROLE) {
+            let pos = at + j;
+            let kind = body.get(pos + ROLE.len()).copied().unwrap_or(0);
+            roles.push((pos, kind));
+            at = pos + ROLE.len();
+        }
+        let mut anchor = 0;
+        for i in (0..roles.len()).rev() {
+            if roles[i].1 != b'u' {
+                continue;
+            }
+            let win_start = if i > 0 {
+                roles[i - 1].0 + ROLE.len()
+            } else {
+                0
+            };
+            let win_end = roles.get(i + 1).map_or(body.len(), |r| r.0);
+            if find_from(&body[win_start..win_end], TOOL_RESULT).is_none() {
+                anchor = roles[i].0;
+                break;
+            }
+        }
+        roles
+            .iter()
+            .filter(|(pos, kind)| *pos > anchor && *kind == b'a')
+            .count() as u32
     }
 
     /// The reference: the same quantity, from a parsed body.
@@ -166,10 +203,18 @@ impl FakeProvider {
         let Some(a) = body.get("messages").and_then(|v| v.as_array()) else {
             return 0;
         };
-        let last_user = a
-            .iter()
-            .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-            .unwrap_or(0);
+        let is_real_user = |m: &serde_json::Value| {
+            m.get("role").and_then(|r| r.as_str()) == Some("user")
+                && !m
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|blocks| {
+                        blocks
+                            .iter()
+                            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+                    })
+        };
+        let last_user = a.iter().rposition(is_real_user).unwrap_or(0);
         a[last_user..]
             .iter()
             .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
@@ -234,39 +279,19 @@ impl FakeProvider {
         else {
             return None;
         };
-        // Assistant messages **in the current turn only**, i.e. after the last
-        // real user message. Counting them across the whole session makes every
-        // turn after the first skip its tool rounds -- which is exactly what the
-        // concurrency arm's guard caught: 132 model calls where 640 were
-        // expected. A `tool` role message is a tool result, not a new turn.
-        let msgs = body.get("messages").and_then(|v| v.as_array());
-        let assistant_so_far = msgs
-            .map(|a| {
-                let last_user = a
-                    .iter()
-                    .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-                    .unwrap_or(0);
-                a[last_user..]
-                    .iter()
-                    .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
-                    .count()
-            })
-            .unwrap_or(0) as u32;
-        Some(if assistant_so_far < tool_rounds {
-            Scripted::ToolCalls(
-                (0..parallel.max(1))
-                    .map(|i| {
-                        (
-                            format!("c{assistant_so_far}_{i}"),
-                            tool.clone(),
-                            serde_json::json!({ "i": i }),
-                        )
-                    })
-                    .collect(),
-            )
-        } else {
-            Scripted::Text("x".repeat(text_bytes))
-        })
+        // ONE counting function for both paths. This used to be an inline duplicate of
+        // assistants_this_turn_parsed; the two drifted (the duplicate kept treating Anthropic
+        // tool-result user messages as turn boundaries) and the sampled-inspection runs took
+        // the buggy copy on exactly 1-in-N requests — an off-by-a-few in the round counts that
+        // looked entirely plausible. The slice-5 bench guards caught it; never duplicate this.
+        let assistant_so_far = Self::assistants_this_turn_parsed(body);
+        Some(Self::scripted_for(
+            assistant_so_far,
+            tool_rounds,
+            parallel,
+            &tool,
+            text_bytes,
+        ))
     }
 
     pub fn script(&self, turns: impl IntoIterator<Item = Scripted>) {
@@ -430,11 +455,7 @@ impl Provider for FakeProvider {
                 .and_then(|t| t.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0),
-            system_chars: body
-                .get("system")
-                .and_then(|s| s.as_str())
-                .map(|s| s.len())
-                .unwrap_or(0),
+            system_chars: system_chars(&body),
             context_sha256,
             prefix_sha256,
         };
@@ -523,18 +544,35 @@ impl FakeProvider {
 }
 
 /// Last occurrence of `needle` in `hay`.
-fn rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
+/// System-prompt length on either wire: Anthropic's top-level `system` (string or text
+/// blocks), or OpenAI's `messages[0]` with `role:"system"`.
+fn system_chars(body: &serde_json::Value) -> usize {
+    if let Some(s) = body.get("system") {
+        if let Some(s) = s.as_str() {
+            return s.len();
+        }
+        if let Some(blocks) = s.as_array() {
+            return blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .map(str::len)
+                .sum();
+        }
+    }
+    body.get("messages")
+        .and_then(|m| m.as_array())
+        .and_then(|a| a.first())
+        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+        .and_then(|m| m.get("content").and_then(|c| c.as_str()))
+        .map(str::len)
+        .unwrap_or(0)
+}
+
+fn find_from(hay: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || hay.len() < needle.len() {
         return None;
     }
-    hay.windows(needle.len()).rposition(|w| w == needle)
-}
-
-fn count_from(hay: &[u8], needle: &[u8]) -> usize {
-    if needle.is_empty() || hay.len() < needle.len() {
-        return 0;
-    }
-    hay.windows(needle.len()).filter(|w| *w == needle).count()
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 fn split_tokens(s: &str) -> Vec<String> {
@@ -611,5 +649,30 @@ mod tests {
         let f = FakeProvider::new(Dialect::OpenAiChat);
         f.script([Scripted::Text("a".into()), Scripted::Text("b".into())]);
         assert!(f.assert_drained(2, "t").is_err(), "2 pending must fail");
+    }
+
+    #[test]
+    fn anthropic_tool_result_user_messages_are_not_turn_boundaries() {
+        // On the Anthropic wire a tool result is a user-role message carrying tool_result
+        // blocks. The round counter must skip those, or the policy resets to round 0 after
+        // every tool round and emits tool calls until the round cap (the slice-5 bench caught
+        // exactly this: 2,560 model calls where 60 were expected).
+        let body = serde_json::json!({"messages": [
+            {"role": "user", "content": [{"type": "text", "text": "go"}]},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "c0", "name": "bash", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c0", "content": "ok"}]},
+        ]});
+        assert_eq!(FakeProvider::assistants_this_turn_parsed(&body), 1);
+        let bytes = serde_json::to_vec(&body).unwrap();
+        assert_eq!(FakeProvider::assistants_this_turn_scan(&bytes), 1);
+        // A REAL user message after the tool round starts a new turn.
+        let mut b2 = body.clone();
+        b2["messages"].as_array_mut().unwrap().extend([
+            serde_json::json!({"role": "assistant", "content": [{"type": "text", "text": "done"}]}),
+            serde_json::json!({"role": "user", "content": [{"type": "text", "text": "next"}]}),
+        ]);
+        assert_eq!(FakeProvider::assistants_this_turn_parsed(&b2), 0);
+        let bytes2 = serde_json::to_vec(&b2).unwrap();
+        assert_eq!(FakeProvider::assistants_this_turn_scan(&bytes2), 0);
     }
 }

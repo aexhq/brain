@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brain", "crates/brain-aws", "crates/brain-server"]
+members = ["crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-server"]
 resolver = "2"
 
 [workspace.package]
@@ -24,6 +24,7 @@ aws-sdk-kms = "1"
 aws-sdk-s3 = "1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
 base64 = "0.22"
+bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
