@@ -311,6 +311,13 @@ async fn run() -> anyhow::Result<()> {
     let anthropic_base = std::env::var("AEX_M0_ANTHROPIC_BASE_URL").ok();
     let deepseek_base = std::env::var("AEX_M0_DEEPSEEK_BASE_URL").ok();
 
+    // Pre-flight: the gate identifies "the session's VM" as the one non-terminated MicroVM
+    // in the dev account, so a stray from a previous run would make it watch (and kill) the
+    // wrong incarnation. Refuse to start dirty.
+    if let Some((vm, state)) = microvm_of(&control).await? {
+        bail!("pre-flight: stray MicroVM {vm} in {state}; terminate it and re-run");
+    }
+
     let mut timings: Vec<(String, u128)> = Vec::new();
     macro_rules! step {
         ($name:expr, $t:expr) => {
