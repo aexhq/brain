@@ -1,0 +1,5 @@
+target/
+.git/
+aex-data/
+*.md
+!README.md

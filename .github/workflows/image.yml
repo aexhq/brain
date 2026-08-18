@@ -1,0 +1,52 @@
+name: image
+# Publishes ghcr.io/aexhq/brain on every main push: one native build per arch (no QEMU — a
+# Rust build under emulation takes an hour), merged into a multi-arch manifest tagged
+# :latest and :sha-<commit>. The Fargate deploy (platform repo) and the compose stack (aex
+# repo) both consume this image.
+on:
+  push:
+    branches: [main]
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/brain
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          docker build -t "$IMAGE:${{ github.sha }}-${{ matrix.arch }}" .
+          docker push "$IMAGE:${{ github.sha }}-${{ matrix.arch }}"
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          docker buildx imagetools create \
+            -t "$IMAGE:latest" -t "$IMAGE:sha-${{ github.sha }}" \
+            "$IMAGE:${{ github.sha }}-amd64" "$IMAGE:${{ github.sha }}-arm64"
