@@ -66,11 +66,18 @@ struct Args {
     /// Idle residency before a session actor discards its fold (the `serve` arm).
     #[arg(long, default_value_t = 3600)]
     idle_discard_s: u64,
+    /// Density: create/turns/delete cycles. Cycle 1 yields density+reclaim; later cycles
+    /// exist to separate a leak (grows every cycle) from allocator fragmentation (plateaus).
+    #[arg(long, default_value_t = 3)]
+    cycles: usize,
     /// Gate thresholds (used by `ci`; also enforced on other arms when set).
     #[arg(long)]
     gate_max_kib_per_session: Option<f64>,
     #[arg(long)]
     gate_min_reclaim_pct: Option<f64>,
+    /// Density: max growth of the post-delete memory floor per cycle (MiB).
+    #[arg(long)]
+    gate_max_creep_mib: Option<f64>,
     #[arg(long)]
     gate_max_turn_p99_ms: Option<f64>,
     #[arg(long)]
@@ -524,7 +531,6 @@ async fn arm_density(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
     }
     tokio::time::sleep(Duration::from_secs(1)).await;
     let m_final = sample(api.clone()).await?;
-    child.kill().await.ok();
 
     let per = |a: u64, z: u64| (a.saturating_sub(z)) as f64 / n as f64 / 1024.0;
     let kib_private = per(m_resident.private_bytes(), m_discarded.private_bytes());
@@ -564,6 +570,41 @@ async fn arm_density(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
         args.gate_max_kib_per_session,
     );
     book.min("reclaim_pct", reclaim_pct, args.gate_min_reclaim_pct);
+
+    // Steady state: repeat the whole create/turns/delete cycle. A leak grows every cycle;
+    // glibc fragmentation plateaus and the pages get REUSED by the next cycle. The gate is
+    // that the post-delete floor stops rising.
+    let mut finals = vec![m_final.private_bytes()];
+    for cycle in 2..=args.cycles.max(1) {
+        let (_a, _w, sids) = drive_all(&api, n, args.turns).await?;
+        api.guards(em * cycle as u64, et * cycle as u64).await?;
+        for sid in &sids {
+            api.delete_session(sid).await?;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let m = sample(api.clone()).await?;
+        finals.push(m.private_bytes());
+    }
+    child.kill().await.ok();
+    if finals.len() > 1 {
+        let creep_mib = (*finals.last().expect("nonempty") as f64 - finals[0] as f64)
+            / 1048576.0
+            / (finals.len() - 1) as f64;
+        println!(
+            "  steady state over {} cycles: post-delete floor {:?} MiB -> creep {:+.1} MiB/cycle",
+            finals.len(),
+            finals
+                .iter()
+                .map(|b| (*b as f64 / 1048576.0 * 10.0).round() / 10.0)
+                .collect::<Vec<_>>(),
+            creep_mib,
+        );
+        book.max(
+            "creep_mib_per_cycle",
+            creep_mib.max(0.0),
+            args.gate_max_creep_mib,
+        );
+    }
     Ok(())
 }
 
