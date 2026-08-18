@@ -250,7 +250,15 @@ async fn serve(mode: Mode) -> (String, Arc<McpState>) {
 struct TempDir(PathBuf);
 impl TempDir {
     fn new() -> Self {
-        let p = std::env::temp_dir().join(format!("aex-mcp-e2e-{}", std::process::id()));
+        // Unique per harness: the tests in this binary run concurrently in ONE process, so a
+        // pid-keyed dir is shared -- and the remove_dir_all here (and in Drop) would delete a
+        // sibling test's live session workspace mid-create (the slice-7 flake).
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "aex-mcp-e2e-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         TempDir(p)
@@ -364,6 +372,13 @@ impl Harness {
         let status = r.status();
         let v = r.json::<Value>().await.unwrap();
         (status, v)
+    }
+
+    /// Creates a session and asserts the API accepted it; a failure carries the body.
+    async fn create_ok(&self, body: Value) -> Value {
+        let (status, v) = self.create(body).await;
+        assert_eq!(status, reqwest::StatusCode::CREATED, "create failed: {v}");
+        v
     }
 
     async fn send(&self, sid: &str, content: &str) -> reqwest::StatusCode {
@@ -482,8 +497,8 @@ async fn mcp_tools_dispatch_over_the_real_http_surface() {
 async fn input_required_maps_to_a_structured_tool_failure() {
     let (mcp_url, mcp_st) = serve(Mode::V2).await;
     let h = Harness::new().await;
-    let (_, created) = h
-        .create(json!({
+    let created = h
+        .create_ok(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
             "tools": {"builtin": [], "mcp": [{"name": "svc", "url": mcp_url}]}
         }))
@@ -589,8 +604,8 @@ async fn an_allowlist_filters_and_a_bad_server_fails_the_create() {
     let (mcp_url, _) = serve(Mode::V2).await;
     let h = Harness::new().await;
     // Only echo is allowlisted: the sealed set must be exactly `svc__echo`.
-    let (_, created) = h
-        .create(json!({
+    let created = h
+        .create_ok(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
             "tools": {"builtin": [], "mcp": [{
                 "name": "svc",
@@ -634,8 +649,8 @@ async fn an_allowlist_filters_and_a_bad_server_fails_the_create() {
 async fn the_sealed_digest_survives_discard_and_rehydrate() {
     let (mcp_url, _) = serve(Mode::V2).await;
     let h = Harness::new().await;
-    let (_, created) = h
-        .create(json!({
+    let created = h
+        .create_ok(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
             "tools": {"builtin": ["todo"], "mcp": [{"name": "svc", "url": mcp_url}]}
         }))
