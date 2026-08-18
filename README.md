@@ -77,9 +77,14 @@ documented on the traits; the shared journal tests define the store semantics.
 ## Build and test
 
 ```
-cargo test --workspace                              # unit + the local-mode e2e (no cloud)
+cargo test --workspace                              # unit + local-mode e2e + leakage gate (no cloud)
 cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p brain-bench --release -- ci            # the benchmark gates (density arm needs Linux)
 cargo run --bin m0        # the AWS-mode M0 gate; needs AWS + provider keys (bin/m0.rs header)
 ```
+
+The published numbers — platform-added TTFT, turns/s, KiB per resident session, reclaim,
+cross-session leakage, in-region hand latency, no-IMDS — live in [BENCHMARKS.md](BENCHMARKS.md)
+with the method that produced them. The same suite gates every push.
 
 License: Apache-2.0.

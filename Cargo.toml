@@ -12,8 +12,8 @@ license = "Apache-2.0"
 aex-contracts = { git = "https://github.com/aexhq/aex", tag = "aex-contracts-v0.1.0" }
 brain = { path = "crates/brain" }
 brain-aws = { path = "crates/brain-aws" }
-hand-client = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.1" }
-hand-lambda = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.1" }
+hand-client = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.2" }
+hand-lambda = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.2" }
 
 anyhow = "1"
 async-trait = "0.1"
