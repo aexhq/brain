@@ -17,3 +17,15 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # Slice-5 gates. Thresholds are backstops for a shared 2-vCPU runner (catch
+      # order-of-magnitude regressions like the Nagle 40ms/write stall); the published
+      # numbers come from the ARM target run recorded in BENCHMARKS.md.
+      - name: benchmark gates (density, reclaim, creep, turns/s, TTFT) + leakage
+        run: |
+          cargo run -p brain-bench --release -- ci \
+            --gate-max-turn-p99-ms 250 \
+            --gate-max-ttft-p99-ms 100 \
+            --gate-min-turns-per-sec 40 \
+            --gate-max-kib-per-session 256 \
+            --gate-min-reclaim-pct 50 \
+            --gate-max-creep-mib 8

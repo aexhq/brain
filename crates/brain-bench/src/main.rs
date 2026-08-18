@@ -488,6 +488,10 @@ async fn arm_density(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
             "--idle-discard-s",
             &idle_s.to_string(),
         ])
+        // The reclaim floor is allocator-dependent: cap the SERVER's arenas so the number is
+        // deterministic (and matches the deploy recommendation). Only the child — fewer
+        // arenas cost hot-path throughput, which the latency arms must not pay.
+        .env("MALLOC_ARENA_MAX", "2")
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
