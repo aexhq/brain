@@ -56,8 +56,20 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) -> anyhow::Resul
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "brain listening");
-    axum::serve(listener, app).await?;
+    axum::serve(nodelay(listener), app).await?;
     Ok(())
+}
+
+/// TCP_NODELAY on every accepted connection. Load-bearing for the event stream: SSE frames are
+/// small writes, and Nagle + delayed ACK turns each one into a ~40 ms stall on Linux — the
+/// slice-5 TTFT gate measured a hard 46 ms floor per turn before this (1 ms after).
+pub fn nodelay(
+    listener: tokio::net::TcpListener,
+) -> impl axum::serve::Listener<Io = tokio::net::TcpStream, Addr = std::net::SocketAddr> {
+    use axum::serve::ListenerExt as _;
+    listener.tap_io(|io| {
+        let _ = io.set_nodelay(true);
+    })
 }
 
 // ---------------------------------------------------------------------------------------------

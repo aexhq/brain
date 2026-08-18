@@ -118,7 +118,9 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         token: token.clone(),
     });
     tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("bench server");
+        axum::serve(brain::api::nodelay(listener), app)
+            .await
+            .expect("bench server");
     });
     Ok(Bench {
         base,
