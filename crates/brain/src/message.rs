@@ -33,6 +33,12 @@ pub enum ContentBlock {
         /// this flag; the model then reads a failure as a success.
         is_error: bool,
     },
+    /// A validated typed response committed by `session.output()`. The schema itself is
+    /// deliberately absent; only its stable hash and the value enter durable history.
+    Output {
+        schema_hash: String,
+        value: serde_json::Value,
+    },
 }
 
 impl ContentBlock {
@@ -53,6 +59,9 @@ impl ContentBlock {
                 content,
                 ..
             } => tool_use_id.capacity() + content.capacity(),
+            ContentBlock::Output { schema_hash, value } => {
+                schema_hash.capacity() + json_bytes(value)
+            }
         }
     }
 }
@@ -121,6 +130,7 @@ pub enum StopReason {
     ToolUse,
     MaxTokens,
     StopSequence,
+    Refusal,
     /// The provider ended the stream without a terminal reason. Distinct from
     /// EndTurn on purpose: absent is never zero.
     #[default]
@@ -136,6 +146,7 @@ pub struct Usage {
     pub output_tokens: Option<u64>,
     pub cache_read_input_tokens: Option<u64>,
     pub cache_creation_input_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
 }
 
 impl Usage {
@@ -155,5 +166,6 @@ impl Usage {
             &mut self.cache_creation_input_tokens,
             other.cache_creation_input_tokens,
         );
+        add(&mut self.reasoning_tokens, other.reasoning_tokens);
     }
 }

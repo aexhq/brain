@@ -15,10 +15,11 @@ use crate::adapter::{
     HandAdapter, HandFactory, HandSpec, SeedFile, WorkspaceFile, WorkspaceListing,
 };
 use crate::compact::DEFAULT_HISTORY_BUDGET_BYTES;
-use crate::config::{AgentDef, Dialect, GenOpts, ProviderKey, SessionConfig};
+use crate::config::{AgentDef, Dialect, GenOpts, ProviderKey, SealedPrefix, SessionConfig};
 use crate::events::EventHub;
 use crate::journal::{
-    ArtifactDoc, Entry, FailureDoc, Head, HeadDoc, Journal, Lease, PrefixDoc, Record,
+    ArtifactDoc, Entry, FailureDoc, Head, HeadDoc, Journal, Lease, OutputRequestDoc, PrefixDoc,
+    Record,
 };
 use crate::keys::{KeyCustody, blob_from_b64, blob_to_b64};
 use crate::local::LocalFactory;
@@ -28,7 +29,8 @@ use crate::tools::TodoState;
 use crate::turn::{TurnRun, TurnState};
 use crate::{BrainError, Result};
 use aex_contracts::session::{
-    self, CreateSessionRequest, MessageRequestContent, Provider as ApiProvider,
+    self, CreateSessionRequest, MessageRequestContent, OutputRequest, OutputRequestInput,
+    Provider as ApiProvider,
 };
 use base64::Engine;
 use std::collections::HashMap;
@@ -161,6 +163,14 @@ enum Command {
         content: Vec<ContentBlock>,
         reply: oneshot::Sender<Result<(String, u64)>>, // (turn_id, seq of the user message)
     },
+    Output {
+        schema: serde_json::Value,
+        schema_hash: String,
+        request_hash: String,
+        idempotency_key_hash: Option<String>,
+        input: Option<Vec<ContentBlock>>,
+        reply: oneshot::Sender<Result<OutputAdmission>>,
+    },
     Cancel {
         reply: oneshot::Sender<Result<HeadDoc>>,
     },
@@ -193,6 +203,13 @@ enum Command {
     Snapshot {
         reply: oneshot::Sender<HeadDoc>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct OutputAdmission {
+    pub output_id: String,
+    pub schema_hash: String,
+    pub seq: u64,
 }
 
 impl Brain {
@@ -421,6 +438,7 @@ impl Brain {
             hand_state,
             workspace_bytes: 0,
             artifacts: Vec::new(),
+            output_requests: Vec::new(),
         };
         self.journal
             .create(
@@ -522,6 +540,36 @@ impl Brain {
         let blocks = content_blocks(content)?;
         self.deliver(session_id, |reply| Command::Message {
             content: blocks.clone(),
+            reply,
+        })
+        .await?
+    }
+
+    pub async fn output(
+        self: &Arc<Self>,
+        session_id: &str,
+        req: OutputRequest,
+        idempotency_key: Option<&str>,
+    ) -> Result<OutputAdmission> {
+        if let Some(key) = idempotency_key
+            && (key.is_empty() || key.len() > 128)
+        {
+            return Err(BrainError::Invalid(
+                "Idempotency-Key must contain 1 to 128 bytes".into(),
+            ));
+        }
+        let request_hash = crate::output::jcs_sha256(&req)?;
+        let schema_hash = req.schema_hash.to_string();
+        let schema = serde_json::Value::Object(req.schema.0);
+        crate::output::validate_schema(&schema, &schema_hash)?;
+        let input = req.input.map(output_content_blocks).transpose()?;
+        let idempotency_key_hash = idempotency_key.map(crate::output::jcs_sha256).transpose()?;
+        self.deliver(session_id, |reply| Command::Output {
+            schema: schema.clone(),
+            schema_hash: schema_hash.clone(),
+            request_hash: request_hash.clone(),
+            idempotency_key_hash: idempotency_key_hash.clone(),
+            input: input.clone(),
             reply,
         })
         .await?
@@ -660,12 +708,88 @@ struct Resident {
     key: ProviderKey,
 }
 
+struct Running {
+    handle: tokio::task::JoinHandle<(TurnState, RunningOutcome)>,
+    cancel: CancellationToken,
+    key: ProviderKey,
+}
+
+enum RunningOutcome {
+    Turn {
+        turn_id: String,
+        outcome: Result<crate::turn::TurnReport>,
+    },
+    Output {
+        output_id: String,
+        outcome: Result<OutputJobReport>,
+    },
+}
+
+#[derive(Debug)]
+struct OutputJobReport {
+    completed: bool,
+}
+
+struct OutputRuntime {
+    prefix: Arc<SealedPrefix>,
+    session: SessionConfig,
+    provider: Arc<dyn Provider>,
+}
+
+enum OutputAdmit {
+    Replay(OutputAdmission),
+    Started {
+        admission: OutputAdmission,
+        turn_id: Option<String>,
+        cancel: CancellationToken,
+    },
+}
+
 #[derive(Debug)]
 struct PendingTask {
     seq: u64,
     turn: String,
     agent: String,
     call: String,
+}
+
+#[derive(Debug)]
+struct PendingOutput {
+    seq: u64,
+    output: String,
+    turn: Option<String>,
+    schema_hash: String,
+}
+
+fn pending_outputs(entries: &[Entry]) -> Vec<PendingOutput> {
+    let mut pending = HashMap::<String, PendingOutput>::new();
+    for entry in entries {
+        match &entry.record {
+            Record::OutputStarted {
+                output,
+                turn,
+                schema_hash,
+                ..
+            } => {
+                pending.insert(
+                    output.clone(),
+                    PendingOutput {
+                        seq: entry.seq,
+                        output: output.clone(),
+                        turn: turn.clone(),
+                        schema_hash: schema_hash.clone(),
+                    },
+                );
+            }
+            Record::OutputCompleted { output, .. } | Record::OutputFailed { output, .. } => {
+                pending.remove(output);
+            }
+            _ => {}
+        }
+    }
+    let mut pending: Vec<_> = pending.into_values().collect();
+    pending.sort_by_key(|output| output.seq);
+    pending
 }
 
 /// Finds `task` intents with no result. Once a new owner can claim the
@@ -723,13 +847,7 @@ async fn actor(
     eager_hand: bool,
 ) {
     let mut resident: Option<Resident> = None;
-    #[allow(clippy::type_complexity)]
-    let mut running: Option<(
-        tokio::task::JoinHandle<(TurnState, Result<crate::turn::TurnReport>)>,
-        CancellationToken,
-        String,
-        ProviderKey,
-    )> = None;
+    let mut running: Option<Running> = None;
 
     if eager_hand {
         // Eager hand creation, D16: ready the substrate without any caller waiting.
@@ -765,21 +883,9 @@ async fn actor(
 
     loop {
         tokio::select! {
-            done = async { (&mut running.as_mut().expect("guarded").0).await }, if running.is_some() => {
-                let (_, _, turn_id, key) = running.take().expect("running");
-                match done {
-                    Ok((st, outcome)) => {
-                        let mut r = Resident { st, key };
-                        finish_turn(&brain, &session_id, &turn_id, &mut r.st, outcome).await;
-                        resident = Some(r);
-                    }
-                    Err(join_err) => {
-                        tracing::error!(session = %session_id, error = %join_err, "turn task panicked");
-                        // The fold moved into the task and is gone; discard and rehydrate on
-                        // the next message. The journal has everything up to the last commit.
-                        resident = None;
-                    }
-                }
+            done = async { (&mut running.as_mut().expect("guarded").handle).await }, if running.is_some() => {
+                let task = running.take().expect("running");
+                resident = settle_running(&brain, &session_id, task.key, done).await;
             }
             cmd = rx.recv() => {
                 let Some(cmd) = cmd else { break };
@@ -826,16 +932,134 @@ async fn actor(
                                     let _permit = permit; // held for the whole turn (admission)
                                     let mut st = parked.st;
                                     let out = run.run(&mut st).await;
-                                    (st, out)
+                                    (st, RunningOutcome::Turn { turn_id: turn_id.clone(), outcome: out })
                                 });
-                                running = Some((handle, cancel, turn_id, key));
+                                running = Some(Running { handle, cancel, key });
                             }
                             Err(e) => { let _ = reply.send(Err(e)); }
                         }
                     }
+                    Command::Output {
+                        schema,
+                        schema_hash,
+                        request_hash,
+                        idempotency_key_hash,
+                        input,
+                        reply,
+                    } => {
+                        if running.is_some() {
+                            let replay = match brain.journal.get_head(&session_id).await {
+                                Ok(head) => replay_output(
+                                    &head.doc,
+                                    idempotency_key_hash.as_deref(),
+                                    &request_hash,
+                                ),
+                                Err(error) => Err(error),
+                            };
+                            match replay {
+                                Ok(Some(admission)) => { let _ = reply.send(Ok(admission)); }
+                                Ok(None) => { let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone()))); }
+                                Err(error) => { let _ = reply.send(Err(error)); }
+                            }
+                            continue;
+                        }
+                        let resident_ref = match ensure_resident(&brain, &session_id, &mut resident).await {
+                            Ok(resident) => resident,
+                            Err(error) => { let _ = reply.send(Err(error)); continue; }
+                        };
+                        // Replays are reads of an already-admitted identity. They must not need
+                        // provider configuration or a fresh global turn permit.
+                        match replay_output(
+                            &resident_ref.st.head,
+                            idempotency_key_hash.as_deref(),
+                            &request_hash,
+                        ) {
+                            Ok(Some(admission)) => {
+                                let _ = reply.send(Ok(admission));
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                let _ = reply.send(Err(error));
+                                continue;
+                            }
+                        }
+                        let runtime = match output_runtime(&brain, resident_ref) {
+                            Ok(runtime) => runtime,
+                            Err(error) => { let _ = reply.send(Err(error)); continue; }
+                        };
+                        let permit = match brain.turn_permits.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => { let _ = reply.send(Err(BrainError::Overloaded)); continue; }
+                        };
+                        let admitted = admit_output(
+                            &brain,
+                            &session_id,
+                            resident_ref,
+                            &schema_hash,
+                            &request_hash,
+                            idempotency_key_hash.as_deref(),
+                            input,
+                        ).await;
+                        let OutputAdmit::Started { admission, turn_id, cancel } = (match admitted {
+                            Ok(OutputAdmit::Replay(admission)) => {
+                                let _ = reply.send(Ok(admission));
+                                continue;
+                            }
+                            Ok(started) => started,
+                            Err(error) => { let _ = reply.send(Err(error)); continue; }
+                        }) else { unreachable!("replay handled above") };
+
+                        let _ = reply.send(Ok(admission.clone()));
+                        let parked = resident.take().expect("resident");
+                        let work_run = turn_id.as_ref().map(|turn_id| TurnRun {
+                            session_id: session_id.clone(),
+                            turn_id: turn_id.clone(),
+                            prefix: runtime.prefix.clone(),
+                            session: runtime.session.clone(),
+                            provider: runtime.provider.clone(),
+                            provider_name: parked.st.head.prefix.provider.clone(),
+                            journal: brain.journal.clone(),
+                            hub: brain.hub.clone(),
+                            cancel: cancel.clone(),
+                            model_permits: brain.model_permits.clone(),
+                            history_budget_bytes: brain.cfg.history_budget_bytes,
+                            web: brain.web.clone(),
+                        });
+                        let key = parked.key.clone();
+                        let output_id = admission.output_id.clone();
+                        let brain_for_job = brain.clone();
+                        let session_for_job = session_id.clone();
+                        let schema_hash_for_job = schema_hash.clone();
+                        let cancel_for_job = cancel.clone();
+                        let handle = tokio::spawn(async move {
+                            let _permit = permit;
+                            let mut state = parked.st;
+                            let outcome = run_output_job(
+                                &brain_for_job,
+                                &session_for_job,
+                                &output_id,
+                                &schema_hash_for_job,
+                                turn_id,
+                                schema,
+                                runtime,
+                                work_run,
+                                cancel_for_job,
+                                &mut state,
+                            ).await;
+                            (
+                                state,
+                                RunningOutcome::Output {
+                                    output_id,
+                                    outcome,
+                                },
+                            )
+                        });
+                        running = Some(Running { handle, cancel, key });
+                    }
                     Command::Cancel { reply } => {
-                        if let Some((_, cancel, _, _)) = &running {
-                            cancel.cancel();
+                        if let Some(task) = &running {
+                            task.cancel.cancel();
                         }
                         let doc = match &resident {
                             Some(r) => r.st.head.clone(),
@@ -847,13 +1071,11 @@ async fn actor(
                         let _ = reply.send(Ok(doc));
                     }
                     Command::End { reply } => {
-                        if let Some((handle, cancel, turn_id, key)) = running.take() {
-                            cancel.cancel();
-                            if let Ok((st, outcome)) = handle.await {
-                                let mut r = Resident { st, key };
-                                finish_turn(&brain, &session_id, &turn_id, &mut r.st, outcome).await;
-                                resident = Some(r);
-                            }
+                        if let Some(task) = running.take() {
+                            task.cancel.cancel();
+                            let key = task.key;
+                            let done = task.handle.await;
+                            resident = settle_running(&brain, &session_id, key, done).await;
                         }
                         match end_session(&brain, &session_id, &mut resident).await {
                             Ok(doc) => { let _ = reply.send(Ok(doc)); }
@@ -861,9 +1083,9 @@ async fn actor(
                         }
                     }
                     Command::Delete { reply } => {
-                        if let Some((handle, cancel, _, _)) = running.take() {
-                            cancel.cancel();
-                            let _ = handle.await;
+                        if let Some(task) = running.take() {
+                            task.cancel.cancel();
+                            let _ = task.handle.await;
                             resident = None;
                         }
                         let out = delete_session(&brain, &session_id, &mut resident).await;
@@ -937,6 +1159,67 @@ async fn actor(
         }
     }
     tracing::debug!(session = %session_id, "actor exited");
+}
+
+async fn settle_running(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    key: ProviderKey,
+    done: std::result::Result<(TurnState, RunningOutcome), tokio::task::JoinError>,
+) -> Option<Resident> {
+    match done {
+        Ok((st, outcome)) => {
+            let mut resident = Resident { st, key };
+            match outcome {
+                RunningOutcome::Turn { turn_id, outcome } => {
+                    finish_turn(brain, session_id, &turn_id, &mut resident.st, outcome).await;
+                }
+                RunningOutcome::Output { output_id, outcome } => {
+                    match outcome {
+                        Ok(report) => tracing::info!(
+                            session = %session_id,
+                            output = %output_id,
+                            completed = report.completed,
+                            "output done"
+                        ),
+                        Err(error) => tracing::error!(
+                            session = %session_id,
+                            output = %output_id,
+                            error = %error,
+                            "output task could not commit its terminal event"
+                        ),
+                    }
+                    match resident.st.hand.checkpoint().await {
+                        Ok(()) => {
+                            if let Err(error) =
+                                commit(brain, session_id, &mut resident.st, vec![]).await
+                            {
+                                tracing::warn!(session = %session_id, error = %error, "output checkpoint commit failed");
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(session = %session_id, error = %error, "output checkpoint failed")
+                        }
+                    }
+                    resident.st.hand.idle();
+                }
+            }
+            Some(resident)
+        }
+        Err(join_error) => {
+            tracing::error!(session = %session_id, error = %join_error, "session task panicked");
+            // The fold moved into the task and is gone. Rehydrate immediately so an admitted
+            // output gets a durable interrupted terminal instead of leaving its Promise open
+            // until some unrelated future request happens to touch the session.
+            match hydrate(brain, session_id).await {
+                Ok(resident) => Some(resident),
+                Err(error) => {
+                    tracing::error!(session = %session_id, error = %error, "session rehydrate after panic failed");
+                    None
+                }
+            }
+        }
+    }
 }
 
 async fn ensure_resident<'a>(
@@ -1041,6 +1324,75 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             last_seq: head.last_seq,
         };
         let high_water = next_seq - 1;
+        brain
+            .journal
+            .commit(session_id, &mut lease, &records, &head.doc, high_water)
+            .await?;
+        let now = crate::wall_ms();
+        for (seq, record) in &records {
+            if let Some(event) =
+                crate::events::derive(session_id, *seq, now, record, &head.doc.hand_info)
+            {
+                brain.hub.publish(session_id, event);
+            }
+        }
+        head.last_seq = lease.last_seq;
+        entries = brain.journal.read_records(session_id, 0).await?;
+    }
+
+    // An output commit is a model-side effect and must never be replayed after ownership was
+    // lost. Close any admitted request that lacks a terminal event as interrupted; an
+    // idempotent retry then replays this same failure instead of asking the model twice.
+    let interrupted_outputs = pending_outputs(&entries);
+    if !interrupted_outputs.is_empty() {
+        let mut next_seq = head.last_seq + 1;
+        let mut records = Vec::with_capacity(interrupted_outputs.len() * 2 + 1);
+        for output in &interrupted_outputs {
+            records.push((
+                next_seq,
+                Record::OutputFailed {
+                    output: output.output.clone(),
+                    turn: output.turn.clone(),
+                    schema_hash: output.schema_hash.clone(),
+                    code: "cancelled".into(),
+                    message:
+                        "output interrupted when its previous owner stopped; it was not replayed"
+                            .into(),
+                    issues: Vec::new(),
+                    usage: crate::message::Usage::default(),
+                },
+            ));
+            next_seq += 1;
+            if let Some(turn) = &output.turn
+                && head.doc.turn.as_deref() == Some(turn)
+            {
+                records.push((
+                    next_seq,
+                    Record::TurnFailed {
+                        turn: turn.clone(),
+                        code: "cancelled".into(),
+                        message: "turn interrupted with its output request; it was not replayed"
+                            .into(),
+                    },
+                ));
+                next_seq += 1;
+            }
+        }
+        head.doc.state = "idle".into();
+        let previous_turn = head.doc.turn.take();
+        records.push((
+            next_seq,
+            Record::State {
+                state: "idle".into(),
+                turn: previous_turn,
+            },
+        ));
+        head.doc.updated_ms = crate::wall_ms();
+        let high_water = next_seq;
+        let mut lease = Lease {
+            fence: head.fence,
+            last_seq: head.last_seq,
+        };
         brain
             .journal
             .commit(session_id, &mut lease, &records, &head.doc, high_water)
@@ -1219,6 +1571,437 @@ async fn admit(
     r.st.hand.on_message_admitted();
 
     Ok((turn_id, user_seq, CancellationToken::new()))
+}
+
+fn output_runtime(brain: &Arc<Brain>, resident: &Resident) -> Result<OutputRuntime> {
+    let (prefix, dialect) = build_prefix(&resident.st.head.prefix)?;
+    let base_url = resident.st.head.prefix.base_url.clone().unwrap_or_default();
+    let session = SessionConfig::new(prefix.clone(), resident.key.clone(), base_url);
+    Ok(OutputRuntime {
+        prefix,
+        session,
+        provider: (brain.provider_factory)(dialect),
+    })
+}
+
+fn replay_output(
+    doc: &HeadDoc,
+    idempotency_key_hash: Option<&str>,
+    request_hash: &str,
+) -> Result<Option<OutputAdmission>> {
+    let Some(key_hash) = idempotency_key_hash else {
+        return Ok(None);
+    };
+    let Some(previous) = doc
+        .output_requests
+        .iter()
+        .find(|request| request.key_hash == key_hash)
+    else {
+        return Ok(None);
+    };
+    if previous.request_hash != request_hash {
+        return Err(BrainError::IdempotencyConflict);
+    }
+    Ok(Some(OutputAdmission {
+        output_id: previous.output_id.clone(),
+        schema_hash: previous.schema_hash.clone(),
+        seq: previous.started_seq,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn admit_output(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Resident,
+    schema_hash: &str,
+    request_hash: &str,
+    idempotency_key_hash: Option<&str>,
+    input: Option<Vec<ContentBlock>>,
+) -> Result<OutputAdmit> {
+    if let Some(admission) = replay_output(&resident.st.head, idempotency_key_hash, request_hash)? {
+        return Ok(OutputAdmit::Replay(admission));
+    }
+    if resident.st.head.state == "failed" {
+        return Err(BrainError::SessionFailed(
+            resident
+                .st
+                .head
+                .failure
+                .as_ref()
+                .map(|failure| failure.message.clone())
+                .unwrap_or_default(),
+        ));
+    }
+
+    let now = crate::wall_ms();
+    resident
+        .st
+        .head
+        .output_requests
+        .retain(|request| now.saturating_sub(request.admitted_ms) <= 24 * 60 * 60 * 1000);
+
+    if input.is_some() && resident.st.hand.must_release() {
+        let _ = resident.st.hand.release().await;
+        let seq = resident.st.take_seq();
+        let record = Record::State {
+            state: resident.st.head.state.clone(),
+            turn: None,
+        };
+        commit(brain, session_id, &mut resident.st, vec![(seq, record)]).await?;
+    }
+
+    let source_seq = resident.st.lease.last_seq;
+    let output_id = crate::mint_id("out", 24);
+    let turn_id = input.as_ref().map(|_| crate::mint_id("trn", 24));
+    let mut records = Vec::with_capacity(if input.is_some() { 3 } else { 1 });
+
+    if let (Some(content), Some(turn)) = (input.as_ref(), turn_id.as_ref()) {
+        records.push((
+            resident.st.take_seq(),
+            Record::UserMessage {
+                turn: turn.clone(),
+                content: content.clone(),
+            },
+        ));
+        records.push((
+            resident.st.take_seq(),
+            Record::TurnStarted { turn: turn.clone() },
+        ));
+        resident.st.head.turn = Some(turn.clone());
+        resident.st.head.turns += 1;
+        resident.st.head.last_message_ms = Some(now);
+    }
+    let started_seq = resident.st.take_seq();
+    records.push((
+        started_seq,
+        Record::OutputStarted {
+            output: output_id.clone(),
+            turn: turn_id.clone(),
+            schema_hash: schema_hash.to_string(),
+            source_seq,
+        },
+    ));
+    resident.st.head.state = "active".into();
+
+    if let Some(key_hash) = idempotency_key_hash {
+        if resident.st.head.output_requests.len() >= 256 {
+            resident.st.head.output_requests.remove(0);
+        }
+        resident.st.head.output_requests.push(OutputRequestDoc {
+            key_hash: key_hash.to_string(),
+            request_hash: request_hash.to_string(),
+            output_id: output_id.clone(),
+            schema_hash: schema_hash.to_string(),
+            started_seq,
+            admitted_ms: now,
+        });
+    }
+    commit(brain, session_id, &mut resident.st, records).await?;
+
+    if let Some(content) = input {
+        if let Some(last) = resident.st.history.last_mut()
+            && last.role == crate::message::Role::User
+            && !last.content.is_empty()
+            && last
+                .content
+                .iter()
+                .all(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        {
+            last.content.extend(content);
+        } else {
+            resident.st.history.push(Message {
+                role: crate::message::Role::User,
+                content,
+            });
+        }
+        resident.st.hand.on_message_admitted();
+    }
+
+    Ok(OutputAdmit::Started {
+        admission: OutputAdmission {
+            output_id,
+            schema_hash: schema_hash.to_string(),
+            seq: started_seq,
+        },
+        turn_id,
+        cancel: CancellationToken::new(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_output_job(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    output_id: &str,
+    schema_hash: &str,
+    turn_id: Option<String>,
+    schema: serde_json::Value,
+    runtime: OutputRuntime,
+    work_run: Option<TurnRun>,
+    cancel: CancellationToken,
+    state: &mut TurnState,
+) -> Result<OutputJobReport> {
+    let work_report = if let Some(run) = work_run {
+        match run.run_work(state).await {
+            Ok(report) => Some(report),
+            Err(error) => {
+                return finish_output_failure(
+                    brain,
+                    session_id,
+                    state,
+                    output_id,
+                    schema_hash,
+                    turn_id,
+                    None,
+                    error,
+                    Vec::new(),
+                    crate::message::Usage::default(),
+                    true,
+                )
+                .await;
+            }
+        }
+    } else {
+        None
+    };
+
+    if work_report
+        .as_ref()
+        .is_some_and(|report| report.stop_reason == "refusal")
+    {
+        let message = last_assistant_text(&state.history)
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| "the provider refused the output request".into());
+        return finish_output_failure(
+            brain,
+            session_id,
+            state,
+            output_id,
+            schema_hash,
+            turn_id,
+            work_report,
+            BrainError::OutputRefused(message),
+            Vec::new(),
+            crate::message::Usage::default(),
+            false,
+        )
+        .await;
+    }
+
+    if work_report
+        .as_ref()
+        .is_some_and(|report| report.stop_reason == "cancelled")
+    {
+        return finish_output_failure(
+            brain,
+            session_id,
+            state,
+            output_id,
+            schema_hash,
+            turn_id,
+            work_report,
+            BrainError::Cancelled,
+            Vec::new(),
+            crate::message::Usage::default(),
+            false,
+        )
+        .await;
+    }
+
+    let context = crate::output::CommitContext {
+        provider: runtime.provider,
+        prefix: runtime.prefix,
+        session: runtime.session,
+        history: state.history.clone(),
+        model_permits: brain.model_permits.clone(),
+        cancel,
+    };
+    match crate::output::commit(context, schema).await {
+        Ok(success) => {
+            let output_seq = state.take_seq();
+            let mut records = vec![(
+                output_seq,
+                Record::OutputCompleted {
+                    output: output_id.to_string(),
+                    turn: turn_id.clone(),
+                    schema_hash: schema_hash.to_string(),
+                    value: success.value.clone(),
+                    usage: success.usage,
+                },
+            )];
+            append_turn_terminal(
+                state,
+                &mut records,
+                turn_id.as_deref(),
+                work_report.as_ref(),
+            );
+            state.head.state = "idle".into();
+            state.head.turn = None;
+            let state_seq = state.take_seq();
+            records.push((
+                state_seq,
+                Record::State {
+                    state: "idle".into(),
+                    turn: turn_id.clone(),
+                },
+            ));
+            commit(brain, session_id, state, records).await?;
+            append_output_history(state, schema_hash, success.value);
+            Ok(OutputJobReport { completed: true })
+        }
+        Err(failure) => {
+            finish_output_failure(
+                brain,
+                session_id,
+                state,
+                output_id,
+                schema_hash,
+                turn_id,
+                work_report,
+                failure.error,
+                failure.issues,
+                failure.usage,
+                false,
+            )
+            .await
+        }
+    }
+}
+
+fn append_turn_terminal(
+    state: &TurnState,
+    records: &mut Vec<(u64, Record)>,
+    turn_id: Option<&str>,
+    report: Option<&crate::turn::TurnReport>,
+) {
+    if let (Some(turn), Some(report)) = (turn_id, report) {
+        records.push((
+            state.take_seq(),
+            Record::TurnCompleted {
+                turn: turn.to_string(),
+                stop_reason: report.stop_reason.clone(),
+                rounds: report.rounds,
+                tool_calls: report.tool_calls,
+            },
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish_output_failure(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    state: &mut TurnState,
+    output_id: &str,
+    schema_hash: &str,
+    turn_id: Option<String>,
+    work_report: Option<crate::turn::TurnReport>,
+    error: BrainError,
+    issues: Vec<crate::output::ValidationIssue>,
+    usage: crate::message::Usage,
+    work_failed: bool,
+) -> Result<OutputJobReport> {
+    let message = error.to_string();
+    let code = output_error_code(&error).to_string();
+    let mut records = vec![(
+        state.take_seq(),
+        Record::OutputFailed {
+            output: output_id.to_string(),
+            turn: turn_id.clone(),
+            schema_hash: schema_hash.to_string(),
+            code,
+            message: message.clone(),
+            issues,
+            usage,
+        },
+    )];
+    if work_failed {
+        if let Some(turn) = turn_id.as_ref() {
+            records.push((
+                state.take_seq(),
+                Record::TurnFailed {
+                    turn: turn.clone(),
+                    code: turn_error_code(&error).into(),
+                    message,
+                },
+            ));
+        }
+    } else {
+        append_turn_terminal(
+            state,
+            &mut records,
+            turn_id.as_deref(),
+            work_report.as_ref(),
+        );
+    }
+    state.head.state = "idle".into();
+    state.head.turn = None;
+    records.push((
+        state.take_seq(),
+        Record::State {
+            state: "idle".into(),
+            turn: turn_id,
+        },
+    ));
+    commit(brain, session_id, state, records).await?;
+    Ok(OutputJobReport { completed: false })
+}
+
+fn output_error_code(error: &BrainError) -> &'static str {
+    match error {
+        BrainError::OutputSchema(_) => "output_schema_error",
+        BrainError::OutputRefused(_) => "output_refused",
+        BrainError::OutputValidation(_) => "output_validation_error",
+        BrainError::Cancelled => "cancelled",
+        BrainError::ProviderStatus { .. } | BrainError::Transport(_) | BrainError::Protocol(_) => {
+            "provider_error"
+        }
+        BrainError::HandUnavailable(_) | BrainError::Hand(_) => "hand_unavailable",
+        BrainError::Overloaded => "rate_limited",
+        BrainError::SessionDeleted(_) | BrainError::SessionFailed(_) => "session_failed",
+        _ => "internal",
+    }
+}
+
+fn turn_error_code(error: &BrainError) -> &'static str {
+    match error {
+        BrainError::ProviderStatus { .. } | BrainError::Transport(_) | BrainError::Protocol(_) => {
+            "provider_error"
+        }
+        BrainError::HandUnavailable(_) | BrainError::Hand(_) => "hand_unavailable",
+        BrainError::SessionFailed(_) => "session_failed",
+        BrainError::Cancelled => "cancelled",
+        _ => "internal",
+    }
+}
+
+fn append_output_history(state: &mut TurnState, schema_hash: &str, value: serde_json::Value) {
+    let block = ContentBlock::Output {
+        schema_hash: schema_hash.to_string(),
+        value,
+    };
+    if let Some(last) = state.history.last_mut()
+        && last.role == crate::message::Role::Assistant
+    {
+        last.content.push(block);
+    } else {
+        state.history.push(Message::assistant(vec![block]));
+    }
+}
+
+fn last_assistant_text(history: &[Message]) -> Option<String> {
+    let message = history.last()?;
+    (message.role == crate::message::Role::Assistant).then(|| {
+        message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>()
+    })
 }
 
 fn turn_run(
@@ -1705,6 +2488,35 @@ fn content_blocks(content: MessageRequestContent) -> Result<Vec<ContentBlock>> {
     }
 }
 
+fn output_content_blocks(content: OutputRequestInput) -> Result<Vec<ContentBlock>> {
+    match content {
+        OutputRequestInput::String(value) => {
+            let value = value.to_string();
+            if value.is_empty() {
+                return Err(BrainError::Invalid("input must not be empty".into()));
+            }
+            Ok(vec![ContentBlock::text(value)])
+        }
+        OutputRequestInput::Array(parts) => {
+            if parts.is_empty() {
+                return Err(BrainError::Invalid("input must not be empty".into()));
+            }
+            let mut blocks = Vec::with_capacity(parts.len());
+            for part in parts {
+                match part {
+                    session::ContentPart::Text { text } => blocks.push(ContentBlock::text(text)),
+                    session::ContentPart::WorkspaceFile { .. } => {
+                        return Err(BrainError::Invalid(
+                            "workspace_file content parts are not available yet (M1)".into(),
+                        ));
+                    }
+                }
+            }
+            Ok(blocks)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1799,5 +2611,38 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].call, "op_pending");
         assert_eq!(task_identity_count(&entries), 2);
+    }
+
+    #[test]
+    fn pending_output_scan_never_replays_a_model_side_effect() {
+        let started = |seq: u64, output: &str| Entry {
+            seq,
+            ts_ms: 0,
+            record: Record::OutputStarted {
+                output: output.into(),
+                turn: None,
+                schema_hash: "0".repeat(64),
+                source_seq: seq.saturating_sub(1),
+            },
+        };
+        let entries = vec![
+            started(4, "out_interrupted"),
+            started(5, "out_done"),
+            Entry {
+                seq: 6,
+                ts_ms: 0,
+                record: Record::OutputCompleted {
+                    output: "out_done".into(),
+                    turn: None,
+                    schema_hash: "0".repeat(64),
+                    value: serde_json::json!({"ok":true}),
+                    usage: crate::message::Usage::default(),
+                },
+            },
+        ];
+        let pending = pending_outputs(&entries);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].output, "out_interrupted");
+        assert_eq!(pending[0].seq, 4);
     }
 }

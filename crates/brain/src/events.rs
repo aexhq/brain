@@ -7,7 +7,8 @@
 
 use crate::journal::Record;
 use aex_contracts::session::{
-    self, ApiError, ApiErrorCode, Event, EventStream, ProviderUsage, Timestamp, ToolOutcome,
+    self, ApiError, ApiErrorCode, Event, EventStream, OutputContent, OutputContentType,
+    OutputValidationIssue, ProviderUsage, Timestamp, ToolOutcome,
 };
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -75,7 +76,7 @@ pub fn usage_of(u: &crate::message::Usage) -> ProviderUsage {
         output_tokens: u.output_tokens,
         cache_read_input_tokens: u.cache_read_input_tokens,
         cache_creation_input_tokens: u.cache_creation_input_tokens,
-        reasoning_tokens: None,
+        reasoning_tokens: u.reasoning_tokens,
     }
 }
 
@@ -100,6 +101,70 @@ pub fn derive(
             seq,
             session_id: sid,
             turn_id: turn_of(turn)?,
+        },
+        Record::OutputStarted {
+            output,
+            turn,
+            schema_hash,
+            source_seq,
+        } => Event::OutputStarted {
+            at,
+            output_id: output.parse().ok()?,
+            schema_hash: schema_hash.parse().ok()?,
+            seq,
+            session_id: sid,
+            source_seq: *source_seq,
+            turn_id: turn.as_deref().and_then(turn_of),
+        },
+        Record::OutputCompleted {
+            output,
+            turn,
+            schema_hash,
+            value,
+            usage,
+        } => Event::OutputCompleted {
+            at,
+            output: OutputContent {
+                schema_hash: schema_hash.parse().ok()?,
+                type_: OutputContentType::Output,
+                value: value.clone(),
+            },
+            output_id: output.parse().ok()?,
+            seq,
+            session_id: sid,
+            turn_id: turn.as_deref().and_then(turn_of),
+            usage: usage_option(usage),
+        },
+        Record::OutputFailed {
+            output,
+            turn,
+            schema_hash,
+            code,
+            message,
+            issues,
+            usage,
+        } => Event::OutputFailed {
+            at,
+            error: ApiError {
+                code: error_code(code),
+                message: message.clone(),
+                param: None,
+                request_id: None,
+            },
+            issues: issues
+                .iter()
+                .map(|issue| OutputValidationIssue {
+                    keyword: issue.keyword.clone(),
+                    message: issue.message.clone(),
+                    path: issue.path.clone(),
+                })
+                .collect(),
+            output_id: output.parse().ok()?,
+            schema_hash: schema_hash.parse().ok()?,
+            seq,
+            session_id: sid,
+            turn_id: turn.as_deref().and_then(turn_of),
+            usage: usage_option(usage),
         },
         Record::Assistant {
             turn,
@@ -260,12 +325,20 @@ pub fn error_code(s: &str) -> ApiErrorCode {
         "session_busy" => ApiErrorCode::SessionBusy,
         "session_deleted" => ApiErrorCode::SessionDeleted,
         "session_failed" => ApiErrorCode::SessionFailed,
+        "cancelled" => ApiErrorCode::Cancelled,
         "rate_limited" => ApiErrorCode::RateLimited,
         "provider_error" => ApiErrorCode::ProviderError,
+        "output_schema_error" => ApiErrorCode::OutputSchemaError,
+        "output_refused" => ApiErrorCode::OutputRefused,
+        "output_validation_error" => ApiErrorCode::OutputValidationError,
         "hand_unavailable" => ApiErrorCode::HandUnavailable,
         "too_large" => ApiErrorCode::TooLarge,
         _ => ApiErrorCode::Internal,
     }
+}
+
+fn usage_option(usage: &crate::message::Usage) -> Option<ProviderUsage> {
+    (*usage != crate::message::Usage::default()).then(|| usage_of(usage))
 }
 
 /// Live constructors for the two ephemeral event types.
@@ -310,6 +383,9 @@ pub fn output_event(
 pub fn event_seq(e: &Event) -> u64 {
     match e {
         Event::TurnStarted { seq, .. }
+        | Event::OutputStarted { seq, .. }
+        | Event::OutputCompleted { seq, .. }
+        | Event::OutputFailed { seq, .. }
         | Event::AssistantDelta { seq, .. }
         | Event::AssistantMessage { seq, .. }
         | Event::ToolCall { seq, .. }

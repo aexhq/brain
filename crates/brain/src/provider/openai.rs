@@ -6,7 +6,7 @@
 //! separate measurements.
 
 use super::sse::SseDecoder;
-use super::{ModelRequest, Provider, ProviderEvent};
+use super::{ModelRequest, OutputControl, OutputMode, Provider, ProviderEvent};
 use crate::config::{Dialect, ProviderKey, SealedPrefix};
 use crate::message::{ContentBlock, Message, Role, StopReason, Usage};
 use crate::{BrainError, Result};
@@ -17,6 +17,19 @@ use serde_json::{Map, Value, json};
 pub struct OpenAiChat;
 
 impl OpenAiChat {
+    fn request(body: Value, key: &ProviderKey, base_url: &str) -> Result<ModelRequest> {
+        Ok(ModelRequest {
+            method: "POST",
+            url: format!("{}/v1/chat/completions", base_url.trim_end_matches('/')),
+            headers: vec![
+                ("content-type".into(), "application/json".into()),
+                ("accept".into(), "text/event-stream".into()),
+                ("authorization".into(), format!("Bearer {}", key.expose())),
+            ],
+            body: serde_json::to_vec(&body)?,
+        })
+    }
+
     /// Render ONE provider-neutral message into the dialect's array elements.
     ///
     /// Split out of `body` so that the pre-rendered transcript store
@@ -45,6 +58,9 @@ impl OpenAiChat {
                             return Err(BrainError::Protocol(
                                 "a tool_result block cannot appear in an assistant message".into(),
                             ));
+                        }
+                        ContentBlock::Output { value, .. } => {
+                            text.push_str(&serde_json::to_string(value)?);
                         }
                     }
                 }
@@ -94,6 +110,11 @@ impl OpenAiChat {
                         ContentBlock::ToolUse { .. } => {
                             return Err(BrainError::Protocol(
                                 "a tool_use block cannot appear in a user message".into(),
+                            ));
+                        }
+                        ContentBlock::Output { .. } => {
+                            return Err(BrainError::Protocol(
+                                "an output block cannot appear in a user message".into(),
                             ));
                         }
                     }
@@ -164,17 +185,69 @@ impl Provider for OpenAiChat {
         key: &ProviderKey,
         base_url: &str,
     ) -> Result<ModelRequest> {
-        let body = serde_json::to_vec(&Self::body(prefix, history)?)?;
-        Ok(ModelRequest {
-            method: "POST",
-            url: format!("{}/v1/chat/completions", base_url.trim_end_matches('/')),
-            headers: vec![
-                ("content-type".into(), "application/json".into()),
-                ("accept".into(), "text/event-stream".into()),
-                ("authorization".into(), format!("Bearer {}", key.expose())),
-            ],
-            body,
-        })
+        Self::request(Self::body(prefix, history)?, key, base_url)
+    }
+
+    fn build_output_request(
+        &self,
+        prefix: &SealedPrefix,
+        history: &[Message],
+        key: &ProviderKey,
+        base_url: &str,
+        control: &OutputControl,
+        mode: OutputMode,
+    ) -> Result<ModelRequest> {
+        let mut body = Self::body(prefix, history)?;
+        let object = body.as_object_mut().expect("openai body is an object");
+        object.remove("tools");
+        if let Some(system) = object
+            .get_mut("messages")
+            .and_then(Value::as_array_mut)
+            .and_then(|messages| messages.first_mut())
+            .and_then(Value::as_object_mut)
+        {
+            system.insert(
+                "content".into(),
+                json!(format!(
+                    "{}\n\n{}",
+                    prefix.system_prompt, control.instruction
+                )),
+            );
+        }
+        match mode {
+            OutputMode::Native => {
+                object.insert(
+                    "response_format".into(),
+                    json!({
+                        "type":"json_schema",
+                        "json_schema":{
+                            "name":"aex_output",
+                            "strict":true,
+                            "schema":control.schema
+                        }
+                    }),
+                );
+            }
+            OutputMode::ForcedTool => {
+                object.insert(
+                    "tools".into(),
+                    json!([{
+                        "type":"function",
+                        "function":{
+                            "name":"aex_output",
+                            "description":"Commit the final structured output.",
+                            "parameters":control.schema
+                        }
+                    }]),
+                );
+                object.insert(
+                    "tool_choice".into(),
+                    json!({"type":"function","function":{"name":"aex_output"}}),
+                );
+                object.insert("parallel_tool_calls".into(), json!(false));
+            }
+        }
+        Self::request(body, key, base_url)
     }
 
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
@@ -204,6 +277,14 @@ pub fn decode(_event: Option<&str>, data: &str) -> Result<Vec<ProviderEvent>> {
                 && !t.is_empty()
             {
                 out.push(ProviderEvent::TextDelta {
+                    index: 0,
+                    text: t.to_string(),
+                });
+            }
+            if let Some(t) = delta.get("refusal").and_then(|c| c.as_str())
+                && !t.is_empty()
+            {
+                out.push(ProviderEvent::RefusalDelta {
                     index: 0,
                     text: t.to_string(),
                 });
@@ -262,6 +343,7 @@ fn map_stop(s: Option<&str>) -> StopReason {
         Some("stop") => StopReason::EndTurn,
         Some("tool_calls") | Some("function_call") => StopReason::ToolUse,
         Some("length") => StopReason::MaxTokens,
+        Some("content_filter") => StopReason::Refusal,
         _ => StopReason::Unknown,
     }
 }
@@ -280,6 +362,10 @@ fn usage_of(u: Option<&Value>) -> Usage {
             .and_then(|d| d.get("cached_tokens"))
             .and_then(|v| v.as_u64()),
         cache_creation_input_tokens: None,
+        reasoning_tokens: u
+            .get("completion_tokens_details")
+            .and_then(|details| details.get("reasoning_tokens"))
+            .and_then(Value::as_u64),
     }
 }
 
@@ -307,6 +393,66 @@ mod tests {
                 route: ToolRoute::Hand,
             })
             .seal()
+    }
+
+    #[test]
+    fn output_request_is_private_and_disables_ordinary_tools() {
+        let p = prefix();
+        let control = OutputControl {
+            schema: json!({
+                "type":"object",
+                "properties":{"answer":{"type":"number"}},
+                "required":["answer"],
+                "additionalProperties":false
+            }),
+            instruction: "commit privately".into(),
+        };
+        let native: Value = serde_json::from_slice(
+            &OpenAiChat
+                .build_output_request(
+                    &p,
+                    &[Message::user_text("hi")],
+                    &ProviderKey::new("k"),
+                    "http://x",
+                    &control,
+                    OutputMode::Native,
+                )
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        assert!(native.get("tools").is_none());
+        assert_eq!(native["response_format"]["type"], "json_schema");
+        assert_eq!(native["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(
+            native["response_format"]["json_schema"]["schema"],
+            control.schema
+        );
+        assert!(
+            native["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .ends_with("commit privately")
+        );
+
+        let fallback: Value = serde_json::from_slice(
+            &OpenAiChat
+                .build_output_request(
+                    &p,
+                    &[Message::user_text("hi")],
+                    &ProviderKey::new("k"),
+                    "http://x",
+                    &control,
+                    OutputMode::ForcedTool,
+                )
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        assert_eq!(fallback["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(fallback["tools"][0]["function"]["name"], "aex_output");
+        assert!(fallback["tools"][0]["function"].get("strict").is_none());
+        assert_eq!(fallback["parallel_tool_calls"], false);
     }
 
     #[test]
@@ -383,6 +529,26 @@ mod tests {
             }
             other => panic!("expected MessageDone, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn structured_refusal_survives_an_ordinary_stop_and_usage_chunk() {
+        let raw = concat!(
+            "data: {\"choices\":[{\"delta\":{\"refusal\":\"I cannot help with that.\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":5}}\n\n"
+        );
+        let mut accumulator = Accumulator::new();
+        for event in decode_stream(raw.as_bytes()).unwrap() {
+            accumulator.push(event);
+        }
+        let (message, stop, usage) = accumulator.finish().unwrap();
+        assert_eq!(stop, StopReason::Refusal);
+        assert_eq!(usage.input_tokens, Some(9));
+        assert!(matches!(
+            &message.content[0],
+            ContentBlock::Text { text } if text == "I cannot help with that."
+        ));
     }
 
     #[test]

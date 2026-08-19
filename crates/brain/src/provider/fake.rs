@@ -10,7 +10,7 @@
 //! successfully, so a density run silently becomes a measurement of how fast the
 //! runtime produces error turns. `assert_drained` is not optional.
 
-use super::{ModelRequest, Provider, ProviderEvent};
+use super::{ModelRequest, OutputControl, OutputMode, Provider, ProviderEvent};
 use crate::config::{Dialect, ProviderKey, SealedPrefix};
 use crate::message::{Message, StopReason, Usage};
 use crate::{BrainError, Result};
@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Debug, Clone)]
 pub enum Scripted {
     Text(String),
+    Refusal(String),
     /// N tool calls **in one assistant message** -- this sameness is what makes
     /// them parallel rather than N turns.
     ToolCalls(Vec<(String, String, serde_json::Value)>),
@@ -408,6 +409,23 @@ impl Provider for FakeProvider {
         }
     }
 
+    fn build_output_request(
+        &self,
+        prefix: &SealedPrefix,
+        history: &[Message],
+        key: &ProviderKey,
+        base_url: &str,
+        control: &OutputControl,
+        mode: OutputMode,
+    ) -> Result<ModelRequest> {
+        match self.dialect {
+            Dialect::AnthropicMessages => super::anthropic::Anthropic
+                .build_output_request(prefix, history, key, base_url, control, mode),
+            Dialect::OpenAiChat => super::openai::OpenAiChat
+                .build_output_request(prefix, history, key, base_url, control, mode),
+        }
+    }
+
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
         let call_no = self.call_count.fetch_add(1, Ordering::SeqCst);
 
@@ -518,7 +536,18 @@ impl FakeProvider {
                         stop_reason: StopReason::EndTurn,
                         usage: Usage { input_tokens: Some(0), output_tokens: Some(0),
                                        cache_read_input_tokens: None,
-                                       cache_creation_input_tokens: None },
+                                       cache_creation_input_tokens: None,
+                                       reasoning_tokens: None },
+                    });
+                }
+                Scripted::Refusal(text) => {
+                    yield Ok(ProviderEvent::RefusalDelta { index: 0, text });
+                    yield Ok(ProviderEvent::MessageDone {
+                        stop_reason: StopReason::Refusal,
+                        usage: Usage { input_tokens: Some(0), output_tokens: Some(0),
+                                       cache_read_input_tokens: None,
+                                       cache_creation_input_tokens: None,
+                                       reasoning_tokens: None },
                     });
                 }
                 Scripted::ToolCalls(calls) => {
@@ -534,7 +563,8 @@ impl FakeProvider {
                         stop_reason: StopReason::ToolUse,
                         usage: Usage { input_tokens: Some(0), output_tokens: Some(0),
                                        cache_read_input_tokens: None,
-                                       cache_creation_input_tokens: None },
+                                       cache_creation_input_tokens: None,
+                                       reasoning_tokens: None },
                     });
                 }
             }

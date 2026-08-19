@@ -23,6 +23,7 @@ pub mod local;
 pub mod mcp;
 pub mod message;
 pub mod outbound;
+pub mod output;
 pub mod provider;
 pub mod reclaim;
 pub mod session;
@@ -48,6 +49,9 @@ pub enum BrainError {
 
     #[error("session {0} is already running a turn")]
     TurnInFlight(String),
+
+    #[error("Idempotency-Key was already used with a different request")]
+    IdempotencyConflict,
 
     #[error("session {0} is deleted")]
     SessionDeleted(String),
@@ -91,6 +95,15 @@ pub enum BrainError {
 
     #[error("provider error {status}: {body}")]
     ProviderStatus { status: u16, body: String },
+
+    #[error("output schema: {0}")]
+    OutputSchema(String),
+
+    #[error("model refused the requested output: {0}")]
+    OutputRefused(String),
+
+    #[error("model output did not satisfy the schema: {0}")]
+    OutputValidation(String),
 
     #[error("hand unavailable: {0}")]
     HandUnavailable(String),

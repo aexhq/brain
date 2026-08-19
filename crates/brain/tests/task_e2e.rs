@@ -13,7 +13,7 @@ use brain::config::{Dialect, ProviderKey, SealedPrefix};
 use brain::journal::{Entry, Journal, Lease, Record};
 use brain::local::LocalFactory;
 use brain::message::{ContentBlock, Message, StopReason, Usage};
-use brain::provider::{ModelRequest, Provider, ProviderEvent};
+use brain::provider::{ModelRequest, OutputControl, OutputMode, Provider, ProviderEvent};
 use brain::session::{Brain, BrainConfig};
 use brain::{BrainError, Result};
 use futures_util::stream::BoxStream;
@@ -257,6 +257,7 @@ fn zero_usage() -> Usage {
         output_tokens: Some(0),
         cache_read_input_tokens: None,
         cache_creation_input_tokens: None,
+        reasoning_tokens: None,
     }
 }
 
@@ -274,6 +275,19 @@ impl Provider for TaskProvider {
         base_url: &str,
     ) -> Result<ModelRequest> {
         brain::provider::anthropic::Anthropic.build_request(prefix, history, key, base_url)
+    }
+
+    fn build_output_request(
+        &self,
+        prefix: &SealedPrefix,
+        history: &[Message],
+        key: &ProviderKey,
+        base_url: &str,
+        control: &OutputControl,
+        mode: OutputMode,
+    ) -> Result<ModelRequest> {
+        brain::provider::anthropic::Anthropic
+            .build_output_request(prefix, history, key, base_url, control, mode)
     }
 
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
