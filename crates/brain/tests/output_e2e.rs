@@ -195,7 +195,8 @@ async fn output_is_typed_private_repairable_and_idempotent() {
         .bearer_auth(token)
         .json(&json!({
             "model": {"provider":"anthropic","name":"scripted","api_key":"sk-fake"},
-            "system_prompt": "Be exact."
+            "system_prompt": "Be exact.",
+            "tools": {"builtin": ["todo"]}
         }))
         .send()
         .await

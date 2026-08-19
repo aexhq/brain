@@ -4,8 +4,8 @@
 //! schemas are rendered to the model exactly as the hand serves them, so the manifest digest
 //! the brain seals at create is the digest the hand must answer in `hello` (I1).
 //!
-//! Brain-side tools (`todo`, and since slice 8 `task`) run in-process. Managed web tools run
-//! through the guarded outbound seam and are available only when explicitly sealed.
+//! Brain-side tools (`todo` and `task`) run in-process. All tools are opt-in. Managed web tools
+//! run through the guarded outbound seam and are available only when explicitly sealed.
 
 use crate::config::{ToolDecl, ToolRoute};
 use crate::{BrainError, Result};
@@ -14,20 +14,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// The default tool set when `tools` is omitted at create: all hand tools + `task` + `todo`,
-/// exactly as the contract documents.
+/// The default tool set when `tools` is omitted at create. Capability grants are explicit:
+/// a session with no selection exposes no model tools.
 pub fn default_builtins() -> Vec<BuiltinTool> {
-    vec![
-        BuiltinTool::Bash,
-        BuiltinTool::Read,
-        BuiltinTool::Write,
-        BuiltinTool::Edit,
-        BuiltinTool::Glob,
-        BuiltinTool::Grep,
-        BuiltinTool::Ls,
-        BuiltinTool::Task,
-        BuiltinTool::Todo,
-    ]
+    Vec::new()
 }
 
 fn builtin_name(t: &BuiltinTool) -> &'static str {
@@ -282,8 +272,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn omitted_tools_resolve_to_an_empty_set() {
+        assert!(resolve(&default_builtins()).unwrap().is_empty());
+    }
+
+    #[test]
     fn resolve_serves_manifest_schemas_verbatim_in_order() {
-        let decls = resolve(&default_builtins()).unwrap();
+        let builtins = [
+            BuiltinTool::Bash,
+            BuiltinTool::Read,
+            BuiltinTool::Write,
+            BuiltinTool::Edit,
+            BuiltinTool::Glob,
+            BuiltinTool::Grep,
+            BuiltinTool::Ls,
+            BuiltinTool::Task,
+            BuiltinTool::Todo,
+        ];
+        let decls = resolve(&builtins).unwrap();
         assert_eq!(
             names(&decls),
             vec![

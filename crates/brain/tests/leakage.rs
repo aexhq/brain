@@ -43,6 +43,7 @@ async fn create(
         .json(&json!({
             "model": {"provider": provider, "name": model, "api_key": key},
             "system_prompt": system,
+            "tools": {"builtin": ["write", "read"]},
         }))
         .send()
         .await

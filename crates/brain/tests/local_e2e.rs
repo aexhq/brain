@@ -138,7 +138,8 @@ async fn the_whole_local_loop_over_real_http() {
         .bearer_auth(&token)
         .json(&json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "system_prompt": "test agent"
+            "system_prompt": "test agent",
+            "tools": {"builtin": ["write", "bash"]}
         }))
         .send()
         .await

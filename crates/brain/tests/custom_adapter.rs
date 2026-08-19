@@ -170,6 +170,7 @@ async fn a_third_party_adapter_composes_via_public_api_only() {
         .bearer_auth(&token)
         .json(&json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+            "tools": {"builtin": ["bash"]},
             "files": [{"path": "seed.txt", "content_base64": "c2VlZGVk"}]
         }))
         .send()

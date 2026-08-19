@@ -398,9 +398,7 @@ impl Harness {
             },
             "system_prompt": "task e2e agent"
         });
-        if let Some(tools) = tools {
-            body["tools"] = tools;
-        }
+        body["tools"] = tools.unwrap_or_else(|| json!({"builtin": ["task", "todo"]}));
         let response = self
             .http
             .post(format!("{}/v1/sessions", self.base))
