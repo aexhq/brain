@@ -35,6 +35,22 @@ pub struct ModelRequest {
     pub body: Vec<u8>,
 }
 
+/// The output commit request is a private provider step. It sees the requested schema and a
+/// transient control instruction, but neither becomes session history or a normal tool.
+#[derive(Debug, Clone)]
+pub struct OutputControl {
+    pub schema: serde_json::Value,
+    pub instruction: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    /// Provider-native constrained structured output.
+    Native,
+    /// A single forced internal `aex_output` tool. Ordinary session tools stay disabled.
+    ForcedTool,
+}
+
 impl ModelRequest {
     pub fn body_len(&self) -> usize {
         self.body.len()
@@ -63,6 +79,12 @@ impl std::fmt::Debug for ModelRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderEvent {
     TextDelta {
+        index: usize,
+        text: String,
+    },
+    /// A provider-native refusal payload. It is text for diagnostics, but it must not be parsed
+    /// as a structured-output candidate even when the provider finishes with an ordinary stop.
+    RefusalDelta {
         index: usize,
         text: String,
     },
@@ -99,6 +121,16 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
         base_url: &str,
     ) -> Result<ModelRequest>;
 
+    fn build_output_request(
+        &self,
+        prefix: &SealedPrefix,
+        history: &[Message],
+        key: &ProviderKey,
+        base_url: &str,
+        control: &OutputControl,
+        mode: OutputMode,
+    ) -> Result<ModelRequest>;
+
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>>;
 }
 
@@ -115,6 +147,7 @@ pub struct Accumulator {
     pub stop_reason: StopReason,
     pub usage: Usage,
     pub saw_terminal: bool,
+    saw_refusal: bool,
 }
 
 #[derive(Debug)]
@@ -135,6 +168,13 @@ impl Accumulator {
     pub fn push(&mut self, ev: ProviderEvent) {
         match ev {
             ProviderEvent::TextDelta { index, text } => {
+                self.ensure(index, || PartialBlock::Text(String::new()));
+                if let Some(PartialBlock::Text(s)) = self.blocks.get_mut(index) {
+                    s.push_str(&text);
+                }
+            }
+            ProviderEvent::RefusalDelta { index, text } => {
+                self.saw_refusal = true;
                 self.ensure(index, || PartialBlock::Text(String::new()));
                 if let Some(PartialBlock::Text(s)) = self.blocks.get_mut(index) {
                     s.push_str(&text);
@@ -163,7 +203,11 @@ impl Accumulator {
             }
             ProviderEvent::BlockDone { .. } => {}
             ProviderEvent::MessageDone { stop_reason, usage } => {
-                self.stop_reason = stop_reason;
+                // OpenAI emits usage in a final choices=[] chunk. Its unknown stop reason must
+                // not overwrite the real finish reason from the preceding chunk.
+                if stop_reason != StopReason::Unknown || self.stop_reason == StopReason::Unknown {
+                    self.stop_reason = stop_reason;
+                }
                 self.usage.merge(&usage);
                 self.saw_terminal = true;
             }
@@ -202,7 +246,12 @@ impl Accumulator {
                 }
             }
         }
-        Ok((Message::assistant(content), self.stop_reason, self.usage))
+        let stop_reason = if self.saw_refusal {
+            StopReason::Refusal
+        } else {
+            self.stop_reason
+        };
+        Ok((Message::assistant(content), stop_reason, self.usage))
     }
 }
 
@@ -341,6 +390,7 @@ mod tests {
                 output_tokens: Some(2),
                 cache_read_input_tokens: None,
                 cache_creation_input_tokens: None,
+                reasoning_tokens: None,
             },
         });
         let (msg, stop, usage) = a.finish().unwrap();

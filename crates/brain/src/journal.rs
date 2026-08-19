@@ -43,6 +43,14 @@ pub enum Record {
     TurnStarted {
         turn: String,
     },
+    /// Admission for one typed output request. The schema is intentionally absent; only its
+    /// hash and the captured journal boundary are durable.
+    OutputStarted {
+        output: String,
+        turn: Option<String>,
+        schema_hash: String,
+        source_seq: u64,
+    },
     /// A complete assistant message, full-fidelity blocks. Only complete messages are
     /// journaled -- a stream that dies mid-message journals nothing.
     Assistant {
@@ -93,6 +101,24 @@ pub enum Record {
         code: String,
         message: String,
     },
+    /// The validated assistant value. This is the only output-commit content folded back into
+    /// future model history.
+    OutputCompleted {
+        output: String,
+        turn: Option<String>,
+        schema_hash: String,
+        value: serde_json::Value,
+        usage: Usage,
+    },
+    OutputFailed {
+        output: String,
+        turn: Option<String>,
+        schema_hash: String,
+        code: String,
+        message: String,
+        issues: Vec<crate::output::ValidationIssue>,
+        usage: Usage,
+    },
     /// A session/hand state transition worth telling clients about (`session.updated`).
     State {
         state: String,
@@ -116,12 +142,15 @@ impl Record {
         match self {
             Record::UserMessage { .. } => "user_message",
             Record::TurnStarted { .. } => "turn_started",
+            Record::OutputStarted { .. } => "output_started",
             Record::Assistant { .. } => "assistant",
             Record::Usage { .. } => "usage",
             Record::ToolCall { .. } => "tool_call",
             Record::ToolResult { .. } => "tool_result",
             Record::TurnCompleted { .. } => "turn_completed",
             Record::TurnFailed { .. } => "turn_failed",
+            Record::OutputCompleted { .. } => "output_completed",
+            Record::OutputFailed { .. } => "output_failed",
             Record::State { .. } => "state",
             Record::HandLost { .. } => "hand_lost",
             Record::Compacted { .. } => "compacted",
@@ -214,6 +243,22 @@ impl Fold {
                     content: content.clone(),
                 });
             }
+            Record::OutputCompleted {
+                schema_hash, value, ..
+            } => {
+                self.flush_results();
+                let block = ContentBlock::Output {
+                    schema_hash: schema_hash.clone(),
+                    value: value.clone(),
+                };
+                if let Some(last) = self.history.last_mut()
+                    && last.role == Role::Assistant
+                {
+                    last.content.push(block);
+                } else {
+                    self.history.push(Message::assistant(vec![block]));
+                }
+            }
             Record::ToolResult {
                 call,
                 content,
@@ -238,6 +283,8 @@ impl Fold {
             | Record::ToolCall { .. }
             | Record::TurnCompleted { .. }
             | Record::TurnFailed { .. }
+            | Record::OutputStarted { .. }
+            | Record::OutputFailed { .. }
             | Record::State { .. }
             | Record::HandLost { .. } => {}
         }
@@ -310,6 +357,10 @@ pub struct HeadDoc {
     pub workspace_bytes: u64,
     #[serde(default)]
     pub artifacts: Vec<ArtifactDoc>,
+    /// Bounded, 24-hour output idempotency index. Keys and request payloads are hashed; the
+    /// schema itself is never retained here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_requests: Vec<OutputRequestDoc>,
 }
 
 impl HeadDoc {
@@ -412,6 +463,17 @@ pub struct ArtifactDoc {
     pub sha256: String,
     pub media_type: String,
     pub created_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputRequestDoc {
+    pub key_hash: String,
+    pub request_hash: String,
+    pub output_id: String,
+    pub schema_hash: String,
+    pub started_seq: u64,
+    pub admitted_ms: u64,
 }
 
 /// The claim a hydrating owner holds. Every commit is conditioned on it.
@@ -1019,6 +1081,7 @@ mod tests {
             hand_state: serde_json::Value::Null,
             workspace_bytes: 0,
             artifacts: vec![],
+            output_requests: vec![],
         };
         let s = serde_json::to_string(&doc).unwrap();
         let back: HeadDoc = serde_json::from_str(&s).unwrap();
@@ -1060,6 +1123,7 @@ mod tests {
             hand_state: serde_json::Value::Null,
             workspace_bytes: 0,
             artifacts: vec![],
+            output_requests: vec![],
         }
     }
 

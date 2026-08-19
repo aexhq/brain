@@ -125,6 +125,15 @@ impl TurnRun {
     /// The whole turn. The admitted user message and `turn_started` are already committed by
     /// the actor; `st.history` already carries the user message.
     pub async fn run(&self, st: &mut TurnState) -> Result<TurnReport> {
+        let report = self.run_work(st).await?;
+        self.complete(st, &report.stop_reason, report.rounds, report.tool_calls)
+            .await
+    }
+
+    /// Execute through the final assistant answer without committing the turn terminal. The
+    /// output path uses this so output.completed/output.failed and turn completion can land in
+    /// one final decision; ordinary messages use [`Self::run`].
+    pub async fn run_work(&self, st: &mut TurnState) -> Result<TurnReport> {
         let mut rounds: u64 = 0;
         let mut tool_calls: u64 = 0;
         let max_rounds = self.prefix.limits.max_rounds as u64;
@@ -144,14 +153,22 @@ impl TurnRun {
             }
 
             if rounds >= max_rounds {
-                return self.complete(st, "max_rounds", rounds, tool_calls).await;
+                return Ok(TurnReport {
+                    stop_reason: "max_rounds".into(),
+                    rounds,
+                    tool_calls,
+                });
             }
 
             // One model round.
             let (mut message, stop) = match self.root_round(st).await {
                 Ok(v) => v,
                 Err(BrainError::Cancelled) => {
-                    return self.complete(st, "cancelled", rounds, tool_calls).await;
+                    return Ok(TurnReport {
+                        stop_reason: "cancelled".into(),
+                        rounds,
+                        tool_calls,
+                    });
                 }
                 Err(e) => return Err(e),
             };
@@ -189,7 +206,15 @@ impl TurnRun {
             st.history.push(message.clone());
 
             if calls.is_empty() {
-                return self.complete(st, "end_turn", rounds, tool_calls).await;
+                return Ok(TurnReport {
+                    stop_reason: if stop == StopReason::Refusal {
+                        "refusal".into()
+                    } else {
+                        "end_turn".into()
+                    },
+                    rounds,
+                    tool_calls,
+                });
             }
             tool_calls += calls.len() as u64;
 
@@ -235,7 +260,11 @@ impl TurnRun {
             st.history.push(Message::tool_results(blocks));
 
             if self.cancel.is_cancelled() {
-                return self.complete(st, "cancelled", rounds, tool_calls).await;
+                return Ok(TurnReport {
+                    stop_reason: "cancelled".into(),
+                    rounds,
+                    tool_calls,
+                });
             }
         }
     }

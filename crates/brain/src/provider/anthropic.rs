@@ -1,7 +1,7 @@
 //! Anthropic Messages API adapter.
 
 use super::sse::SseDecoder;
-use super::{ModelRequest, Provider, ProviderEvent};
+use super::{ModelRequest, OutputControl, OutputMode, Provider, ProviderEvent};
 use crate::config::{Dialect, ProviderKey, SealedPrefix};
 use crate::message::{ContentBlock, Message, Role, StopReason, Usage};
 use crate::{BrainError, Result};
@@ -12,6 +12,20 @@ use serde_json::{Map, Value, json};
 pub struct Anthropic;
 
 impl Anthropic {
+    fn request(body: Value, key: &ProviderKey, base_url: &str) -> Result<ModelRequest> {
+        Ok(ModelRequest {
+            method: "POST",
+            url: format!("{}/v1/messages", base_url.trim_end_matches('/')),
+            headers: vec![
+                ("content-type".into(), "application/json".into()),
+                ("accept".into(), "text/event-stream".into()),
+                ("anthropic-version".into(), "2023-06-01".into()),
+                ("x-api-key".into(), key.expose().to_string()),
+            ],
+            body: serde_json::to_vec(&body)?,
+        })
+    }
+
     /// Render ONE provider-neutral message into the dialect's array elements.
     ///
     /// Split out of `body` so the pre-rendered transcript store
@@ -41,6 +55,10 @@ impl Anthropic {
                     "content":content,
                     // ALWAYS present. Never omitted on a failure.
                     "is_error":is_error
+                }),
+                ContentBlock::Output { value, .. } => json!({
+                    "type":"text",
+                    "text":serde_json::to_string(value)?
                 }),
             });
         }
@@ -105,18 +123,51 @@ impl Provider for Anthropic {
         key: &ProviderKey,
         base_url: &str,
     ) -> Result<ModelRequest> {
-        let body = serde_json::to_vec(&Self::body(prefix, history)?)?;
-        Ok(ModelRequest {
-            method: "POST",
-            url: format!("{}/v1/messages", base_url.trim_end_matches('/')),
-            headers: vec![
-                ("content-type".into(), "application/json".into()),
-                ("accept".into(), "text/event-stream".into()),
-                ("anthropic-version".into(), "2023-06-01".into()),
-                ("x-api-key".into(), key.expose().to_string()),
-            ],
-            body,
-        })
+        Self::request(Self::body(prefix, history)?, key, base_url)
+    }
+
+    fn build_output_request(
+        &self,
+        prefix: &SealedPrefix,
+        history: &[Message],
+        key: &ProviderKey,
+        base_url: &str,
+        control: &OutputControl,
+        mode: OutputMode,
+    ) -> Result<ModelRequest> {
+        let mut body = Self::body(prefix, history)?;
+        let object = body.as_object_mut().expect("anthropic body is an object");
+        object.remove("tools");
+        object.insert(
+            "system".into(),
+            json!(format!(
+                "{}\n\n{}",
+                prefix.system_prompt, control.instruction
+            )),
+        );
+        match mode {
+            OutputMode::Native => {
+                object.insert(
+                    "output_config".into(),
+                    json!({"format":{"type":"json_schema","schema":control.schema}}),
+                );
+            }
+            OutputMode::ForcedTool => {
+                object.insert(
+                    "tools".into(),
+                    json!([{
+                        "name":"aex_output",
+                        "description":"Commit the final structured output.",
+                        "input_schema":control.schema
+                    }]),
+                );
+                object.insert(
+                    "tool_choice".into(),
+                    json!({"type":"tool","name":"aex_output","disable_parallel_tool_use":true}),
+                );
+            }
+        }
+        Self::request(body, key, base_url)
     }
 
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
@@ -220,6 +271,7 @@ fn map_stop(s: Option<&str>) -> StopReason {
         Some("tool_use") => StopReason::ToolUse,
         Some("max_tokens") => StopReason::MaxTokens,
         Some("stop_sequence") => StopReason::StopSequence,
+        Some("refusal") => StopReason::Refusal,
         // A stop reason we do not recognise is Unknown, not EndTurn. Guessing
         // EndTurn would end a turn the provider did not end.
         _ => StopReason::Unknown,
@@ -237,6 +289,7 @@ fn usage_of(u: Option<&Value>) -> Usage {
         output_tokens: g("output_tokens"),
         cache_read_input_tokens: g("cache_read_input_tokens"),
         cache_creation_input_tokens: g("cache_creation_input_tokens"),
+        reasoning_tokens: None,
     }
 }
 
@@ -284,6 +337,61 @@ mod tests {
     }
 
     #[test]
+    fn output_request_is_private_and_disables_ordinary_tools() {
+        let p = prefix();
+        let control = OutputControl {
+            schema: json!({
+                "type":"object",
+                "properties":{"answer":{"type":"number"}},
+                "required":["answer"],
+                "additionalProperties":false
+            }),
+            instruction: "commit privately".into(),
+        };
+        let native: Value = serde_json::from_slice(
+            &Anthropic
+                .build_output_request(
+                    &p,
+                    &[Message::user_text("hi")],
+                    &ProviderKey::new("k"),
+                    "http://x",
+                    &control,
+                    OutputMode::Native,
+                )
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        assert!(native.get("tools").is_none());
+        assert_eq!(native["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(native["output_config"]["format"]["schema"], control.schema);
+        assert!(
+            native["system"]
+                .as_str()
+                .unwrap()
+                .ends_with("commit privately")
+        );
+
+        let fallback: Value = serde_json::from_slice(
+            &Anthropic
+                .build_output_request(
+                    &p,
+                    &[Message::user_text("hi")],
+                    &ProviderKey::new("k"),
+                    "http://x",
+                    &control,
+                    OutputMode::ForcedTool,
+                )
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        assert_eq!(fallback["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(fallback["tools"][0]["name"], "aex_output");
+        assert_eq!(fallback["tool_choice"]["name"], "aex_output");
+    }
+
+    #[test]
     fn tool_result_always_carries_is_error() {
         let p = prefix();
         let h = vec![Message::tool_results(vec![ContentBlock::ToolResult {
@@ -325,8 +433,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_stop_reason_is_unknown_not_end_turn() {
-        assert_eq!(map_stop(Some("refusal")), StopReason::Unknown);
+    fn refusal_is_typed_and_an_absent_reason_stays_unknown() {
+        assert_eq!(map_stop(Some("refusal")), StopReason::Refusal);
         assert_eq!(map_stop(None), StopReason::Unknown);
     }
 }

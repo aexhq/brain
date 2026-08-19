@@ -7,7 +7,8 @@
 //! The subscription starts BEFORE the replay read so nothing falls between them; duplicates
 //! are dropped by seq.
 //!
-//! Idempotency-Key headers are accepted and ignored in M0.
+//! Output admission persists a hash of Idempotency-Key for 24-hour replay. Raw keys never enter
+//! the journal.
 
 use crate::events::{event_seq, event_type};
 use crate::journal::Record;
@@ -15,7 +16,8 @@ use crate::session::Brain;
 use crate::{BrainError, mint_id};
 use aex_contracts::session::{
     self, ApiError, ApiErrorCode, ApiErrorResponse, Artifact, ArtifactList, CreateSessionRequest,
-    FileList, FileListObject, MessageAccepted, MessageRequest, PersistRequest, SessionList,
+    FileList, FileListObject, MessageAccepted, MessageRequest, OutputAccepted, OutputRequest,
+    PersistRequest, SessionList,
 };
 use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Path, Query, State};
@@ -43,6 +45,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions", post(create_session).get(list_sessions))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(send_message))
+        .route("/v1/sessions/{id}/output", post(request_output))
         .route("/v1/sessions/{id}/events", get(stream_events))
         .route("/v1/sessions/{id}/cancel", post(cancel_turn))
         .route("/v1/sessions/{id}/end", post(end_session))
@@ -108,12 +111,17 @@ fn map_err(e: BrainError) -> Failure {
         BrainError::FileNotFound(_) => (S::NOT_FOUND, C::NotFound),
         BrainError::FileTooLarge { .. } => (S::PAYLOAD_TOO_LARGE, C::InvalidRequest),
         BrainError::TurnInFlight(_) => (S::CONFLICT, C::SessionBusy),
+        BrainError::IdempotencyConflict => (S::CONFLICT, C::Conflict),
         BrainError::SessionDeleted(_) => (S::GONE, C::SessionDeleted),
         BrainError::SessionFailed(_) => (S::CONFLICT, C::SessionFailed),
         BrainError::Overloaded => (S::TOO_MANY_REQUESTS, C::RateLimited),
         BrainError::ProviderStatus { .. } | BrainError::Transport(_) | BrainError::Protocol(_) => {
             (S::BAD_GATEWAY, C::ProviderError)
         }
+        BrainError::OutputSchema(_) => (S::BAD_REQUEST, C::OutputSchemaError),
+        BrainError::OutputRefused(_) => (S::UNPROCESSABLE_ENTITY, C::OutputRefused),
+        BrainError::OutputValidation(_) => (S::UNPROCESSABLE_ENTITY, C::OutputValidationError),
+        BrainError::Cancelled => (S::CONFLICT, C::Cancelled),
         BrainError::HandUnavailable(_) | BrainError::Hand(_) => {
             (S::SERVICE_UNAVAILABLE, C::HandUnavailable)
         }
@@ -229,6 +237,59 @@ async fn send_message(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ApiErrorCode::Internal,
                     "turn id".into(),
+                )
+            })?,
+        }),
+    ))
+}
+
+async fn request_output(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<OutputRequest>,
+) -> Result<(StatusCode, Json<OutputAccepted>), Failure> {
+    auth(&state, &headers)?;
+    let idempotency_key = headers
+        .get("idempotency-key")
+        .map(|value| {
+            value.to_str().map_err(|_| {
+                Failure(
+                    StatusCode::BAD_REQUEST,
+                    ApiErrorCode::InvalidRequest,
+                    "Idempotency-Key must be valid ASCII".into(),
+                )
+            })
+        })
+        .transpose()?;
+    let admitted = state
+        .brain
+        .output(&id, req, idempotency_key)
+        .await
+        .map_err(map_err)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(OutputAccepted {
+            output_id: admitted.output_id.parse().map_err(|_| {
+                Failure(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ApiErrorCode::Internal,
+                    "output id".into(),
+                )
+            })?,
+            schema_hash: admitted.schema_hash.parse().map_err(|_| {
+                Failure(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    ApiErrorCode::Internal,
+                    "schema hash".into(),
+                )
+            })?,
+            seq: NonZeroU64::new(admitted.seq.max(1)).expect("nonzero"),
+            session_id: id.parse().map_err(|_| {
+                Failure(
+                    StatusCode::BAD_REQUEST,
+                    ApiErrorCode::InvalidRequest,
+                    "session id".into(),
                 )
             })?,
         }),
