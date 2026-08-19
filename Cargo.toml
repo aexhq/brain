@@ -9,19 +9,20 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 # Contracts and the hand, pinned by tag: the wire formats are owned by their repos.
-aex-contracts = { git = "https://github.com/aexhq/aex", tag = "aex-contracts-v0.1.0" }
+aex-contracts = { git = "https://github.com/aexhq/aex", tag = "aex-contracts-v0.3.0" }
 brain = { path = "crates/brain" }
 brain-aws = { path = "crates/brain-aws" }
-hand-client = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.2" }
-hand-lambda = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.2" }
+hand-client = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.3" }
+hand-lambda = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.3" }
 
 anyhow = "1"
 async-trait = "0.1"
 async-stream = "0.3"
-aws-config = "1"
-aws-sdk-dynamodb = "1"
-aws-sdk-kms = "1"
-aws-sdk-s3 = "1"
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "credentials-process", "default-https-client", "rt-tokio", "sso"] }
+aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-lambdamicrovms = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
 base64 = "0.22"
 bytes = "1"
@@ -30,6 +31,7 @@ clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 globset = "0.4"
 hex = "0.4"
+html2text = "0.17.1"
 libc = "0.2"
 rand = "0.9"
 regex = "1"

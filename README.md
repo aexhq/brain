@@ -22,8 +22,9 @@ substrate — a k8s pod, an SSH box, another cloud — implements the traits and
 | `brain::local` | the local substrate: the seven manifest tools in subprocesses against per-session directories |
 | `brain::turn` | the tool loop: journal-before-dispatch, bounded-parallel adapter calls, bounded tail-retained output, graceful cancel |
 | `brain::subagent` | self-similar in-process `task` children: depth ≤3, 12 lifetime identities, shared hand/MCP, root-serialized journal commits |
+| `brain::web` | managed `web_search` (Serper) and guarded `web_fetch`: bounded results, redirect-by-redirect SSRF checks, cancellation |
 | `brain::session` | sessions as spawned tasks: hydrate-act-commit-discard actors, admission, `malloc_trim` on drop; `Brain::with_parts` composition |
-| `brain::api` | session API v1 (axum): create/message/events(SSE)/cancel/end/delete/persist/artifacts |
+| `brain::api` | session API v1 (axum): create/message/events(SSE)/cancel/end/delete/files/persist/artifacts |
 | `brain-aws` | the AWS adapter set: `DynamoJournal`, `KmsCustody`, `LambdaFactory` (MicroVM launch/resume/sync/wall survival) |
 | `brain-server` | the composed binaries: `brain` (local by default, AWS by `AEX_MODE=aws`) and `m0` (the AWS gate) |
 
@@ -54,6 +55,16 @@ Two things local mode is honest about:
 
 The session API is identical in every composition — that is the point of contracts-first.
 
+The public files surface accepts only absolute paths beneath `/workspace`, is binary-safe, and
+caps one upload/download at 64 MiB. Writes checkpoint before acknowledgement. A released AWS
+session lists from its last durable manifest without waking a MicroVM; reads and writes wake it.
+
+Managed search is opt-in per session and requires `SERPER_API_KEY` on the plane. `web_fetch`
+requires no credential. In AWS mode both use the guarded outbound client: HTTPS only, public
+unicast only, DNS pinned after resolution, redirects disabled at the client and revalidated
+manually (maximum five). Local composition may explicitly permit private HTTP for integration
+tests and local MCP servers.
+
 ## Write your own adapter
 
 Implement `brain::adapter::{HandFactory, HandAdapter}` (and optionally
@@ -78,10 +89,11 @@ documented on the traits; the shared journal tests define the store semantics.
 ## Build and test
 
 ```
-cargo test --workspace                              # unit + local/MCP/task e2e + leakage gate (no cloud)
+cargo test --workspace                              # unit + local/MCP/task/web/files e2e + leakage gate
 cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p brain-bench --release -- ci            # the benchmark gates (density arm needs Linux)
 cargo run --bin m0        # the AWS-mode M0 gate; needs AWS + provider keys (bin/m0.rs header)
+cargo run --bin web       # real model + Serper + guarded fetch operator gate
 ```
 
 The published numbers — platform-added TTFT, turns/s, KiB per resident session, reclaim,

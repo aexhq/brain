@@ -18,6 +18,7 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 globset = { workspace = true }
 hex = { workspace = true }
+html2text = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }

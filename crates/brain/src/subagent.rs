@@ -77,6 +77,7 @@ pub(crate) struct SubagentCtx {
     pub seq: crate::turn::Seq,
     pub hand: Arc<dyn HandAdapter>,
     pub mcp: Option<Arc<crate::mcp::McpRuntime>>,
+    pub web: Arc<crate::web::WebRuntime>,
     /// Session-lifetime count of child identities already minted.
     pub identities: Arc<AtomicU64>,
     pub journal: ChildJournal,
@@ -379,6 +380,15 @@ async fn dispatch(
                             CallOutcome::failed("MCP dispatch state is missing for this session")
                         }
                     };
+                    (idx, outcome, None)
+                })
+            }
+            Some(ToolRoute::Web) => {
+                let web = ctx.web.clone();
+                let cancel = ctx.cancel.clone();
+                joins.spawn(async move {
+                    let _permit = permit.acquire_owned().await;
+                    let outcome = web.call(&name, &input, &cancel).await;
                     (idx, outcome, None)
                 })
             }

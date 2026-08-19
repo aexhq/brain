@@ -26,7 +26,7 @@
 //!   never replayed, I10) — never by hanging.
 
 use crate::Result;
-use aex_contracts::session::HandInfo;
+use aex_contracts::session::{FileEntry, FileListSource, HandInfo};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -86,6 +86,22 @@ pub struct ArtifactMeta {
     pub sha256: String,
     pub media_type: String,
     pub location: String,
+}
+
+/// A workspace listing returned by a substrate. The core owns the public list envelope;
+/// adapters provide entries and whether they came from a live hand or its durable manifest.
+#[derive(Debug, Clone)]
+pub struct WorkspaceListing {
+    pub entries: Vec<FileEntry>,
+    pub source: FileListSource,
+    pub synced_ms: Option<u64>,
+}
+
+/// Exact bytes plus metadata for one workspace file.
+#[derive(Debug, Clone)]
+pub struct WorkspaceFile {
+    pub entry: FileEntry,
+    pub bytes: Vec<u8>,
 }
 
 /// The create-time facts an adapter may care about.
@@ -150,6 +166,28 @@ pub trait HandAdapter: Send + Sync {
     /// Workspace bytes as last known, for `StorageInfo`. Never billing authority (I9).
     fn workspace_bytes(&self) -> u64 {
         0
+    }
+
+    /// Lists one workspace subtree. A released remote substrate should answer from its last
+    /// committed manifest without waking compute.
+    async fn list_files(&self, _path: &str, _recursive: bool) -> Result<WorkspaceListing> {
+        Err(crate::BrainError::HandUnavailable(
+            "workspace file listing is not supported by this substrate".into(),
+        ))
+    }
+
+    /// Reads one regular file, refusing before buffering more than `max_bytes`.
+    async fn read_file(&self, _path: &str, _max_bytes: usize) -> Result<WorkspaceFile> {
+        Err(crate::BrainError::HandUnavailable(
+            "workspace file download is not supported by this substrate".into(),
+        ))
+    }
+
+    /// Atomically overwrites one regular file. The core checkpoints immediately afterwards.
+    async fn write_file(&self, _path: &str, _bytes: &[u8]) -> Result<FileEntry> {
+        Err(crate::BrainError::HandUnavailable(
+            "workspace file upload is not supported by this substrate".into(),
+        ))
     }
 
     /// Copies a workspace file into durable artifact storage.

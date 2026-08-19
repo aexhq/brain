@@ -77,6 +77,8 @@ pub enum ToolRoute {
     /// D14 -- which supersedes §1.11's connector tier; there is no separate
     /// connector in MVP).
     Mcp,
+    /// A brain-managed outbound web tool (`web_search` / `web_fetch`).
+    Web,
 }
 
 /// An MCP server as declared at session start. Digested, because attaching one

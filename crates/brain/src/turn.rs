@@ -85,6 +85,7 @@ pub struct TurnRun {
     /// Bounds concurrent model rounds across the whole brain (admission, D9/D11).
     pub model_permits: Arc<Semaphore>,
     pub history_budget_bytes: usize,
+    pub web: Arc<crate::web::WebRuntime>,
 }
 
 #[derive(Debug, Clone)]
@@ -404,6 +405,7 @@ impl TurnRun {
                         seq: st.seq.clone(),
                         hand: st.hand.clone(),
                         mcp: st.mcp.clone(),
+                        web: self.web.clone(),
                         identities: st.identities.clone(),
                         journal: child_journal.clone(),
                     });
@@ -454,6 +456,15 @@ impl TurnRun {
                                 "MCP dispatch state is missing for this session".to_string(),
                             ),
                         };
+                        (idx, out)
+                    });
+                }
+                Some(ToolRoute::Web) => {
+                    let web = self.web.clone();
+                    let cancel = self.cancel.clone();
+                    join.spawn(async move {
+                        let _permit = permit.acquire_owned().await;
+                        let out = web.call(&name, &input, &cancel).await;
                         (idx, out)
                     });
                 }

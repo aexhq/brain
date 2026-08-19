@@ -11,7 +11,9 @@
 //! objects (see [`crate::adapter`]). [`Brain::local`] is the zero-setup composition; the AWS
 //! one lives in `brain-aws`; yours is whatever you hand in.
 
-use crate::adapter::{HandAdapter, HandFactory, HandSpec, SeedFile};
+use crate::adapter::{
+    HandAdapter, HandFactory, HandSpec, SeedFile, WorkspaceFile, WorkspaceListing,
+};
 use crate::compact::DEFAULT_HISTORY_BUDGET_BYTES;
 use crate::config::{AgentDef, Dialect, GenOpts, ProviderKey, SessionConfig};
 use crate::events::EventHub;
@@ -57,6 +59,16 @@ pub struct BrainConfig {
     pub mcp_call_timeout: Duration,
     /// Bound on one MCP tool result as shown to the model.
     pub mcp_max_result_bytes: usize,
+    /// Maximum bytes buffered by one public file upload or download.
+    pub max_file_bytes: usize,
+    /// Serper's fixed managed-search endpoint and redacted process credential.
+    pub web_search_endpoint: String,
+    pub web_search_api_key: Option<ProviderKey>,
+    pub web_call_timeout: Duration,
+    pub web_max_result_bytes: usize,
+    pub web_search_max_response_bytes: usize,
+    pub web_fetch_max_response_bytes: usize,
+    pub web_fetch_max_chars: usize,
 }
 
 impl Default for BrainConfig {
@@ -74,6 +86,26 @@ impl Default for BrainConfig {
                 env_num("AEX_MCP_CALL_TIMEOUT_MS", 60_000) as u64
             ),
             mcp_max_result_bytes: env_num("AEX_MCP_MAX_RESULT_BYTES", 128 * 1024),
+            max_file_bytes: env_num("AEX_MAX_FILE_BYTES", 64 * 1024 * 1024),
+            web_search_endpoint: std::env::var("AEX_WEB_SEARCH_ENDPOINT")
+                .unwrap_or_else(|_| "https://google.serper.dev/search".into()),
+            web_search_api_key: std::env::var("SERPER_API_KEY")
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(ProviderKey::new),
+            web_call_timeout: Duration::from_millis(
+                env_num("AEX_WEB_CALL_TIMEOUT_MS", 30_000) as u64
+            ),
+            web_max_result_bytes: env_num("AEX_WEB_MAX_RESULT_BYTES", 128 * 1024),
+            web_search_max_response_bytes: env_num(
+                "AEX_WEB_SEARCH_MAX_RESPONSE_BYTES",
+                1024 * 1024,
+            ),
+            web_fetch_max_response_bytes: env_num(
+                "AEX_WEB_FETCH_MAX_RESPONSE_BYTES",
+                5 * 1024 * 1024,
+            ),
+            web_fetch_max_chars: env_num("AEX_WEB_FETCH_MAX_CHARS", 50_000),
         }
     }
 }
@@ -118,6 +150,7 @@ pub struct Brain {
     /// The D14 egress seam: every brain-originated request to a user-controlled URL (MCP)
     /// goes through this client and its SSRF guard.
     pub outbound: crate::outbound::Outbound,
+    pub web: Arc<crate::web::WebRuntime>,
     provider_factory: ProviderFactory,
     turn_permits: Arc<Semaphore>,
     sessions: Mutex<HashMap<String, mpsc::Sender<Command>>>,
@@ -143,6 +176,20 @@ enum Command {
         media_type: Option<String>,
         reply: oneshot::Sender<Result<ArtifactDoc>>,
     },
+    ListFiles {
+        path: String,
+        recursive: bool,
+        reply: oneshot::Sender<Result<WorkspaceListing>>,
+    },
+    ReadFile {
+        path: String,
+        reply: oneshot::Sender<Result<WorkspaceFile>>,
+    },
+    WriteFile {
+        path: String,
+        bytes: Vec<u8>,
+        reply: oneshot::Sender<Result<aex_contracts::session::FileEntry>>,
+    },
     Snapshot {
         reply: oneshot::Sender<HeadDoc>,
     },
@@ -158,6 +205,17 @@ impl Brain {
         hand_factory: Arc<dyn HandFactory>,
         provider_factory: Option<ProviderFactory>,
     ) -> Arc<Self> {
+        let outbound = crate::outbound::Outbound::new(cfg.outbound_allow_private);
+        let web = Arc::new(crate::web::WebRuntime::new(
+            outbound.clone(),
+            cfg.web_search_endpoint.clone(),
+            cfg.web_search_api_key.clone(),
+            cfg.web_call_timeout,
+            cfg.web_max_result_bytes,
+            cfg.web_search_max_response_bytes,
+            cfg.web_fetch_max_response_bytes,
+            cfg.web_fetch_max_chars,
+        ));
         Arc::new(Self {
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
@@ -167,7 +225,8 @@ impl Brain {
             provider_factory: provider_factory.unwrap_or_else(default_provider_factory),
             hub: Arc::new(EventHub::new()),
             sessions: Mutex::new(HashMap::new()),
-            outbound: crate::outbound::Outbound::new(cfg.outbound_allow_private),
+            outbound,
+            web,
             cfg,
         })
     }
@@ -241,6 +300,15 @@ impl Brain {
             .builtin
             .clone()
             .unwrap_or_else(crate::tools::default_builtins);
+        if builtins
+            .iter()
+            .any(|tool| matches!(tool, aex_contracts::session::BuiltinTool::WebSearch))
+            && self.cfg.web_search_api_key.is_none()
+        {
+            return Err(BrainError::Invalid(
+                "tool web_search requires the managed search credential on this plane".into(),
+            ));
+        }
         let decls = crate::tools::resolve(&builtins)?;
 
         // Resolve the declared MCP servers NOW: the tool list is sealed at create (§1.12),
@@ -489,6 +557,54 @@ impl Brain {
             name: name.clone(),
             path: path.clone(),
             media_type: media_type.clone(),
+            reply,
+        })
+        .await?
+    }
+
+    pub async fn list_files(
+        self: &Arc<Self>,
+        session_id: &str,
+        path: String,
+        recursive: bool,
+    ) -> Result<WorkspaceListing> {
+        let path = normalize_workspace_path(&path)?;
+        self.deliver(session_id, |reply| Command::ListFiles {
+            path: path.clone(),
+            recursive,
+            reply,
+        })
+        .await?
+    }
+
+    pub async fn read_file(
+        self: &Arc<Self>,
+        session_id: &str,
+        path: String,
+    ) -> Result<WorkspaceFile> {
+        let path = normalize_workspace_path(&path)?;
+        self.deliver(session_id, |reply| Command::ReadFile {
+            path: path.clone(),
+            reply,
+        })
+        .await?
+    }
+
+    pub async fn write_file(
+        self: &Arc<Self>,
+        session_id: &str,
+        path: String,
+        bytes: Vec<u8>,
+    ) -> Result<aex_contracts::session::FileEntry> {
+        let path = normalize_workspace_path(&path)?;
+        if bytes.len() > self.cfg.max_file_bytes {
+            return Err(BrainError::FileTooLarge {
+                limit: self.cfg.max_file_bytes,
+            });
+        }
+        self.deliver(session_id, |reply| Command::WriteFile {
+            path: path.clone(),
+            bytes: bytes.clone(),
             reply,
         })
         .await?
@@ -760,6 +876,30 @@ async fn actor(
                             continue;
                         }
                         let out = do_persist(&brain, &session_id, &mut resident, name, path, media_type).await;
+                        let _ = reply.send(out);
+                    }
+                    Command::ListFiles { path, recursive, reply } => {
+                        if running.is_some() {
+                            let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
+                            continue;
+                        }
+                        let out = do_list_files(&brain, &session_id, &mut resident, path, recursive).await;
+                        let _ = reply.send(out);
+                    }
+                    Command::ReadFile { path, reply } => {
+                        if running.is_some() {
+                            let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
+                            continue;
+                        }
+                        let out = do_read_file(&brain, &session_id, &mut resident, path).await;
+                        let _ = reply.send(out);
+                    }
+                    Command::WriteFile { path, bytes, reply } => {
+                        if running.is_some() {
+                            let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
+                            continue;
+                        }
+                        let out = do_write_file(&brain, &session_id, &mut resident, path, bytes).await;
                         let _ = reply.send(out);
                     }
                 }
@@ -1103,6 +1243,7 @@ fn turn_run(
         cancel,
         model_permits: brain.model_permits.clone(),
         history_budget_bytes: brain.cfg.history_budget_bytes,
+        web: brain.web.clone(),
     })
 }
 
@@ -1273,6 +1414,88 @@ async fn do_persist(
     Ok(doc)
 }
 
+async fn ready_for_file_operation(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    st: &mut TurnState,
+) -> Result<()> {
+    if let Some(lost) = st.hand.ensure_ready().await? {
+        tracing::warn!(session = %session_id, reason = %lost.reason, "hand lost before file operation");
+        let synced_ms = st
+            .head
+            .hand_info
+            .last_sync_at
+            .as_ref()
+            .map(|t| t.0.timestamp_millis() as u64);
+        let seq = st.take_seq();
+        commit(
+            brain,
+            session_id,
+            st,
+            vec![(
+                seq,
+                Record::HandLost {
+                    turn: None,
+                    interrupted: vec![],
+                    synced_ms,
+                },
+            )],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn do_list_files(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+    path: String,
+    recursive: bool,
+) -> Result<WorkspaceListing> {
+    let r = ensure_resident(brain, session_id, resident).await?;
+    // A released Lambda hand can serve its committed manifest without waking compute.
+    if r.st.hand.hand_info().state != aex_contracts::session::HandState::Released {
+        ready_for_file_operation(brain, session_id, &mut r.st).await?;
+    }
+    let out = r.st.hand.list_files(&path, recursive).await?;
+    commit(brain, session_id, &mut r.st, vec![]).await?;
+    r.st.hand.idle();
+    Ok(out)
+}
+
+async fn do_read_file(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+    path: String,
+) -> Result<WorkspaceFile> {
+    let r = ensure_resident(brain, session_id, resident).await?;
+    ready_for_file_operation(brain, session_id, &mut r.st).await?;
+    let out = r.st.hand.read_file(&path, brain.cfg.max_file_bytes).await?;
+    commit(brain, session_id, &mut r.st, vec![]).await?;
+    r.st.hand.idle();
+    Ok(out)
+}
+
+async fn do_write_file(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+    path: String,
+    bytes: Vec<u8>,
+) -> Result<aex_contracts::session::FileEntry> {
+    let r = ensure_resident(brain, session_id, resident).await?;
+    ready_for_file_operation(brain, session_id, &mut r.st).await?;
+    let out = r.st.hand.write_file(&path, &bytes).await?;
+    // Upload acknowledgement is the durability boundary: checkpoint and commit the new
+    // adapter manifest pointer before returning 200.
+    r.st.hand.checkpoint().await?;
+    commit(brain, session_id, &mut r.st, vec![]).await?;
+    r.st.hand.idle();
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Mapping helpers
 // ---------------------------------------------------------------------------------------------
@@ -1286,6 +1509,39 @@ pub fn provider_name(p: &ApiProvider) -> &'static str {
         ApiProvider::Xai => "xai",
         ApiProvider::OpenaiCompatible => "openai_compatible",
     }
+}
+
+/// Canonical public file path. The URL surface is deliberately narrower than hand tool paths:
+/// only absolute POSIX paths beneath `/workspace` are accepted.
+pub fn normalize_workspace_path(path: &str) -> Result<String> {
+    if path.contains('\0') || path.contains('\\') {
+        return Err(BrainError::Invalid(
+            "file path contains a forbidden character".into(),
+        ));
+    }
+    let mut parts = path.split('/');
+    if parts.next() != Some("") || parts.next() != Some("workspace") {
+        return Err(BrainError::Invalid(
+            "file path must be absolute and beneath /workspace".into(),
+        ));
+    }
+    let mut clean = Vec::new();
+    for part in parts {
+        match part {
+            "" => continue,
+            "." | ".." => {
+                return Err(BrainError::Invalid(
+                    "file path may not contain . or .. components".into(),
+                ));
+            }
+            value => clean.push(value),
+        }
+    }
+    Ok(if clean.is_empty() {
+        "/workspace".into()
+    } else {
+        format!("/workspace/{}", clean.join("/"))
+    })
 }
 
 /// Certified: openai, anthropic. Available uncertified: the rest (they speak one of the two

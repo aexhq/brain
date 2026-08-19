@@ -84,6 +84,7 @@ async fn the_whole_local_loop_over_real_http() {
         max_concurrent_turns: 8,
         idle_discard: Duration::from_secs(300),
         history_budget_bytes: 1 << 20,
+        max_file_bytes: 8,
         ..BrainConfig::default()
     };
 
@@ -195,6 +196,74 @@ async fn the_whole_local_loop_over_real_http() {
     // The workspace really is on disk where the operator can see it.
     let on_disk = tmp.0.join(&sid).join("workspace").join("hello.txt");
     assert_eq!(std::fs::read_to_string(&on_disk).unwrap(), "local-e2e-ok");
+
+    // Public files surface: binary-safe overwrite, deterministic live listing, exact
+    // download, path confinement, and the configured request ceiling.
+    let file_url = format!("{base}/v1/sessions/{sid}/files/%2Fworkspace%2Fupload.bin");
+    let payload = vec![0, 1, 2, 0xff];
+    let r = http
+        .put(&file_url)
+        .bearer_auth(&token)
+        .header("content-type", "application/octet-stream")
+        .body(payload.clone())
+        .send()
+        .await
+        .unwrap();
+    let status = r.status();
+    let body = r.bytes().await.unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let entry: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(entry["path"], "/workspace/upload.bin");
+    assert_eq!(entry["size"], payload.len());
+
+    let listing: Value = http
+        .get(format!(
+            "{base}/v1/sessions/{sid}/files?path=%2Fworkspace&recursive=true"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listing["source"], "hand");
+    let paths: Vec<_> = listing["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(paths.contains(&"/workspace/hello.txt"));
+    assert!(paths.contains(&"/workspace/upload.bin"));
+
+    let r = http
+        .get(&file_url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.bytes().await.unwrap().as_ref(), payload.as_slice());
+
+    let r = http
+        .get(format!(
+            "{base}/v1/sessions/{sid}/files?path=%2Fworkspace%2F..%2Fescape"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    let r = http
+        .put(&file_url)
+        .bearer_auth(&token)
+        .body(vec![0u8; 9])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 413);
 
     // Persist -> artifact metadata (no download URL in local mode; the file is local).
     let r = http

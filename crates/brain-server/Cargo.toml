@@ -10,7 +10,7 @@ description = "The composed aex brain server: local mode by default, AWS mode by
 brain = { workspace = true }
 brain-aws = { workspace = true }
 hand-lambda = { workspace = true }
-aws-sdk-lambdamicrovms = "1"
+aws-sdk-lambdamicrovms = { workspace = true }
 
 anyhow = { workspace = true }
 futures-util = { workspace = true }

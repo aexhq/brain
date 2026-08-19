@@ -4,8 +4,8 @@
 //! schemas are rendered to the model exactly as the hand serves them, so the manifest digest
 //! the brain seals at create is the digest the hand must answer in `hello` (I1).
 //!
-//! Brain-side tools (`todo`, and since slice 8 `task`) run in-process. The managed web tools
-//! are still M1: asking for them at create is a typed rejection, never a silent no-op.
+//! Brain-side tools (`todo`, and since slice 8 `task`) run in-process. Managed web tools run
+//! through the guarded outbound seam and are available only when explicitly sealed.
 
 use crate::config::{ToolDecl, ToolRoute};
 use crate::{BrainError, Result};
@@ -64,18 +64,15 @@ pub fn parse_builtin(name: &str) -> Option<BuiltinTool> {
 }
 
 /// Resolves the declared builtin tools into sealed `ToolDecl`s, in declaration order (order
-/// is cache-visible). Unavailable tools are refused at create, loudly.
+/// is cache-visible).
 pub fn resolve(builtins: &[BuiltinTool]) -> Result<Vec<ToolDecl>> {
     let manifest = aex_contracts::tools::manifest_v1();
     let mut decls = Vec::with_capacity(builtins.len());
     for b in builtins {
         let name = builtin_name(b);
         match b {
-            BuiltinTool::WebSearch | BuiltinTool::WebFetch => {
-                return Err(BrainError::Invalid(format!(
-                    "tool {name} is not available yet (M1); remove it from tools.builtin"
-                )));
-            }
+            BuiltinTool::WebSearch => decls.push(web_search_decl()),
+            BuiltinTool::WebFetch => decls.push(web_fetch_decl()),
             BuiltinTool::Task => decls.push(task_decl()),
             BuiltinTool::Todo => decls.push(todo_decl()),
             _ => {
@@ -94,6 +91,42 @@ pub fn resolve(builtins: &[BuiltinTool]) -> Result<Vec<ToolDecl>> {
         }
     }
     Ok(decls)
+}
+
+fn web_search_decl() -> ToolDecl {
+    ToolDecl {
+        name: "web_search".into(),
+        description: "Search the public web using the managed search service. Returns ordered titles, URLs, snippets, and optional dates. Each successful call is billed at the published per-query rate.".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {"type":"string", "minLength":1, "maxLength":500},
+                "num": {"type":"integer", "minimum":1, "maximum":10, "default":5},
+                "country": {"type":"string", "minLength":2, "maxLength":8},
+                "language": {"type":"string", "minLength":2, "maxLength":16}
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        }),
+        route: ToolRoute::Web,
+    }
+}
+
+fn web_fetch_decl() -> ToolDecl {
+    ToolDecl {
+        name: "web_fetch".into(),
+        description: "Fetch one public HTTPS page through the SSRF guard and return readable text. Redirects are revalidated at every hop; private, local, metadata, and non-web destinations are refused.".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "url": {"type":"string", "format":"uri", "minLength":1},
+                "max_chars": {"type":"integer", "minimum":1, "maximum":50000, "default":50000}
+            },
+            "required": ["url"],
+            "additionalProperties": false
+        }),
+        route: ToolRoute::Web,
+    }
 }
 
 /// Names of the resolved tools, for the HEAD prefix doc.
@@ -270,10 +303,10 @@ mod tests {
     }
 
     #[test]
-    fn m1_tools_are_refused_loudly() {
-        for t in [BuiltinTool::WebSearch, BuiltinTool::WebFetch] {
-            assert!(matches!(resolve(&[t]), Err(BrainError::Invalid(_))));
-        }
+    fn managed_web_tools_have_sealed_schemas_and_routes() {
+        let tools = resolve(&[BuiltinTool::WebSearch, BuiltinTool::WebFetch]).unwrap();
+        assert_eq!(names(&tools), ["web_search", "web_fetch"]);
+        assert!(tools.iter().all(|tool| tool.route == ToolRoute::Web));
     }
 
     #[test]

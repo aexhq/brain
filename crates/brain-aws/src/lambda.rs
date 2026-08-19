@@ -20,13 +20,14 @@
 use aex_contracts::abi::{
     CancelRequest, Cursor, HelloRequest, HelloResponse, LaneMode, LaneRef, OperationStatus,
     PollRequest, ProtocolVersion, PutFile, PutRequest, PutSource, ReleaseRequest, RestoreSource,
-    RestoreSourcePacksItem, Stream as AbiStream, SyncReason, SyncRequest, SyncScope,
+    RestoreSourcePacksItem, Stream as AbiStream, SyncEntry, SyncManifest, SyncReason, SyncRequest,
+    SyncScope,
 };
 use aws_sdk_s3::presigning::PresigningConfig;
 use base64::Engine;
 use brain::adapter::{
     ArtifactMeta, CallOutcome, CallRequest, HandAdapter, HandFactory, HandSpec, LostReport,
-    OutputSink, SeedFile,
+    OutputSink, SeedFile, WorkspaceFile, WorkspaceListing,
 };
 use brain::journal::MAX_RECORD_CONTENT_BYTES;
 use brain::{BrainError, Result};
@@ -178,6 +179,12 @@ pub fn seed_key(session_id: &str, index: usize) -> String {
 }
 pub fn artifact_key(session_id: &str, name: &str) -> String {
     format!("sessions/{session_id}/artifacts/{name}")
+}
+pub fn transfer_key(session_id: &str) -> String {
+    format!(
+        "sessions/{session_id}/transfer/{}",
+        brain::mint_id("xfer", 20)
+    )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -712,6 +719,126 @@ impl LambdaHand {
         let conn = self.conn.lock().await;
         conn.live.as_ref().map(|l| l.client.clone())
     }
+
+    async fn manifest_listing(
+        &self,
+        path: &str,
+        recursive: bool,
+        source: aex_contracts::session::FileListSource,
+    ) -> Result<WorkspaceListing> {
+        use aex_contracts::session::{FileEntry, FileEntryKind, Timestamp};
+        let snap = self.snap();
+        let Some(manifest_id) = snap.sync.manifest_id.as_deref() else {
+            if path != "/workspace" {
+                return Err(BrainError::FileNotFound(path.into()));
+            }
+            return Ok(WorkspaceListing {
+                entries: Vec::new(),
+                source,
+                synced_ms: snap.sync.synced_ms,
+            });
+        };
+        let object = self
+            .plane
+            .s3
+            .get_object()
+            .bucket(&self.plane.cfg.bucket)
+            .key(sync_manifest_key(&self.spec.session_id, manifest_id))
+            .send()
+            .await
+            .map_err(|e| BrainError::HandUnavailable(format!("manifest download: {e}")))?;
+        const MAX_MANIFEST_BYTES: i64 = 16 * 1024 * 1024;
+        if object.content_length().unwrap_or_default() > MAX_MANIFEST_BYTES {
+            return Err(BrainError::Hand(
+                "sync manifest exceeds the 16 MiB control limit".into(),
+            ));
+        }
+        let raw = object
+            .body
+            .collect()
+            .await
+            .map_err(|e| BrainError::HandUnavailable(format!("manifest body: {e}")))?
+            .into_bytes();
+        if raw.len() > MAX_MANIFEST_BYTES as usize {
+            return Err(BrainError::Hand(
+                "sync manifest exceeds the 16 MiB control limit".into(),
+            ));
+        }
+        let manifest: SyncManifest = serde_json::from_slice(&raw)
+            .map_err(|e| BrainError::Hand(format!("sync manifest is invalid: {e}")))?;
+        let child_prefix = format!("{}/", path.trim_end_matches('/'));
+        let selected = |candidate: &str| {
+            candidate == path
+                || candidate
+                    .strip_prefix(&child_prefix)
+                    .is_some_and(|rest| !rest.is_empty() && (recursive || !rest.contains('/')))
+        };
+        let mut entries = Vec::new();
+        for entry in manifest.entries {
+            let mapped = match entry {
+                SyncEntry::File {
+                    mtime_ns,
+                    path,
+                    sha256,
+                    size,
+                    ..
+                } if selected(&path) => {
+                    let secs = i64::try_from(mtime_ns / 1_000_000_000).ok();
+                    let nanos = (mtime_ns % 1_000_000_000) as u32;
+                    Some(FileEntry {
+                        kind: FileEntryKind::File,
+                        modified_at: secs
+                            .and_then(|s| chrono::DateTime::<chrono::Utc>::from_timestamp(s, nanos))
+                            .map(Timestamp),
+                        path,
+                        sha256: (*sha256).to_string().parse().ok(),
+                        size: Some(size),
+                    })
+                }
+                SyncEntry::Dir { path, .. } if selected(&path) => Some(FileEntry {
+                    kind: FileEntryKind::Dir,
+                    modified_at: None,
+                    path,
+                    sha256: None,
+                    size: None,
+                }),
+                SyncEntry::Symlink { path, .. } if selected(&path) => Some(FileEntry {
+                    kind: FileEntryKind::Symlink,
+                    modified_at: None,
+                    path,
+                    sha256: None,
+                    size: None,
+                }),
+                _ => None,
+            };
+            if let Some(entry) = mapped {
+                entries.push(entry);
+            }
+        }
+        entries.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
+        if entries.is_empty() && path != "/workspace" {
+            return Err(BrainError::FileNotFound(path.into()));
+        }
+        Ok(WorkspaceListing {
+            entries,
+            source,
+            synced_ms: snap.sync.synced_ms,
+        })
+    }
+
+    async fn delete_transfer(&self, key: &str) {
+        if let Err(error) = self
+            .plane
+            .s3
+            .delete_object()
+            .bucket(&self.plane.cfg.bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            tracing::warn!(session = %self.spec.session_id, %error, "temporary file transfer cleanup failed");
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -831,6 +958,160 @@ impl HandAdapter for LambdaHand {
 
     fn workspace_bytes(&self) -> u64 {
         self.snap().sync.bytes_total
+    }
+
+    async fn list_files(&self, path: &str, recursive: bool) -> Result<WorkspaceListing> {
+        let released = self.snap().hand.state == "released";
+        if released {
+            return self
+                .manifest_listing(
+                    path,
+                    recursive,
+                    aex_contracts::session::FileListSource::Manifest,
+                )
+                .await;
+        }
+        // Capture a complete, metadata-bearing live view with the existing sync mechanism;
+        // this avoids parsing a lossy tool preview and makes the listing a durability point.
+        let mut conn = self.conn.lock().await;
+        self.sync_inner(&mut conn, SyncReason::Explicit).await?;
+        drop(conn);
+        self.manifest_listing(
+            path,
+            recursive,
+            aex_contracts::session::FileListSource::Hand,
+        )
+        .await
+    }
+
+    async fn read_file(&self, path: &str, max_bytes: usize) -> Result<WorkspaceFile> {
+        use aex_contracts::abi::{PersistItem, PersistRequest as AbiPersist, PersistSource};
+        use aex_contracts::session::{FileEntry, FileEntryKind};
+        let client = self
+            .client()
+            .await
+            .ok_or_else(|| BrainError::HandUnavailable("no hand".into()))?;
+        let key = transfer_key(&self.spec.session_id);
+        let result = async {
+            let put_url = self.plane.presign_put(&key).await?;
+            let response = client
+                .persist(AbiPersist {
+                    items: vec![PersistItem {
+                        name: "download.bin"
+                            .parse()
+                            .map_err(|_| BrainError::Invalid("transfer name".into()))?,
+                        put_url,
+                        media_type: Some("application/octet-stream".into()),
+                        source: PersistSource::Path {
+                            path: path.to_string(),
+                        },
+                    }],
+                })
+                .await
+                .map_err(|e| BrainError::Hand(format!("file download stage: {e}")))?;
+            let item = response
+                .persisted
+                .first()
+                .ok_or_else(|| BrainError::Hand("file download returned no item".into()))?;
+            if item.bytes > max_bytes as u64 {
+                return Err(BrainError::FileTooLarge { limit: max_bytes });
+            }
+            let object = self
+                .plane
+                .s3
+                .get_object()
+                .bucket(&self.plane.cfg.bucket)
+                .key(&key)
+                .send()
+                .await
+                .map_err(|e| BrainError::HandUnavailable(format!("file download: {e}")))?;
+            let bytes = object
+                .body
+                .collect()
+                .await
+                .map_err(|e| BrainError::HandUnavailable(format!("file body: {e}")))?
+                .into_bytes()
+                .to_vec();
+            if bytes.len() > max_bytes {
+                return Err(BrainError::FileTooLarge { limit: max_bytes });
+            }
+            let got = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes));
+            if got != *item.sha256 {
+                return Err(BrainError::Hand("file download digest mismatch".into()));
+            }
+            Ok(WorkspaceFile {
+                entry: FileEntry {
+                    kind: FileEntryKind::File,
+                    modified_at: None,
+                    path: path.to_string(),
+                    sha256: got.parse().ok(),
+                    size: Some(bytes.len() as u64),
+                },
+                bytes,
+            })
+        }
+        .await;
+        self.delete_transfer(&key).await;
+        result
+    }
+
+    async fn write_file(
+        &self,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<aex_contracts::session::FileEntry> {
+        use aex_contracts::session::{FileEntry, FileEntryKind};
+        let client = self
+            .client()
+            .await
+            .ok_or_else(|| BrainError::HandUnavailable("no hand".into()))?;
+        let key = transfer_key(&self.spec.session_id);
+        let result = async {
+            let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(bytes));
+            self.plane
+                .s3
+                .put_object()
+                .bucket(&self.plane.cfg.bucket)
+                .key(&key)
+                .body(bytes.to_vec().into())
+                .send()
+                .await
+                .map_err(|e| BrainError::HandUnavailable(format!("file upload stage: {e}")))?;
+            let response = client
+                .put(PutRequest {
+                    files: vec![PutFile {
+                        path: path.to_string(),
+                        mode: None,
+                        source: PutSource::Url {
+                            get_url: self.plane.presign_get(&key).await?,
+                            bytes: bytes.len() as u64,
+                            sha256: digest
+                                .clone()
+                                .parse()
+                                .map_err(|_| BrainError::Hand("sha256 conversion".into()))?,
+                        },
+                    }],
+                })
+                .await
+                .map_err(|e| BrainError::Hand(format!("file upload: {e}")))?;
+            let written = response
+                .written
+                .first()
+                .ok_or_else(|| BrainError::Hand("file upload returned no item".into()))?;
+            if written.bytes != bytes.len() as u64 || *written.sha256 != digest {
+                return Err(BrainError::Hand("file upload verification mismatch".into()));
+            }
+            Ok(FileEntry {
+                kind: FileEntryKind::File,
+                modified_at: None,
+                path: path.to_string(),
+                sha256: digest.parse().ok(),
+                size: Some(bytes.len() as u64),
+            })
+        }
+        .await;
+        self.delete_transfer(&key).await;
+        result
     }
 
     async fn persist(

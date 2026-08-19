@@ -7,8 +7,7 @@
 //! The subscription starts BEFORE the replay read so nothing falls between them; duplicates
 //! are dropped by seq.
 //!
-//! Not yet served (M1, returns `invalid_request` with a plain explanation): the files
-//! endpoints (`/files...`). Idempotency-Key headers are accepted and ignored in M0.
+//! Idempotency-Key headers are accepted and ignored in M0.
 
 use crate::events::{event_seq, event_type};
 use crate::journal::Record;
@@ -16,8 +15,9 @@ use crate::session::Brain;
 use crate::{BrainError, mint_id};
 use aex_contracts::session::{
     self, ApiError, ApiErrorCode, ApiErrorResponse, Artifact, ArtifactList, CreateSessionRequest,
-    MessageAccepted, MessageRequest, PersistRequest, SessionList,
+    FileList, FileListObject, MessageAccepted, MessageRequest, PersistRequest, SessionList,
 };
+use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event as SseFrame, KeepAlive, Sse};
@@ -46,6 +46,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions/{id}/events", get(stream_events))
         .route("/v1/sessions/{id}/cancel", post(cancel_turn))
         .route("/v1/sessions/{id}/end", post(end_session))
+        .route("/v1/sessions/{id}/files", get(list_files))
+        .route(
+            "/v1/sessions/{id}/files/{*path}",
+            get(download_file).put(upload_file),
+        )
         .route("/v1/sessions/{id}/persist", post(persist_artifact))
         .route("/v1/sessions/{id}/artifacts", get(list_artifacts))
         .route("/v1/sessions/{id}/artifacts/{name}", get(get_artifact))
@@ -100,6 +105,8 @@ fn map_err(e: BrainError) -> Failure {
             (S::BAD_REQUEST, C::InvalidRequest)
         }
         BrainError::NoSuchSession(_) => (S::NOT_FOUND, C::NotFound),
+        BrainError::FileNotFound(_) => (S::NOT_FOUND, C::NotFound),
+        BrainError::FileTooLarge { .. } => (S::PAYLOAD_TOO_LARGE, C::InvalidRequest),
         BrainError::TurnInFlight(_) => (S::CONFLICT, C::SessionBusy),
         BrainError::SessionDeleted(_) => (S::GONE, C::SessionDeleted),
         BrainError::SessionFailed(_) => (S::CONFLICT, C::SessionFailed),
@@ -244,6 +251,75 @@ async fn end_session(
 ) -> Result<Json<session::Session>, Failure> {
     auth(&state, &headers)?;
     Ok(Json(state.brain.end(&id).await.map_err(map_err)?))
+}
+
+#[derive(Deserialize)]
+struct FilesQuery {
+    #[serde(default = "default_files_path")]
+    path: String,
+    #[serde(default)]
+    recursive: bool,
+}
+
+fn default_files_path() -> String {
+    "/workspace".into()
+}
+
+async fn list_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<FilesQuery>,
+) -> Result<Json<FileList>, Failure> {
+    auth(&state, &headers)?;
+    let listing = state
+        .brain
+        .list_files(&id, q.path, q.recursive)
+        .await
+        .map_err(map_err)?;
+    Ok(Json(FileList {
+        data: listing.entries,
+        object: FileListObject::List,
+        source: listing.source,
+        synced_at: listing.synced_ms.map(|ms| crate::events::ts(ms).0),
+    }))
+}
+
+async fn download_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, path)): Path<(String, String)>,
+) -> Result<Response, Failure> {
+    auth(&state, &headers)?;
+    let file = state.brain.read_file(&id, path).await.map_err(map_err)?;
+    Ok((
+        [(header::CONTENT_TYPE, "application/octet-stream")],
+        Bytes::from(file.bytes),
+    )
+        .into_response())
+}
+
+async fn upload_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, path)): Path<(String, String)>,
+    body: Body,
+) -> Result<Json<session::FileEntry>, Failure> {
+    auth(&state, &headers)?;
+    let bytes = to_bytes(body, state.brain.cfg.max_file_bytes)
+        .await
+        .map_err(|_| {
+            map_err(BrainError::FileTooLarge {
+                limit: state.brain.cfg.max_file_bytes,
+            })
+        })?;
+    Ok(Json(
+        state
+            .brain
+            .write_file(&id, path, bytes.to_vec())
+            .await
+            .map_err(map_err)?,
+    ))
 }
 
 async fn persist_artifact(

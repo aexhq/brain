@@ -15,7 +15,7 @@
 
 use crate::adapter::{
     ArtifactMeta, CallOutcome, CallRequest, HandAdapter, HandFactory, HandSpec, LostReport,
-    OutputSink, SeedFile,
+    OutputSink, SeedFile, WorkspaceFile, WorkspaceListing,
 };
 use crate::{BrainError, Result};
 use serde_json::{Value, json};
@@ -136,6 +136,195 @@ impl LocalHand {
             .unwrap_or(p)
             .to_string_lossy()
             .replace('\\', "/")
+    }
+
+    fn api_path(&self, path: &str) -> Result<PathBuf> {
+        let target = self.resolve(path)?;
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|e| BrainError::Hand(format!("workspace root: {e}")))?;
+        let mut existing = target.clone();
+        while !existing.exists() {
+            existing = existing
+                .parent()
+                .ok_or_else(|| {
+                    BrainError::Invalid(format!("file path {path} escapes the workspace"))
+                })?
+                .to_path_buf();
+        }
+        // For a symlink itself, validate its parent without following the final link. Reads
+        // and writes reject that final link below; listings may describe it safely.
+        let check = if existing == target
+            && std::fs::symlink_metadata(&existing)
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+        {
+            existing.parent().unwrap_or(&existing).canonicalize()
+        } else {
+            existing.canonicalize()
+        }
+        .map_err(|e| BrainError::Hand(format!("resolve {path}: {e}")))?;
+        if !check.starts_with(&root) {
+            return Err(BrainError::Invalid(format!(
+                "file path {path} resolves outside /workspace"
+            )));
+        }
+        Ok(target)
+    }
+
+    fn public_path(&self, path: &Path) -> String {
+        let rel = self.rel_of(path);
+        if rel.is_empty() {
+            "/workspace".into()
+        } else {
+            format!("/workspace/{rel}")
+        }
+    }
+
+    fn file_entry(&self, path: &Path) -> Result<aex_contracts::session::FileEntry> {
+        use aex_contracts::session::{FileEntry, FileEntryKind, Timestamp};
+        let md = std::fs::symlink_metadata(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                BrainError::FileNotFound(self.public_path(path))
+            } else {
+                BrainError::Hand(format!("metadata {}: {e}", path.display()))
+            }
+        })?;
+        let kind = if md.file_type().is_symlink() {
+            FileEntryKind::Symlink
+        } else if md.is_dir() {
+            FileEntryKind::Dir
+        } else {
+            FileEntryKind::File
+        };
+        let (size, sha256) = if md.is_file() {
+            use std::io::Read as _;
+            let mut file = std::fs::File::open(path)
+                .map_err(|e| BrainError::Hand(format!("read {}: {e}", path.display())))?;
+            let mut digest = Sha256::new();
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let n = file
+                    .read(&mut buffer)
+                    .map_err(|e| BrainError::Hand(format!("read {}: {e}", path.display())))?;
+                if n == 0 {
+                    break;
+                }
+                digest.update(&buffer[..n]);
+            }
+            let sha = hex::encode(digest.finalize())
+                .parse()
+                .map_err(|_| BrainError::Hand("sha256 conversion".into()))?;
+            (Some(md.len()), Some(sha))
+        } else {
+            (None, None)
+        };
+        Ok(FileEntry {
+            kind,
+            modified_at: md
+                .modified()
+                .ok()
+                .map(|at| Timestamp(chrono::DateTime::<chrono::Utc>::from(at))),
+            path: self.public_path(path),
+            sha256,
+            size,
+        })
+    }
+
+    fn list_workspace(&self, path: &str, recursive: bool) -> Result<WorkspaceListing> {
+        let target = self.api_path(path)?;
+        if !target.exists() {
+            return Err(BrainError::FileNotFound(path.into()));
+        }
+        let mut entries = Vec::new();
+        let max_depth = if recursive { usize::MAX } else { 1 };
+        for item in walkdir::WalkDir::new(&target)
+            .min_depth(0)
+            .max_depth(max_depth)
+            .follow_links(false)
+        {
+            let item = item.map_err(|e| BrainError::Hand(format!("list {path}: {e}")))?;
+            entries.push(self.file_entry(item.path())?);
+        }
+        entries.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
+        Ok(WorkspaceListing {
+            entries,
+            source: aex_contracts::session::FileListSource::Hand,
+            synced_ms: None,
+        })
+    }
+
+    fn read_workspace(&self, path: &str, max_bytes: usize) -> Result<WorkspaceFile> {
+        let target = self.api_path(path)?;
+        let md = std::fs::symlink_metadata(&target)
+            .map_err(|_| BrainError::FileNotFound(path.into()))?;
+        if md.file_type().is_symlink() || !md.is_file() {
+            return Err(BrainError::Invalid(format!(
+                "file path {path} is not a regular file"
+            )));
+        }
+        let canonical = target
+            .canonicalize()
+            .map_err(|e| BrainError::Hand(format!("resolve {path}: {e}")))?;
+        if !canonical.starts_with(
+            self.root
+                .canonicalize()
+                .map_err(|e| BrainError::Hand(format!("workspace root: {e}")))?,
+        ) {
+            return Err(BrainError::Invalid(format!(
+                "file path {path} resolves outside /workspace"
+            )));
+        }
+        if md.len() > max_bytes as u64 {
+            return Err(BrainError::FileTooLarge { limit: max_bytes });
+        }
+        let bytes =
+            std::fs::read(&target).map_err(|e| BrainError::Hand(format!("read {path}: {e}")))?;
+        if bytes.len() > max_bytes {
+            return Err(BrainError::FileTooLarge { limit: max_bytes });
+        }
+        Ok(WorkspaceFile {
+            entry: self.file_entry(&target)?,
+            bytes,
+        })
+    }
+
+    fn write_workspace(
+        &self,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<aex_contracts::session::FileEntry> {
+        let target = self.api_path(path)?;
+        if target
+            .symlink_metadata()
+            .map(|m| m.file_type().is_symlink() || m.is_dir())
+            .unwrap_or(false)
+        {
+            return Err(BrainError::Invalid(format!(
+                "file path {path} is not a regular file target"
+            )));
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| BrainError::Invalid("file path has no parent".into()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| BrainError::Hand(format!("create parent for {path}: {e}")))?;
+        let tmp = parent.join(format!(".aex-upload-{}", crate::mint_id("tmp", 12)));
+        std::fs::write(&tmp, bytes).map_err(|e| BrainError::Hand(format!("write {path}: {e}")))?;
+        if let Err(first) = std::fs::rename(&tmp, &target) {
+            // Windows does not replace an existing destination on every filesystem. Local
+            // mode is explicitly non-durable/non-sandboxed; retain overwrite semantics.
+            if target.exists() {
+                std::fs::remove_file(&target)
+                    .map_err(|e| BrainError::Hand(format!("replace {path}: {first}; {e}")))?;
+                std::fs::rename(&tmp, &target)
+                    .map_err(|e| BrainError::Hand(format!("replace {path}: {e}")))?;
+            } else {
+                return Err(BrainError::Hand(format!("write {path}: {first}")));
+            }
+        }
+        self.file_entry(&target)
     }
 
     /// Executes one tool call. `emit` receives (stream_name, offset, chunk) for live output.
@@ -751,6 +940,22 @@ impl HandAdapter for LocalHand {
         Ok(())
     }
 
+    async fn list_files(&self, path: &str, recursive: bool) -> Result<WorkspaceListing> {
+        self.list_workspace(path, recursive)
+    }
+
+    async fn read_file(&self, path: &str, max_bytes: usize) -> Result<WorkspaceFile> {
+        self.read_workspace(path, max_bytes)
+    }
+
+    async fn write_file(
+        &self,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<aex_contracts::session::FileEntry> {
+        self.write_workspace(path, bytes)
+    }
+
     async fn persist(
         &self,
         name: &str,
@@ -823,6 +1028,21 @@ mod tests {
         assert!(h.resolve("/etc/passwd").is_err());
         assert!(h.resolve("../outside").is_err());
         assert!(h.resolve("a/../../outside").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn public_file_write_rejects_an_escaping_parent_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let (guard, h) = hand();
+        let outside = guard.0.with_extension("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, h.root.join("escape")).unwrap();
+        let result = h.write_workspace("/workspace/escape/nope.txt", b"nope");
+        assert!(result.is_err());
+        assert!(!outside.join("nope.txt").exists());
+        std::fs::remove_dir_all(outside).unwrap();
     }
 
     #[tokio::test]

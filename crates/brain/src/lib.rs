@@ -29,6 +29,7 @@ pub mod session;
 pub mod subagent;
 pub mod tools;
 pub mod turn;
+pub mod web;
 
 pub use config::{ProviderKey, SealedPrefix, SessionConfig, ToolDecl};
 pub use message::{ContentBlock, Message, Role, StopReason, Usage};
@@ -56,6 +57,12 @@ pub enum BrainError {
 
     #[error("invalid request: {0}")]
     Invalid(String),
+
+    #[error("workspace path not found: {0}")]
+    FileNotFound(String),
+
+    #[error("file payload exceeds the configured limit of {limit} bytes")]
+    FileTooLarge { limit: usize },
 
     #[error("the brain is at capacity; retry with backoff")]
     Overloaded,
