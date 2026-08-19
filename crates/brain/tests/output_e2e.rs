@@ -320,7 +320,7 @@ async fn output_is_typed_private_repairable_and_idempotent() {
         let continuation = serde_json::to_string(&bodies[3]).unwrap();
         assert!(!continuation.contains("$schema"));
         assert!(!continuation.contains("Validation issues"));
-        assert!(!continuation.contains("AEX private output commit"));
+        assert!(!continuation.contains("Aex private output commit"));
     }
 
     fake.assert_drained(4, "typed output e2e and continuation")

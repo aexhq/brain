@@ -76,7 +76,7 @@ pub fn validate_schema(schema: &Value, claimed_hash: &str) -> Result<()> {
     }
     if schema.get("type").and_then(Value::as_str) != Some("object") {
         return Err(BrainError::OutputSchema(
-            "the beta output schema must have an object root".into(),
+            "the output schema must have an object root".into(),
         ));
     }
     reject_remote_refs(schema)?;
@@ -604,7 +604,7 @@ fn message_text(message: &Message) -> String {
 
 fn base_instruction(candidate: &str) -> String {
     let mut instruction = String::from(
-        "AEX private output commit. Return the answer in the required structured format. \
+        "Aex private output commit. Return the answer in the required structured format. \
          Preserve facts already established in the session. Do not perform new work and do not \
          call any tool except the forced aex_output tool if it is the only tool offered.",
     );

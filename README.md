@@ -1,6 +1,6 @@
 # brain
 
-The **brain**: the aex LLM harness. One long-lived process owns every session's decisions —
+The **brain**: the Aex LLM harness. One long-lived process owns every session's decisions —
 the sealed prefix, the provider round, the tool loop, the journal (one durable write per
 decision), the SSE event stream, admission and cancellation.
 
