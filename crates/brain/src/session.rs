@@ -165,10 +165,24 @@ pub(crate) fn idempotent_session_id(key: &str) -> String {
     format!("ses_{}", &hash[..24])
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MessageIdentity {
+    key_hash: String,
+    request_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MessageReplay {
+    request_hash: String,
+    turn_id: String,
+    user_seq: u64,
+}
+
 enum Command {
     Message {
         content: Vec<ContentBlock>,
         metadata: HashMap<String, String>,
+        idempotency: Option<MessageIdentity>,
         reply: oneshot::Sender<Result<(String, u64)>>, // (turn_id, seq of the user message)
     },
     Cancel {
@@ -812,6 +826,17 @@ impl Brain {
         content: MessageRequestContent,
         metadata: HashMap<String, String>,
     ) -> Result<(String, u64)> {
+        self.message_with_metadata_idempotent(session_id, content, metadata, None)
+            .await
+    }
+
+    pub async fn message_with_metadata_idempotent(
+        self: &Arc<Self>,
+        session_id: &str,
+        content: MessageRequestContent,
+        metadata: HashMap<String, String>,
+        idempotency_key: Option<&str>,
+    ) -> Result<(String, u64)> {
         if metadata.len() > 32
             || metadata
                 .iter()
@@ -822,10 +847,30 @@ impl Brain {
                     .into(),
             ));
         }
+        if let Some(key) = idempotency_key
+            && (key.is_empty() || key.len() > 128)
+        {
+            return Err(BrainError::Invalid(
+                "Idempotency-Key must contain 1 to 128 bytes".into(),
+            ));
+        }
         let blocks = content_blocks(content)?;
+        let idempotency = idempotency_key
+            .map(|key| {
+                let canonical = serde_jcs::to_vec(&serde_json::json!({
+                    "content": &blocks,
+                    "metadata": &metadata,
+                }))?;
+                Ok::<_, BrainError>(MessageIdentity {
+                    key_hash: hash_create_key(key),
+                    request_hash: hex::encode(Sha256::digest(canonical)),
+                })
+            })
+            .transpose()?;
         self.deliver(session_id, |reply| Command::Message {
             content: blocks.clone(),
             metadata: metadata.clone(),
+            idempotency: idempotency.clone(),
             reply,
         })
         .await?
@@ -962,12 +1007,14 @@ fn bytes_check_path(path: &str) -> Result<()> {
 struct Resident {
     st: TurnState,
     key: ProviderKey,
+    message_replays: HashMap<String, MessageReplay>,
 }
 
 struct Running {
     handle: tokio::task::JoinHandle<(TurnState, RunningOutcome)>,
     cancel: CancellationToken,
     key: ProviderKey,
+    message_replays: HashMap<String, MessageReplay>,
 }
 
 enum RunningOutcome {
@@ -975,6 +1022,59 @@ enum RunningOutcome {
         turn_id: String,
         outcome: Result<crate::turn::TurnReport>,
     },
+}
+
+fn collect_message_replays(entries: &[Entry]) -> Result<HashMap<String, MessageReplay>> {
+    let mut replays = HashMap::new();
+    for entry in entries {
+        let Record::UserMessage {
+            turn,
+            idempotency_key_hash,
+            request_hash,
+            ..
+        } = &entry.record
+        else {
+            continue;
+        };
+        let (key_hash, request_hash) = match (idempotency_key_hash, request_hash) {
+            (None, None) => continue,
+            (Some(key_hash), Some(request_hash)) => (key_hash, request_hash),
+            _ => {
+                return Err(BrainError::Journal(
+                    "message idempotency record is incomplete".into(),
+                ));
+            }
+        };
+        let replay = MessageReplay {
+            request_hash: request_hash.clone(),
+            turn_id: turn.clone(),
+            user_seq: entry.seq,
+        };
+        if let Some(previous) = replays.insert(key_hash.clone(), replay.clone())
+            && previous != replay
+        {
+            return Err(BrainError::Journal(
+                "message idempotency key maps to conflicting journal records".into(),
+            ));
+        }
+    }
+    Ok(replays)
+}
+
+fn replay_message(
+    replays: &HashMap<String, MessageReplay>,
+    identity: Option<&MessageIdentity>,
+) -> Result<Option<(String, u64)>> {
+    let Some(identity) = identity else {
+        return Ok(None);
+    };
+    let Some(replay) = replays.get(&identity.key_hash) else {
+        return Ok(None);
+    };
+    if replay.request_hash != identity.request_hash {
+        return Err(BrainError::IdempotencyConflict);
+    }
+    Ok(Some((replay.turn_id.clone(), replay.user_seq)))
 }
 
 #[derive(Debug)]
@@ -1429,7 +1529,14 @@ async fn actor(
         tokio::select! {
             done = async { (&mut running.as_mut().expect("guarded").handle).await }, if running.is_some() => {
                 let task = running.take().expect("running");
-                resident = settle_running(&brain, &session_id, task.key, done).await;
+                resident = settle_running(
+                    &brain,
+                    &session_id,
+                    task.key,
+                    task.message_replays,
+                    done,
+                )
+                .await;
             }
             cmd = rx.recv() => {
                 let Some(cmd) = cmd else { break };
@@ -1444,21 +1551,59 @@ async fn actor(
                         };
                         let _ = reply.send(doc);
                     }
-                    Command::Message { content, metadata, reply } => {
-                        if running.is_some() {
-                            let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
+                    Command::Message { content, metadata, idempotency, reply } => {
+                        if let Some(task) = &running {
+                            let response = match replay_message(
+                                &task.message_replays,
+                                idempotency.as_ref(),
+                            ) {
+                                Ok(Some(replay)) => Ok(replay),
+                                Ok(None) => Err(BrainError::TurnInFlight(session_id.clone())),
+                                Err(error) => Err(error),
+                            };
+                            let _ = reply.send(response);
                             continue;
                         }
                         let r = match ensure_resident(&brain, &session_id, &mut resident).await {
                             Ok(r) => r,
                             Err(e) => { let _ = reply.send(Err(e)); continue; }
                         };
+                        match replay_message(&r.message_replays, idempotency.as_ref()) {
+                            Ok(Some(replay)) => {
+                                let _ = reply.send(Ok(replay));
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                let _ = reply.send(Err(error));
+                                continue;
+                            }
+                        }
                         let permit = match brain.turn_permits.clone().try_acquire_owned() {
                             Ok(p) => p,
                             Err(_) => { let _ = reply.send(Err(BrainError::Overloaded)); continue; }
                         };
-                        match admit(&brain, &session_id, r, content, metadata.clone()).await {
+                        match admit(
+                            &brain,
+                            &session_id,
+                            r,
+                            content,
+                            metadata.clone(),
+                            idempotency.clone(),
+                        )
+                        .await
+                        {
                             Ok((turn_id, seq, cancel)) => {
+                                if let Some(identity) = &idempotency {
+                                    r.message_replays.insert(
+                                        identity.key_hash.clone(),
+                                        MessageReplay {
+                                            request_hash: identity.request_hash.clone(),
+                                            turn_id: turn_id.clone(),
+                                            user_seq: seq,
+                                        },
+                                    );
+                                }
                                 let _ = reply.send(Ok((turn_id.clone(), seq)));
                                 // Park the resident state into the turn task; the key rides
                                 // the running tuple until the task returns the state.
@@ -1472,13 +1617,19 @@ async fn actor(
                                     }
                                 };
                                 let key = parked.key.clone();
+                                let message_replays = std::mem::take(&mut parked.message_replays);
                                 let handle = tokio::spawn(async move {
                                     let _permit = permit; // held for the whole turn (admission)
                                     let mut st = parked.st;
                                     let out = run.run(&mut st).await;
                                     (st, RunningOutcome::Turn { turn_id: turn_id.clone(), outcome: out })
                                 });
-                                running = Some(Running { handle, cancel, key });
+                                running = Some(Running {
+                                    handle,
+                                    cancel,
+                                    key,
+                                    message_replays,
+                                });
                             }
                             Err(e) => { let _ = reply.send(Err(e)); }
                         }
@@ -1500,8 +1651,16 @@ async fn actor(
                         if let Some(task) = running.take() {
                             task.cancel.cancel();
                             let key = task.key;
+                            let message_replays = task.message_replays;
                             let done = task.handle.await;
-                            resident = settle_running(&brain, &session_id, key, done).await;
+                            resident = settle_running(
+                                &brain,
+                                &session_id,
+                                key,
+                                message_replays,
+                                done,
+                            )
+                            .await;
                         }
                         match end_session(&brain, &session_id, &mut resident).await {
                             Ok(doc) => { let _ = reply.send(Ok(doc)); }
@@ -1591,11 +1750,16 @@ async fn settle_running(
     brain: &Arc<Brain>,
     session_id: &str,
     key: ProviderKey,
+    message_replays: HashMap<String, MessageReplay>,
     done: std::result::Result<(TurnState, RunningOutcome), tokio::task::JoinError>,
 ) -> Option<Resident> {
     match done {
         Ok((st, outcome)) => {
-            let mut resident = Resident { st, key };
+            let mut resident = Resident {
+                st,
+                key,
+                message_replays,
+            };
             match outcome {
                 RunningOutcome::Turn { turn_id, outcome } => {
                     finish_turn(brain, session_id, &turn_id, &mut resident.st, outcome).await;
@@ -1736,6 +1900,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
         entries = brain.journal.read_records(session_id, 0).await?;
     }
 
+    let message_replays = collect_message_replays(&entries)?;
     let fold = crate::journal::fold(&entries);
     let key = brain
         .custody
@@ -1761,6 +1926,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             identities: Arc::new(std::sync::atomic::AtomicU64::new(identities)),
         },
         key,
+        message_replays,
     };
     if let Some(recovered) =
         recover_external_calls(brain, session_id, &mut resident, &entries).await?
@@ -1861,6 +2027,7 @@ async fn admit(
     r: &mut Resident,
     content: Vec<ContentBlock>,
     metadata: HashMap<String, String>,
+    idempotency: Option<MessageIdentity>,
 ) -> Result<(String, u64, CancellationToken)> {
     if r.st.head.state == "failed" {
         return Err(BrainError::SessionFailed(
@@ -1898,6 +2065,12 @@ async fn admit(
                 turn: turn_id.clone(),
                 content: content.clone(),
                 metadata,
+                idempotency_key_hash: idempotency
+                    .as_ref()
+                    .map(|identity| identity.key_hash.clone()),
+                request_hash: idempotency
+                    .as_ref()
+                    .map(|identity| identity.request_hash.clone()),
             },
         ),
         (
@@ -2640,6 +2813,8 @@ mod tests {
                     turn: "trn_test".into(),
                     content: vec![ContentBlock::text("answer")],
                     metadata: context,
+                    idempotency_key_hash: None,
+                    request_hash: None,
                 },
             },
             Entry {
@@ -2779,6 +2954,8 @@ mod tests {
                     turn: turn.clone(),
                     content: vec![ContentBlock::text("return a typed value")],
                     metadata: HashMap::from([("request_id".into(), "out_test".into())]),
+                    idempotency_key_hash: None,
+                    request_hash: None,
                 },
             ),
             (first_seq + 1, Record::TurnStarted { turn: turn.clone() }),

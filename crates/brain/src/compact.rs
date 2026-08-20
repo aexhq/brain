@@ -141,6 +141,8 @@ mod tests {
                             turn: "t".into(),
                             content: m.content.clone(),
                             metadata: std::collections::HashMap::new(),
+                            idempotency_key_hash: None,
+                            request_hash: None,
                         });
                     } else {
                         for b in &m.content {

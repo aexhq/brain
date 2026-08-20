@@ -820,6 +820,8 @@ async fn cold_hydrate_answers_an_interrupted_task_without_replaying_it() {
             turn: turn.clone(),
             content: vec![ContentBlock::text("crash-root")],
             metadata: std::collections::HashMap::new(),
+            idempotency_key_hash: None,
+            request_hash: None,
         },
     ));
     seq += 1;
