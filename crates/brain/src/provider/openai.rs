@@ -131,12 +131,13 @@ impl OpenAiChat {
             .tools
             .iter()
             .map(|t| {
+                let parameters = function_parameters(&t.input_schema);
                 json!({
                     "type":"function",
                     "function":{
                         "name": t.name,
                         "description": t.description,
-                        "parameters": t.input_schema,
+                        "parameters": parameters,
                     }
                 })
             })
@@ -162,6 +163,112 @@ impl OpenAiChat {
         body.insert("stream_options".into(), json!({"include_usage": true}));
         Ok(Value::Object(body))
     }
+}
+
+/// OpenAI-compatible function parameters must have one object schema at the root. Zod emits a
+/// root `oneOf` for a discriminated union of objects, which providers reject before generation.
+/// Lower that representable case to an object-shaped superset for the model. Brain still validates
+/// every generated call against the exact sealed schema before dispatch, so this compatibility
+/// projection cannot broaden what an executor receives.
+fn function_parameters(input: &Value) -> Value {
+    let Some(root) = input.as_object() else {
+        return input.clone();
+    };
+    if root.get("type").is_some() {
+        return input.clone();
+    }
+    let (union_key, alternatives) = match (
+        root.get("oneOf").and_then(Value::as_array),
+        root.get("anyOf").and_then(Value::as_array),
+    ) {
+        (Some(alternatives), None) => ("oneOf", alternatives),
+        (None, Some(alternatives)) => ("anyOf", alternatives),
+        _ => return input.clone(),
+    };
+    let branches: Vec<&Map<String, Value>> = alternatives
+        .iter()
+        .filter_map(Value::as_object)
+        .filter(|branch| branch.get("type").and_then(Value::as_str) == Some("object"))
+        .collect();
+    if branches.len() != alternatives.len() || branches.is_empty() {
+        return input.clone();
+    }
+
+    let mut properties = Map::new();
+    let mut required = branches[0]
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let all_closed = branches
+        .iter()
+        .all(|branch| branch.get("additionalProperties") == Some(&Value::Bool(false)));
+
+    for branch in branches {
+        if let Some(branch_properties) = branch.get("properties").and_then(Value::as_object) {
+            for (name, schema) in branch_properties {
+                match properties.get_mut(name) {
+                    None => {
+                        properties.insert(name.clone(), schema.clone());
+                    }
+                    Some(existing) if existing != schema => {
+                        *existing = merge_property_schema(existing, schema);
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        let branch_required = branch
+            .get("required")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        required.retain(|name| branch_required.contains(&name.as_str()));
+    }
+
+    let mut lowered = root.clone();
+    lowered.remove(union_key);
+    lowered.insert("type".into(), json!("object"));
+    lowered.insert("properties".into(), Value::Object(properties));
+    if required.is_empty() {
+        lowered.remove("required");
+    } else {
+        lowered.insert("required".into(), json!(required));
+    }
+    if all_closed {
+        lowered.insert("additionalProperties".into(), Value::Bool(false));
+    } else {
+        lowered.remove("additionalProperties");
+    }
+    Value::Object(lowered)
+}
+
+fn merge_property_schema(left: &Value, right: &Value) -> Value {
+    let (Some(left_object), Some(right_object)) = (left.as_object(), right.as_object()) else {
+        return json!({"anyOf": [left, right]});
+    };
+    let (Some(left_const), Some(right_const)) =
+        (left_object.get("const"), right_object.get("const"))
+    else {
+        return json!({"anyOf": [left, right]});
+    };
+    let mut left_without_const = left_object.clone();
+    let mut right_without_const = right_object.clone();
+    left_without_const.remove("const");
+    right_without_const.remove("const");
+    if left_without_const != right_without_const {
+        return json!({"anyOf": [left, right]});
+    }
+    left_without_const.insert("enum".into(), json!([left_const, right_const]));
+    Value::Object(left_without_const)
 }
 
 #[async_trait::async_trait]
@@ -385,6 +492,52 @@ mod tests {
             msgs[3]["content"].as_str().unwrap().starts_with("ERROR:"),
             "the error signal must survive a dialect with no is_error field"
         );
+    }
+
+    #[test]
+    fn root_object_union_is_lowered_for_openai_without_changing_the_sealed_schema() {
+        let exact = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {"action": {"type": "string", "const": "get"}},
+                    "required": ["action"],
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "const": "set"},
+                        "items": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["action", "items"],
+                    "additionalProperties": false
+                }
+            ]
+        });
+        let prefix = AgentDef::new("sys", "fake-1", Dialect::OpenAiChat)
+            .tool(ToolDecl {
+                name: "todo".into(),
+                description: "todo".into(),
+                input_schema: exact.clone(),
+                output_schema: json!({"type":"object"}),
+                route: ToolRoute::Intrinsic("brain.test.todo".into()),
+            })
+            .seal();
+
+        let body = OpenAiChat::body(&prefix, &[]).unwrap();
+        let parameters = &body["tools"][0]["function"]["parameters"];
+        assert_eq!(parameters["type"], "object");
+        assert!(parameters.get("oneOf").is_none());
+        assert_eq!(
+            parameters["properties"]["action"]["enum"],
+            json!(["get", "set"])
+        );
+        assert_eq!(parameters["required"], json!(["action"]));
+        assert_eq!(parameters["additionalProperties"], false);
+        assert!(parameters["properties"].get("items").is_some());
+        assert_eq!(prefix.tools[0].input_schema, exact);
     }
 
     #[test]
