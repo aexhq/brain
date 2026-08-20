@@ -66,8 +66,8 @@ pub enum ProviderEvent {
         index: usize,
         text: String,
     },
-    /// A provider-native refusal payload. It is text for diagnostics, but it must not be parsed
-    /// as a structured-output candidate even when the provider finishes with an ordinary stop.
+    /// A provider-native refusal payload. It is text for diagnostics, but its refusal semantics
+    /// remain distinct even when the provider also reports an ordinary stop reason.
     RefusalDelta {
         index: usize,
         text: String,

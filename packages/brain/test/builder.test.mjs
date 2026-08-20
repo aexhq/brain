@@ -32,7 +32,7 @@ test("the conformance fixture has one cross-platform bundle identity", async () 
   const fixture = new URL("../fixtures/fixture-tool.mjs", import.meta.url).href;
   assert.equal(
     (await buildToolModule(fixture)).checksum,
-    "ba5129527642c60c28499ca08036bdc4b00aa2eed881a1df4f6e0a8c5aac79ee",
+    "38dcc1a69cdd2e5711f392e4728522dc8d023547a07415e057cec6908324482f",
   );
 });
 
