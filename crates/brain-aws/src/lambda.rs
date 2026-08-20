@@ -862,6 +862,7 @@ impl HandAdapter for LambdaHand {
                 exit_code: None,
                 duration_ms: 0,
                 truncated: false,
+                terminal: None,
             };
         };
         hand_call(&client, &req, &cancel, &sink).await
@@ -1237,6 +1238,7 @@ async fn hand_call(
         exit_code: None,
         duration_ms: t0.elapsed().as_millis() as u64,
         truncated: false,
+        terminal: None,
     };
 
     let lane = if req.parallel {
@@ -1399,6 +1401,7 @@ async fn hand_call(
         exit_code,
         duration_ms: t0.elapsed().as_millis() as u64,
         truncated,
+        terminal: None,
     }
 }
 

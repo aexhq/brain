@@ -1,0 +1,14 @@
+{
+  "session_id": "ses_01HZX8Y2K3M4N5P6Q7R8S9T0",
+  "turn_id": "trn_01HZX8Y2K3M4N5P6Q7R8S9U1",
+  "agent_id": "root",
+  "call_id": "call_01HZX8Y2K3M4N5P6Q7R8S9W3",
+  "name": "host_result",
+  "input": {
+    "recommendation": "Option A",
+    "confidence": 0.86
+  },
+  "context": {
+    "aex.output_request_id": "out_01HZX8Y2K3M4N5P6Q7R8S9V2"
+  }
+}

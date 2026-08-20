@@ -1,0 +1,24 @@
+{
+  "kind": "response",
+  "frame": {
+    "id": "r-10",
+    "result": {
+      "status": "ok",
+      "reply": {
+        "op": "sync",
+        "body": {
+          "changed": true,
+          "manifest_id": "m-13",
+          "files_total": 1440,
+          "bytes_total": 17825792,
+          "files_added": 6,
+          "files_modified": 2,
+          "files_deleted": 1,
+          "bytes_uploaded": 48211,
+          "packs_referenced": 3,
+          "duration_ms": 412
+        }
+      }
+    }
+  }
+}

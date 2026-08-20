@@ -35,22 +35,6 @@ pub struct ModelRequest {
     pub body: Vec<u8>,
 }
 
-/// The output commit request is a private provider step. It sees the requested schema and a
-/// transient control instruction, but neither becomes session history or a normal tool.
-#[derive(Debug, Clone)]
-pub struct OutputControl {
-    pub schema: serde_json::Value,
-    pub instruction: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputMode {
-    /// Provider-native constrained structured output.
-    Native,
-    /// A single forced internal `aex_output` tool. Ordinary session tools stay disabled.
-    ForcedTool,
-}
-
 impl ModelRequest {
     pub fn body_len(&self) -> usize {
         self.body.len()
@@ -119,16 +103,6 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
         history: &[Message],
         key: &ProviderKey,
         base_url: &str,
-    ) -> Result<ModelRequest>;
-
-    fn build_output_request(
-        &self,
-        prefix: &SealedPrefix,
-        history: &[Message],
-        key: &ProviderKey,
-        base_url: &str,
-        control: &OutputControl,
-        mode: OutputMode,
     ) -> Result<ModelRequest>;
 
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>>;

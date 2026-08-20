@@ -1,7 +1,7 @@
 //! Anthropic Messages API adapter.
 
 use super::sse::SseDecoder;
-use super::{ModelRequest, OutputControl, OutputMode, Provider, ProviderEvent};
+use super::{ModelRequest, Provider, ProviderEvent};
 use crate::config::{Dialect, ProviderKey, SealedPrefix};
 use crate::message::{ContentBlock, Message, Role, StopReason, Usage};
 use crate::{BrainError, Result};
@@ -124,50 +124,6 @@ impl Provider for Anthropic {
         base_url: &str,
     ) -> Result<ModelRequest> {
         Self::request(Self::body(prefix, history)?, key, base_url)
-    }
-
-    fn build_output_request(
-        &self,
-        prefix: &SealedPrefix,
-        history: &[Message],
-        key: &ProviderKey,
-        base_url: &str,
-        control: &OutputControl,
-        mode: OutputMode,
-    ) -> Result<ModelRequest> {
-        let mut body = Self::body(prefix, history)?;
-        let object = body.as_object_mut().expect("anthropic body is an object");
-        object.remove("tools");
-        object.insert(
-            "system".into(),
-            json!(format!(
-                "{}\n\n{}",
-                prefix.system_prompt, control.instruction
-            )),
-        );
-        match mode {
-            OutputMode::Native => {
-                object.insert(
-                    "output_config".into(),
-                    json!({"format":{"type":"json_schema","schema":control.schema}}),
-                );
-            }
-            OutputMode::ForcedTool => {
-                object.insert(
-                    "tools".into(),
-                    json!([{
-                        "name":"aex_output",
-                        "description":"Commit the final structured output.",
-                        "input_schema":control.schema
-                    }]),
-                );
-                object.insert(
-                    "tool_choice".into(),
-                    json!({"type":"tool","name":"aex_output","disable_parallel_tool_use":true}),
-                );
-            }
-        }
-        Self::request(body, key, base_url)
     }
 
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
@@ -334,61 +290,6 @@ mod tests {
         assert_eq!(v["tools"][0]["name"], "read");
         assert_eq!(v["messages"][0]["content"][0]["text"], "hi");
         assert_eq!(v["stream"], true);
-    }
-
-    #[test]
-    fn output_request_is_private_and_disables_ordinary_tools() {
-        let p = prefix();
-        let control = OutputControl {
-            schema: json!({
-                "type":"object",
-                "properties":{"answer":{"type":"number"}},
-                "required":["answer"],
-                "additionalProperties":false
-            }),
-            instruction: "commit privately".into(),
-        };
-        let native: Value = serde_json::from_slice(
-            &Anthropic
-                .build_output_request(
-                    &p,
-                    &[Message::user_text("hi")],
-                    &ProviderKey::new("k"),
-                    "http://x",
-                    &control,
-                    OutputMode::Native,
-                )
-                .unwrap()
-                .body,
-        )
-        .unwrap();
-        assert!(native.get("tools").is_none());
-        assert_eq!(native["output_config"]["format"]["type"], "json_schema");
-        assert_eq!(native["output_config"]["format"]["schema"], control.schema);
-        assert!(
-            native["system"]
-                .as_str()
-                .unwrap()
-                .ends_with("commit privately")
-        );
-
-        let fallback: Value = serde_json::from_slice(
-            &Anthropic
-                .build_output_request(
-                    &p,
-                    &[Message::user_text("hi")],
-                    &ProviderKey::new("k"),
-                    "http://x",
-                    &control,
-                    OutputMode::ForcedTool,
-                )
-                .unwrap()
-                .body,
-        )
-        .unwrap();
-        assert_eq!(fallback["tools"].as_array().unwrap().len(), 1);
-        assert_eq!(fallback["tools"][0]["name"], "aex_output");
-        assert_eq!(fallback["tool_choice"]["name"], "aex_output");
     }
 
     #[test]

@@ -1,0 +1,17 @@
+{
+  "kind": "response",
+  "frame": {
+    "id": "r-2",
+    "result": {
+      "status": "error",
+      "error": {
+        "code": "tool_input_invalid",
+        "message": "input.command: expected string, got null",
+        "retryable": false,
+        "details": {
+          "schema_path": "/properties/command/type"
+        }
+      }
+    }
+  }
+}

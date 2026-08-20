@@ -1,0 +1,28 @@
+{
+  "kind": "response",
+  "frame": {
+    "id": "r-9",
+    "result": {
+      "status": "ok",
+      "reply": {
+        "op": "persist",
+        "body": {
+          "persisted": [
+            {
+              "name": "report.pdf",
+              "bytes": 204800,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "media_type": "application/pdf"
+            },
+            {
+              "name": "build.log",
+              "bytes": 2210,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "media_type": "text/plain"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

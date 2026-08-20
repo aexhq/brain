@@ -1,0 +1,10 @@
+{
+  "type": "agent.finished",
+  "seq": 128,
+  "at": "2026-08-18T09:40:08Z",
+  "session_id": "ses_01HZX8Y2K3M4N5P6Q7R8S9T0",
+  "turn_id": "trn_01HZX8Y2K3M4N5P6Q7R8S9U1",
+  "agent_id": "agt_01",
+  "outcome": "completed",
+  "summary": "The failing test asserts on a stale fixture."
+}

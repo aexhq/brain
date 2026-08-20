@@ -1,0 +1,23 @@
+{
+  "id": "r-4",
+  "fence": 9,
+  "generation_id": "gen-3",
+  "call": {
+    "op": "poll",
+    "args": {
+      "operation_id": "op-0002",
+      "cursors": [
+        {
+          "stream": "stdout",
+          "offset": 4096
+        },
+        {
+          "stream": "stderr",
+          "offset": 0
+        }
+      ],
+      "max_bytes": 65536,
+      "wait_ms": 10000
+    }
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "id": "r-2",
+  "fence": 9,
+  "generation_id": "gen-3",
+  "call": {
+    "op": "start",
+    "args": {
+      "operation_id": "op-0001",
+      "call_hash": "c1fdd73b5a4dd02c1d301eec36fd409841803a6a273b0bd6770cd0b4a0208c4f",
+      "batch_id": "b-1",
+      "tool": "bash",
+      "input": {
+        "command": "cargo test 2>&1 | tail -20"
+      },
+      "lane": {
+        "id": "0",
+        "mode": "persistent"
+      },
+      "cwd": "/workspace/repo",
+      "detach": false,
+      "wait_ms": 30000,
+      "max_bytes": 65536,
+      "bounds": {
+        "timeout_ms": 600000,
+        "grace_ms": 2000
+      },
+      "correlation": {
+        "agent_id": "root",
+        "tool_call_id": "call_abc"
+      }
+    }
+  }
+}

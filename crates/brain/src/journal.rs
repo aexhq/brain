@@ -39,17 +39,13 @@ pub enum Record {
     UserMessage {
         turn: String,
         content: Vec<ContentBlock>,
+        /// Trusted turn context forwarded to host-executed tools. It is never rendered as model
+        /// input and must survive replay with the admitted message.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
     },
     TurnStarted {
         turn: String,
-    },
-    /// Admission for one typed output request. The schema is intentionally absent; only its
-    /// hash and the captured journal boundary are durable.
-    OutputStarted {
-        output: String,
-        turn: Option<String>,
-        schema_hash: String,
-        source_seq: u64,
     },
     /// A complete assistant message, full-fidelity blocks. Only complete messages are
     /// journaled -- a stream that dies mid-message journals nothing.
@@ -95,29 +91,15 @@ pub enum Record {
         stop_reason: String,
         rounds: u64,
         tool_calls: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<aex_contracts::session::TurnResult>,
     },
     TurnFailed {
         turn: String,
         code: String,
         message: String,
-    },
-    /// The validated assistant value. This is the only output-commit content folded back into
-    /// future model history.
-    OutputCompleted {
-        output: String,
-        turn: Option<String>,
-        schema_hash: String,
-        value: serde_json::Value,
-        usage: Usage,
-    },
-    OutputFailed {
-        output: String,
-        turn: Option<String>,
-        schema_hash: String,
-        code: String,
-        message: String,
-        issues: Vec<crate::output::ValidationIssue>,
-        usage: Usage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
     },
     /// A session/hand state transition worth telling clients about (`session.updated`).
     State {
@@ -142,15 +124,12 @@ impl Record {
         match self {
             Record::UserMessage { .. } => "user_message",
             Record::TurnStarted { .. } => "turn_started",
-            Record::OutputStarted { .. } => "output_started",
             Record::Assistant { .. } => "assistant",
             Record::Usage { .. } => "usage",
             Record::ToolCall { .. } => "tool_call",
             Record::ToolResult { .. } => "tool_result",
             Record::TurnCompleted { .. } => "turn_completed",
             Record::TurnFailed { .. } => "turn_failed",
-            Record::OutputCompleted { .. } => "output_completed",
-            Record::OutputFailed { .. } => "output_failed",
             Record::State { .. } => "state",
             Record::HandLost { .. } => "hand_lost",
             Record::Compacted { .. } => "compacted",
@@ -243,22 +222,6 @@ impl Fold {
                     content: content.clone(),
                 });
             }
-            Record::OutputCompleted {
-                schema_hash, value, ..
-            } => {
-                self.flush_results();
-                let block = ContentBlock::Output {
-                    schema_hash: schema_hash.clone(),
-                    value: value.clone(),
-                };
-                if let Some(last) = self.history.last_mut()
-                    && last.role == Role::Assistant
-                {
-                    last.content.push(block);
-                } else {
-                    self.history.push(Message::assistant(vec![block]));
-                }
-            }
             Record::ToolResult {
                 call,
                 content,
@@ -283,8 +246,6 @@ impl Fold {
             | Record::ToolCall { .. }
             | Record::TurnCompleted { .. }
             | Record::TurnFailed { .. }
-            | Record::OutputStarted { .. }
-            | Record::OutputFailed { .. }
             | Record::State { .. }
             | Record::HandLost { .. } => {}
         }
@@ -357,10 +318,6 @@ pub struct HeadDoc {
     pub workspace_bytes: u64,
     #[serde(default)]
     pub artifacts: Vec<ArtifactDoc>,
-    /// Bounded, 24-hour output idempotency index. Keys and request payloads are hashed; the
-    /// schema itself is never retained here.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub output_requests: Vec<OutputRequestDoc>,
 }
 
 impl HeadDoc {
@@ -419,6 +376,10 @@ pub struct PrefixDoc {
     /// change nothing until the customer forks a new session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_tools: Vec<McpToolDoc>,
+    /// Exact host-executed tool declarations and policies, sealed at create. The executor
+    /// address and credential are deliberately process configuration and never live here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_tools: Vec<aex_contracts::session::ExternalToolConfig>,
     pub hand_enabled: bool,
     pub shape: String,
     pub sync_interval_seconds: u64,
@@ -463,17 +424,6 @@ pub struct ArtifactDoc {
     pub sha256: String,
     pub media_type: String,
     pub created_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OutputRequestDoc {
-    pub key_hash: String,
-    pub request_hash: String,
-    pub output_id: String,
-    pub schema_hash: String,
-    pub started_seq: u64,
-    pub admitted_ms: u64,
 }
 
 /// The claim a hydrating owner holds. Every commit is conditioned on it.
@@ -827,6 +777,7 @@ mod tests {
         Record::UserMessage {
             turn: turn.into(),
             content: vec![ContentBlock::text(text)],
+            metadata: HashMap::new(),
         }
     }
     fn assistant(turn: &str, blocks: Vec<ContentBlock>) -> Record {
@@ -983,6 +934,7 @@ mod tests {
                 stop_reason: "interrupted".into(),
                 rounds: 1,
                 tool_calls: 1,
+                result: None,
             },
             user("t2", "continue"),
         ]));
@@ -1068,6 +1020,7 @@ mod tests {
                 tools: vec!["bash".into()],
                 mcp: vec![],
                 mcp_tools: vec![],
+                external_tools: vec![],
                 hand_enabled: true,
                 shape: "1gb".into(),
                 sync_interval_seconds: 600,
@@ -1081,7 +1034,6 @@ mod tests {
             hand_state: serde_json::Value::Null,
             workspace_bytes: 0,
             artifacts: vec![],
-            output_requests: vec![],
         };
         let s = serde_json::to_string(&doc).unwrap();
         let back: HeadDoc = serde_json::from_str(&s).unwrap();
@@ -1110,6 +1062,7 @@ mod tests {
                 tools: vec![],
                 mcp: vec![],
                 mcp_tools: vec![],
+                external_tools: vec![],
                 hand_enabled: false,
                 shape: "1gb".into(),
                 sync_interval_seconds: 600,
@@ -1123,7 +1076,6 @@ mod tests {
             hand_state: serde_json::Value::Null,
             workspace_bytes: 0,
             artifacts: vec![],
-            output_requests: vec![],
         }
     }
 

@@ -18,7 +18,9 @@
 //! [`crate::adapter::HandAdapter`] seam, one call at a time, output streamed back through a
 //! sink whose event seqs the core owns.
 
-use crate::adapter::{CallOutcome, CallRequest, HandAdapter};
+use crate::adapter::{
+    CallOutcome, CallRequest, ExternalToolExecutor, HandAdapter, TerminalOutcome,
+};
 use crate::config::{SealedPrefix, SessionConfig, ToolRoute};
 use crate::events::EventHub;
 use crate::journal::{self, HeadDoc, Journal, Lease, Record};
@@ -86,6 +88,9 @@ pub struct TurnRun {
     pub model_permits: Arc<Semaphore>,
     pub history_budget_bytes: usize,
     pub web: Arc<crate::web::WebRuntime>,
+    pub external_executor: Arc<dyn ExternalToolExecutor>,
+    /// Trusted metadata journaled with this message and forwarded only to host executors.
+    pub context: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +98,8 @@ pub struct TurnReport {
     pub stop_reason: String,
     pub rounds: u64,
     pub tool_calls: u64,
+    /// True when the tool-result decision also journaled the turn terminal atomically.
+    pub terminal_committed: bool,
 }
 
 impl TurnRun {
@@ -125,17 +132,39 @@ impl TurnRun {
     /// The whole turn. The admitted user message and `turn_started` are already committed by
     /// the actor; `st.history` already carries the user message.
     pub async fn run(&self, st: &mut TurnState) -> Result<TurnReport> {
-        let report = self.run_work(st).await?;
+        self.resume(st, 0, 0).await
+    }
+
+    /// Continue a journaled turn after replay-safe host-tool recovery. The counters are derived
+    /// from already committed root assistant/tool-call records so the eventual terminal event
+    /// remains cumulative across process ownership changes.
+    pub(crate) async fn resume(
+        &self,
+        st: &mut TurnState,
+        rounds: u64,
+        tool_calls: u64,
+    ) -> Result<TurnReport> {
+        let report = self.run_work_from(st, rounds, tool_calls).await?;
+        if report.terminal_committed {
+            return Ok(report);
+        }
         self.complete(st, &report.stop_reason, report.rounds, report.tool_calls)
             .await
     }
 
-    /// Execute through the final assistant answer without committing the turn terminal. The
-    /// output path uses this so output.completed/output.failed and turn completion can land in
-    /// one final decision; ordinary messages use [`Self::run`].
+    /// Execute through the final assistant answer without necessarily committing the turn
+    /// terminal. Host-executed terminal tools commit their tool result and terminal state in one
+    /// decision; ordinary messages finish through [`Self::run`].
     pub async fn run_work(&self, st: &mut TurnState) -> Result<TurnReport> {
-        let mut rounds: u64 = 0;
-        let mut tool_calls: u64 = 0;
+        self.run_work_from(st, 0, 0).await
+    }
+
+    async fn run_work_from(
+        &self,
+        st: &mut TurnState,
+        mut rounds: u64,
+        mut tool_calls: u64,
+    ) -> Result<TurnReport> {
         let max_rounds = self.prefix.limits.max_rounds as u64;
 
         loop {
@@ -157,6 +186,7 @@ impl TurnRun {
                     stop_reason: "max_rounds".into(),
                     rounds,
                     tool_calls,
+                    terminal_committed: false,
                 });
             }
 
@@ -168,6 +198,7 @@ impl TurnRun {
                         stop_reason: "cancelled".into(),
                         rounds,
                         tool_calls,
+                        terminal_committed: false,
                     });
                 }
                 Err(e) => return Err(e),
@@ -214,6 +245,7 @@ impl TurnRun {
                     },
                     rounds,
                     tool_calls,
+                    terminal_committed: false,
                 });
             }
             tool_calls += calls.len() as u64;
@@ -252,6 +284,60 @@ impl TurnRun {
                     },
                 ));
             }
+            let terminal = outcomes
+                .iter()
+                .enumerate()
+                .find_map(|(index, outcome)| outcome.terminal.clone().map(|value| (index, value)));
+            let terminal_report = if let Some((index, terminal)) = terminal {
+                st.head.state = "idle".into();
+                st.head.turn = None;
+                match terminal {
+                    TerminalOutcome::Complete { value, metadata } => {
+                        let result = aex_contracts::session::TurnResult {
+                            call_id: calls[index].0.parse().map_err(|error| {
+                                BrainError::Protocol(format!("external call id: {error}"))
+                            })?,
+                            metadata,
+                            name: calls[index].1.clone(),
+                            value,
+                        };
+                        result_records.push((
+                            st.take_seq(),
+                            Record::TurnCompleted {
+                                turn: self.turn_id.clone(),
+                                stop_reason: "end_turn".into(),
+                                rounds,
+                                tool_calls,
+                                result: Some(result),
+                            },
+                        ));
+                        Some("end_turn")
+                    }
+                    TerminalOutcome::Fail { error } => {
+                        result_records.push((
+                            st.take_seq(),
+                            Record::TurnFailed {
+                                turn: self.turn_id.clone(),
+                                code: error.code.to_string(),
+                                message: error.message,
+                                details: error.details,
+                            },
+                        ));
+                        Some("error")
+                    }
+                }
+            } else {
+                None
+            };
+            if terminal_report.is_some() {
+                result_records.push((
+                    st.take_seq(),
+                    Record::State {
+                        state: "idle".into(),
+                        turn: Some(self.turn_id.clone()),
+                    },
+                ));
+            }
             self.commit(st, result_records).await?;
 
             // Only after the results are durable may the substrate forget them.
@@ -259,11 +345,21 @@ impl TurnRun {
             st.hand.acknowledge(&ids).await;
             st.history.push(Message::tool_results(blocks));
 
+            if let Some(stop_reason) = terminal_report {
+                return Ok(TurnReport {
+                    stop_reason: stop_reason.into(),
+                    rounds,
+                    tool_calls,
+                    terminal_committed: true,
+                });
+            }
+
             if self.cancel.is_cancelled() {
                 return Ok(TurnReport {
                     stop_reason: "cancelled".into(),
                     rounds,
                     tool_calls,
+                    terminal_committed: false,
                 });
             }
         }
@@ -290,6 +386,7 @@ impl TurnRun {
                         stop_reason: stop_reason.into(),
                         rounds,
                         tool_calls,
+                        result: None,
                     },
                 ),
                 (
@@ -306,6 +403,7 @@ impl TurnRun {
             stop_reason: stop_reason.into(),
             rounds,
             tool_calls,
+            terminal_committed: true,
         })
     }
 
@@ -467,6 +565,7 @@ impl TurnRun {
                                 exit_code: None,
                                 duration_ms: t0.elapsed().as_millis() as u64,
                                 truncated: false,
+                                terminal: None,
                             },
                         )
                     });
@@ -494,6 +593,30 @@ impl TurnRun {
                     join.spawn(async move {
                         let _permit = permit.acquire_owned().await;
                         let out = web.call(&name, &input, &cancel).await;
+                        (idx, out)
+                    });
+                }
+                Some(ToolRoute::External(policy)) => {
+                    let executor = self.external_executor.clone();
+                    let cancel = self.cancel.clone();
+                    let session_id = self.session_id.clone();
+                    let turn_id = self.turn_id.clone();
+                    let context = self.context.clone();
+                    join.spawn(async move {
+                        let _permit = permit.acquire_owned().await;
+                        let out = execute_external(
+                            executor,
+                            policy,
+                            batch,
+                            session_id,
+                            turn_id,
+                            op_id,
+                            name,
+                            input,
+                            context,
+                            cancel,
+                        )
+                        .await;
                         (idx, out)
                     });
                 }
@@ -572,6 +695,122 @@ impl TurnRun {
             .into_iter()
             .map(|o| o.unwrap_or_else(|| CallOutcome::failed("tool produced no result")))
             .collect())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_external(
+    executor: Arc<dyn ExternalToolExecutor>,
+    policy: crate::config::ExternalToolPolicy,
+    parallel_batch: bool,
+    session_id: String,
+    turn_id: String,
+    call_id: String,
+    name: String,
+    input: serde_json::Value,
+    context: std::collections::HashMap<String, String>,
+    cancel: CancellationToken,
+) -> CallOutcome {
+    use aex_contracts::session::{
+        ExternalToolCompletion, ExternalToolDisposition, ToolOutcome,
+    };
+
+    if parallel_batch && policy.completion == ExternalToolCompletion::ReturnDirect {
+        return CallOutcome::failed(format!(
+            "return-direct external tool {name} must be the only tool call in an assistant message"
+        ));
+    }
+    let input_bytes = match serde_json::to_vec(&input) {
+        Ok(bytes) => bytes.len(),
+        Err(error) => return CallOutcome::failed(format!("external tool input: {error}")),
+    };
+    if input_bytes > policy.max_input_bytes {
+        return CallOutcome::failed(format!(
+            "external tool {name} input is {input_bytes} bytes; the sealed limit is {} bytes",
+            policy.max_input_bytes
+        ));
+    }
+    let request = match serde_json::from_value(serde_json::json!({
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "agent_id": "root",
+        "call_id": call_id,
+        "name": name,
+        "input": input,
+        "context": context,
+    })) {
+        Ok(request) => request,
+        Err(error) => {
+            return CallOutcome::failed(format!("external tool request contract: {error}"));
+        }
+    };
+    let started = Instant::now();
+    let response = match executor.call(request, cancel).await {
+        Ok(response) => response,
+        Err(BrainError::Cancelled) => {
+            return CallOutcome {
+                outcome: "cancelled".into(),
+                content: "external tool call cancelled".into(),
+                is_error: true,
+                exit_code: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+                truncated: false,
+                terminal: None,
+            };
+        }
+        Err(error) => {
+            let mut outcome = CallOutcome::failed(format!("external tool executor: {error}"));
+            outcome.duration_ms = started.elapsed().as_millis() as u64;
+            return outcome;
+        }
+    };
+    let content = String::from(response.content);
+    if content.as_bytes().len() > policy.max_input_bytes {
+        return CallOutcome::failed(format!(
+            "external tool {name} result exceeds the sealed {}-byte limit",
+            policy.max_input_bytes
+        ));
+    }
+    let terminal = match response.disposition {
+        ExternalToolDisposition::Continue => None,
+        disposition if policy.completion != ExternalToolCompletion::ReturnDirect => {
+            return CallOutcome::failed(format!(
+                "external tool {name} returned terminal disposition {disposition} but is sealed as continue"
+            ));
+        }
+        ExternalToolDisposition::CompleteTurn => {
+            if response.outcome != ToolOutcome::Completed || response.is_error {
+                return CallOutcome::failed(format!(
+                    "external tool {name} returned complete_turn with a failed outcome"
+                ));
+            }
+            let Some(value) = response.result else {
+                return CallOutcome::failed(format!(
+                    "external tool {name} returned complete_turn without result"
+                ));
+            };
+            Some(TerminalOutcome::Complete {
+                value,
+                metadata: response.result_metadata,
+            })
+        }
+        ExternalToolDisposition::FailTurn => {
+            let Some(error) = response.error else {
+                return CallOutcome::failed(format!(
+                    "external tool {name} returned fail_turn without error"
+                ));
+            };
+            Some(TerminalOutcome::Fail { error })
+        }
+    };
+    CallOutcome {
+        outcome: response.outcome.to_string(),
+        content,
+        is_error: response.is_error,
+        exit_code: None,
+        duration_ms: started.elapsed().as_millis() as u64,
+        truncated: false,
+        terminal,
     }
 }
 

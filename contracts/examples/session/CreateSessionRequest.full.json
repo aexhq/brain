@@ -1,0 +1,63 @@
+{
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-sonnet-5",
+    "api_key": "sk-ant-REDACTED",
+    "max_output_tokens": 8192
+  },
+  "system_prompt": "You are a careful engineer.",
+  "tools": {
+    "builtin": [
+      "bash",
+      "read",
+      "write",
+      "edit",
+      "glob",
+      "grep",
+      "ls",
+      "task",
+      "todo",
+      "web_search"
+    ],
+    "mcp": [
+      {
+        "name": "github",
+        "url": "https://mcp.example.com/github",
+        "headers": {
+          "Authorization": "Bearer REDACTED"
+        },
+        "protocol": "auto"
+      }
+    ],
+    "external": [
+      {
+        "name": "host_result",
+        "description": "Return a result to the host.",
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "scope": "root",
+        "completion": "return_direct",
+        "effect": "replay_safe",
+        "max_input_bytes": 98304
+      }
+    ]
+  },
+  "hand": {
+    "shape": "2gb",
+    "env": {
+      "GH_TOKEN": "REDACTED"
+    },
+    "sync_interval_seconds": 600
+  },
+  "files": [
+    {
+      "path": "README.md",
+      "content_base64": "IyBIZWxsbwo="
+    }
+  ],
+  "metadata": {
+    "customer_ref": "job-77"
+  }
+}

@@ -343,6 +343,7 @@ impl LocalHand {
             exit_code: exit,
             duration_ms: t0.elapsed().as_millis() as u64,
             truncated: false,
+            terminal: None,
         };
         match tool {
             "bash" => self.bash(input, cancel, emit, t0).await,
@@ -390,6 +391,7 @@ impl LocalHand {
             exit_code: None,
             duration_ms: t0.elapsed().as_millis() as u64,
             truncated: false,
+            terminal: None,
         };
         let Some(command) = input.get("command").and_then(|v| v.as_str()) else {
             return fail("bash: input.command is required".into());
@@ -499,6 +501,7 @@ impl LocalHand {
             exit_code,
             duration_ms: t0.elapsed().as_millis() as u64,
             truncated: false,
+            terminal: None,
         }
     }
 

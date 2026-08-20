@@ -1,0 +1,14 @@
+{
+  "id": "r-6",
+  "fence": 9,
+  "generation_id": "gen-3",
+  "call": {
+    "op": "release",
+    "args": {
+      "operation_ids": [
+        "op-0001",
+        "op-0002"
+      ]
+    }
+  }
+}

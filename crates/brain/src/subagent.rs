@@ -248,6 +248,7 @@ async fn run_task_inner(
                 exit_code: None,
                 duration_ms: started.elapsed().as_millis() as u64,
                 truncated,
+                terminal: None,
             };
         }
 
@@ -392,6 +393,16 @@ async fn dispatch(
                     (idx, outcome, None)
                 })
             }
+            Some(ToolRoute::External(_)) => joins.spawn(async move {
+                let _permit = permit.acquire_owned().await;
+                (
+                    idx,
+                    CallOutcome::failed(format!(
+                        "external tool {name} is not available to this subagent"
+                    )),
+                    None,
+                )
+            }),
             Some(ToolRoute::Hand) => {
                 if let Some(error) = &hand_down {
                     let error = error.clone();
@@ -496,6 +507,7 @@ fn cancelled(started: Instant) -> CallOutcome {
         exit_code: None,
         duration_ms: started.elapsed().as_millis() as u64,
         truncated: false,
+        terminal: None,
     }
 }
 
@@ -508,6 +520,7 @@ fn failed(started: Instant, content: String) -> CallOutcome {
         exit_code: None,
         duration_ms: started.elapsed().as_millis() as u64,
         truncated,
+        terminal: None,
     }
 }
 

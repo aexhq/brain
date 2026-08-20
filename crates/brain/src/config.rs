@@ -79,6 +79,16 @@ pub enum ToolRoute {
     Mcp,
     /// A brain-managed outbound web tool (`web_search` / `web_fetch`).
     Web,
+    /// A host-owned executor outside Brain. Its policy is sealed in the session prefix doc.
+    External(ExternalToolPolicy),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalToolPolicy {
+    pub scope: aex_contracts::session::ExternalToolScope,
+    pub completion: aex_contracts::session::ExternalToolCompletion,
+    pub effect: aex_contracts::session::ExternalToolEffect,
+    pub max_input_bytes: usize,
 }
 
 /// An MCP server as declared at session start. Digested, because attaching one
@@ -261,7 +271,16 @@ impl SealedPrefix {
             tools: self
                 .tools
                 .iter()
-                .filter(|t| t.name != "todo")
+                .filter(|t| {
+                    t.name != "todo"
+                        && !matches!(
+                            t.route,
+                            ToolRoute::External(ExternalToolPolicy {
+                                scope: aex_contracts::session::ExternalToolScope::Root,
+                                ..
+                            })
+                        )
+                })
                 .cloned()
                 .collect(),
             mcp_servers: self.mcp_servers.clone(),

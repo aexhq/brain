@@ -11,11 +11,10 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "aex-contracts"
 version = "0.1.0"
-source = "git+https://github.com/aexhq/aex?tag=aex-contracts-v0.4.0#6e3d5c7f387374117ee0e1142a32f0efd96b7730"
 dependencies = [
  "chrono",
  "hex",
- "regress",
+ "regress 0.11.1",
  "serde",
  "serde_jcs",
  "serde_json",
@@ -910,6 +909,20 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "brain-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "jsonschema",
+ "regress 0.10.5",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2582,6 +2595,16 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "regress"
+version = "0.10.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2057b2325e68a893284d1538021ab90279adac1139957ca2a74426c6f118fb48"
+dependencies = [
+ "hashbrown 0.16.1",
+ "memchr",
+]
 
 [[package]]
 name = "regress"

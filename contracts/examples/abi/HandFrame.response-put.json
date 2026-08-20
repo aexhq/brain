@@ -1,0 +1,26 @@
+{
+  "kind": "response",
+  "frame": {
+    "id": "r-8",
+    "result": {
+      "status": "ok",
+      "reply": {
+        "op": "put",
+        "body": {
+          "written": [
+            {
+              "path": "/workspace/input/data.csv",
+              "bytes": 1048576,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            {
+              "path": "/workspace/.aex/instructions.md",
+              "bytes": 8,
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

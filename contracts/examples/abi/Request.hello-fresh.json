@@ -1,0 +1,30 @@
+{
+  "id": "r-1",
+  "fence": 7,
+  "call": {
+    "op": "hello",
+    "args": {
+      "protocol": {
+        "major": 1,
+        "minor": 0
+      },
+      "session_id": "ses_01HZX8Y2K3M4N5P6Q7R8S9T0",
+      "session_token": "tok_example",
+      "tool_manifest_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "env": {
+        "GIT_AUTHOR_NAME": "agent"
+      },
+      "sync": {
+        "roots": [
+          "/workspace",
+          "/home/agent"
+        ],
+        "exclude": [
+          "**/.cache/**",
+          "**/node_modules/.cache/**"
+        ]
+      },
+      "heartbeat_ms": 5000
+    }
+  }
+}

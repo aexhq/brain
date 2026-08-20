@@ -13,7 +13,7 @@ use brain::config::{Dialect, ProviderKey, SealedPrefix};
 use brain::journal::{Entry, Journal, Lease, Record};
 use brain::local::LocalFactory;
 use brain::message::{ContentBlock, Message, StopReason, Usage};
-use brain::provider::{ModelRequest, OutputControl, OutputMode, Provider, ProviderEvent};
+use brain::provider::{ModelRequest, Provider, ProviderEvent};
 use brain::session::{Brain, BrainConfig};
 use brain::{BrainError, Result};
 use futures_util::stream::BoxStream;
@@ -275,19 +275,6 @@ impl Provider for TaskProvider {
         base_url: &str,
     ) -> Result<ModelRequest> {
         brain::provider::anthropic::Anthropic.build_request(prefix, history, key, base_url)
-    }
-
-    fn build_output_request(
-        &self,
-        prefix: &SealedPrefix,
-        history: &[Message],
-        key: &ProviderKey,
-        base_url: &str,
-        control: &OutputControl,
-        mode: OutputMode,
-    ) -> Result<ModelRequest> {
-        brain::provider::anthropic::Anthropic
-            .build_output_request(prefix, history, key, base_url, control, mode)
     }
 
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
@@ -811,6 +798,7 @@ async fn cold_hydrate_answers_an_interrupted_task_without_replaying_it() {
         Record::UserMessage {
             turn: turn.clone(),
             content: vec![ContentBlock::text("crash-root")],
+            metadata: std::collections::HashMap::new(),
         },
     ));
     seq += 1;

@@ -1,0 +1,2115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aex.dev/contracts/abi/v1/abi.json",
+  "title": "Aex brain-hand ABI v1",
+  "description": "Wire contract between the brain (LLM harness) and a hand (tool executor in a microVM). One multiplexed WebSocket per hand carries JSON text frames: the brain sends `Request` frames, the hand sends `HandFrame` frames (responses correlated by `id`, plus unsolicited `hand_status` events). Major version must match; unknown fields are ignored. Semantics live in contracts/abi/v1/README.md.",
+  "$defs": {
+    "Sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lower-case hex SHA-256."
+    },
+    "RequestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Brain-minted, unique per request on one connection. Responses echo it."
+    },
+    "OperationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Brain-minted, durable, unique per tool-call attempt. Not the provider's tool_call id."
+    },
+    "LaneId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Brain-minted lane identifier. \"0\" is the root lane and always exists."
+    },
+    "BatchId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Groups the parallel tool calls of one assistant message."
+    },
+    "GenerationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Minted by the hand per incarnation (per boot with fresh state). Lanes, operations and spill files are scoped to a generation."
+    },
+    "BootId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Changes on every VM boot, including resume from a released state. Same generation_id + same boot_id on reconnect means in-guest state survived."
+    },
+    "SessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "ManifestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Identifies one workspace sync manifest. Brain-minted."
+    },
+    "PackId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "Identifies one sync pack object (tar+zstd of changed files). Brain-minted."
+    },
+    "MonotonicMs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Milliseconds on the guest's monotonic clock. Jumps across a restore; compare only within one boot_id."
+    },
+    "WallMs": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Milliseconds since the Unix epoch, guest wall clock."
+    },
+    "ProtocolVersion": {
+      "type": "object",
+      "required": [
+        "major",
+        "minor"
+      ],
+      "properties": {
+        "major": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Must match exactly between brain and hand."
+        },
+        "minor": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Informational. Additive changes only."
+        }
+      }
+    },
+    "Stream": {
+      "type": "string",
+      "enum": [
+        "stdout",
+        "stderr"
+      ],
+      "description": "Every operation owns two byte streams. Typed tools write their human-readable result to stdout and diagnostics to stderr."
+    },
+    "Cursor": {
+      "type": "object",
+      "required": [
+        "stream",
+        "offset"
+      ],
+      "properties": {
+        "stream": {
+          "$ref": "#/$defs/Stream"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte offset into the full stream as produced (not as retained)."
+        }
+      }
+    },
+    "OutputSlice": {
+      "type": "object",
+      "required": [
+        "stream",
+        "offset",
+        "data_base64",
+        "eof"
+      ],
+      "properties": {
+        "stream": {
+          "$ref": "#/$defs/Stream"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Byte offset of the first byte of `data_base64` in the full stream."
+        },
+        "data_base64": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "description": "Standard base64 (RFC 4648 §4, with padding). Bounded by `max_bytes` of the request and `limits.max_slice_bytes`."
+        },
+        "eof": {
+          "type": "boolean",
+          "description": "True when this slice reaches the current end of the stream. Only meaningful as 'no more bytes right now'; the stream may still grow while the operation is running."
+        }
+      }
+    },
+    "StreamInfo": {
+      "type": "object",
+      "required": [
+        "stream",
+        "produced_bytes",
+        "retained_from"
+      ],
+      "properties": {
+        "stream": {
+          "$ref": "#/$defs/Stream"
+        },
+        "produced_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total bytes the child has written to this stream so far."
+        },
+        "retained_from": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Bytes before this offset are evicted (bounds.max_retained_bytes). A poll below this offset returns `operation_output_evicted`; absent is not zero."
+        },
+        "spill_path": {
+          "type": "string",
+          "description": "Guest path of the file holding the retained bytes, readable by the agent's own tools (e.g. `grep`). Deleted on `release`."
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256Hex",
+          "description": "Over the full stream. Present only once the operation is terminal and nothing was evicted."
+        }
+      }
+    },
+    "Bounds": {
+      "type": "object",
+      "description": "Per-operation limits enforced by the hand. Missing fields take `limits.default_bounds`.",
+      "properties": {
+        "timeout_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Relative deadline on the guest monotonic clock. null = no hand-side timeout."
+        },
+        "grace_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "SIGTERM -> grace -> SIGKILL."
+        },
+        "max_retained_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per stream. Beyond this the oldest bytes are evicted from the spill file (tail retention)."
+        }
+      }
+    },
+    "EffectiveBounds": {
+      "type": "object",
+      "required": [
+        "timeout_ms",
+        "grace_ms",
+        "max_retained_bytes"
+      ],
+      "description": "The complete bounds a hand applies when `start.bounds` omits a field.",
+      "properties": {
+        "timeout_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "grace_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_retained_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "LaneMode": {
+      "type": "string",
+      "enum": [
+        "persistent",
+        "ephemeral"
+      ]
+    },
+    "LaneRef": {
+      "type": "object",
+      "required": [
+        "id",
+        "mode"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/LaneId"
+        },
+        "mode": {
+          "$ref": "#/$defs/LaneMode"
+        },
+        "parent": {
+          "$ref": "#/$defs/LaneId",
+          "description": "Required when mode = ephemeral: the lane whose environment is inherited. An ephemeral lane's env mutations are discarded when it is closed or its operation ends."
+        }
+      }
+    },
+    "LaneSummary": {
+      "type": "object",
+      "required": [
+        "id",
+        "mode",
+        "state"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/LaneId"
+        },
+        "mode": {
+          "$ref": "#/$defs/LaneMode"
+        },
+        "parent": {
+          "$ref": "#/$defs/LaneId"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "live",
+            "closed"
+          ]
+        },
+        "inflight": {
+          "$ref": "#/$defs/OperationId",
+          "description": "The attached operation currently holding the lane, if any."
+        },
+        "created_at_monotonic_ms": {
+          "$ref": "#/$defs/MonotonicMs"
+        }
+      }
+    },
+    "ToolSpec": {
+      "type": "object",
+      "required": [
+        "name",
+        "description",
+        "input_schema",
+        "output_schema"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "description": {
+          "type": "string"
+        },
+        "input_schema": {
+          "type": "object",
+          "description": "JSON Schema 2020-12 for `start.input`."
+        },
+        "output_schema": {
+          "type": "object",
+          "description": "JSON Schema 2020-12 for `TerminalInfo.output`."
+        },
+        "streams": {
+          "type": "string",
+          "enum": [
+            "text",
+            "binary"
+          ],
+          "description": "Hint for the brain: whether stdout is UTF-8 text. Default text."
+        }
+      }
+    },
+    "ToolManifest": {
+      "type": "object",
+      "required": [
+        "version",
+        "tools"
+      ],
+      "description": "The sealed tool set. Digest = SHA-256 over the RFC 8785 (JCS) canonical JSON of this object. Tools are sorted by name.",
+      "properties": {
+        "version": {
+          "type": "string",
+          "enum": [
+            "1"
+          ]
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolSpec"
+          }
+        }
+      }
+    },
+    "Limits": {
+      "type": "object",
+      "required": [
+        "max_lanes",
+        "max_concurrent_operations",
+        "max_frame_bytes",
+        "max_slice_bytes",
+        "max_poll_wait_ms",
+        "max_inline_put_bytes",
+        "max_persist_bytes",
+        "default_bounds"
+      ],
+      "description": "Declared by the hand in `hello`, not assumed by the brain.",
+      "properties": {
+        "max_lanes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_concurrent_operations": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_frame_bytes": {
+          "type": "integer",
+          "minimum": 65536,
+          "description": "Largest WebSocket text frame either side will send."
+        },
+        "max_slice_bytes": {
+          "type": "integer",
+          "minimum": 4096,
+          "description": "Largest decoded slice returned per stream per response."
+        },
+        "max_poll_wait_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cap on `wait_ms` for start/poll."
+        },
+        "max_inline_put_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_persist_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per persisted item."
+        },
+        "default_bounds": {
+          "$ref": "#/$defs/EffectiveBounds"
+        }
+      }
+    },
+    "Paths": {
+      "type": "object",
+      "required": [
+        "workspace",
+        "home",
+        "spill_dir"
+      ],
+      "properties": {
+        "workspace": {
+          "type": "string",
+          "description": "Default cwd. Synced."
+        },
+        "home": {
+          "type": "string",
+          "description": "$HOME of the agent user. Synced."
+        },
+        "spill_dir": {
+          "type": "string",
+          "description": "Where operation output files live. Not synced."
+        }
+      }
+    },
+    "Clock": {
+      "type": "object",
+      "required": [
+        "monotonic_ms",
+        "wall_ms"
+      ],
+      "properties": {
+        "monotonic_ms": {
+          "$ref": "#/$defs/MonotonicMs"
+        },
+        "wall_ms": {
+          "$ref": "#/$defs/WallMs"
+        }
+      }
+    },
+    "Usage": {
+      "type": "object",
+      "required": [
+        "wall_ms"
+      ],
+      "description": "Observation only; customer-controlled data; never billing authority (I9).",
+      "properties": {
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpu_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_rss_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "Outcome": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "failed",
+        "cancelled",
+        "deadline_exceeded",
+        "interrupted"
+      ],
+      "description": "completed = the tool ran to its end (a non-zero exit_code is still `completed`; the failure is data for the model). failed = the hand could not run it. interrupted = outcome unknown; never replayed."
+    },
+    "TerminalInfo": {
+      "type": "object",
+      "required": [
+        "outcome",
+        "ended_at_monotonic_ms",
+        "usage"
+      ],
+      "properties": {
+        "outcome": {
+          "$ref": "#/$defs/Outcome"
+        },
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Process exit code for command-like tools; null when killed by a signal. Typed tools use 0 = ok, 1 = tool-level failure explained on stderr."
+        },
+        "signal": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Terminating signal name (e.g. \"SIGKILL\") when applicable."
+        },
+        "output": {
+          "description": "Typed result validated against the tool's `output_schema`. Present when outcome = completed."
+        },
+        "error": {
+          "$ref": "#/$defs/AbiError",
+          "description": "Present when outcome = failed."
+        },
+        "ended_at_monotonic_ms": {
+          "$ref": "#/$defs/MonotonicMs"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        }
+      }
+    },
+    "OperationStatus": {
+      "type": "string",
+      "enum": [
+        "running",
+        "terminal",
+        "missing"
+      ],
+      "description": "missing = the hand knows the id but lost its record (treated as interrupted)."
+    },
+    "OperationView": {
+      "type": "object",
+      "required": [
+        "operation_id",
+        "tool",
+        "lane_id",
+        "detach",
+        "status",
+        "started_at_monotonic_ms",
+        "streams"
+      ],
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "lane_id": {
+          "$ref": "#/$defs/LaneId"
+        },
+        "detach": {
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/OperationStatus"
+        },
+        "started_at_monotonic_ms": {
+          "$ref": "#/$defs/MonotonicMs"
+        },
+        "terminal": {
+          "$ref": "#/$defs/TerminalInfo",
+          "description": "Present iff status = terminal."
+        },
+        "streams": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StreamInfo"
+          }
+        },
+        "correlation": {
+          "type": "object",
+          "description": "Echoed verbatim from `start`."
+        }
+      }
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "malformed_request",
+        "protocol_unsupported",
+        "unauthorized",
+        "tool_manifest_mismatch",
+        "generation_mismatch",
+        "fence_stale",
+        "tool_not_found",
+        "tool_input_invalid",
+        "tool_output_invalid",
+        "lane_gone",
+        "lane_busy",
+        "lane_limit_exceeded",
+        "lane_not_closable",
+        "operation_not_found",
+        "operation_idempotency_conflict",
+        "operation_output_evicted",
+        "path_not_found",
+        "path_outside_scope",
+        "checksum_mismatch",
+        "transfer_failed",
+        "too_large",
+        "resource_exhausted",
+        "restore_failed",
+        "internal"
+      ]
+    },
+    "AbiError": {
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean",
+          "description": "True only when repeating the identical request later is safe and may succeed (e.g. resource_exhausted). Never true for opaque work."
+        },
+        "details": {
+          "type": "object",
+          "description": "Code-specific structured detail, e.g. {\"schema_path\": ...} for tool_input_invalid."
+        }
+      }
+    },
+    "SyncScope": {
+      "type": "object",
+      "required": [
+        "roots"
+      ],
+      "properties": {
+        "roots": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "Absolute directories included in workspace sync (default: workspace and home)."
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Gitignore-style patterns relative to each root."
+        }
+      }
+    },
+    "RestoreSource": {
+      "type": "object",
+      "required": [
+        "manifest_id",
+        "manifest_get_url",
+        "packs"
+      ],
+      "description": "How a fresh hand re-materialises the workspace. All URLs are short-lived presigned GETs minted by the trusted side; the hand holds no credential (I8).",
+      "properties": {
+        "manifest_id": {
+          "$ref": "#/$defs/ManifestId"
+        },
+        "manifest_get_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "packs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "pack_id",
+              "get_url"
+            ],
+            "properties": {
+              "pack_id": {
+                "$ref": "#/$defs/PackId"
+              },
+              "get_url": {
+                "type": "string",
+                "format": "uri"
+              }
+            }
+          }
+        }
+      }
+    },
+    "RestoreReport": {
+      "type": "object",
+      "required": [
+        "manifest_id",
+        "files",
+        "bytes",
+        "duration_ms"
+      ],
+      "properties": {
+        "manifest_id": {
+          "$ref": "#/$defs/ManifestId"
+        },
+        "files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "HelloRequest": {
+      "type": "object",
+      "required": [
+        "protocol",
+        "session_id",
+        "session_token",
+        "env",
+        "sync",
+        "heartbeat_ms"
+      ],
+      "description": "First request on every connection. Seals the tool manifest (I1), authenticates the brain to the hand, restores the workspace on a fresh generation, re-attaches on reconnect.",
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "session_token": {
+          "type": "string",
+          "description": "Per-session secret the hand was launched with. Mismatch = unauthorized and the connection is closed."
+        },
+        "expected_generation_id": {
+          "$ref": "#/$defs/GenerationId",
+          "description": "Set on reconnect. If the hand's generation differs, the response still succeeds and the brain treats every prior operation as lost."
+        },
+        "tool_manifest_digest": {
+          "$ref": "#/$defs/Sha256Hex",
+          "description": "The digest sealed at session create. Omitted only on the very first hello of a session, when the brain adopts the hand's manifest. A hand that cannot serve this digest answers tool_manifest_mismatch."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment for lane 0 (inherited by every lane). Customer-supplied; never platform credentials."
+        },
+        "sync": {
+          "$ref": "#/$defs/SyncScope"
+        },
+        "restore": {
+          "$ref": "#/$defs/RestoreSource",
+          "description": "Present when the hand is a fresh generation of a session that has synced before. The hand restores before answering."
+        },
+        "heartbeat_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "description": "Interval for unsolicited hand_status events."
+        }
+      }
+    },
+    "HelloResponse": {
+      "type": "object",
+      "required": [
+        "protocol",
+        "generation_id",
+        "boot_id",
+        "tool_manifest_digest",
+        "tools",
+        "lanes",
+        "operations",
+        "limits",
+        "paths",
+        "clock"
+      ],
+      "properties": {
+        "protocol": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "generation_id": {
+          "$ref": "#/$defs/GenerationId"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/BootId"
+        },
+        "tool_manifest_digest": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ToolSpec"
+          },
+          "description": "The manifest's tools, sorted by name."
+        },
+        "lanes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LaneSummary"
+          },
+          "description": "Every lane the hand knows (live and closed tombstones). Non-empty only on reconnect to a surviving generation."
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OperationView"
+          },
+          "description": "Every non-released operation. Empty on a fresh generation."
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        },
+        "paths": {
+          "$ref": "#/$defs/Paths"
+        },
+        "clock": {
+          "$ref": "#/$defs/Clock"
+        },
+        "restore": {
+          "$ref": "#/$defs/RestoreReport",
+          "description": "Present when the request carried `restore`."
+        }
+      }
+    },
+    "StartRequest": {
+      "type": "object",
+      "required": [
+        "operation_id",
+        "call_hash",
+        "tool",
+        "input",
+        "lane",
+        "detach",
+        "wait_ms",
+        "max_bytes"
+      ],
+      "description": "Begin a tool call. Idempotent within a generation by (operation_id, call_hash): a replay returns the existing operation without running it again. Validation precedes side effects.",
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "call_hash": {
+          "$ref": "#/$defs/Sha256Hex",
+          "description": "SHA-256 over JCS of {tool, input, lane, cwd, detach, bounds}. Same operation_id with a different call_hash = operation_idempotency_conflict."
+        },
+        "batch_id": {
+          "$ref": "#/$defs/BatchId"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "input": {
+          "description": "Validated against the manifest input_schema before anything runs."
+        },
+        "lane": {
+          "$ref": "#/$defs/LaneRef"
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for this call. Default = paths.workspace. Per call; the lane's cwd is never mutated by the ABI."
+        },
+        "detach": {
+          "type": "boolean",
+          "description": "true = background job: return as soon as the operation is recorded and spawned; the lane is not held; poll/cancel later. false = attached: holds the lane until terminal."
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Attached only: wait up to this long for the operation to become terminal before answering, so short calls cost one round trip. Capped by limits.max_poll_wait_ms. Ignored when detach = true."
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Bytes of stdout/stderr (from offset 0) to include in the response slices. 0 = none."
+        },
+        "bounds": {
+          "$ref": "#/$defs/Bounds"
+        },
+        "correlation": {
+          "type": "object",
+          "description": "Opaque to the hand (e.g. agent_id, provider tool_call id). Echoed on every view."
+        }
+      }
+    },
+    "StartResponse": {
+      "type": "object",
+      "required": [
+        "view",
+        "slices",
+        "replayed"
+      ],
+      "properties": {
+        "view": {
+          "$ref": "#/$defs/OperationView"
+        },
+        "slices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OutputSlice"
+          }
+        },
+        "replayed": {
+          "type": "boolean",
+          "description": "True when this start matched an existing (operation_id, call_hash) and nothing new was executed."
+        }
+      }
+    },
+    "PollRequest": {
+      "type": "object",
+      "required": [
+        "operation_id",
+        "cursors",
+        "max_bytes",
+        "wait_ms"
+      ],
+      "description": "Status plus incremental output from byte cursors. Byte offsets are the authority: no gaps, no duplicates, up to retention. Waits up to wait_ms for the operation to become terminal or for any cursor to have new bytes.",
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "cursors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Cursor"
+          },
+          "description": "Empty = status only."
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total decoded bytes across all returned slices."
+        },
+        "wait_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "PollResponse": {
+      "type": "object",
+      "required": [
+        "view",
+        "slices"
+      ],
+      "properties": {
+        "view": {
+          "$ref": "#/$defs/OperationView"
+        },
+        "slices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OutputSlice"
+          }
+        }
+      }
+    },
+    "CancelRequest": {
+      "type": "object",
+      "required": [
+        "operation_id"
+      ],
+      "description": "SIGTERM to the operation's process group -> grace_ms -> SIGKILL -> terminal(cancelled). Cancelling a terminal operation is not an error (accepted = false).",
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "grace_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Overrides bounds.grace_ms."
+        }
+      }
+    },
+    "CancelResponse": {
+      "type": "object",
+      "required": [
+        "accepted",
+        "view"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "view": {
+          "$ref": "#/$defs/OperationView",
+          "description": "The view at the time of the answer; may still be running during the grace period."
+        }
+      }
+    },
+    "ReleaseRequest": {
+      "type": "object",
+      "required": [
+        "operation_ids"
+      ],
+      "description": "The brain has durably committed these results; the hand deletes their spill files and forgets them. After release, poll returns operation_not_found and a replayed start would run again — so release only after commit.",
+      "properties": {
+        "operation_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/OperationId"
+          }
+        }
+      }
+    },
+    "ReleaseResponse": {
+      "type": "object",
+      "required": [
+        "released",
+        "unknown"
+      ],
+      "properties": {
+        "released": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OperationId"
+          }
+        },
+        "unknown": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OperationId"
+          },
+          "description": "Ids the hand did not know (already released or never started). Not an error."
+        }
+      }
+    },
+    "LaneCloseRequest": {
+      "type": "object",
+      "required": [
+        "lane_id"
+      ],
+      "description": "Destroy a lane and tombstone its id. Cancels its attached in-flight operation. Does not kill detached jobs started from it (they belong to the operation registry). Lane 0 is not closable.",
+      "properties": {
+        "lane_id": {
+          "$ref": "#/$defs/LaneId"
+        },
+        "grace_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "LaneCloseResponse": {
+      "type": "object",
+      "required": [
+        "closed",
+        "cancelled_operations"
+      ],
+      "properties": {
+        "closed": {
+          "type": "boolean"
+        },
+        "cancelled_operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OperationId"
+          }
+        }
+      }
+    },
+    "PutSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "get_url",
+            "bytes",
+            "sha256"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "url"
+              ]
+            },
+            "get_url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Short-lived presigned GET minted by the trusted side."
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "$ref": "#/$defs/Sha256Hex",
+              "description": "Verified after download; mismatch = checksum_mismatch and the file is not written."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "data_base64"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "inline"
+              ]
+            },
+            "data_base64": {
+              "type": "string",
+              "contentEncoding": "base64",
+              "description": "Small files only (limits.max_inline_put_bytes decoded)."
+            }
+          }
+        }
+      ]
+    },
+    "PutFile": {
+      "type": "object",
+      "required": [
+        "path",
+        "source"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Absolute guest path inside the sync scope; parents are created. Symlinks are resolved before the scope check."
+        },
+        "source": {
+          "$ref": "#/$defs/PutSource"
+        },
+        "mode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095,
+          "description": "Unix permission bits. Default 0644."
+        }
+      }
+    },
+    "PutRequest": {
+      "type": "object",
+      "required": [
+        "files"
+      ],
+      "description": "Files in. Bytes never travel as a tool result (I7): the hand downloads from presigned URLs, or accepts small inline payloads.",
+      "properties": {
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/PutFile"
+          }
+        }
+      }
+    },
+    "PutResponse": {
+      "type": "object",
+      "required": [
+        "written"
+      ],
+      "properties": {
+        "written": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "bytes",
+              "sha256"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sha256": {
+                "$ref": "#/$defs/Sha256Hex"
+              }
+            }
+          }
+        }
+      }
+    },
+    "PersistSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "path"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "description": "Absolute guest path inside the sync scope, resolved through symlinks."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "operation_id",
+            "stream"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "operation_stream"
+              ]
+            },
+            "operation_id": {
+              "$ref": "#/$defs/OperationId"
+            },
+            "stream": {
+              "$ref": "#/$defs/Stream"
+            }
+          }
+        }
+      ]
+    },
+    "PersistItem": {
+      "type": "object",
+      "required": [
+        "name",
+        "source",
+        "put_url"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Session-unique artifact name, chosen by the brain/customer."
+        },
+        "source": {
+          "$ref": "#/$defs/PersistSource"
+        },
+        "put_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Short-lived presigned PUT for exactly this artifact object."
+        },
+        "media_type": {
+          "type": "string",
+          "description": "Sent as Content-Type. Sniffed if absent."
+        }
+      }
+    },
+    "PersistRequest": {
+      "type": "object",
+      "required": [
+        "items"
+      ],
+      "description": "Files out. The hand uploads each item to its presigned URL and reports size + digest; the trusted side records the artifact. Bounded by limits.max_persist_bytes per item.",
+      "properties": {
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/PersistItem"
+          }
+        }
+      }
+    },
+    "PersistResponse": {
+      "type": "object",
+      "required": [
+        "persisted"
+      ],
+      "properties": {
+        "persisted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "bytes",
+              "sha256",
+              "media_type"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sha256": {
+                "$ref": "#/$defs/Sha256Hex"
+              },
+              "media_type": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "SyncReason": {
+      "type": "string",
+      "enum": [
+        "turn_end",
+        "interval",
+        "before_release",
+        "explicit"
+      ]
+    },
+    "SyncRequest": {
+      "type": "object",
+      "required": [
+        "reason",
+        "manifest_id",
+        "manifest_put_url",
+        "pack_id",
+        "pack_put_url",
+        "full"
+      ],
+      "description": "Workspace sync: diff the sync scope against the last manifest, upload changed files as one pack plus a new manifest. Brain-driven (turn end, every sync_interval, before release/termination). Nothing is uploaded when nothing changed.",
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/SyncReason"
+        },
+        "manifest_id": {
+          "$ref": "#/$defs/ManifestId",
+          "description": "Id for the manifest this sync would produce."
+        },
+        "manifest_put_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "pack_id": {
+          "$ref": "#/$defs/PackId"
+        },
+        "pack_put_url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "full": {
+          "type": "boolean",
+          "description": "true = pack every file (compaction), not only changed ones. The new manifest then references a single pack."
+        }
+      }
+    },
+    "SyncResponse": {
+      "type": "object",
+      "required": [
+        "changed",
+        "manifest_id",
+        "files_total",
+        "bytes_total",
+        "files_added",
+        "files_modified",
+        "files_deleted",
+        "bytes_uploaded",
+        "packs_referenced",
+        "duration_ms"
+      ],
+      "properties": {
+        "changed": {
+          "type": "boolean",
+          "description": "false = nothing differed from the last manifest; no upload happened and manifest_id is the previous one."
+        },
+        "manifest_id": {
+          "$ref": "#/$defs/ManifestId"
+        },
+        "files_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "files_added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "files_modified": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "files_deleted": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes_uploaded": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Compressed pack bytes actually uploaded."
+        },
+        "packs_referenced": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many packs the new manifest points at. The brain compacts (full = true) when this grows large."
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "RequestCall": {
+      "description": "One brain->hand call, tagged by `op`; `args` is that op's request type.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "hello"
+              ]
+            },
+            "args": {
+              "$ref": "#/$defs/HelloRequest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "start"
+              ]
+            },
+            "args": {
+              "$ref": "#/$defs/StartRequest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "poll"
+              ]
+            },
+            "args": {
+              "$ref": "#/$defs/PollRequest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "cancel"
+              ]
+            },
+            "args": {
+              "$ref": "#/$defs/CancelRequest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "release"
+              ]
+            },
+            "args": {
+              "$ref": "#/$defs/ReleaseRequest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "lane_close"
+              ]
+            },
+            "args": {
+              "$ref": "#/$defs/LaneCloseRequest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "put"
+              ]
+            },
+            "args": {
+              "$ref": "#/$defs/PutRequest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "persist"
+              ]
+            },
+            "args": {
+              "$ref": "#/$defs/PersistRequest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "args"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "sync"
+              ]
+            },
+            "args": {
+              "$ref": "#/$defs/SyncRequest"
+            }
+          }
+        }
+      ]
+    },
+    "Request": {
+      "type": "object",
+      "required": [
+        "id",
+        "fence",
+        "call"
+      ],
+      "description": "Brain -> hand. Every request carries the brain's ownership fence; a fence lower than the highest the hand has accepted is refused with fence_stale (no side effect). generation_id is required on every request except hello; a mismatch is generation_mismatch.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "fence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "generation_id": {
+          "$ref": "#/$defs/GenerationId"
+        },
+        "call": {
+          "$ref": "#/$defs/RequestCall"
+        }
+      }
+    },
+    "ResponseResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "status",
+            "reply"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "ok"
+              ]
+            },
+            "reply": {
+              "$ref": "#/$defs/Reply"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "status",
+            "error"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "error"
+              ]
+            },
+            "error": {
+              "$ref": "#/$defs/AbiError"
+            }
+          }
+        }
+      ]
+    },
+    "Response": {
+      "type": "object",
+      "required": [
+        "id",
+        "result"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "result": {
+          "$ref": "#/$defs/ResponseResult"
+        }
+      },
+      "description": "Hand -> brain answer to one Request, correlated by `id`."
+    },
+    "Pressure": {
+      "type": "object",
+      "required": [
+        "mem_available_bytes",
+        "swap_used_bytes"
+      ],
+      "properties": {
+        "mem_available_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "swap_used_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "psi_some_avg10": {
+          "type": "number",
+          "minimum": 0,
+          "description": "PSI memory 'some' avg10, when the guest kernel exposes it."
+        }
+      }
+    },
+    "HandStatusEvent": {
+      "type": "object",
+      "required": [
+        "generation_id",
+        "boot_id",
+        "seq",
+        "at_monotonic_ms",
+        "at_wall_ms",
+        "inflight",
+        "live_jobs",
+        "lanes_live",
+        "operations_retained",
+        "retained_bytes",
+        "idle_for_ms"
+      ],
+      "description": "Hand -> brain, unsolicited: on every idle/busy transition, when a detached job ends, and every heartbeat_ms. The idle signal.",
+      "properties": {
+        "generation_id": {
+          "$ref": "#/$defs/GenerationId"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/BootId"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per boot, monotonic."
+        },
+        "at_monotonic_ms": {
+          "$ref": "#/$defs/MonotonicMs"
+        },
+        "at_wall_ms": {
+          "$ref": "#/$defs/WallMs"
+        },
+        "inflight": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OperationId"
+          },
+          "description": "Attached operations not yet terminal."
+        },
+        "live_jobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OperationId"
+          },
+          "description": "Detached operations not yet terminal."
+        },
+        "lanes_live": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "operations_retained": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Terminal but not yet released."
+        },
+        "retained_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "idle_for_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 while inflight or live_jobs is non-empty."
+        },
+        "pressure": {
+          "$ref": "#/$defs/Pressure"
+        }
+      }
+    },
+    "HandFrame": {
+      "description": "Hand -> brain frame, tagged by `kind`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "frame"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "response"
+              ]
+            },
+            "frame": {
+              "$ref": "#/$defs/Response"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "frame"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "hand_status"
+              ]
+            },
+            "frame": {
+              "$ref": "#/$defs/HandStatusEvent"
+            }
+          }
+        }
+      ]
+    },
+    "SyncEntry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "path",
+            "size",
+            "mtime_ns",
+            "mode",
+            "sha256",
+            "pack_id"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "file"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "description": "Absolute guest path."
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "mtime_ns": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "mode": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4095
+            },
+            "sha256": {
+              "$ref": "#/$defs/Sha256Hex"
+            },
+            "pack_id": {
+              "$ref": "#/$defs/PackId",
+              "description": "The pack whose entry `path` holds this exact content."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "path",
+            "target"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "symlink"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "path",
+            "mode"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "dir"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "mode": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4095
+            }
+          }
+        }
+      ]
+    },
+    "SyncManifest": {
+      "type": "object",
+      "required": [
+        "version",
+        "manifest_id",
+        "created_at_wall_ms",
+        "generation_id",
+        "roots",
+        "pack_format",
+        "packs",
+        "entries"
+      ],
+      "description": "The object a sync writes to manifest_put_url. Restore = fetch this, then the referenced packs, then extract each file entry from its pack. Empty directories and symlinks are recreated from entries.",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "const": 1
+        },
+        "manifest_id": {
+          "$ref": "#/$defs/ManifestId"
+        },
+        "parent_manifest_id": {
+          "$ref": "#/$defs/ManifestId"
+        },
+        "created_at_wall_ms": {
+          "$ref": "#/$defs/WallMs"
+        },
+        "generation_id": {
+          "$ref": "#/$defs/GenerationId"
+        },
+        "roots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pack_format": {
+          "type": "string",
+          "description": "POSIX pax tar, zstd-compressed; entry names are absolute guest paths without the leading slash.",
+          "enum": [
+            "tar+zstd"
+          ]
+        },
+        "packs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "pack_id",
+              "bytes"
+            ],
+            "properties": {
+              "pack_id": {
+                "$ref": "#/$defs/PackId"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Compressed size."
+              },
+              "sha256": {
+                "$ref": "#/$defs/Sha256Hex"
+              }
+            }
+          }
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SyncEntry"
+          }
+        }
+      }
+    },
+    "Reply": {
+      "description": "One successful reply, tagged by `op`; `body` is that op's response type.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "body"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "hello"
+              ]
+            },
+            "body": {
+              "$ref": "#/$defs/HelloResponse"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "body"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "start"
+              ]
+            },
+            "body": {
+              "$ref": "#/$defs/StartResponse"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "body"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "poll"
+              ]
+            },
+            "body": {
+              "$ref": "#/$defs/PollResponse"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "body"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "cancel"
+              ]
+            },
+            "body": {
+              "$ref": "#/$defs/CancelResponse"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "body"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "release"
+              ]
+            },
+            "body": {
+              "$ref": "#/$defs/ReleaseResponse"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "body"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "lane_close"
+              ]
+            },
+            "body": {
+              "$ref": "#/$defs/LaneCloseResponse"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "body"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "put"
+              ]
+            },
+            "body": {
+              "$ref": "#/$defs/PutResponse"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "body"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "persist"
+              ]
+            },
+            "body": {
+              "$ref": "#/$defs/PersistResponse"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "op",
+            "body"
+          ],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "sync"
+              ]
+            },
+            "body": {
+              "$ref": "#/$defs/SyncResponse"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

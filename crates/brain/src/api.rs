@@ -7,17 +7,13 @@
 //! The subscription starts BEFORE the replay read so nothing falls between them; duplicates
 //! are dropped by seq.
 //!
-//! Output admission persists a hash of Idempotency-Key for 24-hour replay. Raw keys never enter
-//! the journal.
-
 use crate::events::{event_seq, event_type};
 use crate::journal::Record;
 use crate::session::Brain;
 use crate::{BrainError, mint_id};
 use aex_contracts::session::{
     self, ApiError, ApiErrorCode, ApiErrorResponse, Artifact, ArtifactList, CreateSessionRequest,
-    FileList, FileListObject, MessageAccepted, MessageRequest, OutputAccepted, OutputRequest,
-    PersistRequest, SessionList,
+    FileList, FileListObject, MessageAccepted, MessageRequest, PersistRequest, SessionList,
 };
 use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Path, Query, State};
@@ -45,7 +41,6 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions", post(create_session).get(list_sessions))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(send_message))
-        .route("/v1/sessions/{id}/output", post(request_output))
         .route("/v1/sessions/{id}/events", get(stream_events))
         .route("/v1/sessions/{id}/cancel", post(cancel_turn))
         .route("/v1/sessions/{id}/end", post(end_session))
@@ -91,6 +86,7 @@ impl IntoResponse for Failure {
         let body = ApiErrorResponse {
             error: ApiError {
                 code: self.1,
+                details: None,
                 message: self.2,
                 param: None,
                 request_id: Some(mint_id("req", 16)),
@@ -216,15 +212,24 @@ async fn send_message(
     Json(req): Json<MessageRequest>,
 ) -> Result<(StatusCode, Json<MessageAccepted>), Failure> {
     auth(&state, &headers)?;
+    if req.output.is_some() {
+        return Err(Failure(
+            StatusCode::BAD_REQUEST,
+            ApiErrorCode::InvalidRequest,
+            "message.output is a host extension and must be consumed before calling Brain".into(),
+        ));
+    }
     let (turn_id, seq) = state
         .brain
-        .message(&id, req.content)
+        .message_with_metadata(&id, req.content, req.metadata)
         .await
         .map_err(map_err)?;
     Ok((
         StatusCode::ACCEPTED,
         Json(MessageAccepted {
+            output_id: None,
             seq: NonZeroU64::new(seq.max(1)).expect("nonzero"),
+            schema_hash: None,
             session_id: id.parse().map_err(|_| {
                 Failure(
                     StatusCode::BAD_REQUEST,
@@ -237,59 +242,6 @@ async fn send_message(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     ApiErrorCode::Internal,
                     "turn id".into(),
-                )
-            })?,
-        }),
-    ))
-}
-
-async fn request_output(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(req): Json<OutputRequest>,
-) -> Result<(StatusCode, Json<OutputAccepted>), Failure> {
-    auth(&state, &headers)?;
-    let idempotency_key = headers
-        .get("idempotency-key")
-        .map(|value| {
-            value.to_str().map_err(|_| {
-                Failure(
-                    StatusCode::BAD_REQUEST,
-                    ApiErrorCode::InvalidRequest,
-                    "Idempotency-Key must be valid ASCII".into(),
-                )
-            })
-        })
-        .transpose()?;
-    let admitted = state
-        .brain
-        .output(&id, req, idempotency_key)
-        .await
-        .map_err(map_err)?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(OutputAccepted {
-            output_id: admitted.output_id.parse().map_err(|_| {
-                Failure(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ApiErrorCode::Internal,
-                    "output id".into(),
-                )
-            })?,
-            schema_hash: admitted.schema_hash.parse().map_err(|_| {
-                Failure(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ApiErrorCode::Internal,
-                    "schema hash".into(),
-                )
-            })?,
-            seq: NonZeroU64::new(admitted.seq.max(1)).expect("nonzero"),
-            session_id: id.parse().map_err(|_| {
-                Failure(
-                    StatusCode::BAD_REQUEST,
-                    ApiErrorCode::InvalidRequest,
-                    "session id".into(),
                 )
             })?,
         }),

@@ -6,7 +6,7 @@
 //! separate measurements.
 
 use super::sse::SseDecoder;
-use super::{ModelRequest, OutputControl, OutputMode, Provider, ProviderEvent};
+use super::{ModelRequest, Provider, ProviderEvent};
 use crate::config::{Dialect, ProviderKey, SealedPrefix};
 use crate::message::{ContentBlock, Message, Role, StopReason, Usage};
 use crate::{BrainError, Result};
@@ -188,68 +188,6 @@ impl Provider for OpenAiChat {
         Self::request(Self::body(prefix, history)?, key, base_url)
     }
 
-    fn build_output_request(
-        &self,
-        prefix: &SealedPrefix,
-        history: &[Message],
-        key: &ProviderKey,
-        base_url: &str,
-        control: &OutputControl,
-        mode: OutputMode,
-    ) -> Result<ModelRequest> {
-        let mut body = Self::body(prefix, history)?;
-        let object = body.as_object_mut().expect("openai body is an object");
-        object.remove("tools");
-        if let Some(system) = object
-            .get_mut("messages")
-            .and_then(Value::as_array_mut)
-            .and_then(|messages| messages.first_mut())
-            .and_then(Value::as_object_mut)
-        {
-            system.insert(
-                "content".into(),
-                json!(format!(
-                    "{}\n\n{}",
-                    prefix.system_prompt, control.instruction
-                )),
-            );
-        }
-        match mode {
-            OutputMode::Native => {
-                object.insert(
-                    "response_format".into(),
-                    json!({
-                        "type":"json_schema",
-                        "json_schema":{
-                            "name":"aex_output",
-                            "strict":true,
-                            "schema":control.schema
-                        }
-                    }),
-                );
-            }
-            OutputMode::ForcedTool => {
-                object.insert(
-                    "tools".into(),
-                    json!([{
-                        "type":"function",
-                        "function":{
-                            "name":"aex_output",
-                            "description":"Commit the final structured output.",
-                            "parameters":control.schema
-                        }
-                    }]),
-                );
-                object.insert(
-                    "tool_choice".into(),
-                    json!({"type":"function","function":{"name":"aex_output"}}),
-                );
-                object.insert("parallel_tool_calls".into(), json!(false));
-            }
-        }
-        Self::request(body, key, base_url)
-    }
-
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
         crate::provider::http_stream(req, decode).await
     }
@@ -393,66 +331,6 @@ mod tests {
                 route: ToolRoute::Hand,
             })
             .seal()
-    }
-
-    #[test]
-    fn output_request_is_private_and_disables_ordinary_tools() {
-        let p = prefix();
-        let control = OutputControl {
-            schema: json!({
-                "type":"object",
-                "properties":{"answer":{"type":"number"}},
-                "required":["answer"],
-                "additionalProperties":false
-            }),
-            instruction: "commit privately".into(),
-        };
-        let native: Value = serde_json::from_slice(
-            &OpenAiChat
-                .build_output_request(
-                    &p,
-                    &[Message::user_text("hi")],
-                    &ProviderKey::new("k"),
-                    "http://x",
-                    &control,
-                    OutputMode::Native,
-                )
-                .unwrap()
-                .body,
-        )
-        .unwrap();
-        assert!(native.get("tools").is_none());
-        assert_eq!(native["response_format"]["type"], "json_schema");
-        assert_eq!(native["response_format"]["json_schema"]["strict"], true);
-        assert_eq!(
-            native["response_format"]["json_schema"]["schema"],
-            control.schema
-        );
-        assert!(
-            native["messages"][0]["content"]
-                .as_str()
-                .unwrap()
-                .ends_with("commit privately")
-        );
-
-        let fallback: Value = serde_json::from_slice(
-            &OpenAiChat
-                .build_output_request(
-                    &p,
-                    &[Message::user_text("hi")],
-                    &ProviderKey::new("k"),
-                    "http://x",
-                    &control,
-                    OutputMode::ForcedTool,
-                )
-                .unwrap()
-                .body,
-        )
-        .unwrap();
-        assert_eq!(fallback["tools"].as_array().unwrap().len(), 1);
-        assert_eq!(fallback["tools"][0]["function"]["name"], "aex_output");
-        assert!(fallback["tools"][0]["function"].get("strict").is_none());
-        assert_eq!(fallback["parallel_tool_calls"], false);
     }
 
     #[test]

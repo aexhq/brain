@@ -378,6 +378,7 @@ impl McpRuntime {
                 exit_code: None,
                 duration_ms,
                 truncated: r.truncated,
+                terminal: None,
             },
             Err(McpError::Cancelled) => CallOutcome {
                 outcome: "cancelled".into(),
@@ -386,6 +387,7 @@ impl McpRuntime {
                 exit_code: None,
                 duration_ms,
                 truncated: false,
+                terminal: None,
             },
             Err(McpError::Timeout) => CallOutcome {
                 outcome: "deadline_exceeded".into(),
@@ -397,6 +399,7 @@ impl McpRuntime {
                 exit_code: None,
                 duration_ms,
                 truncated: false,
+                terminal: None,
             },
             Err(e) => {
                 let mut o = CallOutcome::failed(format!("MCP server {}: {e}", tool.server));

@@ -329,6 +329,7 @@ fn outcome(
         exit_code: None,
         duration_ms: started.elapsed().as_millis() as u64,
         truncated,
+        terminal: None,
     }
 }
 

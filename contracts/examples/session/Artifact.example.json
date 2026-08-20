@@ -1,0 +1,11 @@
+{
+  "object": "artifact",
+  "session_id": "ses_01HZX8Y2K3M4N5P6Q7R8S9T0",
+  "name": "report.pdf",
+  "bytes": 204800,
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "media_type": "application/pdf",
+  "created_at": "2026-08-18T09:41:00Z",
+  "download_url": "https://s3.example/art/report.pdf?X-Amz-Signature=x",
+  "download_url_expires_at": "2026-08-18T10:41:00Z"
+}

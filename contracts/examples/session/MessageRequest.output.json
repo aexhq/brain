@@ -1,0 +1,26 @@
+{
+  "content": "Research the available options and recommend one.",
+  "output": {
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recommendation",
+        "confidence"
+      ],
+      "properties": {
+        "recommendation": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "schema_hash": "cd06af0f3000f46b6139447d3d8672cbd3620943b6384cbded698f8b77d16cc6",
+    "retries": 1
+  }
+}

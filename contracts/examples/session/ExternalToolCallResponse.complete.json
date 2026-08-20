@@ -1,0 +1,14 @@
+{
+  "outcome": "completed",
+  "content": "The result was accepted.",
+  "is_error": false,
+  "disposition": "complete_turn",
+  "result": {
+    "recommendation": "Option A",
+    "confidence": 0.86
+  },
+  "result_metadata": {
+    "output_id": "out_01HZX8Y2K3M4N5P6Q7R8S9V2",
+    "schema_hash": "cd06af0f3000f46b6139447d3d8672cbd3620943b6384cbded698f8b77d16cc6"
+  }
+}

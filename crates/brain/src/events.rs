@@ -7,8 +7,7 @@
 
 use crate::journal::Record;
 use aex_contracts::session::{
-    self, ApiError, ApiErrorCode, Event, EventStream, OutputContent, OutputContentType,
-    OutputValidationIssue, ProviderUsage, Timestamp, ToolOutcome,
+    self, ApiError, ApiErrorCode, Event, EventStream, ProviderUsage, Timestamp, ToolOutcome,
 };
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -102,70 +101,6 @@ pub fn derive(
             session_id: sid,
             turn_id: turn_of(turn)?,
         },
-        Record::OutputStarted {
-            output,
-            turn,
-            schema_hash,
-            source_seq,
-        } => Event::OutputStarted {
-            at,
-            output_id: output.parse().ok()?,
-            schema_hash: schema_hash.parse().ok()?,
-            seq,
-            session_id: sid,
-            source_seq: *source_seq,
-            turn_id: turn.as_deref().and_then(turn_of),
-        },
-        Record::OutputCompleted {
-            output,
-            turn,
-            schema_hash,
-            value,
-            usage,
-        } => Event::OutputCompleted {
-            at,
-            output: OutputContent {
-                schema_hash: schema_hash.parse().ok()?,
-                type_: OutputContentType::Output,
-                value: value.clone(),
-            },
-            output_id: output.parse().ok()?,
-            seq,
-            session_id: sid,
-            turn_id: turn.as_deref().and_then(turn_of),
-            usage: usage_option(usage),
-        },
-        Record::OutputFailed {
-            output,
-            turn,
-            schema_hash,
-            code,
-            message,
-            issues,
-            usage,
-        } => Event::OutputFailed {
-            at,
-            error: ApiError {
-                code: error_code(code),
-                message: message.clone(),
-                param: None,
-                request_id: None,
-            },
-            issues: issues
-                .iter()
-                .map(|issue| OutputValidationIssue {
-                    keyword: issue.keyword.clone(),
-                    message: issue.message.clone(),
-                    path: issue.path.clone(),
-                })
-                .collect(),
-            output_id: output.parse().ok()?,
-            schema_hash: schema_hash.parse().ok()?,
-            seq,
-            session_id: sid,
-            turn_id: turn.as_deref().and_then(turn_of),
-            usage: usage_option(usage),
-        },
         Record::Assistant {
             turn,
             agent,
@@ -257,8 +192,10 @@ pub fn derive(
             stop_reason: sr,
             rounds,
             tool_calls,
+            result,
         } => Event::TurnCompleted {
             at,
+            result: result.clone(),
             rounds: *rounds,
             seq,
             session_id: sid,
@@ -270,10 +207,12 @@ pub fn derive(
             turn,
             code,
             message,
+            details,
         } => Event::TurnFailed {
             at,
             error: ApiError {
                 code: error_code(code),
+                details: details.clone(),
                 message: message.clone(),
                 param: None,
                 request_id: None,
@@ -337,10 +276,6 @@ pub fn error_code(s: &str) -> ApiErrorCode {
     }
 }
 
-fn usage_option(usage: &crate::message::Usage) -> Option<ProviderUsage> {
-    (*usage != crate::message::Usage::default()).then(|| usage_of(usage))
-}
-
 /// Live constructors for the two ephemeral event types.
 pub fn delta_event(
     session_id: &str,
@@ -383,9 +318,6 @@ pub fn output_event(
 pub fn event_seq(e: &Event) -> u64 {
     match e {
         Event::TurnStarted { seq, .. }
-        | Event::OutputStarted { seq, .. }
-        | Event::OutputCompleted { seq, .. }
-        | Event::OutputFailed { seq, .. }
         | Event::AssistantDelta { seq, .. }
         | Event::AssistantMessage { seq, .. }
         | Event::ToolCall { seq, .. }
@@ -472,6 +404,7 @@ mod tests {
         let r = Record::UserMessage {
             turn: "trn_aaaaaaaaaaaaaaaaaaaa".into(),
             content: vec![],
+            metadata: std::collections::HashMap::new(),
         };
         assert!(derive("ses_aaaaaaaaaaaaaaaaaaaa", 1, 0, &r, &hand_info()).is_none());
         let c = Record::Compacted {

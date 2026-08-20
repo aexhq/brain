@@ -26,7 +26,9 @@
 //!   never replayed, I10) — never by hanging.
 
 use crate::Result;
-use aex_contracts::session::{FileEntry, FileListSource, HandInfo};
+use aex_contracts::session::{
+    ExternalToolCallRequest, ExternalToolCallResponse, FileEntry, FileListSource, HandInfo,
+};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -57,6 +59,21 @@ pub struct CallOutcome {
     pub exit_code: Option<i64>,
     pub duration_ms: u64,
     pub truncated: bool,
+    /// Present only when a host-executed return-direct tool asks Brain to end the turn.
+    pub terminal: Option<TerminalOutcome>,
+}
+
+/// A generic external executor may return a replayable client value or a structured turn error.
+/// Brain does not interpret either payload; it only journals it with the turn terminal.
+#[derive(Debug, Clone)]
+pub enum TerminalOutcome {
+    Complete {
+        value: Value,
+        metadata: std::collections::HashMap<String, String>,
+    },
+    Fail {
+        error: aex_contracts::session::ApiError,
+    },
 }
 
 impl CallOutcome {
@@ -68,7 +85,35 @@ impl CallOutcome {
             exit_code: None,
             duration_ms: 0,
             truncated: false,
+            terminal: None,
         }
+    }
+}
+
+/// Host-side execution for tools declared through `ToolsConfig.external`. The trait consumes the
+/// public wire types so alternate Brain hosts implement the same contract without re-describing it.
+#[async_trait::async_trait]
+pub trait ExternalToolExecutor: Send + Sync {
+    async fn call(
+        &self,
+        request: ExternalToolCallRequest,
+        cancel: CancellationToken,
+    ) -> Result<ExternalToolCallResponse>;
+}
+
+/// Default composition for deployments that do not expose host-executed tools.
+pub struct DisabledExternalToolExecutor;
+
+#[async_trait::async_trait]
+impl ExternalToolExecutor for DisabledExternalToolExecutor {
+    async fn call(
+        &self,
+        _request: ExternalToolCallRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ExternalToolCallResponse> {
+        Err(crate::BrainError::Invalid(
+            "no external tool executor is configured on this Brain host".into(),
+        ))
     }
 }
 

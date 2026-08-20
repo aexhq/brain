@@ -1,0 +1,23 @@
+{
+  "kind": "hand_status",
+  "frame": {
+    "generation_id": "gen-3",
+    "boot_id": "boot-9f3a",
+    "seq": 42,
+    "at_monotonic_ms": 220000,
+    "at_wall_ms": 1787400220000,
+    "inflight": [],
+    "live_jobs": [
+      "op-0002"
+    ],
+    "lanes_live": 2,
+    "operations_retained": 1,
+    "retained_bytes": 2210,
+    "idle_for_ms": 0,
+    "pressure": {
+      "mem_available_bytes": 2147483648,
+      "swap_used_bytes": 0,
+      "psi_some_avg10": 0.0
+    }
+  }
+}

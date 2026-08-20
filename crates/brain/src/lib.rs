@@ -16,6 +16,7 @@ pub mod api;
 pub mod compact;
 pub mod config;
 pub mod events;
+pub mod external;
 
 pub mod journal;
 pub mod keys;
@@ -23,7 +24,6 @@ pub mod local;
 pub mod mcp;
 pub mod message;
 pub mod outbound;
-pub mod output;
 pub mod provider;
 pub mod reclaim;
 pub mod session;

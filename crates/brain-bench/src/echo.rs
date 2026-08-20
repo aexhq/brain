@@ -37,6 +37,7 @@ impl HandAdapter for EchoHand {
             exit_code: Some(0),
             duration_ms: 0,
             truncated: false,
+            terminal: None,
         }
     }
 

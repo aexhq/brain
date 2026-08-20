@@ -1,0 +1,33 @@
+{
+  "name": "@aexhq/brain",
+  "version": "0.1.0",
+  "description": "Client, tool authoring API, and local builder for the independent Brain session server",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aexhq/brain.git",
+    "directory": "packages/brain"
+  },
+  "type": "module",
+  "engines": { "node": ">=22.0.0" },
+  "publishConfig": { "access": "public", "provenance": true },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./session": { "types": "./dist/generated/session.d.ts", "import": "./dist/generated/session.js" },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "schemas", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.9",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2"
+  }
+}

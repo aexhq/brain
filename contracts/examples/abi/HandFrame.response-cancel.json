@@ -1,0 +1,36 @@
+{
+  "kind": "response",
+  "frame": {
+    "id": "r-5",
+    "result": {
+      "status": "ok",
+      "reply": {
+        "op": "cancel",
+        "body": {
+          "accepted": true,
+          "view": {
+            "operation_id": "op-0002",
+            "tool": "bash",
+            "lane_id": "L-7",
+            "detach": true,
+            "status": "running",
+            "started_at_monotonic_ms": 120345,
+            "streams": [
+              {
+                "stream": "stdout",
+                "produced_bytes": 8192,
+                "retained_from": 0,
+                "spill_path": "/var/aex/ops/op-0002.stdout"
+              },
+              {
+                "stream": "stderr",
+                "produced_bytes": 0,
+                "retained_from": 0
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

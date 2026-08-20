@@ -1,0 +1,16 @@
+{
+  "id": "r-10",
+  "fence": 9,
+  "generation_id": "gen-3",
+  "call": {
+    "op": "sync",
+    "args": {
+      "reason": "turn_end",
+      "manifest_id": "m-13",
+      "manifest_put_url": "https://s3.example/ses/m-13.json?X-Amz-Signature=x",
+      "pack_id": "p-13",
+      "pack_put_url": "https://s3.example/ses/p-13.tar.zst?X-Amz-Signature=x",
+      "full": false
+    }
+  }
+}
