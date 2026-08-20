@@ -43,6 +43,13 @@ pub enum Record {
         /// input and must survive replay with the admitted message.
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         metadata: HashMap<String, String>,
+        /// SHA-256 of the caller's Idempotency-Key. The raw key is never persisted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key_hash: Option<String>,
+        /// SHA-256 of the canonical message content and metadata. Paired with the key hash so
+        /// replay can reject reuse of one key for a different request.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_hash: Option<String>,
     },
     TurnStarted {
         turn: String,
@@ -786,6 +793,8 @@ mod tests {
             turn: turn.into(),
             content: vec![ContentBlock::text(text)],
             metadata: HashMap::new(),
+            idempotency_key_hash: None,
+            request_hash: None,
         }
     }
     fn assistant(turn: &str, blocks: Vec<ContentBlock>) -> Record {
@@ -820,6 +829,27 @@ mod tests {
                 record,
             })
             .collect()
+    }
+
+    #[test]
+    fn pre_idempotency_user_records_remain_readable() {
+        let record: Record = serde_json::from_value(serde_json::json!({
+            "kind": "user_message",
+            "turn": "trn_old",
+            "content": [{"type": "text", "text": "hello"}],
+            "metadata": {}
+        }))
+        .unwrap();
+        let Record::UserMessage {
+            idempotency_key_hash,
+            request_hash,
+            ..
+        } = record
+        else {
+            panic!("expected user message");
+        };
+        assert!(idempotency_key_hash.is_none());
+        assert!(request_hash.is_none());
     }
 
     #[test]

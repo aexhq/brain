@@ -494,6 +494,8 @@ mod tests {
             turn: "trn_test".into(),
             content: vec![ContentBlock::text(text)],
             metadata: HashMap::new(),
+            idempotency_key_hash: None,
+            request_hash: None,
         }
     }
 

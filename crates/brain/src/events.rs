@@ -389,6 +389,8 @@ mod tests {
             turn: "trn_aaaaaaaaaaaaaaaaaaaa".into(),
             content: vec![],
             metadata: std::collections::HashMap::new(),
+            idempotency_key_hash: None,
+            request_hash: None,
         };
         assert!(derive("ses_aaaaaaaaaaaaaaaaaaaa", 1, 0, &r, &hand_info()).is_none());
         let c = Record::Compacted {
