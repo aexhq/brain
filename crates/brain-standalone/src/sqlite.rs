@@ -456,6 +456,8 @@ mod tests {
             turns: 0,
             created_ms: 1,
             updated_ms: 1,
+            create_key_hash: None,
+            create_request_hash: None,
             last_message_ms: None,
             ended: false,
             prefix: PrefixDoc {

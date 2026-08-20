@@ -278,7 +278,7 @@ async fn create_session(
             value.to_str().map_err(|_| {
                 Failure(
                     StatusCode::BAD_REQUEST,
-                    ApiErrorCode::InvalidRequest,
+                    api_code("invalid_request"),
                     "Idempotency-Key must be valid ASCII".into(),
                 )
             })

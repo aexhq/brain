@@ -344,7 +344,10 @@ impl Brain {
         let create_key_hash = idempotency_key.map(hash_create_key);
         let create_request_hash = create_key_hash
             .as_ref()
-            .map(|_| crate::output::jcs_sha256(&req))
+            .map(|_| {
+                let canonical = serde_jcs::to_vec(&req)?;
+                Ok::<_, BrainError>(hex::encode(Sha256::digest(canonical)))
+            })
             .transpose()?;
         let session_id = idempotency_key
             .map(idempotent_session_id)
@@ -2737,6 +2740,7 @@ mod tests {
                     }
                 }))
                 .expect("valid create request"),
+                None,
             )
             .await
             .expect("create session");
