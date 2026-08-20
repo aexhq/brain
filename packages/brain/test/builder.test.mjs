@@ -10,12 +10,14 @@ import { z } from "zod";
 
 test("the local builder is deterministic and does not evaluate customer code", async () => {
   const directory = await mkdtemp(join(tmpdir(), "brain-builder-"));
+  const previousMarker = process.env.BRAIN_BUILDER_TEST_MARKER;
   try {
     const marker = join(directory, "evaluated.txt");
+    process.env.BRAIN_BUILDER_TEST_MARKER = marker;
     const modulePath = join(directory, "tool.mjs");
     await writeFile(
       modulePath,
-      `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "bad");\nexport default { kind: "brain.tool" };\n`,
+      `import { writeFileSync } from "node:fs";\nwriteFileSync(process.env.BRAIN_BUILDER_TEST_MARKER, "bad");\nexport default { kind: "brain.tool" };\n`,
     );
     const url = pathToFileURL(modulePath).href;
     const first = await buildToolModule(url);
@@ -24,6 +26,8 @@ test("the local builder is deterministic and does not evaluate customer code", a
     assert.deepEqual(first.bytes, second.bytes);
     await assert.rejects(readFile(marker), { code: "ENOENT" });
   } finally {
+    if (previousMarker === undefined) delete process.env.BRAIN_BUILDER_TEST_MARKER;
+    else process.env.BRAIN_BUILDER_TEST_MARKER = previousMarker;
     await rm(directory, { recursive: true, force: true });
   }
 });

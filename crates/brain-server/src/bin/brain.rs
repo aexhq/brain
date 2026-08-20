@@ -189,10 +189,10 @@ fn secure_read(path: &Path) -> anyhow::Result<std::fs::File> {
         if metadata.permissions().mode() & 0o077 != 0 {
             anyhow::bail!("{} must have 0600 permissions", path.display());
         }
-        return Ok(std::fs::OpenOptions::new()
+        Ok(std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
-            .open(path)?);
+            .open(path)?)
     }
     #[cfg(not(unix))]
     Ok(std::fs::File::open(path)?)
