@@ -91,8 +91,8 @@ the brain's adapter (`hand.lost` on the session API) — the hand never reports 
 * Idempotent by `(operation_id, call_hash)`: a replay answers the existing operation with
   `replayed: true` and runs nothing. Same `operation_id` with a different `call_hash` →
   `operation_idempotency_conflict`. `call_hash` = SHA-256 over the RFC 8785 canonical JSON of
-  `{tool, input, lane, cwd, detach, bounds}` (absent optionals as `null`); `aex_contracts::tools::call_hash`
-  and `@aexhq/contracts` `callHash` implement it and the examples pin values.
+  `{tool, input, lane, cwd, detach, bounds}` (absent optionals as `null`);
+  `brain_protocol::tools::call_hash` implements it and the examples pin values.
 * `lane` names a persistent lane (created on first use, up to `limits.max_lanes`) or an ephemeral
   lane forked from `parent`. An attached operation holds its lane until terminal (`lane_busy`
   otherwise); a detached one does not hold the lane.
@@ -199,7 +199,7 @@ work. Codes: see `ErrorCode` in the schema.
 | I9 | Exit status, output and usage are customer-controlled observations, never billing authority |
 | I10 | Connection loss ≠ hand loss; the generation id says whether state survived; nothing is replayed |
 
-## 5. What changed from the spike-programme draft (`aex-research/docs/brain-hand-abi.md`)
+## 5. MVP simplifications
 
 Dropped: `signal`, `lane_info`, `probe`, streaming `update`, `terminal` push, effect classes,
 credit-based backpressure, hard version match, reject-unknown-fields.

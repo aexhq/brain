@@ -17,6 +17,6 @@
   behind public adapters; never let a local-mode convenience weaken a production invariant, and
   never re-fuse the core to a cloud.
 * `tests/local_e2e.rs` drives the whole loop (HTTP + SSE + journal + real subprocess tools)
-  with a scripted provider and runs in CI. `bin/m0` is the AWS gate: real AWS (eu-west-1 dev
-  plane) + real provider keys.
+  with a scripted provider and runs in CI. Hosted AWS composition and MicroVM gates live
+  downstream in Aex/Platform and Hands; do not pull those implementations back into Brain.
 * Fail fast; plain English in comments. Commit style: `area: imperative summary`.

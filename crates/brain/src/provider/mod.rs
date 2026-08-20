@@ -111,7 +111,7 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
 /// Accumulates a dialect-neutral event stream into one complete assistant
 /// message.
 ///
-/// `aex` B11: a provider response becomes model-visible history **only after a
+/// A provider response becomes model-visible history **only after a
 /// complete assistant message commits**. Partial deltas may be streamed to a
 /// client but never become a journal entry, which is why this type exists
 /// separately from the journal.
@@ -240,7 +240,7 @@ pub fn for_dialect(d: Dialect) -> Box<dyn Provider> {
 ///
 /// Not an optimisation detail: a client per session would mean a TLS session
 /// cache, a connection pool and a DNS resolver per session, which is a large
-/// part of why process-per-session costs what it does. `aex` §11.1 makes the
+/// part of why process-per-session costs what it does. Brain makes the
 /// same point -- pooled TLS/HTTP clients are a named reason the mux exists.
 static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 

@@ -4,12 +4,13 @@
 //! credential are process configuration. This keeps customer prompts and model arguments from
 //! choosing where privileged host work runs.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
-use aex_contracts::session::{ExternalToolCallRequest, ExternalToolCallResponse};
+use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
 use tokio_util::sync::CancellationToken;
 
-use crate::adapter::ExternalToolExecutor;
+use crate::adapter::ToolExecutor;
 use crate::{BrainError, Result};
 
 const MAX_RESPONSE_BYTES: usize = 128 * 1024;
@@ -20,15 +21,22 @@ pub struct HttpExternalToolExecutor {
     endpoint: String,
     bearer: Option<String>,
     timeout: Duration,
+    capabilities: HashSet<String>,
 }
 
 impl HttpExternalToolExecutor {
-    pub fn new(endpoint: impl Into<String>, bearer: Option<String>, timeout: Duration) -> Self {
+    pub fn new(
+        endpoint: impl Into<String>,
+        bearer: Option<String>,
+        timeout: Duration,
+        capabilities: impl IntoIterator<Item = String>,
+    ) -> Self {
         Self {
             client: reqwest::Client::new(),
             endpoint: endpoint.into(),
             bearer,
             timeout,
+            capabilities: capabilities.into_iter().collect(),
         }
     }
 }
@@ -39,17 +47,26 @@ impl std::fmt::Debug for HttpExternalToolExecutor {
             .field("endpoint", &self.endpoint)
             .field("bearer", &self.bearer.as_ref().map(|_| "<redacted>"))
             .field("timeout", &self.timeout)
+            .field("capabilities", &self.capabilities)
             .finish()
     }
 }
 
 #[async_trait::async_trait]
-impl ExternalToolExecutor for HttpExternalToolExecutor {
+impl ToolExecutor for HttpExternalToolExecutor {
+    fn supports(&self, capability: &str) -> bool {
+        self.capabilities.contains(capability)
+    }
+
     async fn call(
         &self,
-        request: ExternalToolCallRequest,
+        capability: &str,
+        mut request: ExternalToolCallRequest,
         cancel: CancellationToken,
     ) -> Result<ExternalToolCallResponse> {
+        request
+            .context
+            .insert("brain.capability".into(), capability.into());
         let mut send = self.client.post(&self.endpoint).json(&request);
         if let Some(bearer) = &self.bearer {
             send = send.bearer_auth(bearer);
@@ -80,7 +97,26 @@ impl ExternalToolExecutor for HttpExternalToolExecutor {
                 preview.chars().take(512).collect::<String>()
             )));
         }
-        serde_json::from_slice(&bytes)
-            .map_err(|error| BrainError::Protocol(format!("external tool executor response: {error}")))
+        serde_json::from_slice(&bytes).map_err(|error| {
+            BrainError::Protocol(format!("external tool executor response: {error}"))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_explicitly_registered_capabilities_are_advertised() {
+        let executor = HttpExternalToolExecutor::new(
+            "http://127.0.0.1:1",
+            None,
+            Duration::from_secs(1),
+            ["example.lookup.v1".to_string()],
+        );
+        assert!(executor.supports("example.lookup.v1"));
+        assert!(!executor.supports("lookup"));
+        assert!(!executor.supports("example.delete.v1"));
     }
 }

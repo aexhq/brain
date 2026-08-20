@@ -3,12 +3,15 @@
 //! Only the model is scripted. Journal, SSE, local hand calls, MCP calls,
 //! cancellation, discard, and rehydrate all use their production seams.
 
+mod support;
+
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use brain::adapter::ToolExecutor;
 use brain::config::{Dialect, ProviderKey, SealedPrefix};
 use brain::journal::{Entry, Journal, Lease, Record};
 use brain::local::LocalFactory;
@@ -16,13 +19,15 @@ use brain::message::{ContentBlock, Message, StopReason, Usage};
 use brain::provider::{ModelRequest, Provider, ProviderEvent};
 use brain::session::{Brain, BrainConfig};
 use brain::{BrainError, Result};
+use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
 use futures_util::stream::BoxStream;
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Barrier, Notify};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
 enum Reply {
@@ -34,7 +39,6 @@ enum Reply {
 struct Arrival {
     seed: String,
     assistant_count: usize,
-    tools: Vec<String>,
 }
 
 /// A request-driven provider: every response is a pure function of the current
@@ -47,7 +51,6 @@ struct TaskProvider {
     parallel_barrier: Barrier,
     parallel_arrivals: AtomicU64,
     cancel_started: Notify,
-    todo_offered_to_child: AtomicBool,
 }
 
 impl TaskProvider {
@@ -58,7 +61,6 @@ impl TaskProvider {
             parallel_barrier: Barrier::new(2),
             parallel_arrivals: AtomicU64::new(0),
             cancel_started: Notify::new(),
-            todo_offered_to_child: AtomicBool::new(false),
         }
     }
 
@@ -113,19 +115,9 @@ impl TaskProvider {
             .iter()
             .filter(|message| message["role"] == "assistant")
             .count();
-        let tools = body["tools"]
-            .as_array()
-            .map(|tools| {
-                tools
-                    .iter()
-                    .filter_map(|tool| tool["name"].as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
         Ok(Arrival {
             seed: seed.expect("found with anchor"),
             assistant_count,
-            tools,
         })
     }
 
@@ -166,8 +158,9 @@ impl TaskProvider {
                     json!({"path":"from-child.txt","content":"child-hand-ok"}),
                 ),
                 ("svc__echo".into(), json!({"msg":"child-mcp-ok"})),
+                ("host_echo".into(), json!({"msg":"child-server-ok"})),
             ]),
-            ("tools-worker", _) => Reply::Text("used hand and mcp".into()),
+            ("tools-worker", _) => Reply::Text("used hand, mcp, and server tools".into()),
 
             ("failure-root", 0) => Reply::Tools(vec![Self::task("failure-worker")]),
             ("failure-root", _) => Reply::Text("root recovered from child failure".into()),
@@ -177,11 +170,6 @@ impl TaskProvider {
 
             ("cancel-root", 0) => Reply::Tools(vec![Self::task("cancel-worker")]),
             ("cancel-root", _) => Reply::Text("must not run after cancellation".into()),
-
-            ("todo-root", 0) => Reply::Tools(vec![Self::task("todo-worker")]),
-            ("todo-root", _) => Reply::Text("todo isolation verified".into()),
-            ("todo-worker", 0) => Reply::Tools(vec![("todo".into(), json!({"action":"list"}))]),
-            ("todo-worker", _) => Reply::Text("todo was unavailable, as expected".into()),
 
             ("cap-root", 0) => Reply::Tools(
                 (0..13)
@@ -295,13 +283,6 @@ impl Provider for TaskProvider {
             std::future::pending::<()>().await;
             unreachable!("cancelled provider future must be dropped");
         }
-        if arrival.seed == "todo-worker" {
-            self.todo_offered_to_child.store(
-                arrival.tools.iter().any(|tool| tool == "todo"),
-                Ordering::SeqCst,
-            );
-        }
-
         Ok(Self::emit(self.policy(&arrival)?))
     }
 }
@@ -312,7 +293,7 @@ impl TempDir {
     fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "aex-task-e2e-{}-{}",
+            "brain-task-e2e-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -328,6 +309,35 @@ impl Drop for TempDir {
     }
 }
 
+#[derive(Default)]
+struct ChildServer {
+    calls: Mutex<Vec<ExternalToolCallRequest>>,
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor for ChildServer {
+    fn supports(&self, capability: &str) -> bool {
+        capability == "test.child_echo"
+    }
+
+    async fn call(
+        &self,
+        capability: &str,
+        request: ExternalToolCallRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ExternalToolCallResponse> {
+        assert_eq!(capability, "test.child_echo");
+        self.calls.lock().unwrap().push(request);
+        Ok(serde_json::from_value(json!({
+            "outcome": "completed",
+            "content": "child server result",
+            "result": "child server result",
+            "is_error": false,
+            "disposition": "continue"
+        }))?)
+    }
+}
+
 struct Harness {
     journal: Journal,
     provider: Arc<TaskProvider>,
@@ -335,6 +345,7 @@ struct Harness {
     token: String,
     http: reqwest::Client,
     tmp: TempDir,
+    server: Arc<ChildServer>,
 }
 
 impl Harness {
@@ -342,8 +353,9 @@ impl Harness {
         let tmp = TempDir::new();
         let provider = Arc::new(TaskProvider::new());
         let provider_factory = provider.clone();
+        let server = Arc::new(ChildServer::default());
         let journal = Journal::new_memory(format!("task-e2e-{}", std::process::id()));
-        let brain = Brain::with_parts(
+        let brain = Brain::with_parts_and_external(
             BrainConfig {
                 max_concurrent_model_rounds: 32,
                 max_concurrent_turns: 8,
@@ -354,6 +366,7 @@ impl Harness {
             journal.clone(),
             Arc::new(brain::keys::PlainCustody),
             Arc::new(LocalFactory::new(tmp.0.clone())),
+            server.clone(),
             Some(Arc::new(move |_| {
                 provider_factory.clone() as Arc<dyn Provider>
             })),
@@ -373,6 +386,7 @@ impl Harness {
             token,
             http: reqwest::Client::new(),
             tmp,
+            server,
         }
     }
 
@@ -385,7 +399,7 @@ impl Harness {
             },
             "system_prompt": "task e2e agent"
         });
-        body["tools"] = tools.unwrap_or_else(|| json!({"builtin": ["task", "todo"]}));
+        body["tools"] = tools.unwrap_or_else(|| json!({"items": [support::subagents_tool()]}));
         let response = self
             .http
             .post(format!("{}/v1/sessions", self.base))
@@ -581,7 +595,7 @@ async fn serve_mcp() -> (String, Arc<McpState>) {
 // ---------------------------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn depth_parallel_identity_cap_and_todo_isolation() {
+async fn depth_parallel_and_identity_caps_are_enforced() {
     let harness = Harness::new(Duration::from_secs(300), false).await;
 
     let nested = harness.create(None).await;
@@ -622,25 +636,6 @@ async fn depth_parallel_identity_cap_and_todo_isolation() {
             .count(),
         1
     );
-
-    let todo = harness.create(None).await;
-    harness.send(&todo, "todo-root").await;
-    harness.wait_completed(&todo, 1).await;
-    assert!(
-        !harness
-            .provider
-            .todo_offered_to_child
-            .load(Ordering::SeqCst),
-        "todo must be removed from the child prefix"
-    );
-    let records = harness.records(&todo).await;
-    assert!(records.iter().any(|entry| {
-        matches!(
-            &entry.record,
-            Record::ToolResult { agent, name, is_error: true, .. }
-                if agent != "root" && name == "todo"
-        )
-    }));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -649,7 +644,26 @@ async fn a_child_uses_the_hand_and_mcp_and_failure_stays_local() {
     let harness = Harness::new(Duration::from_secs(300), true).await;
     let session = harness
         .create(Some(json!({
-            "builtin": ["write", "task", "todo"],
+            "items": [
+                support::hand_tool("write"),
+                support::subagents_tool(),
+                {
+                    "definition": {
+                        "name": "host_echo",
+                        "description": "Echo through the host executor.",
+                        "input_schema": {"type": "object"},
+                        "output_schema": {"type": "string"}
+                    },
+                    "executor": {
+                        "kind": "server",
+                        "capability": "test.child_echo",
+                        "scope": "all",
+                        "completion": "continue",
+                        "effect": "replay_safe",
+                        "max_input_bytes": 1024
+                    }
+                }
+            ],
             "mcp": [{
                 "name": "svc",
                 "url": mcp_url,
@@ -679,7 +693,7 @@ async fn a_child_uses_the_hand_and_mcp_and_failure_stays_local() {
     let records = harness.records(&session).await;
     let child = child_agents(&records);
     assert_eq!(child.len(), 1);
-    for name in ["write", "svc__echo"] {
+    for name in ["write", "svc__echo", "host_echo"] {
         assert!(records.iter().any(|entry| {
             matches!(
                 &entry.record,
@@ -687,6 +701,13 @@ async fn a_child_uses_the_hand_and_mcp_and_failure_stays_local() {
                     if agent == &child[0] && record_name == name
             )
         }));
+    }
+    {
+        let server_calls = harness.server.calls.lock().unwrap();
+        assert_eq!(server_calls.len(), 1);
+        assert_ne!(server_calls[0].agent_id.as_str(), "root");
+        assert!(server_calls[0].agent_id.as_str().starts_with("agt_"));
+        assert_eq!(server_calls[0].name, "host_echo");
     }
 
     let failed = harness.create(None).await;
@@ -873,7 +894,7 @@ async fn cold_hydrate_answers_an_interrupted_task_without_replaying_it() {
             ..
         }] if agent == "root"
             && outcome == "interrupted"
-            && content.contains("subagent interrupted")
+            && content.contains("call was not replayed")
     ));
     assert!(records.iter().any(|entry| {
         matches!(

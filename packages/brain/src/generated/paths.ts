@@ -1,7 +1,5 @@
 /* eslint-disable */
-/**
- * GENERATED from contracts/session/v1/openapi.yaml by packages/contracts/scripts/gen.mjs (tools/gen.sh). DO NOT EDIT.
- */
+/** GENERATED from Brain-owned contracts/session/v1. DO NOT EDIT. */
 export type paths = {
     "/v1/sessions": {
         parameters: {
@@ -55,9 +53,8 @@ export type paths = {
         /**
          * Send a user message; starts a turn
          * @description Returns 202 as soon as the turn is admitted and journaled. Follow progress on
-         *     `GET /events?after=<seq-1>`. An optional `output` requests a typed result for this turn;
-         *     a successful result is attached to `turn.completed`. It does not change provider response
-         *     configuration or the session's sealed prefix. 409 `session_busy` while a turn is running.
+         *     `GET /events?after=<seq-1>`. 409 `session_busy` while a turn is running. Host products may
+         *     implement higher-level result semantics with ordinary sealed server tools.
          */
         post: operations["sendMessage"];
         delete?: never;
@@ -237,8 +234,8 @@ export type components = {
          * @enum {string}
          */
         SessionState: "active" | "idle" | "deleted" | "failed";
-        /** @enum {string} */
-        ApiErrorCode: "invalid_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "session_busy" | "session_deleted" | "session_failed" | "cancelled" | "insufficient_balance" | "rate_limited" | "provider_error" | "output_schema_error" | "output_refused" | "output_validation_error" | "hand_unavailable" | "too_large" | "internal";
+        /** @description Stable machine-readable code. Brain defines its core codes; a host executor may return its own code without teaching Brain product semantics. */
+        ApiErrorCode: string;
         ApiError: {
             code: components["schemas"]["ApiErrorCode"];
             message: string;
@@ -265,7 +262,7 @@ export type components = {
             base_url?: string;
         };
         /**
-         * @description preparing = microVM launching or restoring; ready = running and connected; suspended = AWS holds RAM+disk after 180 s idle, compute free, ~1 s back; released = VM destroyed, workspace synced to storage, ~3 s back into a fresh VM; lost = the hand died mid-run (in-flight calls reported as interrupted, never replayed).
+         * @description preparing = the selected runtime is launching or restoring; ready = running and connected; suspended = the adapter retains runtime state without active compute; released = compute was destroyed while durable workspace state remains; lost = the Hand died mid-run (in-flight calls are interrupted and never replayed).
          * @enum {string}
          */
         HandState: "preparing" | "ready" | "suspended" | "released" | "lost";
@@ -296,7 +293,7 @@ export type components = {
         StorageInfo: {
             /** @description Synced workspace objects (packs + manifests) in storage. */
             workspace_bytes: number;
-            /** @description Bytes AWS holds for a suspended hand. */
+            /** @description Bytes retained by the selected adapter for a suspended Hand, when reported. */
             suspended_bytes: number;
             artifact_bytes: number;
         };
@@ -352,11 +349,77 @@ export type components = {
              */
             reasoning_effort?: "low" | "medium" | "high";
         };
+        ToolName: string;
+        /** @description The model-visible half of one Tool. Array order is preserved exactly in the immutable model prefix. */
+        ToolDefinition: {
+            name: components["schemas"]["ToolName"];
+            description: string;
+            input_schema: {
+                [key: string]: unknown;
+            };
+            output_schema: {
+                [key: string]: unknown;
+            };
+        };
+        Sha256Hex: string;
+        /** @enum {string} */
+        HandToolSource: "bundle" | "preinstalled";
+        /** @description A checksum-sealed executable in the session's default Hand. */
+        HandToolExecutor: {
+            /** @constant */
+            kind: "hand";
+            /** @constant */
+            protocol: 1;
+            checksum: components["schemas"]["Sha256Hex"];
+            source: components["schemas"]["HandToolSource"];
+            /** @description Environment-key names only. Secret values never enter the seal. */
+            required_env: string[];
+        };
+        AttachedToolExecutor: {
+            /** @constant */
+            kind: "attached";
+            callback_id: string;
+        };
         /**
-         * @description bash..ls run in the hand; task/todo run in the brain; web_search/web_fetch are managed and billed.
+         * @description Which agents may call a trusted server capability.
          * @enum {string}
          */
-        BuiltinTool: "bash" | "read" | "write" | "edit" | "glob" | "grep" | "ls" | "task" | "todo" | "web_search" | "web_fetch";
+        ExternalToolScope: "root" | "all";
+        /**
+         * @description continue returns the result to the model. return_direct may complete or fail the turn without another model call.
+         * @enum {string}
+         */
+        ExternalToolCompletion: "continue" | "return_direct";
+        /**
+         * @description replay_safe promises that repeating the same session_id and call_id returns the same logical result.
+         * @enum {string}
+         */
+        ExternalToolEffect: "opaque" | "replay_safe";
+        ServerToolExecutor: {
+            /** @constant */
+            kind: "server";
+            capability: string;
+            scope: components["schemas"]["ExternalToolScope"];
+            completion: components["schemas"]["ExternalToolCompletion"];
+            effect: components["schemas"]["ExternalToolEffect"];
+            max_input_bytes: number;
+        };
+        IntrinsicToolExecutor: {
+            /** @constant */
+            kind: "intrinsic";
+            capability: string;
+        };
+        McpToolExecutor: {
+            /** @constant */
+            kind: "mcp";
+            server: string;
+            remote_name: string;
+        };
+        ToolExecutor: components["schemas"]["HandToolExecutor"] | components["schemas"]["AttachedToolExecutor"] | components["schemas"]["ServerToolExecutor"] | components["schemas"]["IntrinsicToolExecutor"] | components["schemas"]["McpToolExecutor"];
+        ToolConfig: {
+            definition: components["schemas"]["ToolDefinition"];
+            executor: components["schemas"]["ToolExecutor"];
+        };
         /**
          * @description auto probes server/discover and falls back to the legacy adapter (initialize + Mcp-Session-Id).
          * @enum {string}
@@ -375,40 +438,20 @@ export type components = {
             /** @description Whitelist; default all. */
             allowed_tools?: string[];
         };
-        /**
-         * @description Host-executed tools are root-only in the MVP, keeping terminal control out of subagents.
-         * @enum {string}
-         */
-        ExternalToolScope: "root";
-        /**
-         * @description continue returns the result to the model. return_direct may complete or fail the turn without another model call.
-         * @enum {string}
-         */
-        ExternalToolCompletion: "continue" | "return_direct";
-        /**
-         * @description replay_safe promises that repeating the same session_id and call_id returns the same logical result.
-         * @enum {string}
-         */
-        ExternalToolEffect: "opaque" | "replay_safe";
-        /** @description A model-visible tool executed by the Brain host's configured external executor. The executor address and credentials are host configuration, never session data. */
-        ExternalToolConfig: {
-            name: string;
-            description: string;
-            input_schema: {
-                [key: string]: unknown;
-            };
-            scope: components["schemas"]["ExternalToolScope"];
-            completion: components["schemas"]["ExternalToolCompletion"];
-            effect: components["schemas"]["ExternalToolEffect"];
-            max_input_bytes: number;
-        };
         /** @description Sealed at create with the rest of the prefix. Omitted tools default to an empty set. */
         ToolsConfig: {
-            /** @description Built-in tools to enable. Omitted or empty means no built-in tools. */
-            builtin?: components["schemas"]["BuiltinTool"][];
+            /** @description The exact ordered native Tool grant. Omitted or empty means no native tools. */
+            items?: components["schemas"]["ToolConfig"][];
+            /** @description Optional remote interoperability servers. Discovery resolves once at create and appends sealed MCP Tool descriptors. */
             mcp?: components["schemas"]["McpServerConfig"][];
-            /** @description Host-executed tools sealed into the model prefix. Hosted Aex reserves its own output tool; direct Brain deployments may compose others. */
-            external?: components["schemas"]["ExternalToolConfig"][];
+        };
+        /** @description Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation. */
+        ToolBundle: {
+            checksum: components["schemas"]["Sha256Hex"];
+            content_base64: string;
+            bytes: number;
+            /** @constant */
+            media_type: "application/javascript+esm";
         };
         HandConfig: {
             /**
@@ -441,6 +484,8 @@ export type components = {
             model: components["schemas"]["ModelConfig"];
             system_prompt?: string;
             tools?: components["schemas"]["ToolsConfig"];
+            /** @description Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal. */
+            tool_bundles?: components["schemas"]["ToolBundle"][];
             hand?: components["schemas"]["HandConfig"];
             files?: components["schemas"]["FileInput"][];
             metadata?: {
@@ -457,41 +502,18 @@ export type components = {
             /** @description A file already in the workspace; the model is told about it. */
             path: string;
         };
-        /** @description JSON Schema 2020-12 produced by the SDK. Aex validates it in the trusted host executor; it is never provider-native response-format configuration. */
-        OutputSchema: {
-            [key: string]: unknown;
-        };
-        Sha256Hex: string;
-        MessageOutput: {
-            schema: components["schemas"]["OutputSchema"];
-            /** @description SHA-256 of RFC 8785 canonical JSON for schema. The server rejects a mismatch before calling the model. */
-            schema_hash: components["schemas"]["Sha256Hex"];
-            /**
-             * @description Extra model attempts after the first invalid candidate.
-             * @default 1
-             */
-            retries: number;
-        };
         MessageRequest: {
             content: string | components["schemas"]["ContentPart"][];
             metadata?: {
                 [key: string]: string;
             };
-            /** @description Optional typed result requested for this turn. It is a per-message operation, not session configuration. */
-            output?: components["schemas"]["MessageOutput"];
         };
-        /** @description Correlation id for one output request. It is not a separately managed resource. */
-        OutputId: string;
         /** @description The turn was admitted and journaled. Follow it on GET /events?after=<seq-1>. */
         MessageAccepted: {
             session_id: components["schemas"]["SessionId"];
             turn_id: components["schemas"]["TurnId"];
             /** @description Journal sequence of the turn.started event. */
             seq: number;
-            /** @description Present when this message requested typed output. */
-            output_id?: components["schemas"]["OutputId"];
-            /** @description Present when this message requested typed output. */
-            schema_hash?: components["schemas"]["Sha256Hex"];
         };
         /** @description "root" for the session's root agent; subagents get brain-minted ids. */
         AgentId: string;
@@ -508,7 +530,7 @@ export type components = {
             reasoning_tokens?: number;
         };
         /** @enum {string} */
-        StopReason: "end_turn" | "max_rounds" | "cancelled" | "error";
+        StopReason: "end_turn" | "refusal" | "max_rounds" | "cancelled" | "error";
         /** @description A replayable client-facing result returned directly by a generic external tool. */
         TurnResult: {
             call_id: components["schemas"]["CallId"];

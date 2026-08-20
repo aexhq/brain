@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { builtinModules } from "node:module";
 import { dirname, extname, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,9 +63,22 @@ export async function buildToolModule(moduleUrl: string): Promise<PreparedBundle
   for (const input of Object.keys(result.metafile.inputs)) {
     if (extname(input) === ".node") throw new TypeError(`Native Node addon is not supported: ${input}`);
   }
+  const builtins = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]));
+  for (const output of Object.values(result.metafile.outputs)) {
+    for (const imported of output.imports) {
+      if (imported.external && !builtins.has(imported.path)) {
+        throw new TypeError(`Tool bundle leaves an unsupported runtime import: ${imported.path}`);
+      }
+    }
+  }
   const output = result.outputFiles[0];
   if (output === undefined || result.outputFiles.length !== 1) throw new TypeError("Tool build did not produce one ESM file");
   const text = output.text;
+  if (/\bimport\s*\(/u.test(text)) {
+    throw new TypeError(
+      "Tool bundle contains a dynamic import that cannot be prepared reproducibly; use static imports or choose .local().",
+    );
+  }
   const normalizedRoot = normalize(resolveDir).replaceAll("\\", "/");
   if (text.includes(normalizedRoot) || /^[A-Za-z]:\//mu.test(text)) {
     throw new TypeError("Tool bundle contains a local absolute path");

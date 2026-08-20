@@ -28,6 +28,14 @@ test("the local builder is deterministic and does not evaluate customer code", a
   }
 });
 
+test("the conformance fixture has one cross-platform bundle identity", async () => {
+  const fixture = new URL("../fixtures/fixture-tool.mjs", import.meta.url).href;
+  assert.equal(
+    (await buildToolModule(fixture)).checksum,
+    "ba5129527642c60c28499ca08036bdc4b00aa2eed881a1df4f6e0a8c5aac79ee",
+  );
+});
+
 test("custom and official values compile through one ordered Tool path", async () => {
   const module = new URL("../fixtures/fixture-tool.mjs", import.meta.url).href;
   const one = defineTool({
@@ -52,4 +60,21 @@ test("custom and official values compile through one ordered Tool path", async (
   assert.equal(compiled.items[1].executor.kind, "attached");
   assert.equal(compiled.attached.get("callback-two"), two);
   await assert.rejects(compileTools([one, one]), /selected more than once/u);
+});
+
+test("the builder rejects runtime module discovery before session creation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "brain-builder-dynamic-"));
+  try {
+    const modulePath = join(directory, "dynamic.mjs");
+    await writeFile(
+      modulePath,
+      `export default { kind: "brain.tool", async execute() { return import(process.env.RUNTIME_MODULE); } };\n`,
+    );
+    await assert.rejects(
+      buildToolModule(pathToFileURL(modulePath).href),
+      /dynamic import|unsupported dynamic behavior/u,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

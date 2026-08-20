@@ -34,6 +34,15 @@ export class Transport {
     this.#fetch = fetchImplementation;
   }
 
+  attachedConnection(sessionId: string): { url: string; token: string } {
+    const base = new URL(this.baseUrl);
+    base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+    base.pathname = `/v1/sessions/${encodeURIComponent(sessionId)}/attached`;
+    base.search = "";
+    base.hash = "";
+    return { url: base.toString(), token: this.#apiKey };
+  }
+
   async json<T>(
     method: "GET" | "POST" | "DELETE",
     path: string,
@@ -87,7 +96,7 @@ export class Transport {
           },
         );
         if (!response.ok) throw await this.responseError(response);
-        if (response.body === null) throw new SessionError("The Aex event stream had no body");
+        if (response.body === null) throw new SessionError("The Brain event stream had no body");
 
         let received = false;
         for await (const event of parseEventStream(response.body)) {

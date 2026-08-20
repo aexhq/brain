@@ -59,35 +59,53 @@ pub struct ToolDecl {
     pub description: String,
     /// JSON Schema for the tool input. Rendered verbatim into the request.
     pub input_schema: serde_json::Value,
+    /// JSON Schema for the successful tool result. This is part of the sealed
+    /// definition even though model providers currently only receive the input schema.
+    pub output_schema: serde_json::Value,
     /// Where dispatch goes. Not digested -- it is our routing, not model-visible
     /// prefix content.
     #[serde(skip)]
     pub route: ToolRoute,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolRoute {
-    /// Executed in-process by the brain (subagent control, todo, result control).
-    #[default]
-    Brain,
-    /// Forwarded over the brain->hand ABI.
-    Hand,
+    /// A deliberately selected Brain engine capability. The model-visible name is
+    /// unrelated to this stable capability identifier.
+    Intrinsic(String),
+    /// Forwarded over the Brain->Hand ABI using this exact execution seal.
+    Hand(HandToolSeal),
     /// A sealed remote MCP tool: the brain makes the outbound call itself
     /// behind the one `Outbound` seam with its SSRF guard (ARCHITECTURE-v1
     /// D14 -- which supersedes §1.11's connector tier; there is no separate
     /// connector in MVP).
-    Mcp,
-    /// A brain-managed outbound web tool (`web_search` / `web_fetch`).
-    Web,
-    /// A host-owned executor outside Brain. Its policy is sealed in the session prefix doc.
-    External(ExternalToolPolicy),
+    Mcp { server: String, remote_name: String },
+    /// A host-owned trusted executor registered under a stable capability.
+    Server(ServerToolPolicy),
+    /// An explicitly attached SDK callback. Calls are never replayed after dispatch.
+    Attached { callback_id: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExternalToolPolicy {
-    pub scope: aex_contracts::session::ExternalToolScope,
-    pub completion: aex_contracts::session::ExternalToolCompletion,
-    pub effect: aex_contracts::session::ExternalToolEffect,
+impl Default for ToolRoute {
+    fn default() -> Self {
+        Self::Intrinsic("brain.invalid".into())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandToolSeal {
+    pub protocol: i64,
+    pub checksum: String,
+    pub source: brain_protocol::session::HandToolSource,
+    pub required_env: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerToolPolicy {
+    pub capability: String,
+    pub scope: brain_protocol::session::ExternalToolScope,
+    pub completion: brain_protocol::session::ExternalToolCompletion,
+    pub effect: brain_protocol::session::ExternalToolEffect,
     pub max_input_bytes: usize,
 }
 
@@ -258,9 +276,8 @@ impl SealedPrefix {
             what,
         }
     }
-    /// The uniform child prefix for `task` subagents (slice-8 spec): the parent's
-    /// prefix verbatim minus the session-singleton `todo` (two writers would
-    /// interleave one list). The child keeps `task` itself -- depth is enforced at
+    /// The uniform child prefix for subagents: the parent's prefix minus trusted server tools
+    /// explicitly scoped to the root. The child keeps the subagent capability itself -- depth is enforced at
     /// dispatch, so one uniform child prefix serves every depth. Derived
     /// deterministically from the sealed prefix: the SESSION digest is unchanged
     /// and replay reconstructs children exactly.
@@ -271,15 +288,13 @@ impl SealedPrefix {
             tools: self
                 .tools
                 .iter()
-                .filter(|t| {
-                    t.name != "todo"
-                        && !matches!(
-                            t.route,
-                            ToolRoute::External(ExternalToolPolicy {
-                                scope: aex_contracts::session::ExternalToolScope::Root,
-                                ..
-                            })
-                        )
+                .filter(|tool| {
+                    !matches!(
+                        &tool.route,
+                        ToolRoute::Server(policy)
+                            if policy.scope
+                                == brain_protocol::session::ExternalToolScope::Root
+                    )
                 })
                 .cloned()
                 .collect(),
@@ -303,6 +318,9 @@ impl SealedPrefix {
                     t.name.capacity()
                         + t.description.capacity()
                         + serde_json::to_string(&t.input_schema)
+                            .map(|s| s.len())
+                            .unwrap_or(0)
+                        + serde_json::to_string(&t.output_schema)
                             .map(|s| s.len())
                             .unwrap_or(0)
                 })
@@ -339,6 +357,7 @@ pub fn prefix_digest(def: &AgentDef) -> String {
         name: &'a str,
         description: &'a str,
         input_schema: &'a serde_json::Value,
+        output_schema: &'a serde_json::Value,
     }
     #[derive(Serialize)]
     struct CanonMcp<'a> {
@@ -362,6 +381,7 @@ pub fn prefix_digest(def: &AgentDef) -> String {
                 name: &t.name,
                 description: &t.description,
                 input_schema: &t.input_schema,
+                output_schema: &t.output_schema,
             })
             .collect(),
         mcp: def
@@ -449,7 +469,8 @@ mod tests {
             name: "read".into(),
             description: "read a file".into(),
             input_schema: schema(),
-            route: ToolRoute::Hand,
+            output_schema: serde_json::json!({"type":"object"}),
+            route: ToolRoute::Intrinsic("brain.test.read".into()),
         })
     }
 
@@ -478,7 +499,8 @@ mod tests {
             name: "write".into(),
             description: "write a file".into(),
             input_schema: schema(),
-            route: ToolRoute::Hand,
+            output_schema: serde_json::json!({"type":"object"}),
+            route: ToolRoute::Intrinsic("brain.test.write".into()),
         });
         assert_ne!(
             prefix_digest(&more),
@@ -493,7 +515,8 @@ mod tests {
             name: "write".into(),
             description: "write a file".into(),
             input_schema: schema(),
-            route: ToolRoute::Hand,
+            output_schema: serde_json::json!({"type":"object"}),
+            route: ToolRoute::Intrinsic("brain.test.write".into()),
         });
         let forward = prefix_digest(&swapped);
         swapped.tools.swap(0, 1);
@@ -508,7 +531,10 @@ mod tests {
     fn routing_and_limits_are_not_digested() {
         let base = prefix_digest(&def());
         let mut d = def();
-        d.tools[0].route = ToolRoute::Mcp;
+        d.tools[0].route = ToolRoute::Mcp {
+            server: "test".into(),
+            remote_name: "read".into(),
+        };
         d.limits.max_fanout = 999;
         assert_eq!(
             prefix_digest(&d),
@@ -528,20 +554,34 @@ mod tests {
     }
 
     #[test]
-    fn task_child_keeps_the_sealed_identity_but_removes_todo() {
+    fn task_child_keeps_intrinsics_and_removes_root_scoped_server_tools() {
         let sealed = AgentDef::new("parent", "test-model", Dialect::AnthropicMessages)
-            .tool(crate::tools::task_decl())
             .tool(ToolDecl {
-                name: "todo".into(),
-                description: "todo".into(),
+                name: "delegate".into(),
+                description: "delegate".into(),
                 input_schema: serde_json::json!({"type":"object"}),
-                route: ToolRoute::Brain,
+                output_schema: serde_json::json!({"type":"string"}),
+                route: ToolRoute::Intrinsic("brain.subagents".into()),
+            })
+            .tool(ToolDecl {
+                name: "root_only".into(),
+                description: "root".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                output_schema: serde_json::json!({"type":"object"}),
+                route: ToolRoute::Server(ServerToolPolicy {
+                    capability: "test.root".into(),
+                    scope: brain_protocol::session::ExternalToolScope::Root,
+                    completion: brain_protocol::session::ExternalToolCompletion::Continue,
+                    effect: brain_protocol::session::ExternalToolEffect::Opaque,
+                    max_input_bytes: 1024,
+                }),
             })
             .tool(ToolDecl {
                 name: "read".into(),
                 description: "read".into(),
                 input_schema: serde_json::json!({"type":"object"}),
-                route: ToolRoute::Hand,
+                output_schema: serde_json::json!({"type":"object"}),
+                route: ToolRoute::Intrinsic("brain.test.read".into()),
             })
             .seal();
         let child = sealed.task_child();
@@ -553,7 +593,7 @@ mod tests {
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["task", "read"]
+            vec!["delegate", "read"]
         );
     }
 

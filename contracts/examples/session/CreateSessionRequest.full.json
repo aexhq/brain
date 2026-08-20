@@ -7,17 +7,105 @@
   },
   "system_prompt": "You are a careful engineer.",
   "tools": {
-    "builtin": [
-      "bash",
-      "read",
-      "write",
-      "edit",
-      "glob",
-      "grep",
-      "ls",
-      "task",
-      "todo",
-      "web_search"
+    "items": [
+      {
+        "definition": {
+          "name": "bash",
+          "description": "Run a shell command in the lane's persistent shell environment. stdout/stderr are the operation streams. A non-zero exit is a completed operation with that exit_code.",
+          "input_schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timeout_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1,
+                "description": "Overrides bounds.timeout_ms for this call."
+              }
+            }
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "timed_out"
+            ],
+            "properties": {
+              "timed_out": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "executor": {
+          "kind": "hand",
+          "protocol": 1,
+          "checksum": "0ed0bae284be7259c3d82f498885dc7010747fdb4b9f3edcc3160c922dac161b",
+          "source": "preinstalled",
+          "required_env": []
+        }
+      },
+      {
+        "definition": {
+          "name": "task",
+          "description": "Delegate a bounded task to a child agent.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "description",
+              "prompt"
+            ],
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "executor": {
+          "kind": "intrinsic",
+          "capability": "brain.subagents.v1"
+        }
+      },
+      {
+        "definition": {
+          "name": "host_result",
+          "description": "Return a result to the host.",
+          "input_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "executor": {
+          "kind": "server",
+          "capability": "example.result.v1",
+          "scope": "root",
+          "completion": "return_direct",
+          "effect": "replay_safe",
+          "max_input_bytes": 98304
+        }
+      }
     ],
     "mcp": [
       {
@@ -27,20 +115,6 @@
           "Authorization": "Bearer REDACTED"
         },
         "protocol": "auto"
-      }
-    ],
-    "external": [
-      {
-        "name": "host_result",
-        "description": "Return a result to the host.",
-        "input_schema": {
-          "type": "object",
-          "additionalProperties": true
-        },
-        "scope": "root",
-        "completion": "return_direct",
-        "effect": "replay_safe",
-        "max_input_bytes": 98304
       }
     ]
   },

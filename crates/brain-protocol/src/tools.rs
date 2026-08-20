@@ -42,7 +42,13 @@ pub fn jcs_sha256<T: Serialize>(value: &T) -> Result<Sha256Hex, serde_json::Erro
 /// Digest of a tool manifest. Tools must already be sorted by name (the schema says so and the
 /// digest does not re-sort: an unsorted manifest is a different manifest).
 pub fn manifest_digest(manifest: &ToolManifest) -> Sha256Hex {
-    jcs_sha256(manifest).expect("a ToolManifest is always serialisable")
+    // Download URLs are short-lived transport material, not part of the execution seal. The
+    // checksum, byte count, definition, source and array order remain sealed.
+    let mut sealed = manifest.clone();
+    for tool in &mut sealed.tools {
+        tool.executable.get_url = None;
+    }
+    jcs_sha256(&sealed).expect("a ToolManifest is always serialisable")
 }
 
 #[derive(Serialize)]

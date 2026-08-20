@@ -1,0 +1,30 @@
+name: brain
+
+services:
+  server:
+    build:
+      context: .
+    image: ${BRAIN_SERVER_IMAGE:-brain:local}
+    restart: unless-stopped
+    environment:
+      BRAIN_MODE: standalone
+      BRAIN_LISTEN: 0.0.0.0:3210
+      BRAIN_DATA_DIR: ${BRAIN_DATA_DIR:?set BRAIN_DATA_DIR to an absolute host path}
+      BRAIN_HAND_IMAGE: ${BRAIN_HAND_IMAGE:?set BRAIN_HAND_IMAGE to an immutable compatible image}
+      BRAIN_DOCKER_NETWORK: brain-runtime
+    ports:
+      - 127.0.0.1:3210:3210
+    volumes:
+      # The path is deliberately identical inside and outside the container. The sibling Hands
+      # are launched by the host Docker daemon and bind the session subdirectories directly.
+      - type: bind
+        source: ${BRAIN_DATA_DIR:?set BRAIN_DATA_DIR to an absolute host path}
+        target: ${BRAIN_DATA_DIR:?set BRAIN_DATA_DIR to an absolute host path}
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    networks: [runtime]
+
+networks:
+  runtime:
+    name: brain-runtime

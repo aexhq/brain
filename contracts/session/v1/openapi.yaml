@@ -1,15 +1,15 @@
 openapi: 3.1.0
 info:
-  title: Aex session API
+  title: Brain session API
   version: "1.0.0"
   description: |
-    Session-oriented platform for running agents. A session = one agent, one workspace, one
-    optional sandbox (hand), any number of messages over any lifetime. BYOK: you bring the model key.
+    Session engine for running agents. A session = one agent, one workspace, one optional
+    sandbox (Hand), and any number of messages over any lifetime. BYOK: you bring the model key.
 
     Auth: `Authorization: Bearer <api key>`. Errors: JSON `{"error": ApiError}`.
     Component types are defined in `schemas.json` (single source, generated into Rust and TypeScript).
 servers:
-  - url: https://api.aex.dev
+  - url: http://127.0.0.1:3210
 security:
   - bearer: []
 tags:
@@ -92,9 +92,8 @@ paths:
       summary: Send a user message; starts a turn
       description: |
         Returns 202 as soon as the turn is admitted and journaled. Follow progress on
-        `GET /events?after=<seq-1>`. An optional `output` requests a typed result for this turn;
-        a successful result is attached to `turn.completed`. It does not change provider response
-        configuration or the session's sealed prefix. 409 `session_busy` while a turn is running.
+        `GET /events?after=<seq-1>`. 409 `session_busy` while a turn is running. Host products may
+        implement higher-level result semantics with ordinary sealed server tools.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:

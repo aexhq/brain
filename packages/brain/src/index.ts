@@ -1,13 +1,11 @@
 import { Sessions } from "./session.js";
 import type { Fetch } from "./transport.js";
 import { Transport } from "./transport.js";
+import type { WebSocketFactory } from "./attached.js";
 
 export {
   AbortError,
   BrainError,
-  OutputRefusalError,
-  OutputSchemaError,
-  OutputValidationError,
   SessionError,
 } from "./errors.js";
 export type { BrainErrorOptions } from "./errors.js";
@@ -15,15 +13,16 @@ export { Session, Sessions } from "./session.js";
 export type {
   CreateSessionOptions,
   ListSessionsOptions,
+  McpServerOptions,
   ModelOptions,
   ModelSummary,
-  OutputOptions,
   RequestOptions,
   SessionInput,
   SessionList,
   SessionSummary,
 } from "./session.js";
 export type { EventOptions } from "./transport.js";
+export type { WebSocketFactory } from "./attached.js";
 export {
   MAX_SESSION_BUNDLE_BYTES,
   MAX_TOOL_BUNDLE_BYTES,
@@ -62,6 +61,7 @@ export interface BrainOptions {
   token: string;
   baseUrl?: string;
   fetch?: Fetch;
+  webSocketFactory?: WebSocketFactory;
 }
 
 /** A neutral client for one long-lived, multi-session Brain server. */
@@ -76,6 +76,8 @@ export class Brain {
     }
     this.sessions = new Sessions(
       new Transport(options.token, options.baseUrl ?? DEFAULT_BRAIN_URL, fetchImplementation),
+      options.webSocketFactory ??
+        (globalThis.WebSocket === undefined ? undefined : (url) => new globalThis.WebSocket(url)),
     );
   }
 }

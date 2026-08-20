@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aex.dev/contracts/abi/v1/abi.json",
-  "title": "Aex brain-hand ABI v1",
+  "$id": "https://github.com/aexhq/brain/contracts/abi/v1/abi.json",
+  "title": "Brain-Hand protocol v1",
   "description": "Wire contract between the brain (LLM harness) and a hand (tool executor in a microVM). One multiplexed WebSocket per hand carries JSON text frames: the brain sends `Request` frames, the hand sends `HandFrame` frames (responses correlated by `id`, plus unsolicited `hand_status` events). Major version must match; unknown fields are ignored. Semantics live in contracts/abi/v1/README.md.",
   "$defs": {
     "Sha256Hex": {
@@ -284,18 +284,69 @@
         }
       }
     },
+    "ToolExecutableSource": {
+      "type": "string",
+      "enum": [
+        "bundle",
+        "preinstalled"
+      ]
+    },
+    "ToolExecutable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "checksum",
+        "source",
+        "required_env"
+      ],
+      "properties": {
+        "protocol": {
+          "type": "integer",
+          "const": 1
+        },
+        "checksum": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "source": {
+          "$ref": "#/$defs/ToolExecutableSource"
+        },
+        "required_env": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "description": "Environment-key names in the execution seal; values arrive separately in hello.env."
+        },
+        "get_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Required for a staged bundle; absent for a checksum-known preinstalled executable."
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        }
+      }
+    },
     "ToolSpec": {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "name",
         "description",
         "input_schema",
-        "output_schema"
+        "output_schema",
+        "executable"
       ],
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          "pattern": "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
         },
         "description": {
           "type": "string"
@@ -307,6 +358,9 @@
         "output_schema": {
           "type": "object",
           "description": "JSON Schema 2020-12 for `TerminalInfo.output`."
+        },
+        "executable": {
+          "$ref": "#/$defs/ToolExecutable"
         },
         "streams": {
           "type": "string",
@@ -324,7 +378,7 @@
         "version",
         "tools"
       ],
-      "description": "The sealed tool set. Digest = SHA-256 over the RFC 8785 (JCS) canonical JSON of this object. Tools are sorted by name.",
+      "description": "The exact ordered sealed Hand tool set. Digest = SHA-256 over RFC 8785 (JCS) canonical JSON. Array order is significant.",
       "properties": {
         "version": {
           "type": "string",
@@ -562,6 +616,7 @@
         "protocol_unsupported",
         "unauthorized",
         "tool_manifest_mismatch",
+        "tool_bundle_invalid",
         "generation_mismatch",
         "fence_stale",
         "tool_not_found",
@@ -700,6 +755,8 @@
         "protocol",
         "session_id",
         "session_token",
+        "tool_manifest_digest",
+        "tool_manifest",
         "env",
         "sync",
         "heartbeat_ms"
@@ -722,7 +779,11 @@
         },
         "tool_manifest_digest": {
           "$ref": "#/$defs/Sha256Hex",
-          "description": "The digest sealed at session create. Omitted only on the very first hello of a session, when the brain adopts the hand's manifest. A hand that cannot serve this digest answers tool_manifest_mismatch."
+          "description": "The execution-seal digest selected at session create."
+        },
+        "tool_manifest": {
+          "$ref": "#/$defs/ToolManifest",
+          "description": "The exact manifest to stage and acknowledge. Bundle URLs are short-lived and excluded from model-visible definitions."
         },
         "env": {
           "type": "object",
@@ -777,7 +838,7 @@
           "items": {
             "$ref": "#/$defs/ToolSpec"
           },
-          "description": "The manifest's tools, sorted by name."
+          "description": "The manifest's tools in the exact sealed order."
         },
         "lanes": {
           "type": "array",

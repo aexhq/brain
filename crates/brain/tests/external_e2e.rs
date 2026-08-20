@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aex_contracts::session::{ExternalToolCallRequest, ExternalToolCallResponse};
-use brain::adapter::ExternalToolExecutor;
+use brain::Result;
+use brain::adapter::ToolExecutor;
 use brain::config::Dialect;
 use brain::journal::Journal;
 use brain::local::LocalFactory;
 use brain::provider::fake::{FakeProvider, Scripted};
 use brain::session::{Brain, BrainConfig};
-use brain::Result;
+use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -42,15 +42,32 @@ struct RepairExecutor {
 }
 
 #[async_trait::async_trait]
-impl ExternalToolExecutor for RepairExecutor {
+impl ToolExecutor for RepairExecutor {
+    fn supports(&self, capability: &str) -> bool {
+        matches!(capability, "test.lookup" | "test.submit_result")
+    }
+
     async fn call(
         &self,
+        capability: &str,
         request: ExternalToolCallRequest,
         _cancel: CancellationToken,
     ) -> Result<ExternalToolCallResponse> {
         let mut requests = self.requests.lock().unwrap();
         requests.push(serde_json::to_value(&request).unwrap());
-        let response = if requests.len() == 1 {
+        let submission = requests
+            .iter()
+            .filter(|request| request["name"] == "submit_result")
+            .count();
+        let response = if capability == "test.lookup" {
+            json!({
+                "outcome": "completed",
+                "content": "ordinary tool result",
+                "is_error": false,
+                "disposition": "continue",
+                "result": "ordinary tool result"
+            })
+        } else if submission == 1 {
             json!({
                 "outcome": "failed",
                 "content": "answer must be an integer; correct it and submit again",
@@ -65,8 +82,8 @@ impl ExternalToolExecutor for RepairExecutor {
                 "disposition": "complete_turn",
                 "result": request.input,
                 "result_metadata": {
-                    "output_id": "out_12345678901234567890",
-                    "schema_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    "request_id": "req_12345678901234567890",
+                    "schema_revision": "v1"
                 }
             })
         };
@@ -74,7 +91,12 @@ impl ExternalToolExecutor for RepairExecutor {
     }
 }
 
-async fn replay_events(client: &reqwest::Client, base: &str, token: &str, session: &str) -> Vec<Value> {
+async fn replay_events(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    session: &str,
+) -> Vec<Value> {
     let response = client
         .get(format!(
             "{base}/v1/sessions/{session}/events?after=0&follow=false"
@@ -99,13 +121,18 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     fake.script([
         Scripted::ToolCalls(vec![(
+            "call_lookup".into(),
+            "lookup".into(),
+            json!({"topic": "ordinary work"}),
+        )]),
+        Scripted::ToolCalls(vec![(
             "call_invalid".into(),
-            "aex_submit_output".into(),
+            "submit_result".into(),
             json!({"answer": "wrong"}),
         )]),
         Scripted::ToolCalls(vec![(
             "call_valid".into(),
-            "aex_submit_output".into(),
+            "submit_result".into(),
             json!({"answer": 42}),
         )]),
     ]);
@@ -142,15 +169,40 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
         .bearer_auth(token)
         .json(&json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "tools": {"external": [{
-                "name": "aex_submit_output",
-                "description": "Submit a result",
-                "input_schema": {"type": "object", "additionalProperties": true},
-                "scope": "root",
-                "completion": "return_direct",
-                "effect": "replay_safe",
-                "max_input_bytes": 98304
-            }]}
+            "tools": {"items": [
+                {
+                    "definition": {
+                        "name": "lookup",
+                        "description": "Perform ordinary work before the final submission",
+                        "input_schema": {"type": "object", "additionalProperties": true},
+                        "output_schema": {"type": "string"}
+                    },
+                    "executor": {
+                        "kind": "server",
+                        "capability": "test.lookup",
+                        "scope": "all",
+                        "completion": "continue",
+                        "effect": "replay_safe",
+                        "max_input_bytes": 98304
+                    }
+                },
+                {
+                    "definition": {
+                        "name": "submit_result",
+                        "description": "Submit a result",
+                        "input_schema": {"type": "object", "additionalProperties": true},
+                        "output_schema": {"type": "object"}
+                    },
+                    "executor": {
+                        "kind": "server",
+                        "capability": "test.submit_result",
+                        "scope": "root",
+                        "completion": "return_direct",
+                        "effect": "replay_safe",
+                        "max_input_bytes": 98304
+                    }
+                }
+            ]}
         }))
         .send()
         .await
@@ -164,7 +216,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
         .bearer_auth(token)
         .json(&json!({
             "content": "Return the requested object.",
-            "metadata": {"aex.output_request_id": "out_12345678901234567890"}
+            "metadata": {"host.request_id": "req_12345678901234567890"}
         }))
         .send()
         .await
@@ -180,19 +232,23 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
         {
             break event;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for turn completion");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for turn completion"
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
 
-    assert_eq!(completed["result"]["name"], "aex_submit_output");
+    assert_eq!(completed["result"]["name"], "submit_result");
     assert_eq!(completed["result"]["value"], json!({"answer": 42}));
-    assert_eq!(completed["tool_calls"], 2);
-    fake.assert_drained(2, "external terminal result").unwrap();
+    assert_eq!(completed["tool_calls"], 3);
+    fake.assert_drained(3, "ordinary work plus external terminal result")
+        .unwrap();
     let requests = executor.requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert_eq!(
-        requests[0]["context"]["aex.output_request_id"],
-        "out_12345678901234567890"
+        requests[0]["context"]["host.request_id"],
+        "req_12345678901234567890"
     );
     assert_eq!(requests[0]["agent_id"], "root");
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aex.dev/contracts/session/v1/schemas.json",
-  "title": "Aex session API v1 types",
+  "$id": "https://github.com/aexhq/brain/contracts/session/v1/schemas.json",
+  "title": "Brain session API v1 types",
   "description": "Component types of the public session API. Paths are in openapi.yaml, which references these by $ref. Public state model: session `active | idle | deleted | failed`; hand state is a separate field. Absent provider counters are absent, never zero.",
   "$defs": {
     "SessionId": {
@@ -52,7 +52,7 @@
         "released",
         "lost"
       ],
-      "description": "preparing = microVM launching or restoring; ready = running and connected; suspended = AWS holds RAM+disk after 180 s idle, compute free, ~1 s back; released = VM destroyed, workspace synced to storage, ~3 s back into a fresh VM; lost = the hand died mid-run (in-flight calls reported as interrupted, never replayed)."
+      "description": "preparing = the selected runtime is launching or restoring; ready = running and connected; suspended = the adapter retains runtime state without active compute; released = compute was destroyed while durable workspace state remains; lost = the Hand died mid-run (in-flight calls are interrupted and never replayed)."
     },
     "HandShape": {
       "type": "string",
@@ -144,22 +144,40 @@
         }
       }
     },
-    "BuiltinTool": {
+    "ToolName": {
       "type": "string",
-      "enum": [
-        "bash",
-        "read",
-        "write",
-        "edit",
-        "glob",
-        "grep",
-        "ls",
-        "task",
-        "todo",
-        "web_search",
-        "web_fetch"
+      "pattern": "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+    },
+    "ToolDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "input_schema",
+        "output_schema"
       ],
-      "description": "bash..ls run in the hand; task/todo run in the brain; web_search/web_fetch are managed and billed."
+      "description": "The model-visible half of one Tool. Array order is preserved exactly in the immutable model prefix.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ToolName"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "input_schema": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": true
+        },
+        "output_schema": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": true
+        }
+      }
     },
     "McpProtocol": {
       "type": "string",
@@ -210,9 +228,10 @@
     "ExternalToolScope": {
       "type": "string",
       "enum": [
-        "root"
+        "root",
+        "all"
       ],
-      "description": "Host-executed tools are root-only in the MVP, keeping terminal control out of subagents."
+      "description": "Which agents may call a trusted server capability."
     },
     "ExternalToolCompletion": {
       "type": "string",
@@ -230,33 +249,88 @@
       ],
       "description": "replay_safe promises that repeating the same session_id and call_id returns the same logical result."
     },
-    "ExternalToolConfig": {
+    "HandToolSource": {
+      "type": "string",
+      "enum": [
+        "bundle",
+        "preinstalled"
+      ]
+    },
+    "HandToolExecutor": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "name",
-        "description",
-        "input_schema",
+        "kind",
+        "protocol",
+        "checksum",
+        "source",
+        "required_env"
+      ],
+      "description": "A checksum-sealed executable in the session's default Hand.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "hand"
+        },
+        "protocol": {
+          "type": "integer",
+          "const": 1
+        },
+        "checksum": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "source": {
+          "$ref": "#/$defs/HandToolSource"
+        },
+        "required_env": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "description": "Environment-key names only. Secret values never enter the seal."
+        }
+      }
+    },
+    "AttachedToolExecutor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "callback_id"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "attached"
+        },
+        "callback_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        }
+      }
+    },
+    "ServerToolExecutor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "capability",
         "scope",
         "completion",
         "effect",
         "max_input_bytes"
       ],
-      "description": "A model-visible tool executed by the Brain host's configured external executor. The executor address and credentials are host configuration, never session data.",
       "properties": {
-        "name": {
+        "kind": {
           "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+          "const": "server"
         },
-        "description": {
+        "capability": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 4096
-        },
-        "input_schema": {
-          "type": "object",
-          "minProperties": 1,
-          "additionalProperties": true
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
         },
         "scope": {
           "$ref": "#/$defs/ExternalToolScope"
@@ -274,31 +348,130 @@
         }
       }
     },
+    "IntrinsicToolExecutor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "capability"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "intrinsic"
+        },
+        "capability": {
+          "type": "string",
+          "pattern": "^brain\\.[A-Za-z0-9_.:-]{1,120}$"
+        }
+      }
+    },
+    "McpToolExecutor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "server",
+        "remote_name"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "mcp"
+        },
+        "server": {
+          "type": "string"
+        },
+        "remote_name": {
+          "type": "string"
+        }
+      }
+    },
+    "ToolExecutor": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HandToolExecutor"
+        },
+        {
+          "$ref": "#/$defs/AttachedToolExecutor"
+        },
+        {
+          "$ref": "#/$defs/ServerToolExecutor"
+        },
+        {
+          "$ref": "#/$defs/IntrinsicToolExecutor"
+        },
+        {
+          "$ref": "#/$defs/McpToolExecutor"
+        }
+      ]
+    },
+    "ToolConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "definition",
+        "executor"
+      ],
+      "properties": {
+        "definition": {
+          "$ref": "#/$defs/ToolDefinition"
+        },
+        "executor": {
+          "$ref": "#/$defs/ToolExecutor"
+        }
+      }
+    },
+    "ToolBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checksum",
+        "content_base64",
+        "bytes",
+        "media_type"
+      ],
+      "description": "Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation.",
+      "properties": {
+        "checksum": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "content_base64": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "writeOnly": true,
+          "maxLength": 5592408
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "media_type": {
+          "type": "string",
+          "const": "application/javascript+esm"
+        }
+      }
+    },
     "ToolsConfig": {
       "type": "object",
       "additionalProperties": false,
       "description": "Sealed at create with the rest of the prefix. Omitted tools default to an empty set.",
       "properties": {
-        "builtin": {
+        "items": {
           "type": "array",
+          "maxItems": 128,
           "items": {
-            "$ref": "#/$defs/BuiltinTool"
+            "$ref": "#/$defs/ToolConfig"
           },
-          "uniqueItems": true,
-          "description": "Built-in tools to enable. Omitted or empty means no built-in tools."
+          "description": "The exact ordered native Tool grant. Omitted or empty means no native tools."
         },
         "mcp": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/McpServerConfig"
-          }
-        },
-        "external": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ExternalToolConfig"
           },
-          "description": "Host-executed tools sealed into the model prefix. Hosted Aex reserves its own output tool; direct Brain deployments may compose others."
+          "description": "Optional remote interoperability servers. Discovery resolves once at create and appends sealed MCP Tool descriptors."
         }
       }
     },
@@ -391,7 +564,7 @@
         "suspended_bytes": {
           "type": "integer",
           "minimum": 0,
-          "description": "Bytes AWS holds for a suspended hand."
+          "description": "Bytes retained by the selected adapter for a suspended Hand, when reported."
         },
         "artifact_bytes": {
           "type": "integer",
@@ -557,6 +730,15 @@
         "tools": {
           "$ref": "#/$defs/ToolsConfig"
         },
+        "tool_bundles": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/ToolBundle"
+          },
+          "writeOnly": true,
+          "description": "Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal."
+        },
         "hand": {
           "$ref": "#/$defs/HandConfig"
         },
@@ -644,10 +826,6 @@
           "additionalProperties": {
             "type": "string"
           }
-        },
-        "output": {
-          "$ref": "#/$defs/MessageOutput",
-          "description": "Optional typed result requested for this turn. It is a per-message operation, not session configuration."
         }
       }
     },
@@ -670,70 +848,6 @@
           "type": "integer",
           "minimum": 1,
           "description": "Journal sequence of the turn.started event."
-        },
-        "output_id": {
-          "$ref": "#/$defs/OutputId",
-          "description": "Present when this message requested typed output."
-        },
-        "schema_hash": {
-          "$ref": "#/$defs/Sha256Hex",
-          "description": "Present when this message requested typed output."
-        }
-      }
-    },
-    "OutputId": {
-      "type": "string",
-      "pattern": "^out_[A-Za-z0-9]{20,32}$",
-      "description": "Correlation id for one output request. It is not a separately managed resource."
-    },
-    "OutputSchema": {
-      "type": "object",
-      "minProperties": 1,
-      "additionalProperties": true,
-      "description": "JSON Schema 2020-12 produced by the SDK. Aex validates it in the trusted host executor; it is never provider-native response-format configuration."
-    },
-    "MessageOutput": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema",
-        "schema_hash"
-      ],
-      "properties": {
-        "schema": {
-          "$ref": "#/$defs/OutputSchema"
-        },
-        "schema_hash": {
-          "$ref": "#/$defs/Sha256Hex",
-          "description": "SHA-256 of RFC 8785 canonical JSON for schema. The server rejects a mismatch before calling the model."
-        },
-        "retries": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 2,
-          "default": 1,
-          "description": "Extra model attempts after the first invalid candidate."
-        }
-      }
-    },
-    "OutputValidationIssue": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "path",
-        "message"
-      ],
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "JSON Pointer into the candidate output."
-        },
-        "message": {
-          "type": "string"
-        },
-        "keyword": {
-          "type": "string",
-          "description": "The failed JSON Schema keyword when available."
         }
       }
     },
@@ -793,7 +907,7 @@
         "is_error",
         "disposition"
       ],
-      "description": "Generic host executor result. Brain honors terminal dispositions only for a return_direct tool called alone by an allowed agent.",
+      "description": "Generic trusted server-executor result. A successful response carries its structured Tool output in result. Brain honors terminal dispositions only for a return_direct tool called alone by an allowed agent.",
       "properties": {
         "outcome": {
           "$ref": "#/$defs/ToolOutcome"
@@ -811,7 +925,7 @@
           "$ref": "#/$defs/ExternalToolDisposition"
         },
         "result": {
-          "description": "Client-facing value attached to turn.completed when disposition is complete_turn."
+          "description": "Structured successful Tool output. Required when outcome is completed and is_error is false; also attached to turn.completed for complete_turn."
         },
         "result_metadata": {
           "type": "object",
@@ -890,6 +1004,7 @@
       "type": "string",
       "enum": [
         "end_turn",
+        "refusal",
         "max_rounds",
         "cancelled",
         "error"
@@ -1652,26 +1767,8 @@
     },
     "ApiErrorCode": {
       "type": "string",
-      "enum": [
-        "invalid_request",
-        "unauthorized",
-        "forbidden",
-        "not_found",
-        "conflict",
-        "session_busy",
-        "session_deleted",
-        "session_failed",
-        "cancelled",
-        "insufficient_balance",
-        "rate_limited",
-        "provider_error",
-        "output_schema_error",
-        "output_refused",
-        "output_validation_error",
-        "hand_unavailable",
-        "too_large",
-        "internal"
-      ]
+      "pattern": "^[a-z][a-z0-9_]{0,63}$",
+      "description": "Stable machine-readable code. Brain defines its core codes; a host executor may return its own code without teaching Brain product semantics."
     },
     "ApiError": {
       "type": "object",

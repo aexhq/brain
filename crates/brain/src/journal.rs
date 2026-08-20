@@ -1,11 +1,11 @@
-//! The session journal: every decision durable in one DynamoDB write (D9).
+//! The session journal: every decision is durable in one backend transaction (D9).
 //!
 //! One item collection per session. `HEAD` carries ownership (lease + fence), the sealed
 //! configuration and the mutable session facts; `E#<seq>` items carry the decision records.
 //! The journal is also the event log: SSE replay is a derivation over these records
 //! (`events::derive`), and `seq` is both the journal order and the SSE `id:`.
 //!
-//! Concurrency rules (donor: aex-brain-domain, kept because each one answers a real outage):
+//! Concurrency rules (each one answers a real outage class):
 //! - the (session, seq) key is the idempotency barrier: a redelivered decision loses the
 //!   write, it never duplicates;
 //! - the fence advances on claim only, never on renew (renewing must not fence out the owner);
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Bound on the tool-result content a single record may carry. DynamoDB items cap at 400 KiB;
+/// Bound on the tool-result content a single record may carry. Hosted DynamoDB items cap at 400 KiB;
 /// this leaves generous room for the envelope and the parallel records of one decision.
 pub const MAX_RECORD_CONTENT_BYTES: usize = 96 * 1024;
 
@@ -92,7 +92,7 @@ pub enum Record {
         rounds: u64,
         tool_calls: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        result: Option<aex_contracts::session::TurnResult>,
+        result: Option<brain_protocol::session::TurnResult>,
     },
     TurnFailed {
         turn: String,
@@ -304,10 +304,15 @@ pub struct HeadDoc {
     /// contract marks `McpServerConfig.headers` writeOnly.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub mcp_secrets_b64: String,
+    /// Custody blob of the session-wide Hand environment map, base64. Never plaintext.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hand_secrets_b64: String,
+    /// Exact ordered Hand execution manifest, excluding ephemeral download URLs.
+    pub hand_manifest: brain_protocol::abi::ToolManifest,
     pub manifest_digest: String,
     /// The contract-facing hand snapshot, refreshed from the adapter on every commit --
     /// what `session.updated` replay and `GET /sessions/{id}` serve.
-    pub hand_info: aex_contracts::session::HandInfo,
+    pub hand_info: brain_protocol::session::HandInfo,
     /// The hand adapter's own durable state. Opaque to the core: persisted verbatim, handed
     /// back on the next `HandFactory::open`.
     #[serde(default)]
@@ -322,8 +327,8 @@ pub struct HeadDoc {
 
 impl HeadDoc {
     /// The hand snapshot before any adapter has reported: preparing, on the given shape.
-    pub fn initial_hand_info(shape: &str) -> aex_contracts::session::HandInfo {
-        use aex_contracts::session::{HandInfo, HandShape, HandState};
+    pub fn initial_hand_info(shape: &str) -> brain_protocol::session::HandInfo {
+        use brain_protocol::session::{HandInfo, HandShape, HandState};
         HandInfo {
             generation: None,
             last_sync_at: None,
@@ -365,8 +370,9 @@ pub struct PrefixDoc {
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-    /// Builtin tool names, in declaration order (order is cache-visible).
-    pub tools: Vec<String>,
+    /// Exact native Tool definitions and execution seals, in cache-visible declaration order.
+    /// Bundle bytes are staged by the Hand factory and never appear here.
+    pub tools: Vec<brain_protocol::session::ToolConfig>,
     /// Declared MCP servers with their negotiated spec versions. Digested via the sealed
     /// prefix; empty for sessions without MCP.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -376,15 +382,12 @@ pub struct PrefixDoc {
     /// change nothing until the customer forks a new session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_tools: Vec<McpToolDoc>,
-    /// Exact host-executed tool declarations and policies, sealed at create. The executor
-    /// address and credential are deliberately process configuration and never live here.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub external_tools: Vec<aex_contracts::session::ExternalToolConfig>,
     pub hand_enabled: bool,
     pub shape: String,
     pub sync_interval_seconds: u64,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
+    /// Names only, allowing create-time required-env validation without persisting values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hand_env_keys: Vec<String>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
 }
@@ -1017,18 +1020,19 @@ mod tests {
                 max_output_tokens: Some(4096),
                 temperature: None,
                 reasoning_effort: None,
-                tools: vec!["bash".into()],
+                tools: vec![],
                 mcp: vec![],
                 mcp_tools: vec![],
-                external_tools: vec![],
                 hand_enabled: true,
                 shape: "1gb".into(),
                 sync_interval_seconds: 600,
-                env: HashMap::new(),
+                hand_env_keys: vec![],
                 metadata: HashMap::new(),
             },
             key_b64: "AAAA".into(),
             mcp_secrets_b64: String::new(),
+            hand_secrets_b64: String::new(),
+            hand_manifest: crate::tools::hand_manifest(&[]).unwrap(),
             manifest_digest: "d".into(),
             hand_info: HeadDoc::initial_hand_info("1gb"),
             hand_state: serde_json::Value::Null,
@@ -1062,15 +1066,16 @@ mod tests {
                 tools: vec![],
                 mcp: vec![],
                 mcp_tools: vec![],
-                external_tools: vec![],
                 hand_enabled: false,
                 shape: "1gb".into(),
                 sync_interval_seconds: 600,
-                env: HashMap::new(),
+                hand_env_keys: vec![],
                 metadata: HashMap::new(),
             },
             key_b64: String::new(),
             mcp_secrets_b64: String::new(),
+            hand_secrets_b64: String::new(),
+            hand_manifest: crate::tools::hand_manifest(&[]).unwrap(),
             manifest_digest: String::new(),
             hand_info: HeadDoc::initial_hand_info("1gb"),
             hand_state: serde_json::Value::Null,

@@ -36,6 +36,12 @@
             "type": "boolean"
           }
         }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "0ed0bae284be7259c3d82f498885dc7010747fdb4b9f3edcc3160c922dac161b",
+        "source": "preinstalled",
+        "required_env": []
       }
     },
     {
@@ -78,6 +84,12 @@
             "minimum": 0
           }
         }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "deb8dd2afb0ad6658dd3667a7bc525266b776a959adc0e5c99ff5a3f27ca9c43",
+        "source": "preinstalled",
+        "required_env": []
       }
     },
     {
@@ -121,6 +133,12 @@
             "type": "boolean"
           }
         }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "4721f58d411cf593b5f91a434680c16c08ae6da7409663928b3b512f3d39ddb4",
+        "source": "preinstalled",
+        "required_env": []
       }
     },
     {
@@ -187,6 +205,12 @@
             "type": "boolean"
           }
         }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "5fd52904b191d45e58b308a3f336ae534616948fd28ef5a278210571d4d073f1",
+        "source": "preinstalled",
+        "required_env": []
       }
     },
     {
@@ -232,6 +256,12 @@
             "type": "boolean"
           }
         }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "b9cec943bf70a2896f65ab5120e7a52f20b38ad39536f70058e32bf2bc19943a",
+        "source": "preinstalled",
+        "required_env": []
       }
     },
     {
@@ -288,6 +318,12 @@
             "description": "True when total_lines > end_line."
           }
         }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "74d97cc52d0607605e9b0c0fa3e90127f5cd68fcc4d6673c855b515c582006ef",
+        "source": "preinstalled",
+        "required_env": []
       }
     },
     {
@@ -326,6 +362,12 @@
             "description": "True when the file did not exist before."
           }
         }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "0560ad249be00118236ba6918bb432d64dbc01f92a50e668ca0b7476f3447e46",
+        "source": "preinstalled",
+        "required_env": []
       }
     }
   ]

@@ -56,10 +56,6 @@ impl Anthropic {
                     // ALWAYS present. Never omitted on a failure.
                     "is_error":is_error
                 }),
-                ContentBlock::Output { value, .. } => json!({
-                    "type":"text",
-                    "text":serde_json::to_string(value)?
-                }),
             });
         }
         Ok(vec![json!({"role":role,"content":blocks})])
@@ -271,7 +267,8 @@ mod tests {
                 name: "read".into(),
                 description: "read".into(),
                 input_schema: json!({"type":"object"}),
-                route: ToolRoute::Hand,
+                output_schema: json!({"type":"object"}),
+                route: ToolRoute::Intrinsic("brain.test.read".into()),
             })
             .seal()
     }

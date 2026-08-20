@@ -8,12 +8,12 @@
 //!
 //! The brain is COMPOSED, not configured into a cloud: [`Brain::with_parts`] takes a journal
 //! store, a key custody, a hand factory and (optionally) a provider factory -- all trait
-//! objects (see [`crate::adapter`]). [`Brain::local`] is the zero-setup composition; the AWS
-//! one lives in `brain-aws`; yours is whatever you hand in.
+//! objects (see [`crate::adapter`]). [`Brain::local`] is the explicitly unsafe development
+//! composition; durable standalone and cloud implementations live behind the same public ports.
 
 use crate::adapter::{
-    CallOutcome, DisabledExternalToolExecutor, ExternalToolExecutor, HandAdapter, HandFactory,
-    HandSpec, SeedFile, TerminalOutcome, WorkspaceFile, WorkspaceListing,
+    CallOutcome, DisabledToolExecutor, HandAdapter, HandFactory, HandSpec, SeedFile,
+    TerminalOutcome, ToolBundleFile, ToolExecutor, WorkspaceFile, WorkspaceListing,
 };
 use crate::compact::DEFAULT_HISTORY_BUDGET_BYTES;
 use crate::config::{AgentDef, Dialect, GenOpts, ProviderKey, SessionConfig};
@@ -25,13 +25,13 @@ use crate::keys::{KeyCustody, blob_from_b64, blob_to_b64};
 use crate::local::LocalFactory;
 use crate::message::{ContentBlock, Message};
 use crate::provider::Provider;
-use crate::tools::TodoState;
 use crate::turn::{TurnRun, TurnState};
 use crate::{BrainError, Result};
-use aex_contracts::session::{
+use base64::Engine;
+use brain_protocol::session::{
     self, CreateSessionRequest, MessageRequestContent, Provider as ApiProvider,
 };
-use base64::Engine;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -62,66 +62,49 @@ pub struct BrainConfig {
     pub mcp_max_result_bytes: usize,
     /// Maximum bytes buffered by one public file upload or download.
     pub max_file_bytes: usize,
-    /// Serper's fixed managed-search endpoint and redacted process credential.
-    pub web_search_endpoint: String,
-    pub web_search_api_key: Option<ProviderKey>,
-    pub web_call_timeout: Duration,
-    pub web_max_result_bytes: usize,
-    pub web_search_max_response_bytes: usize,
-    pub web_fetch_max_response_bytes: usize,
-    pub web_fetch_max_chars: usize,
     /// Optional host executor shared by every external tool declaration. The URL and service
     /// credential are process configuration and never enter the sealed model prefix.
     pub external_executor_url: Option<String>,
     pub external_executor_token: Option<ProviderKey>,
+    /// Stable capabilities registered by the HTTP executor. An empty set advertises none.
+    pub external_executor_capabilities: HashSet<String>,
     pub external_call_timeout: Duration,
 }
 
 impl Default for BrainConfig {
     fn default() -> Self {
         Self {
-            max_concurrent_model_rounds: env_num("AEX_MAX_MODEL_ROUNDS", 64),
-            max_concurrent_turns: env_num("AEX_MAX_TURNS", 64),
-            idle_discard: Duration::from_secs(env_num("AEX_IDLE_DISCARD_SECONDS", 900) as u64),
+            max_concurrent_model_rounds: env_num("BRAIN_MAX_MODEL_ROUNDS", 64),
+            max_concurrent_turns: env_num("BRAIN_MAX_TURNS", 64),
+            idle_discard: Duration::from_secs(env_num("BRAIN_IDLE_DISCARD_SECONDS", 900) as u64),
             history_budget_bytes: DEFAULT_HISTORY_BUDGET_BYTES,
-            outbound_allow_private: env_bool("AEX_OUTBOUND_ALLOW_PRIVATE", false),
+            outbound_allow_private: env_bool("BRAIN_OUTBOUND_ALLOW_PRIVATE", false),
             mcp_create_timeout: Duration::from_millis(
-                env_num("AEX_MCP_CREATE_TIMEOUT_MS", 10_000) as u64
+                env_num("BRAIN_MCP_CREATE_TIMEOUT_MS", 10_000) as u64,
             ),
             mcp_call_timeout: Duration::from_millis(
-                env_num("AEX_MCP_CALL_TIMEOUT_MS", 60_000) as u64
+                env_num("BRAIN_MCP_CALL_TIMEOUT_MS", 60_000) as u64
             ),
-            mcp_max_result_bytes: env_num("AEX_MCP_MAX_RESULT_BYTES", 128 * 1024),
-            max_file_bytes: env_num("AEX_MAX_FILE_BYTES", 64 * 1024 * 1024),
-            web_search_endpoint: std::env::var("AEX_WEB_SEARCH_ENDPOINT")
-                .unwrap_or_else(|_| "https://google.serper.dev/search".into()),
-            web_search_api_key: std::env::var("SERPER_API_KEY")
-                .ok()
-                .filter(|value| !value.is_empty())
-                .map(ProviderKey::new),
-            web_call_timeout: Duration::from_millis(
-                env_num("AEX_WEB_CALL_TIMEOUT_MS", 30_000) as u64
-            ),
-            web_max_result_bytes: env_num("AEX_WEB_MAX_RESULT_BYTES", 128 * 1024),
-            web_search_max_response_bytes: env_num(
-                "AEX_WEB_SEARCH_MAX_RESPONSE_BYTES",
-                1024 * 1024,
-            ),
-            web_fetch_max_response_bytes: env_num(
-                "AEX_WEB_FETCH_MAX_RESPONSE_BYTES",
-                5 * 1024 * 1024,
-            ),
-            web_fetch_max_chars: env_num("AEX_WEB_FETCH_MAX_CHARS", 50_000),
-            external_executor_url: std::env::var("AEX_EXTERNAL_TOOL_EXECUTOR_URL")
+            mcp_max_result_bytes: env_num("BRAIN_MCP_MAX_RESULT_BYTES", 128 * 1024),
+            max_file_bytes: env_num("BRAIN_MAX_FILE_BYTES", 64 * 1024 * 1024),
+            external_executor_url: std::env::var("BRAIN_EXTERNAL_TOOL_EXECUTOR_URL")
                 .ok()
                 .filter(|value| !value.is_empty()),
-            external_executor_token: std::env::var("AEX_EXTERNAL_TOOL_EXECUTOR_TOKEN")
+            external_executor_token: std::env::var("BRAIN_EXTERNAL_TOOL_EXECUTOR_TOKEN")
                 .ok()
                 .filter(|value| !value.is_empty())
                 .map(ProviderKey::new),
-            external_call_timeout: Duration::from_millis(
-                env_num("AEX_EXTERNAL_TOOL_TIMEOUT_MS", 30_000) as u64,
-            ),
+            external_executor_capabilities: std::env::var("BRAIN_EXTERNAL_TOOL_CAPABILITIES")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            external_call_timeout: Duration::from_millis(env_num(
+                "BRAIN_EXTERNAL_TOOL_TIMEOUT_MS",
+                30_000,
+            ) as u64),
         }
     }
 }
@@ -166,8 +149,8 @@ pub struct Brain {
     /// The D14 egress seam: every brain-originated request to a user-controlled URL (MCP)
     /// goes through this client and its SSRF guard.
     pub outbound: crate::outbound::Outbound,
-    pub web: Arc<crate::web::WebRuntime>,
-    pub external_executor: Arc<dyn ExternalToolExecutor>,
+    pub external_executor: Arc<dyn ToolExecutor>,
+    pub attached: Arc<crate::attached::AttachedHub>,
     provider_factory: ProviderFactory,
     turn_permits: Arc<Semaphore>,
     sessions: Mutex<HashMap<String, mpsc::Sender<Command>>>,
@@ -206,7 +189,7 @@ enum Command {
     WriteFile {
         path: String,
         bytes: Vec<u8>,
-        reply: oneshot::Sender<Result<aex_contracts::session::FileEntry>>,
+        reply: oneshot::Sender<Result<brain_protocol::session::FileEntry>>,
     },
     Snapshot {
         reply: oneshot::Sender<HeadDoc>,
@@ -223,15 +206,16 @@ impl Brain {
         hand_factory: Arc<dyn HandFactory>,
         provider_factory: Option<ProviderFactory>,
     ) -> Arc<Self> {
-        let external_executor: Arc<dyn ExternalToolExecutor> = match &cfg.external_executor_url {
+        let external_executor: Arc<dyn ToolExecutor> = match &cfg.external_executor_url {
             Some(endpoint) => Arc::new(crate::external::HttpExternalToolExecutor::new(
                 endpoint.clone(),
                 cfg.external_executor_token
                     .as_ref()
                     .map(|token| token.expose().to_string()),
                 cfg.external_call_timeout,
+                cfg.external_executor_capabilities.iter().cloned(),
             )),
-            None => Arc::new(DisabledExternalToolExecutor),
+            None => Arc::new(DisabledToolExecutor),
         };
         Self::with_parts_and_external(
             cfg,
@@ -249,20 +233,10 @@ impl Brain {
         journal: Journal,
         custody: Arc<dyn KeyCustody>,
         hand_factory: Arc<dyn HandFactory>,
-        external_executor: Arc<dyn ExternalToolExecutor>,
+        external_executor: Arc<dyn ToolExecutor>,
         provider_factory: Option<ProviderFactory>,
     ) -> Arc<Self> {
         let outbound = crate::outbound::Outbound::new(cfg.outbound_allow_private);
-        let web = Arc::new(crate::web::WebRuntime::new(
-            outbound.clone(),
-            cfg.web_search_endpoint.clone(),
-            cfg.web_search_api_key.clone(),
-            cfg.web_call_timeout,
-            cfg.web_max_result_bytes,
-            cfg.web_search_max_response_bytes,
-            cfg.web_fetch_max_response_bytes,
-            cfg.web_fetch_max_chars,
-        ));
         Arc::new(Self {
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
@@ -273,10 +247,21 @@ impl Brain {
             hub: Arc::new(EventHub::new()),
             sessions: Mutex::new(HashMap::new()),
             outbound,
-            web,
             external_executor,
+            attached: Arc::new(crate::attached::AttachedHub::default()),
             cfg,
         })
+    }
+
+    pub async fn attached_callbacks(&self, session_id: &str) -> Result<HashSet<String>> {
+        let head = self.journal.get_head(session_id).await?;
+        Ok(crate::tools::resolve(&head.doc.prefix.tools)?
+            .into_iter()
+            .filter_map(|tool| match tool.route {
+                crate::config::ToolRoute::Attached { callback_id } => Some(callback_id),
+                _ => None,
+            })
+            .collect())
     }
 
     /// The zero-setup composition: in-memory journal (NOT durable), local subprocess tools
@@ -286,10 +271,10 @@ impl Brain {
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| BrainError::Invalid(format!("data dir: {e}")))?;
         // Local mode is permissive-by-default toward private addresses: a developer's MCP
-        // server lives on 127.0.0.1. Setting AEX_OUTBOUND_ALLOW_PRIVATE explicitly wins;
+        // server lives on 127.0.0.1. Setting BRAIN_OUTBOUND_ALLOW_PRIVATE explicitly wins;
         // this is a composition choice of THIS constructor, never of the guard itself.
         let mut cfg = cfg;
-        if std::env::var("AEX_OUTBOUND_ALLOW_PRIVATE").is_err() {
+        if std::env::var("BRAIN_OUTBOUND_ALLOW_PRIVATE").is_err() {
             cfg.outbound_allow_private = true;
         }
         let owner = format!("brain-{}", crate::mint_id("i", 12));
@@ -309,18 +294,27 @@ impl Brain {
             .await
     }
 
-    fn hand_spec(session_id: &str, prefix: &PrefixDoc, manifest_digest: &str) -> HandSpec {
-        HandSpec {
+    async fn hand_spec(&self, session_id: &str, doc: &HeadDoc) -> Result<HandSpec> {
+        let env = if doc.hand_secrets_b64.is_empty() {
+            HashMap::new()
+        } else {
+            let blob = blob_from_b64(&doc.hand_secrets_b64)?;
+            let secret = self.custody.decrypt(session_id, &blob).await?;
+            serde_json::from_str(secret.expose())
+                .map_err(|error| BrainError::Custody(format!("Hand environment: {error}")))?
+        };
+        Ok(HandSpec {
             session_id: session_id.to_string(),
-            hand_enabled: prefix.hand_enabled,
-            shape: prefix.shape.clone(),
-            env: prefix.env.clone(),
-            manifest_digest: manifest_digest.to_string(),
-        }
+            hand_enabled: doc.prefix.hand_enabled,
+            shape: doc.prefix.shape.clone(),
+            env,
+            tool_manifest: doc.hand_manifest.clone(),
+            manifest_digest: doc.manifest_digest.clone(),
+        })
     }
 
     async fn open_adapter(&self, session_id: &str, doc: &HeadDoc) -> Result<Arc<dyn HandAdapter>> {
-        let spec = Self::hand_spec(session_id, &doc.prefix, &doc.manifest_digest);
+        let spec = self.hand_spec(session_id, doc).await?;
         self.hand_factory.open(&spec, doc.hand_state.clone()).await
     }
 
@@ -344,20 +338,33 @@ impl Brain {
             return Err(BrainError::Invalid("metadata: at most 16 pairs".into()));
         }
         let tools_cfg = req.tools.clone().unwrap_or_default();
-        let builtins = tools_cfg
-            .builtin
-            .clone()
-            .unwrap_or_else(crate::tools::default_builtins);
-        if builtins
-            .iter()
-            .any(|tool| matches!(tool, aex_contracts::session::BuiltinTool::WebSearch))
-            && self.cfg.web_search_api_key.is_none()
-        {
-            return Err(BrainError::Invalid(
-                "tool web_search requires the managed search credential on this plane".into(),
-            ));
+        let tool_items = tools_cfg.items.clone();
+        let decls = crate::tools::resolve(&tool_items)?;
+
+        for decl in &decls {
+            match &decl.route {
+                crate::config::ToolRoute::Server(policy)
+                    if !self.external_executor.supports(&policy.capability) =>
+                {
+                    return Err(BrainError::Invalid(format!(
+                        "tool {} requires unavailable server capability {}",
+                        decl.name, policy.capability
+                    )));
+                }
+                crate::config::ToolRoute::Intrinsic(capability)
+                    if !matches!(
+                        capability.as_str(),
+                        "brain.subagents" | "brain.subagents.v1"
+                    ) =>
+                {
+                    return Err(BrainError::Invalid(format!(
+                        "tool {} requires unavailable intrinsic capability {}",
+                        decl.name, capability
+                    )));
+                }
+                _ => {}
+            }
         }
-        let decls = crate::tools::resolve(&builtins)?;
 
         // Resolve the declared MCP servers NOW: the tool list is sealed at create (§1.12),
         // so `tools/list` runs here, concurrently per server, and never again for this
@@ -379,12 +386,6 @@ impl Brain {
         for name in crate::tools::names(&decls)
             .into_iter()
             .chain(mcp.tools.iter().map(|tool| tool.name.clone()))
-            .chain(
-                tools_cfg
-                    .external
-                    .iter()
-                    .map(|tool| String::from(tool.name.clone())),
-            )
         {
             if !tool_names.insert(name.clone()) {
                 return Err(BrainError::Invalid(format!(
@@ -415,6 +416,130 @@ impl Brain {
             Some(s) => format!("{s}"),
         };
 
+        let hand_tools: Vec<_> = decls
+            .iter()
+            .filter_map(|decl| match &decl.route {
+                crate::config::ToolRoute::Hand(seal) => Some((decl, seal)),
+                _ => None,
+            })
+            .collect();
+        if !hand_tools.is_empty() && !hand_cfg.enabled {
+            return Err(BrainError::Invalid(
+                "Hand tools require hand.enabled=true".into(),
+            ));
+        }
+        for (decl, seal) in &hand_tools {
+            let missing: Vec<_> = seal
+                .required_env
+                .iter()
+                .filter(|key| !hand_cfg.env.contains_key(*key))
+                .collect();
+            if !missing.is_empty() {
+                return Err(BrainError::Invalid(format!(
+                    "tool {} is missing required Hand environment keys: {}",
+                    decl.name,
+                    missing
+                        .into_iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+
+        // Verify bundle integrity before any journal write. Exact bytes are passed once to the
+        // Hand factory for staging and are never included in PrefixDoc, HeadDoc, records, events,
+        // logs, or model requests.
+        let mut decoded_bundles = Vec::with_capacity(req.tool_bundles.len());
+        let mut total_bundle_bytes = 0usize;
+        let mut bundle_checksums = HashSet::new();
+        for (index, bundle) in req.tool_bundles.iter().enumerate() {
+            let checksum = bundle.checksum.to_string();
+            if !bundle_checksums.insert(checksum.clone()) {
+                return Err(BrainError::Invalid(format!(
+                    "tool_bundles[{index}]: duplicate checksum"
+                )));
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(bundle.content_base64.as_bytes())
+                .map_err(|error| {
+                    BrainError::Invalid(format!("tool_bundles[{index}].content_base64: {error}"))
+                })?;
+            if bytes.len() != bundle.bytes.get() as usize {
+                return Err(BrainError::Invalid(format!(
+                    "tool_bundles[{index}].bytes does not match decoded content"
+                )));
+            }
+            if bytes.len() > 4 * 1024 * 1024 {
+                return Err(BrainError::Invalid(format!(
+                    "tool_bundles[{index}] exceeds 4 MiB"
+                )));
+            }
+            total_bundle_bytes = total_bundle_bytes.saturating_add(bytes.len());
+            if total_bundle_bytes > 16 * 1024 * 1024 {
+                return Err(BrainError::Invalid(
+                    "tool_bundles exceed the 16 MiB session limit".into(),
+                ));
+            }
+            let actual = hex::encode(Sha256::digest(&bytes));
+            if actual != checksum {
+                return Err(BrainError::Invalid(format!(
+                    "tool_bundles[{index}] checksum mismatch"
+                )));
+            }
+            decoded_bundles.push((checksum, bytes, bundle.media_type.clone()));
+        }
+
+        let referenced_bundle_checksums: HashSet<_> = hand_tools
+            .iter()
+            .filter(|(_, seal)| seal.source == brain_protocol::session::HandToolSource::Bundle)
+            .map(|(_, seal)| seal.checksum.as_str())
+            .collect();
+        for (_, seal) in &hand_tools {
+            let supplied = bundle_checksums.contains(&seal.checksum);
+            match (seal.source, supplied) {
+                (brain_protocol::session::HandToolSource::Bundle, false) => {
+                    return Err(BrainError::Invalid(format!(
+                        "Hand bundle {} was not supplied",
+                        seal.checksum
+                    )));
+                }
+                (brain_protocol::session::HandToolSource::Preinstalled, true) => {
+                    return Err(BrainError::Invalid(format!(
+                        "preinstalled Hand tool unexpectedly supplied bundle {}",
+                        seal.checksum
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if let Some(unused) = bundle_checksums
+            .iter()
+            .find(|checksum| !referenced_bundle_checksums.contains(checksum.as_str()))
+        {
+            return Err(BrainError::Invalid(format!(
+                "unreferenced tool bundle {unused}"
+            )));
+        }
+
+        let mut hand_manifest = crate::tools::hand_manifest(&decls)?;
+        for spec in &mut hand_manifest.tools {
+            if spec.executable.source == brain_protocol::abi::ToolExecutableSource::Bundle {
+                let bytes = decoded_bundles
+                    .iter()
+                    .find(|(checksum, _, _)| checksum == &spec.executable.checksum.to_string())
+                    .map(|(_, bytes, _)| bytes.len() as u64)
+                    .ok_or_else(|| {
+                        BrainError::Invalid(format!(
+                            "missing verified bundle for tool {}",
+                            *spec.name
+                        ))
+                    })?;
+                spec.executable.bytes = std::num::NonZeroU64::new(bytes);
+            }
+        }
+        let manifest_digest = crate::tools::manifest_digest(&hand_manifest);
+
         // Decode seed files; staging is the adapter's business (S3, local disk, yours).
         let mut seed_bytes = Vec::with_capacity(req.files.len());
         for (i, f) in req.files.iter().enumerate() {
@@ -431,6 +556,18 @@ impl Brain {
         // Encrypt the BYOK key; the plaintext never reaches the journal.
         let key = ProviderKey::new(req.model.api_key.to_string());
         let blob = self.custody.encrypt(&session_id, &key).await?;
+        let hand_secrets_b64 = if hand_cfg.env.is_empty() {
+            String::new()
+        } else {
+            let json = serde_json::to_string(&hand_cfg.env)?;
+            let encrypted = self
+                .custody
+                .encrypt(&session_id, &ProviderKey::new(json))
+                .await?;
+            blob_to_b64(&encrypted)
+        };
+        let mut hand_env_keys: Vec<_> = hand_cfg.env.keys().cloned().collect();
+        hand_env_keys.sort();
 
         let now = crate::wall_ms();
         let prefix = PrefixDoc {
@@ -445,21 +582,26 @@ impl Brain {
                 .reasoning_effort
                 .as_ref()
                 .map(|r| format!("{r:?}").to_lowercase()),
-            tools: crate::tools::names(&decls),
+            tools: tool_items,
             mcp: mcp.servers,
             mcp_tools: mcp.tools,
-            external_tools: tools_cfg.external.clone(),
             hand_enabled: hand_cfg.enabled,
             shape: shape.clone(),
             sync_interval_seconds: hand_cfg.sync_interval_seconds.max(60) as u64,
-            env: hand_cfg.env.clone(),
+            hand_env_keys,
             metadata: req.metadata.clone(),
         };
-        let manifest_digest = crate::tools::manifest_digest();
 
         // The adapter stages seeds and validates the spec (an unsupported shape is refused
         // HERE, loudly, before anything is journaled).
-        let spec = Self::hand_spec(&session_id, &prefix, &manifest_digest);
+        let spec = HandSpec {
+            session_id: session_id.clone(),
+            hand_enabled: prefix.hand_enabled,
+            shape: prefix.shape.clone(),
+            env: hand_cfg.env.clone(),
+            tool_manifest: hand_manifest.clone(),
+            manifest_digest: manifest_digest.clone(),
+        };
         let seeds: Vec<SeedFile<'_>> = seed_bytes
             .iter()
             .map(|(path, bytes, mode)| SeedFile {
@@ -468,7 +610,15 @@ impl Brain {
                 mode: *mode,
             })
             .collect();
-        let hand_state = self.hand_factory.create(&spec, &seeds).await?;
+        let bundles: Vec<ToolBundleFile<'_>> = decoded_bundles
+            .iter()
+            .map(|(checksum, bytes, media_type)| ToolBundleFile {
+                checksum,
+                bytes,
+                media_type,
+            })
+            .collect();
+        let hand_state = self.hand_factory.create(&spec, &seeds, &bundles).await?;
 
         let doc = HeadDoc {
             state: "idle".into(),
@@ -482,6 +632,8 @@ impl Brain {
             prefix,
             key_b64: blob_to_b64(&blob),
             mcp_secrets_b64,
+            hand_secrets_b64,
+            hand_manifest,
             manifest_digest,
             hand_info: HeadDoc::initial_hand_info(&shape),
             hand_state,
@@ -682,7 +834,7 @@ impl Brain {
         session_id: &str,
         path: String,
         bytes: Vec<u8>,
-    ) -> Result<aex_contracts::session::FileEntry> {
+    ) -> Result<brain_protocol::session::FileEntry> {
         let path = normalize_workspace_path(&path)?;
         if bytes.len() > self.cfg.max_file_bytes {
             return Err(BrainError::FileTooLarge {
@@ -761,11 +913,12 @@ enum RunningOutcome {
 }
 
 #[derive(Debug)]
-struct PendingTask {
+struct PendingVolatile {
     seq: u64,
     turn: String,
     agent: String,
     call: String,
+    name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -776,7 +929,7 @@ struct PendingExternal {
     name: String,
     input: serde_json::Value,
     context: HashMap<String, String>,
-    policy: crate::config::ExternalToolPolicy,
+    policy: crate::config::ServerToolPolicy,
     parallel_batch: bool,
 }
 
@@ -806,21 +959,15 @@ fn pending_external(entries: &[Entry], prefix: &PrefixDoc) -> Vec<PendingExterna
             _ => None,
         })
         .collect();
-    let policies: HashMap<&str, crate::config::ExternalToolPolicy> = prefix
-        .external_tools
-        .iter()
-        .map(|tool| {
-            (
-                tool.name.as_ref(),
-                crate::config::ExternalToolPolicy {
-                    scope: tool.scope,
-                    completion: tool.completion,
-                    effect: tool.effect,
-                    max_input_bytes: tool.max_input_bytes.get() as usize,
-                },
-            )
-        })
-        .collect();
+    let policies: HashMap<String, crate::config::ServerToolPolicy> =
+        crate::tools::resolve(&prefix.tools)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|tool| match tool.route {
+                crate::config::ToolRoute::Server(policy) => Some((tool.name, policy)),
+                _ => None,
+            })
+            .collect();
 
     let mut pending = Vec::new();
     for entry in entries {
@@ -835,10 +982,13 @@ fn pending_external(entries: &[Entry], prefix: &PrefixDoc) -> Vec<PendingExterna
         else {
             continue;
         };
-        let Some(policy) = policies.get(name.as_str()).copied() else {
+        let Some(policy) = policies.get(name.as_str()).cloned() else {
             continue;
         };
-        if agent != "root" || answered.contains(call.as_str()) || terminal_turns.contains(turn.as_str()) {
+        if agent != "root"
+            || answered.contains(call.as_str())
+            || terminal_turns.contains(turn.as_str())
+        {
             continue;
         }
         let assistant_seq = entries
@@ -855,24 +1005,25 @@ fn pending_external(entries: &[Entry], prefix: &PrefixDoc) -> Vec<PendingExterna
                 _ => None,
             })
             .unwrap_or(0);
+        let next_assistant_seq = entries
+            .iter()
+            .filter_map(|candidate| match &candidate.record {
+                Record::Assistant {
+                    turn: assistant_turn,
+                    agent,
+                    ..
+                } if candidate.seq > assistant_seq && assistant_turn == turn && agent == "root" => {
+                    Some(candidate.seq)
+                }
+                _ => None,
+            })
+            .min()
+            .unwrap_or(u64::MAX);
         let batch_size = entries
             .iter()
             .filter(|candidate| {
                 candidate.seq > assistant_seq
-                    && candidate.seq <= entry.seq.max(
-                        entries
-                            .iter()
-                            .filter_map(|other| match &other.record {
-                                Record::ToolCall {
-                                    turn: other_turn,
-                                    agent,
-                                    ..
-                                } if other_turn == turn && agent == "root" => Some(other.seq),
-                                _ => None,
-                            })
-                            .max()
-                            .unwrap_or(entry.seq),
-                    )
+                    && candidate.seq < next_assistant_seq
                     && matches!(
                         &candidate.record,
                         Record::ToolCall { turn: other_turn, agent, .. }
@@ -886,7 +1037,9 @@ fn pending_external(entries: &[Entry], prefix: &PrefixDoc) -> Vec<PendingExterna
             call: call.clone(),
             name: name.clone(),
             input: input.clone(),
-            context: contexts.get(turn.as_str()).map_or_else(HashMap::new, |v| (*v).clone()),
+            context: contexts
+                .get(turn.as_str())
+                .map_or_else(HashMap::new, |v| (*v).clone()),
             policy,
             parallel_batch: batch_size > 1,
         });
@@ -895,12 +1048,20 @@ fn pending_external(entries: &[Entry], prefix: &PrefixDoc) -> Vec<PendingExterna
     pending
 }
 
-
-/// Finds `task` intents with no result. Once a new owner can claim the
-/// session, the in-process child that owned each intent is gone and must never
-/// be replayed.
-fn pending_tasks(entries: &[Entry]) -> Vec<PendingTask> {
-    let mut pending = HashMap::<String, PendingTask>::new();
+/// Finds unanswered calls whose executor cannot be recovered unambiguously. A newly claimed
+/// session never reassigns these calls: Hand, attached, MCP and in-process intrinsic effects may
+/// already have happened. Replay-safe server capabilities are handled separately.
+fn pending_volatile(entries: &[Entry], prefix: &PrefixDoc) -> Vec<PendingVolatile> {
+    let volatile_names: HashSet<String> = crate::tools::resolve(&prefix.tools)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tool| match tool.route {
+            crate::config::ToolRoute::Server(_) => None,
+            _ => Some(tool.name),
+        })
+        .chain(prefix.mcp_tools.iter().map(|tool| tool.name.clone()))
+        .collect();
+    let mut pending = HashMap::<String, PendingVolatile>::new();
     for entry in entries {
         match &entry.record {
             Record::ToolCall {
@@ -910,14 +1071,15 @@ fn pending_tasks(entries: &[Entry]) -> Vec<PendingTask> {
                 name,
                 detach,
                 ..
-            } if name == "task" && !detach => {
+            } if volatile_names.contains(name) && !detach => {
                 pending.insert(
                     call.clone(),
-                    PendingTask {
+                    PendingVolatile {
                         seq: entry.seq,
                         turn: turn.clone(),
                         agent: agent.clone(),
                         call: call.clone(),
+                        name: name.clone(),
                     },
                 );
             }
@@ -928,17 +1090,230 @@ fn pending_tasks(entries: &[Entry]) -> Vec<PendingTask> {
         }
     }
     let mut pending: Vec<_> = pending.into_values().collect();
-    pending.sort_by_key(|task| task.seq);
+    pending.sort_by_key(|call| call.seq);
     pending
 }
 
-fn task_identity_count(entries: &[Entry]) -> u64 {
+struct RecoveredTurn {
+    turn: String,
+    context: HashMap<String, String>,
+    rounds: u64,
+    tool_calls: u64,
+}
+
+async fn recover_external_calls(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Resident,
+    entries: &[Entry],
+) -> Result<Option<RecoveredTurn>> {
+    let Some(active_turn) = resident.st.head.turn.clone() else {
+        return Ok(None);
+    };
+    let pending: Vec<_> = pending_external(entries, &resident.st.head.prefix)
+        .into_iter()
+        .filter(|call| call.turn == active_turn)
+        .collect();
+    if pending.is_empty() {
+        return Ok(None);
+    }
+
+    let rounds = entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.record,
+                Record::Assistant { turn, agent, .. }
+                    if turn == &active_turn && agent == "root"
+            )
+        })
+        .count() as u64;
+    let tool_calls = entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.record,
+                Record::ToolCall { turn, agent, .. }
+                    if turn == &active_turn && agent == "root"
+            )
+        })
+        .count() as u64;
+    let context = pending[0].context.clone();
+    let sealed_tools = crate::tools::resolve(&resident.st.head.prefix.tools)?;
+    let mut records = Vec::with_capacity(pending.len() + 2);
+    let mut blocks = Vec::with_capacity(pending.len());
+    let mut terminal = None;
+    let mut unreplayable = false;
+
+    for call in pending {
+        let outcome =
+            if call.policy.effect == brain_protocol::session::ExternalToolEffect::ReplaySafe {
+                crate::turn::execute_external(
+                    brain.external_executor.clone(),
+                    call.policy,
+                    call.parallel_batch,
+                    session_id.to_string(),
+                    call.turn.clone(),
+                    "root".into(),
+                    call.call.clone(),
+                    call.name.clone(),
+                    call.input,
+                    call.context,
+                    CancellationToken::new(),
+                )
+                .await
+            } else {
+                unreplayable = true;
+                CallOutcome {
+                    outcome: "interrupted".into(),
+                    value: None,
+                    content: format!(
+                        "external tool {} was interrupted and its opaque effect was not replayed",
+                        call.name
+                    ),
+                    is_error: true,
+                    exit_code: None,
+                    duration_ms: 0,
+                    truncated: false,
+                    terminal: None,
+                }
+            };
+        let outcome = match sealed_tools.iter().find(|tool| tool.name == call.name) {
+            Some(tool) => crate::tools::enforce_output(tool, outcome),
+            None => CallOutcome::failed(format!(
+                "tool {} is absent from the recovered execution seal",
+                call.name
+            )),
+        };
+        let content = if outcome.content.is_empty() {
+            format!("[{}: no output]", outcome.outcome)
+        } else {
+            outcome.content.clone()
+        };
+        blocks.push(ContentBlock::ToolResult {
+            tool_use_id: call.call.clone(),
+            content: content.clone(),
+            is_error: outcome.is_error,
+        });
+        records.push((
+            resident.st.take_seq(),
+            Record::ToolResult {
+                turn: call.turn,
+                agent: "root".into(),
+                call: call.call.clone(),
+                name: call.name.clone(),
+                outcome: outcome.outcome,
+                content,
+                is_error: outcome.is_error,
+                exit_code: outcome.exit_code,
+                duration_ms: outcome.duration_ms,
+                truncated: outcome.truncated,
+            },
+        ));
+        if let Some(value) = outcome.terminal {
+            terminal = Some((call.call, call.name, value));
+        }
+    }
+
+    if let Some((call, name, terminal)) = terminal {
+        resident.st.head.state = "idle".into();
+        resident.st.head.turn = None;
+        match terminal {
+            TerminalOutcome::Complete { value, metadata } => {
+                records.push((
+                    resident.st.take_seq(),
+                    Record::TurnCompleted {
+                        turn: active_turn.clone(),
+                        stop_reason: "end_turn".into(),
+                        rounds,
+                        tool_calls,
+                        result: Some(brain_protocol::session::TurnResult {
+                            call_id: call.parse().map_err(|error| {
+                                BrainError::Protocol(format!("external call id: {error}"))
+                            })?,
+                            metadata,
+                            name,
+                            value,
+                        }),
+                    },
+                ));
+            }
+            TerminalOutcome::Fail { error } => records.push((
+                resident.st.take_seq(),
+                Record::TurnFailed {
+                    turn: active_turn.clone(),
+                    code: error.code.to_string(),
+                    message: error.message,
+                    details: error.details,
+                },
+            )),
+        }
+        records.push((
+            resident.st.take_seq(),
+            Record::State {
+                state: "idle".into(),
+                turn: Some(active_turn.clone()),
+            },
+        ));
+    } else if unreplayable {
+        resident.st.head.state = "idle".into();
+        resident.st.head.turn = None;
+        records.push((
+            resident.st.take_seq(),
+            Record::TurnFailed {
+                turn: active_turn.clone(),
+                code: "cancelled".into(),
+                message:
+                    "turn interrupted with an opaque external-tool effect; it was not replayed"
+                        .into(),
+                details: None,
+            },
+        ));
+        records.push((
+            resident.st.take_seq(),
+            Record::State {
+                state: "idle".into(),
+                turn: Some(active_turn.clone()),
+            },
+        ));
+    }
+
+    commit(brain, session_id, &mut resident.st, records).await?;
+    resident.st.history.push(Message::tool_results(blocks));
+    if resident.st.head.turn.is_none() {
+        Ok(None)
+    } else {
+        Ok(Some(RecoveredTurn {
+            turn: active_turn,
+            context,
+            rounds,
+            tool_calls,
+        }))
+    }
+}
+
+fn task_identity_count(entries: &[Entry], prefix: &PrefixDoc) -> u64 {
+    let intrinsic_names: HashSet<String> = crate::tools::resolve(&prefix.tools)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tool| match tool.route {
+            crate::config::ToolRoute::Intrinsic(capability)
+                if matches!(
+                    capability.as_str(),
+                    "brain.subagents" | "brain.subagents.v1"
+                ) =>
+            {
+                Some(tool.name)
+            }
+            _ => None,
+        })
+        .collect();
     entries
         .iter()
         .filter(|entry| {
             matches!(
                 &entry.record,
-                Record::ToolCall { name, detach: false, .. } if name == "task"
+                Record::ToolCall { name, detach: false, .. } if intrinsic_names.contains(name)
             )
         })
         .count() as u64
@@ -1198,11 +1573,10 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
     }
     let mut entries = brain.journal.read_records(session_id, 0).await?;
 
-    // A successfully claimed session has no live previous owner. Any task
-    // intent without a result belonged to an in-process child that disappeared
-    // with that owner: answer it as interrupted, never replay it. Nested task
-    // results remain audit-only because Fold excludes non-root agents.
-    let interrupted = pending_tasks(&entries);
+    // A successfully claimed session has no live previous owner. Any unanswered volatile intent
+    // is ambiguous and is answered as interrupted, never replayed. Nested results remain
+    // audit-only because Fold excludes non-root agents.
+    let interrupted = pending_volatile(&entries, &head.doc.prefix);
     if !interrupted.is_empty() {
         let active_turn = head.doc.turn.clone();
         let interrupted_root_turn = active_turn.as_deref().is_some_and(|turn| {
@@ -1219,9 +1593,9 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                     turn: task.turn.clone(),
                     agent: task.agent.clone(),
                     call: task.call.clone(),
-                    name: "task".into(),
+                    name: task.name.clone(),
                     outcome: "interrupted".into(),
-                    content: "subagent interrupted while the session was not resident".into(),
+                    content: "tool executor disconnected while the session was not resident; the call was not replayed".into(),
                     is_error: true,
                     exit_code: None,
                     duration_ms: 0,
@@ -1304,11 +1678,11 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
         .await?;
     let mcp = build_mcp_runtime(brain, session_id, &head.doc).await?;
     let hand = brain.open_adapter(session_id, &head.doc).await?;
-    // Every journaled `task` intent minted one child identity, including an
+    // Every journaled subagent intent minted one child identity, including an
     // interrupted call. Rebuilding the count here makes the D11 lifetime cap
     // survive discard and process restart.
-    let identities = task_identity_count(&entries);
-    Ok(Resident {
+    let identities = task_identity_count(&entries, &head.doc.prefix);
+    let mut resident = Resident {
         st: TurnState {
             history: fold.history,
             hand,
@@ -1317,13 +1691,43 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                 fence: head.fence,
                 last_seq: head.last_seq,
             },
-            todo: Arc::new(TodoState::default()),
             mcp,
             seq: Arc::new(std::sync::atomic::AtomicU64::new(head.last_seq + 1)),
             identities: Arc::new(std::sync::atomic::AtomicU64::new(identities)),
         },
         key,
-    })
+    };
+    if let Some(recovered) =
+        recover_external_calls(brain, session_id, &mut resident, &entries).await?
+    {
+        let permit = brain
+            .turn_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| BrainError::Overloaded)?;
+        let run = turn_run(
+            brain,
+            session_id,
+            &recovered.turn,
+            &resident,
+            recovered.context,
+            CancellationToken::new(),
+        )?;
+        let outcome = run
+            .resume(&mut resident.st, recovered.rounds, recovered.tool_calls)
+            .await;
+        drop(permit);
+        finish_turn(
+            brain,
+            session_id,
+            &recovered.turn,
+            &mut resident.st,
+            outcome,
+        )
+        .await;
+    }
+    Ok(resident)
 }
 
 /// Rebuilds the session's MCP dispatch state from the sealed prefix doc: decrypt the header
@@ -1486,8 +1890,8 @@ fn turn_run(
         cancel,
         model_permits: brain.model_permits.clone(),
         history_budget_bytes: brain.cfg.history_budget_bytes,
-        web: brain.web.clone(),
         external_executor: brain.external_executor.clone(),
+        attached: brain.attached.clone(),
         context,
     })
 }
@@ -1700,8 +2104,8 @@ async fn do_list_files(
     recursive: bool,
 ) -> Result<WorkspaceListing> {
     let r = ensure_resident(brain, session_id, resident).await?;
-    // A released Lambda hand can serve its committed manifest without waking compute.
-    if r.st.hand.hand_info().state != aex_contracts::session::HandState::Released {
+    // A released remote Hand can serve its committed manifest without waking compute.
+    if r.st.hand.hand_info().state != brain_protocol::session::HandState::Released {
         ready_for_file_operation(brain, session_id, &mut r.st).await?;
     }
     let out = r.st.hand.list_files(&path, recursive).await?;
@@ -1730,7 +2134,7 @@ async fn do_write_file(
     resident: &mut Option<Resident>,
     path: String,
     bytes: Vec<u8>,
-) -> Result<aex_contracts::session::FileEntry> {
+) -> Result<brain_protocol::session::FileEntry> {
     let r = ensure_resident(brain, session_id, resident).await?;
     ready_for_file_operation(brain, session_id, &mut r.st).await?;
     let out = r.st.hand.write_file(&path, &bytes).await?;
@@ -1826,12 +2230,7 @@ pub fn build_prefix(
     p: &PrefixDoc,
 ) -> Result<(crate::Shared<crate::config::SealedPrefix>, Dialect)> {
     let dialect = dialect_of(&p.provider);
-    let builtins: Vec<_> = p
-        .tools
-        .iter()
-        .filter_map(|n| crate::tools::parse_builtin(n))
-        .collect();
-    let decls = crate::tools::resolve(&builtins)?;
+    let decls = crate::tools::resolve(&p.tools)?;
     let mut def = AgentDef::new(
         p.system_prompt
             .clone()
@@ -1842,20 +2241,19 @@ pub fn build_prefix(
     for d in decls {
         def = def.tool(d);
     }
-    // Sealed MCP tools render after the builtins, in create order, from the schemas the doc
+    // Discovered MCP tools render after native tools, in create order, from schemas the doc
     // carries -- no I/O, so the digest is a pure function of the doc (same doc, same digest).
     for t in &p.mcp_tools {
         def = def.tool(crate::config::ToolDecl {
             name: t.name.clone(),
             description: t.description.clone(),
             input_schema: t.input_schema.clone(),
-            route: crate::config::ToolRoute::Mcp,
+            output_schema: serde_json::json!({"type": ["object", "array", "string", "number", "boolean", "null"]}),
+            route: crate::config::ToolRoute::Mcp {
+                server: t.server.clone(),
+                remote_name: t.remote_name.clone(),
+            },
         });
-    }
-    // Host-executed tools render last, in declared order. Their model-visible definition joins
-    // the normal prefix digest; their dispatch policy is rebuilt from the same sealed document.
-    for tool in &p.external_tools {
-        def = def.tool(external_tool_decl(tool));
     }
     for s in &p.mcp {
         def = def.mcp(crate::config::McpServerDecl {
@@ -1870,20 +2268,6 @@ pub fn build_prefix(
         stop_sequences: Vec::new(),
     });
     Ok((def.seal(), dialect))
-}
-
-fn external_tool_decl(tool: &aex_contracts::session::ExternalToolConfig) -> crate::config::ToolDecl {
-    crate::config::ToolDecl {
-        name: String::from(tool.name.clone()),
-        description: String::from(tool.description.clone()),
-        input_schema: serde_json::Value::Object(tool.input_schema.clone()),
-        route: crate::config::ToolRoute::External(crate::config::ExternalToolPolicy {
-            scope: tool.scope,
-            completion: tool.completion,
-            effect: tool.effect,
-            max_input_bytes: tool.max_input_bytes.get() as usize,
-        }),
-    }
 }
 
 fn default_system_prompt() -> String {
@@ -1973,6 +2357,45 @@ fn content_blocks(content: MessageRequestContent) -> Result<Vec<ContentBlock>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct RecoveryExecutor {
+        calls: AtomicUsize,
+        call_ids: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolExecutor for RecoveryExecutor {
+        fn supports(&self, capability: &str) -> bool {
+            capability == "submit"
+        }
+
+        async fn call(
+            &self,
+            capability: &str,
+            request: ExternalToolCallRequest,
+            _cancel: CancellationToken,
+        ) -> Result<ExternalToolCallResponse> {
+            assert_eq!(capability, "submit");
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.call_ids
+                .lock()
+                .expect("recovery call ids")
+                .push(request.call_id.to_string());
+            Ok(serde_json::from_value(json!({
+                "outcome": "completed",
+                "content": "accepted after recovery",
+                "is_error": false,
+                "disposition": "complete_turn",
+                "result": request.input,
+                "result_metadata": {"recovered": "true"}
+            }))
+            .expect("valid recovery response"))
+        }
+    }
 
     #[test]
     fn base_urls_resolve_and_compatible_requires_one() {
@@ -2002,14 +2425,34 @@ mod tests {
             max_output_tokens: Some(2048),
             temperature: Some(0.5),
             reasoning_effort: None,
-            tools: vec!["bash".into(), "todo".into()],
+            tools: serde_json::from_value(json!([
+                {
+                    "definition": {
+                        "name":"run", "description":"run",
+                        "input_schema":{"type":"object"},
+                        "output_schema":{"type":"object"}
+                    },
+                    "executor": {
+                        "kind":"hand", "protocol":1,
+                        "checksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "source":"preinstalled", "required_env":[]
+                    }
+                },
+                {
+                    "definition": {
+                        "name":"delegate", "description":"delegate",
+                        "input_schema":{"type":"object"},
+                        "output_schema":{"type":"string"}
+                    },
+                    "executor":{"kind":"intrinsic", "capability":"brain.subagents"}
+                }
+            ])).unwrap(),
             mcp: vec![],
             mcp_tools: vec![],
-            external_tools: vec![],
             hand_enabled: true,
             shape: "1gb".into(),
             sync_interval_seconds: 600,
-            env: HashMap::new(),
+            hand_env_keys: vec![],
             metadata: HashMap::new(),
         };
         let (a, da) = build_prefix(&p).unwrap();
@@ -2027,7 +2470,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_task_scan_tracks_results_and_the_lifetime_count() {
+    fn pending_volatile_scan_routes_by_the_seal_and_tracks_subagent_identity() {
         let task = |seq: u64, agent: &str, call: &str, detach: bool| Entry {
             seq,
             ts_ms: 0,
@@ -2035,7 +2478,7 @@ mod tests {
                 turn: "trn_test".into(),
                 agent: agent.into(),
                 call: call.into(),
-                name: "task".into(),
+                name: "delegate_under_any_name".into(),
                 input: serde_json::json!({}),
                 detach,
             },
@@ -2050,7 +2493,7 @@ mod tests {
                     turn: "trn_test".into(),
                     agent: "agt_child".into(),
                     call: "op_answered".into(),
-                    name: "task".into(),
+                    name: "delegate_under_any_name".into(),
                     outcome: "completed".into(),
                     content: "done".into(),
                     is_error: false,
@@ -2061,10 +2504,323 @@ mod tests {
             },
             task(4, "root", "op_detached", true),
         ];
-        let pending = pending_tasks(&entries);
+        let prefix = PrefixDoc {
+            system_prompt: None,
+            provider: "anthropic".into(),
+            model: "m".into(),
+            base_url: None,
+            max_output_tokens: None,
+            temperature: None,
+            reasoning_effort: None,
+            tools: serde_json::from_value(json!([{
+                "definition": {
+                    "name":"delegate_under_any_name", "description":"delegate",
+                    "input_schema":{"type":"object"}, "output_schema":{"type":"string"}
+                },
+                "executor":{"kind":"intrinsic", "capability":"brain.subagents"}
+            }]))
+            .unwrap(),
+            mcp: vec![],
+            mcp_tools: vec![],
+            hand_enabled: false,
+            shape: "1gb".into(),
+            sync_interval_seconds: 600,
+            hand_env_keys: vec![],
+            metadata: HashMap::new(),
+        };
+        let pending = pending_volatile(&entries, &prefix);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].call, "op_pending");
-        assert_eq!(task_identity_count(&entries), 2);
+        assert_eq!(task_identity_count(&entries, &prefix), 2);
     }
 
+    #[test]
+    fn pending_external_scan_recovers_only_unanswered_sealed_calls() {
+        let prefix = PrefixDoc {
+            system_prompt: None,
+            provider: "anthropic".into(),
+            model: "m".into(),
+            base_url: None,
+            max_output_tokens: None,
+            temperature: None,
+            reasoning_effort: None,
+            tools: serde_json::from_value(json!([{
+                "definition": {
+                    "name":"submit", "description":"submit",
+                    "input_schema":{"type":"object"},
+                    "output_schema":{"type":"object"}
+                },
+                "executor": {
+                    "kind":"server", "capability":"submit", "scope":"root",
+                    "completion":"return_direct", "effect":"replay_safe",
+                    "max_input_bytes":1024
+                }
+            }]))
+            .unwrap(),
+            mcp: vec![],
+            mcp_tools: vec![],
+            hand_enabled: false,
+            shape: "1gb".into(),
+            sync_interval_seconds: 600,
+            hand_env_keys: vec![],
+            metadata: HashMap::new(),
+        };
+        let mut context = HashMap::new();
+        context.insert("request".into(), "out_1".into());
+        let mut entries = vec![
+            Entry {
+                seq: 1,
+                ts_ms: 0,
+                record: Record::UserMessage {
+                    turn: "trn_test".into(),
+                    content: vec![ContentBlock::text("answer")],
+                    metadata: context,
+                },
+            },
+            Entry {
+                seq: 2,
+                ts_ms: 0,
+                record: Record::Assistant {
+                    turn: "trn_test".into(),
+                    agent: "root".into(),
+                    content: vec![],
+                    stop: crate::message::StopReason::ToolUse,
+                },
+            },
+            Entry {
+                seq: 3,
+                ts_ms: 0,
+                record: Record::ToolCall {
+                    turn: "trn_test".into(),
+                    agent: "root".into(),
+                    call: "op_submit".into(),
+                    name: "submit".into(),
+                    input: json!({"answer": 42}),
+                    detach: false,
+                },
+            },
+        ];
+        let pending = pending_external(&entries, &prefix);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].call, "op_submit");
+        assert_eq!(pending[0].context["request"], "out_1");
+        assert!(!pending[0].parallel_batch);
+
+        entries.push(Entry {
+            seq: 4,
+            ts_ms: 0,
+            record: Record::ToolResult {
+                turn: "trn_test".into(),
+                agent: "root".into(),
+                call: "op_submit".into(),
+                name: "submit".into(),
+                outcome: "completed".into(),
+                content: "done".into(),
+                is_error: false,
+                exit_code: None,
+                duration_ms: 1,
+                truncated: false,
+            },
+        });
+        assert!(pending_external(&entries, &prefix).is_empty());
+    }
+
+    #[tokio::test]
+    async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "brain-external-recovery-{}-{}",
+            std::process::id(),
+            crate::wall_ms()
+        ));
+        std::fs::create_dir_all(&data_dir).expect("create recovery data dir");
+        let journal = Journal::new_memory("brain-recovery-test");
+        let executor = Arc::new(RecoveryExecutor::default());
+        let brain = Brain::with_parts_and_external(
+            BrainConfig {
+                idle_discard: Duration::from_secs(300),
+                ..BrainConfig::default()
+            },
+            journal.clone(),
+            Arc::new(crate::keys::PlainCustody),
+            Arc::new(LocalFactory::new(data_dir.clone())),
+            executor.clone(),
+            None,
+        );
+        let created = brain
+            .create_session(
+                serde_json::from_value(json!({
+                    "model": {
+                        "provider": "anthropic",
+                        "name": "unused-during-terminal-recovery",
+                        "api_key": "sk-test"
+                    },
+                    "hand": {"enabled": false},
+                    "tools": {
+                        "items": [{
+                            "definition": {
+                                "name": "submit",
+                                "description": "Submit the final value",
+                                "input_schema": {"type": "object"},
+                                "output_schema": {"type": "object"}
+                            },
+                            "executor": {
+                                "kind": "server",
+                                "capability": "submit",
+                                "scope": "root",
+                                "completion": "return_direct",
+                                "effect": "replay_safe",
+                                "max_input_bytes": 1024
+                            }
+                        }]
+                    }
+                }))
+                .expect("valid create request"),
+            )
+            .await
+            .expect("create session");
+        let session_id = created.id.to_string();
+
+        // Let the eager actor finish its initial hand-state decision before fencing its fold.
+        for _ in 0..100 {
+            if journal
+                .get_head(&session_id)
+                .await
+                .expect("head while waiting")
+                .last_seq
+                >= 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let mut head = journal
+            .claim(&session_id)
+            .await
+            .expect("claim for crash setup");
+        let turn = "trn_aaaaaaaaaaaaaaaaaaaa".to_string();
+        let call = "op_aaaaaaaaaaaaaaaa".to_string();
+        let input = json!({"answer": 42});
+        head.doc.state = "active".into();
+        head.doc.turn = Some(turn.clone());
+        head.doc.turns += 1;
+        head.doc.last_message_ms = Some(crate::wall_ms());
+        let first_seq = head.last_seq + 1;
+        let records = vec![
+            (
+                first_seq,
+                Record::UserMessage {
+                    turn: turn.clone(),
+                    content: vec![ContentBlock::text("return a typed value")],
+                    metadata: HashMap::from([("request_id".into(), "out_test".into())]),
+                },
+            ),
+            (first_seq + 1, Record::TurnStarted { turn: turn.clone() }),
+            (
+                first_seq + 2,
+                Record::Assistant {
+                    turn: turn.clone(),
+                    agent: "root".into(),
+                    content: vec![ContentBlock::ToolUse {
+                        id: call.clone(),
+                        name: "submit".into(),
+                        input: input.clone(),
+                    }],
+                    stop: crate::message::StopReason::ToolUse,
+                },
+            ),
+            (
+                first_seq + 3,
+                Record::ToolCall {
+                    turn: turn.clone(),
+                    agent: "root".into(),
+                    call: call.clone(),
+                    name: "submit".into(),
+                    input: input.clone(),
+                    detach: false,
+                },
+            ),
+        ];
+        let mut lease = Lease {
+            fence: head.fence,
+            last_seq: head.last_seq,
+        };
+        journal
+            .commit(&session_id, &mut lease, &records, &head.doc, first_seq + 3)
+            .await
+            .expect("commit pending external intent");
+        let crash_entries = journal
+            .read_records(&session_id, 0)
+            .await
+            .expect("read simulated crash records");
+        let resolved = crate::tools::resolve(&head.doc.prefix.tools).expect("resolve sealed tools");
+        assert!(
+            resolved.iter().any(|tool| {
+                tool.name == "submit"
+                    && matches!(
+                        &tool.route,
+                        crate::config::ToolRoute::Server(policy) if policy.capability == "submit"
+                    )
+            }),
+            "resolved tools: {resolved:?}; prefix tools: {:?}",
+            head.doc.prefix.tools
+        );
+        assert!(crash_entries.iter().any(|entry| matches!(
+            &entry.record,
+            Record::ToolCall { call: recorded, .. } if recorded == &call
+        )));
+        let pending = pending_external(&crash_entries, &head.doc.prefix);
+        assert_eq!(
+            pending.len(),
+            1,
+            "the committed server-tool intent is pending"
+        );
+        assert_eq!(pending[0].policy.capability, "submit");
+        journal
+            .release(&session_id, &lease)
+            .await
+            .expect("release crashed owner");
+
+        let resident = hydrate(&brain, &session_id)
+            .await
+            .expect("hydrate and replay pending call");
+        assert_eq!(executor.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(resident.st.head.state, "idle");
+        assert!(resident.st.head.turn.is_none());
+        assert_eq!(
+            executor
+                .call_ids
+                .lock()
+                .expect("recovery call ids")
+                .as_slice(),
+            [call.as_str()]
+        );
+
+        let recovered = journal
+            .read_records(&session_id, first_seq + 3)
+            .await
+            .expect("recovery records");
+        assert!(recovered.iter().any(|entry| matches!(
+            &entry.record,
+            Record::ToolResult { call: recovered_call, .. } if recovered_call == &call
+        )));
+        let result = recovered.iter().find_map(|entry| match &entry.record {
+            Record::TurnCompleted {
+                result: Some(result),
+                ..
+            } => Some(result),
+            _ => None,
+        });
+        let result = result.expect("terminal result committed during hydrate");
+        assert_eq!(result.call_id.to_string(), call);
+        assert_eq!(result.value, input);
+        assert_eq!(result.metadata.get("recovered"), Some(&"true".into()));
+
+        journal
+            .release(&session_id, &resident.st.lease)
+            .await
+            .expect("release recovered lease");
+        drop(resident);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
 }

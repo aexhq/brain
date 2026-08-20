@@ -59,9 +59,6 @@ impl OpenAiChat {
                                 "a tool_result block cannot appear in an assistant message".into(),
                             ));
                         }
-                        ContentBlock::Output { value, .. } => {
-                            text.push_str(&serde_json::to_string(value)?);
-                        }
                     }
                 }
                 let mut o = Map::new();
@@ -110,11 +107,6 @@ impl OpenAiChat {
                         ContentBlock::ToolUse { .. } => {
                             return Err(BrainError::Protocol(
                                 "a tool_use block cannot appear in a user message".into(),
-                            ));
-                        }
-                        ContentBlock::Output { .. } => {
-                            return Err(BrainError::Protocol(
-                                "an output block cannot appear in a user message".into(),
                             ));
                         }
                     }
@@ -328,7 +320,8 @@ mod tests {
                 name: "read".into(),
                 description: "read".into(),
                 input_schema: json!({"type":"object"}),
-                route: ToolRoute::Hand,
+                output_schema: json!({"type":"object"}),
+                route: ToolRoute::Intrinsic("brain.test.read".into()),
             })
             .seal()
     }

@@ -1,30 +1,25 @@
 import type {
-  ApiError,
   CreateSessionRequest,
   Event,
   MessageAccepted,
-  OutputValidationIssue,
   Provider,
   Session as SessionData,
   SessionList as SessionListData,
   SessionState,
 } from "./generated/session.js";
-import * as z from "zod";
 
 import {
   AbortError,
-  OutputRefusalError,
-  OutputSchemaError,
-  OutputValidationError,
   SessionError,
   abortError,
   errorFromApi,
 } from "./errors.js";
-import { jcsSha256, randomIdempotencyKey } from "./json.js";
+import { randomIdempotencyKey } from "./json.js";
 import type { EventOptions } from "./transport.js";
 import { Transport } from "./transport.js";
 import { compileTools } from "./tools.js";
 import type { Tool } from "./tools.js";
+import { AttachedWorker, type WebSocketFactory } from "./attached.js";
 
 export type SessionInput = string;
 
@@ -38,10 +33,20 @@ export interface ModelOptions {
   reasoningEffort?: "low" | "medium" | "high";
 }
 
+export interface McpServerOptions {
+  name: string;
+  url: string;
+  headers?: Record<string, string>;
+  protocol?: "auto" | "2026-07" | "legacy";
+  allowedTools?: readonly string[];
+}
+
 export interface CreateSessionOptions {
   model: ModelOptions;
   /** Omitted or empty grants no tools. A non-empty list is the exact grant. */
   tools?: readonly Tool[];
+  /** Optional remote MCP servers. Discovery happens once and is sealed at session creation. */
+  mcp?: readonly McpServerOptions[];
   systemPrompt?: string;
   hand?: {
     enabled?: boolean;
@@ -54,12 +59,6 @@ export interface RequestOptions {
   signal?: AbortSignal;
   idempotencyKey?: string;
   metadata?: Record<string, string>;
-}
-
-export interface OutputOptions<Schema extends z.ZodType = z.ZodType> extends RequestOptions {
-  output: Schema;
-  /** Extra attempts after the first invalid candidate. Defaults to 1; maximum 2. */
-  outputRetries?: 0 | 1 | 2;
 }
 
 export interface ListSessionsOptions {
@@ -92,13 +91,18 @@ export interface SessionSummary {
 
 export class Sessions {
   readonly #transport: Transport;
+  readonly #webSocketFactory: WebSocketFactory | undefined;
 
-  constructor(transport: Transport) {
+  constructor(transport: Transport, webSocketFactory?: WebSocketFactory) {
     this.#transport = transport;
+    this.#webSocketFactory = webSocketFactory;
   }
 
   async create(options: CreateSessionOptions, request: RequestOptions = {}): Promise<Session> {
     const compiledTools = await compileTools(options.tools);
+    if (compiledTools.attached.size > 0 && this.#webSocketFactory === undefined) {
+      throw new TypeError("This runtime does not provide WebSocket; pass a webSocketFactory to Brain");
+    }
     const body = {
       model: {
         provider: options.model.provider,
@@ -113,7 +117,22 @@ export class Sessions {
           ? {}
           : { reasoning_effort: options.model.reasoningEffort }),
       },
-      tools: { items: compiledTools.items },
+      tools: {
+        items: compiledTools.items,
+        ...(options.mcp === undefined
+          ? {}
+          : {
+              mcp: options.mcp.map((server) => ({
+                name: server.name,
+                url: server.url,
+                ...(server.headers === undefined ? {} : { headers: server.headers }),
+                ...(server.protocol === undefined ? {} : { protocol: server.protocol }),
+                ...(server.allowedTools === undefined
+                  ? {}
+                  : { allowed_tools: [...server.allowedTools] }),
+              })),
+            }),
+      },
       ...(compiledTools.bundles.length === 0 ? {} : { tool_bundles: compiledTools.bundles }),
       ...(options.hand === undefined
         ? {}
@@ -132,7 +151,24 @@ export class Sessions {
       signal: request.signal,
       retry: true,
     });
-    return new Session(this.#transport, data);
+    let worker: AttachedWorker | undefined;
+    if (compiledTools.attached.size > 0) {
+      const connection = this.#transport.attachedConnection(data.id);
+      worker = new AttachedWorker(
+        connection.url,
+        connection.token,
+        compiledTools.attached,
+        this.#webSocketFactory!,
+      );
+      try {
+        await worker.ready;
+      } catch (cause) {
+        throw new SessionError(`Session ${data.id} was created but its attached Tool worker could not connect`, {
+          cause,
+        });
+      }
+    }
+    return new Session(this.#transport, data, worker);
   }
 
   async get(id: string, options: Pick<RequestOptions, "signal"> = {}): Promise<Session> {
@@ -164,10 +200,12 @@ export class Sessions {
 export class Session implements SessionSummary {
   readonly #transport: Transport;
   #data: SessionData;
+  readonly #attachedWorker: AttachedWorker | undefined;
 
-  constructor(transport: Transport, data: SessionData) {
+  constructor(transport: Transport, data: SessionData, attachedWorker?: AttachedWorker) {
     this.#transport = transport;
     this.#data = data;
+    this.#attachedWorker = attachedWorker;
   }
 
   get id(): string {
@@ -207,20 +245,7 @@ export class Session implements SessionSummary {
     return this;
   }
 
-  send(input: SessionInput, options?: RequestOptions): Promise<string>;
-  send<Schema extends z.ZodType>(
-    input: SessionInput,
-    options: OutputOptions<Schema>,
-  ): Promise<z.output<Schema>>;
-  async send(
-    input: SessionInput,
-    options: RequestOptions | OutputOptions = {},
-  ): Promise<unknown> {
-    const outputOptions = isOutputOptions(options) ? options : undefined;
-    const compiled =
-      outputOptions === undefined
-        ? undefined
-        : await compileOutputSchema(outputOptions.output, outputOptions.outputRetries);
+  async send(input: SessionInput, options: RequestOptions = {}): Promise<string> {
     const accepted = await this.#transport.json<MessageAccepted>(
       "POST",
       `/v1/sessions/${encodeURIComponent(this.id)}/messages`,
@@ -228,67 +253,22 @@ export class Session implements SessionSummary {
         body: {
           content: input,
           ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
-          ...(compiled === undefined
-            ? {}
-            : {
-                output: {
-                  schema: compiled.jsonSchema,
-                  schema_hash: compiled.schemaHash,
-                  ...(compiled.retries === undefined ? {} : { retries: compiled.retries }),
-                },
-              }),
         },
         headers: { "Idempotency-Key": options.idempotencyKey ?? randomIdempotencyKey() },
         signal: options.signal,
         retry: true,
       },
     );
-    if (compiled !== undefined) {
-      if (
-        accepted.session_id !== this.id ||
-        accepted.output_id === undefined ||
-        accepted.schema_hash !== compiled.schemaHash
-      ) {
-        throw new SessionError("Brain returned an inconsistent typed-output admission");
-      }
-    }
-
     let answer = "";
     try {
       for await (const event of this.events({ after: Math.max(0, accepted.seq - 1), signal: options.signal })) {
         if (event.type === "assistant.message" && event.turn_id === accepted.turn_id && event.agent_id === "root") {
           answer = event.text;
         } else if (event.type === "turn.failed" && event.turn_id === accepted.turn_id) {
-          throw errorFromApi(event.error, undefined, outputIssues(event.error));
+          throw errorFromApi(event.error);
         } else if (event.type === "turn.completed" && event.turn_id === accepted.turn_id) {
           this.markIdle();
           if (event.stop_reason === "cancelled") throw new AbortError();
-          if (compiled !== undefined && outputOptions !== undefined) {
-            if (event.result === undefined) {
-              throw new OutputRefusalError(
-                "The model ended the turn without submitting the requested structured output",
-              );
-            }
-            if (
-              event.result.name !== "brain_submit_output" ||
-              event.result.metadata?.output_id !== accepted.output_id ||
-              event.result.metadata?.schema_hash !== compiled.schemaHash
-            ) {
-              throw new SessionError("Brain returned a typed result for a different request");
-            }
-            const parsed = await outputOptions.output.safeParseAsync(event.result.value);
-            if (!parsed.success) {
-              throw new OutputValidationError(
-                "The output passed the wire schema but failed the original Zod schema",
-                parsed.error.issues.map((issue) => ({
-                  path: jsonPointer(issue.path),
-                  message: issue.message,
-                  keyword: issue.code,
-                })),
-              );
-            }
-            return parsed.data;
-          }
           return answer;
         }
       }
@@ -320,97 +300,10 @@ export class Session implements SessionSummary {
       signal: options.signal,
     });
     this.#data = { ...this.#data, state: "deleted" };
+    this.#attachedWorker?.close();
   }
 
   private markIdle(): void {
     this.#data = { ...this.#data, state: "idle" };
   }
-}
-
-function isOutputOptions(options: RequestOptions | OutputOptions): options is OutputOptions {
-  return "output" in options;
-}
-
-async function compileOutputSchema(
-  schema: z.ZodType,
-  retries: 0 | 1 | 2 | undefined,
-): Promise<{ jsonSchema: Record<string, unknown>; schemaHash: string; retries: 0 | 1 | 2 | undefined }> {
-  let jsonSchema: Record<string, unknown>;
-  try {
-    assertPortableOutputSchema(schema);
-    jsonSchema = z.toJSONSchema(schema, {
-      target: "draft-2020-12",
-      unrepresentable: "throw",
-    }) as Record<string, unknown>;
-  } catch (cause) {
-    throw new OutputSchemaError(messageOf(cause, "The Zod schema cannot be represented as JSON Schema"), {
-      cause,
-    });
-  }
-  if (jsonSchema.type !== "object") {
-    throw new OutputSchemaError("session.send() output requires a Zod object schema");
-  }
-  return { jsonSchema, schemaHash: await jcsSha256(jsonSchema), retries };
-}
-
-function outputIssues(error: ApiError): readonly OutputValidationIssue[] {
-  const details = error.details;
-  if (details === undefined || details === null || typeof details !== "object") return [];
-  const issues = (details as { issues?: unknown }).issues;
-  if (!Array.isArray(issues)) return [];
-  return issues.flatMap((issue): OutputValidationIssue[] => {
-    if (issue === null || typeof issue !== "object") return [];
-    const value = issue as { path?: unknown; message?: unknown; keyword?: unknown };
-    if (typeof value.path !== "string" || typeof value.message !== "string") return [];
-    return [{
-      path: value.path,
-      message: value.message,
-      ...(typeof value.keyword === "string" ? { keyword: value.keyword } : {}),
-    }];
-  });
-}
-
-function jsonPointer(path: readonly PropertyKey[]): string {
-  if (path.length === 0) return "";
-  return `/${path
-    .map((part) => String(part).replaceAll("~", "~0").replaceAll("/", "~1"))
-    .join("/")}`;
-}
-
-function messageOf(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message !== "" ? error.message : fallback;
-}
-
-/**
- * A server cannot execute user-defined Zod functions. Reject them before admission instead of
- * committing a value that only the calling process can later discover was invalid.
- */
-function assertPortableOutputSchema(schema: z.ZodType): void {
-  const seen = new WeakSet<object>();
-  const visit = (value: unknown): void => {
-    if (value === null || typeof value !== "object" || seen.has(value)) return;
-    seen.add(value);
-    const internal = value as { _zod?: { def?: unknown } };
-    if (internal._zod?.def !== undefined) {
-      const definition = internal._zod.def as { type?: unknown; check?: unknown };
-      const unsupported =
-        definition.type === "custom" ||
-        definition.type === "transform" ||
-        definition.type === "file" ||
-        definition.check === "overwrite";
-      if (unsupported) {
-        throw new OutputSchemaError(
-          `This Zod schema contains ${String(definition.type ?? definition.check)} behavior that cannot be enforced by the Brain output service`,
-        );
-      }
-      visit(definition);
-      return;
-    }
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item);
-      return;
-    }
-    for (const child of Object.values(value)) visit(child);
-  };
-  visit(schema);
 }

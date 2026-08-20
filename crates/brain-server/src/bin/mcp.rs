@@ -11,8 +11,8 @@
 //!   - a real model reads the sealed schemas and drives `tools/call` through `McpRuntime`,
 //!     and the official server's answers come back as ordinary `tool.result` events.
 //!
-//! Requirements: AEX_MCP_REF_URL (tools/mcp.sh starts the server and sets it) and
-//! ANTHROPIC_API_KEY (plus optional AEX_MCP_BASE_URL / AEX_MCP_MODEL for a gateway).
+//! Requirements: BRAIN_MCP_REF_URL (tools/mcp.sh starts the server and sets it) and
+//! ANTHROPIC_API_KEY (plus optional BRAIN_MCP_BASE_URL / BRAIN_MCP_MODEL for a gateway).
 //! Local mode, no cloud. Ends with `MCP GATE PASS` or a loud failure.
 
 use anyhow::{Context, bail, ensure};
@@ -104,17 +104,17 @@ impl Api {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let ref_url = std::env::var("AEX_MCP_REF_URL")
-        .context("AEX_MCP_REF_URL is not set (use tools/mcp.sh)")?;
+    let ref_url = std::env::var("BRAIN_MCP_REF_URL")
+        .context("BRAIN_MCP_REF_URL is not set (use tools/mcp.sh)")?;
     let api_key = std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY is not set")?;
     let model =
-        std::env::var("AEX_MCP_MODEL").unwrap_or_else(|_| "claude-haiku-4-5-20251001".into());
-    let base_url = std::env::var("AEX_MCP_BASE_URL").ok();
+        std::env::var("BRAIN_MCP_MODEL").unwrap_or_else(|_| "claude-haiku-4-5-20251001".into());
+    let base_url = std::env::var("BRAIN_MCP_BASE_URL").ok();
 
     // The brain: local mode in a scratch dir (the gate is about the MCP wire, not the hand),
     // served over real HTTP on an ephemeral port. `Brain::local` composes the outbound guard
     // permissively, which is what lets the reference server live on 127.0.0.1.
-    let data_dir = std::env::temp_dir().join(format!("aex-mcp-gate-{}", std::process::id()));
+    let data_dir = std::env::temp_dir().join(format!("brain-mcp-gate-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data_dir);
     let brain =
         Brain::local(&data_dir, BrainConfig::default()).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -154,8 +154,8 @@ async fn run() -> anyhow::Result<()> {
             "/v1/sessions",
             json!({
                 "model": model_cfg,
-                "system_prompt": "You are the aex MCP gate. Use the tools exactly as asked.",
-                "tools": {"builtin": [], "mcp": [{
+                "system_prompt": "You are the Brain MCP gate. Use the tools exactly as asked.",
+                "tools": {"items": [], "mcp": [{
                     "name": "ref",
                     "url": ref_url,
                     "protocol": "auto",
@@ -193,7 +193,7 @@ async fn run() -> anyhow::Result<()> {
 
     // Step 2: one turn where the MODEL drives both tools through the official server.
     let t = Instant::now();
-    let ask = "Call ref__echo with the message 'aex-mcp-gate-7'. Also call ref__get-sum \
+    let ask = "Call ref__echo with the message 'brain-mcp-gate-7'. Also call ref__get-sum \
                to add 40 and 2. Then reply with just DONE.";
     let (status, acc) = api
         .post(
@@ -221,7 +221,7 @@ async fn run() -> anyhow::Result<()> {
             && echo["output_preview"]
                 .as_str()
                 .unwrap_or("")
-                .contains("aex-mcp-gate-7"),
+                .contains("brain-mcp-gate-7"),
         "echo result wrong: {echo}"
     );
     let sum = result_of("ref__get-sum")?;

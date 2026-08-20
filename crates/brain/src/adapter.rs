@@ -9,10 +9,10 @@
 //! - [`crate::keys::KeyCustody`] — BYOK key custody,
 //! - [`crate::session::ProviderFactory`] — model providers.
 //!
-//! Built-ins: the local adapters in this crate (in-memory journal, subprocess tools) and the
-//! AWS set in `brain-aws` (DynamoDB, KMS, Lambda MicroVM). A custom substrate implements
-//! these traits and hands them to `Brain::with_parts` — no core change, no fork. The
-//! `custom_adapter` integration test is the living example.
+//! Built-ins: the explicitly unsafe development adapters in this crate and the durable
+//! single-node adapters in `brain-standalone`. `brain-aws` supplies neutral persistence and
+//! custody adapters. A Hand implementation lives downstream and implements these traits; Brain
+//! never depends on it. The `custom_adapter` integration test is the living example.
 //!
 //! Contract an adapter must hold:
 //! - `call` runs ONE tool call to a terminal outcome, streams output through the sink as it
@@ -26,7 +26,8 @@
 //!   never replayed, I10) — never by hanging.
 
 use crate::Result;
-use aex_contracts::session::{
+use brain_protocol::abi::ToolManifest;
+use brain_protocol::session::{
     ExternalToolCallRequest, ExternalToolCallResponse, FileEntry, FileListSource, HandInfo,
 };
 use serde_json::Value;
@@ -54,6 +55,9 @@ pub struct CallRequest {
 #[derive(Debug, Clone)]
 pub struct CallOutcome {
     pub outcome: String,
+    /// Successful structured value before presentation formatting. Brain validates this against
+    /// the sealed output schema immediately before it commits the result.
+    pub value: Option<Value>,
     pub content: String,
     pub is_error: bool,
     pub exit_code: Option<i64>,
@@ -72,7 +76,7 @@ pub enum TerminalOutcome {
         metadata: std::collections::HashMap<String, String>,
     },
     Fail {
-        error: aex_contracts::session::ApiError,
+        error: brain_protocol::session::ApiError,
     },
 }
 
@@ -80,6 +84,7 @@ impl CallOutcome {
     pub fn failed(content: impl Into<String>) -> Self {
         CallOutcome {
             outcome: "failed".into(),
+            value: None,
             content: content.into(),
             is_error: true,
             exit_code: None,
@@ -90,24 +95,32 @@ impl CallOutcome {
     }
 }
 
-/// Host-side execution for tools declared through `ToolsConfig.external`. The trait consumes the
-/// public wire types so alternate Brain hosts implement the same contract without re-describing it.
+/// Trusted host-side execution registered under stable capability identifiers. A composition
+/// advertises availability before a session is created; model-visible names never select code.
 #[async_trait::async_trait]
-pub trait ExternalToolExecutor: Send + Sync {
+pub trait ToolExecutor: Send + Sync {
+    fn supports(&self, capability: &str) -> bool;
+
     async fn call(
         &self,
+        capability: &str,
         request: ExternalToolCallRequest,
         cancel: CancellationToken,
     ) -> Result<ExternalToolCallResponse>;
 }
 
 /// Default composition for deployments that do not expose host-executed tools.
-pub struct DisabledExternalToolExecutor;
+pub struct DisabledToolExecutor;
 
 #[async_trait::async_trait]
-impl ExternalToolExecutor for DisabledExternalToolExecutor {
+impl ToolExecutor for DisabledToolExecutor {
+    fn supports(&self, _capability: &str) -> bool {
+        false
+    }
+
     async fn call(
         &self,
+        _capability: &str,
         _request: ExternalToolCallRequest,
         _cancel: CancellationToken,
     ) -> Result<ExternalToolCallResponse> {
@@ -157,7 +170,10 @@ pub struct HandSpec {
     /// `1gb` etc. — advisory; adapters refuse what they cannot offer, loudly, at create.
     pub shape: String,
     pub env: std::collections::HashMap<String, String>,
-    /// The sealed tool-manifest digest; remote hands must serve exactly this set (I1).
+    /// Exact ordered per-session Hand manifest. URLs may be filled by the concrete adapter from
+    /// its staged state immediately before `hello`.
+    pub tool_manifest: ToolManifest,
+    /// The sealed tool-manifest digest; remote Hands must serve exactly this set (I1).
     pub manifest_digest: String,
 }
 
@@ -166,6 +182,14 @@ pub struct SeedFile<'a> {
     pub path: &'a str,
     pub bytes: &'a [u8],
     pub mode: Option<i64>,
+}
+
+/// One verified bundle staged at session create. The bytes are borrowed only for the staging
+/// call and must never be copied into adapter state or Brain's journal.
+pub struct ToolBundleFile<'a> {
+    pub checksum: &'a str,
+    pub bytes: &'a [u8],
+    pub media_type: &'a str,
 }
 
 /// One session's tool-execution substrate. Opened per residency by the factory; all state
@@ -256,7 +280,12 @@ pub trait HandAdapter: Send + Sync {
 pub trait HandFactory: Send + Sync {
     /// Called once at session create: stage seed files, validate the spec (refuse an
     /// unsupported shape loudly), return the adapter's initial state.
-    async fn create(&self, spec: &HandSpec, seeds: &[SeedFile<'_>]) -> Result<Value>;
+    async fn create(
+        &self,
+        spec: &HandSpec,
+        seeds: &[SeedFile<'_>],
+        bundles: &[ToolBundleFile<'_>],
+    ) -> Result<Value>;
 
     /// Opens the adapter for a residency, from the state the last commit persisted.
     async fn open(&self, spec: &HandSpec, state: Value) -> Result<Arc<dyn HandAdapter>>;

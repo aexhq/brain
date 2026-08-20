@@ -6,7 +6,7 @@
 //! The complete `assistant.message` / `tool.result` events carry the durable content.
 
 use crate::journal::Record;
-use aex_contracts::session::{
+use brain_protocol::session::{
     self, ApiError, ApiErrorCode, Event, EventStream, ProviderUsage, Timestamp, ToolOutcome,
 };
 use std::collections::HashMap;
@@ -42,6 +42,7 @@ fn preview(content: &str) -> (String, bool) {
 pub fn stop_reason(s: &str) -> session::StopReason {
     match s {
         "end_turn" => session::StopReason::EndTurn,
+        "refusal" => session::StopReason::Refusal,
         "max_rounds" => session::StopReason::MaxRounds,
         "cancelled" => session::StopReason::Cancelled,
         _ => session::StopReason::Error,
@@ -255,25 +256,8 @@ pub fn session_state(s: &str) -> session::SessionState {
 }
 
 pub fn error_code(s: &str) -> ApiErrorCode {
-    match s {
-        "invalid_request" => ApiErrorCode::InvalidRequest,
-        "unauthorized" => ApiErrorCode::Unauthorized,
-        "forbidden" => ApiErrorCode::Forbidden,
-        "not_found" => ApiErrorCode::NotFound,
-        "conflict" => ApiErrorCode::Conflict,
-        "session_busy" => ApiErrorCode::SessionBusy,
-        "session_deleted" => ApiErrorCode::SessionDeleted,
-        "session_failed" => ApiErrorCode::SessionFailed,
-        "cancelled" => ApiErrorCode::Cancelled,
-        "rate_limited" => ApiErrorCode::RateLimited,
-        "provider_error" => ApiErrorCode::ProviderError,
-        "output_schema_error" => ApiErrorCode::OutputSchemaError,
-        "output_refused" => ApiErrorCode::OutputRefused,
-        "output_validation_error" => ApiErrorCode::OutputValidationError,
-        "hand_unavailable" => ApiErrorCode::HandUnavailable,
-        "too_large" => ApiErrorCode::TooLarge,
-        _ => ApiErrorCode::Internal,
-    }
+    s.parse()
+        .unwrap_or_else(|_| "internal".parse().expect("static API error code"))
 }
 
 /// Live constructors for the two ephemeral event types.
@@ -477,6 +461,11 @@ mod tests {
         let e = derive("ses_aaaaaaaaaaaaaaaaaaaa", 1, 0, &r, &hand_info()).unwrap();
         assert_eq!(event_type(&e), "turn.started");
         assert_eq!(event_seq(&e), 1);
+    }
+
+    #[test]
+    fn provider_refusal_remains_distinct_on_the_public_event() {
+        assert_eq!(stop_reason("refusal"), session::StopReason::Refusal);
     }
 
     #[test]

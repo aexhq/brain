@@ -1,40 +1,4 @@
-import { OutputSchemaError, SessionError } from "./errors.js";
-
-/** RFC 8785 canonical JSON. Object keys sort by UTF-16 code units, as required by JCS. */
-export function canonicalize(value: unknown): string {
-  const visit = (current: unknown): unknown => {
-    if (Array.isArray(current)) return current.map(visit);
-    if (current !== null && typeof current === "object") {
-      const object = current as Record<string, unknown>;
-      return Object.fromEntries(
-        Object.keys(object)
-          .filter((key) => object[key] !== undefined)
-          .sort()
-          .map((key) => [key, visit(object[key])]),
-      );
-    }
-    if (typeof current === "number" && !Number.isFinite(current)) {
-      throw new OutputSchemaError("The output schema contains a non-finite number");
-    }
-    return current;
-  };
-
-  const encoded = JSON.stringify(visit(value));
-  if (encoded === undefined) {
-    throw new OutputSchemaError("The output schema is not JSON-serialisable");
-  }
-  return encoded;
-}
-
-export async function jcsSha256(value: unknown): Promise<string> {
-  const subtle = globalThis.crypto?.subtle;
-  if (subtle === undefined) {
-    throw new OutputSchemaError("This runtime does not provide Web Crypto SHA-256 support");
-  }
-  const bytes = new TextEncoder().encode(canonicalize(value));
-  const digest = await subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
+import { SessionError } from "./errors.js";
 
 export function randomIdempotencyKey(): string {
   const crypto = globalThis.crypto;

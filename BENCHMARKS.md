@@ -51,7 +51,7 @@ The 50 ms tool-call floor against a 2 ms network baseline was the same Nagle sig
 brain had, in the ABI WebSocket hops. Client-side nodelay alone changed nothing (the delayed
 leg was the guest's responses); with image v3.0 fixing both ends the platform adds ~2 ms over
 the raw endpoint round trip. Reproduce with
-`hand-lambda gate --image aex-hands-dev-1gb --version <v>` — IMDS is a hard pass/fail, the
+`hand-lambda gate --image hands-dev-1gb --version <v>` — IMDS is a hard pass/fail, the
 latency row is the record. The security gate and this latency measurement run on demand (they
 launch a real MicroVM and need AWS credentials); the brain suite runs in CI on every push.
 

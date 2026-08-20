@@ -17,25 +17,45 @@
           "tools": [
             {
               "name": "bash",
-              "description": "Run a shell command.",
+              "description": "Run a shell command in the lane's persistent shell environment. stdout/stderr are the operation streams. A non-zero exit is a completed operation with that exit_code.",
               "input_schema": {
                 "type": "object",
+                "additionalProperties": false,
                 "required": [
                   "command"
                 ],
                 "properties": {
                   "command": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "timeout_ms": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1,
+                    "description": "Overrides bounds.timeout_ms for this call."
                   }
                 }
               },
               "output_schema": {
                 "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "timed_out"
+                ],
                 "properties": {
                   "timed_out": {
                     "type": "boolean"
                   }
                 }
+              },
+              "executable": {
+                "protocol": 1,
+                "checksum": "0ed0bae284be7259c3d82f498885dc7010747fdb4b9f3edcc3160c922dac161b",
+                "source": "preinstalled",
+                "required_env": []
               }
             }
           ],
@@ -65,7 +85,7 @@
           "paths": {
             "workspace": "/workspace",
             "home": "/home/agent",
-            "spill_dir": "/var/aex/ops"
+            "spill_dir": "/var/hand/ops"
           },
           "clock": {
             "monotonic_ms": 812,

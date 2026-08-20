@@ -9,7 +9,7 @@
 //! any tool intent. This preserves journal-before-dispatch without sharing a
 //! mutable lease between concurrent children.
 
-use crate::adapter::{CallOutcome, CallRequest, HandAdapter};
+use crate::adapter::{CallOutcome, CallRequest, HandAdapter, ToolExecutor};
 use crate::config::{SealedPrefix, SessionConfig, ToolRoute};
 use crate::events::EventHub;
 use crate::journal::Record;
@@ -77,7 +77,9 @@ pub(crate) struct SubagentCtx {
     pub seq: crate::turn::Seq,
     pub hand: Arc<dyn HandAdapter>,
     pub mcp: Option<Arc<crate::mcp::McpRuntime>>,
-    pub web: Arc<crate::web::WebRuntime>,
+    pub server_executor: Arc<dyn ToolExecutor>,
+    pub attached: Arc<crate::attached::AttachedHub>,
+    pub context: std::collections::HashMap<String, String>,
     /// Session-lifetime count of child identities already minted.
     pub identities: Arc<AtomicU64>,
     pub journal: ChildJournal,
@@ -234,16 +236,22 @@ async fn run_task_inner(
         history.push(message.clone());
 
         if calls.is_empty() {
-            let (content, truncated) = final_report(&message);
+            let (summary, truncated) = final_report(&message);
             tracing::info!(
                 session = %ctx.session_id,
                 agent = %agent_id,
                 rounds,
                 "subagent done"
             );
+            let value = serde_json::json!({
+                "agent_id": agent_id,
+                "outcome": "completed",
+                "summary": summary,
+            });
             return CallOutcome {
                 outcome: "completed".into(),
-                content,
+                value: Some(value.clone()),
+                content: value.to_string(),
                 is_error: false,
                 exit_code: None,
                 duration_ms: started.elapsed().as_millis() as u64,
@@ -252,7 +260,7 @@ async fn run_task_inner(
             };
         }
 
-        let dispatched = match dispatch(&ctx, depth, &child_prefix, &calls).await {
+        let dispatched = match dispatch(&ctx, depth, &agent_id, &child_prefix, &calls).await {
             Ok(v) => v,
             Err(BrainError::Cancelled) => return cancelled(started),
             Err(e) => return failed(started, format!("subagent dispatch failed: {e}")),
@@ -305,13 +313,14 @@ struct ChildDispatch {
 async fn dispatch(
     ctx: &Arc<SubagentCtx>,
     depth: u32,
+    agent_id: &str,
     child_prefix: &Shared<SealedPrefix>,
     calls: &[(String, String, serde_json::Value)],
 ) -> Result<ChildDispatch> {
-    let route_of = |name: &str| child_prefix.tool(name).map(|t| t.route);
+    let route_of = |name: &str| child_prefix.tool(name).map(|t| t.route.clone());
     let has_hand = calls
         .iter()
-        .any(|(_, name, _)| matches!(route_of(name), Some(ToolRoute::Hand)));
+        .any(|(_, name, _)| matches!(route_of(name), Some(ToolRoute::Hand(_))));
     let mut hand_down = None;
     if has_hand {
         match ctx.hand.ensure_ready().await {
@@ -345,6 +354,16 @@ async fn dispatch(
     let mut joins = tokio::task::JoinSet::new();
     for (idx, (op_id, name, input)) in calls.iter().cloned().enumerate() {
         let permit = permits.clone();
+        if let Some(error) = child_prefix
+            .tool(&name)
+            .and_then(|tool| crate::tools::input_error(tool, &input))
+        {
+            joins.spawn(async move {
+                let _permit = permit.acquire_owned().await;
+                (idx, CallOutcome::failed(error), None)
+            });
+            continue;
+        }
         match route_of(&name) {
             None => joins.spawn(async move {
                 let _permit = permit.acquire_owned().await;
@@ -354,7 +373,12 @@ async fn dispatch(
                     None,
                 )
             }),
-            Some(ToolRoute::Brain) if name == "task" => {
+            Some(ToolRoute::Intrinsic(capability))
+                if matches!(
+                    capability.as_str(),
+                    "brain.subagents" | "brain.subagents.v1"
+                ) =>
+            {
                 let child_ctx = ctx.clone();
                 joins.spawn(async move {
                     let _permit = permit.acquire_owned().await;
@@ -362,15 +386,17 @@ async fn dispatch(
                     (idx, outcome, None)
                 })
             }
-            Some(ToolRoute::Brain) => joins.spawn(async move {
+            Some(ToolRoute::Intrinsic(capability)) => joins.spawn(async move {
                 let _permit = permit.acquire_owned().await;
                 (
                     idx,
-                    CallOutcome::failed(crate::tools::undeclared(&name)),
+                    CallOutcome::failed(format!(
+                        "intrinsic capability {capability} is unavailable"
+                    )),
                     None,
                 )
             }),
-            Some(ToolRoute::Mcp) => {
+            Some(ToolRoute::Mcp { .. }) => {
                 let runtime = ctx.mcp.clone();
                 let cancel = ctx.cancel.clone();
                 joins.spawn(async move {
@@ -384,26 +410,49 @@ async fn dispatch(
                     (idx, outcome, None)
                 })
             }
-            Some(ToolRoute::Web) => {
-                let web = ctx.web.clone();
+            Some(ToolRoute::Server(policy)) => {
+                let executor = ctx.server_executor.clone();
                 let cancel = ctx.cancel.clone();
+                let session_id = ctx.session_id.clone();
+                let turn_id = ctx.turn_id.clone();
+                let agent_id = agent_id.to_string();
+                let context = ctx.context.clone();
                 joins.spawn(async move {
                     let _permit = permit.acquire_owned().await;
-                    let outcome = web.call(&name, &input, &cancel).await;
+                    let outcome = crate::turn::execute_external(
+                        executor, policy, parallel, session_id, turn_id, agent_id, op_id, name,
+                        input, context, cancel,
+                    )
+                    .await;
                     (idx, outcome, None)
                 })
             }
-            Some(ToolRoute::External(_)) => joins.spawn(async move {
-                let _permit = permit.acquire_owned().await;
-                (
-                    idx,
-                    CallOutcome::failed(format!(
-                        "external tool {name} is not available to this subagent"
-                    )),
-                    None,
-                )
-            }),
-            Some(ToolRoute::Hand) => {
+            Some(ToolRoute::Attached { callback_id }) => {
+                let attached = ctx.attached.clone();
+                let cancel = ctx.cancel.clone();
+                let session_id = ctx.session_id.clone();
+                let output_schema = child_prefix
+                    .tool(&name)
+                    .expect("sealed route came from this Tool")
+                    .output_schema
+                    .clone();
+                joins.spawn(async move {
+                    let _permit = permit.acquire_owned().await;
+                    let outcome = attached
+                        .call(
+                            &session_id,
+                            &callback_id,
+                            &op_id,
+                            &name,
+                            input,
+                            &output_schema,
+                            cancel,
+                        )
+                        .await;
+                    (idx, outcome, None)
+                })
+            }
+            Some(ToolRoute::Hand(_)) => {
                 if let Some(error) = &hand_down {
                     let error = error.clone();
                     joins.spawn(async move {
@@ -470,8 +519,14 @@ async fn dispatch(
     Ok(ChildDispatch {
         outcomes: outcomes
             .into_iter()
-            .map(|outcome| {
-                outcome.unwrap_or_else(|| CallOutcome::failed("tool produced no result"))
+            .enumerate()
+            .map(|(index, outcome)| {
+                let outcome =
+                    outcome.unwrap_or_else(|| CallOutcome::failed("tool produced no result"));
+                match child_prefix.tool(&calls[index].1) {
+                    Some(tool) => crate::tools::enforce_output(tool, outcome),
+                    None => outcome,
+                }
             })
             .collect(),
         hand_ack_ids,
@@ -502,6 +557,7 @@ fn compact_history(history: &mut Vec<Message>, budget_bytes: usize) -> bool {
 fn cancelled(started: Instant) -> CallOutcome {
     CallOutcome {
         outcome: "cancelled".into(),
+        value: None,
         content: "subagent cancelled".into(),
         is_error: true,
         exit_code: None,
@@ -515,6 +571,7 @@ fn failed(started: Instant, content: String) -> CallOutcome {
     let (content, truncated) = bounded_result(content);
     CallOutcome {
         outcome: "failed".into(),
+        value: None,
         content,
         is_error: true,
         exit_code: None,

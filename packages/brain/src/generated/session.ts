@@ -1,121 +1,121 @@
 /* eslint-disable */
-/**
- * GENERATED from contracts/session/v1/schemas.json by packages/contracts/scripts/gen.mjs (tools/gen.sh). DO NOT EDIT.
- */
+/** GENERATED from Brain-owned contracts/session/v1. DO NOT EDIT. */
 
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "SessionId".
  */
 export type SessionId = string;
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "TurnId".
  */
 export type TurnId = string;
 /**
  * "root" for the session's root agent; subagents get brain-minted ids.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "AgentId".
  */
 export type AgentId = string;
 /**
  * Brain-minted id of one tool call (equals the ABI operation_id for hand tools).
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "CallId".
  */
 export type CallId = string;
 /**
  * RFC 3339, UTC.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "Timestamp".
  */
 export type Timestamp = string;
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "Sha256Hex".
  */
 export type Sha256Hex = string;
 /**
  * active = a turn is running or a background job is live; idle = waiting for the next message (hand may be running, suspended or released underneath); deleted = irreversible; failed = the session cannot continue (see Session.failure).
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "SessionState".
  */
 export type SessionState = "active" | "idle" | "deleted" | "failed";
 /**
- * preparing = microVM launching or restoring; ready = running and connected; suspended = AWS holds RAM+disk after 180 s idle, compute free, ~1 s back; released = VM destroyed, workspace synced to storage, ~3 s back into a fresh VM; lost = the hand died mid-run (in-flight calls reported as interrupted, never replayed).
+ * preparing = the selected runtime is launching or restoring; ready = running and connected; suspended = the adapter retains runtime state without active compute; released = compute was destroyed while durable workspace state remains; lost = the Hand died mid-run (in-flight calls are interrupted and never replayed).
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "HandState".
  */
 export type HandState = "preparing" | "ready" | "suspended" | "released" | "lost";
 /**
  * Baseline memory; vCPU = memory/2; bursts to 4x. Default 1gb.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "HandShape".
  */
 export type HandShape = "1gb" | "2gb" | "4gb" | "8gb";
 /**
  * openai and anthropic are certified; the rest are available uncertified.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "Provider".
  */
 export type Provider =
   "openai" | "anthropic" | "deepseek" | "moonshot" | "xai" | "openai_compatible";
 /**
- * bash..ls run in the hand; task/todo run in the brain; web_search/web_fetch are managed and billed.
- *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "BuiltinTool".
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ToolName".
  */
-export type BuiltinTool =
-  | "bash"
-  | "read"
-  | "write"
-  | "edit"
-  | "glob"
-  | "grep"
-  | "ls"
-  | "task"
-  | "todo"
-  | "web_search"
-  | "web_fetch";
+export type ToolName = string;
 /**
  * auto probes server/discover and falls back to the legacy adapter (initialize + Mcp-Session-Id).
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "McpProtocol".
  */
 export type McpProtocol = "auto" | "2026-07" | "legacy";
 /**
- * Host-executed tools are root-only in the MVP, keeping terminal control out of subagents.
+ * Which agents may call a trusted server capability.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ExternalToolScope".
  */
-export type ExternalToolScope = "root";
+export type ExternalToolScope = "root" | "all";
 /**
  * continue returns the result to the model. return_direct may complete or fail the turn without another model call.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ExternalToolCompletion".
  */
 export type ExternalToolCompletion = "continue" | "return_direct";
 /**
  * replay_safe promises that repeating the same session_id and call_id returns the same logical result.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ExternalToolEffect".
  */
 export type ExternalToolEffect = "opaque" | "replay_safe";
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "HandToolSource".
+ */
+export type HandToolSource = "bundle" | "preinstalled";
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ToolExecutor".
+ */
+export type ToolExecutor =
+  | HandToolExecutor
+  | AttachedToolExecutor
+  | ServerToolExecutor
+  | IntrinsicToolExecutor
+  | McpToolExecutor;
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ContentPart".
  */
 export type ContentPart =
@@ -131,55 +131,32 @@ export type ContentPart =
       path: string;
     };
 /**
- * Correlation id for one output request. It is not a separately managed resource.
- *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "OutputId".
- */
-export type OutputId = string;
-/**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ExternalToolDisposition".
  */
 export type ExternalToolDisposition = "continue" | "complete_turn" | "fail_turn";
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ToolOutcome".
  */
 export type ToolOutcome =
   "completed" | "failed" | "cancelled" | "deadline_exceeded" | "interrupted";
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * Stable machine-readable code. Brain defines its core codes; a host executor may return its own code without teaching Brain product semantics.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ApiErrorCode".
  */
-export type ApiErrorCode =
-  | "invalid_request"
-  | "unauthorized"
-  | "forbidden"
-  | "not_found"
-  | "conflict"
-  | "session_busy"
-  | "session_deleted"
-  | "session_failed"
-  | "cancelled"
-  | "insufficient_balance"
-  | "rate_limited"
-  | "provider_error"
-  | "output_schema_error"
-  | "output_refused"
-  | "output_validation_error"
-  | "hand_unavailable"
-  | "too_large"
-  | "internal";
+export type ApiErrorCode = string;
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "StopReason".
  */
-export type StopReason = "end_turn" | "max_rounds" | "cancelled" | "error";
+export type StopReason = "end_turn" | "refusal" | "max_rounds" | "cancelled" | "error";
 /**
  * One journal event, delivered over SSE as `event: <type>` with `id: <seq>` and this object as data. Discriminated by `type`.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "Event".
  */
 export type Event =
@@ -341,11 +318,11 @@ export type Event =
 /**
  * Component types of the public session API. Paths are in openapi.yaml, which references these by $ref. Public state model: session `active | idle | deleted | failed`; hand state is a separate field. Absent provider counters are absent, never zero.
  */
-export interface AexSessionAPIV1Types {
+export interface BrainSessionAPIV1Types {
   [k: string]: unknown | undefined;
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ModelConfig".
  */
 export interface ModelConfig {
@@ -372,7 +349,7 @@ export interface ModelConfig {
 /**
  * ModelConfig without the key.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ModelInfo".
  */
 export interface ModelInfo {
@@ -381,7 +358,23 @@ export interface ModelInfo {
   base_url?: string;
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * The model-visible half of one Tool. Array order is preserved exactly in the immutable model prefix.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ToolDefinition".
+ */
+export interface ToolDefinition {
+  name: ToolName;
+  description: string;
+  input_schema: {
+    [k: string]: unknown | undefined;
+  };
+  output_schema: {
+    [k: string]: unknown | undefined;
+  };
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "McpServerConfig".
  */
 export interface McpServerConfig {
@@ -403,41 +396,100 @@ export interface McpServerConfig {
   allowed_tools?: string[];
 }
 /**
- * A model-visible tool executed by the Brain host's configured external executor. The executor address and credentials are host configuration, never session data.
+ * A checksum-sealed executable in the session's default Hand.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "ExternalToolConfig".
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "HandToolExecutor".
  */
-export interface ExternalToolConfig {
-  name: string;
-  description: string;
-  input_schema: {
-    [k: string]: unknown | undefined;
-  };
+export interface HandToolExecutor {
+  kind: "hand";
+  protocol: 1;
+  checksum: Sha256Hex;
+  source: HandToolSource;
+  /**
+   * Environment-key names only. Secret values never enter the seal.
+   *
+   * @maxItems 64
+   */
+  required_env: string[];
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "AttachedToolExecutor".
+ */
+export interface AttachedToolExecutor {
+  kind: "attached";
+  callback_id: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ServerToolExecutor".
+ */
+export interface ServerToolExecutor {
+  kind: "server";
+  capability: string;
   scope: ExternalToolScope;
   completion: ExternalToolCompletion;
   effect: ExternalToolEffect;
   max_input_bytes: number;
 }
 /**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "IntrinsicToolExecutor".
+ */
+export interface IntrinsicToolExecutor {
+  kind: "intrinsic";
+  capability: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "McpToolExecutor".
+ */
+export interface McpToolExecutor {
+  kind: "mcp";
+  server: string;
+  remote_name: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ToolConfig".
+ */
+export interface ToolConfig {
+  definition: ToolDefinition;
+  executor: ToolExecutor;
+}
+/**
+ * Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ToolBundle".
+ */
+export interface ToolBundle {
+  checksum: Sha256Hex;
+  content_base64: string;
+  bytes: number;
+  media_type: "application/javascript+esm";
+}
+/**
  * Sealed at create with the rest of the prefix. Omitted tools default to an empty set.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ToolsConfig".
  */
 export interface ToolsConfig {
   /**
-   * Built-in tools to enable. Omitted or empty means no built-in tools.
+   * The exact ordered native Tool grant. Omitted or empty means no native tools.
+   *
+   * @maxItems 128
    */
-  builtin?: BuiltinTool[];
-  mcp?: McpServerConfig[];
+  items?: ToolConfig[];
   /**
-   * Host-executed tools sealed into the model prefix. Hosted Aex reserves its own output tool; direct Brain deployments may compose others.
+   * Optional remote interoperability servers. Discovery resolves once at create and appends sealed MCP Tool descriptors.
    */
-  external?: ExternalToolConfig[];
+  mcp?: McpServerConfig[];
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "HandConfig".
  */
 export interface HandConfig {
@@ -462,7 +514,7 @@ export interface HandConfig {
   max_background_minutes?: number | null;
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "HandInfo".
  */
 export interface HandInfo {
@@ -489,7 +541,7 @@ export interface HandInfo {
 /**
  * Billed storage, visible from day one.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "StorageInfo".
  */
 export interface StorageInfo {
@@ -498,13 +550,13 @@ export interface StorageInfo {
    */
   workspace_bytes: number;
   /**
-   * Bytes AWS holds for a suspended hand.
+   * Bytes retained by the selected adapter for a suspended Hand, when reported.
    */
   suspended_bytes: number;
   artifact_bytes: number;
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "SessionFailure".
  */
 export interface SessionFailure {
@@ -513,7 +565,7 @@ export interface SessionFailure {
   at: Timestamp;
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "Session".
  */
 export interface Session {
@@ -537,7 +589,7 @@ export interface Session {
   };
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "SessionList".
  */
 export interface SessionList {
@@ -549,7 +601,7 @@ export interface SessionList {
 /**
  * Small files placed into the workspace at create (limit 1 MiB each). Larger files: PUT /files/{path} after create.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "FileInput".
  */
 export interface FileInput {
@@ -563,13 +615,19 @@ export interface FileInput {
 /**
  * Everything here except metadata is part of the immutable prefix: it cannot change for the life of the session.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "CreateSessionRequest".
  */
 export interface CreateSessionRequest {
   model: ModelConfig;
   system_prompt?: string;
   tools?: ToolsConfig;
+  /**
+   * Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal.
+   *
+   * @maxItems 128
+   */
+  tool_bundles?: ToolBundle[];
   hand?: HandConfig;
   files?: FileInput[];
   metadata?: {
@@ -577,7 +635,7 @@ export interface CreateSessionRequest {
   };
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "MessageRequest".
  */
 export interface MessageRequest {
@@ -585,35 +643,11 @@ export interface MessageRequest {
   metadata?: {
     [k: string]: string | undefined;
   };
-  output?: MessageOutput;
-}
-/**
- * Optional typed result requested for this turn. It is a per-message operation, not session configuration.
- */
-export interface MessageOutput {
-  schema: OutputSchema;
-  /**
-   * SHA-256 of RFC 8785 canonical JSON for schema. The server rejects a mismatch before calling the model.
-   */
-  schema_hash: string;
-  /**
-   * Extra model attempts after the first invalid candidate.
-   */
-  retries?: number;
-}
-/**
- * JSON Schema 2020-12 produced by the SDK. Aex validates it in the trusted host executor; it is never provider-native response-format configuration.
- *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "OutputSchema".
- */
-export interface OutputSchema {
-  [k: string]: unknown | undefined;
 }
 /**
  * The turn was admitted and journaled. Follow it on GET /events?after=<seq-1>.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "MessageAccepted".
  */
 export interface MessageAccepted {
@@ -623,49 +657,11 @@ export interface MessageAccepted {
    * Journal sequence of the turn.started event.
    */
   seq: number;
-  /**
-   * Present when this message requested typed output.
-   */
-  output_id?: string;
-  /**
-   * Present when this message requested typed output.
-   */
-  schema_hash?: string;
-}
-/**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "MessageOutput".
- */
-export interface MessageOutput1 {
-  schema: OutputSchema;
-  /**
-   * SHA-256 of RFC 8785 canonical JSON for schema. The server rejects a mismatch before calling the model.
-   */
-  schema_hash: string;
-  /**
-   * Extra model attempts after the first invalid candidate.
-   */
-  retries?: number;
-}
-/**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "OutputValidationIssue".
- */
-export interface OutputValidationIssue {
-  /**
-   * JSON Pointer into the candidate output.
-   */
-  path: string;
-  message: string;
-  /**
-   * The failed JSON Schema keyword when available.
-   */
-  keyword?: string;
 }
 /**
  * Generic Brain-to-host executor request. Repeating a replay_safe call uses the same session_id and call_id.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ExternalToolCallRequest".
  */
 export interface ExternalToolCallRequest {
@@ -683,9 +679,9 @@ export interface ExternalToolCallRequest {
   };
 }
 /**
- * Generic host executor result. Brain honors terminal dispositions only for a return_direct tool called alone by an allowed agent.
+ * Generic trusted server-executor result. A successful response carries its structured Tool output in result. Brain honors terminal dispositions only for a return_direct tool called alone by an allowed agent.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ExternalToolCallResponse".
  */
 export interface ExternalToolCallResponse {
@@ -697,7 +693,7 @@ export interface ExternalToolCallResponse {
   is_error: boolean;
   disposition: ExternalToolDisposition;
   /**
-   * Client-facing value attached to turn.completed when disposition is complete_turn.
+   * Structured successful Tool output. Required when outcome is completed and is_error is false; also attached to turn.completed for complete_turn.
    */
   result?: {
     [k: string]: unknown | undefined;
@@ -728,7 +724,7 @@ export interface ApiError {
 /**
  * A replayable client-facing result returned directly by a generic external tool.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "TurnResult".
  */
 export interface TurnResult {
@@ -742,7 +738,7 @@ export interface TurnResult {
 /**
  * Raw provider counters for one model call. A counter the provider did not send is absent here — never reported as 0.
  *
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ProviderUsage".
  */
 export interface ProviderUsage {
@@ -764,7 +760,7 @@ export interface TurnResult1 {
   };
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ApiError".
  */
 export interface ApiError1 {
@@ -783,7 +779,7 @@ export interface ApiError1 {
   };
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "FileEntry".
  */
 export interface FileEntry {
@@ -794,7 +790,7 @@ export interface FileEntry {
   sha256?: Sha256Hex;
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "FileList".
  */
 export interface FileList {
@@ -810,7 +806,7 @@ export interface FileList {
   source: "hand" | "manifest";
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "PersistRequest".
  */
 export interface PersistRequest {
@@ -822,7 +818,7 @@ export interface PersistRequest {
   media_type?: string;
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "Artifact".
  */
 export interface Artifact {
@@ -840,7 +836,7 @@ export interface Artifact {
   download_url_expires_at?: Timestamp;
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ArtifactList".
  */
 export interface ArtifactList {
@@ -848,7 +844,7 @@ export interface ArtifactList {
   data: Artifact[];
 }
 /**
- * This interface was referenced by `AexSessionAPIV1Types`'s JSON-Schema
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ApiErrorResponse".
  */
 export interface ApiErrorResponse {

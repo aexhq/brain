@@ -4,7 +4,8 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "test": "npm test --workspaces --if-present"
+    "test": "npm test --workspaces --if-present",
+    "package-smoke": "node tools/package-smoke.mjs"
   },
   "engines": { "node": ">=22" }
 }

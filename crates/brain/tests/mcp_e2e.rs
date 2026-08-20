@@ -255,7 +255,7 @@ impl TempDir {
         // sibling test's live session workspace mid-create (the slice-7 flake).
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
-            "aex-mcp-e2e-{}-{}",
+            "brain-mcp-e2e-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -409,7 +409,6 @@ async fn mcp_tools_dispatch_over_the_real_http_surface() {
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
             "system_prompt": "mcp agent",
             "tools": {
-                "builtin": ["todo"],
                 "mcp": [{
                     "name": "svc",
                     "url": mcp_url,
@@ -444,12 +443,11 @@ async fn mcp_tools_dispatch_over_the_real_http_surface() {
         .collect();
     assert_eq!(sealed, vec!["svc__echo", "svc__boom", "svc__ask"]);
 
-    // One scripted turn: two MCP calls (echo + boom) plus todo, in one message (parallel).
+    // One scripted turn: two MCP calls (echo + boom) in one message (parallel).
     h.fake.script([
         Scripted::ToolCalls(vec![
             ("c1".into(), "svc__echo".into(), json!({"msg": "hi"})),
             ("c2".into(), "svc__boom".into(), json!({})),
-            ("c3".into(), "todo".into(), json!({"action": "list"})),
         ]),
         Scripted::Text("done".into()),
     ]);
@@ -477,7 +475,7 @@ async fn mcp_tools_dispatch_over_the_real_http_surface() {
         .filter(|(k, _)| k == "tool.result")
         .map(|(_, v)| v)
         .collect();
-    assert_eq!(results.len(), 3, "echo + boom + todo: {results:?}");
+    assert_eq!(results.len(), 2, "echo + boom: {results:?}");
     let echo = results.iter().find(|r| r["name"] == "svc__echo").unwrap();
     assert_eq!(echo["outcome"], "completed");
     assert!(echo["output_preview"].as_str().unwrap().contains("echo:hi"));
@@ -500,7 +498,7 @@ async fn input_required_maps_to_a_structured_tool_failure() {
     let created = h
         .create_ok(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "tools": {"builtin": [], "mcp": [{"name": "svc", "url": mcp_url}]}
+            "tools": {"mcp": [{"name": "svc", "url": mcp_url}]}
         }))
         .await;
     let sid = created["id"].as_str().unwrap().to_string();
@@ -540,7 +538,7 @@ async fn auto_negotiation_falls_back_to_legacy_and_handles_is_error() {
     let (status, created) = h
         .create(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "tools": {"builtin": [], "mcp": [{"name": "old", "url": mcp_url, "protocol": "auto"}]}
+            "tools": {"mcp": [{"name": "old", "url": mcp_url, "protocol": "auto"}]}
         }))
         .await;
     assert_eq!(status, reqwest::StatusCode::CREATED, "{created}");
@@ -582,7 +580,7 @@ async fn an_allowlist_naming_an_unserved_tool_fails_the_create() {
     let (status, body) = h
         .create(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "tools": {"builtin": [], "mcp": [{
+            "tools": {"mcp": [{
                 "name": "svc",
                 "url": mcp_url,
                 "allowed_tools": ["echo", "not_really_there"]
@@ -607,7 +605,7 @@ async fn an_allowlist_filters_and_a_bad_server_fails_the_create() {
     let created = h
         .create_ok(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "tools": {"builtin": [], "mcp": [{
+            "tools": {"mcp": [{
                 "name": "svc",
                 "url": mcp_url,
                 "allowed_tools": ["echo"]
@@ -629,7 +627,7 @@ async fn an_allowlist_filters_and_a_bad_server_fails_the_create() {
     let (status, body) = h
         .create(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "tools": {"builtin": [], "mcp": [{
+            "tools": {"mcp": [{
                 "name": "gone",
                 "url": "http://127.0.0.1:1/nope",
                 "protocol": "2026-07"
@@ -652,7 +650,7 @@ async fn the_sealed_digest_survives_discard_and_rehydrate() {
     let created = h
         .create_ok(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "tools": {"builtin": ["todo"], "mcp": [{"name": "svc", "url": mcp_url}]}
+            "tools": {"mcp": [{"name": "svc", "url": mcp_url}]}
         }))
         .await;
     let sid = created["id"].as_str().unwrap().to_string();
