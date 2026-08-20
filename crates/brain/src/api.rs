@@ -7,6 +7,9 @@
 //! The subscription starts BEFORE the replay read so nothing falls between them; duplicates
 //! are dropped by seq.
 //!
+//! Create and output admission persist hashes of Idempotency-Key for replay. Raw keys never enter
+//! the journal.
+
 use crate::events::{event_seq, event_type};
 use crate::journal::Record;
 use crate::session::Brain;
@@ -269,7 +272,23 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<session::Session>), Failure> {
     auth(&state, &headers)?;
-    let doc = state.brain.create_session(req).await.map_err(map_err)?;
+    let idempotency_key = headers
+        .get("idempotency-key")
+        .map(|value| {
+            value.to_str().map_err(|_| {
+                Failure(
+                    StatusCode::BAD_REQUEST,
+                    ApiErrorCode::InvalidRequest,
+                    "Idempotency-Key must be valid ASCII".into(),
+                )
+            })
+        })
+        .transpose()?;
+    let doc = state
+        .brain
+        .create_session(req, idempotency_key)
+        .await
+        .map_err(map_err)?;
     Ok((StatusCode::CREATED, Json(doc)))
 }
 

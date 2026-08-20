@@ -291,6 +291,11 @@ pub struct HeadDoc {
     pub turns: u64,
     pub created_ms: u64,
     pub updated_ms: u64,
+    /// Hashes for replaying a create request without retaining the raw idempotency key or body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_key_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_request_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_ms: Option<u64>,
     /// True once `end` ran: compute released for good, the workspace is kept.
@@ -1010,6 +1015,8 @@ mod tests {
             turns: 0,
             created_ms: 1,
             updated_ms: 2,
+            create_key_hash: None,
+            create_request_hash: None,
             last_message_ms: None,
             ended: false,
             prefix: PrefixDoc {
@@ -1053,6 +1060,8 @@ mod tests {
             turns: 0,
             created_ms: 1,
             updated_ms: 1,
+            create_key_hash: None,
+            create_request_hash: None,
             last_message_ms: None,
             ended: false,
             prefix: PrefixDoc {

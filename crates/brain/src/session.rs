@@ -156,6 +156,15 @@ pub struct Brain {
     sessions: Mutex<HashMap<String, mpsc::Sender<Command>>>,
 }
 
+fn hash_create_key(key: &str) -> String {
+    hex::encode(Sha256::digest(key.as_bytes()))
+}
+
+pub(crate) fn idempotent_session_id(key: &str) -> String {
+    let hash = hash_create_key(key);
+    format!("ses_{}", &hash[..24])
+}
+
 enum Command {
     Message {
         content: Vec<ContentBlock>,
@@ -323,8 +332,31 @@ impl Brain {
     pub async fn create_session(
         self: &Arc<Self>,
         req: CreateSessionRequest,
+        idempotency_key: Option<&str>,
     ) -> Result<session::Session> {
-        let session_id = crate::mint_id("ses", 24);
+        if let Some(key) = idempotency_key
+            && (key.is_empty() || key.len() > 128)
+        {
+            return Err(BrainError::Invalid(
+                "Idempotency-Key must contain 1 to 128 bytes".into(),
+            ));
+        }
+        let create_key_hash = idempotency_key.map(hash_create_key);
+        let create_request_hash = create_key_hash
+            .as_ref()
+            .map(|_| crate::output::jcs_sha256(&req))
+            .transpose()?;
+        let session_id = idempotency_key
+            .map(idempotent_session_id)
+            .unwrap_or_else(|| crate::mint_id("ses", 24));
+
+        if create_key_hash.is_some()
+            && let Some(doc) = self
+                .replay_create(&session_id, &create_key_hash, &create_request_hash)
+                .await?
+        {
+            return Ok(doc);
+        }
 
         // Validate and resolve the sealed configuration.
         let provider = provider_name(&req.model.provider);
@@ -627,6 +659,8 @@ impl Brain {
             turns: 0,
             created_ms: now,
             updated_ms: now,
+            create_key_hash: create_key_hash.clone(),
+            create_request_hash: create_request_hash.clone(),
             last_message_ms: None,
             ended: false,
             prefix,
@@ -640,7 +674,8 @@ impl Brain {
             workspace_bytes: 0,
             artifacts: Vec::new(),
         };
-        self.journal
+        if let Err(error) = self
+            .journal
             .create(
                 &session_id,
                 &doc,
@@ -649,13 +684,40 @@ impl Brain {
                     turn: None,
                 },
             )
-            .await?;
+            .await
+        {
+            if create_key_hash.is_some()
+                && let Some(doc) = self
+                    .replay_create(&session_id, &create_key_hash, &create_request_hash)
+                    .await?
+            {
+                return Ok(doc);
+            }
+            return Err(error);
+        }
 
         // Eager hand creation (D16): the actor starts now and readies the substrate without
         // the caller waiting.
         self.spawn_actor(&session_id, true).await;
 
         Ok(session_doc(&session_id, &doc))
+    }
+
+    async fn replay_create(
+        &self,
+        session_id: &str,
+        key_hash: &Option<String>,
+        request_hash: &Option<String>,
+    ) -> Result<Option<session::Session>> {
+        let head = match self.journal.get_head(session_id).await {
+            Ok(head) => head,
+            Err(BrainError::NoSuchSession(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if &head.doc.create_key_hash != key_hash || &head.doc.create_request_hash != request_hash {
+            return Err(BrainError::IdempotencyConflict);
+        }
+        Ok(Some(session_doc(session_id, &head.doc)))
     }
 
     // -- routing to actors -------------------------------------------------------------------
