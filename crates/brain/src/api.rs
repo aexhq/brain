@@ -16,7 +16,7 @@ use crate::session::Brain;
 use crate::{BrainError, mint_id};
 use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event as SseFrame, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -41,6 +41,11 @@ pub struct AppState {
     pub token: String,
 }
 
+// A valid create request may carry 16 MiB of raw tool bundles. Base64 expands that beyond
+// Axum's 2 MiB default; 32 MiB leaves room for the tool definitions and other JSON fields while
+// remaining below Aex control's 64 MiB proxy limit.
+const SESSION_API_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -59,6 +64,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions/{id}/persist", post(persist_artifact))
         .route("/v1/sessions/{id}/artifacts", get(list_artifacts))
         .route("/v1/sessions/{id}/artifacts/{name}", get(get_artifact))
+        .layer(DefaultBodyLimit::max(SESSION_API_BODY_LIMIT_BYTES))
         .with_state(state)
 }
 
