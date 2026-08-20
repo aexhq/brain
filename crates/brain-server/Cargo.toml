@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "The standalone Brain server"
+publish = false
 
 [dependencies]
 brain = { workspace = true }

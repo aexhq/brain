@@ -1,11 +1,10 @@
-//! MCP for the brain (ARCHITECTURE-v1 D11/D14): remote MCP servers become ordinary sealed
-//! tools.
+//! MCP for Brain: remote MCP servers become ordinary sealed tools.
 //!
 //! Shape of the feature:
 //! - **Resolved once at create, sealed forever.** `tools/list` runs at session create; the
 //!   full tool schemas (namespaced `server__tool`) are persisted in the HEAD prefix doc, so
 //!   rehydration does zero network I/O and a server-side schema drift can never silently fork
-//!   the prefix digest. Changing the MCP set forks a new session (§1.12).
+//!   the prefix digest. Changing the MCP set requires a new session.
 //! - **Brain-side dispatch behind the `Outbound` SSRF guard.** MCP URLs are user-controlled;
 //!   every request goes through [`crate::outbound::Outbound`]. Per-server headers (the
 //!   credentials) live in key custody, never in the journal plaintext and never in the hand.

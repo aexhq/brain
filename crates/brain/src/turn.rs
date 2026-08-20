@@ -47,7 +47,7 @@ pub struct TurnState {
     /// events (deltas, tool output) consume seqs too; every commit persists the
     /// high-water mark.
     pub seq: Seq,
-    /// Session-lifetime count of minted `task` subagent identities (D11 cap), seeded
+    /// Session-lifetime count of minted `task` subagent identities, seeded
     /// from the journal at hydrate so it survives re-materialise.
     pub identities: Arc<AtomicU64>,
 }
@@ -80,7 +80,7 @@ pub struct TurnRun {
     pub journal: Journal,
     pub hub: Arc<EventHub>,
     pub cancel: CancellationToken,
-    /// Bounds concurrent model rounds across the whole brain (admission, D9/D11).
+    /// Bounds concurrent model rounds across the whole Brain.
     pub model_permits: Arc<Semaphore>,
     pub history_budget_bytes: usize,
     pub external_executor: Arc<dyn ToolExecutor>,

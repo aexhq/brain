@@ -2,6 +2,7 @@
 name = "brain-protocol"
 version = "0.1.0"
 description = "Brain session API and Brain-to-Hand protocol types generated from Brain-owned JSON Schemas"
+publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

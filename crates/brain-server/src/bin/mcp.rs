@@ -1,7 +1,6 @@
-//! The slice-7 real-wire MCP operator gate: the brain's own MCP client against the OFFICIAL
-//! reference server (`@modelcontextprotocol/server-everything`), with a REAL model choosing
-//! the calls. The in-test axum servers prove our reading of the spec; this proves interop
-//! with the implementation everyone else runs.
+//! Real-wire MCP interoperability check: Brain's MCP client talks to the official
+//! `@modelcontextprotocol/server-everything` reference server while a real model chooses calls.
+//! The in-test Axum servers cover protocol behaviour; this binary covers external interoperability.
 //!
 //! What a pass proves, over real HTTP end to end:
 //!   - `protocol: auto` negotiates with whatever revision the official server speaks today

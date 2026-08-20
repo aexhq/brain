@@ -22,7 +22,11 @@ export default echo;
 
 const brain = new Brain({ token: process.env.BRAIN_TOKEN! });
 const session = await brain.sessions.create({
-  model: { provider: "openai", name: "gpt-5", apiKey: process.env.OPENAI_API_KEY! },
+  model: {
+    provider: "openai",
+    name: process.env.MODEL_NAME!,
+    apiKey: process.env.OPENAI_API_KEY!,
+  },
   tools: [echo],
 });
 ```

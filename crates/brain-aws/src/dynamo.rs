@@ -7,7 +7,7 @@
 //!   idempotency barrier;
 //! - claim is one conditional `UpdateItem` with `ADD fence 1` (the only fence advance);
 //! - commit is one `TransactWriteItems`: every record put plus the fenced HEAD update --
-//!   one decision, one durable write (D9);
+//!   one decision, one durable write;
 //! - `BatchWriteItem` is never used (it cannot be conditioned).
 
 use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};

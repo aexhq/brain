@@ -1,4 +1,4 @@
-//! The slice-7 MCP gate, CI-runnable: real MCP servers (2026-07-28 stateless and the legacy
+//! CI-runnable MCP coverage: real servers (2026-07-28 stateless and the legacy
 //! `initialize` + `Mcp-Session-Id` adapter) exercised over the real HTTP surface, with only
 //! the model scripted (the fake provider).
 //!
@@ -252,7 +252,7 @@ impl TempDir {
     fn new() -> Self {
         // Unique per harness: the tests in this binary run concurrently in ONE process, so a
         // pid-keyed dir is shared -- and the remove_dir_all here (and in Drop) would delete a
-        // sibling test's live session workspace mid-create (the slice-7 flake).
+        // sibling test's live session workspace mid-create.
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let p = std::env::temp_dir().join(format!(
             "brain-mcp-e2e-{}-{}",

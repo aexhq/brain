@@ -14,8 +14,6 @@
 pub mod anthropic;
 pub mod fake;
 pub mod openai;
-// `render` (render-once + byte-splice request assembly) stays in the prototype until the
-// slice-5 density work lands; the reference `build_request` path below is the certified one.
 pub mod sse;
 
 use crate::Result;

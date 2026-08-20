@@ -7,8 +7,8 @@
 //! not decrypt). `brain-aws` carries the KMS implementation; [`PlainCustody`] is the local /
 //! test one.
 //!
-//! Custody never pools per-tenant state (ARCHITECTURE-v1 §2.9: a shared token accountant is
-//! how P1 leaked accounting across tenants) -- there is nothing here but stateless calls.
+//! Custody never pools per-tenant state. Keeping these calls stateless prevents accounting or key
+//! material from crossing tenant boundaries.
 
 use crate::config::ProviderKey;
 use crate::{BrainError, Result};

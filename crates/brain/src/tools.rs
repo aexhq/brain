@@ -222,7 +222,7 @@ pub fn manifest_digest(manifest: &ToolManifest) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------
-// task -- brain-side: a self-similar child agent inside the parent's turn (slice-8 spec)
+// task -- a Brain-side child agent inside the parent's turn
 // ---------------------------------------------------------------------------------------------
 
 /// The model-supplied input of one `task` call.

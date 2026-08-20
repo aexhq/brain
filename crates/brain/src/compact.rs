@@ -1,4 +1,4 @@
-//! Linear, prefix-stable compaction (D11).
+//! Linear, prefix-stable compaction.
 //!
 //! When the model-visible history outgrows its byte budget, everything but a trailing window
 //! is replaced by one summary message. Two properties are load-bearing:

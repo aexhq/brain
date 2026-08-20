@@ -77,9 +77,8 @@ impl HandClient {
                 .map_err(|e| ClientError::Transport(e.to_string()))?;
             request.headers_mut().insert(name, value);
         }
-        // disable_nagle: ABI frames are small; Nagle + delayed ACK adds ~40 ms to every
-        // request/response pair (the slice-5 latency gate measured a 50 ms tool-call floor
-        // against a 2 ms network baseline before this).
+        // disable_nagle: ABI frames are small; Nagle + delayed ACK added ~40 ms to every
+        // request/response pair in the end-to-end latency benchmark.
         let (ws, _) = tokio_tungstenite::connect_async_with_config(request, None, true)
             .await
             .map_err(|e| ClientError::Transport(e.to_string()))?;

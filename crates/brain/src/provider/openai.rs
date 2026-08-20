@@ -577,8 +577,7 @@ mod tests {
 
     #[test]
     fn a_real_zero_cached_tokens_survives() {
-        // The exact bug LANDSCAPE §2 documents in five products: testing
-        // truthiness drops a genuine 0, which is the finding, not the absence.
+        // Truthiness checks drop a genuine zero, even though zero is data rather than absence.
         let raw = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\n";
         let evs = decode_stream(raw.as_bytes()).unwrap();
         match &evs[0] {

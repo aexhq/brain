@@ -1,7 +1,6 @@
-//! The cross-session leakage gate (slice 5, ARCHITECTURE-v1 §2.9): two tenants on one brain,
+//! Cross-session leakage gate: two tenants on one Brain,
 //! adversarially interleaved, and NOTHING crosses — not workspace files, not prompt or output
-//! content, not model identity, not provider keys. This is the CI form of the P1 incident
-//! class (leaked accounting across tenants) and it runs on every push.
+//! content, not model identity, and not provider keys. It runs on every push.
 //!
 //! Method: one Brain, the real local substrate (real files on disk), two sessions on DIFFERENT
 //! dialects so each gets its own scripted fake — provider traffic is attributable per session

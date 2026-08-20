@@ -3,13 +3,12 @@
 //! The core loop is deliberately small: build a provider request from (sealed
 //! prefix, history), stream it, parse tool calls, dispatch them over the
 //! brain->hand ABI, append results, repeat. Every decision is made durable in
-//! one journal decision before it takes effect anywhere else (D9), and an idle
+//! one journal decision before it takes effect anywhere else, and an idle
 //! session is nothing but a cached fold of its journal (hydrate-act-commit-
 //! discard).
 //!
-//! Design authority: `aex-research/docs/ARCHITECTURE-v1.md` and its accepted independent-product
-//! amendment. This repository owns the session and Brain↔Hand wire formats exposed by
-//! `brain-protocol`; downstream Hands and products consume immutable Brain identities.
+//! This repository owns the session and Brain-to-Hand wire formats exposed by `brain-protocol`;
+//! downstream Hands and products consume immutable Brain identities.
 
 pub mod adapter;
 pub mod api;

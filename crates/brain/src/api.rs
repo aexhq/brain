@@ -188,8 +188,7 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) -> anyhow::Resul
 }
 
 /// TCP_NODELAY on every accepted connection. Load-bearing for the event stream: SSE frames are
-/// small writes, and Nagle + delayed ACK turns each one into a ~40 ms stall on Linux — the
-/// slice-5 TTFT gate measured a hard 46 ms floor per turn before this (1 ms after).
+/// small writes, and Nagle plus delayed ACK added a measured ~40 ms stall per turn on Linux.
 pub fn nodelay(
     listener: tokio::net::TcpListener,
 ) -> impl axum::serve::Listener<Io = tokio::net::TcpStream, Addr = std::net::SocketAddr> {
