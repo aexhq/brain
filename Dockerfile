@@ -3,7 +3,7 @@ WORKDIR /src
 COPY . .
 RUN cargo build --locked --release -p brain-server --bin brain
 
-FROM docker:28.3.3-cli AS docker-cli
+FROM docker:29.7.0-cli AS docker-cli
 
 FROM debian:bookworm-slim
 RUN apt-get update \
