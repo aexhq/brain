@@ -205,6 +205,24 @@ impl Api {
             .bearer_auth(TOKEN)
             .json(&json!({
                 "model": {"provider": "anthropic", "name": "bench", "api_key": "sk-bench"},
+                // Brain deliberately has no implicit tools. The benchmark's scripted provider
+                // calls `bash`, so grant the echo Hand implementation explicitly just as a real
+                // session would grant an installed tool.
+                "tools": {"items": [{
+                    "definition": {
+                        "name": "bash",
+                        "description": "Execute the benchmark echo tool.",
+                        "input_schema": {"type": "object", "additionalProperties": true},
+                        "output_schema": {"type": "object", "additionalProperties": true}
+                    },
+                    "executor": {
+                        "kind": "hand",
+                        "protocol": 1,
+                        "checksum": "0ed0bae284be7259c3d82f498885dc7010747fdb4b9f3edcc3160c922dac161b",
+                        "source": "preinstalled",
+                        "required_env": []
+                    }
+                }]}
             }))
             .send()
             .await?;
