@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Neutral AWS persistence and key-custody adapters for Brain"
+publish = false
 
 [dependencies]
 brain = { workspace = true }

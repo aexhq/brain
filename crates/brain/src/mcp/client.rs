@@ -2,8 +2,8 @@
 //! adapter (`initialize` + `Mcp-Session-Id`, Streamable HTTP 2025-03-26..2025-11-25, no SSE
 //! resumability) behind the same call surface.
 //!
-//! Scope is deliberately narrow (ARCHITECTURE-v1 D11): `tools/list` and `tools/call`, plus
-//! the version negotiation needed to reach them. No subscriptions, no sampling/roots (we
+//! Scope is deliberately narrow: `tools/list` and `tools/call`, plus the version negotiation
+//! needed to reach them. No subscriptions, no sampling/roots (we
 //! declare zero client capabilities), no resumability. MRTR `input_required` results are
 //! surfaced as structured tool failures. The legacy adapter is the first thing to cut.
 //!

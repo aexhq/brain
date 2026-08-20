@@ -40,8 +40,8 @@ impl ContentBlock {
         ContentBlock::Text { text: s.into() }
     }
     /// Approximate resident bytes of this block's owned heap data. Used only by
-    /// the memory harness, never for billing -- token accounting is passed
-    /// through from the provider (standing constraint, design-decisions.md §3).
+    /// the memory harness, never for billing; token accounting is passed through from the
+    /// provider.
     pub fn heap_bytes(&self) -> usize {
         match self {
             ContentBlock::Text { text } => text.capacity(),

@@ -87,16 +87,16 @@ pub struct FakeProvider {
     /// measurements of an empty loop.
     pub tokens_per_second: AtomicU64,
     /// Inspect (fully parse + canonically hash + record) 1 request in every N.
-    /// `1` inspects every request, which is PD-10's behaviour and the default.
+    /// `1` inspects every request and is the default.
     ///
-    /// PD-11 needs this because it drives an **unpaced** provider at the
+    /// Unpaced benchmarks need this because they drive the provider at the
     /// platform's real context size: a full `serde_json` parse of a ~500 KB body
     /// on every model call costs several milliseconds, which is more than the
     /// entire brain loop it is supposed to be measuring. An instrument that
     /// dominates its measurement is not an instrument.
     pub inspect_every: AtomicU64,
     /// Cap on retained arrivals. Unbounded retention is a leak inside the thing
-    /// being measured; at PD-11's throughput it is a large one.
+    /// being measured and becomes significant at benchmark throughput.
     pub arrivals_cap: AtomicU64,
     /// Requests whose cheap byte-scan round count disagreed with the full parse
     /// on an inspected request. **Must be zero**; the harness treats any
@@ -144,14 +144,14 @@ impl FakeProvider {
     /// without parsing them.
     ///
     /// The full-parse version of this (below) costs several milliseconds on a
-    /// 122 K-token request, which is more than the brain loop PD-11 is trying to
+    /// 122 K-token request, which is more than the Brain loop this benchmark is trying to
     /// measure. This byte scan is microseconds, and still derived purely from
     /// the request, so K concurrent sessions cannot interfere.
     ///
     /// A turn boundary is a REAL user message. On the Anthropic wire, tool
     /// results also ride in `role:"user"` messages (as `tool_result` blocks) —
     /// treating those as boundaries resets the round count every tool round and
-    /// the policy emits tool calls until the round cap (the slice-5 bench hit
+    /// the policy emits tool calls until the round cap (the benchmark once observed
     /// exactly that: 2,560 model calls where 60 were expected).
     ///
     /// It is a heuristic on bytes, so it is **cross-checked against the full
@@ -284,7 +284,7 @@ impl FakeProvider {
         // assistants_this_turn_parsed; the two drifted (the duplicate kept treating Anthropic
         // tool-result user messages as turn boundaries) and the sampled-inspection runs took
         // the buggy copy on exactly 1-in-N requests — an off-by-a-few in the round counts that
-        // looked entirely plausible. The slice-5 bench guards caught it; never duplicate this.
+        // looked entirely plausible. The benchmark guards caught it; never duplicate this.
         let assistant_so_far = Self::assistants_this_turn_parsed(body);
         Some(Self::scripted_for(
             assistant_so_far,
@@ -414,7 +414,7 @@ impl Provider for FakeProvider {
 
         // The fast path: decide the turn from raw bytes and record nothing.
         // Taken only when the caller has explicitly asked for sampling; the
-        // default (`inspect_every == 1`) is PD-10's every-request behaviour.
+        // default (`inspect_every == 1`) inspects every request.
         let every = self.inspect_every.load(Ordering::Relaxed).max(1);
         if every > 1 && !call_no.is_multiple_of(every) {
             let next =
@@ -463,7 +463,7 @@ impl Provider for FakeProvider {
         {
             let mut a = self.arrivals.lock().expect("arrivals");
             // Bounded: an unbounded arrival log is a leak inside the thing being
-            // measured, and at PD-11's throughput it is a large one. Dropping
+            // measured, and at benchmark throughput it is a large one. Dropping
             // the OLDEST keeps the most recent window, which is what a guard
             // reads. The count of calls is `call_count` and is never truncated,
             // so "how many arrived" stays exact even when "which ones" does not.
@@ -668,7 +668,7 @@ mod tests {
     fn anthropic_tool_result_user_messages_are_not_turn_boundaries() {
         // On the Anthropic wire a tool result is a user-role message carrying tool_result
         // blocks. The round counter must skip those, or the policy resets to round 0 after
-        // every tool round and emits tool calls until the round cap (the slice-5 bench caught
+        // every tool round and emits tool calls until the round cap (the benchmark caught
         // exactly this: 2,560 model calls where 60 were expected).
         let body = serde_json::json!({"messages": [
             {"role": "user", "content": [{"type": "text", "text": "go"}]},

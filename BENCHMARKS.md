@@ -1,64 +1,45 @@
-# Benchmarks — the slice-5 record
+# Benchmarks
 
-The published numbers behind the platform. Method before numbers: every figure measures the
-PLATFORM, never a model — the provider is the scripted fake (instant), the hand is an
-in-process echo, the journal is in-memory, and the drive path is the real public HTTP API with
-SSE, because that is what production serves. Reproduce with `cargo run -p brain-bench
---release -- <arm>`; the same suite gates every push in CI (thresholds are loose backstops for
-the shared runner; this file is the record).
+Brain's benchmark suite measures the engine, not a model. It drives the public HTTP and SSE paths
+with an instant scripted provider, an in-process echo Hand, and an in-memory journal. Reference
+measurements below were recorded on 18 August 2026 using a release build on a c7g.xlarge
+(4-vCPU Graviton3, Ubuntu, glibc).
 
-**Environment:** c7g.xlarge (4 vCPU Graviton3, Ubuntu, glibc), release build — the production
-target family. Windows/macOS runs are smoke only (memory arms refuse without `smaps_rollup`).
+## Reference results
 
-## The brain
+| Measurement | Result |
+| --- | ---: |
+| First visible byte, one session | p50 1.4 ms · p99 2.2 ms |
+| Complete text turn, one session | p50 2.3 ms · p99 3.2 ms |
+| Admission to `turn.started` | p50 0.22 ms |
+| Throughput, 64 sessions | 2,002 turns/s · p99 58 ms |
+| Throughput, 256 sessions | 2,100 turns/s · p99 254 ms |
+| Tool loop, 64 sessions, 2 rounds × 4 calls | 429 turns/s · about 3,430 tool calls/s |
+| Resident session, excluding the in-process journal | 21–31 KiB private memory |
+| Memory returned after deleting all sessions | 82–86% in one cycle |
+| Steady-state change across delete cycles | −0.6 MiB per cycle over 6 cycles |
 
-| Number | Value |
-| --- | --- |
-| Platform-added TTFT (`POST /messages` → first `assistant.delta` at the client, K=1) | **p50 1.4 ms · p99 2.2 ms** |
-| Whole-turn overhead (pure text turn over HTTP+SSE, K=1) | p50 2.3 ms · p99 3.2 ms |
-| Admission (`POST` → `turn.started`, K=1) | p50 0.22 ms |
-| Unpaced throughput, K=64 sessions | **2,002 turns/s** · turn p99 58 ms |
-| Unpaced throughput, K=256 sessions | 2,100 turns/s · turn p99 254 ms |
-| Tool loop, K=64, 2 rounds × 4 parallel calls/turn | 429 turns/s (**≈3,430 tool calls/s**) |
-| Resident session (fold cached between turns; journal-neutral) | **21–31 KiB private** (≈5 KiB with `MALLOC_ARENA_MAX=1`) |
-| Memory returned on delete-all, single cycle | 82–86 % (glibc `malloc_trim`; the rest is arena fragmentation) |
-| Steady-state creep (create/turns/delete cycles, tail) | **−0.6 MiB/cycle over 6 cycles** — a plateau, not a leak |
+The first-byte and turn measurements include HTTP, SSE, request construction, journaling, and
+dispatch. The provider itself is instant. The resident-session figure is the private-memory delta
+between live actors and the post-discard state; production journals are off-process. An
+in-process journal at four 8-KiB turns uses roughly 450–470 KiB per session.
 
-Notes that keep these honest:
+The one-cycle reclaim percentage reflects allocator fragmentation. The stronger long-running
+invariant is that the post-delete floor stops rising; the measured floor plateaued. CI thresholds
+are deliberately loose regression guards for shared runners, not replacements for the reference
+record.
 
-- **Resident** = the private-byte delta between "actors alive, folds cached" and "actors
-  idle-discarded, journal retained". The in-memory journal is excluded on purpose: production
-  journals live in DynamoDB, off-process. (Journal-inclusive: ~450–470 KiB/session at 4 turns
-  × 8 KiB text with the dev journal in-process.)
-- **Reclaim** is two numbers because one would lie. The single-cycle percentage is capped by
-  glibc arena fragmentation (`malloc_trim` cannot compact interior holes; `MALLOC_ARENA_MAX`
-  trades hot-path throughput for a lower floor — a deploy-time knob). The invariant a
-  long-lived brain needs is the second number: the post-delete floor stops rising. It does.
-- The TTFT gate caught a real bug while being built: Nagle + delayed ACK put a hard **46 ms
-  floor** under every turn on Linux (SSE frames are small writes). `TCP_NODELAY` on the serve
-  path took K=1 p50 from 46 ms to 5 ms; the CI gate exists so it cannot come back.
+## Reproduce
 
-## The hand (real Lambda MicroVM, measured in-region, eu-west-1)
+```sh
+cargo run -p brain-bench --release -- ci
+cargo run -p brain-bench --release -- --help
+```
 
-| Number | Value |
-| --- | --- |
-| Endpoint round trip (raw HTTP probe through the JWE proxy) | **p50 2.1 ms** · p99 3.4 ms |
-| Tool call round trip (bash `true`: start → poll complete over the ABI), image v2.0 | p50 50.0 ms · p95 60.1 ms |
-| Tool call round trip, image v3.0 (`TCP_NODELAY` on both WebSocket ends) | **p50 4.4 ms · p99 5.3 ms** — 11× |
-| IMDS from inside the guest | **no IAM role, no credentials** (role list 404, creds unreachable; identity doc exposes the region only) |
+Density and reclaim measurements require Linux `/proc/*/smaps_rollup`; other platforms run the
+portable latency and correctness arms only. The benchmark refuses to substitute RSS because it
+would double-count shared pages.
 
-The 50 ms tool-call floor against a 2 ms network baseline was the same Nagle signature the
-brain had, in the ABI WebSocket hops. Client-side nodelay alone changed nothing (the delayed
-leg was the guest's responses); with image v3.0 fixing both ends the platform adds ~2 ms over
-the raw endpoint round trip. Reproduce with
-`hand-lambda gate --image hands-dev-1gb --version <v>` — IMDS is a hard pass/fail, the
-latency row is the record. The security gate and this latency measurement run on demand (they
-launch a real MicroVM and need AWS credentials); the brain suite runs in CI on every push.
-
-## Cross-session leakage
-
-`crates/brain/tests/leakage.rs`, on every push: two tenants on one brain, real files on disk,
-interleaved turns, dialect-split scripted providers. Workspaces are disjoint on disk, a probe
-for the other tenant's file by path finds nothing, no foreign content or model identity in
-either journal, provider keys appear in NO journal (not even the session's own), every event
-names its own session, and every wire request carries exactly its own sealed system prompt.
+`crates/brain/tests/leakage.rs` independently checks cross-session isolation on every push: files,
+conversation content, model identity, provider keys, events, and journals must remain scoped to
+their owning session.

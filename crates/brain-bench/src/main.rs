@@ -1,4 +1,4 @@
-//! Benchmark gates for the brain (slice 5). Every number measures the PLATFORM, never a model:
+//! Benchmark gates for Brain. Every number measures the engine, never a model:
 //! the provider is the scripted fake (instant unless paced), the hand is an in-process echo,
 //! the journal is in-memory — and the drive path is the real public HTTP API with SSE, because
 //! that is what production serves.
@@ -7,7 +7,7 @@
 //!   density  N resident sessions -> KiB per resident session (journal-neutral: the resident
 //!            sample minus the post-discard sample, because an idle session is nothing but its
 //!            journal and the production journal lives in DynamoDB, not this process), then
-//!            delete-all -> memory returned (PD-13 gate: >=97% with explicit malloc_trim).
+//!            delete-all -> memory returned with explicit allocator reclamation.
 //!            The server runs in its OWN process and is sampled via /proc/<pid>: client-side
 //!            buffers (reqwest pools, driver vecs) must not pollute the brain's numbers.
 //!            Linux-only by construction (smaps_rollup; run on the production target).
@@ -112,7 +112,7 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         text_bytes: args.text_bytes,
     });
     // Sampled inspection: full-parse instrumentation on every request would dominate an
-    // unpaced measurement (the PD-11 lesson, kept).
+    // unpaced measurement.
     fake.inspect_every
         .store(args.inspect_every.max(1), Ordering::Relaxed);
     fake.arrivals_cap.store(64, Ordering::Relaxed);

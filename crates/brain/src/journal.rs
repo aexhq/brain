@@ -1,4 +1,4 @@
-//! The session journal: every decision is durable in one backend transaction (D9).
+//! The session journal: every decision is durable in one backend transaction.
 //!
 //! One item collection per session. `HEAD` carries ownership (lease + fence), the sealed
 //! configuration and the mutable session facts; `E#<seq>` items carry the decision records.

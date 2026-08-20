@@ -2,10 +2,9 @@
 //!
 //! # Why this module exists
 //!
-//! PD-10 found that dropping 10,000 sessions returned **0.00%** of 13.9 GB to
-//! the OS, and that one `malloc_trim(0)` recovered 99.96%. PD-13 repeated that
-//! across three allocators at the target session shape and found something
-//! worse than "glibc is the odd one out":
+//! An early load test found that dropping 10,000 sessions returned **0.00%** of 13.9 GB to
+//! the OS, while one `malloc_trim(0)` recovered 99.96%. A follow-up at the target session shape
+//! compared three allocators and found that none returned the memory without an explicit call:
 //!
 //! | allocator | dropped 10,000 sessions, no explicit call | after an explicit call |
 //! | --- | ---: | ---: |
@@ -19,10 +18,8 @@
 //! rather than by a timer. A process that has just evicted its sessions and is
 //! now idle is precisely the process that never triggers it.
 //!
-//! So the return has to be asked for, and the question PD-10 left open --
-//! "`malloc_trim` is not the answer, only the proof ... there is no principled
-//! place to call it" -- is answerable once you know what the call costs. PD-13
-//! measured that too, at ~6 GB held:
+//! Returning memory therefore needs an explicit trigger. Measuring the call cost at roughly 6 GB
+//! held identifies the right trigger boundary:
 //!
 //! | mechanism | call duration |
 //! | --- | ---: |

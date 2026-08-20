@@ -1,5 +1,5 @@
 //! Regression: a message arriving exactly when the idle timer discards the session's actor
-//! must succeed, not 500. The slice-5 density bench hit this as "actor dropped the reply"
+//! must succeed, not 500. The density benchmark exposed this as "actor dropped the reply"
 //! (the idle branch could win a select round against an already-buffered command and exit
 //! without answering it). The fix is close-then-drain in the actor plus a one-shot send retry
 //! in the callers; this test forces the collision hundreds of times.

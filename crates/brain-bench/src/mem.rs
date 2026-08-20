@@ -10,8 +10,8 @@
 //! *private* answers "what does the Nth session add"; *Pss* answers "what does this process
 //! occupy in the fleet". Both are recorded, never one alone. If `/proc/self/smaps_rollup` is
 //! unreadable (macOS, Windows) this module REFUSES rather than falling back to RSS: a bare RSS
-//! sum double-counts every shared page and would not be comparable with the banked PD-11
-//! figures. Density and reclaim gates are Linux-only by construction; run them on the target.
+//! sum double-counts every shared page and would not be comparable with the reference figures.
+//! Density and reclaim gates are Linux-only by construction; run them on the target.
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Mem {

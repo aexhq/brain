@@ -1,9 +1,9 @@
-//! Sessions as spawned tasks (D9): one actor per resident session, hydrate-act-commit-discard.
+//! Sessions as spawned tasks: one actor per resident session, hydrate-act-commit-discard.
 //!
 //! An idle session is nothing but its journal. The actor holds the cached fold (history,
 //! head, lease, hand adapter); after `idle_discard` without traffic it releases the lease,
-//! drops the adapter and exits -- the next message hydrates from the journal (PD-11 measured
-//! the rehydrate at constant ~4 ms). Everything the actor holds is rebuildable; everything
+//! drops the adapter and exits -- the next message hydrates from the journal (measured at roughly
+//! 4 ms). Everything the actor holds is rebuildable; everything
 //! durable went through `Journal::commit` first.
 //!
 //! The brain is COMPOSED, not configured into a cloud: [`Brain::with_parts`] takes a journal
@@ -51,7 +51,7 @@ pub struct BrainConfig {
     pub history_budget_bytes: usize,
     /// Whether brain-originated requests to user-controlled URLs (MCP) may reach loopback /
     /// private / link-local addresses. `false` is the production invariant (the SSRF guard,
-    /// D14); [`Brain::local`] defaults it to `true` so a developer's MCP server on
+    /// user-controlled egress); [`Brain::local`] defaults it to `true` so a developer's MCP server on
     /// `127.0.0.1` works zero-config, and `brain-aws` refuses to start with `true`.
     pub outbound_allow_private: bool,
     /// Per-server budget for the create-time MCP probe + `tools/list`.
@@ -123,8 +123,8 @@ fn env_bool(k: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-/// Process-wide reclaim policy (PD-13: >=97% of a dropped session's memory returns with an
-/// explicit `malloc_trim`; no allocator does it unprompted).
+/// Process-wide reclaim policy. Measurements showed that allocators retain dropped session memory
+/// unless reclamation is requested explicitly.
 fn reclaim_policy() -> &'static crate::reclaim::ReclaimPolicy {
     static POLICY: std::sync::OnceLock<crate::reclaim::ReclaimPolicy> = std::sync::OnceLock::new();
     POLICY
@@ -146,7 +146,7 @@ pub struct Brain {
     pub hand_factory: Arc<dyn HandFactory>,
     pub hub: Arc<EventHub>,
     pub model_permits: Arc<Semaphore>,
-    /// The D14 egress seam: every brain-originated request to a user-controlled URL (MCP)
+    /// The egress seam: every Brain-originated request to a user-controlled URL (MCP)
     /// goes through this client and its SSRF guard.
     pub outbound: crate::outbound::Outbound,
     pub external_executor: Arc<dyn ToolExecutor>,
@@ -415,7 +415,7 @@ impl Brain {
             }
         }
 
-        // Resolve the declared MCP servers NOW: the tool list is sealed at create (§1.12),
+        // Resolve the declared MCP servers now: the tool list is sealed at create,
         // so `tools/list` runs here, concurrently per server, and never again for this
         // session. Strict: an unreachable server fails the create.
         let mcp = if tools_cfg.mcp.is_empty() {
@@ -713,7 +713,7 @@ impl Brain {
             return Err(error);
         }
 
-        // Eager hand creation (D16): the actor starts now and readies the substrate without
+        // Eager Hand creation: the actor starts now and readies the substrate without
         // the caller waiting.
         self.spawn_actor(&session_id, true).await;
 
@@ -1494,7 +1494,7 @@ async fn actor(
     let mut running: Option<Running> = None;
 
     if eager_hand {
-        // Eager hand creation, D16: ready the substrate without any caller waiting.
+        // Eager Hand creation readies the substrate without any caller waiting.
         match hydrate(&brain, &session_id).await {
             Ok(mut r) => {
                 match r.st.hand.ensure_ready().await {
@@ -1734,7 +1734,7 @@ async fn actor(
                     let _ = brain.journal.release(&session_id, &r.st.lease).await;
                     let freed: usize = r.st.history.iter().map(|m| m.heap_bytes()).sum();
                     drop(r);
-                    // PD-13: no allocator returns memory on drop without an explicit trim.
+                    // No tested allocator returned memory on drop without an explicit trim.
                     // The policy batches trims so a burst of discards pays one stall.
                     if reclaim_policy().freed(freed as u64).is_some() {
                         tracing::debug!(freed, "malloc_trim after session drop");
@@ -1909,7 +1909,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
     let mcp = build_mcp_runtime(brain, session_id, &head.doc).await?;
     let hand = brain.open_adapter(session_id, &head.doc).await?;
     // Every journaled subagent intent minted one child identity, including an
-    // interrupted call. Rebuilding the count here makes the D11 lifetime cap
+    // interrupted call. Rebuilding the count here makes the lifetime cap
     // survive discard and process restart.
     let identities = task_identity_count(&entries, &head.doc.prefix);
     let mut resident = Resident {
@@ -2099,7 +2099,7 @@ async fn admit(
         });
     }
 
-    // e.g. the speculative resume (F-4): substrate traffic now, hidden behind the model round.
+    // e.g. speculative resume: substrate traffic now, hidden behind the model round.
     r.st.hand.on_message_admitted();
 
     Ok((turn_id, user_seq, CancellationToken::new()))
@@ -2135,7 +2135,7 @@ fn turn_run(
 }
 
 /// Applies the turn outcome that `TurnRun::run` could not commit itself (failures), then the
-/// turn-end checkpoint (the workspace durability point, D7).
+/// turn-end checkpoint, which is the workspace durability point.
 async fn finish_turn(
     brain: &Arc<Brain>,
     session_id: &str,

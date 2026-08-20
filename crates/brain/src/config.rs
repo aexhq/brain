@@ -1,7 +1,7 @@
 //! The SDK / configuration surface, and the sealed prefix.
 //!
-//! Platform invariant (`design-decisions.md` §1.12): **the prefix is immutable
-//! for a session's life.** Tools, system prompt, MCP set and model cannot change
+//! Core invariant: **the prefix is immutable for a session's life.** Tools, system prompt, MCP set,
+//! and model cannot change
 //! mid-session; changing any of them forks a new session. One appended tool
 //! definition destroyed a 6,103-token cache entry, so this is enforced by
 //! construction rather than by convention: there is no `&mut` path to a
@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 /// A BYOK provider credential. Per-session and frozen.
 ///
-/// We never hold provider keys as our own (`design-decisions.md` §3). The
-/// redacting `Debug` is not politeness: a key that reaches a log, a span
+/// Provider keys remain per-session customer credentials. The redacting `Debug` is not politeness:
+/// a key that reaches a log, a span
 /// attribute or a journal entry has leaked into storage we control, which is
 /// precisely the thing BYOK promises does not happen.
 #[derive(Clone, PartialEq, Eq)]
@@ -75,10 +75,8 @@ pub enum ToolRoute {
     Intrinsic(String),
     /// Forwarded over the Brain->Hand ABI using this exact execution seal.
     Hand(HandToolSeal),
-    /// A sealed remote MCP tool: the brain makes the outbound call itself
-    /// behind the one `Outbound` seam with its SSRF guard (ARCHITECTURE-v1
-    /// D14 -- which supersedes §1.11's connector tier; there is no separate
-    /// connector in MVP).
+    /// A sealed remote MCP tool. Brain makes the outbound call through the single
+    /// SSRF-guarded `Outbound` seam; there is no separate connector tier.
     Mcp { server: String, remote_name: String },
     /// A host-owned trusted executor registered under a stable capability.
     Server(ServerToolPolicy),
@@ -153,7 +151,7 @@ pub struct Limits {
     /// Maximum tool calls dispatched concurrently from one assistant message.
     /// p90 batch size is 4; this is not sized for 64.
     pub max_parallel_tools: usize,
-    /// Maximum `task` subagent identities minted over the session's LIFETIME (D11).
+    /// Maximum `task` subagent identities minted over the session's lifetime.
     /// Counted from journaled `task` tool calls, so the cap survives re-materialise.
     pub max_subagent_identities: u32,
 }
@@ -505,7 +503,7 @@ mod tests {
         assert_ne!(
             prefix_digest(&more),
             base,
-            "one appended tool definition must fork the prefix (design-decisions §1.12)"
+            "one appended tool definition must fork the prefix"
         );
     }
 

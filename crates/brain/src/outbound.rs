@@ -1,4 +1,4 @@
-//! The `Outbound` seam (D14): every brain-originated request to a USER-CONTROLLED URL goes
+//! The `Outbound` seam: every Brain-originated request to a user-controlled URL goes
 //! through here. MCP servers are the first tenant; `web_fetch` joins in M1.
 //!
 //! The threat is SSRF from the trusted tier: the brain sits next to its own metadata service,

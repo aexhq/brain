@@ -97,8 +97,8 @@ the brain's adapter (`hand.lost` on the session API) — the hand never reports 
   lane forked from `parent`. An attached operation holds its lane until terminal (`lane_busy`
   otherwise); a detached one does not hold the lane.
 * `cwd` is a per-call parameter defaulting to `paths.workspace`. The ABI never mutates a lane's
-  cwd; a `cd` inside a shell command is consumed by that command (98.1% of real `cd`s are
-  `cd x && cmd`, PD-4).
+  cwd; a `cd` inside a shell command is consumed by that command. This matches observed usage,
+  where 98.1% of directory changes were part of a command such as `cd x && cmd`.
 * `wait_ms` (attached only): the hand waits up to this long for the operation to become terminal
   before answering, capped by `limits.max_poll_wait_ms`; `max_bytes` bounds the stdout/stderr
   slices included from offset 0. Most calls therefore complete in one round trip.
@@ -178,8 +178,8 @@ URL minted by the trusted side:
 `hand_status` is published on every idle↔busy transition, when a job ends, and every
 `heartbeat_ms`. `idle_for_ms` is 0 while anything is in `inflight` or `live_jobs`. The brain's
 adapter keeps the VM alive (keepalive) while jobs are live so AWS's 180 s idle suspend does not
-fire under a running job; when nothing is live it lets the suspend happen. `pressure` is advisory
-(guest OOM gives no warning, HD-10).
+fire under a running job; when nothing is live it lets the suspend happen. `pressure` is advisory;
+the guest may be terminated for out-of-memory without advance notice.
 
 ## 3. Errors
 
@@ -204,6 +204,6 @@ work. Codes: see `ErrorCode` in the schema.
 Dropped: `signal`, `lane_info`, `probe`, streaming `update`, `terminal` push, effect classes,
 credit-based backpressure, hard version match, reject-unknown-fields.
 Folded: `result` into `poll` (one status+output view for start/poll/cancel).
-Added: `sync` (the durability decision D7 needed a wire operation), `wait_ms` on `start`/`poll`
+Added: `sync` for durable workspace state, `wait_ms` on `start`/`poll`
 (one round trip for short calls, no push channel needed), presigned-URL transfers, the pack +
 manifest format, `session_token` in `hello`.

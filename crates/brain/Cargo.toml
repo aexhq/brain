@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Brain session engine: durable journals, sealed tool prefixes, provider dialects, the tool loop, and a substrate-neutral session API."
+publish = false
 
 [dependencies]
 brain-protocol = { workspace = true }

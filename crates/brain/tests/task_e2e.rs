@@ -1,4 +1,4 @@
-//! Slice-8 gate: in-process `task` subagents over the real session HTTP API.
+//! In-process `task` subagents over the real session HTTP API.
 //!
 //! Only the model is scripted. Journal, SSE, local hand calls, MCP calls,
 //! cancellation, discard, and rehydrate all use their production seams.

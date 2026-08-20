@@ -86,8 +86,7 @@ impl Anthropic {
         body.insert("max_tokens".into(), json!(prefix.sampling.max_tokens));
         body.insert("stream".into(), json!(true));
         // System prompt first, then tools, then messages: the render order the
-        // prompt cache keys on. Reordering these silently invalidates every
-        // cached prefix, which is the bug §1.12 exists to retire.
+        // prompt cache keys on. Reordering these silently invalidates every cached prefix.
         body.insert("system".into(), json!(prefix.system_prompt));
         if !tools.is_empty() {
             body.insert("tools".into(), json!(tools));
