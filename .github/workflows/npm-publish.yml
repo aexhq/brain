@@ -28,6 +28,10 @@ jobs:
       - run: npm test
       - run: npm run package-smoke
       - name: Publish in dependency order
+        env:
+          # A token is required only to bootstrap a package before its OIDC trust relationship
+          # can exist. Provenance is still minted by this public GitHub Actions job.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
