@@ -12,7 +12,7 @@ use brain::{BrainError, Result};
 use zeroize::Zeroizing;
 
 /// Where the session id goes in the KMS encryption context.
-const CONTEXT_KEY: &str = "aex:session";
+const CONTEXT_KEY: &str = "brain:session";
 
 pub struct KmsCustody {
     kms: aws_sdk_kms::Client,

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-server"]
+members = ["crates/brain-protocol", "crates/brain-hand-client", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-standalone", "crates/brain-server"]
 resolver = "2"
 
 [workspace.package]
@@ -8,22 +8,20 @@ rust-version = "1.97"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-# Contracts and the hand, pinned by tag: the wire formats are owned by their repos.
-aex-contracts = { git = "https://github.com/aexhq/aex", tag = "aex-contracts-v0.4.0" }
+# Brain owns its public session API and the Brain↔Hand wire protocol.
+brain-protocol = { path = "crates/brain-protocol" }
+brain-hand-client = { path = "crates/brain-hand-client" }
 brain = { path = "crates/brain" }
 brain-aws = { path = "crates/brain-aws" }
-hand-client = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.4" }
-hand-lambda = { git = "https://github.com/aexhq/hands", tag = "hands-v0.1.4" }
 
 anyhow = "1"
+aes-gcm = "0.10"
 async-trait = "0.1"
 async-stream = "0.3"
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "credentials-process", "default-https-client", "rt-tokio", "sso"] }
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
-aws-sdk-lambdamicrovms = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "ws"] }
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
@@ -31,12 +29,13 @@ clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 globset = "0.4"
 hex = "0.4"
-html2text = "0.17.1"
 jsonschema = { version = "0.49", default-features = false }
 libc = "0.2"
 rand = "0.9"
 regex = "1"
+regress = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json", "http2"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_jcs = "0.2"
@@ -44,6 +43,7 @@ sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "signal"] }
 tokio-util = "0.7"
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2"

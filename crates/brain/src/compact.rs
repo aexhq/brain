@@ -140,6 +140,7 @@ mod tests {
                         f.apply(&Record::UserMessage {
                             turn: "t".into(),
                             content: m.content.clone(),
+                            metadata: std::collections::HashMap::new(),
                         });
                     } else {
                         for b in &m.content {

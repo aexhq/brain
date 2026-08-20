@@ -1,5 +1,9 @@
-target/
-.git/
-aex-data/
-*.md
-!README.md
+.git
+.github
+brain-data
+node_modules
+packages/*/dist
+target
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal

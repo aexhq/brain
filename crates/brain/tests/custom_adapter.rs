@@ -6,6 +6,8 @@
 //! The adapter here is deliberately tiny: an in-memory "echo" substrate that records every
 //! call, answers `bash` with a canned transcript, and persists from an in-memory file map.
 
+mod support;
+
 use brain::adapter::{
     ArtifactMeta, CallOutcome, CallRequest, HandAdapter, HandFactory, HandSpec, LostReport,
     OutputSink, SeedFile,
@@ -52,11 +54,13 @@ impl HandAdapter for EchoHand {
         sink("stdout", 5, text[5..].to_string());
         CallOutcome {
             outcome: "completed".into(),
+            value: Some(serde_json::json!({"timed_out": false})),
             content: text,
             is_error: false,
             exit_code: Some(0),
             duration_ms: 1,
             truncated: false,
+            terminal: None,
         }
     }
 
@@ -82,8 +86,8 @@ impl HandAdapter for EchoHand {
         })
     }
 
-    fn hand_info(&self) -> aex_contracts::session::HandInfo {
-        use aex_contracts::session::{HandInfo, HandShape, HandState};
+    fn hand_info(&self) -> brain_protocol::session::HandInfo {
+        use brain_protocol::session::{HandInfo, HandShape, HandState};
         HandInfo {
             generation: Some(1),
             last_sync_at: None,
@@ -106,7 +110,12 @@ struct EchoFactory {
 
 #[async_trait::async_trait]
 impl HandFactory for EchoFactory {
-    async fn create(&self, _spec: &HandSpec, seeds: &[SeedFile<'_>]) -> brain::Result<Value> {
+    async fn create(
+        &self,
+        _spec: &HandSpec,
+        seeds: &[SeedFile<'_>],
+        _bundles: &[brain::adapter::ToolBundleFile<'_>],
+    ) -> brain::Result<Value> {
         let mut files = self.opened.files.lock().unwrap();
         for s in seeds {
             files.insert(s.path.to_string(), s.bytes.to_vec());
@@ -170,6 +179,7 @@ async fn a_third_party_adapter_composes_via_public_api_only() {
         .bearer_auth(&token)
         .json(&json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+            "tools": {"items": [support::hand_tool("bash")]},
             "files": [{"path": "seed.txt", "content_base64": "c2VlZGVk"}]
         }))
         .send()

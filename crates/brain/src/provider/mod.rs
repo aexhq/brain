@@ -35,22 +35,6 @@ pub struct ModelRequest {
     pub body: Vec<u8>,
 }
 
-/// The output commit request is a private provider step. It sees the requested schema and a
-/// transient control instruction, but neither becomes session history or a normal tool.
-#[derive(Debug, Clone)]
-pub struct OutputControl {
-    pub schema: serde_json::Value,
-    pub instruction: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputMode {
-    /// Provider-native constrained structured output.
-    Native,
-    /// A single forced internal `aex_output` tool. Ordinary session tools stay disabled.
-    ForcedTool,
-}
-
 impl ModelRequest {
     pub fn body_len(&self) -> usize {
         self.body.len()
@@ -82,8 +66,8 @@ pub enum ProviderEvent {
         index: usize,
         text: String,
     },
-    /// A provider-native refusal payload. It is text for diagnostics, but it must not be parsed
-    /// as a structured-output candidate even when the provider finishes with an ordinary stop.
+    /// A provider-native refusal payload. It is text for diagnostics, but its refusal semantics
+    /// remain distinct even when the provider also reports an ordinary stop reason.
     RefusalDelta {
         index: usize,
         text: String,
@@ -121,23 +105,13 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
         base_url: &str,
     ) -> Result<ModelRequest>;
 
-    fn build_output_request(
-        &self,
-        prefix: &SealedPrefix,
-        history: &[Message],
-        key: &ProviderKey,
-        base_url: &str,
-        control: &OutputControl,
-        mode: OutputMode,
-    ) -> Result<ModelRequest>;
-
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>>;
 }
 
 /// Accumulates a dialect-neutral event stream into one complete assistant
 /// message.
 ///
-/// `aex` B11: a provider response becomes model-visible history **only after a
+/// A provider response becomes model-visible history **only after a
 /// complete assistant message commits**. Partial deltas may be streamed to a
 /// client but never become a journal entry, which is why this type exists
 /// separately from the journal.
@@ -266,7 +240,7 @@ pub fn for_dialect(d: Dialect) -> Box<dyn Provider> {
 ///
 /// Not an optimisation detail: a client per session would mean a TLS session
 /// cache, a connection pool and a DNS resolver per session, which is a large
-/// part of why process-per-session costs what it does. `aex` §11.1 makes the
+/// part of why process-per-session costs what it does. Brain makes the
 /// same point -- pooled TLS/HTTP clients are a named reason the mux exists.
 static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 

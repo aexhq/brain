@@ -16,7 +16,7 @@ pub const LEGACY_OFFER: &str = "2025-06-18";
 /// Initialization-era revisions the legacy adapter accepts from a server.
 pub const LEGACY_ACCEPTED: [&str; 3] = ["2025-03-26", "2025-06-18", "2025-11-25"];
 
-pub const CLIENT_NAME: &str = "aex-brain";
+pub const CLIENT_NAME: &str = "brain";
 
 // JSON-RPC error codes the 2026-07-28 revision defines. A 400 whose body carries one of
 // these came from a MODERN server -- the backward-compat probe must NOT fall back on them.

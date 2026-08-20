@@ -1,0 +1,21 @@
+{
+  "type": "turn.failed",
+  "seq": 126,
+  "at": "2026-08-18T09:40:06Z",
+  "session_id": "ses_01HZX8Y2K3M4N5P6Q7R8S9T0",
+  "turn_id": "trn_01HZX8Y2K3M4N5P6Q7R8S9U1",
+  "error": {
+    "code": "invalid_request",
+    "message": "The host rejected the terminal tool result",
+    "request_id": "req_9x",
+    "details": {
+      "issues": [
+        {
+          "path": "/confidence",
+          "message": "must be less than or equal to 1",
+          "keyword": "maximum"
+        }
+      ]
+    }
+  }
+}

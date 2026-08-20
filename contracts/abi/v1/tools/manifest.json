@@ -1,0 +1,374 @@
+{
+  "version": "1",
+  "tools": [
+    {
+      "name": "bash",
+      "description": "Run a shell command in the lane's persistent shell environment. stdout/stderr are the operation streams. A non-zero exit is a completed operation with that exit_code.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "timeout_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Overrides bounds.timeout_ms for this call."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "timed_out"
+        ],
+        "properties": {
+          "timed_out": {
+            "type": "boolean"
+          }
+        }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "0ed0bae284be7259c3d82f498885dc7010747fdb4b9f3edcc3160c922dac161b",
+        "source": "preinstalled",
+        "required_env": []
+      }
+    },
+    {
+      "name": "edit",
+      "description": "Replace an exact string in a file. Fails (exit 1, reason on stderr) when old_string is absent, or matches more than once without replace_all.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "old_string",
+          "new_string"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "old_string": {
+            "type": "string",
+            "minLength": 1
+          },
+          "new_string": {
+            "type": "string"
+          },
+          "replace_all": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "replacements"
+        ],
+        "properties": {
+          "replacements": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "deb8dd2afb0ad6658dd3667a7bc525266b776a959adc0e5c99ff5a3f27ca9c43",
+        "source": "preinstalled",
+        "required_env": []
+      }
+    },
+    {
+      "name": "glob",
+      "description": "Find files by glob pattern. stdout: one matching path per line, most recently modified first.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pattern"
+        ],
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "description": "Directory to search. Default cwd."
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1000
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "matches",
+          "truncated"
+        ],
+        "properties": {
+          "matches": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "4721f58d411cf593b5f91a434680c16c08ae6da7409663928b3b512f3d39ddb4",
+        "source": "preinstalled",
+        "required_env": []
+      }
+    },
+    {
+      "name": "grep",
+      "description": "Search file contents with a regular expression (ripgrep semantics). stdout: results in the selected mode.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pattern"
+        ],
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "description": "File or directory. Default cwd."
+          },
+          "glob": {
+            "type": "string",
+            "description": "Only files matching this glob."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "files",
+              "content",
+              "count"
+            ],
+            "default": "files"
+          },
+          "case_insensitive": {
+            "type": "boolean",
+            "default": false
+          },
+          "context": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Lines of context around each match (content mode)."
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1000
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "matches",
+          "truncated"
+        ],
+        "properties": {
+          "matches": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "5fd52904b191d45e58b308a3f336ae534616948fd28ef5a278210571d4d073f1",
+        "source": "preinstalled",
+        "required_env": []
+      }
+    },
+    {
+      "name": "ls",
+      "description": "List a directory. stdout: one entry per line, directories suffixed with '/'.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Default cwd."
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1
+          },
+          "hidden": {
+            "type": "boolean",
+            "default": false
+          },
+          "max_entries": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 2000
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entries",
+          "truncated"
+        ],
+        "properties": {
+          "entries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "b9cec943bf70a2896f65ab5120e7a52f20b38ad39536f70058e32bf2bc19943a",
+        "source": "preinstalled",
+        "required_env": []
+      }
+    },
+    {
+      "name": "read",
+      "description": "Read a text file. stdout: the selected lines, raw (no line numbers). Binary files fail with exit 1.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1,
+            "description": "1-based first line."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 2000,
+            "description": "Maximum lines."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "total_lines",
+          "start_line",
+          "end_line",
+          "truncated"
+        ],
+        "properties": {
+          "total_lines": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "start_line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when total_lines > end_line."
+          }
+        }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "74d97cc52d0607605e9b0c0fa3e90127f5cd68fcc4d6673c855b515c582006ef",
+        "source": "preinstalled",
+        "required_env": []
+      }
+    },
+    {
+      "name": "write",
+      "description": "Create or overwrite a file with the given content, creating parent directories.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "bytes_written",
+          "created"
+        ],
+        "properties": {
+          "bytes_written": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "created": {
+            "type": "boolean",
+            "description": "True when the file did not exist before."
+          }
+        }
+      },
+      "executable": {
+        "protocol": 1,
+        "checksum": "0560ad249be00118236ba6918bb432d64dbc01f92a50e668ca0b7476f3447e46",
+        "source": "preinstalled",
+        "required_env": []
+      }
+    }
+  ]
+}

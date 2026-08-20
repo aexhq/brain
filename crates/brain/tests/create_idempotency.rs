@@ -7,7 +7,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "aex-create-idempotency-{}-{}",
+            "brain-create-idempotency-{}-{}",
             std::process::id(),
             brain::wall_ms()
         ));

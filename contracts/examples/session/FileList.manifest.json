@@ -1,0 +1,18 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "path": "/workspace/repo/src/main.rs",
+      "kind": "file",
+      "size": 1042,
+      "modified_at": "2026-08-18T09:41:39Z",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "path": "/workspace/repo/target",
+      "kind": "dir"
+    }
+  ],
+  "synced_at": "2026-08-18T09:42:10Z",
+  "source": "manifest"
+}

@@ -1,11 +1,11 @@
-//! The session journal: every decision durable in one DynamoDB write (D9).
+//! The session journal: every decision is durable in one backend transaction (D9).
 //!
 //! One item collection per session. `HEAD` carries ownership (lease + fence), the sealed
 //! configuration and the mutable session facts; `E#<seq>` items carry the decision records.
 //! The journal is also the event log: SSE replay is a derivation over these records
 //! (`events::derive`), and `seq` is both the journal order and the SSE `id:`.
 //!
-//! Concurrency rules (donor: aex-brain-domain, kept because each one answers a real outage):
+//! Concurrency rules (each one answers a real outage class):
 //! - the (session, seq) key is the idempotency barrier: a redelivered decision loses the
 //!   write, it never duplicates;
 //! - the fence advances on claim only, never on renew (renewing must not fence out the owner);
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Bound on the tool-result content a single record may carry. DynamoDB items cap at 400 KiB;
+/// Bound on the tool-result content a single record may carry. Hosted DynamoDB items cap at 400 KiB;
 /// this leaves generous room for the envelope and the parallel records of one decision.
 pub const MAX_RECORD_CONTENT_BYTES: usize = 96 * 1024;
 
@@ -39,17 +39,13 @@ pub enum Record {
     UserMessage {
         turn: String,
         content: Vec<ContentBlock>,
+        /// Trusted turn context forwarded to host-executed tools. It is never rendered as model
+        /// input and must survive replay with the admitted message.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
     },
     TurnStarted {
         turn: String,
-    },
-    /// Admission for one typed output request. The schema is intentionally absent; only its
-    /// hash and the captured journal boundary are durable.
-    OutputStarted {
-        output: String,
-        turn: Option<String>,
-        schema_hash: String,
-        source_seq: u64,
     },
     /// A complete assistant message, full-fidelity blocks. Only complete messages are
     /// journaled -- a stream that dies mid-message journals nothing.
@@ -95,29 +91,15 @@ pub enum Record {
         stop_reason: String,
         rounds: u64,
         tool_calls: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<brain_protocol::session::TurnResult>,
     },
     TurnFailed {
         turn: String,
         code: String,
         message: String,
-    },
-    /// The validated assistant value. This is the only output-commit content folded back into
-    /// future model history.
-    OutputCompleted {
-        output: String,
-        turn: Option<String>,
-        schema_hash: String,
-        value: serde_json::Value,
-        usage: Usage,
-    },
-    OutputFailed {
-        output: String,
-        turn: Option<String>,
-        schema_hash: String,
-        code: String,
-        message: String,
-        issues: Vec<crate::output::ValidationIssue>,
-        usage: Usage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
     },
     /// A session/hand state transition worth telling clients about (`session.updated`).
     State {
@@ -142,15 +124,12 @@ impl Record {
         match self {
             Record::UserMessage { .. } => "user_message",
             Record::TurnStarted { .. } => "turn_started",
-            Record::OutputStarted { .. } => "output_started",
             Record::Assistant { .. } => "assistant",
             Record::Usage { .. } => "usage",
             Record::ToolCall { .. } => "tool_call",
             Record::ToolResult { .. } => "tool_result",
             Record::TurnCompleted { .. } => "turn_completed",
             Record::TurnFailed { .. } => "turn_failed",
-            Record::OutputCompleted { .. } => "output_completed",
-            Record::OutputFailed { .. } => "output_failed",
             Record::State { .. } => "state",
             Record::HandLost { .. } => "hand_lost",
             Record::Compacted { .. } => "compacted",
@@ -243,22 +222,6 @@ impl Fold {
                     content: content.clone(),
                 });
             }
-            Record::OutputCompleted {
-                schema_hash, value, ..
-            } => {
-                self.flush_results();
-                let block = ContentBlock::Output {
-                    schema_hash: schema_hash.clone(),
-                    value: value.clone(),
-                };
-                if let Some(last) = self.history.last_mut()
-                    && last.role == Role::Assistant
-                {
-                    last.content.push(block);
-                } else {
-                    self.history.push(Message::assistant(vec![block]));
-                }
-            }
             Record::ToolResult {
                 call,
                 content,
@@ -283,8 +246,6 @@ impl Fold {
             | Record::ToolCall { .. }
             | Record::TurnCompleted { .. }
             | Record::TurnFailed { .. }
-            | Record::OutputStarted { .. }
-            | Record::OutputFailed { .. }
             | Record::State { .. }
             | Record::HandLost { .. } => {}
         }
@@ -348,10 +309,15 @@ pub struct HeadDoc {
     /// contract marks `McpServerConfig.headers` writeOnly.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub mcp_secrets_b64: String,
+    /// Custody blob of the session-wide Hand environment map, base64. Never plaintext.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hand_secrets_b64: String,
+    /// Exact ordered Hand execution manifest, excluding ephemeral download URLs.
+    pub hand_manifest: brain_protocol::abi::ToolManifest,
     pub manifest_digest: String,
     /// The contract-facing hand snapshot, refreshed from the adapter on every commit --
     /// what `session.updated` replay and `GET /sessions/{id}` serve.
-    pub hand_info: aex_contracts::session::HandInfo,
+    pub hand_info: brain_protocol::session::HandInfo,
     /// The hand adapter's own durable state. Opaque to the core: persisted verbatim, handed
     /// back on the next `HandFactory::open`.
     #[serde(default)]
@@ -362,16 +328,12 @@ pub struct HeadDoc {
     pub workspace_bytes: u64,
     #[serde(default)]
     pub artifacts: Vec<ArtifactDoc>,
-    /// Bounded, 24-hour output idempotency index. Keys and request payloads are hashed; the
-    /// schema itself is never retained here.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub output_requests: Vec<OutputRequestDoc>,
 }
 
 impl HeadDoc {
     /// The hand snapshot before any adapter has reported: preparing, on the given shape.
-    pub fn initial_hand_info(shape: &str) -> aex_contracts::session::HandInfo {
-        use aex_contracts::session::{HandInfo, HandShape, HandState};
+    pub fn initial_hand_info(shape: &str) -> brain_protocol::session::HandInfo {
+        use brain_protocol::session::{HandInfo, HandShape, HandState};
         HandInfo {
             generation: None,
             last_sync_at: None,
@@ -413,8 +375,9 @@ pub struct PrefixDoc {
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-    /// Builtin tool names, in declaration order (order is cache-visible).
-    pub tools: Vec<String>,
+    /// Exact native Tool definitions and execution seals, in cache-visible declaration order.
+    /// Bundle bytes are staged by the Hand factory and never appear here.
+    pub tools: Vec<brain_protocol::session::ToolConfig>,
     /// Declared MCP servers with their negotiated spec versions. Digested via the sealed
     /// prefix; empty for sessions without MCP.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -427,8 +390,9 @@ pub struct PrefixDoc {
     pub hand_enabled: bool,
     pub shape: String,
     pub sync_interval_seconds: u64,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
+    /// Names only, allowing create-time required-env validation without persisting values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hand_env_keys: Vec<String>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
 }
@@ -468,17 +432,6 @@ pub struct ArtifactDoc {
     pub sha256: String,
     pub media_type: String,
     pub created_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OutputRequestDoc {
-    pub key_hash: String,
-    pub request_hash: String,
-    pub output_id: String,
-    pub schema_hash: String,
-    pub started_seq: u64,
-    pub admitted_ms: u64,
 }
 
 /// The claim a hydrating owner holds. Every commit is conditioned on it.
@@ -832,6 +785,7 @@ mod tests {
         Record::UserMessage {
             turn: turn.into(),
             content: vec![ContentBlock::text(text)],
+            metadata: HashMap::new(),
         }
     }
     fn assistant(turn: &str, blocks: Vec<ContentBlock>) -> Record {
@@ -988,6 +942,7 @@ mod tests {
                 stop_reason: "interrupted".into(),
                 rounds: 1,
                 tool_calls: 1,
+                result: None,
             },
             user("t2", "continue"),
         ]));
@@ -1072,23 +1027,24 @@ mod tests {
                 max_output_tokens: Some(4096),
                 temperature: None,
                 reasoning_effort: None,
-                tools: vec!["bash".into()],
+                tools: vec![],
                 mcp: vec![],
                 mcp_tools: vec![],
                 hand_enabled: true,
                 shape: "1gb".into(),
                 sync_interval_seconds: 600,
-                env: HashMap::new(),
+                hand_env_keys: vec![],
                 metadata: HashMap::new(),
             },
             key_b64: "AAAA".into(),
             mcp_secrets_b64: String::new(),
+            hand_secrets_b64: String::new(),
+            hand_manifest: crate::tools::hand_manifest(&[]).unwrap(),
             manifest_digest: "d".into(),
             hand_info: HeadDoc::initial_hand_info("1gb"),
             hand_state: serde_json::Value::Null,
             workspace_bytes: 0,
             artifacts: vec![],
-            output_requests: vec![],
         };
         let s = serde_json::to_string(&doc).unwrap();
         let back: HeadDoc = serde_json::from_str(&s).unwrap();
@@ -1122,17 +1078,18 @@ mod tests {
                 hand_enabled: false,
                 shape: "1gb".into(),
                 sync_interval_seconds: 600,
-                env: HashMap::new(),
+                hand_env_keys: vec![],
                 metadata: HashMap::new(),
             },
             key_b64: String::new(),
             mcp_secrets_b64: String::new(),
+            hand_secrets_b64: String::new(),
+            hand_manifest: crate::tools::hand_manifest(&[]).unwrap(),
             manifest_digest: String::new(),
             hand_info: HeadDoc::initial_hand_info("1gb"),
             hand_state: serde_json::Value::Null,
             workspace_bytes: 0,
             artifacts: vec![],
-            output_requests: vec![],
         }
     }
 

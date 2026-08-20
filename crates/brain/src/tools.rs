@@ -1,132 +1,160 @@
-//! Tool resolution and the brain-side tools.
+//! Resolution of the public definition/executor Tool contract.
 //!
-//! The seven hand tools come verbatim from the sealed ABI manifest (`aex-contracts`); their
-//! schemas are rendered to the model exactly as the hand serves them, so the manifest digest
-//! the brain seals at create is the digest the hand must answer in `hello` (I1).
-//!
-//! Brain-side tools (`todo`, and since slice 8 `task`) run in-process. Managed web tools run
-//! through the guarded outbound seam and are available only when explicitly sealed.
+//! There is deliberately no builtin registry here. Official and third-party tools arrive through
+//! the same ordered `ToolConfig` array, and dispatch is derived only from the sealed executor
+//! descriptor. Model-visible names are data, never switches in the core.
 
-use crate::config::{ToolDecl, ToolRoute};
+use crate::config::{HandToolSeal, ServerToolPolicy, ToolDecl, ToolRoute};
 use crate::{BrainError, Result};
-use aex_contracts::session::BuiltinTool;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Mutex;
+use brain_protocol::abi::{
+    ToolExecutable, ToolExecutableSource, ToolManifest, ToolManifestVersion, ToolSpec, ToolSpecName,
+};
+use brain_protocol::session::{HandToolSource, ToolConfig, ToolExecutor};
+use serde::Deserialize;
 
-/// The default tool set when `tools` is omitted at create: all hand tools + `task` + `todo`,
-/// exactly as the contract documents.
-pub fn default_builtins() -> Vec<BuiltinTool> {
-    vec![
-        BuiltinTool::Bash,
-        BuiltinTool::Read,
-        BuiltinTool::Write,
-        BuiltinTool::Edit,
-        BuiltinTool::Glob,
-        BuiltinTool::Grep,
-        BuiltinTool::Ls,
-        BuiltinTool::Task,
-        BuiltinTool::Todo,
-    ]
+/// Resolve native tools in exact declaration order. Kind discriminator strings and protocol
+/// constants are checked here because generated Rust structs intentionally preserve JSON `const`
+/// fields as strings/integers.
+pub fn resolve(items: &[ToolConfig]) -> Result<Vec<ToolDecl>> {
+    items.iter().map(resolve_one).collect()
 }
 
-fn builtin_name(t: &BuiltinTool) -> &'static str {
-    match t {
-        BuiltinTool::Bash => "bash",
-        BuiltinTool::Read => "read",
-        BuiltinTool::Write => "write",
-        BuiltinTool::Edit => "edit",
-        BuiltinTool::Glob => "glob",
-        BuiltinTool::Grep => "grep",
-        BuiltinTool::Ls => "ls",
-        BuiltinTool::Task => "task",
-        BuiltinTool::Todo => "todo",
-        BuiltinTool::WebSearch => "web_search",
-        BuiltinTool::WebFetch => "web_fetch",
-    }
-}
+fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
+    let name = tool.definition.name.to_string();
+    let input_schema = serde_json::Value::Object(tool.definition.input_schema.clone());
+    let output_schema = serde_json::Value::Object(tool.definition.output_schema.clone());
+    validate_schema(&name, "input", &input_schema)?;
+    validate_schema(&name, "output", &output_schema)?;
+    let route = match &tool.executor {
+        ToolExecutor::HandToolExecutor(exec) => {
+            if exec.kind != "hand" || exec.protocol != 1 {
+                return Err(BrainError::Invalid(format!(
+                    "tool {name}: unsupported Hand executor descriptor"
+                )));
+            }
+            ToolRoute::Hand(HandToolSeal {
+                protocol: exec.protocol,
+                checksum: exec.checksum.to_string(),
+                source: exec.source,
+                required_env: exec
+                    .required_env
+                    .iter()
+                    .cloned()
+                    .map(String::from)
+                    .collect(),
+            })
+        }
+        ToolExecutor::AttachedToolExecutor(exec) => {
+            if exec.kind != "attached" {
+                return Err(BrainError::Invalid(format!(
+                    "tool {name}: invalid attached executor kind"
+                )));
+            }
+            ToolRoute::Attached {
+                callback_id: exec.callback_id.to_string(),
+            }
+        }
+        ToolExecutor::ServerToolExecutor(exec) => {
+            if exec.kind != "server" {
+                return Err(BrainError::Invalid(format!(
+                    "tool {name}: invalid server executor kind"
+                )));
+            }
+            ToolRoute::Server(ServerToolPolicy {
+                capability: exec.capability.to_string(),
+                scope: exec.scope,
+                completion: exec.completion,
+                effect: exec.effect,
+                max_input_bytes: exec.max_input_bytes.get() as usize,
+            })
+        }
+        ToolExecutor::IntrinsicToolExecutor(exec) => {
+            if exec.kind != "intrinsic" {
+                return Err(BrainError::Invalid(format!(
+                    "tool {name}: invalid intrinsic executor kind"
+                )));
+            }
+            ToolRoute::Intrinsic(exec.capability.to_string())
+        }
+        ToolExecutor::McpToolExecutor(exec) => {
+            if exec.kind != "mcp" {
+                return Err(BrainError::Invalid(format!(
+                    "tool {name}: invalid MCP executor kind"
+                )));
+            }
+            ToolRoute::Mcp {
+                server: exec.server.clone(),
+                remote_name: exec.remote_name.clone(),
+            }
+        }
+    };
 
-pub fn parse_builtin(name: &str) -> Option<BuiltinTool> {
-    Some(match name {
-        "bash" => BuiltinTool::Bash,
-        "read" => BuiltinTool::Read,
-        "write" => BuiltinTool::Write,
-        "edit" => BuiltinTool::Edit,
-        "glob" => BuiltinTool::Glob,
-        "grep" => BuiltinTool::Grep,
-        "ls" => BuiltinTool::Ls,
-        "task" => BuiltinTool::Task,
-        "todo" => BuiltinTool::Todo,
-        "web_search" => BuiltinTool::WebSearch,
-        "web_fetch" => BuiltinTool::WebFetch,
-        _ => return None,
+    Ok(ToolDecl {
+        name,
+        description: tool.definition.description.to_string(),
+        input_schema,
+        output_schema,
+        route,
     })
 }
 
-/// Resolves the declared builtin tools into sealed `ToolDecl`s, in declaration order (order
-/// is cache-visible).
-pub fn resolve(builtins: &[BuiltinTool]) -> Result<Vec<ToolDecl>> {
-    let manifest = aex_contracts::tools::manifest_v1();
-    let mut decls = Vec::with_capacity(builtins.len());
-    for b in builtins {
-        let name = builtin_name(b);
-        match b {
-            BuiltinTool::WebSearch => decls.push(web_search_decl()),
-            BuiltinTool::WebFetch => decls.push(web_fetch_decl()),
-            BuiltinTool::Task => decls.push(task_decl()),
-            BuiltinTool::Todo => decls.push(todo_decl()),
-            _ => {
-                let spec = manifest
-                    .tools
-                    .iter()
-                    .find(|t| *t.name == name)
-                    .ok_or_else(|| BrainError::UndeclaredTool { name: name.into() })?;
-                decls.push(ToolDecl {
-                    name: name.into(),
-                    description: spec.description.clone(),
-                    input_schema: serde_json::Value::Object(spec.input_schema.clone()),
-                    route: ToolRoute::Hand,
-                });
-            }
+fn validate_schema(name: &str, boundary: &str, schema: &serde_json::Value) -> Result<()> {
+    jsonschema::draft202012::new(schema).map_err(|error| {
+        BrainError::Invalid(format!("tool {name} {boundary}_schema is invalid: {error}"))
+    })?;
+    Ok(())
+}
+
+/// Validate one model-produced input at the sealed execution boundary. The call intent has
+/// already been journaled when this is used, but invalid input never reaches an executor.
+pub fn input_error(tool: &ToolDecl, input: &serde_json::Value) -> Option<String> {
+    validation_error(&tool.name, "input", &tool.input_schema, input)
+}
+
+/// Enforce the successful structured result immediately before the caller commits it. Adapters
+/// may format `content` for the model, but the independently carried value is authoritative for
+/// the output contract.
+pub fn enforce_output(
+    tool: &ToolDecl,
+    outcome: crate::adapter::CallOutcome,
+) -> crate::adapter::CallOutcome {
+    if outcome.is_error || outcome.outcome != "completed" {
+        return outcome;
+    }
+    let Some(value) = outcome.value.as_ref() else {
+        let mut failed = crate::adapter::CallOutcome::failed(format!(
+            "tool {} completed without a structured output value",
+            tool.name
+        ));
+        failed.duration_ms = outcome.duration_ms;
+        return failed;
+    };
+    let Some(error) = validation_error(&tool.name, "output", &tool.output_schema, value) else {
+        return outcome;
+    };
+    let mut failed = crate::adapter::CallOutcome::failed(error);
+    failed.duration_ms = outcome.duration_ms;
+    failed
+}
+
+fn validation_error(
+    name: &str,
+    boundary: &str,
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Option<String> {
+    let validator = match jsonschema::draft202012::new(schema) {
+        Ok(validator) => validator,
+        Err(error) => {
+            return Some(format!(
+                "tool {name} sealed {boundary}_schema is invalid: {error}"
+            ));
         }
-    }
-    Ok(decls)
-}
-
-fn web_search_decl() -> ToolDecl {
-    ToolDecl {
-        name: "web_search".into(),
-        description: "Search the public web using the managed search service. Returns ordered titles, URLs, snippets, and optional dates. Each successful call is billed at the published per-query rate.".into(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {"type":"string", "minLength":1, "maxLength":500},
-                "num": {"type":"integer", "minimum":1, "maximum":10, "default":5},
-                "country": {"type":"string", "minLength":2, "maxLength":8},
-                "language": {"type":"string", "minLength":2, "maxLength":16}
-            },
-            "required": ["query"],
-            "additionalProperties": false
-        }),
-        route: ToolRoute::Web,
-    }
-}
-
-fn web_fetch_decl() -> ToolDecl {
-    ToolDecl {
-        name: "web_fetch".into(),
-        description: "Fetch one public HTTPS page through the SSRF guard and return readable text. Redirects are revalidated at every hop; private, local, metadata, and non-web destinations are refused.".into(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "url": {"type":"string", "format":"uri", "minLength":1},
-                "max_chars": {"type":"integer", "minimum":1, "maximum":50000, "default":50000}
-            },
-            "required": ["url"],
-            "additionalProperties": false
-        }),
-        route: ToolRoute::Web,
-    }
+    };
+    validator
+        .iter_errors(value)
+        .next()
+        .map(|error| format!("tool {name} {boundary}{}: {error}", error.instance_path()))
 }
 
 /// Names of the resolved tools, for the HEAD prefix doc.
@@ -136,10 +164,61 @@ pub fn names(decls: &[ToolDecl]) -> Vec<String> {
 
 /// The digest the brain seals and sends in `hello`. Any hand that cannot serve exactly this
 /// manifest fails the session (`tool_manifest_mismatch`).
-pub fn manifest_digest() -> String {
-    aex_contracts::tools::TOOL_MANIFEST_V1_DIGEST
-        .trim()
-        .to_string()
+pub fn hand_manifest(decls: &[ToolDecl]) -> Result<ToolManifest> {
+    let mut tools = Vec::new();
+    for decl in decls {
+        let ToolRoute::Hand(seal) = &decl.route else {
+            continue;
+        };
+        let input_schema = decl.input_schema.as_object().cloned().ok_or_else(|| {
+            BrainError::Invalid(format!("tool {} input_schema must be an object", decl.name))
+        })?;
+        let output_schema = decl.output_schema.as_object().cloned().ok_or_else(|| {
+            BrainError::Invalid(format!(
+                "tool {} output_schema must be an object",
+                decl.name
+            ))
+        })?;
+        tools.push(ToolSpec {
+            name: ToolSpecName::try_from(decl.name.clone())
+                .map_err(|e| BrainError::Invalid(format!("tool name: {e}")))?,
+            description: decl.description.clone(),
+            input_schema,
+            output_schema,
+            streams: None,
+            executable: ToolExecutable {
+                protocol: seal.protocol,
+                checksum: seal.checksum.clone().try_into().map_err(|e| {
+                    BrainError::Invalid(format!("tool {} checksum: {e}", decl.name))
+                })?,
+                source: match seal.source {
+                    HandToolSource::Bundle => ToolExecutableSource::Bundle,
+                    HandToolSource::Preinstalled => ToolExecutableSource::Preinstalled,
+                },
+                bytes: None,
+                get_url: None,
+                required_env: seal
+                    .required_env
+                    .iter()
+                    .map(|name| name.parse())
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|error| {
+                        BrainError::Invalid(format!(
+                            "tool {} required environment name: {error}",
+                            decl.name
+                        ))
+                    })?,
+            },
+        });
+    }
+    Ok(ToolManifest {
+        version: ToolManifestVersion::X1,
+        tools,
+    })
+}
+
+pub fn manifest_digest(manifest: &ToolManifest) -> String {
+    brain_protocol::tools::manifest_digest(manifest).to_string()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -156,174 +235,132 @@ pub struct TaskInput {
     pub prompt: String,
 }
 
-pub fn task_decl() -> ToolDecl {
-    ToolDecl {
-        name: "task".into(),
-        description: concat!(
-            "Delegate a self-contained piece of work to a subagent. The subagent has the ",
-            "same tools and workspace as you (except task-list state), works autonomously ",
-            "from your prompt alone, and returns only its final report -- so the prompt ",
-            "must carry every detail it needs."
-        )
-        .into(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "description": {"type": "string", "minLength": 1, "maxLength": 100,
-                                "description": "A short (3-7 word) label for this delegation."},
-                "prompt": {"type": "string", "minLength": 1,
-                           "description": "The complete, self-contained task for the subagent."}
-            },
-            "required": ["description", "prompt"],
-            "additionalProperties": false
-        }),
-        route: ToolRoute::Brain,
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// todo -- brain-side, no side effects outside the session
-// ---------------------------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TodoItem {
-    pub content: String,
-    pub status: TodoStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TodoStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TodoInput {
-    items: Vec<TodoItem>,
-}
-
-fn todo_decl() -> ToolDecl {
-    ToolDecl {
-        name: "todo".into(),
-        description: "Replace the session's todo list. Send the complete list every time; \
-                      the response echoes the stored list."
-            .into(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "content": {"type": "string", "minLength": 1},
-                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}
-                        },
-                        "required": ["content", "status"],
-                        "additionalProperties": false
-                    }
-                }
-            },
-            "required": ["items"],
-            "additionalProperties": false
-        }),
-        route: ToolRoute::Brain,
-    }
-}
-
-/// The per-session todo state. Ephemeral by design: it is model working memory, not data.
-#[derive(Debug, Default)]
-pub struct TodoState {
-    items: Mutex<Vec<TodoItem>>,
-}
-
-impl TodoState {
-    /// Executes one `todo` call. Returns (content, is_error).
-    pub fn execute(&self, input: &serde_json::Value) -> (String, bool) {
-        match serde_json::from_value::<TodoInput>(input.clone()) {
-            Ok(t) => {
-                let mut items = self.items.lock().expect("todo lock");
-                *items = t.items;
-                let body = serde_json::json!({ "items": &*items });
-                (body.to_string(), false)
-            }
-            Err(e) => (format!("invalid todo input: {e}"), true),
-        }
-    }
-}
-
 /// The per-call metadata the dispatcher carries; also what error text the model sees when a
 /// tool cannot run at all.
 pub fn undeclared(name: &str) -> String {
     format!("tool {name} is not declared in this session's sealed tool set")
 }
 
-/// Session-scoped mint for operation/batch ids: unique per session for the life of the
-/// process, unique across rehydrations by the turn prefix.
-#[derive(Debug, Default)]
-pub struct Mint(std::sync::atomic::AtomicU64);
-
-impl Mint {
-    pub fn next(&self, prefix: &str) -> String {
-        let n = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        format!("{prefix}_{n:08x}")
-    }
-}
-
-/// Placeholder to keep `HashMap` import honest for env carriage helpers used by hand hello.
-pub type Env = HashMap<String, String>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn resolve_serves_manifest_schemas_verbatim_in_order() {
-        let decls = resolve(&default_builtins()).unwrap();
-        assert_eq!(
-            names(&decls),
-            vec![
-                "bash", "read", "write", "edit", "glob", "grep", "ls", "task", "todo"
-            ]
-        );
-        let manifest = aex_contracts::tools::manifest_v1();
-        let bash = manifest.tools.iter().find(|t| &**t.name == "bash").unwrap();
-        assert_eq!(
-            decls[0].input_schema,
-            serde_json::Value::Object(bash.input_schema.clone()),
-            "hand tool schemas must render exactly as the manifest serves them (I1)"
-        );
-        assert!(matches!(decls[0].route, ToolRoute::Hand));
-        assert!(matches!(decls[7].route, ToolRoute::Brain));
-        assert!(matches!(decls[8].route, ToolRoute::Brain));
+    fn omitted_tools_resolve_to_an_empty_set() {
+        assert!(resolve(&[]).unwrap().is_empty());
     }
 
     #[test]
-    fn managed_web_tools_have_sealed_schemas_and_routes() {
-        let tools = resolve(&[BuiltinTool::WebSearch, BuiltinTool::WebFetch]).unwrap();
-        assert_eq!(names(&tools), ["web_search", "web_fetch"]);
-        assert!(tools.iter().all(|tool| tool.route == ToolRoute::Web));
-    }
-
-    #[test]
-    fn todo_replaces_and_echoes() {
-        let s = TodoState::default();
-        let (out, err) = s.execute(&serde_json::json!({
-            "items": [{"content": "write tests", "status": "in_progress"}]
-        }));
-        assert!(!err);
-        assert!(out.contains("write tests"));
-        let (out, err) = s.execute(&serde_json::json!({"bogus": true}));
-        assert!(err, "invalid input is an error result, not a panic: {out}");
+    fn arbitrary_names_resolve_from_executor_descriptors_in_exact_order() {
+        let items: Vec<ToolConfig> = serde_json::from_value(serde_json::json!([
+            {
+                "definition": {
+                    "name": "run_anything",
+                    "description": "A test Hand tool.",
+                    "input_schema": {"type":"object"},
+                    "output_schema": {"type":"object"}
+                },
+                "executor": {
+                    "kind":"hand", "protocol":1,
+                    "checksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "source":"bundle", "required_env":["TOKEN"]
+                }
+            },
+            {
+                "definition": {
+                    "name": "delegate_anything",
+                    "description": "A test intrinsic.",
+                    "input_schema": {"type":"object"},
+                    "output_schema": {"type":"string"}
+                },
+                "executor": {"kind":"intrinsic", "capability":"brain.subagents"}
+            }
+        ]))
+        .unwrap();
+        let decls = resolve(&items).unwrap();
+        assert_eq!(names(&decls), ["run_anything", "delegate_anything"]);
+        assert!(matches!(decls[0].route, ToolRoute::Hand(_)));
+        assert!(matches!(
+            &decls[1].route,
+            ToolRoute::Intrinsic(capability) if capability == "brain.subagents"
+        ));
+        let manifest = hand_manifest(&decls).unwrap();
+        assert_eq!(manifest.tools.len(), 1);
+        assert_eq!(&*manifest.tools[0].name, "run_anything");
+        assert_eq!(
+            manifest.tools[0].executable.required_env[0].as_str(),
+            "TOKEN"
+        );
     }
 
     #[test]
     fn manifest_digest_matches_the_pin() {
-        let m = aex_contracts::tools::manifest_v1();
-        assert_eq!(*aex_contracts::tools::manifest_digest(m), manifest_digest());
+        let m = brain_protocol::tools::manifest_v1();
+        assert_eq!(
+            *brain_protocol::tools::manifest_digest(m),
+            manifest_digest(m)
+        );
+    }
+
+    #[test]
+    fn schemas_are_compiled_at_create_and_values_are_checked_at_both_boundaries() {
+        let item: ToolConfig = serde_json::from_value(serde_json::json!({
+            "definition": {
+                "name": "arbitrary_name",
+                "description": "Schema gate.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"value": {"type": "integer"}},
+                    "required": ["value"]
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"]
+                }
+            },
+            "executor": {"kind": "attached", "callback_id": "schema-gate"}
+        }))
+        .unwrap();
+        let tool = resolve(&[item]).unwrap().remove(0);
+        assert!(input_error(&tool, &serde_json::json!({"value": "wrong"})).is_some());
+        assert!(input_error(&tool, &serde_json::json!({"value": 1})).is_none());
+
+        let valid = crate::adapter::CallOutcome {
+            outcome: "completed".into(),
+            value: Some(serde_json::json!({"ok": true})),
+            content: "ok".into(),
+            is_error: false,
+            exit_code: None,
+            duration_ms: 7,
+            truncated: false,
+            terminal: None,
+        };
+        assert_eq!(enforce_output(&tool, valid).outcome, "completed");
+        let invalid = crate::adapter::CallOutcome {
+            outcome: "completed".into(),
+            value: Some(serde_json::json!({"ok": "wrong"})),
+            content: "bad".into(),
+            is_error: false,
+            exit_code: None,
+            duration_ms: 7,
+            truncated: false,
+            terminal: None,
+        };
+        let invalid = enforce_output(&tool, invalid);
+        assert_eq!(invalid.outcome, "failed");
+        assert!(invalid.content.contains("arbitrary_name output"));
+
+        let malformed: ToolConfig = serde_json::from_value(serde_json::json!({
+            "definition": {
+                "name": "malformed",
+                "description": "Bad schema.",
+                "input_schema": {"type": "not-a-json-schema-type"},
+                "output_schema": {"type": "object"}
+            },
+            "executor": {"kind": "attached", "callback_id": "malformed"}
+        }))
+        .unwrap();
+        assert!(resolve(&[malformed]).is_err());
     }
 }

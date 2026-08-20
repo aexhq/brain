@@ -1,0 +1,7 @@
+{
+  "model": {
+    "provider": "openai",
+    "name": "gpt-5",
+    "api_key": "sk-REDACTED"
+  }
+}

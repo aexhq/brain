@@ -8,6 +8,8 @@
 //! by construction, and any bleed shows up as the wrong fake being asked, the wrong system
 //! prompt length arriving, or the wrong content in a journal.
 
+mod support;
+
 use brain::config::Dialect;
 use brain::journal::Journal;
 use brain::local::LocalFactory;
@@ -22,12 +24,15 @@ const ALPHA_SYSTEM: &str = "You are agent ALPHA. MARKER_ALPHA_PROMPT.";
 const BETA_SYSTEM: &str = "You are agent BETA with a longer prompt. MARKER_BETA_PROMPT!!";
 const ALPHA_KEY: &str = "sk-alpha-secret-key-000001";
 const BETA_KEY: &str = "sk-beta-secret-key-000002";
+const ALPHA_HAND_SECRET: &str = "hand-alpha-secret-000001";
+const BETA_HAND_SECRET: &str = "hand-beta-secret-000002";
 
 struct Tenant {
     sid: String,
     fake: Arc<FakeProvider>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create(
     http: &reqwest::Client,
     base: &str,
@@ -36,6 +41,7 @@ async fn create(
     model: &str,
     key: &str,
     system: &str,
+    hand_secret: &str,
 ) -> String {
     let r = http
         .post(format!("{base}/v1/sessions"))
@@ -43,6 +49,8 @@ async fn create(
         .json(&json!({
             "model": {"provider": provider, "name": model, "api_key": key},
             "system_prompt": system,
+            "hand": {"env": {"TENANT_SECRET": hand_secret}},
+            "tools": {"items": [support::hand_tool("write"), support::hand_tool("read")]},
         }))
         .send()
         .await
@@ -130,7 +138,7 @@ async fn nothing_crosses_between_two_tenants_on_one_brain() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let app = brain::api::router(brain::api::AppState {
-        brain,
+        brain: brain.clone(),
         token: token.clone(),
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -145,6 +153,7 @@ async fn nothing_crosses_between_two_tenants_on_one_brain() {
             "model-alpha",
             ALPHA_KEY,
             ALPHA_SYSTEM,
+            ALPHA_HAND_SECRET,
         )
         .await,
         fake: fake_alpha,
@@ -158,6 +167,7 @@ async fn nothing_crosses_between_two_tenants_on_one_brain() {
             "model-beta",
             BETA_KEY,
             BETA_SYSTEM,
+            BETA_HAND_SECRET,
         )
         .await,
         fake: fake_beta,
@@ -213,10 +223,32 @@ async fn nothing_crosses_between_two_tenants_on_one_brain() {
         }
     }
 
-    // 3. Provider keys appear in NO journal, not even the session's own (BYOK custody:
-    //    encrypted at create, decrypted per call, never journaled, never echoed).
+    // 3. Provider and Hand environment values appear in NO public journal event, not even
+    //    the session's own (custody values are never echoed or passed to the model).
     for events in [&alpha_events, &beta_events] {
-        assert!(!events.contains(ALPHA_KEY) && !events.contains(BETA_KEY));
+        for secret in [ALPHA_KEY, BETA_KEY, ALPHA_HAND_SECRET, BETA_HAND_SECRET] {
+            assert!(!events.contains(secret));
+        }
+    }
+
+    // The durable documents likewise contain only custody blobs and environment key names,
+    // never literal secret values. Standalone custody separately proves authenticated
+    // encryption of those blobs.
+    let heads = brain.journal.list_sessions(10).await.unwrap();
+    let mut durable = String::new();
+    for head in &heads {
+        durable.push_str(&serde_json::to_string(&head.doc).unwrap());
+        for entry in brain
+            .journal
+            .read_records(&head.session_id, 0)
+            .await
+            .unwrap()
+        {
+            durable.push_str(&serde_json::to_string(&entry.record).unwrap());
+        }
+    }
+    for secret in [ALPHA_KEY, BETA_KEY, ALPHA_HAND_SECRET, BETA_HAND_SECRET] {
+        assert!(!durable.contains(secret), "literal secret was journaled");
     }
 
     // 4. Every journaled event names its own session, nothing else's.

@@ -1,0 +1,104 @@
+{
+  "kind": "response",
+  "frame": {
+    "id": "r-1",
+    "result": {
+      "status": "ok",
+      "reply": {
+        "op": "hello",
+        "body": {
+          "protocol": {
+            "major": 1,
+            "minor": 0
+          },
+          "generation_id": "gen-3",
+          "boot_id": "boot-9f3a",
+          "tool_manifest_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tools": [
+            {
+              "name": "bash",
+              "description": "Run a shell command in the lane's persistent shell environment. stdout/stderr are the operation streams. A non-zero exit is a completed operation with that exit_code.",
+              "input_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "command"
+                ],
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "timeout_ms": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1,
+                    "description": "Overrides bounds.timeout_ms for this call."
+                  }
+                }
+              },
+              "output_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "timed_out"
+                ],
+                "properties": {
+                  "timed_out": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "executable": {
+                "protocol": 1,
+                "checksum": "0ed0bae284be7259c3d82f498885dc7010747fdb4b9f3edcc3160c922dac161b",
+                "source": "preinstalled",
+                "required_env": []
+              }
+            }
+          ],
+          "lanes": [
+            {
+              "id": "0",
+              "mode": "persistent",
+              "state": "live",
+              "created_at_monotonic_ms": 812
+            }
+          ],
+          "operations": [],
+          "limits": {
+            "max_lanes": 64,
+            "max_concurrent_operations": 64,
+            "max_frame_bytes": 1048576,
+            "max_slice_bytes": 262144,
+            "max_poll_wait_ms": 30000,
+            "max_inline_put_bytes": 262144,
+            "max_persist_bytes": 1073741824,
+            "default_bounds": {
+              "timeout_ms": null,
+              "grace_ms": 2000,
+              "max_retained_bytes": 67108864
+            }
+          },
+          "paths": {
+            "workspace": "/workspace",
+            "home": "/home/agent",
+            "spill_dir": "/var/hand/ops"
+          },
+          "clock": {
+            "monotonic_ms": 812,
+            "wall_ms": 1787400000000
+          },
+          "restore": {
+            "manifest_id": "m-12",
+            "files": 1432,
+            "bytes": 16777216,
+            "duration_ms": 1080
+          }
+        }
+      }
+    }
+  }
+}

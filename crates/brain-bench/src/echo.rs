@@ -30,13 +30,16 @@ impl HandAdapter for EchoHand {
         _sink: OutputSink,
     ) -> CallOutcome {
         self.calls.fetch_add(1, Ordering::Relaxed);
+        let content = format!("ok:{}", req.call_id);
         CallOutcome {
             outcome: "completed".into(),
-            content: format!("ok:{}", req.call_id),
+            value: Some(Value::String(content.clone())),
+            content,
             is_error: false,
             exit_code: Some(0),
             duration_ms: 0,
             truncated: false,
+            terminal: None,
         }
     }
 
@@ -55,8 +58,8 @@ impl HandAdapter for EchoHand {
         ))
     }
 
-    fn hand_info(&self) -> aex_contracts::session::HandInfo {
-        use aex_contracts::session::{HandInfo, HandShape, HandState};
+    fn hand_info(&self) -> brain_protocol::session::HandInfo {
+        use brain_protocol::session::{HandInfo, HandShape, HandState};
         HandInfo {
             generation: Some(1),
             last_sync_at: None,
@@ -81,7 +84,12 @@ pub struct EchoFactory {
 
 #[async_trait::async_trait]
 impl HandFactory for EchoFactory {
-    async fn create(&self, _spec: &HandSpec, _seeds: &[SeedFile<'_>]) -> brain::Result<Value> {
+    async fn create(
+        &self,
+        _spec: &HandSpec,
+        _seeds: &[SeedFile<'_>],
+        _bundles: &[brain::adapter::ToolBundleFile<'_>],
+    ) -> brain::Result<Value> {
         Ok(json!({"echo": true}))
     }
 

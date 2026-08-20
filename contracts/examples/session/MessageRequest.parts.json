@@ -1,0 +1,12 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Summarise this file."
+    },
+    {
+      "type": "workspace_file",
+      "path": "/workspace/README.md"
+    }
+  ]
+}

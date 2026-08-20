@@ -1,0 +1,11 @@
+{
+  "id": "r-7",
+  "fence": 9,
+  "generation_id": "gen-3",
+  "call": {
+    "op": "lane_close",
+    "args": {
+      "lane_id": "L-7"
+    }
+  }
+}

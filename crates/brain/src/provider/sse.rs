@@ -1,10 +1,10 @@
 //! An incremental SSE decoder.
 //!
 //! Bounded at construction: a frame that exceeds `max_frame` is a typed error,
-//! not an unbounded buffer. `aex` §5 forbids unbounded buffers, and a provider
+//! not an unbounded buffer. Brain forbids unbounded buffers, and a provider
 //! that never sends a blank line is otherwise an OOM.
 //!
-//! Handles the cases the `aex` plan's Slice 5 lists as required: fragmentation
+//! Handles the required wire cases: fragmentation
 //! at any byte boundary, split UTF-8, comment lines, CRLF, and early EOF.
 
 use crate::{BrainError, Result};

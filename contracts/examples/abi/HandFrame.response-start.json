@@ -1,0 +1,64 @@
+{
+  "kind": "response",
+  "frame": {
+    "id": "r-2",
+    "result": {
+      "status": "ok",
+      "reply": {
+        "op": "start",
+        "body": {
+          "view": {
+            "operation_id": "op-0001",
+            "tool": "bash",
+            "lane_id": "0",
+            "detach": false,
+            "status": "terminal",
+            "started_at_monotonic_ms": 100000,
+            "terminal": {
+              "outcome": "completed",
+              "exit_code": 1,
+              "signal": null,
+              "output": {
+                "timed_out": false
+              },
+              "ended_at_monotonic_ms": 104210,
+              "usage": {
+                "wall_ms": 4210,
+                "cpu_ms": 3900,
+                "max_rss_bytes": 734003200
+              }
+            },
+            "streams": [
+              {
+                "stream": "stdout",
+                "produced_bytes": 2210,
+                "retained_from": 0,
+                "spill_path": "/var/hand/ops/op-0001.stdout",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              {
+                "stream": "stderr",
+                "produced_bytes": 0,
+                "retained_from": 0,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "correlation": {
+              "agent_id": "root",
+              "tool_call_id": "call_abc"
+            }
+          },
+          "slices": [
+            {
+              "stream": "stdout",
+              "offset": 0,
+              "data_base64": "dGVzdCByZXN1bHQ6IEZBSUxFRC4gMSBwYXNzZWQ7IDEgZmFpbGVkCg==",
+              "eof": true
+            }
+          ],
+          "replayed": false
+        }
+      }
+    }
+  }
+}

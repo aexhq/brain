@@ -1,5 +1,5 @@
 //! The session API v1 over axum: the HTTP surface defined by
-//! `aexhq/aex/contracts/session/v1/openapi.yaml`. Shapes come from `aex-contracts`; this
+//! `contracts/session/v1/openapi.yaml`. Shapes come from `brain-protocol`; this
 //! module only routes, authenticates and maps errors -- it never invents wire formats.
 //!
 //! SSE framing: `id: <seq>` / `event: <type>` / `data: <Event JSON>`. Replay comes from the
@@ -14,20 +14,22 @@ use crate::events::{event_seq, event_type};
 use crate::journal::Record;
 use crate::session::Brain;
 use crate::{BrainError, mint_id};
-use aex_contracts::session::{
-    self, ApiError, ApiErrorCode, ApiErrorResponse, Artifact, ArtifactList, CreateSessionRequest,
-    FileList, FileListObject, MessageAccepted, MessageRequest, OutputAccepted, OutputRequest,
-    PersistRequest, SessionList,
-};
 use axum::body::{Body, Bytes, to_bytes};
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event as SseFrame, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use brain_protocol::session::{
+    self, ApiError, ApiErrorCode, ApiErrorResponse, Artifact, ArtifactList, CreateSessionRequest,
+    FileList, FileListObject, MessageAccepted, MessageRequest, PersistRequest, SessionList,
+};
 use futures_util::stream::Stream;
+use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -45,8 +47,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions", post(create_session).get(list_sessions))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/messages", post(send_message))
-        .route("/v1/sessions/{id}/output", post(request_output))
         .route("/v1/sessions/{id}/events", get(stream_events))
+        .route("/v1/sessions/{id}/attached", get(attached_worker))
         .route("/v1/sessions/{id}/cancel", post(cancel_turn))
         .route("/v1/sessions/{id}/end", post(end_session))
         .route("/v1/sessions/{id}/files", get(list_files))
@@ -58,6 +60,117 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions/{id}/artifacts", get(list_artifacts))
         .route("/v1/sessions/{id}/artifacts/{name}", get(get_artifact))
         .with_state(state)
+}
+
+async fn attached_worker(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.max_message_size(128 * 1024)
+        .max_frame_size(128 * 1024)
+        .on_upgrade(move |socket| serve_attached_worker(state, id, socket))
+        .into_response()
+}
+
+async fn serve_attached_worker(state: AppState, session_id: String, socket: WebSocket) {
+    let (mut sink, mut source) = socket.split();
+    let hello = tokio::time::timeout(std::time::Duration::from_secs(5), source.next()).await;
+    let Some(Ok(WsMessage::Text(text))) = hello.ok().flatten() else {
+        let _ = sink
+            .send(WsMessage::Text(
+                serde_json::to_string(&crate::attached::ServerFrame::Error {
+                    message: "attached worker hello was not received".into(),
+                })
+                .unwrap_or_default()
+                .into(),
+            ))
+            .await;
+        return;
+    };
+    let frame = serde_json::from_str::<crate::attached::ClientFrame>(&text);
+    let (token, callbacks) = match frame {
+        Ok(crate::attached::ClientFrame::Hello { token, callbacks }) => (token, callbacks),
+        _ => {
+            let _ = sink.close().await;
+            return;
+        }
+    };
+    if token != state.token {
+        let _ = sink
+            .send(WsMessage::Text(
+                serde_json::to_string(&crate::attached::ServerFrame::Error {
+                    message: "invalid bearer token".into(),
+                })
+                .unwrap_or_default()
+                .into(),
+            ))
+            .await;
+        return;
+    }
+    let expected = match state.brain.attached_callbacks(&session_id).await {
+        Ok(expected) if !expected.is_empty() => expected,
+        _ => {
+            let _ = sink.close().await;
+            return;
+        }
+    };
+    let callbacks: HashSet<_> = callbacks.into_iter().collect();
+    let mut registration = match state
+        .brain
+        .attached
+        .register(&session_id, callbacks, &expected)
+    {
+        Ok(registration) => registration,
+        Err(error) => {
+            let _ = sink
+                .send(WsMessage::Text(
+                    serde_json::to_string(&crate::attached::ServerFrame::Error {
+                        message: error.to_string(),
+                    })
+                    .unwrap_or_default()
+                    .into(),
+                ))
+                .await;
+            return;
+        }
+    };
+    let ready = serde_json::to_string(&crate::attached::ServerFrame::Ready).unwrap_or_default();
+    if sink.send(WsMessage::Text(ready.into())).await.is_err() {
+        registration.disconnect();
+        return;
+    }
+    loop {
+        tokio::select! {
+            outbound = registration.outbound.recv() => {
+                let Some(frame) = outbound else { break };
+                let Ok(text) = serde_json::to_string(&frame) else { break };
+                if sink.send(WsMessage::Text(text.into())).await.is_err() { break; }
+            }
+            inbound = source.next() => {
+                let Some(Ok(message)) = inbound else { break };
+                match message {
+                    WsMessage::Text(text) => {
+                        if let Ok(crate::attached::ClientFrame::Result { call_id, ok, output, error }) =
+                            serde_json::from_str::<crate::attached::ClientFrame>(&text)
+                        {
+                            state.brain.attached.complete(
+                                &session_id,
+                                &call_id,
+                                crate::attached::AttachedResult { ok, output, error },
+                            );
+                        }
+                    }
+                    WsMessage::Close(_) => break,
+                    WsMessage::Ping(bytes) => {
+                        if sink.send(WsMessage::Pong(bytes)).await.is_err() { break; }
+                    }
+                    WsMessage::Pong(_) | WsMessage::Binary(_) => {}
+                }
+            }
+        }
+    }
+    registration.disconnect();
 }
 
 pub async fn serve(state: AppState, addr: std::net::SocketAddr) -> anyhow::Result<()> {
@@ -86,11 +199,16 @@ pub fn nodelay(
 
 struct Failure(StatusCode, ApiErrorCode, String);
 
+fn api_code(value: &str) -> ApiErrorCode {
+    value.parse().expect("static API error code")
+}
+
 impl IntoResponse for Failure {
     fn into_response(self) -> Response {
         let body = ApiErrorResponse {
             error: ApiError {
                 code: self.1,
+                details: None,
                 message: self.2,
                 param: None,
                 request_id: Some(mint_id("req", 16)),
@@ -101,35 +219,31 @@ impl IntoResponse for Failure {
 }
 
 fn map_err(e: BrainError) -> Failure {
-    use ApiErrorCode as C;
     use StatusCode as S;
     let (status, code) = match &e {
         BrainError::Invalid(_) | BrainError::PrefixSealed { .. } | BrainError::Serde(_) => {
-            (S::BAD_REQUEST, C::InvalidRequest)
+            (S::BAD_REQUEST, "invalid_request")
         }
-        BrainError::NoSuchSession(_) => (S::NOT_FOUND, C::NotFound),
-        BrainError::FileNotFound(_) => (S::NOT_FOUND, C::NotFound),
-        BrainError::FileTooLarge { .. } => (S::PAYLOAD_TOO_LARGE, C::InvalidRequest),
-        BrainError::TurnInFlight(_) => (S::CONFLICT, C::SessionBusy),
-        BrainError::IdempotencyConflict => (S::CONFLICT, C::Conflict),
-        BrainError::SessionDeleted(_) => (S::GONE, C::SessionDeleted),
-        BrainError::SessionFailed(_) => (S::CONFLICT, C::SessionFailed),
-        BrainError::Overloaded => (S::TOO_MANY_REQUESTS, C::RateLimited),
+        BrainError::NoSuchSession(_) => (S::NOT_FOUND, "not_found"),
+        BrainError::FileNotFound(_) => (S::NOT_FOUND, "not_found"),
+        BrainError::FileTooLarge { .. } => (S::PAYLOAD_TOO_LARGE, "invalid_request"),
+        BrainError::TurnInFlight(_) => (S::CONFLICT, "session_busy"),
+        BrainError::IdempotencyConflict => (S::CONFLICT, "conflict"),
+        BrainError::SessionDeleted(_) => (S::GONE, "session_deleted"),
+        BrainError::SessionFailed(_) => (S::CONFLICT, "session_failed"),
+        BrainError::Overloaded => (S::TOO_MANY_REQUESTS, "rate_limited"),
         BrainError::ProviderStatus { .. } | BrainError::Transport(_) | BrainError::Protocol(_) => {
-            (S::BAD_GATEWAY, C::ProviderError)
+            (S::BAD_GATEWAY, "provider_error")
         }
-        BrainError::OutputSchema(_) => (S::BAD_REQUEST, C::OutputSchemaError),
-        BrainError::OutputRefused(_) => (S::UNPROCESSABLE_ENTITY, C::OutputRefused),
-        BrainError::OutputValidation(_) => (S::UNPROCESSABLE_ENTITY, C::OutputValidationError),
-        BrainError::Cancelled => (S::CONFLICT, C::Cancelled),
+        BrainError::Cancelled => (S::CONFLICT, "cancelled"),
         BrainError::HandUnavailable(_) | BrainError::Hand(_) => {
-            (S::SERVICE_UNAVAILABLE, C::HandUnavailable)
+            (S::SERVICE_UNAVAILABLE, "hand_unavailable")
         }
-        _ => (S::INTERNAL_SERVER_ERROR, C::Internal),
+        _ => (S::INTERNAL_SERVER_ERROR, "internal"),
     };
     // The message is safe to surface: BrainError never carries credentials (ProviderKey's
     // Debug redacts, and no variant embeds request bodies).
-    Failure(status, code, e.to_string())
+    Failure(status, api_code(code), e.to_string())
 }
 
 fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Failure> {
@@ -142,7 +256,7 @@ fn auth(state: &AppState, headers: &HeaderMap) -> Result<(), Failure> {
     } else {
         Err(Failure(
             StatusCode::UNAUTHORIZED,
-            ApiErrorCode::Unauthorized,
+            api_code("unauthorized"),
             "missing or invalid bearer token".into(),
         ))
     }
@@ -164,7 +278,7 @@ async fn create_session(
             value.to_str().map_err(|_| {
                 Failure(
                     StatusCode::BAD_REQUEST,
-                    ApiErrorCode::InvalidRequest,
+                    api_code("invalid_request"),
                     "Idempotency-Key must be valid ASCII".into(),
                 )
             })
@@ -234,7 +348,7 @@ async fn send_message(
     auth(&state, &headers)?;
     let (turn_id, seq) = state
         .brain
-        .message(&id, req.content)
+        .message_with_metadata(&id, req.content, req.metadata)
         .await
         .map_err(map_err)?;
     Ok((
@@ -244,68 +358,15 @@ async fn send_message(
             session_id: id.parse().map_err(|_| {
                 Failure(
                     StatusCode::BAD_REQUEST,
-                    ApiErrorCode::InvalidRequest,
+                    api_code("invalid_request"),
                     "session id".into(),
                 )
             })?,
             turn_id: turn_id.parse().map_err(|_| {
                 Failure(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    ApiErrorCode::Internal,
+                    api_code("internal"),
                     "turn id".into(),
-                )
-            })?,
-        }),
-    ))
-}
-
-async fn request_output(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(req): Json<OutputRequest>,
-) -> Result<(StatusCode, Json<OutputAccepted>), Failure> {
-    auth(&state, &headers)?;
-    let idempotency_key = headers
-        .get("idempotency-key")
-        .map(|value| {
-            value.to_str().map_err(|_| {
-                Failure(
-                    StatusCode::BAD_REQUEST,
-                    ApiErrorCode::InvalidRequest,
-                    "Idempotency-Key must be valid ASCII".into(),
-                )
-            })
-        })
-        .transpose()?;
-    let admitted = state
-        .brain
-        .output(&id, req, idempotency_key)
-        .await
-        .map_err(map_err)?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(OutputAccepted {
-            output_id: admitted.output_id.parse().map_err(|_| {
-                Failure(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ApiErrorCode::Internal,
-                    "output id".into(),
-                )
-            })?,
-            schema_hash: admitted.schema_hash.parse().map_err(|_| {
-                Failure(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ApiErrorCode::Internal,
-                    "schema hash".into(),
-                )
-            })?,
-            seq: NonZeroU64::new(admitted.seq.max(1)).expect("nonzero"),
-            session_id: id.parse().map_err(|_| {
-                Failure(
-                    StatusCode::BAD_REQUEST,
-                    ApiErrorCode::InvalidRequest,
-                    "session id".into(),
                 )
             })?,
         }),
@@ -447,7 +508,7 @@ async fn get_artifact(
         .ok_or_else(|| {
             Failure(
                 StatusCode::NOT_FOUND,
-                ApiErrorCode::NotFound,
+                api_code("not_found"),
                 format!("no artifact {name}"),
             )
         })?;
@@ -514,7 +575,7 @@ async fn stream_events(
     if head.doc.state == "deleted" {
         return Err(Failure(
             StatusCode::NOT_FOUND,
-            ApiErrorCode::NotFound,
+            api_code("not_found"),
             "session deleted".into(),
         ));
     }

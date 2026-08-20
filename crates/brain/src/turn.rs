@@ -18,15 +18,14 @@
 //! [`crate::adapter::HandAdapter`] seam, one call at a time, output streamed back through a
 //! sink whose event seqs the core owns.
 
-use crate::adapter::{CallOutcome, CallRequest, HandAdapter};
+use crate::adapter::{CallOutcome, CallRequest, HandAdapter, TerminalOutcome, ToolExecutor};
 use crate::config::{SealedPrefix, SessionConfig, ToolRoute};
 use crate::events::EventHub;
 use crate::journal::{self, HeadDoc, Journal, Lease, Record};
 use crate::message::{ContentBlock, Message, StopReason};
 use crate::provider::{Accumulator, Provider, ProviderEvent};
-use crate::tools::TodoState;
 use crate::{BrainError, Result, Shared};
-use aex_contracts::session::EventStream;
+use brain_protocol::session::EventStream;
 use futures_util::StreamExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,7 +40,6 @@ pub struct TurnState {
     pub head: HeadDoc,
     pub lease: Lease,
     pub hand: Arc<dyn HandAdapter>,
-    pub todo: Arc<TodoState>,
     /// Sealed MCP dispatch state, rebuilt at hydrate from the prefix doc. `None` when the
     /// session declares no MCP servers.
     pub mcp: Option<Arc<crate::mcp::McpRuntime>>,
@@ -85,7 +83,10 @@ pub struct TurnRun {
     /// Bounds concurrent model rounds across the whole brain (admission, D9/D11).
     pub model_permits: Arc<Semaphore>,
     pub history_budget_bytes: usize,
-    pub web: Arc<crate::web::WebRuntime>,
+    pub external_executor: Arc<dyn ToolExecutor>,
+    pub attached: Arc<crate::attached::AttachedHub>,
+    /// Trusted metadata journaled with this message and forwarded only to host executors.
+    pub context: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +94,8 @@ pub struct TurnReport {
     pub stop_reason: String,
     pub rounds: u64,
     pub tool_calls: u64,
+    /// True when the tool-result decision also journaled the turn terminal atomically.
+    pub terminal_committed: bool,
 }
 
 impl TurnRun {
@@ -125,17 +128,39 @@ impl TurnRun {
     /// The whole turn. The admitted user message and `turn_started` are already committed by
     /// the actor; `st.history` already carries the user message.
     pub async fn run(&self, st: &mut TurnState) -> Result<TurnReport> {
-        let report = self.run_work(st).await?;
+        self.resume(st, 0, 0).await
+    }
+
+    /// Continue a journaled turn after replay-safe host-tool recovery. The counters are derived
+    /// from already committed root assistant/tool-call records so the eventual terminal event
+    /// remains cumulative across process ownership changes.
+    pub(crate) async fn resume(
+        &self,
+        st: &mut TurnState,
+        rounds: u64,
+        tool_calls: u64,
+    ) -> Result<TurnReport> {
+        let report = self.run_work_from(st, rounds, tool_calls).await?;
+        if report.terminal_committed {
+            return Ok(report);
+        }
         self.complete(st, &report.stop_reason, report.rounds, report.tool_calls)
             .await
     }
 
-    /// Execute through the final assistant answer without committing the turn terminal. The
-    /// output path uses this so output.completed/output.failed and turn completion can land in
-    /// one final decision; ordinary messages use [`Self::run`].
+    /// Execute through the final assistant answer without necessarily committing the turn
+    /// terminal. Host-executed terminal tools commit their tool result and terminal state in one
+    /// decision; ordinary messages finish through [`Self::run`].
     pub async fn run_work(&self, st: &mut TurnState) -> Result<TurnReport> {
-        let mut rounds: u64 = 0;
-        let mut tool_calls: u64 = 0;
+        self.run_work_from(st, 0, 0).await
+    }
+
+    async fn run_work_from(
+        &self,
+        st: &mut TurnState,
+        mut rounds: u64,
+        mut tool_calls: u64,
+    ) -> Result<TurnReport> {
         let max_rounds = self.prefix.limits.max_rounds as u64;
 
         loop {
@@ -157,6 +182,7 @@ impl TurnRun {
                     stop_reason: "max_rounds".into(),
                     rounds,
                     tool_calls,
+                    terminal_committed: false,
                 });
             }
 
@@ -168,6 +194,7 @@ impl TurnRun {
                         stop_reason: "cancelled".into(),
                         rounds,
                         tool_calls,
+                        terminal_committed: false,
                     });
                 }
                 Err(e) => return Err(e),
@@ -214,6 +241,7 @@ impl TurnRun {
                     },
                     rounds,
                     tool_calls,
+                    terminal_committed: false,
                 });
             }
             tool_calls += calls.len() as u64;
@@ -252,6 +280,60 @@ impl TurnRun {
                     },
                 ));
             }
+            let terminal = outcomes
+                .iter()
+                .enumerate()
+                .find_map(|(index, outcome)| outcome.terminal.clone().map(|value| (index, value)));
+            let terminal_report = if let Some((index, terminal)) = terminal {
+                st.head.state = "idle".into();
+                st.head.turn = None;
+                match terminal {
+                    TerminalOutcome::Complete { value, metadata } => {
+                        let result = brain_protocol::session::TurnResult {
+                            call_id: calls[index].0.parse().map_err(|error| {
+                                BrainError::Protocol(format!("external call id: {error}"))
+                            })?,
+                            metadata,
+                            name: calls[index].1.clone(),
+                            value,
+                        };
+                        result_records.push((
+                            st.take_seq(),
+                            Record::TurnCompleted {
+                                turn: self.turn_id.clone(),
+                                stop_reason: "end_turn".into(),
+                                rounds,
+                                tool_calls,
+                                result: Some(result),
+                            },
+                        ));
+                        Some("end_turn")
+                    }
+                    TerminalOutcome::Fail { error } => {
+                        result_records.push((
+                            st.take_seq(),
+                            Record::TurnFailed {
+                                turn: self.turn_id.clone(),
+                                code: error.code.to_string(),
+                                message: error.message,
+                                details: error.details,
+                            },
+                        ));
+                        Some("error")
+                    }
+                }
+            } else {
+                None
+            };
+            if terminal_report.is_some() {
+                result_records.push((
+                    st.take_seq(),
+                    Record::State {
+                        state: "idle".into(),
+                        turn: Some(self.turn_id.clone()),
+                    },
+                ));
+            }
             self.commit(st, result_records).await?;
 
             // Only after the results are durable may the substrate forget them.
@@ -259,11 +341,21 @@ impl TurnRun {
             st.hand.acknowledge(&ids).await;
             st.history.push(Message::tool_results(blocks));
 
+            if let Some(stop_reason) = terminal_report {
+                return Ok(TurnReport {
+                    stop_reason: stop_reason.into(),
+                    rounds,
+                    tool_calls,
+                    terminal_committed: true,
+                });
+            }
+
             if self.cancel.is_cancelled() {
                 return Ok(TurnReport {
                     stop_reason: "cancelled".into(),
                     rounds,
                     tool_calls,
+                    terminal_committed: false,
                 });
             }
         }
@@ -290,6 +382,7 @@ impl TurnRun {
                         stop_reason: stop_reason.into(),
                         rounds,
                         tool_calls,
+                        result: None,
                     },
                 ),
                 (
@@ -306,6 +399,7 @@ impl TurnRun {
             stop_reason: stop_reason.into(),
             rounds,
             tool_calls,
+            terminal_committed: true,
         })
     }
 
@@ -359,8 +453,8 @@ impl TurnRun {
     ) -> Result<Vec<CallOutcome>> {
         let needs_hand = calls.iter().any(|(_, name, _)| {
             matches!(
-                self.prefix.tool(name).map(|t| t.route),
-                Some(ToolRoute::Hand) | None
+                self.prefix.tool(name).map(|t| &t.route),
+                Some(ToolRoute::Hand(_))
             )
         });
         if needs_hand {
@@ -401,12 +495,29 @@ impl TurnRun {
         let (child_journal, mut child_commits) = crate::subagent::ChildJournal::channel();
         let child_prefix: Option<Shared<SealedPrefix>> = calls
             .iter()
-            .any(|(_, name, _)| name == "task")
+            .any(|(_, name, _)| {
+                matches!(
+                    self.prefix.tool(name).map(|tool| &tool.route),
+                    Some(ToolRoute::Intrinsic(capability))
+                        if matches!(capability.as_str(), "brain.subagents" | "brain.subagents.v1")
+                )
+            })
             .then(|| Arc::new(self.prefix.task_child()));
         let mut join = tokio::task::JoinSet::new();
         for (idx, (op_id, name, input)) in calls.iter().cloned().enumerate() {
-            let route = self.prefix.tool(&name).map(|t| t.route);
+            let route = self.prefix.tool(&name).map(|t| t.route.clone());
             let permit = sem.clone();
+            if let Some(error) = self
+                .prefix
+                .tool(&name)
+                .and_then(|tool| crate::tools::input_error(tool, &input))
+            {
+                join.spawn(async move {
+                    let _permit = permit.acquire_owned().await;
+                    (idx, CallOutcome::failed(error))
+                });
+                continue;
+            }
             match route {
                 None => {
                     // Undeclared: never dispatched, still answered.
@@ -415,7 +526,12 @@ impl TurnRun {
                         (idx, CallOutcome::failed(crate::tools::undeclared(&name)))
                     });
                 }
-                Some(ToolRoute::Brain) if name == "task" => {
+                Some(ToolRoute::Intrinsic(capability))
+                    if matches!(
+                        capability.as_str(),
+                        "brain.subagents" | "brain.subagents.v1"
+                    ) =>
+                {
                     // A self-similar child agent, in-process, inside this turn (slice 8).
                     let ctx = Arc::new(crate::subagent::SubagentCtx {
                         session_id: self.session_id.clone(),
@@ -434,7 +550,9 @@ impl TurnRun {
                         seq: st.seq.clone(),
                         hand: st.hand.clone(),
                         mcp: st.mcp.clone(),
-                        web: self.web.clone(),
+                        server_executor: self.external_executor.clone(),
+                        attached: self.attached.clone(),
+                        context: self.context.clone(),
                         identities: st.identities.clone(),
                         journal: child_journal.clone(),
                     });
@@ -444,34 +562,18 @@ impl TurnRun {
                         (idx, outcome)
                     });
                 }
-                Some(ToolRoute::Brain) => {
-                    let todo = st.todo.clone();
+                Some(ToolRoute::Intrinsic(capability)) => {
                     join.spawn(async move {
                         let _permit = permit.acquire_owned().await;
-                        let t0 = Instant::now();
-                        let (content, is_error) = if name == "todo" {
-                            todo.execute(&input)
-                        } else {
-                            (crate::tools::undeclared(&name), true)
-                        };
                         (
                             idx,
-                            CallOutcome {
-                                outcome: if is_error {
-                                    "failed".into()
-                                } else {
-                                    "completed".into()
-                                },
-                                content,
-                                is_error,
-                                exit_code: None,
-                                duration_ms: t0.elapsed().as_millis() as u64,
-                                truncated: false,
-                            },
+                            CallOutcome::failed(format!(
+                                "intrinsic capability {capability} is unavailable"
+                            )),
                         )
                     });
                 }
-                Some(ToolRoute::Mcp) => {
+                Some(ToolRoute::Mcp { .. }) => {
                     // Sealed MCP tools dispatch through the session's McpRuntime. The runtime
                     // was built at hydrate; a call for a session that somehow has none (or a
                     // tool the runtime no longer knows) is answered as an error, never a panic.
@@ -488,16 +590,58 @@ impl TurnRun {
                         (idx, out)
                     });
                 }
-                Some(ToolRoute::Web) => {
-                    let web = self.web.clone();
+                Some(ToolRoute::Server(policy)) => {
+                    let executor = self.external_executor.clone();
                     let cancel = self.cancel.clone();
+                    let session_id = self.session_id.clone();
+                    let turn_id = self.turn_id.clone();
+                    let context = self.context.clone();
                     join.spawn(async move {
                         let _permit = permit.acquire_owned().await;
-                        let out = web.call(&name, &input, &cancel).await;
+                        let out = execute_external(
+                            executor,
+                            policy,
+                            batch,
+                            session_id,
+                            turn_id,
+                            "root".into(),
+                            op_id,
+                            name,
+                            input,
+                            context,
+                            cancel,
+                        )
+                        .await;
                         (idx, out)
                     });
                 }
-                Some(ToolRoute::Hand) => {
+                Some(ToolRoute::Attached { callback_id }) => {
+                    let attached = self.attached.clone();
+                    let cancel = self.cancel.clone();
+                    let session_id = self.session_id.clone();
+                    let output_schema = self
+                        .prefix
+                        .tool(&name)
+                        .expect("sealed route came from this Tool")
+                        .output_schema
+                        .clone();
+                    join.spawn(async move {
+                        let _permit = permit.acquire_owned().await;
+                        let outcome = attached
+                            .call(
+                                &session_id,
+                                &callback_id,
+                                &op_id,
+                                &name,
+                                input,
+                                &output_schema,
+                                cancel,
+                            )
+                            .await;
+                        (idx, outcome)
+                    });
+                }
+                Some(ToolRoute::Hand(_)) => {
                     let hand = st.hand.clone();
                     let cancel = self.cancel.clone();
                     // Each streaming call reserves its own ephemeral seq window for
@@ -570,8 +714,139 @@ impl TurnRun {
 
         Ok(done
             .into_iter()
-            .map(|o| o.unwrap_or_else(|| CallOutcome::failed("tool produced no result")))
+            .enumerate()
+            .map(|(index, outcome)| {
+                let outcome =
+                    outcome.unwrap_or_else(|| CallOutcome::failed("tool produced no result"));
+                match self.prefix.tool(&calls[index].1) {
+                    Some(tool) => crate::tools::enforce_output(tool, outcome),
+                    None => outcome,
+                }
+            })
             .collect())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_external(
+    executor: Arc<dyn ToolExecutor>,
+    policy: crate::config::ServerToolPolicy,
+    parallel_batch: bool,
+    session_id: String,
+    turn_id: String,
+    agent_id: String,
+    call_id: String,
+    name: String,
+    input: serde_json::Value,
+    context: std::collections::HashMap<String, String>,
+    cancel: CancellationToken,
+) -> CallOutcome {
+    use brain_protocol::session::{ExternalToolCompletion, ExternalToolDisposition, ToolOutcome};
+
+    if parallel_batch && policy.completion == ExternalToolCompletion::ReturnDirect {
+        return CallOutcome::failed(format!(
+            "return-direct external tool {name} must be the only tool call in an assistant message"
+        ));
+    }
+    let input_bytes = match serde_json::to_vec(&input) {
+        Ok(bytes) => bytes.len(),
+        Err(error) => return CallOutcome::failed(format!("external tool input: {error}")),
+    };
+    if input_bytes > policy.max_input_bytes {
+        return CallOutcome::failed(format!(
+            "external tool {name} input is {input_bytes} bytes; the sealed limit is {} bytes",
+            policy.max_input_bytes
+        ));
+    }
+    let request = match serde_json::from_value(serde_json::json!({
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "agent_id": agent_id,
+        "call_id": call_id,
+        "name": name,
+        "input": input,
+        "context": context,
+    })) {
+        Ok(request) => request,
+        Err(error) => {
+            return CallOutcome::failed(format!("external tool request contract: {error}"));
+        }
+    };
+    let started = Instant::now();
+    let response = match executor.call(&policy.capability, request, cancel).await {
+        Ok(response) => response,
+        Err(BrainError::Cancelled) => {
+            return CallOutcome {
+                outcome: "cancelled".into(),
+                value: None,
+                content: "external tool call cancelled".into(),
+                is_error: true,
+                exit_code: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+                truncated: false,
+                terminal: None,
+            };
+        }
+        Err(error) => {
+            let mut outcome = CallOutcome::failed(format!("external tool executor: {error}"));
+            outcome.duration_ms = started.elapsed().as_millis() as u64;
+            return outcome;
+        }
+    };
+    let content = String::from(response.content);
+    let structured = response.result.clone();
+    if content.len() > journal::MAX_RECORD_CONTENT_BYTES {
+        return CallOutcome::failed(format!(
+            "external tool {name} result exceeds the {}-byte journal limit",
+            journal::MAX_RECORD_CONTENT_BYTES
+        ));
+    }
+    let terminal = match response.disposition {
+        ExternalToolDisposition::Continue => None,
+        disposition if policy.completion != ExternalToolCompletion::ReturnDirect => {
+            return CallOutcome::failed(format!(
+                "external tool {name} returned terminal disposition {disposition} but is sealed as continue"
+            ));
+        }
+        ExternalToolDisposition::CompleteTurn => {
+            if response.outcome != ToolOutcome::Completed || response.is_error {
+                return CallOutcome::failed(format!(
+                    "external tool {name} returned complete_turn with a failed outcome"
+                ));
+            }
+            let Some(value) = response.result else {
+                return CallOutcome::failed(format!(
+                    "external tool {name} returned complete_turn without result"
+                ));
+            };
+            Some(TerminalOutcome::Complete {
+                value,
+                metadata: response.result_metadata,
+            })
+        }
+        ExternalToolDisposition::FailTurn => {
+            if response.outcome == ToolOutcome::Completed || !response.is_error {
+                return CallOutcome::failed(format!(
+                    "external tool {name} returned fail_turn with a successful outcome"
+                ));
+            }
+            let Some(error) = response.error else {
+                return CallOutcome::failed(format!(
+                    "external tool {name} returned fail_turn without error"
+                ));
+            };
+            Some(TerminalOutcome::Fail { error })
+        }
+    };
+    CallOutcome {
+        outcome: response.outcome.to_string(),
+        value: structured,
+        content,
+        is_error: response.is_error,
+        exit_code: None,
+        duration_ms: started.elapsed().as_millis() as u64,
+        truncated: false,
+        terminal,
     }
 }
 

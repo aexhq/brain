@@ -4,7 +4,7 @@
 //! This is the zero-setup default mode. Be clear about what it is NOT: a subprocess is
 //! process-level separation, **not a sandbox** -- `bash` here runs arbitrary commands as the
 //! operator. Fine for developing against your own brain with your own key; untrusted prompts
-//! belong in the MicroVM mode (`AEX_MODE=aws`). The startup banner repeats this.
+//! belong in a sandboxed Hand adapter. The startup banner repeats this.
 //!
 //! Semantics mirror the hand guest where it matters to the model: identical input schemas
 //! (they ARE the sealed manifest schemas), the same output conventions (stdout + `[stderr]`
@@ -15,7 +15,7 @@
 
 use crate::adapter::{
     ArtifactMeta, CallOutcome, CallRequest, HandAdapter, HandFactory, HandSpec, LostReport,
-    OutputSink, SeedFile, WorkspaceFile, WorkspaceListing,
+    OutputSink, SeedFile, ToolBundleFile, WorkspaceFile, WorkspaceListing,
 };
 use crate::{BrainError, Result};
 use serde_json::{Value, json};
@@ -38,6 +38,7 @@ pub struct LocalHand {
     pub session_id: String,
     root: PathBuf,
     artifacts: PathBuf,
+    bundles: PathBuf,
 }
 
 impl LocalHand {
@@ -46,13 +47,16 @@ impl LocalHand {
         let base = data_dir.join(session_id);
         let root = base.join("workspace");
         let artifacts = base.join("artifacts");
+        let bundles = base.join("bundles");
         std::fs::create_dir_all(&root)
             .and_then(|()| std::fs::create_dir_all(&artifacts))
+            .and_then(|()| std::fs::create_dir_all(&bundles))
             .map_err(|e| BrainError::HandUnavailable(format!("workspace dir: {e}")))?;
         Ok(Arc::new(Self {
             session_id: session_id.to_string(),
             root,
             artifacts,
+            bundles,
         }))
     }
 
@@ -182,8 +186,8 @@ impl LocalHand {
         }
     }
 
-    fn file_entry(&self, path: &Path) -> Result<aex_contracts::session::FileEntry> {
-        use aex_contracts::session::{FileEntry, FileEntryKind, Timestamp};
+    fn file_entry(&self, path: &Path) -> Result<brain_protocol::session::FileEntry> {
+        use brain_protocol::session::{FileEntry, FileEntryKind, Timestamp};
         let md = std::fs::symlink_metadata(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 BrainError::FileNotFound(self.public_path(path))
@@ -250,7 +254,7 @@ impl LocalHand {
         entries.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
         Ok(WorkspaceListing {
             entries,
-            source: aex_contracts::session::FileListSource::Hand,
+            source: brain_protocol::session::FileListSource::Hand,
             synced_ms: None,
         })
     }
@@ -294,7 +298,7 @@ impl LocalHand {
         &self,
         path: &str,
         bytes: &[u8],
-    ) -> Result<aex_contracts::session::FileEntry> {
+    ) -> Result<brain_protocol::session::FileEntry> {
         let target = self.api_path(path)?;
         if target
             .symlink_metadata()
@@ -310,7 +314,7 @@ impl LocalHand {
             .ok_or_else(|| BrainError::Invalid("file path has no parent".into()))?;
         std::fs::create_dir_all(parent)
             .map_err(|e| BrainError::Hand(format!("create parent for {path}: {e}")))?;
-        let tmp = parent.join(format!(".aex-upload-{}", crate::mint_id("tmp", 12)));
+        let tmp = parent.join(format!(".brain-upload-{}", crate::mint_id("tmp", 12)));
         std::fs::write(&tmp, bytes).map_err(|e| BrainError::Hand(format!("write {path}: {e}")))?;
         if let Err(first) = std::fs::rename(&tmp, &target) {
             // Windows does not replace an existing destination on every filesystem. Local
@@ -338,11 +342,13 @@ impl LocalHand {
         let t0 = Instant::now();
         let done = |content: String, is_error: bool, exit: Option<i64>, t0: Instant| CallOutcome {
             outcome: (if is_error { "failed" } else { "completed" }).into(),
+            value: None,
             content,
             is_error,
             exit_code: exit,
             duration_ms: t0.elapsed().as_millis() as u64,
             truncated: false,
+            terminal: None,
         };
         match tool {
             "bash" => self.bash(input, cancel, emit, t0).await,
@@ -367,7 +373,9 @@ impl LocalHand {
                             content.push('\n');
                         }
                         content.push_str(&format!("[meta] {meta}"));
-                        done(content, false, None, t0)
+                        let mut outcome = done(content, false, None, t0);
+                        outcome.value = Some(meta);
+                        outcome
                     }
                     Ok(Err(e)) => done(e.to_string(), true, None, t0),
                     Err(e) => done(format!("tool task did not complete: {e}"), true, None, t0),
@@ -385,11 +393,13 @@ impl LocalHand {
     ) -> CallOutcome {
         let fail = |msg: String| CallOutcome {
             outcome: "failed".into(),
+            value: None,
             content: msg,
             is_error: true,
             exit_code: None,
             duration_ms: t0.elapsed().as_millis() as u64,
             truncated: false,
+            terminal: None,
         };
         let Some(command) = input.get("command").and_then(|v| v.as_str()) else {
             return fail("bash: input.command is required".into());
@@ -494,11 +504,13 @@ impl LocalHand {
         };
         CallOutcome {
             outcome: outcome.into(),
+            value: (!cancelled).then(|| serde_json::json!({"timed_out": timed_out})),
             content,
             is_error,
             exit_code,
             duration_ms: t0.elapsed().as_millis() as u64,
             truncated: false,
+            terminal: None,
         }
     }
 
@@ -886,10 +898,22 @@ impl LocalFactory {
 
 #[async_trait::async_trait]
 impl HandFactory for LocalFactory {
-    async fn create(&self, spec: &HandSpec, seeds: &[SeedFile<'_>]) -> Result<serde_json::Value> {
+    async fn create(
+        &self,
+        spec: &HandSpec,
+        seeds: &[SeedFile<'_>],
+        bundles: &[ToolBundleFile<'_>],
+    ) -> Result<serde_json::Value> {
         let h = LocalHand::open(&self.data_dir, &spec.session_id)?;
         for s in seeds {
             h.seed(s.path, s.bytes, s.mode)?;
+        }
+        for bundle in bundles {
+            std::fs::write(
+                h.bundles.join(format!("{}.mjs", bundle.checksum)),
+                bundle.bytes,
+            )
+            .map_err(|error| BrainError::Hand(format!("stage tool bundle: {error}")))?;
         }
         Ok(serde_json::json!({ "v": 1 }))
     }
@@ -926,6 +950,7 @@ impl HandAdapter for LocalHand {
             session_id: self.session_id.clone(),
             root: self.root.clone(),
             artifacts: self.artifacts.clone(),
+            bundles: self.bundles.clone(),
         });
         this.execute(
             &req.tool,
@@ -952,7 +977,7 @@ impl HandAdapter for LocalHand {
         &self,
         path: &str,
         bytes: &[u8],
-    ) -> Result<aex_contracts::session::FileEntry> {
+    ) -> Result<brain_protocol::session::FileEntry> {
         self.write_workspace(path, bytes)
     }
 
@@ -971,8 +996,8 @@ impl HandAdapter for LocalHand {
         })
     }
 
-    fn hand_info(&self) -> aex_contracts::session::HandInfo {
-        use aex_contracts::session::{HandInfo, HandShape, HandState};
+    fn hand_info(&self) -> brain_protocol::session::HandInfo {
+        use brain_protocol::session::{HandInfo, HandShape, HandState};
         HandInfo {
             generation: Some(1),
             last_sync_at: None,
@@ -994,6 +1019,13 @@ impl HandAdapter for LocalHand {
 mod tests {
     use super::*;
 
+    fn bash_available() -> bool {
+        std::process::Command::new("bash")
+            .arg("--version")
+            .output()
+            .is_ok()
+    }
+
     fn hand() -> (tempdir::TempDirGuard, Arc<LocalHand>) {
         let dir = tempdir::TempDirGuard::new();
         let h = LocalHand::open(&dir.0, "ses_local_test").unwrap();
@@ -1007,7 +1039,7 @@ mod tests {
         impl TempDirGuard {
             pub fn new() -> Self {
                 let p = std::env::temp_dir()
-                    .join(format!("aex-local-test-{}", crate::mint_id("t", 10)));
+                    .join(format!("brain-local-test-{}", crate::mint_id("t", 10)));
                 std::fs::create_dir_all(&p).unwrap();
                 TempDirGuard(p)
             }
@@ -1159,6 +1191,9 @@ mod tests {
 
     #[tokio::test]
     async fn bash_runs_streams_and_reports_exit() {
+        if !bash_available() {
+            return;
+        }
         let (_g, h) = hand();
         let cancel = CancellationToken::new();
         let chunks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1186,6 +1221,9 @@ mod tests {
 
     #[tokio::test]
     async fn bash_cancel_kills_the_process() {
+        if !bash_available() {
+            return;
+        }
         let (_g, h) = hand();
         let cancel = CancellationToken::new();
         let c2 = cancel.clone();

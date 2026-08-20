@@ -21,7 +21,7 @@ pub mod wire;
 use crate::journal::{McpServerDoc, McpToolDoc};
 use crate::outbound::Outbound;
 use crate::{BrainError, Result};
-use aex_contracts::session::McpServerConfig;
+use brain_protocol::session::McpServerConfig;
 use client::{McpError, Requested, ServerConn};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -64,7 +64,7 @@ fn reserved_header(name: &str) -> bool {
 }
 
 fn requested_of(cfg: &McpServerConfig) -> Requested {
-    use aex_contracts::session::McpProtocol;
+    use brain_protocol::session::McpProtocol;
     match cfg.protocol {
         None | Some(McpProtocol::Auto) => Requested::Auto,
         Some(McpProtocol::X202607) => Requested::V2Only,
@@ -263,6 +263,8 @@ fn tool_verdict(
             "input schema is {schema_bytes} bytes (max {MAX_SCHEMA_BYTES})"
         ));
     }
+    jsonschema::draft202012::new(&t.input_schema)
+        .map_err(|error| format!("input schema is invalid: {error}"))?;
     wire::validate_tool_headers(&t.input_schema)
 }
 
@@ -373,22 +375,27 @@ impl McpRuntime {
                 } else {
                     "completed".into()
                 },
+                value: (!r.is_error).then(|| serde_json::Value::String(r.content.clone())),
                 content: r.content,
                 is_error: r.is_error,
                 exit_code: None,
                 duration_ms,
                 truncated: r.truncated,
+                terminal: None,
             },
             Err(McpError::Cancelled) => CallOutcome {
                 outcome: "cancelled".into(),
+                value: None,
                 content: "cancelled".into(),
                 is_error: true,
                 exit_code: None,
                 duration_ms,
                 truncated: false,
+                terminal: None,
             },
             Err(McpError::Timeout) => CallOutcome {
                 outcome: "deadline_exceeded".into(),
+                value: None,
                 content: format!(
                     "MCP call exceeded the {}ms deadline",
                     self.call_timeout.as_millis()
@@ -397,6 +404,7 @@ impl McpRuntime {
                 exit_code: None,
                 duration_ms,
                 truncated: false,
+                terminal: None,
             },
             Err(e) => {
                 let mut o = CallOutcome::failed(format!("MCP server {}: {e}", tool.server));

@@ -1,0 +1,16 @@
+{
+  "kind": "response",
+  "frame": {
+    "id": "r-7",
+    "result": {
+      "status": "ok",
+      "reply": {
+        "op": "lane_close",
+        "body": {
+          "closed": true,
+          "cancelled_operations": []
+        }
+      }
+    }
+  }
+}

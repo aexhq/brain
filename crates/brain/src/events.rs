@@ -6,9 +6,8 @@
 //! The complete `assistant.message` / `tool.result` events carry the durable content.
 
 use crate::journal::Record;
-use aex_contracts::session::{
-    self, ApiError, ApiErrorCode, Event, EventStream, OutputContent, OutputContentType,
-    OutputValidationIssue, ProviderUsage, Timestamp, ToolOutcome,
+use brain_protocol::session::{
+    self, ApiError, ApiErrorCode, Event, EventStream, ProviderUsage, Timestamp, ToolOutcome,
 };
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -43,6 +42,7 @@ fn preview(content: &str) -> (String, bool) {
 pub fn stop_reason(s: &str) -> session::StopReason {
     match s {
         "end_turn" => session::StopReason::EndTurn,
+        "refusal" => session::StopReason::Refusal,
         "max_rounds" => session::StopReason::MaxRounds,
         "cancelled" => session::StopReason::Cancelled,
         _ => session::StopReason::Error,
@@ -101,70 +101,6 @@ pub fn derive(
             seq,
             session_id: sid,
             turn_id: turn_of(turn)?,
-        },
-        Record::OutputStarted {
-            output,
-            turn,
-            schema_hash,
-            source_seq,
-        } => Event::OutputStarted {
-            at,
-            output_id: output.parse().ok()?,
-            schema_hash: schema_hash.parse().ok()?,
-            seq,
-            session_id: sid,
-            source_seq: *source_seq,
-            turn_id: turn.as_deref().and_then(turn_of),
-        },
-        Record::OutputCompleted {
-            output,
-            turn,
-            schema_hash,
-            value,
-            usage,
-        } => Event::OutputCompleted {
-            at,
-            output: OutputContent {
-                schema_hash: schema_hash.parse().ok()?,
-                type_: OutputContentType::Output,
-                value: value.clone(),
-            },
-            output_id: output.parse().ok()?,
-            seq,
-            session_id: sid,
-            turn_id: turn.as_deref().and_then(turn_of),
-            usage: usage_option(usage),
-        },
-        Record::OutputFailed {
-            output,
-            turn,
-            schema_hash,
-            code,
-            message,
-            issues,
-            usage,
-        } => Event::OutputFailed {
-            at,
-            error: ApiError {
-                code: error_code(code),
-                message: message.clone(),
-                param: None,
-                request_id: None,
-            },
-            issues: issues
-                .iter()
-                .map(|issue| OutputValidationIssue {
-                    keyword: issue.keyword.clone(),
-                    message: issue.message.clone(),
-                    path: issue.path.clone(),
-                })
-                .collect(),
-            output_id: output.parse().ok()?,
-            schema_hash: schema_hash.parse().ok()?,
-            seq,
-            session_id: sid,
-            turn_id: turn.as_deref().and_then(turn_of),
-            usage: usage_option(usage),
         },
         Record::Assistant {
             turn,
@@ -257,8 +193,10 @@ pub fn derive(
             stop_reason: sr,
             rounds,
             tool_calls,
+            result,
         } => Event::TurnCompleted {
             at,
+            result: result.clone(),
             rounds: *rounds,
             seq,
             session_id: sid,
@@ -270,10 +208,12 @@ pub fn derive(
             turn,
             code,
             message,
+            details,
         } => Event::TurnFailed {
             at,
             error: ApiError {
                 code: error_code(code),
+                details: details.clone(),
                 message: message.clone(),
                 param: None,
                 request_id: None,
@@ -316,29 +256,8 @@ pub fn session_state(s: &str) -> session::SessionState {
 }
 
 pub fn error_code(s: &str) -> ApiErrorCode {
-    match s {
-        "invalid_request" => ApiErrorCode::InvalidRequest,
-        "unauthorized" => ApiErrorCode::Unauthorized,
-        "forbidden" => ApiErrorCode::Forbidden,
-        "not_found" => ApiErrorCode::NotFound,
-        "conflict" => ApiErrorCode::Conflict,
-        "session_busy" => ApiErrorCode::SessionBusy,
-        "session_deleted" => ApiErrorCode::SessionDeleted,
-        "session_failed" => ApiErrorCode::SessionFailed,
-        "cancelled" => ApiErrorCode::Cancelled,
-        "rate_limited" => ApiErrorCode::RateLimited,
-        "provider_error" => ApiErrorCode::ProviderError,
-        "output_schema_error" => ApiErrorCode::OutputSchemaError,
-        "output_refused" => ApiErrorCode::OutputRefused,
-        "output_validation_error" => ApiErrorCode::OutputValidationError,
-        "hand_unavailable" => ApiErrorCode::HandUnavailable,
-        "too_large" => ApiErrorCode::TooLarge,
-        _ => ApiErrorCode::Internal,
-    }
-}
-
-fn usage_option(usage: &crate::message::Usage) -> Option<ProviderUsage> {
-    (*usage != crate::message::Usage::default()).then(|| usage_of(usage))
+    s.parse()
+        .unwrap_or_else(|_| "internal".parse().expect("static API error code"))
 }
 
 /// Live constructors for the two ephemeral event types.
@@ -383,9 +302,6 @@ pub fn output_event(
 pub fn event_seq(e: &Event) -> u64 {
     match e {
         Event::TurnStarted { seq, .. }
-        | Event::OutputStarted { seq, .. }
-        | Event::OutputCompleted { seq, .. }
-        | Event::OutputFailed { seq, .. }
         | Event::AssistantDelta { seq, .. }
         | Event::AssistantMessage { seq, .. }
         | Event::ToolCall { seq, .. }
@@ -472,6 +388,7 @@ mod tests {
         let r = Record::UserMessage {
             turn: "trn_aaaaaaaaaaaaaaaaaaaa".into(),
             content: vec![],
+            metadata: std::collections::HashMap::new(),
         };
         assert!(derive("ses_aaaaaaaaaaaaaaaaaaaa", 1, 0, &r, &hand_info()).is_none());
         let c = Record::Compacted {
@@ -544,6 +461,11 @@ mod tests {
         let e = derive("ses_aaaaaaaaaaaaaaaaaaaa", 1, 0, &r, &hand_info()).unwrap();
         assert_eq!(event_type(&e), "turn.started");
         assert_eq!(event_seq(&e), 1);
+    }
+
+    #[test]
+    fn provider_refusal_remains_distinct_on_the_public_event() {
+        assert_eq!(stop_reason("refusal"), session::StopReason::Refusal);
     }
 
     #[test]

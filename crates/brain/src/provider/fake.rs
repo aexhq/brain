@@ -10,7 +10,7 @@
 //! successfully, so a density run silently becomes a measurement of how fast the
 //! runtime produces error turns. `assert_drained` is not optional.
 
-use super::{ModelRequest, OutputControl, OutputMode, Provider, ProviderEvent};
+use super::{ModelRequest, Provider, ProviderEvent};
 use crate::config::{Dialect, ProviderKey, SealedPrefix};
 use crate::message::{Message, StopReason, Usage};
 use crate::{BrainError, Result};
@@ -406,23 +406,6 @@ impl Provider for FakeProvider {
             Dialect::OpenAiChat => {
                 super::openai::OpenAiChat.build_request(prefix, history, key, base_url)
             }
-        }
-    }
-
-    fn build_output_request(
-        &self,
-        prefix: &SealedPrefix,
-        history: &[Message],
-        key: &ProviderKey,
-        base_url: &str,
-        control: &OutputControl,
-        mode: OutputMode,
-    ) -> Result<ModelRequest> {
-        match self.dialect {
-            Dialect::AnthropicMessages => super::anthropic::Anthropic
-                .build_output_request(prefix, history, key, base_url, control, mode),
-            Dialect::OpenAiChat => super::openai::OpenAiChat
-                .build_output_request(prefix, history, key, base_url, control, mode),
         }
     }
 

@@ -1,0 +1,303 @@
+openapi: 3.1.0
+info:
+  title: Brain session API
+  version: "1.0.0"
+  description: |
+    Session engine for running agents. A session = one agent, one workspace, one optional
+    sandbox (Hand), and any number of messages over any lifetime. BYOK: you bring the model key.
+
+    Auth: `Authorization: Bearer <api key>`. Errors: JSON `{"error": ApiError}`.
+    Component types are defined in `schemas.json` (single source, generated into Rust and TypeScript).
+servers:
+  - url: http://127.0.0.1:3210
+security:
+  - bearer: []
+tags:
+  - name: sessions
+  - name: turns
+  - name: files
+  - name: artifacts
+
+paths:
+  /v1/sessions:
+    post:
+      tags: [sessions]
+      operationId: createSession
+      summary: Create a session (seals model, prompt, tools; starts preparing the hand)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "schemas.json#/$defs/CreateSessionRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/Session" }
+        default: { $ref: "#/components/responses/Error" }
+    get:
+      tags: [sessions]
+      operationId: listSessions
+      summary: List sessions (newest first)
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { $ref: "schemas.json#/$defs/SessionState" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/SessionList" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [sessions]
+      operationId: getSession
+      summary: Get a session
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/Session" }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [sessions]
+      operationId: deleteSession
+      summary: Delete a session (irreversible; releases the hand, deletes workspace, artifacts and journal)
+      responses:
+        "204":
+          description: Deleted
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [turns]
+      operationId: sendMessage
+      summary: Send a user message; starts a turn
+      description: |
+        Returns 202 as soon as the turn is admitted and journaled. Follow progress on
+        `GET /events?after=<seq-1>`. 409 `session_busy` while a turn is running. Host products may
+        implement higher-level result semantics with ordinary sealed server tools.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "schemas.json#/$defs/MessageRequest" }
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/MessageAccepted" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/events:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [turns]
+      operationId: streamEvents
+      summary: Server-sent events for a session, replayable from the journal
+      description: |
+        `text/event-stream`. Each event is `id: <seq>`, `event: <type>`, `data: <Event JSON>`.
+        Pass `after` (or the `Last-Event-ID` header) to resume. With `follow=false` the stream
+        ends after the journal is drained; otherwise it stays open across turns until the session
+        is deleted.
+      parameters:
+        - name: after
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: follow
+          in: query
+          schema: { type: boolean, default: true }
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { $ref: "schemas.json#/$defs/Event" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [turns]
+      operationId: cancelTurn
+      summary: Cancel the running turn (in-flight tool calls are cancelled; background jobs keep running)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/end:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [sessions]
+      operationId: endSession
+      summary: End now — cancel the turn, stop background jobs, sync and release the hand; keep the workspace
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/files:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [files]
+      operationId: listFiles
+      summary: List workspace files (live from the hand when it is up, else from the last sync manifest)
+      parameters:
+        - name: path
+          in: query
+          schema: { type: string, default: "/workspace" }
+        - name: recursive
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/FileList" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/files/{path}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - name: path
+        in: path
+        required: true
+        description: Absolute guest path, URL-encoded, e.g. `%2Fworkspace%2Fsrc%2Fmain.rs`.
+        schema: { type: string }
+    get:
+      tags: [files]
+      operationId: downloadFile
+      summary: Download one file (raw bytes; 64 MiB deployment ceiling)
+      responses:
+        "200":
+          description: File bytes
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        default: { $ref: "#/components/responses/Error" }
+    put:
+      tags: [files]
+      operationId: uploadFile
+      summary: Upload one file into the workspace (raw bytes; overwrites; checkpoints before acknowledgement; 64 MiB ceiling)
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/FileEntry" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/persist:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [artifacts]
+      operationId: persistArtifact
+      summary: Copy a workspace file into durable, named artifact storage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "schemas.json#/$defs/PersistRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/Artifact" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/artifacts:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [artifacts]
+      operationId: listArtifacts
+      summary: List artifacts
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/ArtifactList" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/artifacts/{name}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [artifacts]
+      operationId: getArtifact
+      summary: Get one artifact with a short-lived download URL
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/Artifact" }
+        default: { $ref: "#/components/responses/Error" }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+  parameters:
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema: { $ref: "schemas.json#/$defs/SessionId" }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Repeating a request with the same key within 24 h returns the original result.
+      schema: { type: string, maxLength: 128 }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: "schemas.json#/$defs/ApiErrorResponse" }

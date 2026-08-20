@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "manifest_id": "m-13",
+  "parent_manifest_id": "m-12",
+  "created_at_wall_ms": 1787400300000,
+  "generation_id": "gen-3",
+  "roots": [
+    "/workspace",
+    "/home/agent"
+  ],
+  "pack_format": "tar+zstd",
+  "packs": [
+    {
+      "pack_id": "p-3",
+      "bytes": 15728640,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "pack_id": "p-12",
+      "bytes": 98304,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "pack_id": "p-13",
+      "bytes": 48211,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "entries": [
+    {
+      "kind": "dir",
+      "path": "/workspace/repo",
+      "mode": 493
+    },
+    {
+      "kind": "file",
+      "path": "/workspace/repo/src/main.rs",
+      "size": 1042,
+      "mtime_ns": 1787400299123456789,
+      "mode": 420,
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "pack_id": "p-13"
+    },
+    {
+      "kind": "symlink",
+      "path": "/workspace/repo/latest",
+      "target": "target/debug/app"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "outcome": "completed",
+  "content": "The result was accepted.",
+  "is_error": false,
+  "disposition": "complete_turn",
+  "result": {
+    "recommendation": "Option A",
+    "confidence": 0.86
+  },
+  "result_metadata": {
+    "request_id": "req_01HZX8Y2K3M4N5P6Q7R8S9V2",
+    "validator": "recommendation-v1"
+  }
+}

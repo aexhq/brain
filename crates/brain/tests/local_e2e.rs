@@ -7,6 +7,8 @@
 //! delete purges everything. If this is green, `cargo run --bin brain` gives a working
 //! session API on localhost.
 
+mod support;
+
 use brain::config::Dialect;
 use brain::journal::Journal;
 use brain::local::LocalFactory;
@@ -20,7 +22,7 @@ use std::time::{Duration, Instant};
 struct TempDir(PathBuf);
 impl TempDir {
     fn new() -> Self {
-        let p = std::env::temp_dir().join(format!("aex-local-e2e-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("brain-local-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         TempDir(p)
@@ -77,6 +79,10 @@ async fn wait_for<F: Fn(&[(String, Value)]) -> bool>(
 }
 
 #[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "requires the bash executable used by the development adapter"
+)]
 async fn the_whole_local_loop_over_real_http() {
     let tmp = TempDir::new();
     let cfg = BrainConfig {
@@ -138,7 +144,8 @@ async fn the_whole_local_loop_over_real_http() {
         .bearer_auth(&token)
         .json(&json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "system_prompt": "test agent"
+            "system_prompt": "test agent",
+            "tools": {"items": [support::hand_tool("write"), support::hand_tool("bash")]}
         }))
         .send()
         .await

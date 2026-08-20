@@ -8,33 +8,31 @@
 //!
 //! The brain is COMPOSED, not configured into a cloud: [`Brain::with_parts`] takes a journal
 //! store, a key custody, a hand factory and (optionally) a provider factory -- all trait
-//! objects (see [`crate::adapter`]). [`Brain::local`] is the zero-setup composition; the AWS
-//! one lives in `brain-aws`; yours is whatever you hand in.
+//! objects (see [`crate::adapter`]). [`Brain::local`] is the explicitly unsafe development
+//! composition; durable standalone and cloud implementations live behind the same public ports.
 
 use crate::adapter::{
-    HandAdapter, HandFactory, HandSpec, SeedFile, WorkspaceFile, WorkspaceListing,
+    CallOutcome, DisabledToolExecutor, HandAdapter, HandFactory, HandSpec, SeedFile,
+    TerminalOutcome, ToolBundleFile, ToolExecutor, WorkspaceFile, WorkspaceListing,
 };
 use crate::compact::DEFAULT_HISTORY_BUDGET_BYTES;
-use crate::config::{AgentDef, Dialect, GenOpts, ProviderKey, SealedPrefix, SessionConfig};
+use crate::config::{AgentDef, Dialect, GenOpts, ProviderKey, SessionConfig};
 use crate::events::EventHub;
 use crate::journal::{
-    ArtifactDoc, Entry, FailureDoc, Head, HeadDoc, Journal, Lease, OutputRequestDoc, PrefixDoc,
-    Record,
+    ArtifactDoc, Entry, FailureDoc, Head, HeadDoc, Journal, Lease, PrefixDoc, Record,
 };
 use crate::keys::{KeyCustody, blob_from_b64, blob_to_b64};
 use crate::local::LocalFactory;
 use crate::message::{ContentBlock, Message};
 use crate::provider::Provider;
-use crate::tools::TodoState;
 use crate::turn::{TurnRun, TurnState};
 use crate::{BrainError, Result};
-use aex_contracts::session::{
-    self, CreateSessionRequest, MessageRequestContent, OutputRequest, OutputRequestInput,
-    Provider as ApiProvider,
-};
 use base64::Engine;
+use brain_protocol::session::{
+    self, CreateSessionRequest, MessageRequestContent, Provider as ApiProvider,
+};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -64,51 +62,49 @@ pub struct BrainConfig {
     pub mcp_max_result_bytes: usize,
     /// Maximum bytes buffered by one public file upload or download.
     pub max_file_bytes: usize,
-    /// Serper's fixed managed-search endpoint and redacted process credential.
-    pub web_search_endpoint: String,
-    pub web_search_api_key: Option<ProviderKey>,
-    pub web_call_timeout: Duration,
-    pub web_max_result_bytes: usize,
-    pub web_search_max_response_bytes: usize,
-    pub web_fetch_max_response_bytes: usize,
-    pub web_fetch_max_chars: usize,
+    /// Optional host executor shared by every external tool declaration. The URL and service
+    /// credential are process configuration and never enter the sealed model prefix.
+    pub external_executor_url: Option<String>,
+    pub external_executor_token: Option<ProviderKey>,
+    /// Stable capabilities registered by the HTTP executor. An empty set advertises none.
+    pub external_executor_capabilities: HashSet<String>,
+    pub external_call_timeout: Duration,
 }
 
 impl Default for BrainConfig {
     fn default() -> Self {
         Self {
-            max_concurrent_model_rounds: env_num("AEX_MAX_MODEL_ROUNDS", 64),
-            max_concurrent_turns: env_num("AEX_MAX_TURNS", 64),
-            idle_discard: Duration::from_secs(env_num("AEX_IDLE_DISCARD_SECONDS", 900) as u64),
+            max_concurrent_model_rounds: env_num("BRAIN_MAX_MODEL_ROUNDS", 64),
+            max_concurrent_turns: env_num("BRAIN_MAX_TURNS", 64),
+            idle_discard: Duration::from_secs(env_num("BRAIN_IDLE_DISCARD_SECONDS", 900) as u64),
             history_budget_bytes: DEFAULT_HISTORY_BUDGET_BYTES,
-            outbound_allow_private: env_bool("AEX_OUTBOUND_ALLOW_PRIVATE", false),
+            outbound_allow_private: env_bool("BRAIN_OUTBOUND_ALLOW_PRIVATE", false),
             mcp_create_timeout: Duration::from_millis(
-                env_num("AEX_MCP_CREATE_TIMEOUT_MS", 10_000) as u64
+                env_num("BRAIN_MCP_CREATE_TIMEOUT_MS", 10_000) as u64,
             ),
             mcp_call_timeout: Duration::from_millis(
-                env_num("AEX_MCP_CALL_TIMEOUT_MS", 60_000) as u64
+                env_num("BRAIN_MCP_CALL_TIMEOUT_MS", 60_000) as u64
             ),
-            mcp_max_result_bytes: env_num("AEX_MCP_MAX_RESULT_BYTES", 128 * 1024),
-            max_file_bytes: env_num("AEX_MAX_FILE_BYTES", 64 * 1024 * 1024),
-            web_search_endpoint: std::env::var("AEX_WEB_SEARCH_ENDPOINT")
-                .unwrap_or_else(|_| "https://google.serper.dev/search".into()),
-            web_search_api_key: std::env::var("SERPER_API_KEY")
+            mcp_max_result_bytes: env_num("BRAIN_MCP_MAX_RESULT_BYTES", 128 * 1024),
+            max_file_bytes: env_num("BRAIN_MAX_FILE_BYTES", 64 * 1024 * 1024),
+            external_executor_url: std::env::var("BRAIN_EXTERNAL_TOOL_EXECUTOR_URL")
+                .ok()
+                .filter(|value| !value.is_empty()),
+            external_executor_token: std::env::var("BRAIN_EXTERNAL_TOOL_EXECUTOR_TOKEN")
                 .ok()
                 .filter(|value| !value.is_empty())
                 .map(ProviderKey::new),
-            web_call_timeout: Duration::from_millis(
-                env_num("AEX_WEB_CALL_TIMEOUT_MS", 30_000) as u64
-            ),
-            web_max_result_bytes: env_num("AEX_WEB_MAX_RESULT_BYTES", 128 * 1024),
-            web_search_max_response_bytes: env_num(
-                "AEX_WEB_SEARCH_MAX_RESPONSE_BYTES",
-                1024 * 1024,
-            ),
-            web_fetch_max_response_bytes: env_num(
-                "AEX_WEB_FETCH_MAX_RESPONSE_BYTES",
-                5 * 1024 * 1024,
-            ),
-            web_fetch_max_chars: env_num("AEX_WEB_FETCH_MAX_CHARS", 50_000),
+            external_executor_capabilities: std::env::var("BRAIN_EXTERNAL_TOOL_CAPABILITIES")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            external_call_timeout: Duration::from_millis(env_num(
+                "BRAIN_EXTERNAL_TOOL_TIMEOUT_MS",
+                30_000,
+            ) as u64),
         }
     }
 }
@@ -153,7 +149,8 @@ pub struct Brain {
     /// The D14 egress seam: every brain-originated request to a user-controlled URL (MCP)
     /// goes through this client and its SSRF guard.
     pub outbound: crate::outbound::Outbound,
-    pub web: Arc<crate::web::WebRuntime>,
+    pub external_executor: Arc<dyn ToolExecutor>,
+    pub attached: Arc<crate::attached::AttachedHub>,
     provider_factory: ProviderFactory,
     turn_permits: Arc<Semaphore>,
     sessions: Mutex<HashMap<String, mpsc::Sender<Command>>>,
@@ -171,15 +168,8 @@ pub(crate) fn idempotent_session_id(key: &str) -> String {
 enum Command {
     Message {
         content: Vec<ContentBlock>,
+        metadata: HashMap<String, String>,
         reply: oneshot::Sender<Result<(String, u64)>>, // (turn_id, seq of the user message)
-    },
-    Output {
-        schema: serde_json::Value,
-        schema_hash: String,
-        request_hash: String,
-        idempotency_key_hash: Option<String>,
-        input: Option<Vec<ContentBlock>>,
-        reply: oneshot::Sender<Result<OutputAdmission>>,
     },
     Cancel {
         reply: oneshot::Sender<Result<HeadDoc>>,
@@ -208,18 +198,11 @@ enum Command {
     WriteFile {
         path: String,
         bytes: Vec<u8>,
-        reply: oneshot::Sender<Result<aex_contracts::session::FileEntry>>,
+        reply: oneshot::Sender<Result<brain_protocol::session::FileEntry>>,
     },
     Snapshot {
         reply: oneshot::Sender<HeadDoc>,
     },
-}
-
-#[derive(Debug, Clone)]
-pub struct OutputAdmission {
-    pub output_id: String,
-    pub schema_hash: String,
-    pub seq: u64,
 }
 
 impl Brain {
@@ -232,17 +215,37 @@ impl Brain {
         hand_factory: Arc<dyn HandFactory>,
         provider_factory: Option<ProviderFactory>,
     ) -> Arc<Self> {
+        let external_executor: Arc<dyn ToolExecutor> = match &cfg.external_executor_url {
+            Some(endpoint) => Arc::new(crate::external::HttpExternalToolExecutor::new(
+                endpoint.clone(),
+                cfg.external_executor_token
+                    .as_ref()
+                    .map(|token| token.expose().to_string()),
+                cfg.external_call_timeout,
+                cfg.external_executor_capabilities.iter().cloned(),
+            )),
+            None => Arc::new(DisabledToolExecutor),
+        };
+        Self::with_parts_and_external(
+            cfg,
+            journal,
+            custody,
+            hand_factory,
+            external_executor,
+            provider_factory,
+        )
+    }
+
+    /// General composition including a host-owned executor for sealed external tools.
+    pub fn with_parts_and_external(
+        cfg: BrainConfig,
+        journal: Journal,
+        custody: Arc<dyn KeyCustody>,
+        hand_factory: Arc<dyn HandFactory>,
+        external_executor: Arc<dyn ToolExecutor>,
+        provider_factory: Option<ProviderFactory>,
+    ) -> Arc<Self> {
         let outbound = crate::outbound::Outbound::new(cfg.outbound_allow_private);
-        let web = Arc::new(crate::web::WebRuntime::new(
-            outbound.clone(),
-            cfg.web_search_endpoint.clone(),
-            cfg.web_search_api_key.clone(),
-            cfg.web_call_timeout,
-            cfg.web_max_result_bytes,
-            cfg.web_search_max_response_bytes,
-            cfg.web_fetch_max_response_bytes,
-            cfg.web_fetch_max_chars,
-        ));
         Arc::new(Self {
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
@@ -253,9 +256,21 @@ impl Brain {
             hub: Arc::new(EventHub::new()),
             sessions: Mutex::new(HashMap::new()),
             outbound,
-            web,
+            external_executor,
+            attached: Arc::new(crate::attached::AttachedHub::default()),
             cfg,
         })
+    }
+
+    pub async fn attached_callbacks(&self, session_id: &str) -> Result<HashSet<String>> {
+        let head = self.journal.get_head(session_id).await?;
+        Ok(crate::tools::resolve(&head.doc.prefix.tools)?
+            .into_iter()
+            .filter_map(|tool| match tool.route {
+                crate::config::ToolRoute::Attached { callback_id } => Some(callback_id),
+                _ => None,
+            })
+            .collect())
     }
 
     /// The zero-setup composition: in-memory journal (NOT durable), local subprocess tools
@@ -265,10 +280,10 @@ impl Brain {
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| BrainError::Invalid(format!("data dir: {e}")))?;
         // Local mode is permissive-by-default toward private addresses: a developer's MCP
-        // server lives on 127.0.0.1. Setting AEX_OUTBOUND_ALLOW_PRIVATE explicitly wins;
+        // server lives on 127.0.0.1. Setting BRAIN_OUTBOUND_ALLOW_PRIVATE explicitly wins;
         // this is a composition choice of THIS constructor, never of the guard itself.
         let mut cfg = cfg;
-        if std::env::var("AEX_OUTBOUND_ALLOW_PRIVATE").is_err() {
+        if std::env::var("BRAIN_OUTBOUND_ALLOW_PRIVATE").is_err() {
             cfg.outbound_allow_private = true;
         }
         let owner = format!("brain-{}", crate::mint_id("i", 12));
@@ -288,18 +303,27 @@ impl Brain {
             .await
     }
 
-    fn hand_spec(session_id: &str, prefix: &PrefixDoc, manifest_digest: &str) -> HandSpec {
-        HandSpec {
+    async fn hand_spec(&self, session_id: &str, doc: &HeadDoc) -> Result<HandSpec> {
+        let env = if doc.hand_secrets_b64.is_empty() {
+            HashMap::new()
+        } else {
+            let blob = blob_from_b64(&doc.hand_secrets_b64)?;
+            let secret = self.custody.decrypt(session_id, &blob).await?;
+            serde_json::from_str(secret.expose())
+                .map_err(|error| BrainError::Custody(format!("Hand environment: {error}")))?
+        };
+        Ok(HandSpec {
             session_id: session_id.to_string(),
-            hand_enabled: prefix.hand_enabled,
-            shape: prefix.shape.clone(),
-            env: prefix.env.clone(),
-            manifest_digest: manifest_digest.to_string(),
-        }
+            hand_enabled: doc.prefix.hand_enabled,
+            shape: doc.prefix.shape.clone(),
+            env,
+            tool_manifest: doc.hand_manifest.clone(),
+            manifest_digest: doc.manifest_digest.clone(),
+        })
     }
 
     async fn open_adapter(&self, session_id: &str, doc: &HeadDoc) -> Result<Arc<dyn HandAdapter>> {
-        let spec = Self::hand_spec(session_id, &doc.prefix, &doc.manifest_digest);
+        let spec = self.hand_spec(session_id, doc).await?;
         self.hand_factory.open(&spec, doc.hand_state.clone()).await
     }
 
@@ -320,7 +344,10 @@ impl Brain {
         let create_key_hash = idempotency_key.map(hash_create_key);
         let create_request_hash = create_key_hash
             .as_ref()
-            .map(|_| crate::output::jcs_sha256(&req))
+            .map(|_| {
+                let canonical = serde_jcs::to_vec(&req)?;
+                Ok::<_, BrainError>(hex::encode(Sha256::digest(canonical)))
+            })
             .transpose()?;
         let session_id = idempotency_key
             .map(idempotent_session_id)
@@ -346,20 +373,33 @@ impl Brain {
             return Err(BrainError::Invalid("metadata: at most 16 pairs".into()));
         }
         let tools_cfg = req.tools.clone().unwrap_or_default();
-        let builtins = tools_cfg
-            .builtin
-            .clone()
-            .unwrap_or_else(crate::tools::default_builtins);
-        if builtins
-            .iter()
-            .any(|tool| matches!(tool, aex_contracts::session::BuiltinTool::WebSearch))
-            && self.cfg.web_search_api_key.is_none()
-        {
-            return Err(BrainError::Invalid(
-                "tool web_search requires the managed search credential on this plane".into(),
-            ));
+        let tool_items = tools_cfg.items.clone();
+        let decls = crate::tools::resolve(&tool_items)?;
+
+        for decl in &decls {
+            match &decl.route {
+                crate::config::ToolRoute::Server(policy)
+                    if !self.external_executor.supports(&policy.capability) =>
+                {
+                    return Err(BrainError::Invalid(format!(
+                        "tool {} requires unavailable server capability {}",
+                        decl.name, policy.capability
+                    )));
+                }
+                crate::config::ToolRoute::Intrinsic(capability)
+                    if !matches!(
+                        capability.as_str(),
+                        "brain.subagents" | "brain.subagents.v1"
+                    ) =>
+                {
+                    return Err(BrainError::Invalid(format!(
+                        "tool {} requires unavailable intrinsic capability {}",
+                        decl.name, capability
+                    )));
+                }
+                _ => {}
+            }
         }
-        let decls = crate::tools::resolve(&builtins)?;
 
         // Resolve the declared MCP servers NOW: the tool list is sealed at create (§1.12),
         // so `tools/list` runs here, concurrently per server, and never again for this
@@ -377,6 +417,17 @@ impl Brain {
             )
             .await?
         };
+        let mut tool_names = std::collections::HashSet::new();
+        for name in crate::tools::names(&decls)
+            .into_iter()
+            .chain(mcp.tools.iter().map(|tool| tool.name.clone()))
+        {
+            if !tool_names.insert(name.clone()) {
+                return Err(BrainError::Invalid(format!(
+                    "tools: duplicate model-visible name {name:?}"
+                )));
+            }
+        }
         // Per-server headers are credentials: custody, never the journal plaintext.
         let mcp_headers: HashMap<String, HashMap<String, String>> = tools_cfg
             .mcp
@@ -400,6 +451,130 @@ impl Brain {
             Some(s) => format!("{s}"),
         };
 
+        let hand_tools: Vec<_> = decls
+            .iter()
+            .filter_map(|decl| match &decl.route {
+                crate::config::ToolRoute::Hand(seal) => Some((decl, seal)),
+                _ => None,
+            })
+            .collect();
+        if !hand_tools.is_empty() && !hand_cfg.enabled {
+            return Err(BrainError::Invalid(
+                "Hand tools require hand.enabled=true".into(),
+            ));
+        }
+        for (decl, seal) in &hand_tools {
+            let missing: Vec<_> = seal
+                .required_env
+                .iter()
+                .filter(|key| !hand_cfg.env.contains_key(*key))
+                .collect();
+            if !missing.is_empty() {
+                return Err(BrainError::Invalid(format!(
+                    "tool {} is missing required Hand environment keys: {}",
+                    decl.name,
+                    missing
+                        .into_iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+
+        // Verify bundle integrity before any journal write. Exact bytes are passed once to the
+        // Hand factory for staging and are never included in PrefixDoc, HeadDoc, records, events,
+        // logs, or model requests.
+        let mut decoded_bundles = Vec::with_capacity(req.tool_bundles.len());
+        let mut total_bundle_bytes = 0usize;
+        let mut bundle_checksums = HashSet::new();
+        for (index, bundle) in req.tool_bundles.iter().enumerate() {
+            let checksum = bundle.checksum.to_string();
+            if !bundle_checksums.insert(checksum.clone()) {
+                return Err(BrainError::Invalid(format!(
+                    "tool_bundles[{index}]: duplicate checksum"
+                )));
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(bundle.content_base64.as_bytes())
+                .map_err(|error| {
+                    BrainError::Invalid(format!("tool_bundles[{index}].content_base64: {error}"))
+                })?;
+            if bytes.len() != bundle.bytes.get() as usize {
+                return Err(BrainError::Invalid(format!(
+                    "tool_bundles[{index}].bytes does not match decoded content"
+                )));
+            }
+            if bytes.len() > 4 * 1024 * 1024 {
+                return Err(BrainError::Invalid(format!(
+                    "tool_bundles[{index}] exceeds 4 MiB"
+                )));
+            }
+            total_bundle_bytes = total_bundle_bytes.saturating_add(bytes.len());
+            if total_bundle_bytes > 16 * 1024 * 1024 {
+                return Err(BrainError::Invalid(
+                    "tool_bundles exceed the 16 MiB session limit".into(),
+                ));
+            }
+            let actual = hex::encode(Sha256::digest(&bytes));
+            if actual != checksum {
+                return Err(BrainError::Invalid(format!(
+                    "tool_bundles[{index}] checksum mismatch"
+                )));
+            }
+            decoded_bundles.push((checksum, bytes, bundle.media_type.clone()));
+        }
+
+        let referenced_bundle_checksums: HashSet<_> = hand_tools
+            .iter()
+            .filter(|(_, seal)| seal.source == brain_protocol::session::HandToolSource::Bundle)
+            .map(|(_, seal)| seal.checksum.as_str())
+            .collect();
+        for (_, seal) in &hand_tools {
+            let supplied = bundle_checksums.contains(&seal.checksum);
+            match (seal.source, supplied) {
+                (brain_protocol::session::HandToolSource::Bundle, false) => {
+                    return Err(BrainError::Invalid(format!(
+                        "Hand bundle {} was not supplied",
+                        seal.checksum
+                    )));
+                }
+                (brain_protocol::session::HandToolSource::Preinstalled, true) => {
+                    return Err(BrainError::Invalid(format!(
+                        "preinstalled Hand tool unexpectedly supplied bundle {}",
+                        seal.checksum
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if let Some(unused) = bundle_checksums
+            .iter()
+            .find(|checksum| !referenced_bundle_checksums.contains(checksum.as_str()))
+        {
+            return Err(BrainError::Invalid(format!(
+                "unreferenced tool bundle {unused}"
+            )));
+        }
+
+        let mut hand_manifest = crate::tools::hand_manifest(&decls)?;
+        for spec in &mut hand_manifest.tools {
+            if spec.executable.source == brain_protocol::abi::ToolExecutableSource::Bundle {
+                let bytes = decoded_bundles
+                    .iter()
+                    .find(|(checksum, _, _)| checksum == &spec.executable.checksum.to_string())
+                    .map(|(_, bytes, _)| bytes.len() as u64)
+                    .ok_or_else(|| {
+                        BrainError::Invalid(format!(
+                            "missing verified bundle for tool {}",
+                            *spec.name
+                        ))
+                    })?;
+                spec.executable.bytes = std::num::NonZeroU64::new(bytes);
+            }
+        }
+        let manifest_digest = crate::tools::manifest_digest(&hand_manifest);
+
         // Decode seed files; staging is the adapter's business (S3, local disk, yours).
         let mut seed_bytes = Vec::with_capacity(req.files.len());
         for (i, f) in req.files.iter().enumerate() {
@@ -416,6 +591,18 @@ impl Brain {
         // Encrypt the BYOK key; the plaintext never reaches the journal.
         let key = ProviderKey::new(req.model.api_key.to_string());
         let blob = self.custody.encrypt(&session_id, &key).await?;
+        let hand_secrets_b64 = if hand_cfg.env.is_empty() {
+            String::new()
+        } else {
+            let json = serde_json::to_string(&hand_cfg.env)?;
+            let encrypted = self
+                .custody
+                .encrypt(&session_id, &ProviderKey::new(json))
+                .await?;
+            blob_to_b64(&encrypted)
+        };
+        let mut hand_env_keys: Vec<_> = hand_cfg.env.keys().cloned().collect();
+        hand_env_keys.sort();
 
         let now = crate::wall_ms();
         let prefix = PrefixDoc {
@@ -430,20 +617,26 @@ impl Brain {
                 .reasoning_effort
                 .as_ref()
                 .map(|r| format!("{r:?}").to_lowercase()),
-            tools: crate::tools::names(&decls),
+            tools: tool_items,
             mcp: mcp.servers,
             mcp_tools: mcp.tools,
             hand_enabled: hand_cfg.enabled,
             shape: shape.clone(),
             sync_interval_seconds: hand_cfg.sync_interval_seconds.max(60) as u64,
-            env: hand_cfg.env.clone(),
+            hand_env_keys,
             metadata: req.metadata.clone(),
         };
-        let manifest_digest = crate::tools::manifest_digest();
 
         // The adapter stages seeds and validates the spec (an unsupported shape is refused
         // HERE, loudly, before anything is journaled).
-        let spec = Self::hand_spec(&session_id, &prefix, &manifest_digest);
+        let spec = HandSpec {
+            session_id: session_id.clone(),
+            hand_enabled: prefix.hand_enabled,
+            shape: prefix.shape.clone(),
+            env: hand_cfg.env.clone(),
+            tool_manifest: hand_manifest.clone(),
+            manifest_digest: manifest_digest.clone(),
+        };
         let seeds: Vec<SeedFile<'_>> = seed_bytes
             .iter()
             .map(|(path, bytes, mode)| SeedFile {
@@ -452,7 +645,15 @@ impl Brain {
                 mode: *mode,
             })
             .collect();
-        let hand_state = self.hand_factory.create(&spec, &seeds).await?;
+        let bundles: Vec<ToolBundleFile<'_>> = decoded_bundles
+            .iter()
+            .map(|(checksum, bytes, media_type)| ToolBundleFile {
+                checksum,
+                bytes,
+                media_type,
+            })
+            .collect();
+        let hand_state = self.hand_factory.create(&spec, &seeds, &bundles).await?;
 
         let doc = HeadDoc {
             state: "idle".into(),
@@ -468,12 +669,13 @@ impl Brain {
             prefix,
             key_b64: blob_to_b64(&blob),
             mcp_secrets_b64,
+            hand_secrets_b64,
+            hand_manifest,
             manifest_digest,
             hand_info: HeadDoc::initial_hand_info(&shape),
             hand_state,
             workspace_bytes: 0,
             artifacts: Vec::new(),
-            output_requests: Vec::new(),
         };
         if let Err(error) = self
             .journal
@@ -600,39 +802,30 @@ impl Brain {
         session_id: &str,
         content: MessageRequestContent,
     ) -> Result<(String, u64)> {
+        self.message_with_metadata(session_id, content, HashMap::new())
+            .await
+    }
+
+    pub async fn message_with_metadata(
+        self: &Arc<Self>,
+        session_id: &str,
+        content: MessageRequestContent,
+        metadata: HashMap<String, String>,
+    ) -> Result<(String, u64)> {
+        if metadata.len() > 32
+            || metadata
+                .iter()
+                .any(|(key, value)| key.len() > 128 || value.len() > 4096)
+        {
+            return Err(BrainError::Invalid(
+                "message metadata exceeds the 32-pair, 128-byte key, or 4096-byte value limit"
+                    .into(),
+            ));
+        }
         let blocks = content_blocks(content)?;
         self.deliver(session_id, |reply| Command::Message {
             content: blocks.clone(),
-            reply,
-        })
-        .await?
-    }
-
-    pub async fn output(
-        self: &Arc<Self>,
-        session_id: &str,
-        req: OutputRequest,
-        idempotency_key: Option<&str>,
-    ) -> Result<OutputAdmission> {
-        if let Some(key) = idempotency_key
-            && (key.is_empty() || key.len() > 128)
-        {
-            return Err(BrainError::Invalid(
-                "Idempotency-Key must contain 1 to 128 bytes".into(),
-            ));
-        }
-        let request_hash = crate::output::jcs_sha256(&req)?;
-        let schema_hash = req.schema_hash.to_string();
-        let schema = serde_json::Value::Object(req.schema.0);
-        crate::output::validate_schema(&schema, &schema_hash)?;
-        let input = req.input.map(output_content_blocks).transpose()?;
-        let idempotency_key_hash = idempotency_key.map(crate::output::jcs_sha256).transpose()?;
-        self.deliver(session_id, |reply| Command::Output {
-            schema: schema.clone(),
-            schema_hash: schema_hash.clone(),
-            request_hash: request_hash.clone(),
-            idempotency_key_hash: idempotency_key_hash.clone(),
-            input: input.clone(),
+            metadata: metadata.clone(),
             reply,
         })
         .await?
@@ -706,7 +899,7 @@ impl Brain {
         session_id: &str,
         path: String,
         bytes: Vec<u8>,
-    ) -> Result<aex_contracts::session::FileEntry> {
+    ) -> Result<brain_protocol::session::FileEntry> {
         let path = normalize_workspace_path(&path)?;
         if bytes.len() > self.cfg.max_file_bytes {
             return Err(BrainError::FileTooLarge {
@@ -782,84 +975,158 @@ enum RunningOutcome {
         turn_id: String,
         outcome: Result<crate::turn::TurnReport>,
     },
-    Output {
-        output_id: String,
-        outcome: Result<OutputJobReport>,
-    },
 }
 
 #[derive(Debug)]
-struct OutputJobReport {
-    completed: bool,
-}
-
-struct OutputRuntime {
-    prefix: Arc<SealedPrefix>,
-    session: SessionConfig,
-    provider: Arc<dyn Provider>,
-}
-
-enum OutputAdmit {
-    Replay(OutputAdmission),
-    Started {
-        admission: OutputAdmission,
-        turn_id: Option<String>,
-        cancel: CancellationToken,
-    },
-}
-
-#[derive(Debug)]
-struct PendingTask {
+struct PendingVolatile {
     seq: u64,
     turn: String,
     agent: String,
     call: String,
+    name: String,
 }
 
-#[derive(Debug)]
-struct PendingOutput {
+#[derive(Debug, Clone)]
+struct PendingExternal {
     seq: u64,
-    output: String,
-    turn: Option<String>,
-    schema_hash: String,
+    turn: String,
+    call: String,
+    name: String,
+    input: serde_json::Value,
+    context: HashMap<String, String>,
+    policy: crate::config::ServerToolPolicy,
+    parallel_batch: bool,
 }
 
-fn pending_outputs(entries: &[Entry]) -> Vec<PendingOutput> {
-    let mut pending = HashMap::<String, PendingOutput>::new();
+/// Host-tool calls whose intent committed but whose result did not. Only the stable sealed policy
+/// determines whether replay is permitted; model arguments cannot opt a call into replay.
+fn pending_external(entries: &[Entry], prefix: &PrefixDoc) -> Vec<PendingExternal> {
+    let answered: HashSet<&str> = entries
+        .iter()
+        .filter_map(|entry| match &entry.record {
+            Record::ToolResult { call, .. } => Some(call.as_str()),
+            _ => None,
+        })
+        .collect();
+    let terminal_turns: HashSet<&str> = entries
+        .iter()
+        .filter_map(|entry| match &entry.record {
+            Record::TurnCompleted { turn, .. } | Record::TurnFailed { turn, .. } => {
+                Some(turn.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let contexts: HashMap<&str, &HashMap<String, String>> = entries
+        .iter()
+        .filter_map(|entry| match &entry.record {
+            Record::UserMessage { turn, metadata, .. } => Some((turn.as_str(), metadata)),
+            _ => None,
+        })
+        .collect();
+    let policies: HashMap<String, crate::config::ServerToolPolicy> =
+        crate::tools::resolve(&prefix.tools)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|tool| match tool.route {
+                crate::config::ToolRoute::Server(policy) => Some((tool.name, policy)),
+                _ => None,
+            })
+            .collect();
+
+    let mut pending = Vec::new();
     for entry in entries {
-        match &entry.record {
-            Record::OutputStarted {
-                output,
-                turn,
-                schema_hash,
-                ..
-            } => {
-                pending.insert(
-                    output.clone(),
-                    PendingOutput {
-                        seq: entry.seq,
-                        output: output.clone(),
-                        turn: turn.clone(),
-                        schema_hash: schema_hash.clone(),
-                    },
-                );
-            }
-            Record::OutputCompleted { output, .. } | Record::OutputFailed { output, .. } => {
-                pending.remove(output);
-            }
-            _ => {}
+        let Record::ToolCall {
+            turn,
+            agent,
+            call,
+            name,
+            input,
+            ..
+        } = &entry.record
+        else {
+            continue;
+        };
+        let Some(policy) = policies.get(name.as_str()).cloned() else {
+            continue;
+        };
+        if agent != "root"
+            || answered.contains(call.as_str())
+            || terminal_turns.contains(turn.as_str())
+        {
+            continue;
         }
+        let assistant_seq = entries
+            .iter()
+            .rev()
+            .find_map(|candidate| match &candidate.record {
+                Record::Assistant {
+                    turn: assistant_turn,
+                    agent,
+                    ..
+                } if candidate.seq < entry.seq && assistant_turn == turn && agent == "root" => {
+                    Some(candidate.seq)
+                }
+                _ => None,
+            })
+            .unwrap_or(0);
+        let next_assistant_seq = entries
+            .iter()
+            .filter_map(|candidate| match &candidate.record {
+                Record::Assistant {
+                    turn: assistant_turn,
+                    agent,
+                    ..
+                } if candidate.seq > assistant_seq && assistant_turn == turn && agent == "root" => {
+                    Some(candidate.seq)
+                }
+                _ => None,
+            })
+            .min()
+            .unwrap_or(u64::MAX);
+        let batch_size = entries
+            .iter()
+            .filter(|candidate| {
+                candidate.seq > assistant_seq
+                    && candidate.seq < next_assistant_seq
+                    && matches!(
+                        &candidate.record,
+                        Record::ToolCall { turn: other_turn, agent, .. }
+                            if other_turn == turn && agent == "root"
+                    )
+            })
+            .count();
+        pending.push(PendingExternal {
+            seq: entry.seq,
+            turn: turn.clone(),
+            call: call.clone(),
+            name: name.clone(),
+            input: input.clone(),
+            context: contexts
+                .get(turn.as_str())
+                .map_or_else(HashMap::new, |v| (*v).clone()),
+            policy,
+            parallel_batch: batch_size > 1,
+        });
     }
-    let mut pending: Vec<_> = pending.into_values().collect();
-    pending.sort_by_key(|output| output.seq);
+    pending.sort_by_key(|call| call.seq);
     pending
 }
 
-/// Finds `task` intents with no result. Once a new owner can claim the
-/// session, the in-process child that owned each intent is gone and must never
-/// be replayed.
-fn pending_tasks(entries: &[Entry]) -> Vec<PendingTask> {
-    let mut pending = HashMap::<String, PendingTask>::new();
+/// Finds unanswered calls whose executor cannot be recovered unambiguously. A newly claimed
+/// session never reassigns these calls: Hand, attached, MCP and in-process intrinsic effects may
+/// already have happened. Replay-safe server capabilities are handled separately.
+fn pending_volatile(entries: &[Entry], prefix: &PrefixDoc) -> Vec<PendingVolatile> {
+    let volatile_names: HashSet<String> = crate::tools::resolve(&prefix.tools)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tool| match tool.route {
+            crate::config::ToolRoute::Server(_) => None,
+            _ => Some(tool.name),
+        })
+        .chain(prefix.mcp_tools.iter().map(|tool| tool.name.clone()))
+        .collect();
+    let mut pending = HashMap::<String, PendingVolatile>::new();
     for entry in entries {
         match &entry.record {
             Record::ToolCall {
@@ -869,14 +1136,15 @@ fn pending_tasks(entries: &[Entry]) -> Vec<PendingTask> {
                 name,
                 detach,
                 ..
-            } if name == "task" && !detach => {
+            } if volatile_names.contains(name) && !detach => {
                 pending.insert(
                     call.clone(),
-                    PendingTask {
+                    PendingVolatile {
                         seq: entry.seq,
                         turn: turn.clone(),
                         agent: agent.clone(),
                         call: call.clone(),
+                        name: name.clone(),
                     },
                 );
             }
@@ -887,17 +1155,230 @@ fn pending_tasks(entries: &[Entry]) -> Vec<PendingTask> {
         }
     }
     let mut pending: Vec<_> = pending.into_values().collect();
-    pending.sort_by_key(|task| task.seq);
+    pending.sort_by_key(|call| call.seq);
     pending
 }
 
-fn task_identity_count(entries: &[Entry]) -> u64 {
+struct RecoveredTurn {
+    turn: String,
+    context: HashMap<String, String>,
+    rounds: u64,
+    tool_calls: u64,
+}
+
+async fn recover_external_calls(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Resident,
+    entries: &[Entry],
+) -> Result<Option<RecoveredTurn>> {
+    let Some(active_turn) = resident.st.head.turn.clone() else {
+        return Ok(None);
+    };
+    let pending: Vec<_> = pending_external(entries, &resident.st.head.prefix)
+        .into_iter()
+        .filter(|call| call.turn == active_turn)
+        .collect();
+    if pending.is_empty() {
+        return Ok(None);
+    }
+
+    let rounds = entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.record,
+                Record::Assistant { turn, agent, .. }
+                    if turn == &active_turn && agent == "root"
+            )
+        })
+        .count() as u64;
+    let tool_calls = entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.record,
+                Record::ToolCall { turn, agent, .. }
+                    if turn == &active_turn && agent == "root"
+            )
+        })
+        .count() as u64;
+    let context = pending[0].context.clone();
+    let sealed_tools = crate::tools::resolve(&resident.st.head.prefix.tools)?;
+    let mut records = Vec::with_capacity(pending.len() + 2);
+    let mut blocks = Vec::with_capacity(pending.len());
+    let mut terminal = None;
+    let mut unreplayable = false;
+
+    for call in pending {
+        let outcome =
+            if call.policy.effect == brain_protocol::session::ExternalToolEffect::ReplaySafe {
+                crate::turn::execute_external(
+                    brain.external_executor.clone(),
+                    call.policy,
+                    call.parallel_batch,
+                    session_id.to_string(),
+                    call.turn.clone(),
+                    "root".into(),
+                    call.call.clone(),
+                    call.name.clone(),
+                    call.input,
+                    call.context,
+                    CancellationToken::new(),
+                )
+                .await
+            } else {
+                unreplayable = true;
+                CallOutcome {
+                    outcome: "interrupted".into(),
+                    value: None,
+                    content: format!(
+                        "external tool {} was interrupted and its opaque effect was not replayed",
+                        call.name
+                    ),
+                    is_error: true,
+                    exit_code: None,
+                    duration_ms: 0,
+                    truncated: false,
+                    terminal: None,
+                }
+            };
+        let outcome = match sealed_tools.iter().find(|tool| tool.name == call.name) {
+            Some(tool) => crate::tools::enforce_output(tool, outcome),
+            None => CallOutcome::failed(format!(
+                "tool {} is absent from the recovered execution seal",
+                call.name
+            )),
+        };
+        let content = if outcome.content.is_empty() {
+            format!("[{}: no output]", outcome.outcome)
+        } else {
+            outcome.content.clone()
+        };
+        blocks.push(ContentBlock::ToolResult {
+            tool_use_id: call.call.clone(),
+            content: content.clone(),
+            is_error: outcome.is_error,
+        });
+        records.push((
+            resident.st.take_seq(),
+            Record::ToolResult {
+                turn: call.turn,
+                agent: "root".into(),
+                call: call.call.clone(),
+                name: call.name.clone(),
+                outcome: outcome.outcome,
+                content,
+                is_error: outcome.is_error,
+                exit_code: outcome.exit_code,
+                duration_ms: outcome.duration_ms,
+                truncated: outcome.truncated,
+            },
+        ));
+        if let Some(value) = outcome.terminal {
+            terminal = Some((call.call, call.name, value));
+        }
+    }
+
+    if let Some((call, name, terminal)) = terminal {
+        resident.st.head.state = "idle".into();
+        resident.st.head.turn = None;
+        match terminal {
+            TerminalOutcome::Complete { value, metadata } => {
+                records.push((
+                    resident.st.take_seq(),
+                    Record::TurnCompleted {
+                        turn: active_turn.clone(),
+                        stop_reason: "end_turn".into(),
+                        rounds,
+                        tool_calls,
+                        result: Some(brain_protocol::session::TurnResult {
+                            call_id: call.parse().map_err(|error| {
+                                BrainError::Protocol(format!("external call id: {error}"))
+                            })?,
+                            metadata,
+                            name,
+                            value,
+                        }),
+                    },
+                ));
+            }
+            TerminalOutcome::Fail { error } => records.push((
+                resident.st.take_seq(),
+                Record::TurnFailed {
+                    turn: active_turn.clone(),
+                    code: error.code.to_string(),
+                    message: error.message,
+                    details: error.details,
+                },
+            )),
+        }
+        records.push((
+            resident.st.take_seq(),
+            Record::State {
+                state: "idle".into(),
+                turn: Some(active_turn.clone()),
+            },
+        ));
+    } else if unreplayable {
+        resident.st.head.state = "idle".into();
+        resident.st.head.turn = None;
+        records.push((
+            resident.st.take_seq(),
+            Record::TurnFailed {
+                turn: active_turn.clone(),
+                code: "cancelled".into(),
+                message:
+                    "turn interrupted with an opaque external-tool effect; it was not replayed"
+                        .into(),
+                details: None,
+            },
+        ));
+        records.push((
+            resident.st.take_seq(),
+            Record::State {
+                state: "idle".into(),
+                turn: Some(active_turn.clone()),
+            },
+        ));
+    }
+
+    commit(brain, session_id, &mut resident.st, records).await?;
+    resident.st.history.push(Message::tool_results(blocks));
+    if resident.st.head.turn.is_none() {
+        Ok(None)
+    } else {
+        Ok(Some(RecoveredTurn {
+            turn: active_turn,
+            context,
+            rounds,
+            tool_calls,
+        }))
+    }
+}
+
+fn task_identity_count(entries: &[Entry], prefix: &PrefixDoc) -> u64 {
+    let intrinsic_names: HashSet<String> = crate::tools::resolve(&prefix.tools)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|tool| match tool.route {
+            crate::config::ToolRoute::Intrinsic(capability)
+                if matches!(
+                    capability.as_str(),
+                    "brain.subagents" | "brain.subagents.v1"
+                ) =>
+            {
+                Some(tool.name)
+            }
+            _ => None,
+        })
+        .collect();
     entries
         .iter()
         .filter(|entry| {
             matches!(
                 &entry.record,
-                Record::ToolCall { name, detach: false, .. } if name == "task"
+                Record::ToolCall { name, detach: false, .. } if intrinsic_names.contains(name)
             )
         })
         .count() as u64
@@ -963,7 +1444,7 @@ async fn actor(
                         };
                         let _ = reply.send(doc);
                     }
-                    Command::Message { content, reply } => {
+                    Command::Message { content, metadata, reply } => {
                         if running.is_some() {
                             let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
                             continue;
@@ -976,13 +1457,13 @@ async fn actor(
                             Ok(p) => p,
                             Err(_) => { let _ = reply.send(Err(BrainError::Overloaded)); continue; }
                         };
-                        match admit(&brain, &session_id, r, content).await {
+                        match admit(&brain, &session_id, r, content, metadata.clone()).await {
                             Ok((turn_id, seq, cancel)) => {
                                 let _ = reply.send(Ok((turn_id.clone(), seq)));
                                 // Park the resident state into the turn task; the key rides
                                 // the running tuple until the task returns the state.
                                 let mut parked = resident.take().expect("resident");
-                                let run = match turn_run(&brain, &session_id, &turn_id, &parked, cancel.clone()) {
+                                let run = match turn_run(&brain, &session_id, &turn_id, &parked, metadata, cancel.clone()) {
                                     Ok(run) => run,
                                     Err(e) => {
                                         let _ = fail_turn_now(&brain, &session_id, &turn_id, &mut parked.st, &e).await;
@@ -1001,124 +1482,6 @@ async fn actor(
                             }
                             Err(e) => { let _ = reply.send(Err(e)); }
                         }
-                    }
-                    Command::Output {
-                        schema,
-                        schema_hash,
-                        request_hash,
-                        idempotency_key_hash,
-                        input,
-                        reply,
-                    } => {
-                        if running.is_some() {
-                            let replay = match brain.journal.get_head(&session_id).await {
-                                Ok(head) => replay_output(
-                                    &head.doc,
-                                    idempotency_key_hash.as_deref(),
-                                    &request_hash,
-                                ),
-                                Err(error) => Err(error),
-                            };
-                            match replay {
-                                Ok(Some(admission)) => { let _ = reply.send(Ok(admission)); }
-                                Ok(None) => { let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone()))); }
-                                Err(error) => { let _ = reply.send(Err(error)); }
-                            }
-                            continue;
-                        }
-                        let resident_ref = match ensure_resident(&brain, &session_id, &mut resident).await {
-                            Ok(resident) => resident,
-                            Err(error) => { let _ = reply.send(Err(error)); continue; }
-                        };
-                        // Replays are reads of an already-admitted identity. They must not need
-                        // provider configuration or a fresh global turn permit.
-                        match replay_output(
-                            &resident_ref.st.head,
-                            idempotency_key_hash.as_deref(),
-                            &request_hash,
-                        ) {
-                            Ok(Some(admission)) => {
-                                let _ = reply.send(Ok(admission));
-                                continue;
-                            }
-                            Ok(None) => {}
-                            Err(error) => {
-                                let _ = reply.send(Err(error));
-                                continue;
-                            }
-                        }
-                        let runtime = match output_runtime(&brain, resident_ref) {
-                            Ok(runtime) => runtime,
-                            Err(error) => { let _ = reply.send(Err(error)); continue; }
-                        };
-                        let permit = match brain.turn_permits.clone().try_acquire_owned() {
-                            Ok(permit) => permit,
-                            Err(_) => { let _ = reply.send(Err(BrainError::Overloaded)); continue; }
-                        };
-                        let admitted = admit_output(
-                            &brain,
-                            &session_id,
-                            resident_ref,
-                            &schema_hash,
-                            &request_hash,
-                            idempotency_key_hash.as_deref(),
-                            input,
-                        ).await;
-                        let OutputAdmit::Started { admission, turn_id, cancel } = (match admitted {
-                            Ok(OutputAdmit::Replay(admission)) => {
-                                let _ = reply.send(Ok(admission));
-                                continue;
-                            }
-                            Ok(started) => started,
-                            Err(error) => { let _ = reply.send(Err(error)); continue; }
-                        }) else { unreachable!("replay handled above") };
-
-                        let _ = reply.send(Ok(admission.clone()));
-                        let parked = resident.take().expect("resident");
-                        let work_run = turn_id.as_ref().map(|turn_id| TurnRun {
-                            session_id: session_id.clone(),
-                            turn_id: turn_id.clone(),
-                            prefix: runtime.prefix.clone(),
-                            session: runtime.session.clone(),
-                            provider: runtime.provider.clone(),
-                            provider_name: parked.st.head.prefix.provider.clone(),
-                            journal: brain.journal.clone(),
-                            hub: brain.hub.clone(),
-                            cancel: cancel.clone(),
-                            model_permits: brain.model_permits.clone(),
-                            history_budget_bytes: brain.cfg.history_budget_bytes,
-                            web: brain.web.clone(),
-                        });
-                        let key = parked.key.clone();
-                        let output_id = admission.output_id.clone();
-                        let brain_for_job = brain.clone();
-                        let session_for_job = session_id.clone();
-                        let schema_hash_for_job = schema_hash.clone();
-                        let cancel_for_job = cancel.clone();
-                        let handle = tokio::spawn(async move {
-                            let _permit = permit;
-                            let mut state = parked.st;
-                            let outcome = run_output_job(
-                                &brain_for_job,
-                                &session_for_job,
-                                &output_id,
-                                &schema_hash_for_job,
-                                turn_id,
-                                schema,
-                                runtime,
-                                work_run,
-                                cancel_for_job,
-                                &mut state,
-                            ).await;
-                            (
-                                state,
-                                RunningOutcome::Output {
-                                    output_id,
-                                    outcome,
-                                },
-                            )
-                        });
-                        running = Some(Running { handle, cancel, key });
                     }
                     Command::Cancel { reply } => {
                         if let Some(task) = &running {
@@ -1237,43 +1600,13 @@ async fn settle_running(
                 RunningOutcome::Turn { turn_id, outcome } => {
                     finish_turn(brain, session_id, &turn_id, &mut resident.st, outcome).await;
                 }
-                RunningOutcome::Output { output_id, outcome } => {
-                    match outcome {
-                        Ok(report) => tracing::info!(
-                            session = %session_id,
-                            output = %output_id,
-                            completed = report.completed,
-                            "output done"
-                        ),
-                        Err(error) => tracing::error!(
-                            session = %session_id,
-                            output = %output_id,
-                            error = %error,
-                            "output task could not commit its terminal event"
-                        ),
-                    }
-                    match resident.st.hand.checkpoint().await {
-                        Ok(()) => {
-                            if let Err(error) =
-                                commit(brain, session_id, &mut resident.st, vec![]).await
-                            {
-                                tracing::warn!(session = %session_id, error = %error, "output checkpoint commit failed");
-                            }
-                        }
-                        Err(error) => {
-                            tracing::warn!(session = %session_id, error = %error, "output checkpoint failed")
-                        }
-                    }
-                    resident.st.hand.idle();
-                }
             }
             Some(resident)
         }
         Err(join_error) => {
             tracing::error!(session = %session_id, error = %join_error, "session task panicked");
-            // The fold moved into the task and is gone. Rehydrate immediately so an admitted
-            // output gets a durable interrupted terminal instead of leaving its Promise open
-            // until some unrelated future request happens to touch the session.
+            // The fold moved into the task and is gone. Rehydrate immediately so the actor can
+            // continue serving the durable session state.
             match hydrate(brain, session_id).await {
                 Ok(resident) => Some(resident),
                 Err(error) => {
@@ -1305,11 +1638,10 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
     }
     let mut entries = brain.journal.read_records(session_id, 0).await?;
 
-    // A successfully claimed session has no live previous owner. Any task
-    // intent without a result belonged to an in-process child that disappeared
-    // with that owner: answer it as interrupted, never replay it. Nested task
-    // results remain audit-only because Fold excludes non-root agents.
-    let interrupted = pending_tasks(&entries);
+    // A successfully claimed session has no live previous owner. Any unanswered volatile intent
+    // is ambiguous and is answered as interrupted, never replayed. Nested results remain
+    // audit-only because Fold excludes non-root agents.
+    let interrupted = pending_volatile(&entries, &head.doc.prefix);
     if !interrupted.is_empty() {
         let active_turn = head.doc.turn.clone();
         let interrupted_root_turn = active_turn.as_deref().is_some_and(|turn| {
@@ -1326,9 +1658,9 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                     turn: task.turn.clone(),
                     agent: task.agent.clone(),
                     call: task.call.clone(),
-                    name: "task".into(),
+                    name: task.name.clone(),
                     outcome: "interrupted".into(),
-                    content: "subagent interrupted while the session was not resident".into(),
+                    content: "tool executor disconnected while the session was not resident; the call was not replayed".into(),
                     is_error: true,
                     exit_code: None,
                     duration_ms: 0,
@@ -1366,6 +1698,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                     stop_reason: "interrupted".into(),
                     rounds,
                     tool_calls,
+                    result: None,
                 },
             ));
             next_seq += 1;
@@ -1403,75 +1736,6 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
         entries = brain.journal.read_records(session_id, 0).await?;
     }
 
-    // An output commit is a model-side effect and must never be replayed after ownership was
-    // lost. Close any admitted request that lacks a terminal event as interrupted; an
-    // idempotent retry then replays this same failure instead of asking the model twice.
-    let interrupted_outputs = pending_outputs(&entries);
-    if !interrupted_outputs.is_empty() {
-        let mut next_seq = head.last_seq + 1;
-        let mut records = Vec::with_capacity(interrupted_outputs.len() * 2 + 1);
-        for output in &interrupted_outputs {
-            records.push((
-                next_seq,
-                Record::OutputFailed {
-                    output: output.output.clone(),
-                    turn: output.turn.clone(),
-                    schema_hash: output.schema_hash.clone(),
-                    code: "cancelled".into(),
-                    message:
-                        "output interrupted when its previous owner stopped; it was not replayed"
-                            .into(),
-                    issues: Vec::new(),
-                    usage: crate::message::Usage::default(),
-                },
-            ));
-            next_seq += 1;
-            if let Some(turn) = &output.turn
-                && head.doc.turn.as_deref() == Some(turn)
-            {
-                records.push((
-                    next_seq,
-                    Record::TurnFailed {
-                        turn: turn.clone(),
-                        code: "cancelled".into(),
-                        message: "turn interrupted with its output request; it was not replayed"
-                            .into(),
-                    },
-                ));
-                next_seq += 1;
-            }
-        }
-        head.doc.state = "idle".into();
-        let previous_turn = head.doc.turn.take();
-        records.push((
-            next_seq,
-            Record::State {
-                state: "idle".into(),
-                turn: previous_turn,
-            },
-        ));
-        head.doc.updated_ms = crate::wall_ms();
-        let high_water = next_seq;
-        let mut lease = Lease {
-            fence: head.fence,
-            last_seq: head.last_seq,
-        };
-        brain
-            .journal
-            .commit(session_id, &mut lease, &records, &head.doc, high_water)
-            .await?;
-        let now = crate::wall_ms();
-        for (seq, record) in &records {
-            if let Some(event) =
-                crate::events::derive(session_id, *seq, now, record, &head.doc.hand_info)
-            {
-                brain.hub.publish(session_id, event);
-            }
-        }
-        head.last_seq = lease.last_seq;
-        entries = brain.journal.read_records(session_id, 0).await?;
-    }
-
     let fold = crate::journal::fold(&entries);
     let key = brain
         .custody
@@ -1479,11 +1743,11 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
         .await?;
     let mcp = build_mcp_runtime(brain, session_id, &head.doc).await?;
     let hand = brain.open_adapter(session_id, &head.doc).await?;
-    // Every journaled `task` intent minted one child identity, including an
+    // Every journaled subagent intent minted one child identity, including an
     // interrupted call. Rebuilding the count here makes the D11 lifetime cap
     // survive discard and process restart.
-    let identities = task_identity_count(&entries);
-    Ok(Resident {
+    let identities = task_identity_count(&entries, &head.doc.prefix);
+    let mut resident = Resident {
         st: TurnState {
             history: fold.history,
             hand,
@@ -1492,13 +1756,43 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                 fence: head.fence,
                 last_seq: head.last_seq,
             },
-            todo: Arc::new(TodoState::default()),
             mcp,
             seq: Arc::new(std::sync::atomic::AtomicU64::new(head.last_seq + 1)),
             identities: Arc::new(std::sync::atomic::AtomicU64::new(identities)),
         },
         key,
-    })
+    };
+    if let Some(recovered) =
+        recover_external_calls(brain, session_id, &mut resident, &entries).await?
+    {
+        let permit = brain
+            .turn_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| BrainError::Overloaded)?;
+        let run = turn_run(
+            brain,
+            session_id,
+            &recovered.turn,
+            &resident,
+            recovered.context,
+            CancellationToken::new(),
+        )?;
+        let outcome = run
+            .resume(&mut resident.st, recovered.rounds, recovered.tool_calls)
+            .await;
+        drop(permit);
+        finish_turn(
+            brain,
+            session_id,
+            &recovered.turn,
+            &mut resident.st,
+            outcome,
+        )
+        .await;
+    }
+    Ok(resident)
 }
 
 /// Rebuilds the session's MCP dispatch state from the sealed prefix doc: decrypt the header
@@ -1566,6 +1860,7 @@ async fn admit(
     session_id: &str,
     r: &mut Resident,
     content: Vec<ContentBlock>,
+    metadata: HashMap<String, String>,
 ) -> Result<(String, u64, CancellationToken)> {
     if r.st.head.state == "failed" {
         return Err(BrainError::SessionFailed(
@@ -1602,6 +1897,7 @@ async fn admit(
             Record::UserMessage {
                 turn: turn_id.clone(),
                 content: content.clone(),
+                metadata,
             },
         ),
         (
@@ -1636,442 +1932,12 @@ async fn admit(
     Ok((turn_id, user_seq, CancellationToken::new()))
 }
 
-fn output_runtime(brain: &Arc<Brain>, resident: &Resident) -> Result<OutputRuntime> {
-    let (prefix, dialect) = build_prefix(&resident.st.head.prefix)?;
-    let base_url = resident.st.head.prefix.base_url.clone().unwrap_or_default();
-    let session = SessionConfig::new(prefix.clone(), resident.key.clone(), base_url);
-    Ok(OutputRuntime {
-        prefix,
-        session,
-        provider: (brain.provider_factory)(dialect),
-    })
-}
-
-fn replay_output(
-    doc: &HeadDoc,
-    idempotency_key_hash: Option<&str>,
-    request_hash: &str,
-) -> Result<Option<OutputAdmission>> {
-    let Some(key_hash) = idempotency_key_hash else {
-        return Ok(None);
-    };
-    let Some(previous) = doc
-        .output_requests
-        .iter()
-        .find(|request| request.key_hash == key_hash)
-    else {
-        return Ok(None);
-    };
-    if previous.request_hash != request_hash {
-        return Err(BrainError::IdempotencyConflict);
-    }
-    Ok(Some(OutputAdmission {
-        output_id: previous.output_id.clone(),
-        schema_hash: previous.schema_hash.clone(),
-        seq: previous.started_seq,
-    }))
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn admit_output(
-    brain: &Arc<Brain>,
-    session_id: &str,
-    resident: &mut Resident,
-    schema_hash: &str,
-    request_hash: &str,
-    idempotency_key_hash: Option<&str>,
-    input: Option<Vec<ContentBlock>>,
-) -> Result<OutputAdmit> {
-    if let Some(admission) = replay_output(&resident.st.head, idempotency_key_hash, request_hash)? {
-        return Ok(OutputAdmit::Replay(admission));
-    }
-    if resident.st.head.state == "failed" {
-        return Err(BrainError::SessionFailed(
-            resident
-                .st
-                .head
-                .failure
-                .as_ref()
-                .map(|failure| failure.message.clone())
-                .unwrap_or_default(),
-        ));
-    }
-
-    let now = crate::wall_ms();
-    resident
-        .st
-        .head
-        .output_requests
-        .retain(|request| now.saturating_sub(request.admitted_ms) <= 24 * 60 * 60 * 1000);
-
-    if input.is_some() && resident.st.hand.must_release() {
-        let _ = resident.st.hand.release().await;
-        let seq = resident.st.take_seq();
-        let record = Record::State {
-            state: resident.st.head.state.clone(),
-            turn: None,
-        };
-        commit(brain, session_id, &mut resident.st, vec![(seq, record)]).await?;
-    }
-
-    let source_seq = resident.st.lease.last_seq;
-    let output_id = crate::mint_id("out", 24);
-    let turn_id = input.as_ref().map(|_| crate::mint_id("trn", 24));
-    let mut records = Vec::with_capacity(if input.is_some() { 3 } else { 1 });
-
-    if let (Some(content), Some(turn)) = (input.as_ref(), turn_id.as_ref()) {
-        records.push((
-            resident.st.take_seq(),
-            Record::UserMessage {
-                turn: turn.clone(),
-                content: content.clone(),
-            },
-        ));
-        records.push((
-            resident.st.take_seq(),
-            Record::TurnStarted { turn: turn.clone() },
-        ));
-        resident.st.head.turn = Some(turn.clone());
-        resident.st.head.turns += 1;
-        resident.st.head.last_message_ms = Some(now);
-    }
-    let started_seq = resident.st.take_seq();
-    records.push((
-        started_seq,
-        Record::OutputStarted {
-            output: output_id.clone(),
-            turn: turn_id.clone(),
-            schema_hash: schema_hash.to_string(),
-            source_seq,
-        },
-    ));
-    resident.st.head.state = "active".into();
-
-    if let Some(key_hash) = idempotency_key_hash {
-        if resident.st.head.output_requests.len() >= 256 {
-            resident.st.head.output_requests.remove(0);
-        }
-        resident.st.head.output_requests.push(OutputRequestDoc {
-            key_hash: key_hash.to_string(),
-            request_hash: request_hash.to_string(),
-            output_id: output_id.clone(),
-            schema_hash: schema_hash.to_string(),
-            started_seq,
-            admitted_ms: now,
-        });
-    }
-    commit(brain, session_id, &mut resident.st, records).await?;
-
-    if let Some(content) = input {
-        if let Some(last) = resident.st.history.last_mut()
-            && last.role == crate::message::Role::User
-            && !last.content.is_empty()
-            && last
-                .content
-                .iter()
-                .all(|block| matches!(block, ContentBlock::ToolResult { .. }))
-        {
-            last.content.extend(content);
-        } else {
-            resident.st.history.push(Message {
-                role: crate::message::Role::User,
-                content,
-            });
-        }
-        resident.st.hand.on_message_admitted();
-    }
-
-    Ok(OutputAdmit::Started {
-        admission: OutputAdmission {
-            output_id,
-            schema_hash: schema_hash.to_string(),
-            seq: started_seq,
-        },
-        turn_id,
-        cancel: CancellationToken::new(),
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_output_job(
-    brain: &Arc<Brain>,
-    session_id: &str,
-    output_id: &str,
-    schema_hash: &str,
-    turn_id: Option<String>,
-    schema: serde_json::Value,
-    runtime: OutputRuntime,
-    work_run: Option<TurnRun>,
-    cancel: CancellationToken,
-    state: &mut TurnState,
-) -> Result<OutputJobReport> {
-    let work_report = if let Some(run) = work_run {
-        match run.run_work(state).await {
-            Ok(report) => Some(report),
-            Err(error) => {
-                return finish_output_failure(
-                    brain,
-                    session_id,
-                    state,
-                    output_id,
-                    schema_hash,
-                    turn_id,
-                    None,
-                    error,
-                    Vec::new(),
-                    crate::message::Usage::default(),
-                    true,
-                )
-                .await;
-            }
-        }
-    } else {
-        None
-    };
-
-    if work_report
-        .as_ref()
-        .is_some_and(|report| report.stop_reason == "refusal")
-    {
-        let message = last_assistant_text(&state.history)
-            .filter(|message| !message.is_empty())
-            .unwrap_or_else(|| "the provider refused the output request".into());
-        return finish_output_failure(
-            brain,
-            session_id,
-            state,
-            output_id,
-            schema_hash,
-            turn_id,
-            work_report,
-            BrainError::OutputRefused(message),
-            Vec::new(),
-            crate::message::Usage::default(),
-            false,
-        )
-        .await;
-    }
-
-    if work_report
-        .as_ref()
-        .is_some_and(|report| report.stop_reason == "cancelled")
-    {
-        return finish_output_failure(
-            brain,
-            session_id,
-            state,
-            output_id,
-            schema_hash,
-            turn_id,
-            work_report,
-            BrainError::Cancelled,
-            Vec::new(),
-            crate::message::Usage::default(),
-            false,
-        )
-        .await;
-    }
-
-    let context = crate::output::CommitContext {
-        provider: runtime.provider,
-        prefix: runtime.prefix,
-        session: runtime.session,
-        history: state.history.clone(),
-        model_permits: brain.model_permits.clone(),
-        cancel,
-    };
-    match crate::output::commit(context, schema).await {
-        Ok(success) => {
-            let output_seq = state.take_seq();
-            let mut records = vec![(
-                output_seq,
-                Record::OutputCompleted {
-                    output: output_id.to_string(),
-                    turn: turn_id.clone(),
-                    schema_hash: schema_hash.to_string(),
-                    value: success.value.clone(),
-                    usage: success.usage,
-                },
-            )];
-            append_turn_terminal(
-                state,
-                &mut records,
-                turn_id.as_deref(),
-                work_report.as_ref(),
-            );
-            state.head.state = "idle".into();
-            state.head.turn = None;
-            let state_seq = state.take_seq();
-            records.push((
-                state_seq,
-                Record::State {
-                    state: "idle".into(),
-                    turn: turn_id.clone(),
-                },
-            ));
-            commit(brain, session_id, state, records).await?;
-            append_output_history(state, schema_hash, success.value);
-            Ok(OutputJobReport { completed: true })
-        }
-        Err(failure) => {
-            finish_output_failure(
-                brain,
-                session_id,
-                state,
-                output_id,
-                schema_hash,
-                turn_id,
-                work_report,
-                failure.error,
-                failure.issues,
-                failure.usage,
-                false,
-            )
-            .await
-        }
-    }
-}
-
-fn append_turn_terminal(
-    state: &TurnState,
-    records: &mut Vec<(u64, Record)>,
-    turn_id: Option<&str>,
-    report: Option<&crate::turn::TurnReport>,
-) {
-    if let (Some(turn), Some(report)) = (turn_id, report) {
-        records.push((
-            state.take_seq(),
-            Record::TurnCompleted {
-                turn: turn.to_string(),
-                stop_reason: report.stop_reason.clone(),
-                rounds: report.rounds,
-                tool_calls: report.tool_calls,
-            },
-        ));
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn finish_output_failure(
-    brain: &Arc<Brain>,
-    session_id: &str,
-    state: &mut TurnState,
-    output_id: &str,
-    schema_hash: &str,
-    turn_id: Option<String>,
-    work_report: Option<crate::turn::TurnReport>,
-    error: BrainError,
-    issues: Vec<crate::output::ValidationIssue>,
-    usage: crate::message::Usage,
-    work_failed: bool,
-) -> Result<OutputJobReport> {
-    let message = error.to_string();
-    let code = output_error_code(&error).to_string();
-    let mut records = vec![(
-        state.take_seq(),
-        Record::OutputFailed {
-            output: output_id.to_string(),
-            turn: turn_id.clone(),
-            schema_hash: schema_hash.to_string(),
-            code,
-            message: message.clone(),
-            issues,
-            usage,
-        },
-    )];
-    if work_failed {
-        if let Some(turn) = turn_id.as_ref() {
-            records.push((
-                state.take_seq(),
-                Record::TurnFailed {
-                    turn: turn.clone(),
-                    code: turn_error_code(&error).into(),
-                    message,
-                },
-            ));
-        }
-    } else {
-        append_turn_terminal(
-            state,
-            &mut records,
-            turn_id.as_deref(),
-            work_report.as_ref(),
-        );
-    }
-    state.head.state = "idle".into();
-    state.head.turn = None;
-    records.push((
-        state.take_seq(),
-        Record::State {
-            state: "idle".into(),
-            turn: turn_id,
-        },
-    ));
-    commit(brain, session_id, state, records).await?;
-    Ok(OutputJobReport { completed: false })
-}
-
-fn output_error_code(error: &BrainError) -> &'static str {
-    match error {
-        BrainError::OutputSchema(_) => "output_schema_error",
-        BrainError::OutputRefused(_) => "output_refused",
-        BrainError::OutputValidation(_) => "output_validation_error",
-        BrainError::Cancelled => "cancelled",
-        BrainError::ProviderStatus { .. } | BrainError::Transport(_) | BrainError::Protocol(_) => {
-            "provider_error"
-        }
-        BrainError::HandUnavailable(_) | BrainError::Hand(_) => "hand_unavailable",
-        BrainError::Overloaded => "rate_limited",
-        BrainError::SessionDeleted(_) | BrainError::SessionFailed(_) => "session_failed",
-        _ => "internal",
-    }
-}
-
-fn turn_error_code(error: &BrainError) -> &'static str {
-    match error {
-        BrainError::ProviderStatus { .. } | BrainError::Transport(_) | BrainError::Protocol(_) => {
-            "provider_error"
-        }
-        BrainError::HandUnavailable(_) | BrainError::Hand(_) => "hand_unavailable",
-        BrainError::SessionFailed(_) => "session_failed",
-        BrainError::Cancelled => "cancelled",
-        _ => "internal",
-    }
-}
-
-fn append_output_history(state: &mut TurnState, schema_hash: &str, value: serde_json::Value) {
-    let block = ContentBlock::Output {
-        schema_hash: schema_hash.to_string(),
-        value,
-    };
-    if let Some(last) = state.history.last_mut()
-        && last.role == crate::message::Role::Assistant
-    {
-        last.content.push(block);
-    } else {
-        state.history.push(Message::assistant(vec![block]));
-    }
-}
-
-fn last_assistant_text(history: &[Message]) -> Option<String> {
-    let message = history.last()?;
-    (message.role == crate::message::Role::Assistant).then(|| {
-        message
-            .content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<String>()
-    })
-}
-
 fn turn_run(
     brain: &Arc<Brain>,
     session_id: &str,
     turn_id: &str,
     r: &Resident,
+    context: HashMap<String, String>,
     cancel: CancellationToken,
 ) -> Result<TurnRun> {
     let (prefix, dialect) = build_prefix(&r.st.head.prefix)?;
@@ -2089,7 +1955,9 @@ fn turn_run(
         cancel,
         model_permits: brain.model_permits.clone(),
         history_budget_bytes: brain.cfg.history_budget_bytes,
-        web: brain.web.clone(),
+        external_executor: brain.external_executor.clone(),
+        attached: brain.attached.clone(),
+        context,
     })
 }
 
@@ -2159,6 +2027,7 @@ async fn fail_turn_now(
                 turn: turn_id.to_string(),
                 code: code.into(),
                 message: e.to_string(),
+                details: None,
             },
         ),
         (
@@ -2300,8 +2169,8 @@ async fn do_list_files(
     recursive: bool,
 ) -> Result<WorkspaceListing> {
     let r = ensure_resident(brain, session_id, resident).await?;
-    // A released Lambda hand can serve its committed manifest without waking compute.
-    if r.st.hand.hand_info().state != aex_contracts::session::HandState::Released {
+    // A released remote Hand can serve its committed manifest without waking compute.
+    if r.st.hand.hand_info().state != brain_protocol::session::HandState::Released {
         ready_for_file_operation(brain, session_id, &mut r.st).await?;
     }
     let out = r.st.hand.list_files(&path, recursive).await?;
@@ -2330,7 +2199,7 @@ async fn do_write_file(
     resident: &mut Option<Resident>,
     path: String,
     bytes: Vec<u8>,
-) -> Result<aex_contracts::session::FileEntry> {
+) -> Result<brain_protocol::session::FileEntry> {
     let r = ensure_resident(brain, session_id, resident).await?;
     ready_for_file_operation(brain, session_id, &mut r.st).await?;
     let out = r.st.hand.write_file(&path, &bytes).await?;
@@ -2426,12 +2295,7 @@ pub fn build_prefix(
     p: &PrefixDoc,
 ) -> Result<(crate::Shared<crate::config::SealedPrefix>, Dialect)> {
     let dialect = dialect_of(&p.provider);
-    let builtins: Vec<_> = p
-        .tools
-        .iter()
-        .filter_map(|n| crate::tools::parse_builtin(n))
-        .collect();
-    let decls = crate::tools::resolve(&builtins)?;
+    let decls = crate::tools::resolve(&p.tools)?;
     let mut def = AgentDef::new(
         p.system_prompt
             .clone()
@@ -2442,14 +2306,18 @@ pub fn build_prefix(
     for d in decls {
         def = def.tool(d);
     }
-    // Sealed MCP tools render after the builtins, in create order, from the schemas the doc
+    // Discovered MCP tools render after native tools, in create order, from schemas the doc
     // carries -- no I/O, so the digest is a pure function of the doc (same doc, same digest).
     for t in &p.mcp_tools {
         def = def.tool(crate::config::ToolDecl {
             name: t.name.clone(),
             description: t.description.clone(),
             input_schema: t.input_schema.clone(),
-            route: crate::config::ToolRoute::Mcp,
+            output_schema: serde_json::json!({"type": ["object", "array", "string", "number", "boolean", "null"]}),
+            route: crate::config::ToolRoute::Mcp {
+                server: t.server.clone(),
+                remote_name: t.remote_name.clone(),
+            },
         });
     }
     for s in &p.mcp {
@@ -2551,38 +2419,48 @@ fn content_blocks(content: MessageRequestContent) -> Result<Vec<ContentBlock>> {
     }
 }
 
-fn output_content_blocks(content: OutputRequestInput) -> Result<Vec<ContentBlock>> {
-    match content {
-        OutputRequestInput::String(value) => {
-            let value = value.to_string();
-            if value.is_empty() {
-                return Err(BrainError::Invalid("input must not be empty".into()));
-            }
-            Ok(vec![ContentBlock::text(value)])
-        }
-        OutputRequestInput::Array(parts) => {
-            if parts.is_empty() {
-                return Err(BrainError::Invalid("input must not be empty".into()));
-            }
-            let mut blocks = Vec::with_capacity(parts.len());
-            for part in parts {
-                match part {
-                    session::ContentPart::Text { text } => blocks.push(ContentBlock::text(text)),
-                    session::ContentPart::WorkspaceFile { .. } => {
-                        return Err(BrainError::Invalid(
-                            "workspace_file content parts are not available yet (M1)".into(),
-                        ));
-                    }
-                }
-            }
-            Ok(blocks)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct RecoveryExecutor {
+        calls: AtomicUsize,
+        call_ids: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolExecutor for RecoveryExecutor {
+        fn supports(&self, capability: &str) -> bool {
+            capability == "submit"
+        }
+
+        async fn call(
+            &self,
+            capability: &str,
+            request: ExternalToolCallRequest,
+            _cancel: CancellationToken,
+        ) -> Result<ExternalToolCallResponse> {
+            assert_eq!(capability, "submit");
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.call_ids
+                .lock()
+                .expect("recovery call ids")
+                .push(request.call_id.to_string());
+            Ok(serde_json::from_value(json!({
+                "outcome": "completed",
+                "content": "accepted after recovery",
+                "is_error": false,
+                "disposition": "complete_turn",
+                "result": request.input,
+                "result_metadata": {"recovered": "true"}
+            }))
+            .expect("valid recovery response"))
+        }
+    }
 
     #[test]
     fn base_urls_resolve_and_compatible_requires_one() {
@@ -2612,13 +2490,34 @@ mod tests {
             max_output_tokens: Some(2048),
             temperature: Some(0.5),
             reasoning_effort: None,
-            tools: vec!["bash".into(), "todo".into()],
+            tools: serde_json::from_value(json!([
+                {
+                    "definition": {
+                        "name":"run", "description":"run",
+                        "input_schema":{"type":"object"},
+                        "output_schema":{"type":"object"}
+                    },
+                    "executor": {
+                        "kind":"hand", "protocol":1,
+                        "checksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "source":"preinstalled", "required_env":[]
+                    }
+                },
+                {
+                    "definition": {
+                        "name":"delegate", "description":"delegate",
+                        "input_schema":{"type":"object"},
+                        "output_schema":{"type":"string"}
+                    },
+                    "executor":{"kind":"intrinsic", "capability":"brain.subagents"}
+                }
+            ])).unwrap(),
             mcp: vec![],
             mcp_tools: vec![],
             hand_enabled: true,
             shape: "1gb".into(),
             sync_interval_seconds: 600,
-            env: HashMap::new(),
+            hand_env_keys: vec![],
             metadata: HashMap::new(),
         };
         let (a, da) = build_prefix(&p).unwrap();
@@ -2636,7 +2535,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_task_scan_tracks_results_and_the_lifetime_count() {
+    fn pending_volatile_scan_routes_by_the_seal_and_tracks_subagent_identity() {
         let task = |seq: u64, agent: &str, call: &str, detach: bool| Entry {
             seq,
             ts_ms: 0,
@@ -2644,7 +2543,7 @@ mod tests {
                 turn: "trn_test".into(),
                 agent: agent.into(),
                 call: call.into(),
-                name: "task".into(),
+                name: "delegate_under_any_name".into(),
                 input: serde_json::json!({}),
                 detach,
             },
@@ -2659,7 +2558,7 @@ mod tests {
                     turn: "trn_test".into(),
                     agent: "agt_child".into(),
                     call: "op_answered".into(),
-                    name: "task".into(),
+                    name: "delegate_under_any_name".into(),
                     outcome: "completed".into(),
                     content: "done".into(),
                     is_error: false,
@@ -2670,42 +2569,324 @@ mod tests {
             },
             task(4, "root", "op_detached", true),
         ];
-        let pending = pending_tasks(&entries);
+        let prefix = PrefixDoc {
+            system_prompt: None,
+            provider: "anthropic".into(),
+            model: "m".into(),
+            base_url: None,
+            max_output_tokens: None,
+            temperature: None,
+            reasoning_effort: None,
+            tools: serde_json::from_value(json!([{
+                "definition": {
+                    "name":"delegate_under_any_name", "description":"delegate",
+                    "input_schema":{"type":"object"}, "output_schema":{"type":"string"}
+                },
+                "executor":{"kind":"intrinsic", "capability":"brain.subagents"}
+            }]))
+            .unwrap(),
+            mcp: vec![],
+            mcp_tools: vec![],
+            hand_enabled: false,
+            shape: "1gb".into(),
+            sync_interval_seconds: 600,
+            hand_env_keys: vec![],
+            metadata: HashMap::new(),
+        };
+        let pending = pending_volatile(&entries, &prefix);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].call, "op_pending");
-        assert_eq!(task_identity_count(&entries), 2);
+        assert_eq!(task_identity_count(&entries, &prefix), 2);
     }
 
     #[test]
-    fn pending_output_scan_never_replays_a_model_side_effect() {
-        let started = |seq: u64, output: &str| Entry {
-            seq,
-            ts_ms: 0,
-            record: Record::OutputStarted {
-                output: output.into(),
-                turn: None,
-                schema_hash: "0".repeat(64),
-                source_seq: seq.saturating_sub(1),
-            },
+    fn pending_external_scan_recovers_only_unanswered_sealed_calls() {
+        let prefix = PrefixDoc {
+            system_prompt: None,
+            provider: "anthropic".into(),
+            model: "m".into(),
+            base_url: None,
+            max_output_tokens: None,
+            temperature: None,
+            reasoning_effort: None,
+            tools: serde_json::from_value(json!([{
+                "definition": {
+                    "name":"submit", "description":"submit",
+                    "input_schema":{"type":"object"},
+                    "output_schema":{"type":"object"}
+                },
+                "executor": {
+                    "kind":"server", "capability":"submit", "scope":"root",
+                    "completion":"return_direct", "effect":"replay_safe",
+                    "max_input_bytes":1024
+                }
+            }]))
+            .unwrap(),
+            mcp: vec![],
+            mcp_tools: vec![],
+            hand_enabled: false,
+            shape: "1gb".into(),
+            sync_interval_seconds: 600,
+            hand_env_keys: vec![],
+            metadata: HashMap::new(),
         };
-        let entries = vec![
-            started(4, "out_interrupted"),
-            started(5, "out_done"),
+        let mut context = HashMap::new();
+        context.insert("request".into(), "out_1".into());
+        let mut entries = vec![
             Entry {
-                seq: 6,
+                seq: 1,
                 ts_ms: 0,
-                record: Record::OutputCompleted {
-                    output: "out_done".into(),
-                    turn: None,
-                    schema_hash: "0".repeat(64),
-                    value: serde_json::json!({"ok":true}),
-                    usage: crate::message::Usage::default(),
+                record: Record::UserMessage {
+                    turn: "trn_test".into(),
+                    content: vec![ContentBlock::text("answer")],
+                    metadata: context,
+                },
+            },
+            Entry {
+                seq: 2,
+                ts_ms: 0,
+                record: Record::Assistant {
+                    turn: "trn_test".into(),
+                    agent: "root".into(),
+                    content: vec![],
+                    stop: crate::message::StopReason::ToolUse,
+                },
+            },
+            Entry {
+                seq: 3,
+                ts_ms: 0,
+                record: Record::ToolCall {
+                    turn: "trn_test".into(),
+                    agent: "root".into(),
+                    call: "op_submit".into(),
+                    name: "submit".into(),
+                    input: json!({"answer": 42}),
+                    detach: false,
                 },
             },
         ];
-        let pending = pending_outputs(&entries);
+        let pending = pending_external(&entries, &prefix);
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].output, "out_interrupted");
-        assert_eq!(pending[0].seq, 4);
+        assert_eq!(pending[0].call, "op_submit");
+        assert_eq!(pending[0].context["request"], "out_1");
+        assert!(!pending[0].parallel_batch);
+
+        entries.push(Entry {
+            seq: 4,
+            ts_ms: 0,
+            record: Record::ToolResult {
+                turn: "trn_test".into(),
+                agent: "root".into(),
+                call: "op_submit".into(),
+                name: "submit".into(),
+                outcome: "completed".into(),
+                content: "done".into(),
+                is_error: false,
+                exit_code: None,
+                duration_ms: 1,
+                truncated: false,
+            },
+        });
+        assert!(pending_external(&entries, &prefix).is_empty());
+    }
+
+    #[tokio::test]
+    async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() {
+        let data_dir = std::env::temp_dir().join(format!(
+            "brain-external-recovery-{}-{}",
+            std::process::id(),
+            crate::wall_ms()
+        ));
+        std::fs::create_dir_all(&data_dir).expect("create recovery data dir");
+        let journal = Journal::new_memory("brain-recovery-test");
+        let executor = Arc::new(RecoveryExecutor::default());
+        let brain = Brain::with_parts_and_external(
+            BrainConfig {
+                idle_discard: Duration::from_secs(300),
+                ..BrainConfig::default()
+            },
+            journal.clone(),
+            Arc::new(crate::keys::PlainCustody),
+            Arc::new(LocalFactory::new(data_dir.clone())),
+            executor.clone(),
+            None,
+        );
+        let created = brain
+            .create_session(
+                serde_json::from_value(json!({
+                    "model": {
+                        "provider": "anthropic",
+                        "name": "unused-during-terminal-recovery",
+                        "api_key": "sk-test"
+                    },
+                    "hand": {"enabled": false},
+                    "tools": {
+                        "items": [{
+                            "definition": {
+                                "name": "submit",
+                                "description": "Submit the final value",
+                                "input_schema": {"type": "object"},
+                                "output_schema": {"type": "object"}
+                            },
+                            "executor": {
+                                "kind": "server",
+                                "capability": "submit",
+                                "scope": "root",
+                                "completion": "return_direct",
+                                "effect": "replay_safe",
+                                "max_input_bytes": 1024
+                            }
+                        }]
+                    }
+                }))
+                .expect("valid create request"),
+                None,
+            )
+            .await
+            .expect("create session");
+        let session_id = created.id.to_string();
+
+        // Let the eager actor finish its initial hand-state decision before fencing its fold.
+        for _ in 0..100 {
+            if journal
+                .get_head(&session_id)
+                .await
+                .expect("head while waiting")
+                .last_seq
+                >= 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let mut head = journal
+            .claim(&session_id)
+            .await
+            .expect("claim for crash setup");
+        let turn = "trn_aaaaaaaaaaaaaaaaaaaa".to_string();
+        let call = "op_aaaaaaaaaaaaaaaa".to_string();
+        let input = json!({"answer": 42});
+        head.doc.state = "active".into();
+        head.doc.turn = Some(turn.clone());
+        head.doc.turns += 1;
+        head.doc.last_message_ms = Some(crate::wall_ms());
+        let first_seq = head.last_seq + 1;
+        let records = vec![
+            (
+                first_seq,
+                Record::UserMessage {
+                    turn: turn.clone(),
+                    content: vec![ContentBlock::text("return a typed value")],
+                    metadata: HashMap::from([("request_id".into(), "out_test".into())]),
+                },
+            ),
+            (first_seq + 1, Record::TurnStarted { turn: turn.clone() }),
+            (
+                first_seq + 2,
+                Record::Assistant {
+                    turn: turn.clone(),
+                    agent: "root".into(),
+                    content: vec![ContentBlock::ToolUse {
+                        id: call.clone(),
+                        name: "submit".into(),
+                        input: input.clone(),
+                    }],
+                    stop: crate::message::StopReason::ToolUse,
+                },
+            ),
+            (
+                first_seq + 3,
+                Record::ToolCall {
+                    turn: turn.clone(),
+                    agent: "root".into(),
+                    call: call.clone(),
+                    name: "submit".into(),
+                    input: input.clone(),
+                    detach: false,
+                },
+            ),
+        ];
+        let mut lease = Lease {
+            fence: head.fence,
+            last_seq: head.last_seq,
+        };
+        journal
+            .commit(&session_id, &mut lease, &records, &head.doc, first_seq + 3)
+            .await
+            .expect("commit pending external intent");
+        let crash_entries = journal
+            .read_records(&session_id, 0)
+            .await
+            .expect("read simulated crash records");
+        let resolved = crate::tools::resolve(&head.doc.prefix.tools).expect("resolve sealed tools");
+        assert!(
+            resolved.iter().any(|tool| {
+                tool.name == "submit"
+                    && matches!(
+                        &tool.route,
+                        crate::config::ToolRoute::Server(policy) if policy.capability == "submit"
+                    )
+            }),
+            "resolved tools: {resolved:?}; prefix tools: {:?}",
+            head.doc.prefix.tools
+        );
+        assert!(crash_entries.iter().any(|entry| matches!(
+            &entry.record,
+            Record::ToolCall { call: recorded, .. } if recorded == &call
+        )));
+        let pending = pending_external(&crash_entries, &head.doc.prefix);
+        assert_eq!(
+            pending.len(),
+            1,
+            "the committed server-tool intent is pending"
+        );
+        assert_eq!(pending[0].policy.capability, "submit");
+        journal
+            .release(&session_id, &lease)
+            .await
+            .expect("release crashed owner");
+
+        let resident = hydrate(&brain, &session_id)
+            .await
+            .expect("hydrate and replay pending call");
+        assert_eq!(executor.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(resident.st.head.state, "idle");
+        assert!(resident.st.head.turn.is_none());
+        assert_eq!(
+            executor
+                .call_ids
+                .lock()
+                .expect("recovery call ids")
+                .as_slice(),
+            [call.as_str()]
+        );
+
+        let recovered = journal
+            .read_records(&session_id, first_seq + 3)
+            .await
+            .expect("recovery records");
+        assert!(recovered.iter().any(|entry| matches!(
+            &entry.record,
+            Record::ToolResult { call: recovered_call, .. } if recovered_call == &call
+        )));
+        let result = recovered.iter().find_map(|entry| match &entry.record {
+            Record::TurnCompleted {
+                result: Some(result),
+                ..
+            } => Some(result),
+            _ => None,
+        });
+        let result = result.expect("terminal result committed during hydrate");
+        assert_eq!(result.call_id.to_string(), call);
+        assert_eq!(result.value, input);
+        assert_eq!(result.metadata.get("recovered"), Some(&"true".into()));
+
+        journal
+            .release(&session_id, &resident.st.lease)
+            .await
+            .expect("release recovered lease");
+        drop(resident);
+        let _ = std::fs::remove_dir_all(data_dir);
     }
 }
