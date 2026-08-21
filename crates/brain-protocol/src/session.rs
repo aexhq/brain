@@ -223,6 +223,619 @@ impl<'de> ::serde::Deserialize<'de> for AgentId {
             })
     }
 }
+#[doc = "Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"description\": \"An official loop by name (e.g. \\\"aex\\\", \\\"pi\\\"), resolved to the composition's pinned version and sealed as (name, version).\","]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1,"]
+#[doc = "      \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"description\": \"A customer loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"bundle_base64\","]
+#[doc = "        \"source_bundle_sha256\","]
+#[doc = "        \"toolchain\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"bundle_base64\": {"]
+#[doc = "          \"description\": \"The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix.\","]
+#[doc = "          \"writeOnly\": true,"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 11184812"]
+#[doc = "        },"]
+#[doc = "        \"source_bundle_sha256\": {"]
+#[doc = "          \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "        },"]
+#[doc = "        \"toolchain\": {"]
+#[doc = "          \"description\": \"The pinned loop-toolchain identity the bundle was built for.\","]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1,"]
+#[doc = "          \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum AgentloopConfig {
+    String(AgentloopConfigString),
+    Object {
+        #[doc = "The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."]
+        bundle_base64: AgentloopConfigObjectBundleBase64,
+        source_bundle_sha256: Sha256Hex,
+        #[doc = "The pinned loop-toolchain identity the bundle was built for."]
+        toolchain: AgentloopConfigObjectToolchain,
+    },
+}
+impl ::std::convert::From<AgentloopConfigString> for AgentloopConfig {
+    fn from(value: AgentloopConfigString) -> Self {
+        Self::String(value)
+    }
+}
+#[doc = "The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix.\","]
+#[doc = "  \"writeOnly\": true,"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 11184812"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct AgentloopConfigObjectBundleBase64(::std::string::String);
+impl ::std::ops::Deref for AgentloopConfigObjectBundleBase64 {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<AgentloopConfigObjectBundleBase64> for ::std::string::String {
+    fn from(value: AgentloopConfigObjectBundleBase64) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for AgentloopConfigObjectBundleBase64 {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 11184812usize {
+            return Err("longer than 11184812 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for AgentloopConfigObjectBundleBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigObjectBundleBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigObjectBundleBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for AgentloopConfigObjectBundleBase64 {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "The pinned loop-toolchain identity the bundle was built for."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"The pinned loop-toolchain identity the bundle was built for.\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1,"]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct AgentloopConfigObjectToolchain(::std::string::String);
+impl ::std::ops::Deref for AgentloopConfigObjectToolchain {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<AgentloopConfigObjectToolchain> for ::std::string::String {
+    fn from(value: AgentloopConfigObjectToolchain) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for AgentloopConfigObjectToolchain {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for AgentloopConfigObjectToolchain {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigObjectToolchain {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigObjectToolchain {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for AgentloopConfigObjectToolchain {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "An official loop by name (e.g. \"aex\", \"pi\"), resolved to the composition's pinned version and sealed as (name, version)."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"An official loop by name (e.g. \\\"aex\\\", \\\"pi\\\"), resolved to the composition's pinned version and sealed as (name, version).\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1,"]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct AgentloopConfigString(::std::string::String);
+impl ::std::ops::Deref for AgentloopConfigString {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<AgentloopConfigString> for ::std::string::String {
+    fn from(value: AgentloopConfigString) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for AgentloopConfigString {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for AgentloopConfigString {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigString {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigString {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for AgentloopConfigString {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "The sealed agentloop identity of a session."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"The sealed agentloop identity of a session.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"kind\","]
+#[doc = "        \"name\","]
+#[doc = "        \"version\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"kind\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"official\""]
+#[doc = "        },"]
+#[doc = "        \"name\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1,"]
+#[doc = "          \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "        },"]
+#[doc = "        \"version\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1,"]
+#[doc = "          \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"kind\","]
+#[doc = "        \"source_bundle_sha256\","]
+#[doc = "        \"toolchain\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"kind\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"custom\""]
+#[doc = "        },"]
+#[doc = "        \"source_bundle_sha256\": {"]
+#[doc = "          \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "        },"]
+#[doc = "        \"toolchain\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1,"]
+#[doc = "          \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum AgentloopInfo {
+    #[serde(rename = "official")]
+    Official {
+        name: AgentloopInfoName,
+        version: AgentloopInfoVersion,
+    },
+    #[serde(rename = "custom")]
+    Custom {
+        source_bundle_sha256: Sha256Hex,
+        toolchain: AgentloopInfoToolchain,
+    },
+}
+#[doc = "`AgentloopInfoName`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1,"]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct AgentloopInfoName(::std::string::String);
+impl ::std::ops::Deref for AgentloopInfoName {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<AgentloopInfoName> for ::std::string::String {
+    fn from(value: AgentloopInfoName) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for AgentloopInfoName {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for AgentloopInfoName {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for AgentloopInfoName {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for AgentloopInfoName {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for AgentloopInfoName {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`AgentloopInfoToolchain`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1,"]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct AgentloopInfoToolchain(::std::string::String);
+impl ::std::ops::Deref for AgentloopInfoToolchain {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<AgentloopInfoToolchain> for ::std::string::String {
+    fn from(value: AgentloopInfoToolchain) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for AgentloopInfoToolchain {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for AgentloopInfoToolchain {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for AgentloopInfoToolchain {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for AgentloopInfoToolchain {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for AgentloopInfoToolchain {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`AgentloopInfoVersion`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1,"]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct AgentloopInfoVersion(::std::string::String);
+impl ::std::ops::Deref for AgentloopInfoVersion {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<AgentloopInfoVersion> for ::std::string::String {
+    fn from(value: AgentloopInfoVersion) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for AgentloopInfoVersion {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for AgentloopInfoVersion {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for AgentloopInfoVersion {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for AgentloopInfoVersion {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for AgentloopInfoVersion {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
 #[doc = "`ApiError`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -821,6 +1434,9 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[doc = "    \"model\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"agentloop\": {"]
+#[doc = "      \"$ref\": \"#/$defs/AgentloopConfig\""]
+#[doc = "    },"]
 #[doc = "    \"children\": {"]
 #[doc = "      \"$ref\": \"#/$defs/ChildLimits\""]
 #[doc = "    },"]
@@ -890,6 +1506,8 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub agentloop: ::std::option::Option<AgentloopConfig>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub children: ::std::option::Option<ChildLimits>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -4759,6 +5377,9 @@ impl ProviderUsage {
 #[doc = "    \"updated_at\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
+#[doc = "    \"agentloop\": {"]
+#[doc = "      \"$ref\": \"#/$defs/AgentloopInfo\""]
+#[doc = "    },"]
 #[doc = "    \"context_fork\": {"]
 #[doc = "      \"$ref\": \"#/$defs/ContextFork\""]
 #[doc = "    },"]
@@ -4855,6 +5476,8 @@ impl ProviderUsage {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct Session {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub agentloop: ::std::option::Option<AgentloopInfo>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub context_fork: ::std::option::Option<ContextFork>,
     pub created_at: Timestamp,
@@ -7041,6 +7664,10 @@ pub mod builder {
     }
     #[derive(Clone)]
     pub struct CreateSessionRequest {
+        agentloop: ::std::result::Result<
+            ::std::option::Option<super::AgentloopConfig>,
+            ::std::string::String,
+        >,
         children:
             ::std::result::Result<::std::option::Option<super::ChildLimits>, ::std::string::String>,
         client: ::std::result::Result<
@@ -7079,6 +7706,7 @@ pub mod builder {
     impl ::std::default::Default for CreateSessionRequest {
         fn default() -> Self {
             Self {
+                agentloop: Ok(Default::default()),
                 children: Ok(Default::default()),
                 client: Ok(Default::default()),
                 metadata: Ok(Default::default()),
@@ -7093,6 +7721,16 @@ pub mod builder {
         }
     }
     impl CreateSessionRequest {
+        pub fn agentloop<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::AgentloopConfig>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.agentloop = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for agentloop: {e}"));
+            self
+        }
         pub fn children<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<super::ChildLimits>>,
@@ -7212,6 +7850,7 @@ pub mod builder {
             value: CreateSessionRequest,
         ) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                agentloop: value.agentloop?,
                 children: value.children?,
                 client: value.client?,
                 metadata: value.metadata?,
@@ -7228,6 +7867,7 @@ pub mod builder {
     impl ::std::convert::From<super::CreateSessionRequest> for CreateSessionRequest {
         fn from(value: super::CreateSessionRequest) -> Self {
             Self {
+                agentloop: Ok(value.agentloop),
                 children: Ok(value.children),
                 client: Ok(value.client),
                 metadata: Ok(value.metadata),
@@ -8131,6 +8771,10 @@ pub mod builder {
     }
     #[derive(Clone, Debug)]
     pub struct Session {
+        agentloop: ::std::result::Result<
+            ::std::option::Option<super::AgentloopInfo>,
+            ::std::string::String,
+        >,
         context_fork:
             ::std::result::Result<::std::option::Option<super::ContextFork>, ::std::string::String>,
         created_at: ::std::result::Result<super::Timestamp, ::std::string::String>,
@@ -8170,6 +8814,7 @@ pub mod builder {
     impl ::std::default::Default for Session {
         fn default() -> Self {
             Self {
+                agentloop: Ok(Default::default()),
                 context_fork: Ok(Default::default()),
                 created_at: Err("no value supplied for created_at".to_string()),
                 current_turn: Ok(Default::default()),
@@ -8195,6 +8840,16 @@ pub mod builder {
         }
     }
     impl Session {
+        pub fn agentloop<T>(mut self, value: T) -> Self
+        where
+            T: ::std::convert::TryInto<::std::option::Option<super::AgentloopInfo>>,
+            T::Error: ::std::fmt::Display,
+        {
+            self.agentloop = value
+                .try_into()
+                .map_err(|e| format!("error converting supplied value for agentloop: {e}"));
+            self
+        }
         pub fn context_fork<T>(mut self, value: T) -> Self
         where
             T: ::std::convert::TryInto<::std::option::Option<super::ContextFork>>,
@@ -8415,6 +9070,7 @@ pub mod builder {
         type Error = super::error::ConversionError;
         fn try_from(value: Session) -> ::std::result::Result<Self, super::error::ConversionError> {
             Ok(Self {
+                agentloop: value.agentloop?,
                 context_fork: value.context_fork?,
                 created_at: value.created_at?,
                 current_turn: value.current_turn?,
@@ -8442,6 +9098,7 @@ pub mod builder {
     impl ::std::convert::From<super::Session> for Session {
         fn from(value: super::Session) -> Self {
             Self {
+                agentloop: Ok(value.agentloop),
                 context_fork: Ok(value.context_fork),
                 created_at: Ok(value.created_at),
                 current_turn: Ok(value.current_turn),

@@ -176,6 +176,70 @@ pub trait Agentloop: Send + Sync {
     async fn drive_turn(&self, ctx: &mut dyn TurnCtx) -> Result<LoopVerdict>;
 }
 
+/// Maps a session's sealed selector to the loop implementation this composition runs for it.
+/// Resolution happens at create (rejecting unavailable loops before anything seals) and again
+/// per turn (a session sealed under a richer composition fails honestly on a poorer one).
+pub trait AgentloopRegistry: Send + Sync {
+    fn resolve(
+        &self,
+        selector: &crate::journal::AgentloopSelectorDoc,
+    ) -> Result<std::sync::Arc<dyn Agentloop>>;
+
+    /// Resolve an official loop name to the pinned identity this composition seals for it.
+    fn pin_official(&self, name: &str) -> Result<crate::journal::AgentloopSelectorDoc>;
+
+    /// Admit a customer source bundle (already digest-verified by the caller) and return the
+    /// identity to seal. Compositions with a loop store override this; the default refuses.
+    fn admit_custom(
+        &self,
+        source_bundle_sha256: &str,
+        toolchain: &str,
+        bundle: &[u8],
+    ) -> Result<crate::journal::AgentloopSelectorDoc> {
+        let _ = (source_bundle_sha256, toolchain, bundle);
+        Err(BrainError::Invalid(
+            "custom agentloops are not enabled in this composition".into(),
+        ))
+    }
+}
+
+/// The default registry: exactly one official loop, `aex`, backed by whatever implementation
+/// the composition installed (in-process builtin, wasm guest, or remote loop host).
+pub struct OfficialAexRegistry {
+    pub aex: std::sync::Arc<dyn Agentloop>,
+}
+
+impl AgentloopRegistry for OfficialAexRegistry {
+    fn resolve(
+        &self,
+        selector: &crate::journal::AgentloopSelectorDoc,
+    ) -> Result<std::sync::Arc<dyn Agentloop>> {
+        match selector {
+            crate::journal::AgentloopSelectorDoc::Official { name, .. } if name == "aex" => {
+                Ok(self.aex.clone())
+            }
+            crate::journal::AgentloopSelectorDoc::Official { name, version } => {
+                Err(BrainError::Invalid(format!(
+                    "official agentloop {name}@{version} is not available in this composition"
+                )))
+            }
+            crate::journal::AgentloopSelectorDoc::Custom { .. } => Err(BrainError::Invalid(
+                "custom agentloops are not enabled in this composition".into(),
+            )),
+        }
+    }
+
+    fn pin_official(&self, name: &str) -> Result<crate::journal::AgentloopSelectorDoc> {
+        if name == "aex" {
+            Ok(crate::journal::AgentloopSelectorDoc::official_aex())
+        } else {
+            Err(BrainError::Invalid(format!(
+                "official agentloop {name:?} is not available in this composition"
+            )))
+        }
+    }
+}
+
 /// The official `aex` loop policy: model round, dispatch every requested tool call, continue
 /// until the model finishes, stop gracefully at the sealed round ceiling.
 pub struct BuiltinAexLoop;
