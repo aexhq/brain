@@ -121,6 +121,7 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         // Admission must not be what we measure: raise it above any K used here.
         max_concurrent_model_rounds: 4096,
         max_concurrent_turns: 4096,
+        max_event_followers: 4096,
         idle_discard,
         ..BrainConfig::default()
     };
