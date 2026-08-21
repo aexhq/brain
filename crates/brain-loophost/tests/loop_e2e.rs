@@ -34,6 +34,10 @@ fn pi_component_path() -> PathBuf {
     guest_dir().join("dist/pi-loop.component.wasm")
 }
 
+fn codex_component_path() -> PathBuf {
+    guest_dir().join("dist/codex-loop.component.wasm")
+}
+
 /// Build the guest components when absent. Requires Node + npm, exactly like the standalone
 /// managed-tool tests; the build is cached under guest/dist. Once-guarded so parallel tests
 /// never race the npm/componentize pipeline.
@@ -44,6 +48,7 @@ fn ensure_component() {
             && contract_component_path().exists()
             && sdk_component_path().exists()
             && pi_component_path().exists()
+            && codex_component_path().exists()
         {
             return;
         }
@@ -68,6 +73,7 @@ fn ensure_component() {
         assert!(contract_component_path().exists());
         assert!(sdk_component_path().exists());
         assert!(pi_component_path().exists());
+        assert!(codex_component_path().exists());
     });
 }
 
@@ -688,6 +694,120 @@ async fn the_official_pi_loop_drives_turns() {
             .iter()
             .any(|event| event["type"] == "turn.completed" && event["stop_reason"] == "end_turn"),
         "the resident pi conversation carries into turn 2"
+    );
+    let _ = std::fs::remove_dir_all(store);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_codex_style_loop_executes_tools_sequentially() {
+    ensure_component();
+    let store = std::env::temp_dir().join(format!(
+        "brain-codex-loop-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    let aex: Arc<dyn brain::agentloop::Agentloop> = Arc::new(
+        brain_loophost::WasmAgentloop::from_component_file(&component_path()).expect("aex loop"),
+    );
+    let registry =
+        brain_loophost::registry::LoophostRegistry::new(aex.clone(), &store, guest_dir())
+            .expect("registry")
+            .with_official("codex-style", "1", codex_component_path());
+    let brain = serve_brain(
+        BrainServices {
+            agentloop: Some(aex),
+            agentloop_registry: Some(Arc::new(registry)),
+            ..BrainServices::default()
+        },
+        // Two task calls in one round: sequential execution means child A runs to completion
+        // (popping its answer) before child B is even dispatched.
+        vec![
+            Scripted::ToolCalls(vec![
+                (
+                    "call_a".into(),
+                    "subagents".into(),
+                    json!({"action": "spawn_agent", "task_name": "a", "message": "child prompt", "fork_turns": "all"}),
+                ),
+                (
+                    "call_b".into(),
+                    "subagents".into(),
+                    json!({"action": "spawn_agent", "task_name": "b", "message": "child prompt", "fork_turns": "all"}),
+                ),
+            ]),
+            Scripted::Text("child a answer".into()),
+            Scripted::Text("child b answer".into()),
+            Scripted::Text("codex-style wrap-up".into()),
+        ],
+    )
+    .await;
+
+    let created: Value = brain
+        .http
+        .post(format!("{}/v1/sessions", brain.base))
+        .bearer_auth(&brain.token)
+        .json(&json!({
+            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+            "agentloop": "codex-style",
+            "tools": {"items": [{
+                "definition": {
+                    "name": "subagents",
+                    "description": "spawn a child session",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string"},
+                            "task_name": {"type": "string"},
+                            "message": {"type": "string"},
+                            "fork_turns": {"type": "string"}
+                        },
+                        "required": ["action", "task_name", "message"],
+                        "additionalProperties": true
+                    },
+                    "output_schema": {"type": "object", "additionalProperties": true},
+                    "contract_digest": "a".repeat(64),
+                },
+                "executor": {"kind": "engine", "capability": "brain.subagents"},
+            }]}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        created["agentloop"],
+        json!({"kind": "official", "name": "codex-style", "version": "1"}),
+        "{created}"
+    );
+    let session = created["id"].as_str().expect("session id").to_string();
+
+    brain.send_message(&session, "run two tools").await;
+    let events = brain.wait_turn(&session).await;
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .expect("the codex-style turn completes");
+    assert_eq!(completed["stop_reason"], "end_turn");
+
+    // The port's distinctive shape: strictly sequential execution — each call's result is
+    // journaled before the next call is journaled (the aex batch loop journals both calls,
+    // then both results).
+    let tool_order: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event["type"].as_str() {
+            Some("tool.call") => Some("call"),
+            Some("tool.result") => Some("result"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tool_order,
+        vec!["call", "result", "call", "result"],
+        "sequential dispatch is visible in the public transcript"
     );
     let _ = std::fs::remove_dir_all(store);
 }

@@ -47,6 +47,7 @@ for (const guest of [
   { entry: "loop-contract.mjs", out: "dist/contract-loop.component.wasm" },
   { entry: "loop-sdk.mjs", out: "dist/sdk-loop.component.wasm", sdk: true, emitSource: true },
   { entry: "loop-pi.mjs", out: "dist/pi-loop.component.wasm", sdk: true, compat: true },
+  { entry: "loop-codex.mjs", out: "dist/codex-loop.component.wasm", sdk: true },
 ]) {
   const common = {
     bundle: true,
