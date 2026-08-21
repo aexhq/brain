@@ -103,6 +103,10 @@ pub const MAX_WRITE_STDIN_BYTES: usize = 4 * 1024;
 pub const MAX_LOOP_ENTRY_DATA_BYTES: usize = 96 * 1024;
 /// A `mark` carries the loop's compacted context and is chunked internally beyond record size.
 pub const MAX_LOOP_MARK_DATA_BYTES: usize = 2 * 1024 * 1024;
+/// The current kernel accepts only marks that fit one journal record inline; larger marks (up
+/// to [`MAX_LOOP_MARK_DATA_BYTES`]) need the chunking machinery, which lands with the loop SDK.
+/// Sized under the 256 KiB record cap with envelope headroom.
+pub const MAX_LOOP_MARK_INLINE_BYTES: usize = 192 * 1024;
 /// Keyed loop state: per-session key count and per-value RFC 8785 bytes.
 pub const MAX_LOOP_KV_KEYS: usize = 64;
 pub const MAX_LOOP_KV_VALUE_BYTES: usize = 8 * 1024;

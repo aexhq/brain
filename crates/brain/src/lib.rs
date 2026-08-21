@@ -22,6 +22,7 @@ pub mod external;
 pub mod hand;
 pub mod journal;
 pub mod keys;
+pub(crate) mod loopctx;
 pub mod message;
 pub mod outbound;
 pub mod provider;

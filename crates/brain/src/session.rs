@@ -2050,6 +2050,7 @@ impl Brain {
         };
 
         let doc = HeadDoc {
+            loop_state: None,
             tenant_id: principal.as_str().into(),
             root_id: session_id.clone(),
             parent_id: None,
@@ -6846,6 +6847,7 @@ async fn actor(
                             Ok(p) => p,
                             Err(_) => { let _ = reply.send(Err(BrainError::Overloaded)); continue; }
                         };
+                        let admitted_content = content.clone();
                         match admit(
                             &brain,
                             &session_id,
@@ -6868,10 +6870,15 @@ async fn actor(
                                     );
                                 }
                                 let _ = reply.send(Ok((turn_id.clone(), seq)));
+                                let admitted = Some(crate::turn::AdmittedMessage {
+                                    seq,
+                                    at_ms: crate::wall_ms(),
+                                    content: admitted_content,
+                                });
                                 // Park the resident state into the turn task; the key rides
                                 // the running tuple until the task returns the state.
                                 let mut parked = resident.take().expect("resident");
-                                let run = match turn_run(&brain, &session_id, &turn_id, &parked, metadata, cancel.clone()) {
+                                let run = match turn_run(&brain, &session_id, &turn_id, &parked, metadata, cancel.clone(), admitted) {
                                     Ok(run) => run,
                                     Err(e) => {
                                         let _ = fail_turn_now(&brain, &session_id, &turn_id, &mut parked.st, &e).await;
@@ -7503,6 +7510,21 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
 
     let message_replays = collect_message_replays(&head.doc, &entries)?;
     let history = materialize_session_history(brain, &head.doc, &entries).await?;
+    // Loop kv/mark state folds from the full journal, independent of the model-context floor
+    // (a kv write from a long-compacted turn must survive). Sessions that never committed a
+    // loop record skip the read entirely — the HEAD marker gates it.
+    let mut loop_kv = serde_json::Map::new();
+    let mut latest_mark = None;
+    if head.doc.loop_state.is_some() {
+        for entry in brain.journal.read_records(session_id, 0).await? {
+            crate::turn::apply_loop_record(
+                &mut loop_kv,
+                &mut latest_mark,
+                entry.seq,
+                &entry.record,
+            );
+        }
+    }
     let (root_secret_cell, root_secrets) = brain.root_execution_secrets(&head.doc).await?;
     let key = root_secrets.key.clone();
     let managed_bindings = brain.prepare_managed_session(session_id, &head.doc).await?;
@@ -7518,6 +7540,9 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                 retention: head.retention,
             },
             seq: Arc::new(std::sync::atomic::AtomicU64::new(head.last_seq + 1)),
+            loop_kv,
+            latest_mark,
+            pending_loop: Vec::new(),
         },
         key,
         managed_bindings,
@@ -7580,6 +7605,18 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             .acquire_owned()
             .await
             .map_err(|_| BrainError::Overloaded)?;
+        // A recovered turn rebuilds its admitted message from the journal when the record is
+        // still ahead of the context floor; contract activations fail honestly otherwise.
+        let recovered_message = entries.iter().find_map(|entry| match &entry.record {
+            Record::UserMessage { turn, content, .. } if *turn == recovered.turn => {
+                Some(crate::turn::AdmittedMessage {
+                    seq: entry.seq,
+                    at_ms: entry.ts_ms,
+                    content: content.clone(),
+                })
+            }
+            _ => None,
+        });
         let run = turn_run(
             brain,
             session_id,
@@ -7587,6 +7624,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             &resident,
             recovered.context,
             CancellationToken::new(),
+            recovered_message,
         )?;
         let outcome = run
             .resume(&mut resident.st, recovered.rounds, recovered.tool_calls)
@@ -8386,6 +8424,7 @@ fn turn_run(
     r: &Resident,
     context: HashMap<String, String>,
     cancel: CancellationToken,
+    message: Option<crate::turn::AdmittedMessage>,
 ) -> Result<TurnRun> {
     let (prefix, dialect) = build_prefix(&r.st.head.prefix)?;
     let base_url = r.st.head.prefix.base_url.clone().unwrap_or_default();
@@ -8393,6 +8432,7 @@ fn turn_run(
     Ok(TurnRun {
         engine: Arc::downgrade(brain),
         agentloop: brain.agentloop.clone(),
+        message,
         session_id: session_id.to_string(),
         turn_id: turn_id.to_string(),
         prefix,
@@ -8457,9 +8497,7 @@ async fn fail_turn_now(
             ("provider_error", false)
         }
         BrainError::HandUnavailable(_) => ("hand_unavailable", false),
-        // "internal" until agentloop_error joins the public error-code enum alongside the
-        // session-create agentloop selector; the message names the loop precisely already.
-        BrainError::Agentloop(_) => ("internal", false),
+        BrainError::Agentloop(_) => ("agentloop_error", false),
         BrainError::SessionFailed(_) => ("session_failed", true),
         BrainError::Fenced => return Ok(()), // a newer owner exists; nothing to write
         _ => ("internal", false),
@@ -8573,6 +8611,7 @@ async fn create_child_session(
     let mut ancestor_ids = parent.doc.ancestor_ids.clone();
     ancestor_ids.push(parent_id.to_owned());
     let child = HeadDoc {
+        loop_state: None,
         tenant_id: parent.doc.tenant_id.clone(),
         root_id: parent.doc.root_id.clone(),
         parent_id: Some(parent_id.to_owned()),

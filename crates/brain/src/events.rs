@@ -306,6 +306,14 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
                 upload_reserved_bytes: *reserved_bytes,
             },
         },
+        Record::LoopEvent { turn, name, data } => Event::LoopEvent {
+            at,
+            data: data.as_object().cloned().unwrap_or_default(),
+            name: name.parse().ok()?,
+            seq,
+            session_id: sid,
+            turn_id: turn_of(turn)?,
+        },
         Record::ContextChunk { .. }
         | Record::ContextInstalled { .. }
         | Record::DefaultSandboxChanged { .. }
@@ -324,7 +332,12 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
         | Record::ManagedTerminalReceived { .. }
         | Record::ManagedTerminalAcknowledged { .. }
         | Record::SandboxFileEffectIntent { .. }
-        | Record::SandboxFileEffectCompleted { .. } => return None,
+        | Record::SandboxFileEffectCompleted { .. }
+        // Loop custom entries, marks and kv are durable loop state, not application events;
+        // only the `event` entry kind is application-visible.
+        | Record::LoopCustom { .. }
+        | Record::LoopMark { .. }
+        | Record::LoopKvSet { .. } => return None,
     })
 }
 
@@ -412,7 +425,8 @@ pub fn event_seq(e: &Event) -> u64 {
         | Event::SessionUpdated { seq, .. }
         | Event::HandLost { seq, .. }
         | Event::TurnCompleted { seq, .. }
-        | Event::TurnFailed { seq, .. } => seq.get(),
+        | Event::TurnFailed { seq, .. }
+        | Event::LoopEvent { seq, .. } => seq.get(),
     }
 }
 

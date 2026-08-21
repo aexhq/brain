@@ -458,6 +458,31 @@ pub enum Record {
         retained_from_sequence: u64,
         created_at_ms: u64,
     },
+    /// A loop-authored opaque entry (`contracts/agentloop/v1` `journal_append` kind `custom`).
+    /// Never model input, never an SSE event; readable back through `journal_read`.
+    LoopCustom {
+        turn: String,
+        data: serde_json::Value,
+    },
+    /// A loop-authored application-visible entry; surfaces on SSE as `loop.event`.
+    LoopEvent {
+        turn: String,
+        name: String,
+        data: serde_json::Value,
+    },
+    /// The loop's hydration floor: `data` carries its compacted working context and the next
+    /// `session_start` tail begins after `covers_through_seq`.
+    LoopMark {
+        turn: String,
+        covers_through_seq: u64,
+        data: serde_json::Value,
+    },
+    /// One durable `kv_set` batch: key to value, `null` deletes. The session's kv map is the
+    /// fold of these records; caps are enforced at the op boundary before the record exists.
+    LoopKvSet {
+        turn: String,
+        entries: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 impl Record {
@@ -499,6 +524,10 @@ impl Record {
             Record::DefaultSandboxChanged { .. } => "default_sandbox_changed",
             Record::ContextChunk { .. } => "context_chunk",
             Record::ContextInstalled { .. } => "context_installed",
+            Record::LoopCustom { .. } => "loop_custom",
+            Record::LoopEvent { .. } => "loop_event",
+            Record::LoopMark { .. } => "loop_mark",
+            Record::LoopKvSet { .. } => "loop_kv_set",
         }
     }
 }
@@ -939,7 +968,13 @@ impl Fold {
             | Record::SandboxFileEffectCompleted { .. }
             | Record::DefaultSandboxChanged { .. }
             | Record::ContextChunk { .. }
-            | Record::ContextInstalled { .. } => {}
+            | Record::ContextInstalled { .. }
+            // Loop-land state is never kernel model input; contract loops compose their own
+            // provider context from marks and the journal_read projections.
+            | Record::LoopCustom { .. }
+            | Record::LoopEvent { .. }
+            | Record::LoopMark { .. }
+            | Record::LoopKvSet { .. } => {}
         }
     }
 
@@ -1070,6 +1105,19 @@ pub struct HeadDoc {
     /// address this same target through `root_id`; they do not get a second default sandbox.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_sandbox: Option<brain_protocol::hand::SandboxStatus>,
+    /// Present iff the session has ever committed a loop record. Its presence gates the
+    /// loop-state journal fold at rehydration, so sessions that never used loop state pay no
+    /// extra read. The kv map itself lives in records, never here (it can reach 512 KiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_state: Option<LoopStateDoc>,
+}
+
+/// Bounded pointer to the session's loop-authored durable state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoopStateDoc {
+    /// Seq of the newest committed loop record.
+    pub last_seq: u64,
 }
 
 /// Small mutable control projection. Production stores rewrite only this value on a decision;
@@ -1111,6 +1159,8 @@ pub struct ControlDoc {
     pub pending_managed_acks: Vec<ManagedTerminalAckDoc>,
     #[serde(default)]
     pub default_sandbox: Option<brain_protocol::hand::SandboxStatus>,
+    #[serde(default)]
+    pub loop_state: Option<LoopStateDoc>,
 }
 
 /// Immutable create-time material, stored once as `CONFIG` and content-addressed by its digest.
@@ -1225,6 +1275,7 @@ impl HeadDoc {
             pending_customer_acks: self.pending_customer_acks.clone(),
             pending_managed_acks: self.pending_managed_acks.clone(),
             default_sandbox: self.default_sandbox.clone(),
+            loop_state: self.loop_state,
         }
     }
 
@@ -1288,6 +1339,7 @@ impl HeadDoc {
             pending_customer_acks: control.pending_customer_acks,
             pending_managed_acks: control.pending_managed_acks,
             default_sandbox: control.default_sandbox,
+            loop_state: control.loop_state,
         }
     }
 }
@@ -3500,6 +3552,7 @@ mod tests {
     #[test]
     fn head_doc_round_trips() {
         let doc = HeadDoc {
+            loop_state: None,
             tenant_id: "local".into(),
             root_id: "ses_test".into(),
             parent_id: None,
@@ -3582,6 +3635,7 @@ mod tests {
 
     fn head_doc() -> HeadDoc {
         HeadDoc {
+            loop_state: None,
             tenant_id: "local".into(),
             root_id: "ses_test".into(),
             parent_id: None,

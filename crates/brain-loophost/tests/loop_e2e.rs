@@ -22,13 +22,17 @@ fn component_path() -> PathBuf {
     guest_dir().join("dist/aex-loop.component.wasm")
 }
 
-/// Build the guest component when absent. Requires Node + npm, exactly like the standalone
+fn contract_component_path() -> PathBuf {
+    guest_dir().join("dist/contract-loop.component.wasm")
+}
+
+/// Build the guest components when absent. Requires Node + npm, exactly like the standalone
 /// managed-tool tests; the build is cached under guest/dist. Once-guarded so parallel tests
 /// never race the npm/componentize pipeline.
 fn ensure_component() {
     static BUILD: Once = Once::new();
     BUILD.call_once(|| {
-        if component_path().exists() {
+        if component_path().exists() && contract_component_path().exists() {
             return;
         }
         let npm: (&str, &[&str]) = if cfg!(windows) {
@@ -49,6 +53,7 @@ fn ensure_component() {
             .expect("node is required to build the guest loop");
         assert!(build.success(), "guest loop componentization failed");
         assert!(component_path().exists());
+        assert!(contract_component_path().exists());
     });
 }
 
@@ -107,20 +112,57 @@ async fn serve_brain(services: BrainServices, script: Vec<Scripted>) -> TestBrai
 
 impl TestBrain {
     async fn create_session(&self) -> String {
+        self.create_session_from(json!({
+            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"}
+        }))
+        .await
+    }
+
+    /// A session with the sealed engine task tool — the one dispatchable tool that needs no
+    /// Hand or customer transport, so a contract loop can drive a real successful dispatch.
+    async fn create_session_with_task_tool(&self) -> String {
+        self.create_session_from(json!({
+            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+            "tools": {"items": [{
+                "definition": {
+                    "name": "subagents",
+                    "description": "spawn a child session",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string"},
+                            "task_name": {"type": "string"},
+                            "message": {"type": "string"},
+                            "fork_turns": {"type": "string"}
+                        },
+                        "required": ["action", "task_name", "message"],
+                        "additionalProperties": true
+                    },
+                    "output_schema": {"type": "object", "additionalProperties": true},
+                    "contract_digest": "a".repeat(64),
+                },
+                "executor": {"kind": "engine", "capability": "brain.subagents"},
+            }]}
+        }))
+        .await
+    }
+
+    async fn create_session_from(&self, body: Value) -> String {
         let created: Value = self
             .http
             .post(format!("{}/v1/sessions", self.base))
             .bearer_auth(&self.token)
-            .json(&json!({
-                "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"}
-            }))
+            .json(&body)
             .send()
             .await
             .unwrap()
             .json()
             .await
             .unwrap();
-        created["id"].as_str().expect("session id").to_string()
+        created["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("session id missing in {created}"))
+            .to_string()
     }
 
     async fn send_message(&self, session_id: &str, content: &str) {
@@ -137,12 +179,16 @@ impl TestBrain {
 
     /// Poll the event stream until the turn concludes (completed or failed).
     async fn wait_turn(&self, session_id: &str) -> Vec<Value> {
+        self.wait_turn_after(session_id, 0).await
+    }
+
+    async fn wait_turn_after(&self, session_id: &str, after: u64) -> Vec<Value> {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             let text = self
                 .http
                 .get(format!(
-                    "{}/v1/sessions/{session_id}/events?after=0&follow=false",
+                    "{}/v1/sessions/{session_id}/events?after={after}&follow=false",
                     self.base
                 ))
                 .bearer_auth(&self.token)
@@ -287,6 +333,155 @@ async fn two_sessions_multiplex_one_loop_host_connection() {
         );
     }
     assert_eq!(transcript(&first_events), transcript(&second_events));
+}
+
+/// The `data` payloads of the named loop events, in stream order.
+fn loop_event_data<'e>(events: &'e [Value], name: &str) -> Vec<&'e Value> {
+    events
+        .iter()
+        .filter(|event| event["type"] == "loop.event" && event["name"] == name)
+        .map(|event| &event["data"])
+        .collect()
+}
+
+fn max_seq(events: &[Value]) -> u64 {
+    events
+        .iter()
+        .filter_map(|event| event["seq"].as_u64())
+        .max()
+        .unwrap_or(0)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_contract_loop_drives_turns_through_ctx_ops() {
+    ensure_component();
+    // Queue order is the execution order: the parent's first composed round asks for the task
+    // tool, the spawned child's single round pops next while the parent dispatch awaits it,
+    // then the parent's follow-up round, then turn 2.
+    let brain = serve_brain(
+        brain_loophost::services_with_wasm_loop(&contract_component_path()).expect("contract loop"),
+        vec![
+            Scripted::ToolCalls(vec![(
+                "call_task".into(),
+                "subagents".into(),
+                json!({
+                    "action": "spawn_agent",
+                    "task_name": "worker",
+                    "message": "child prompt",
+                    "fork_turns": "all"
+                }),
+            )]),
+            Scripted::Text("child answer".into()),
+            Scripted::Text("done after task".into()),
+            Scripted::Text("second answer".into()),
+        ],
+    )
+    .await;
+    let session = brain.create_session_with_task_tool().await;
+
+    // ---- turn 1: a fresh session with no loop state ----
+    brain.send_message(&session, "run the probe").await;
+    let first = brain.wait_turn(&session).await;
+
+    let completed = first
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .expect("turn 1 completes");
+    assert_eq!(completed["stop_reason"], "end_turn");
+    assert_eq!(
+        completed["result"]["name"], "agentloop",
+        "turn_finish carries the loop-declared result: {completed}"
+    );
+    assert_eq!(completed["result"]["value"]["turns"], 1);
+
+    let hydration = loop_event_data(&first, "loop.hydration");
+    assert_eq!(hydration.len(), 1);
+    assert_eq!(hydration[0]["resumed"], false);
+    assert_eq!(hydration[0]["kv"], json!({}));
+    assert_eq!(hydration[0]["tail_types"], json!([]));
+    assert_eq!(hydration[0]["mark_covers"], Value::Null);
+
+    let checks = loop_event_data(&first, "loop.checks");
+    assert_eq!(
+        checks[0]["unsealed"], "unsealed_tool",
+        "an undeclared tool fails the op with a typed code: {}",
+        checks[0]
+    );
+    assert_eq!(checks[0]["kv_limit"], "kv_limit");
+
+    let dispatched = loop_event_data(&first, "loop.dispatched");
+    assert_eq!(dispatched[0]["results"][0]["name"], "subagents");
+    assert_eq!(
+        dispatched[0]["results"][0]["is_error"], false,
+        "the sealed engine task tool dispatches successfully: {}",
+        dispatched[0]
+    );
+
+    assert_eq!(
+        transcript(&first)
+            .iter()
+            .filter(|kind| kind.as_str() == "assistant.message")
+            .count(),
+        2,
+        "the loop drove two composed model rounds on the parent"
+    );
+    let tool_result = first
+        .iter()
+        .find(|event| event["type"] == "tool.result")
+        .expect("the dispatched call is journaled");
+    assert_eq!(tool_result["name"], "subagents");
+    assert_eq!(tool_result["outcome"], "completed");
+
+    // ---- turn 2: kv, the mark and the tail all survive the turn boundary ----
+    let first_high_water = max_seq(&first);
+    brain.send_message(&session, "second").await;
+    let second = brain.wait_turn_after(&session, first_high_water).await;
+
+    let completed = second
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .expect("turn 2 completes");
+    assert_eq!(
+        completed["result"]["value"]["turns"], 2,
+        "kv persisted across turns"
+    );
+
+    let hydration = loop_event_data(&second, "loop.hydration");
+    assert_eq!(hydration[0]["resumed"], true);
+    assert_eq!(hydration[0]["kv"]["turns"], 1);
+    assert_eq!(hydration[0]["mark_data"]["summary"], "through turn 1");
+    assert!(
+        hydration[0]["mark_covers"]
+            .as_u64()
+            .is_some_and(|covers| covers > 0),
+        "the latest mark is delivered: {}",
+        hydration[0]
+    );
+    let tail_types: Vec<&str> = hydration[0]["tail_types"]
+        .as_array()
+        .expect("tail types")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for expected in [
+        "assistant_message",
+        "tool_result",
+        "loop_event",
+        "loop_custom",
+    ] {
+        assert!(
+            tail_types.contains(&expected),
+            "the tail after the mark carries {expected}: {tail_types:?}"
+        );
+    }
+    assert!(
+        !tail_types.contains(&"loop_mark"),
+        "the mark itself travels as latest_mark, not in the tail"
+    );
+    assert!(
+        !tail_types.contains(&"user_message"),
+        "entries at or before covers_through_seq are covered by the mark"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
