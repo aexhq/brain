@@ -26,13 +26,20 @@ fn contract_component_path() -> PathBuf {
     guest_dir().join("dist/contract-loop.component.wasm")
 }
 
+fn sdk_component_path() -> PathBuf {
+    guest_dir().join("dist/sdk-loop.component.wasm")
+}
+
 /// Build the guest components when absent. Requires Node + npm, exactly like the standalone
 /// managed-tool tests; the build is cached under guest/dist. Once-guarded so parallel tests
 /// never race the npm/componentize pipeline.
 fn ensure_component() {
     static BUILD: Once = Once::new();
     BUILD.call_once(|| {
-        if component_path().exists() && contract_component_path().exists() {
+        if component_path().exists()
+            && contract_component_path().exists()
+            && sdk_component_path().exists()
+        {
             return;
         }
         let npm: (&str, &[&str]) = if cfg!(windows) {
@@ -54,6 +61,7 @@ fn ensure_component() {
         assert!(build.success(), "guest loop componentization failed");
         assert!(component_path().exists());
         assert!(contract_component_path().exists());
+        assert!(sdk_component_path().exists());
     });
 }
 
@@ -503,6 +511,51 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
         !tail_types.contains(&"user_message"),
         "entries at or before covers_through_seq are covered by the mark"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_sdk_authored_loop_drives_turns_end_to_end() {
+    ensure_component();
+    let brain = serve_brain(
+        brain_loophost::services_with_wasm_loop(&sdk_component_path()).expect("sdk loop"),
+        vec![
+            Scripted::Text("sdk answer one".into()),
+            Scripted::Text("sdk answer two".into()),
+        ],
+    )
+    .await;
+    let session = brain.create_session().await;
+
+    brain.send_message(&session, "first").await;
+    let first = brain.wait_turn(&session).await;
+    let completed = first
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .expect("the sdk-driven turn completes");
+    assert_eq!(completed["stop_reason"], "end_turn");
+    assert_eq!(
+        completed["result"]["value"]["n"], 1,
+        "ctx.turn.finish carried the structured result: {completed}"
+    );
+    let turn_events = loop_event_data(&first, "sdk.turn");
+    assert_eq!(turn_events[0]["n"], 1);
+    assert_eq!(turn_events[0]["text"], "sdk answer one");
+    assert_eq!(
+        turn_events[0]["resumed"], false,
+        "the delivered session_start hydration reached ctx.start: {}",
+        turn_events[0]
+    );
+
+    let high_water = max_seq(&first);
+    brain.send_message(&session, "second").await;
+    let second = brain.wait_turn_after(&session, high_water).await;
+    let completed = second
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .expect("turn 2 completes");
+    assert_eq!(completed["result"]["value"]["n"], 2, "kv persisted across turns");
+    let turn_events = loop_event_data(&second, "sdk.turn");
+    assert_eq!(turn_events[0]["text"], "sdk answer two");
 }
 
 #[tokio::test(flavor = "multi_thread")]
