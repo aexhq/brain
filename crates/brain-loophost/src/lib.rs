@@ -16,6 +16,7 @@
 //! returns afterwards: a loop cannot mask kernel failures.
 
 pub mod daemon;
+pub mod registry;
 pub mod remote;
 pub mod wire;
 
