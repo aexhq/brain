@@ -122,6 +122,11 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         max_concurrent_model_rounds: 4096,
         max_concurrent_turns: 4096,
         max_event_followers: 4096,
+        // Density intentionally packs more simultaneously retained sessions than the hosted
+        // tenant policy admits. Keep the per-session retention invariant, but exempt this
+        // process-isolated measurement from the aggregate tenant product quota just as it is
+        // exempt from production turn/follower admission above.
+        journal_max_tenant_bytes: brain::journal::MAX_JOURNAL_BYTES,
         idle_discard,
         ..BrainConfig::default()
     };
