@@ -108,7 +108,11 @@ impl Agentloop for BuiltinAexLoop {
                 RoundOutcome::Cancelled => return Ok(LoopVerdict::stop("cancelled")),
                 RoundOutcome::Interrupted => return Ok(LoopVerdict::stop("interrupted")),
                 RoundOutcome::Final { refusal } => {
-                    return Ok(LoopVerdict::stop(if refusal { "refusal" } else { "end_turn" }));
+                    return Ok(LoopVerdict::stop(if refusal {
+                        "refusal"
+                    } else {
+                        "end_turn"
+                    }));
                 }
                 RoundOutcome::ToolCalls { .. } => match ctx.dispatch_pending().await? {
                     DispatchOutcome::TerminalCommitted { stop_reason } => {

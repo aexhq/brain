@@ -35,7 +35,13 @@ fn schema_for(schema_json: &str, type_name: &str) -> jsonschema::Validator {
     // constraints (e.g. a contract-identity const block) describe the whole contract document,
     // not the referenced type, and in 2020-12 they would apply beside `$ref` — strip them.
     let root = schema.as_object_mut().unwrap();
-    for key in ["$id", "type", "properties", "required", "additionalProperties"] {
+    for key in [
+        "$id",
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+    ] {
         root.remove(key);
     }
     root.insert("$ref".into(), Value::String(format!("#/$defs/{type_name}")));

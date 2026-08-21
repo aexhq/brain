@@ -156,6 +156,11 @@ pub enum BrainError {
     #[error("provider returned an unparseable stream: {0}")]
     Protocol(String),
 
+    /// The session's agentloop (or the loop host running it) failed; the kernel and provider
+    /// are healthy. Distinct from [`BrainError::Protocol`] so turn failures name the right party.
+    #[error("agentloop: {0}")]
+    Agentloop(String),
+
     #[error("provider error {status}: {body}")]
     ProviderStatus { status: u16, body: String },
 
