@@ -28,14 +28,28 @@ function engineOp(name) {
   return response;
 }
 
+// Loop memory is a cache that lives exactly as long as this resident instance: the delivered
+// session_start hydration and the activation history prove residency semantics to the tests.
+let deliveredHydration = null;
+const activationKinds = [];
+
 export function activate(kind, payload) {
+  activationKinds.push(kind);
+  if (kind === "session_start") {
+    deliveredHydration = JSON.parse(payload);
+    return JSON.stringify({
+      activation_id: deliveredHydration.activation_id,
+      outcome: "completed",
+    });
+  }
   if (kind !== "message") {
     return JSON.stringify({ activation_id: "act-none", outcome: "completed" });
   }
   const activation = JSON.parse(payload);
   const id = activation.activation_id;
 
-  // Hydration probe: fetch the session_start payload and publish what arrived.
+  // Hydration probe: fetch the current payload each turn and publish what arrived, plus what
+  // the host DELIVERED at instance start and every activation kind this instance has seen.
   const hydration = engineOp("engine.session_start");
   op(id, {
     op: "journal_append",
@@ -48,6 +62,9 @@ export function activate(kind, payload) {
         tail_types: hydration.tail.map((entry) => entry.type),
         mark_covers: hydration.latest_mark ? hydration.latest_mark.covers_through_seq : null,
         mark_data: hydration.latest_mark ? hydration.latest_mark.data : null,
+        activation_kinds: activationKinds.slice(),
+        start_delivered: deliveredHydration !== null,
+        start_resumed: deliveredHydration ? deliveredHydration.resumed : null,
       },
     }],
   });

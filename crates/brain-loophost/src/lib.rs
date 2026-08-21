@@ -19,6 +19,7 @@ pub mod daemon;
 pub mod remote;
 pub mod wire;
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,17 +53,17 @@ const MAX_OP_BYTES: usize = 768 * 1024;
 /// One guest ctx op awaiting service: the op JSON and the channel its response goes back on.
 pub type CtxRequest = (String, oneshot::Sender<String>);
 
-/// A running activation: resolves to the guest's verdict JSON, or an error string naming what
-/// the guest did (trapped, failed to instantiate). Owns the store — dropping it kills the guest.
-pub type ActivationFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>;
-
-/// Store data for one activation: the channel to the ctx service plus WASI plumbing.
+/// Store data for one resident instance: the current activation's ctx channel plus WASI
+/// plumbing. The channel is swapped per activation by [`SessionInstance::arm`].
 struct HostState {
     tx: mpsc::Sender<CtxRequest>,
     wasi: WasiCtx,
     table: ResourceTable,
     limits: StoreLimits,
+    /// Ops serviced so far; the epoch-deadline callback re-arms the CPU slice when this moved,
+    /// so awaiting the kernel never consumes guest CPU budget.
+    ops_serviced: u64,
+    ops_at_last_deadline: u64,
 }
 
 impl WasiView for HostState {
@@ -83,9 +84,11 @@ impl loophost::abi::host::Host for HostState {
         if self.tx.send((payload, reply_tx)).await.is_err() {
             return error_json("aborted", "the turn is no longer being serviced");
         }
-        reply_rx
+        let response = reply_rx
             .await
-            .unwrap_or_else(|_| error_json("aborted", "the turn is no longer being serviced"))
+            .unwrap_or_else(|_| error_json("aborted", "the turn is no longer being serviced"));
+        self.ops_serviced += 1;
+        response
     }
 }
 
@@ -133,44 +136,152 @@ impl WasmLoopEngine {
         Ok(Arc::new(Self { engine, pre }))
     }
 
-    /// Begin one guest activation. The returned future owns the fresh store and resolves to the
-    /// guest's verdict; ctx ops arrive on the receiver until it does. The caller decides how ops
-    /// are serviced — locally against a `TurnCtx`, or forwarded over the wire.
-    pub fn start_activation(
-        self: &Arc<Self>,
-        kind: &str,
-        payload: &str,
-    ) -> (mpsc::Receiver<CtxRequest>, ActivationFuture) {
+    /// Instantiate one resident guest instance for a session. Creation restores the
+    /// wizer-snapshotted memory copy-on-write (33 µs on the deployment substrate), so instances
+    /// are the cheapest resident thing and are evicted first under pressure.
+    pub async fn new_instance(self: &Arc<Self>) -> Result<SessionInstance, String> {
+        // The channel is replaced per activation by `arm`; this initial one is never used.
+        let (tx, _rx) = mpsc::channel(1);
+        let mut store = Store::new(
+            &self.engine,
+            HostState {
+                tx,
+                wasi: WasiCtxBuilder::new().build(),
+                table: ResourceTable::new(),
+                limits: StoreLimitsBuilder::new()
+                    .memory_size(MEMORY_LIMIT_BYTES)
+                    .build(),
+                ops_serviced: 0,
+                ops_at_last_deadline: 0,
+            },
+        );
+        store.limiter(|state| &mut state.limits);
+        // The CPU-slice deadline bounds contiguous guest execution: when ops were serviced
+        // since the last check, the guest was awaiting the kernel, and the slice re-arms.
+        store.epoch_deadline_callback(|mut context| {
+            let state = context.data_mut();
+            if state.ops_serviced != state.ops_at_last_deadline {
+                state.ops_at_last_deadline = state.ops_serviced;
+                Ok(wasmtime::UpdateDeadline::Continue(EPOCH_DEADLINE_TICKS))
+            } else {
+                Err(wasmtime::Error::msg(format!(
+                    "the loop exceeded its {}s guest CPU slice",
+                    EPOCH_TICK.as_millis() as u64 * EPOCH_DEADLINE_TICKS / 1_000
+                )))
+            }
+        });
+        store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
+        let guest = self
+            .pre
+            .instantiate_async(&mut store)
+            .await
+            .map_err(|error| format!("guest instantiation failed: {error}"))?;
+        Ok(SessionInstance {
+            store,
+            guest,
+            started: false,
+        })
+    }
+}
+
+/// One resident guest instance: its store (linear memory and limits) and the instantiated
+/// exports. Lives as long as the session stays warm in the host (60 s idle, capped residency);
+/// loop memory is a cache — durable state rides the journal and rehydrates via `session_start`.
+pub struct SessionInstance {
+    store: Store<HostState>,
+    guest: Guest,
+    /// True once this instance received its `session_start` activation.
+    pub started: bool,
+}
+
+impl SessionInstance {
+    /// Prepare one activation: wire a fresh ctx channel into the store and re-arm the CPU
+    /// slice. The caller drives [`Self::activate`] while servicing the returned receiver.
+    pub fn arm(&mut self) -> mpsc::Receiver<CtxRequest> {
         // Capacity 1 is exact: the guest ABI is call/response, so at most one op is in flight.
         let (tx, rx) = mpsc::channel(1);
-        let this = self.clone();
-        let kind = kind.to_string();
-        let payload = payload.to_string();
-        let future = Box::pin(async move {
-            let mut store = Store::new(
-                &this.engine,
-                HostState {
-                    tx,
-                    wasi: WasiCtxBuilder::new().build(),
-                    table: ResourceTable::new(),
-                    limits: StoreLimitsBuilder::new()
-                        .memory_size(MEMORY_LIMIT_BYTES)
-                        .build(),
-                },
-            );
-            store.limiter(|state| &mut state.limits);
-            store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
-            let guest = this
-                .pre
-                .instantiate_async(&mut store)
-                .await
-                .map_err(|error| format!("guest instantiation failed: {error}"))?;
-            guest
-                .call_activate(&mut store, &kind, &payload)
-                .await
-                .map_err(|error| format!("guest trapped: {error}"))
-        });
-        (rx, future)
+        self.store.data_mut().tx = tx;
+        self.store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
+        rx
+    }
+
+    pub async fn activate(&mut self, kind: &str, payload: &str) -> Result<String, String> {
+        self.guest
+            .call_activate(&mut self.store, kind, payload)
+            .await
+            .map_err(|error| format!("guest trapped: {error}"))
+    }
+}
+
+/// The per-session resident-instance table shared by a host: get-or-create keyed by session,
+/// idle-timer eviction independent of brain actor residency, LRU-capped.
+pub struct SessionInstances {
+    engine: Arc<WasmLoopEngine>,
+    map: std::sync::Mutex<HashMap<String, InstanceEntry>>,
+}
+
+struct InstanceEntry {
+    instance: Arc<tokio::sync::Mutex<SessionInstance>>,
+    last_used: std::time::Instant,
+}
+
+/// Idle eviction and residency cap for loop instances (design ledger A5: recreation costs
+/// 33 µs, so loops are reclaimed before anything else).
+pub const LOOP_INSTANCE_IDLE: Duration = Duration::from_secs(60);
+pub const LOOP_INSTANCE_CAP: usize = 256;
+
+impl SessionInstances {
+    pub fn new(engine: Arc<WasmLoopEngine>) -> Self {
+        Self {
+            engine,
+            map: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The session's resident instance, created fresh when absent or evicted. Exactly one turn
+    /// runs per session, so the get-or-create race cannot occur for one key.
+    pub async fn acquire(
+        &self,
+        session_id: &str,
+    ) -> Result<Arc<tokio::sync::Mutex<SessionInstance>>, String> {
+        self.sweep();
+        if let Some(entry) = self.map.lock().expect("instances").get_mut(session_id) {
+            entry.last_used = std::time::Instant::now();
+            return Ok(entry.instance.clone());
+        }
+        let instance = Arc::new(tokio::sync::Mutex::new(self.engine.new_instance().await?));
+        self.map.lock().expect("instances").insert(
+            session_id.to_string(),
+            InstanceEntry {
+                instance: instance.clone(),
+                last_used: std::time::Instant::now(),
+            },
+        );
+        Ok(instance)
+    }
+
+    /// Drop a session's instance (after a trap or a failed turn: a fresh instance rehydrates
+    /// from durable state instead of trusting possibly-corrupt loop memory).
+    pub fn remove(&self, session_id: &str) {
+        self.map.lock().expect("instances").remove(session_id);
+    }
+
+    /// Evict idle instances and enforce the residency cap (oldest first). A running activation
+    /// holds its own `Arc`, so eviction never kills live work — it only drops the table's hold.
+    pub fn sweep(&self) {
+        let mut map = self.map.lock().expect("instances");
+        let now = std::time::Instant::now();
+        map.retain(|_, entry| now.duration_since(entry.last_used) < LOOP_INSTANCE_IDLE);
+        while map.len() > LOOP_INSTANCE_CAP {
+            let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            map.remove(&oldest);
+        }
     }
 }
 
@@ -329,16 +440,67 @@ pub(crate) fn parse_verdict(verdict_json: &str) -> Result<LoopVerdict, BrainErro
     })
 }
 
-/// An agentloop implementation that runs a guest component in-process, one instance per turn
-/// activation. The remote counterpart is [`remote::RemoteAgentloop`].
+/// Serve one activation on a resident instance, servicing every guest ctx op locally against
+/// the driving turn's `TurnCtx`.
+async fn serve_local_activation(
+    instance: &mut SessionInstance,
+    kind: &str,
+    payload: &str,
+    ctx: &mut dyn TurnCtx,
+    first_error: &mut Option<BrainError>,
+) -> Result<String, String> {
+    let mut rx = instance.arm();
+    let mut activation = Box::pin(instance.activate(kind, payload));
+    loop {
+        tokio::select! {
+            biased;
+            Some((payload, reply)) = rx.recv() => {
+                let response = service_ctx_op(ctx, &payload, first_error).await;
+                let _ = reply.send(response);
+            }
+            result = &mut activation => break result,
+        }
+    }
+}
+
+/// A `session_start` activation's return: any clean return is acceptance (the engine-mode aex
+/// guest answers with its legacy verdict shape), but a contract loop reporting failed/aborted
+/// fails the turn.
+pub(crate) fn check_session_start(returned: &str) -> Result<(), BrainError> {
+    use brain_protocol::agentloop::{ActivationResult, ActivationResultOutcome};
+    if let Ok(result) = serde_json::from_str::<ActivationResult>(returned)
+        && !matches!(result.outcome, ActivationResultOutcome::Completed)
+    {
+        return Err(BrainError::Agentloop(format!(
+            "the session_start activation ended {}",
+            result.outcome
+        )));
+    }
+    Ok(())
+}
+
+/// The session id an activation payload addresses.
+pub(crate) fn payload_session_id(payload: &serde_json::Value) -> Result<String, BrainError> {
+    payload
+        .get("session")
+        .and_then(|session| session.get("session_id"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| BrainError::Agentloop("the activation payload carries no session id".into()))
+}
+
+/// An agentloop implementation that runs a guest component in-process with per-session
+/// resident instances: a fresh instance receives its `session_start` hydration before the
+/// first message activation, and loop memory persists across turns until idle eviction.
+/// The remote counterpart is [`remote::RemoteAgentloop`].
 pub struct WasmAgentloop {
-    engine: Arc<WasmLoopEngine>,
+    instances: SessionInstances,
 }
 
 impl WasmAgentloop {
     pub fn from_component_file(path: &Path) -> anyhow::Result<Self> {
         Ok(Self {
-            engine: WasmLoopEngine::from_component_file(path)?,
+            instances: SessionInstances::new(WasmLoopEngine::from_component_file(path)?),
         })
     }
 }
@@ -346,25 +508,68 @@ impl WasmAgentloop {
 #[async_trait]
 impl Agentloop for WasmAgentloop {
     async fn drive_turn(&self, ctx: &mut dyn TurnCtx) -> Result<LoopVerdict, BrainError> {
-        let payload = ctx.activation_message()?.to_string();
-        let (mut rx, mut activation) = self.engine.start_activation("message", &payload);
+        let message_payload = ctx.activation_message()?;
+        let session_id = payload_session_id(&message_payload)?;
+        let instance = self
+            .instances
+            .acquire(&session_id)
+            .await
+            .map_err(BrainError::Agentloop)?;
+        let mut guard = instance.lock().await;
         let mut first_error: Option<BrainError> = None;
-        let outcome = loop {
-            tokio::select! {
-                biased;
-                Some((payload, reply)) = rx.recv() => {
-                    let response = service_ctx_op(ctx, &payload, &mut first_error).await;
-                    let _ = reply.send(response);
-                }
-                result = &mut activation => break result,
+        if !guard.started {
+            let hydration = ctx.session_start_payload().await?.to_string();
+            let outcome = serve_local_activation(
+                &mut guard,
+                "session_start",
+                &hydration,
+                ctx,
+                &mut first_error,
+            )
+            .await;
+            if let Some(error) = first_error.take() {
+                drop(guard);
+                self.instances.remove(&session_id);
+                return Err(error);
             }
-        };
-        drop(activation);
+            match outcome {
+                Ok(returned) => {
+                    if let Err(error) = check_session_start(&returned) {
+                        drop(guard);
+                        self.instances.remove(&session_id);
+                        return Err(error);
+                    }
+                    guard.started = true;
+                }
+                Err(guest) => {
+                    drop(guard);
+                    self.instances.remove(&session_id);
+                    return Err(BrainError::Agentloop(guest));
+                }
+            }
+        }
+        let outcome = serve_local_activation(
+            &mut guard,
+            "message",
+            &message_payload.to_string(),
+            ctx,
+            &mut first_error,
+        )
+        .await;
+        drop(guard);
         if let Some(error) = first_error {
+            self.instances.remove(&session_id);
             return Err(error);
         }
-        let verdict_json = outcome.map_err(BrainError::Agentloop)?;
-        resolve_verdict(&verdict_json, ctx)
+        match outcome {
+            Ok(verdict_json) => resolve_verdict(&verdict_json, ctx),
+            Err(guest) => {
+                // Never reuse an instance that trapped: the replacement rehydrates from
+                // durable state instead of trusting possibly-corrupt loop memory.
+                self.instances.remove(&session_id);
+                Err(BrainError::Agentloop(guest))
+            }
+        }
     }
 }
 

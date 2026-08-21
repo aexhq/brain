@@ -2,6 +2,11 @@
 //! protocol. The daemon is a pure relay around the wasm engine — every ctx op a guest issues is
 //! forwarded to the brain, which services it against the turn's `TurnCtx`; the daemon holds no
 //! kernel state and no credentials.
+//!
+//! Guest instances are resident per session and shared across brain connections: a fresh
+//! instance receives its `session_start` hydration (fetched from the driving turn over the
+//! wire) before its first message activation, and idle instances are swept independently of
+//! brain actor residency.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 
 use crate::wire::{self, Frame};
-use crate::{ActivationFuture, CtxRequest, WasmLoopEngine};
+use crate::{SessionInstance, SessionInstances, WasmLoopEngine, check_session_start};
 
 /// Accept brain connections forever. Each connection authenticates with the shared token and
 /// then multiplexes activations; per-tenant isolation is the process boundary around this call.
@@ -21,12 +26,20 @@ pub async fn serve(
     engine: Arc<WasmLoopEngine>,
     token: String,
 ) -> anyhow::Result<()> {
+    let instances = Arc::new(SessionInstances::new(engine));
+    let sweeper = instances.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            sweeper.sweep();
+        }
+    });
     loop {
         let (stream, peer) = listener.accept().await?;
-        let engine = engine.clone();
+        let instances = instances.clone();
         let token = token.clone();
         tokio::spawn(async move {
-            match handle_connection(stream, engine, &token).await {
+            match handle_connection(stream, instances, &token).await {
                 Ok(()) => tracing::info!(%peer, "brain connection closed"),
                 Err(error) => tracing::warn!(%peer, %error, "brain connection failed"),
             }
@@ -44,7 +57,7 @@ struct ConnectionState {
 
 async fn handle_connection(
     stream: TcpStream,
-    engine: Arc<WasmLoopEngine>,
+    instances: Arc<SessionInstances>,
     token: &str,
 ) -> anyhow::Result<()> {
     let (mut reader, mut writer) = stream.into_split();
@@ -68,9 +81,10 @@ async fn handle_connection(
         activations: Mutex::new(HashMap::new()),
         next_ctx_id: AtomicU64::new(1),
     });
-    let result = connection_loop(&mut reader, &engine, &out, &state).await;
-    // The brain is gone: kill every guest this connection was running. Dropping the pending
-    // replies answers any in-flight guest hostcall with "aborted" on its way down.
+    let result = connection_loop(&mut reader, &instances, &out, &state).await;
+    // The brain is gone: stop every activation this connection was running. Dropping the
+    // pending replies answers any in-flight guest hostcall with "aborted" on its way down;
+    // resident instances stay warm for a reconnecting brain.
     for (_, abort) in state.activations.lock().expect("activations").drain() {
         abort.abort();
     }
@@ -82,7 +96,7 @@ async fn handle_connection(
 
 async fn connection_loop(
     reader: &mut (impl tokio::io::AsyncRead + Unpin),
-    engine: &Arc<WasmLoopEngine>,
+    instances: &Arc<SessionInstances>,
     out: &mpsc::Sender<Frame>,
     state: &Arc<ConnectionState>,
 ) -> anyhow::Result<()> {
@@ -107,11 +121,11 @@ async fn connection_loop(
                 {
                     anyhow::bail!("activation {activation} is already running");
                 }
-                let (rx, future) = engine.start_activation(&activation_kind, &payload);
                 let task = tokio::spawn(run_activation(
                     activation,
-                    rx,
-                    future,
+                    activation_kind,
+                    payload,
+                    instances.clone(),
                     out.clone(),
                     state.clone(),
                 ));
@@ -149,31 +163,86 @@ async fn connection_loop(
     }
 }
 
-/// Drive one guest activation, relaying its ctx ops to the brain and reporting the outcome.
-async fn run_activation(
+/// One daemon-initiated ctx op to the brain (the `session_start` hydration fetch), using the
+/// same correlation machinery guest ops ride.
+async fn wire_ctx_op(
     activation: u64,
-    mut rx: mpsc::Receiver<CtxRequest>,
-    mut future: ActivationFuture,
-    out: mpsc::Sender<Frame>,
-    state: Arc<ConnectionState>,
-) {
-    let result = loop {
+    op_json: &str,
+    out: &mpsc::Sender<Frame>,
+    state: &Arc<ConnectionState>,
+) -> Result<String, String> {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let id = state.next_ctx_id.fetch_add(1, Ordering::Relaxed);
+    state
+        .pending_ctx
+        .lock()
+        .expect("pending ctx")
+        .insert(id, (activation, reply_tx));
+    if out
+        .send(Frame::Ctx {
+            id,
+            activation,
+            payload: op_json.to_string(),
+        })
+        .await
+        .is_err()
+    {
+        return Err("the brain connection closed mid-activation".to_string());
+    }
+    reply_rx
+        .await
+        .map_err(|_| "the brain connection closed mid-activation".to_string())
+}
+
+/// Serve one activation on a resident instance, forwarding every guest ctx op to the brain.
+async fn serve_forwarding(
+    instance: &mut SessionInstance,
+    kind: &str,
+    payload: &str,
+    activation: u64,
+    out: &mpsc::Sender<Frame>,
+    state: &Arc<ConnectionState>,
+) -> Result<String, String> {
+    let mut rx = instance.arm();
+    let mut future = Box::pin(instance.activate(kind, payload));
+    loop {
         tokio::select! {
             biased;
-            Some((payload, reply)) = rx.recv() => {
+            Some((op, reply)) = rx.recv() => {
                 let id = state.next_ctx_id.fetch_add(1, Ordering::Relaxed);
                 state
                     .pending_ctx
                     .lock()
                     .expect("pending ctx")
                     .insert(id, (activation, reply));
-                if out.send(Frame::Ctx { id, activation, payload }).await.is_err() {
+                if out.send(Frame::Ctx { id, activation, payload: op }).await.is_err() {
                     break Err("the brain connection closed mid-activation".to_string());
                 }
             }
             result = &mut future => break result,
         }
-    };
+    }
+}
+
+/// Drive one guest activation: resident instance lookup, first-use `session_start` hydration,
+/// then the requested activation, reporting the outcome to the brain.
+async fn run_activation(
+    activation: u64,
+    activation_kind: String,
+    payload: String,
+    instances: Arc<SessionInstances>,
+    out: mpsc::Sender<Frame>,
+    state: Arc<ConnectionState>,
+) {
+    let result = drive_activation(
+        activation,
+        &activation_kind,
+        &payload,
+        &instances,
+        &out,
+        &state,
+    )
+    .await;
     state
         .activations
         .lock()
@@ -192,4 +261,46 @@ async fn run_activation(
         },
     };
     let _ = out.send(frame).await;
+}
+
+async fn drive_activation(
+    activation: u64,
+    activation_kind: &str,
+    payload: &str,
+    instances: &Arc<SessionInstances>,
+    out: &mpsc::Sender<Frame>,
+    state: &Arc<ConnectionState>,
+) -> Result<String, String> {
+    let parsed: serde_json::Value = serde_json::from_str(payload)
+        .map_err(|error| format!("activation payload is not JSON: {error}"))?;
+    let session_id = crate::payload_session_id(&parsed).map_err(|error| error.to_string())?;
+    let instance = instances.acquire(&session_id).await?;
+    let mut guard = instance.lock().await;
+    if !guard.started {
+        let hydration =
+            wire_ctx_op(activation, r#"{"op":"engine.session_start"}"#, out, state).await?;
+        let hydrated: serde_json::Value = serde_json::from_str(&hydration)
+            .map_err(|error| format!("session_start hydration is not JSON: {error}"))?;
+        if let Some(error) = hydrated.get("error") {
+            return Err(format!("session_start hydration failed: {error}"));
+        }
+        let returned = serve_forwarding(
+            &mut guard,
+            "session_start",
+            &hydration,
+            activation,
+            out,
+            state,
+        )
+        .await
+        .inspect_err(|_| instances.remove(&session_id))?;
+        if let Err(error) = check_session_start(&returned) {
+            instances.remove(&session_id);
+            return Err(error.to_string());
+        }
+        guard.started = true;
+    }
+    serve_forwarding(&mut guard, activation_kind, payload, activation, out, state)
+        .await
+        .inspect_err(|_| instances.remove(&session_id))
 }

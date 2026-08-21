@@ -408,6 +408,13 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
     assert_eq!(hydration[0]["kv"], json!({}));
     assert_eq!(hydration[0]["tail_types"], json!([]));
     assert_eq!(hydration[0]["mark_covers"], Value::Null);
+    assert_eq!(
+        hydration[0]["activation_kinds"],
+        json!(["session_start", "message"]),
+        "a fresh instance receives its session_start before the first message"
+    );
+    assert_eq!(hydration[0]["start_delivered"], true);
+    assert_eq!(hydration[0]["start_resumed"], false);
 
     let checks = loop_event_data(&first, "loop.checks");
     assert_eq!(
@@ -458,6 +465,12 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
     assert_eq!(hydration[0]["resumed"], true);
     assert_eq!(hydration[0]["kv"]["turns"], 1);
     assert_eq!(hydration[0]["mark_data"]["summary"], "through turn 1");
+    assert_eq!(
+        hydration[0]["activation_kinds"],
+        json!(["session_start", "message", "message"]),
+        "the resident instance survived the turn boundary: no second session_start, and its \
+         module state accumulated"
+    );
     assert!(
         hydration[0]["mark_covers"]
             .as_u64()
