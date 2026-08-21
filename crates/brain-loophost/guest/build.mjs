@@ -47,6 +47,10 @@ for (const guest of [
       : { ...common, entryPoints: [guest.entry] },
   );
   const source = bundled.outputFiles[0].text;
+  if (guest.sdk) {
+    // The pre-componentize source bundle is what a customer uploads; the e2e reuses it.
+    await writeFile(guest.out.replace(/\.component\.wasm$/, ".source.mjs"), source);
+  }
 
   const { component } = await componentize(source, wit, {
     worldName: "guest",

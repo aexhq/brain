@@ -553,9 +553,94 @@ async fn an_sdk_authored_loop_drives_turns_end_to_end() {
         .iter()
         .find(|event| event["type"] == "turn.completed")
         .expect("turn 2 completes");
-    assert_eq!(completed["result"]["value"]["n"], 2, "kv persisted across turns");
+    assert_eq!(
+        completed["result"]["value"]["n"], 2,
+        "kv persisted across turns"
+    );
     let turn_events = loop_event_data(&second, "sdk.turn");
     assert_eq!(turn_events[0]["text"], "sdk answer two");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_customer_bundle_uploads_componentizes_and_drives_turns() {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    ensure_component();
+    let source =
+        std::fs::read(guest_dir().join("dist/sdk-loop.source.mjs")).expect("the source bundle");
+    let digest = hex::encode(sha2::Sha256::digest(&source));
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&source);
+    let store = std::env::temp_dir().join(format!(
+        "brain-loop-store-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+
+    let brain = serve_brain(
+        brain_loophost::registry::services_with_loop_store(&component_path(), &store, &guest_dir())
+            .expect("loop store composition"),
+        vec![Scripted::Text("uploaded answer".into())],
+    )
+    .await;
+
+    // The wrong toolchain refuses before anything componentizes.
+    let refused: Value = brain
+        .http
+        .post(format!("{}/v1/sessions", brain.base))
+        .bearer_auth(&brain.token)
+        .json(&json!({
+            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+            "agentloop": {
+                "source_bundle_sha256": digest,
+                "toolchain": "some-other-toolchain",
+                "bundle_base64": encoded,
+            }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(refused["error"]["code"], "invalid_request", "{refused}");
+
+    // The customer flow: upload the SDK-built source bundle at create; the composition
+    // componentizes it under the pinned toolchain and the sealed loop drives the turn.
+    let session = brain
+        .create_session_from(json!({
+            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+            "agentloop": {
+                "source_bundle_sha256": digest,
+                "toolchain": brain_loophost::registry::LOOP_TOOLCHAIN,
+                "bundle_base64": encoded,
+            }
+        }))
+        .await;
+    brain
+        .send_message(&session, "drive the uploaded loop")
+        .await;
+    let events = brain.wait_turn(&session).await;
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .expect("the uploaded loop completes its turn");
+    assert_eq!(completed["result"]["value"]["n"], 1);
+    let turn_events = loop_event_data(&events, "sdk.turn");
+    assert_eq!(turn_events[0]["text"], "uploaded answer");
+
+    // The componentized artifact is cached content-addressed for every later admission.
+    let cached = store.join("component").join(format!(
+        "{digest}-{}.wasm",
+        brain_loophost::registry::LOOP_TOOLCHAIN
+    ));
+    assert!(
+        cached.exists(),
+        "the componentized loop is cached at {cached:?}"
+    );
+    let _ = std::fs::remove_dir_all(store);
 }
 
 #[tokio::test(flavor = "multi_thread")]
