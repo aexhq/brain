@@ -267,7 +267,18 @@ impl SpawnedLoopHost {
         use rand::Rng;
         use std::io::BufRead;
         let token = format!("{:032x}", rand::rng().random::<u128>());
-        let mut child = std::process::Command::new(daemon_exe)
+        let mut command = std::process::Command::new(daemon_exe);
+        // The loop host gets no ambient environment: no cloud credentials, no provider keys,
+        // no composition secrets ever reach guest-adjacent code. Only the process plumbing the
+        // OS needs survives the scrub. Every daemon-backed test runs under this discipline,
+        // which is the executable form of the no-secrets gate.
+        command.env_clear();
+        for keep in ["PATH", "SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE"] {
+            if let Ok(value) = std::env::var(keep) {
+                command.env(keep, value);
+            }
+        }
+        let mut child = command
             .env("LOOPHOST_COMPONENT", component)
             .env("LOOPHOST_TOKEN", &token)
             .env("LOOPHOST_LISTEN", "127.0.0.1:0")
