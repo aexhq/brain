@@ -56,6 +56,16 @@ jobs:
         with:
           path: crates/brain-loophost/guest/dist
           key: loop-guests-${{ runner.os }}-${{ hashFiles('crates/brain-loophost/guest/*.mjs', 'crates/brain-loophost/guest/package.json', 'crates/brain-loophost/guest/package-lock.json', 'crates/brain-loophost/wit/guest.wit', 'packages/agentloop/src/**', 'packages/agentloop/package.json') }}
+      # The engine's own compilation cache (self-validating, keyed by engine config + content):
+      # a hit turns each multi-minute cranelift compile of a component into a fast deserialize.
+      # restore-keys is safe — wasmtime revalidates every entry itself.
+      - name: cache wasmtime compiled components
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/wasmtime
+          key: wasmtime-components-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('crates/brain-loophost/guest/*.mjs', 'packages/agentloop/src/**') }}
+          restore-keys: |
+            wasmtime-components-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.97.1"
