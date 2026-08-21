@@ -1819,6 +1819,7 @@ mod tests {
 
     fn doc() -> HeadDoc {
         HeadDoc {
+            loop_state: None,
             tenant_id: "local".into(),
             root_id: "ses_test".into(),
             parent_id: None,

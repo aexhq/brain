@@ -60,6 +60,50 @@ pub struct TurnState {
     /// The next seq to allocate. Ephemeral events (deltas, tool output) consume seqs too;
     /// every commit persists the high-water mark.
     pub seq: Seq,
+    /// The session's durable loop kv map: the fold of committed `LoopKvSet` records. Writes
+    /// staged in `pending_loop` are applied here only once their commit succeeds, so this map
+    /// always equals what a journal replay would rebuild.
+    pub loop_kv: serde_json::Map<String, serde_json::Value>,
+    /// Newest committed loop mark as `(seq, covers_through_seq)`; the mark data stays in its
+    /// journal record and is fetched only when a `session_start` payload needs it.
+    pub latest_mark: Option<(u64, u64)>,
+    /// Loop records appended this activation with allocated seqs but no durable commit yet.
+    /// They ride into the next kernel decision (`TurnRun::commit` drains them) — the contract's
+    /// write-coalescing rule; loss before that commit is the activation's honest loss window.
+    pub pending_loop: Vec<(u64, Record)>,
+}
+
+/// Fold one committed loop record into the kv/mark projection. Used by the live commit path
+/// and by rehydration, so the in-memory shape is exactly the replay shape.
+pub(crate) fn apply_loop_record(
+    kv: &mut serde_json::Map<String, serde_json::Value>,
+    latest_mark: &mut Option<(u64, u64)>,
+    seq: u64,
+    record: &Record,
+) {
+    match record {
+        Record::LoopKvSet { entries, .. } => {
+            for (key, value) in entries {
+                if value.is_null() {
+                    kv.remove(key);
+                } else {
+                    kv.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        Record::LoopMark {
+            covers_through_seq, ..
+        } => *latest_mark = Some((seq, *covers_through_seq)),
+        _ => {}
+    }
+}
+
+/// The admitted user message this turn answers, delivered to the loop's `message` activation.
+#[derive(Debug, Clone)]
+pub struct AdmittedMessage {
+    pub seq: u64,
+    pub at_ms: u64,
+    pub content: Vec<ContentBlock>,
 }
 
 /// The session's sequence allocator.
@@ -111,6 +155,9 @@ pub struct TurnRun {
     /// [`crate::agentloop::BuiltinAexLoop`]; remote loop hosts implement the same trait over
     /// `contracts/agentloop/v1`.
     pub agentloop: Arc<dyn crate::agentloop::Agentloop>,
+    /// The admitted message this turn answers. `None` only for a recovered turn whose admission
+    /// record fell behind the context floor; contract activations then fail honestly.
+    pub message: Option<AdmittedMessage>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +167,8 @@ pub struct TurnReport {
     pub tool_calls: u64,
     /// True when the tool-result decision also journaled the turn terminal atomically.
     pub terminal_committed: bool,
+    /// A structured result the loop declared through `turn_finish`; journaled on TurnCompleted.
+    pub result: Option<brain_protocol::session::TurnResult>,
 }
 
 struct RootRound {
@@ -178,6 +227,15 @@ struct LoopTurnCtx<'a> {
     rounds: u64,
     tool_calls: u64,
     pending: Option<PendingBatch>,
+    /// A terminal declared through the contract's `turn_finish`/`turn_fail` ops. Once set,
+    /// every further ctx op fails `turn_already_terminal`.
+    terminal: Option<crate::agentloop::LoopTerminal>,
+    /// True when dispatch committed the turn terminal atomically (`return_direct`).
+    terminal_committed: bool,
+    /// Kernel call ids minted for tool_call blocks returned by `model_stream`. A dispatch that
+    /// echoes one of these reuses it as the journal call id, keeping the assistant message and
+    /// its tool results internally linked for cold replay.
+    minted_calls: std::collections::HashSet<String>,
 }
 
 #[async_trait::async_trait]
@@ -205,9 +263,16 @@ impl crate::agentloop::TurnCtx for LoopTurnCtx<'_> {
         let batch = self.pending.take().ok_or_else(|| {
             BrainError::Protocol("dispatch_pending called with no journaled batch".into())
         })?;
-        self.run
+        let (outcome, _) = self
+            .run
             .loop_dispatch(self.st, batch, self.rounds, &mut self.tool_calls)
-            .await
+            .await?;
+        if let crate::agentloop::DispatchOutcome::TerminalCommitted { .. } = &outcome {
+            // Tracked kernel-side so a loop cannot mislead the completion path into writing a
+            // second turn terminal.
+            self.terminal_committed = true;
+        }
+        Ok(outcome)
     }
 
     fn rounds(&self) -> u64 {
@@ -220,6 +285,772 @@ impl crate::agentloop::TurnCtx for LoopTurnCtx<'_> {
 
     fn cancelled(&self) -> bool {
         self.run.cancel.is_cancelled()
+    }
+
+    async fn contract_op(
+        &mut self,
+        op: brain_protocol::agentloop::CtxOp,
+    ) -> Result<crate::agentloop::ContractOpOutcome> {
+        use brain_protocol::agentloop::{AgentloopErrorCode, CtxOp, CtxOpResult};
+        if self.terminal.is_some() {
+            return Ok(Err(crate::agentloop::op_error(
+                AgentloopErrorCode::TurnAlreadyTerminal,
+                "the turn already has a terminal; the activation should return",
+                false,
+            )));
+        }
+        match op {
+            CtxOp::JournalAppend { entries } => self.op_journal_append(entries).await,
+            CtxOp::KvGet { keys } => Ok(Ok(CtxOpResult::KvGet {
+                entries: brain_protocol::agentloop::JsonObject(
+                    self.kv_overlay_select(keys.iter().map(|key| key.as_str())),
+                ),
+            })),
+            CtxOp::KvSet { entries } => self.op_kv_set(entries.0).await,
+            CtxOp::JournalRead {
+                after_seq,
+                types,
+                limit,
+            } => self.op_journal_read(after_seq, types, limit).await,
+            CtxOp::ModelStream { request } => self.op_model_stream(request).await,
+            CtxOp::ToolsDispatch { calls } => self.op_tools_dispatch(calls).await,
+            CtxOp::TurnFinish { result } => {
+                self.terminal = Some(crate::agentloop::LoopTerminal::Finished {
+                    result: result.map(|object| object.0),
+                });
+                Ok(Ok(CtxOpResult::TurnFinish))
+            }
+            CtxOp::TurnFail { error } => {
+                self.terminal = Some(crate::agentloop::LoopTerminal::Failed { error });
+                Ok(Ok(CtxOpResult::TurnFail))
+            }
+        }
+    }
+
+    fn activation_message(&self) -> Result<serde_json::Value> {
+        use brain_protocol::agentloop as al;
+        let Some(message) = &self.run.message else {
+            return Err(BrainError::Agentloop(
+                "this recovered turn cannot rebuild its message activation".into(),
+            ));
+        };
+        let content = crate::loopctx::blocks_to_content_views(&message.content)?;
+        let request = al::ActivationRequest::Message {
+            activation_id: crate::loopctx::identifier(&crate::mint_id("act", 16))?,
+            message: al::ActivationRequestMessage {
+                at: crate::loopctx::timestamp(message.at_ms),
+                content,
+                seq: crate::loopctx::seq(message.seq)?,
+            },
+            session: self.session_view()?,
+        };
+        Ok(serde_json::to_value(request)?)
+    }
+
+    async fn session_start_payload(&mut self) -> Result<serde_json::Value> {
+        self.assemble_session_start().await
+    }
+
+    fn loop_terminal(&self) -> Option<&crate::agentloop::LoopTerminal> {
+        self.terminal.as_ref()
+    }
+}
+
+/// A `turn_finish` result becomes the public turn result under a synthetic operation identity:
+/// the loop, not a `return_direct` tool, produced the turn's structured value.
+fn loop_turn_result(
+    value: serde_json::Map<String, serde_json::Value>,
+) -> Result<brain_protocol::session::TurnResult> {
+    Ok(brain_protocol::session::TurnResult {
+        call_id: crate::mint_id("op", 16)
+            .parse()
+            .map_err(|_| BrainError::Agentloop("a minted call id violates the contract".into()))?,
+        metadata: HashMap::new(),
+        name: "agentloop".into(),
+        value: serde_json::Value::Object(value),
+    })
+}
+
+/// One dispatched tool result, kernel-side shape, for the loop's `tools_dispatch` views.
+pub(crate) struct DispatchedResultView {
+    pub is_error: bool,
+    pub content: String,
+}
+
+/// The loop-record buffer flushes early at this size so a drained decision stays far below the
+/// journal's per-decision action and byte caps even beside a full kernel decision.
+const LOOP_FLUSH_RECORDS: usize = 16;
+/// Byte budget for a `session_start` tail, leaving activation-request headroom for the kv map,
+/// the mark and the envelope under `brain_protocol::MAX_ACTIVATION_REQUEST_BYTES`.
+const LOOP_TAIL_BYTES: usize = 3 * 1024 * 1024;
+/// Entry cap for a `session_start` tail (`contracts/agentloop/v1` bound).
+const LOOP_TAIL_ENTRIES: usize = 512;
+
+impl LoopTurnCtx<'_> {
+    /// The session's current loop kv state: the committed fold overlaid with writes staged in
+    /// this activation, so a loop always reads its own writes.
+    fn kv_overlay(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut map = self.st.loop_kv.clone();
+        for (_, record) in &self.st.pending_loop {
+            if let Record::LoopKvSet { entries, .. } = record {
+                for (key, value) in entries {
+                    if value.is_null() {
+                        map.remove(key);
+                    } else {
+                        map.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        map
+    }
+
+    fn kv_overlay_select<'k>(
+        &self,
+        keys: impl Iterator<Item = &'k str>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let overlay = self.kv_overlay();
+        let mut selected = serde_json::Map::new();
+        for key in keys {
+            if let Some(value) = overlay.get(key) {
+                selected.insert(key.to_string(), value.clone());
+            }
+        }
+        selected
+    }
+
+    async fn maybe_flush_pending(&mut self) -> Result<()> {
+        if self.st.pending_loop.len() >= LOOP_FLUSH_RECORDS {
+            self.run.commit(self.st, vec![]).await?;
+        }
+        Ok(())
+    }
+
+    async fn op_journal_append(
+        &mut self,
+        entries: Vec<brain_protocol::agentloop::LoopEntry>,
+    ) -> Result<crate::agentloop::ContractOpOutcome> {
+        use brain_protocol::agentloop as al;
+        if entries.is_empty() {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::InvalidRequest,
+                "journal_append needs at least one entry",
+                false,
+            )));
+        }
+        let head_seq = self.st.seq.load(Ordering::Relaxed).saturating_sub(1);
+        for entry in &entries {
+            let checked = match entry {
+                al::LoopEntry::Custom { data } => crate::loopctx::validate_entry_data(
+                    &data.0,
+                    brain_protocol::MAX_LOOP_ENTRY_DATA_BYTES,
+                    "custom",
+                ),
+                al::LoopEntry::Event { data, .. } => crate::loopctx::validate_entry_data(
+                    &data.0,
+                    brain_protocol::MAX_LOOP_ENTRY_DATA_BYTES,
+                    "event",
+                ),
+                al::LoopEntry::Mark {
+                    covers_through_seq,
+                    data,
+                } => {
+                    if covers_through_seq.0.get() > head_seq {
+                        Err(crate::agentloop::op_error(
+                            al::AgentloopErrorCode::InvalidRequest,
+                            format!(
+                                "mark covers_through_seq {} is beyond the journal head {head_seq}",
+                                covers_through_seq.0
+                            ),
+                            false,
+                        ))
+                    } else {
+                        crate::loopctx::validate_entry_data(
+                            &data.0,
+                            brain_protocol::MAX_LOOP_MARK_INLINE_BYTES,
+                            "mark",
+                        )
+                    }
+                }
+            };
+            if let Err(error) = checked {
+                return Ok(Err(error));
+            }
+        }
+        let turn = self.run.turn_id.clone();
+        let mut first = 0u64;
+        let mut last = 0u64;
+        for entry in entries {
+            let seq = self.st.take_seq();
+            if first == 0 {
+                first = seq;
+            }
+            last = seq;
+            let record = match entry {
+                al::LoopEntry::Custom { data } => Record::LoopCustom {
+                    turn: turn.clone(),
+                    data: serde_json::Value::Object(data.0),
+                },
+                al::LoopEntry::Event { name, data } => Record::LoopEvent {
+                    turn: turn.clone(),
+                    name: name.to_string(),
+                    data: serde_json::Value::Object(data.0),
+                },
+                al::LoopEntry::Mark {
+                    covers_through_seq,
+                    data,
+                } => Record::LoopMark {
+                    turn: turn.clone(),
+                    covers_through_seq: covers_through_seq.0.get(),
+                    data: serde_json::Value::Object(data.0),
+                },
+            };
+            self.st.pending_loop.push((seq, record));
+        }
+        self.maybe_flush_pending().await?;
+        Ok(Ok(al::CtxOpResult::JournalAppend {
+            first_seq: crate::loopctx::seq(first)?,
+            last_seq: crate::loopctx::seq(last)?,
+        }))
+    }
+
+    async fn op_kv_set(
+        &mut self,
+        entries: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::agentloop::ContractOpOutcome> {
+        use brain_protocol::agentloop as al;
+        if entries.is_empty() {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::InvalidRequest,
+                "kv_set needs at least one entry",
+                false,
+            )));
+        }
+        for (key, value) in &entries {
+            let key_chars = key.chars().count();
+            if key_chars == 0 || key_chars > 128 {
+                return Ok(Err(crate::agentloop::op_error(
+                    al::AgentloopErrorCode::KvLimit,
+                    format!("kv key {key:?} must be 1..=128 characters"),
+                    false,
+                )));
+            }
+            if !value.is_null() {
+                let bytes = serde_jcs::to_vec(value)
+                    .map_err(|error| {
+                        BrainError::Agentloop(format!("kv value canonicalization: {error}"))
+                    })?
+                    .len();
+                if bytes > brain_protocol::MAX_LOOP_KV_VALUE_BYTES {
+                    return Ok(Err(crate::agentloop::op_error(
+                        al::AgentloopErrorCode::KvLimit,
+                        format!(
+                            "kv value for {key:?} is {bytes} canonical bytes; the bound is {}",
+                            brain_protocol::MAX_LOOP_KV_VALUE_BYTES
+                        ),
+                        false,
+                    )));
+                }
+            }
+        }
+        let mut projected: std::collections::HashSet<String> =
+            self.kv_overlay().keys().cloned().collect();
+        for (key, value) in &entries {
+            if value.is_null() {
+                projected.remove(key);
+            } else {
+                projected.insert(key.clone());
+            }
+        }
+        if projected.len() > brain_protocol::MAX_LOOP_KV_KEYS {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::KvLimit,
+                format!(
+                    "{} keys would exceed the {}-key kv bound",
+                    projected.len(),
+                    brain_protocol::MAX_LOOP_KV_KEYS
+                ),
+                false,
+            )));
+        }
+        let seq = self.st.take_seq();
+        self.st.pending_loop.push((
+            seq,
+            Record::LoopKvSet {
+                turn: self.run.turn_id.clone(),
+                entries,
+            },
+        ));
+        self.maybe_flush_pending().await?;
+        Ok(Ok(al::CtxOpResult::KvSet))
+    }
+
+    async fn op_journal_read(
+        &mut self,
+        after_seq: Option<brain_protocol::agentloop::Seq>,
+        types: Vec<brain_protocol::agentloop::CtxOpTypesItem>,
+        limit: Option<std::num::NonZeroU64>,
+    ) -> Result<crate::agentloop::ContractOpOutcome> {
+        use brain_protocol::agentloop as al;
+        let after = after_seq.map(|seq| seq.0.get()).unwrap_or(0);
+        let limit = limit.map(|limit| limit.get()).unwrap_or(64).min(256) as usize;
+        let filter: Option<std::collections::HashSet<al::CtxOpTypesItem>> = if types.is_empty() {
+            None
+        } else {
+            Some(types.into_iter().collect())
+        };
+        let model = self.run.prefix.model.clone();
+        let mut views = Vec::new();
+        let mut truncated = false;
+        let durable = self
+            .run
+            .journal
+            .read_records(&self.run.session_id, after)
+            .await?;
+        let now = crate::wall_ms();
+        let pending = self
+            .st
+            .pending_loop
+            .iter()
+            .filter(|(seq, _)| *seq > after)
+            .map(|(seq, record)| (*seq, now, record));
+        for (seq, ts_ms, record) in durable
+            .iter()
+            .map(|entry| (entry.seq, entry.ts_ms, &entry.record))
+            .chain(pending)
+        {
+            let Some(view) = crate::loopctx::project_entry(seq, ts_ms, &model, record)? else {
+                continue;
+            };
+            if filter
+                .as_ref()
+                .is_none_or(|filter| filter.contains(&crate::loopctx::view_type(&view)))
+            {
+                if views.len() == limit {
+                    truncated = true;
+                    break;
+                }
+                views.push(view);
+            }
+        }
+        let next_after_seq = if truncated {
+            views
+                .last()
+                .map(|view| crate::loopctx::seq(crate::loopctx::view_seq(view)))
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(Ok(al::CtxOpResult::JournalRead {
+            entries: views,
+            next_after_seq,
+        }))
+    }
+
+    async fn op_model_stream(
+        &mut self,
+        request: brain_protocol::agentloop::ModelRequest,
+    ) -> Result<crate::agentloop::ContractOpOutcome> {
+        use brain_protocol::agentloop as al;
+        let max_rounds = self.run.prefix.limits.max_rounds as u64;
+        if self.rounds >= max_rounds {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::BudgetExceeded,
+                format!("the sealed ceiling of {max_rounds} model rounds per turn is reached"),
+                false,
+            )));
+        }
+        if request.top_p.is_some() {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::InvalidRequest,
+                "top_p is not supported by this kernel build",
+                false,
+            )));
+        }
+        let tools = match crate::loopctx::presented_tools(&self.run.prefix, &request.tools) {
+            Ok(tools) => tools,
+            Err(error) => return Ok(Err(error)),
+        };
+        let history = match crate::loopctx::model_messages_to_history(&request.messages) {
+            Ok(history) => history,
+            Err(error) => return Ok(Err(error)),
+        };
+        let max_tokens = match request.max_tokens {
+            None => None,
+            Some(value) => match u32::try_from(value.get()) {
+                Ok(value) => Some(value),
+                Err(_) => {
+                    return Ok(Err(crate::agentloop::op_error(
+                        al::AgentloopErrorCode::InvalidRequest,
+                        "max_tokens exceeds the provider bound",
+                        false,
+                    )));
+                }
+            },
+        };
+        let view = self.run.prefix.loop_call_view(
+            request.system.map(String::from),
+            Some(tools),
+            max_tokens,
+            request.temperature.map(|temperature| temperature as f32),
+        );
+        let provider_request = match self.run.provider.build_request(
+            &view,
+            &history,
+            &self.run.session.key,
+            &self.run.session.base_url,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                return Ok(Err(crate::agentloop::op_error(
+                    al::AgentloopErrorCode::InvalidRequest,
+                    format!("model request rendering: {error}"),
+                    false,
+                )));
+            }
+        };
+        if let Err(error) = crate::compact::validate_model_request_budget(
+            provider_request.body_len(),
+            view.sampling.max_tokens as usize,
+            self.run.context_window_tokens,
+            "model",
+        ) {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::BudgetExceeded,
+                error.to_string(),
+                false,
+            )));
+        }
+        // The same replacement-recovery authorization the kernel-managed round uses: an unknown
+        // provider outcome consumes durable budget before a digest-identical resend.
+        let round = loop {
+            match self
+                .run
+                .round_with_request(self.st, provider_request.clone())
+                .await
+            {
+                Ok(round) => break round,
+                Err(BrainError::Cancelled) => {
+                    return Ok(Err(crate::agentloop::op_error(
+                        al::AgentloopErrorCode::Aborted,
+                        "the turn was cancelled",
+                        false,
+                    )));
+                }
+                Err(error)
+                    if self
+                        .st
+                        .head
+                        .provider_attempt
+                        .as_ref()
+                        .is_some_and(|attempt| attempt.state == "unknown") =>
+                {
+                    let attempt = self.st.head.provider_attempt.as_mut().expect("checked");
+                    if attempt.replacements_used >= self.st.head.prefix.provider_recovery_retries {
+                        return Ok(Err(crate::agentloop::op_error(
+                            al::AgentloopErrorCode::ProviderError,
+                            format!(
+                                "provider outcome unknown and the replacement budget is exhausted: {error}"
+                            ),
+                            true,
+                        )));
+                    }
+                    tracing::warn!(
+                        session = %self.run.session_id,
+                        logical_operation_id = %attempt.logical_operation_id,
+                        error = %error,
+                        "loop model_stream outcome unknown; authorizing digest-identical replacement"
+                    );
+                    attempt.replacements_used += 1;
+                    attempt.state = "replacement_ready".into();
+                    self.run.commit(self.st, vec![]).await?;
+                }
+                Err(error) => {
+                    return match crate::loopctx::provider_op_error(error) {
+                        Ok(guest_error) => Ok(Err(guest_error)),
+                        Err(kernel) => Err(kernel),
+                    };
+                }
+            }
+        };
+        let RootRound {
+            mut message,
+            stop,
+            usage,
+            logical_operation_id,
+            attempt_id,
+            request_digest,
+        } = round;
+        self.rounds += 1;
+        self.st.head.active_rounds = self.rounds;
+        let calls = mint_tool_calls(&mut message);
+        validate_model_tool_call_count(calls.len())?;
+        for (call_id, _, _) in &calls {
+            self.minted_calls.insert(call_id.clone());
+        }
+        let records = vec![
+            (
+                self.st.take_seq(),
+                Record::ModelCallCompleted {
+                    turn: self.run.turn_id.clone(),
+                    logical_operation_id,
+                    attempt_id: attempt_id.clone(),
+                    request_digest,
+                },
+            ),
+            (
+                self.st.take_seq(),
+                Record::Usage {
+                    turn: self.run.turn_id.clone(),
+                    agent: "root".into(),
+                    provider: self.run.provider_name.clone(),
+                    model: self.run.prefix.model.clone(),
+                    usage,
+                },
+            ),
+            (
+                self.st.take_seq(),
+                Record::Assistant {
+                    turn: self.run.turn_id.clone(),
+                    agent: "root".into(),
+                    attempt_id,
+                    content: message.content.clone(),
+                    stop,
+                },
+            ),
+        ];
+        self.st.head.provider_attempt = None;
+        self.st.head.active_phase = Some("ready_to_continue_model".into());
+        self.run.commit(self.st, records).await?;
+        // Keep the resident history exactly what a cold replay would rebuild from the records
+        // just committed, so a mixed engine/contract session folds consistently.
+        self.st.history.push(message.clone());
+        let view = crate::loopctx::assistant_view(&message, stop, &usage, &self.run.prefix.model)?;
+        Ok(Ok(al::CtxOpResult::ModelStream { message: view }))
+    }
+
+    async fn op_tools_dispatch(
+        &mut self,
+        calls: Vec<brain_protocol::agentloop::ToolCallRequest>,
+    ) -> Result<crate::agentloop::ContractOpOutcome> {
+        use brain_protocol::agentloop as al;
+        if calls.is_empty() {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::InvalidRequest,
+                "tools_dispatch needs at least one call",
+                false,
+            )));
+        }
+        if calls.len() > self.run.prefix.limits.max_parallel_tools {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::InvalidRequest,
+                format!(
+                    "{} calls exceed the sealed parallel-dispatch limit {}",
+                    calls.len(),
+                    self.run.prefix.limits.max_parallel_tools
+                ),
+                false,
+            )));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for call in &calls {
+            if self.run.prefix.tool(call.name.as_str()).is_none() {
+                return Ok(Err(crate::agentloop::op_error(
+                    al::AgentloopErrorCode::UnsealedTool,
+                    format!(
+                        "tool {:?} is not in this session's sealed grant",
+                        call.name.as_str()
+                    ),
+                    false,
+                )));
+            }
+            if !seen.insert(call.tool_call_id.as_str()) {
+                return Ok(Err(crate::agentloop::op_error(
+                    al::AgentloopErrorCode::InvalidRequest,
+                    format!(
+                        "tool_call_id {:?} repeats in one dispatch",
+                        call.tool_call_id.as_str()
+                    ),
+                    false,
+                )));
+            }
+        }
+        // Kernel call ids own journal, SSE and hand attribution. A call echoing an id this
+        // turn's model_stream minted reuses it, keeping the assistant message and its results
+        // linked; a synthesized call gets a fresh kernel id and the loop's own id only appears
+        // in the returned views.
+        let mut kernel_calls = Vec::with_capacity(calls.len());
+        for call in &calls {
+            let loop_id = call.tool_call_id.to_string();
+            let kernel_id = if self.minted_calls.remove(&loop_id) {
+                loop_id
+            } else {
+                crate::mint_id("op", 16)
+            };
+            kernel_calls.push((
+                kernel_id,
+                call.name.to_string(),
+                serde_json::Value::Object(call.input.0.clone()),
+            ));
+        }
+        let prepared_customer = self.run.prepare_customer_dispatches(&kernel_calls).await;
+        let mut records = Vec::new();
+        for (op_id, name, input) in &kernel_calls {
+            if let Some(PreparedCustomerDispatch::Intent(intent)) = prepared_customer.get(op_id) {
+                records.push((
+                    self.st.take_seq(),
+                    Record::CustomerCallIntent {
+                        turn: self.run.turn_id.clone(),
+                        call: op_id.clone(),
+                        client_id: intent.client_id.clone(),
+                        process_id: intent.process_id.clone(),
+                        request_digest: intent.request_digest.clone(),
+                        deadline_at_ms: intent.deadline_at_ms,
+                    },
+                ));
+            }
+            records.push((
+                self.st.take_seq(),
+                Record::ToolCall {
+                    turn: self.run.turn_id.clone(),
+                    agent: "root".into(),
+                    call: op_id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                    detach: false,
+                },
+            ));
+        }
+        self.st.head.active_phase = Some("ready_to_dispatch_tools".into());
+        self.run.commit(self.st, records).await?;
+        let batch = PendingBatch {
+            calls: kernel_calls,
+            prepared_customer,
+        };
+        let (outcome, results) = self
+            .run
+            .loop_dispatch(self.st, batch, self.rounds, &mut self.tool_calls)
+            .await?;
+        if let crate::agentloop::DispatchOutcome::TerminalCommitted { .. } = &outcome {
+            self.terminal = Some(crate::agentloop::LoopTerminal::Finished { result: None });
+            self.terminal_committed = true;
+        }
+        let views = calls
+            .iter()
+            .zip(results)
+            .map(|(call, result)| crate::loopctx::tool_result_view(call, &result))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Ok(al::CtxOpResult::ToolsDispatch { results: views }))
+    }
+
+    fn session_view(&self) -> Result<brain_protocol::agentloop::SessionContextView> {
+        use brain_protocol::agentloop as al;
+        let nonzero = |value: u64, what: &str| {
+            std::num::NonZeroU64::new(value.max(1))
+                .ok_or_else(|| BrainError::Agentloop(format!("{what} limit cannot be zero")))
+        };
+        Ok(al::SessionContextView {
+            limits: al::SessionContextViewLimits {
+                max_parallel_tools: nonzero(
+                    self.run.prefix.limits.max_parallel_tools as u64,
+                    "parallel tools",
+                )?,
+                max_rounds_per_turn: nonzero(self.run.prefix.limits.max_rounds as u64, "rounds")?,
+                // No dedicated per-turn wall exists yet; the 8-hour sandbox wall is the real
+                // outer ceiling every turn lives under.
+                turn_wall_ms: nonzero(8 * 60 * 60 * 1000, "turn wall")?,
+            },
+            metadata: None,
+            model: crate::loopctx::identifier(&self.run.prefix.model)?,
+            session_id: self.run.session_id.parse().map_err(|_| {
+                BrainError::Agentloop("the session id does not satisfy the contract pattern".into())
+            })?,
+        })
+    }
+
+    /// Assemble the `session_start` hydration payload: current kv, the latest committed mark,
+    /// and the typed entry tail between the mark's floor and this turn's admitted message. The
+    /// current turn's own records never appear — they belong to the in-flight activation.
+    async fn assemble_session_start(&mut self) -> Result<serde_json::Value> {
+        use brain_protocol::agentloop as al;
+        let Some(message) = &self.run.message else {
+            return Err(BrainError::Agentloop(
+                "this recovered turn cannot rebuild its session_start activation".into(),
+            ));
+        };
+        let boundary = message.seq;
+        let latest = self
+            .st
+            .latest_mark
+            .filter(|(mark_seq, _)| *mark_seq < boundary);
+        let latest_mark = match latest {
+            None => None,
+            Some((mark_seq, covers)) => {
+                let entries = self
+                    .run
+                    .journal
+                    .read_records_through(&self.run.session_id, mark_seq - 1, mark_seq)
+                    .await?;
+                let data = entries
+                    .iter()
+                    .find(|entry| entry.seq == mark_seq)
+                    .and_then(|entry| match &entry.record {
+                        Record::LoopMark { data, .. } => data.as_object().cloned(),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        BrainError::Agentloop(format!(
+                            "the latest loop mark at seq {mark_seq} is missing or malformed"
+                        ))
+                    })?;
+                Some(al::MarkView {
+                    covers_through_seq: crate::loopctx::seq(covers)?,
+                    data: al::JsonObject(data),
+                    seq: crate::loopctx::seq(mark_seq)?,
+                })
+            }
+        };
+        let floor = latest.map(|(_, covers)| covers).unwrap_or(0);
+        let mark_seq = latest.map(|(mark_seq, _)| mark_seq);
+        let raw = if boundary > floor + 1 {
+            self.run
+                .journal
+                .read_records_through(&self.run.session_id, floor, boundary - 1)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let model = self.run.prefix.model.clone();
+        let mut tail = Vec::new();
+        let mut tail_bytes = 0usize;
+        let mut truncated = false;
+        for entry in &raw {
+            if Some(entry.seq) == mark_seq {
+                continue;
+            }
+            let Some(view) =
+                crate::loopctx::project_entry(entry.seq, entry.ts_ms, &model, &entry.record)?
+            else {
+                continue;
+            };
+            let bytes = serde_json::to_vec(&view)?.len();
+            if tail.len() == LOOP_TAIL_ENTRIES || tail_bytes + bytes > LOOP_TAIL_BYTES {
+                truncated = true;
+                break;
+            }
+            tail_bytes += bytes;
+            tail.push(view);
+        }
+        let request = al::ActivationRequest::SessionStart {
+            activation_id: crate::loopctx::identifier(&crate::mint_id("act", 16))?,
+            kv: al::JsonObject(self.kv_overlay()),
+            latest_mark,
+            resumed: self.st.head.turns > 1,
+            session: self.session_view()?,
+            tail,
+            truncated_tail: truncated.then_some(true),
+        };
+        Ok(serde_json::to_value(request)?)
     }
 }
 
@@ -246,6 +1077,37 @@ impl TurnRun {
     }
 
     async fn commit(&self, st: &mut TurnState, records: Vec<(u64, Record)>) -> Result<()> {
+        // Loop writes coalesce into the next kernel decision: drain the staged records into
+        // this commit (their seqs predate this decision's, so ordering is a merge, and the
+        // sort is a cheap invariant guard). A failed commit drops them with the decision —
+        // the activation's honest loss window.
+        let records = if st.pending_loop.is_empty() {
+            records
+        } else {
+            let mut merged = std::mem::take(&mut st.pending_loop);
+            merged.extend(records);
+            merged.sort_by_key(|(seq, _)| *seq);
+            merged
+        };
+        if let Some(last_loop_seq) = records
+            .iter()
+            .rev()
+            .find(|(_, record)| {
+                matches!(
+                    record,
+                    Record::LoopCustom { .. }
+                        | Record::LoopEvent { .. }
+                        | Record::LoopMark { .. }
+                        | Record::LoopKvSet { .. }
+                )
+            })
+            .map(|(seq, _)| *seq)
+        {
+            let previous = st.head.loop_state.map(|state| state.last_seq).unwrap_or(0);
+            st.head.loop_state = Some(crate::journal::LoopStateDoc {
+                last_seq: last_loop_seq.max(previous),
+            });
+        }
         st.head.updated_ms = crate::wall_ms();
         let high_water = st.seq.load(Ordering::Relaxed).saturating_sub(1);
         st.head.last_seq = high_water;
@@ -264,6 +1126,9 @@ impl TurnRun {
         st.lease = lease;
         st.persisted_head = persisted.clone();
         st.head = persisted;
+        for (seq, record) in &records {
+            apply_loop_record(&mut st.loop_kv, &mut st.latest_mark, *seq, record);
+        }
         self.publish_records(&records);
         Ok(())
     }
@@ -287,8 +1152,7 @@ impl TurnRun {
         if report.terminal_committed {
             return Ok(report);
         }
-        self.complete(st, &report.stop_reason, report.rounds, report.tool_calls)
-            .await
+        self.complete(st, report).await
     }
 
     /// Execute through the final assistant answer without necessarily committing the turn
@@ -305,23 +1169,52 @@ impl TurnRun {
         tool_calls: u64,
     ) -> Result<TurnReport> {
         let agentloop = self.agentloop.clone();
+        st.pending_loop.clear();
         let mut ctx = LoopTurnCtx {
             run: self,
             st,
             rounds,
             tool_calls,
             pending: None,
+            terminal: None,
+            terminal_committed: false,
+            minted_calls: std::collections::HashSet::new(),
         };
         let verdict = agentloop.drive_turn(&mut ctx).await?;
         let LoopTurnCtx {
-            rounds, tool_calls, ..
-        } = ctx;
-        Ok(TurnReport {
-            stop_reason: verdict.stop_reason,
             rounds,
             tool_calls,
-            terminal_committed: verdict.terminal_committed,
-        })
+            terminal,
+            terminal_committed,
+            ..
+        } = ctx;
+        // A terminal the loop declared through the contract ops is authoritative over the
+        // activation's return value; without one, the returned verdict stands (engine mode).
+        match terminal {
+            Some(crate::agentloop::LoopTerminal::Failed { error }) => {
+                Err(BrainError::Agentloop(format!(
+                    "the loop failed the turn: {}: {}",
+                    error.code,
+                    error.message.as_str()
+                )))
+            }
+            Some(crate::agentloop::LoopTerminal::Finished { result }) => Ok(TurnReport {
+                stop_reason: "end_turn".into(),
+                rounds,
+                tool_calls,
+                terminal_committed,
+                result: result.map(loop_turn_result).transpose()?,
+            }),
+            None => Ok(TurnReport {
+                stop_reason: verdict.stop_reason,
+                rounds,
+                tool_calls,
+                // The kernel-side flag wins alongside the verdict: a loop cannot talk the
+                // completion path into journaling a second terminal.
+                terminal_committed: verdict.terminal_committed || terminal_committed,
+                result: None,
+            }),
+        }
     }
 
     /// Compact until the next round fits the sealed context budget.
@@ -439,45 +1332,7 @@ impl TurnRun {
             // one durable write, BEFORE dispatch.
             let calls = mint_tool_calls(&mut message);
             validate_model_tool_call_count(calls.len())?;
-            let mut prepared_customer = HashMap::new();
-            for (operation_id, name, input) in &calls {
-                let Some(tool) = self.prefix.tool(name) else {
-                    continue;
-                };
-                let ToolRoute::Customer { registration } = &tool.route else {
-                    continue;
-                };
-                let prepared = match (&self.customer, &self.customer_client_id) {
-                    (Some(customer), Some(client_id)) => {
-                        let deadline_at_ms = crate::wall_ms().saturating_add(
-                            self.customer_timeout.as_millis().min(u64::MAX as u128) as u64,
-                        );
-                        match customer
-                            .prepare_operation(
-                                &self.tenant_id,
-                                client_id,
-                                &self.session_id,
-                                operation_id,
-                                registration,
-                                name,
-                                &tool.contract_digest,
-                                input.clone(),
-                                deadline_at_ms,
-                            )
-                            .await
-                        {
-                            Ok(intent) => PreparedCustomerDispatch::Intent(intent),
-                            Err(error) => PreparedCustomerDispatch::Failure(
-                                customer_preparation_failure(error),
-                            ),
-                        }
-                    }
-                    _ => PreparedCustomerDispatch::Failure(CallOutcome::failed(
-                        "customer application transport is unavailable",
-                    )),
-                };
-                prepared_customer.insert(operation_id.clone(), prepared);
-            }
+            let prepared_customer = self.prepare_customer_dispatches(&calls).await;
 
             let mut records = Vec::new();
             records.push((
@@ -558,15 +1413,64 @@ impl TurnRun {
         }
     }
 
+    /// Seal customer-app execution routing for every customer-routed call in the batch, before
+    /// anything is journaled. Non-customer calls are absent from the map.
+    async fn prepare_customer_dispatches(
+        &self,
+        calls: &[(String, String, serde_json::Value)],
+    ) -> HashMap<String, PreparedCustomerDispatch> {
+        let mut prepared_customer = HashMap::new();
+        for (operation_id, name, input) in calls {
+            let Some(tool) = self.prefix.tool(name) else {
+                continue;
+            };
+            let ToolRoute::Customer { registration } = &tool.route else {
+                continue;
+            };
+            let prepared = match (&self.customer, &self.customer_client_id) {
+                (Some(customer), Some(client_id)) => {
+                    let deadline_at_ms = crate::wall_ms().saturating_add(
+                        self.customer_timeout.as_millis().min(u64::MAX as u128) as u64,
+                    );
+                    match customer
+                        .prepare_operation(
+                            &self.tenant_id,
+                            client_id,
+                            &self.session_id,
+                            operation_id,
+                            registration,
+                            name,
+                            &tool.contract_digest,
+                            input.clone(),
+                            deadline_at_ms,
+                        )
+                        .await
+                    {
+                        Ok(intent) => PreparedCustomerDispatch::Intent(intent),
+                        Err(error) => {
+                            PreparedCustomerDispatch::Failure(customer_preparation_failure(error))
+                        }
+                    }
+                }
+                _ => PreparedCustomerDispatch::Failure(CallOutcome::failed(
+                    "customer application transport is unavailable",
+                )),
+            };
+            prepared_customer.insert(operation_id.clone(), prepared);
+        }
+        prepared_customer
+    }
+
     /// Dispatch one journaled batch and journal its results — and, for a `return_direct` tool,
-    /// the turn terminal in the same durable decision.
+    /// the turn terminal in the same durable decision. Returns the per-call results in call
+    /// order for the contract's `tools_dispatch` views; the engine path drops them.
     async fn loop_dispatch(
         &self,
         st: &mut TurnState,
         batch: PendingBatch,
         rounds: u64,
         tool_calls: &mut u64,
-    ) -> Result<crate::agentloop::DispatchOutcome> {
+    ) -> Result<(crate::agentloop::DispatchOutcome, Vec<DispatchedResultView>)> {
         let PendingBatch {
             calls,
             prepared_customer,
@@ -581,6 +1485,7 @@ impl TurnRun {
             let outcomes = self.dispatch_batch(st, &calls, &prepared_customer).await?;
             let mut result_records = Vec::new();
             let mut blocks = Vec::with_capacity(calls.len());
+            let mut result_views = Vec::with_capacity(calls.len());
             for (i, dispatched) in outcomes.iter().enumerate() {
                 let o = &dispatched.outcome;
                 // Providers reject an EMPTY tool_result that carries is_error (the Anthropic
@@ -595,6 +1500,10 @@ impl TurnRun {
                     tool_use_id: calls[i].0.clone(),
                     content: content.clone(),
                     is_error: o.is_error,
+                });
+                result_views.push(DispatchedResultView {
+                    is_error: o.is_error,
+                    content: content.clone(),
                 });
                 result_records.push((
                     st.take_seq(),
@@ -839,22 +1748,18 @@ impl TurnRun {
             }
             st.history.push(Message::tool_results(blocks));
 
-            if let Some(stop_reason) = terminal_report {
-                return Ok(crate::agentloop::DispatchOutcome::TerminalCommitted {
+            let outcome = if let Some(stop_reason) = terminal_report {
+                crate::agentloop::DispatchOutcome::TerminalCommitted {
                     stop_reason: stop_reason.into(),
-                });
-            }
-            Ok(crate::agentloop::DispatchOutcome::Continue)
+                }
+            } else {
+                crate::agentloop::DispatchOutcome::Continue
+            };
+            Ok((outcome, result_views))
         }
     }
 
-    async fn complete(
-        &self,
-        st: &mut TurnState,
-        stop_reason: &str,
-        rounds: u64,
-        tool_calls: u64,
-    ) -> Result<TurnReport> {
+    async fn complete(&self, st: &mut TurnState, report: TurnReport) -> Result<TurnReport> {
         let seq = st.take_seq();
         let state_seq = st.take_seq();
         st.head.state = st.head.lifecycle_after_turn();
@@ -871,10 +1776,10 @@ impl TurnRun {
                     seq,
                     Record::TurnCompleted {
                         turn: self.turn_id.clone(),
-                        stop_reason: stop_reason.into(),
-                        rounds,
-                        tool_calls,
-                        result: None,
+                        stop_reason: report.stop_reason.clone(),
+                        rounds: report.rounds,
+                        tool_calls: report.tool_calls,
+                        result: report.result.clone(),
                     },
                 ),
                 (
@@ -888,10 +1793,8 @@ impl TurnRun {
         )
         .await?;
         Ok(TurnReport {
-            stop_reason: stop_reason.into(),
-            rounds,
-            tool_calls,
             terminal_committed: true,
+            ..report
         })
     }
 
@@ -1173,6 +2076,17 @@ impl TurnRun {
             self.context_window_tokens,
             "model",
         )?;
+        self.round_with_request(st, request).await
+    }
+
+    /// One streamed provider round for an already-built request: durable intent, the streamed
+    /// transport, and the unknown-outcome marker on ambiguous loss. Kernel-managed rounds and
+    /// loop-composed `model_stream` rounds share this path exactly.
+    async fn round_with_request(
+        &self,
+        st: &mut TurnState,
+        request: crate::provider::ModelRequest,
+    ) -> Result<RootRound> {
         let request_digest = model_request_digest(&request);
         let (logical_operation_id, replacements_used, superseded_attempt_id) = st
             .head

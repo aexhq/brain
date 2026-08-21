@@ -877,11 +877,9 @@ fn map_err(e: BrainError) -> Failure {
             "the execution runtime is unavailable",
             false,
         ),
-        // Public code stays "internal" until the session contract grows agentloop surface
-        // (create-selector work); the journaled message already names the loop precisely.
         BrainError::Agentloop(_) => (
             S::INTERNAL_SERVER_ERROR,
-            "internal",
+            "agentloop_error",
             "the session's agentloop failed",
             true,
         ),

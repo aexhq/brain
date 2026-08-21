@@ -16,7 +16,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::wire::{self, Frame};
-use crate::{parse_verdict, service_ctx_op};
+use crate::{resolve_verdict, service_ctx_op};
 
 const CONNECTION_LOST: &str = "loop host connection lost";
 
@@ -200,13 +200,14 @@ impl Agentloop for RemoteAgentloop {
         if self.client.closed.load(Ordering::SeqCst) {
             return Err(BrainError::Agentloop(CONNECTION_LOST.into()));
         }
+        let payload = ctx.activation_message()?.to_string();
         let sent = self
             .client
             .out
             .send(Frame::Activate {
                 activation,
                 activation_kind: "message".into(),
-                payload: "{}".into(),
+                payload,
             })
             .await;
         if sent.is_err() {
@@ -238,7 +239,7 @@ impl Agentloop for RemoteAgentloop {
             return Err(error);
         }
         let verdict_json = outcome.map_err(BrainError::Agentloop)?;
-        parse_verdict(&verdict_json)
+        resolve_verdict(&verdict_json, ctx)
     }
 }
 

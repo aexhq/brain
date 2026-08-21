@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 brain = { path = "../brain" }
+brain-protocol = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -22,7 +23,6 @@ wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
 
 [dev-dependencies]
-brain-protocol = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "time"] }

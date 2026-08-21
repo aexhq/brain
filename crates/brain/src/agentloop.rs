@@ -65,9 +65,53 @@ impl LoopVerdict {
     }
 }
 
+/// A terminal the loop declared through the contract's `turn_finish`/`turn_fail` ops. Recorded
+/// on the ctx during the activation; the kernel maps it onto the durable turn terminal after
+/// the loop returns — a loop declares outcomes, the kernel commits them.
+#[derive(Debug, Clone)]
+pub enum LoopTerminal {
+    Finished {
+        result: Option<serde_json::Map<String, serde_json::Value>>,
+    },
+    Failed {
+        error: brain_protocol::agentloop::AgentloopError,
+    },
+}
+
+/// Convenience constructor for a guest-visible op error. The message is clamped to the
+/// contract's 1..=4096 character bound rather than failing over a diagnostic string.
+pub fn op_error(
+    code: brain_protocol::agentloop::AgentloopErrorCode,
+    message: impl Into<String>,
+    retryable: bool,
+) -> brain_protocol::agentloop::AgentloopError {
+    let mut message: String = message.into().chars().take(4096).collect();
+    if message.is_empty() {
+        message = "unspecified agentloop error".into();
+    }
+    brain_protocol::agentloop::AgentloopError {
+        code,
+        message: message.parse().expect("clamped to the contract bound"),
+        retryable,
+        details: serde_json::Map::new(),
+    }
+}
+
+/// A contract ctx-op outcome: `Ok(result)` for success, `Err(error)` for a guest-visible op
+/// failure the loop may handle (invalid input, unsealed tool, provider failure). Kernel faults
+/// never appear here — they travel as the outer `BrainError` and always fail the turn.
+pub type ContractOpOutcome = std::result::Result<
+    brain_protocol::agentloop::CtxOpResult,
+    brain_protocol::agentloop::AgentloopError,
+>;
+
 /// Kernel-side capabilities one turn exposes to its agentloop. Every method journals before its
 /// effect; delivery of one logical step is at-least-once with kernel-side deduplication, so a
 /// loop implementation must treat repeated invocation after recovery as normal.
+///
+/// The `engine.*` methods drive kernel-managed context (the official `aex` policy); the
+/// contract surface (`contract_op` and the activation payloads) is `contracts/agentloop/v1`,
+/// where the loop composes its own context and the kernel executes and journals every effect.
 #[async_trait]
 pub trait TurnCtx: Send {
     /// Compact until the next round fits the sealed context budget.
@@ -82,6 +126,40 @@ pub trait TurnCtx: Send {
     fn max_rounds(&self) -> u64;
     /// True once the turn has been cancelled.
     fn cancelled(&self) -> bool;
+
+    /// Execute one `contracts/agentloop/v1` ctx operation.
+    async fn contract_op(
+        &mut self,
+        op: brain_protocol::agentloop::CtxOp,
+    ) -> Result<ContractOpOutcome> {
+        let _ = op;
+        Ok(Err(op_error(
+            brain_protocol::agentloop::AgentloopErrorCode::Internal,
+            "contract ctx operations are not available on this composition",
+            false,
+        )))
+    }
+
+    /// The `message` activation request for this turn (`contracts/agentloop/v1`
+    /// `ActivationRequest`), serialized. The loop host passes it to the guest verbatim.
+    fn activation_message(&self) -> Result<serde_json::Value> {
+        Err(BrainError::Agentloop(
+            "this composition cannot assemble activation payloads".into(),
+        ))
+    }
+
+    /// The `session_start` activation request: kv map, latest mark and the bounded entry tail
+    /// after it — the kernel's checkpoint-plus-tail hydration shape, pushed as data.
+    async fn session_start_payload(&mut self) -> Result<serde_json::Value> {
+        Err(BrainError::Agentloop(
+            "this composition cannot assemble activation payloads".into(),
+        ))
+    }
+
+    /// A terminal declared through `turn_finish`/`turn_fail` in this activation, if any.
+    fn loop_terminal(&self) -> Option<&LoopTerminal> {
+        None
+    }
 }
 
 /// One agentloop implementation. Exactly one drives a session's turns.

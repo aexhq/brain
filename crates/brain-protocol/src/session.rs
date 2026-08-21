@@ -2325,6 +2325,51 @@ impl<'de> ::serde::Deserialize<'de> for EngineToolExecutorCapability {
 #[doc = "          ]"]
 #[doc = "        }"]
 #[doc = "      }"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"at\","]
+#[doc = "        \"data\","]
+#[doc = "        \"name\","]
+#[doc = "        \"seq\","]
+#[doc = "        \"session_id\","]
+#[doc = "        \"turn_id\","]
+#[doc = "        \"type\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"at\": {"]
+#[doc = "          \"$ref\": \"#/$defs/Timestamp\""]
+#[doc = "        },"]
+#[doc = "        \"data\": {"]
+#[doc = "          \"description\": \"The loop-authored event payload, journaled as a loop `event` entry before it is delivered.\","]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"additionalProperties\": true"]
+#[doc = "        },"]
+#[doc = "        \"name\": {"]
+#[doc = "          \"description\": \"Loop-chosen event name.\","]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"maxLength\": 128,"]
+#[doc = "          \"minLength\": 1,"]
+#[doc = "          \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "        },"]
+#[doc = "        \"seq\": {"]
+#[doc = "          \"type\": \"integer\","]
+#[doc = "          \"minimum\": 1.0"]
+#[doc = "        },"]
+#[doc = "        \"session_id\": {"]
+#[doc = "          \"$ref\": \"#/$defs/SessionId\""]
+#[doc = "        },"]
+#[doc = "        \"turn_id\": {"]
+#[doc = "          \"$ref\": \"#/$defs/TurnId\""]
+#[doc = "        },"]
+#[doc = "        \"type\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"loop.event\""]
+#[doc = "          ]"]
+#[doc = "        }"]
+#[doc = "      }"]
 #[doc = "    }"]
 #[doc = "  ]"]
 #[doc = "}"]
@@ -2508,6 +2553,17 @@ pub enum Event {
         session_id: SessionId,
         turn_id: TurnId,
     },
+    #[serde(rename = "loop.event")]
+    LoopEvent {
+        at: Timestamp,
+        #[doc = "The loop-authored event payload, journaled as a loop `event` entry before it is delivered."]
+        data: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+        #[doc = "Loop-chosen event name."]
+        name: EventName,
+        seq: ::std::num::NonZeroU64,
+        session_id: SessionId,
+        turn_id: TurnId,
+    },
 }
 #[doc = "`EventLogicalOperationId`"]
 #[doc = r""]
@@ -2570,6 +2626,87 @@ impl ::std::convert::TryFrom<::std::string::String> for EventLogicalOperationId 
     }
 }
 impl<'de> ::serde::Deserialize<'de> for EventLogicalOperationId {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "Loop-chosen event name."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"Loop-chosen event name.\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1,"]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct EventName(::std::string::String);
+impl ::std::ops::Deref for EventName {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<EventName> for ::std::string::String {
+    fn from(value: EventName) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for EventName {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for EventName {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for EventName {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for EventName {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for EventName {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,

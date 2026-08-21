@@ -177,11 +177,17 @@ impl WasmLoopEngine {
 /// Service one guest ctx op against the kernel's `TurnCtx`. The first kernel error is latched
 /// into `first_error` (the guest sees an error response too); the caller must fail the turn
 /// with it regardless of the guest's verdict.
+///
+/// Two vocabularies share the channel: `contracts/agentloop/v1` envelopes (an `op` object with
+/// an `op_id`), and the host-internal `engine.*` string ops that drive kernel-managed context.
 pub(crate) async fn service_ctx_op(
     ctx: &mut dyn TurnCtx,
     payload: &str,
     first_error: &mut Option<BrainError>,
 ) -> String {
+    if let Ok(request) = serde_json::from_str::<brain_protocol::agentloop::CtxOpRequest>(payload) {
+        return service_contract_op(ctx, request, first_error).await;
+    }
     let request: serde_json::Value = match serde_json::from_str(payload) {
         Ok(value) => value,
         Err(_) => return error_json("invalid_request", "ctx op payload is not JSON"),
@@ -213,6 +219,9 @@ pub(crate) async fn service_ctx_op(
             "max_rounds": ctx.max_rounds(),
             "cancelled": ctx.cancelled(),
         })),
+        // The session_start hydration payload, fetched lazily: the host (or a loop that wants
+        // it) asks instead of the kernel assembling a tail for every activation.
+        "engine.session_start" => ctx.session_start_payload().await,
         other => {
             return error_json(
                 "invalid_request",
@@ -232,7 +241,69 @@ pub(crate) async fn service_ctx_op(
     }
 }
 
-/// Parse the guest's verdict JSON into the seam's [`LoopVerdict`].
+/// Serve one `contracts/agentloop/v1` envelope: guest-visible op errors return in the
+/// response; a kernel fault is latched (it will fail the turn) and reported as `internal`.
+async fn service_contract_op(
+    ctx: &mut dyn TurnCtx,
+    request: brain_protocol::agentloop::CtxOpRequest,
+    first_error: &mut Option<BrainError>,
+) -> String {
+    use brain_protocol::agentloop::{AgentloopErrorCode, CtxOpResponse};
+    let op_id = request.op_id;
+    let response = match ctx.contract_op(request.op).await {
+        Ok(Ok(result)) => CtxOpResponse::Variant0 { op_id, result },
+        Ok(Err(error)) => CtxOpResponse::Variant1 { error, op_id },
+        Err(kernel) => {
+            let message = kernel.to_string();
+            if first_error.is_none() {
+                *first_error = Some(kernel);
+            }
+            CtxOpResponse::Variant1 {
+                error: brain::agentloop::op_error(AgentloopErrorCode::Internal, message, false),
+                op_id,
+            }
+        }
+    };
+    serde_json::to_string(&response)
+        .unwrap_or_else(|_| error_json("internal", "a ctx op response failed to serialize"))
+}
+
+/// Resolve what the guest's activation returned into the seam's [`LoopVerdict`].
+///
+/// A contract loop ends its activation with an `ActivationResult` — the turn outcome itself
+/// travels through `turn_finish`/`turn_fail`, which the kernel consulted directly; a completed
+/// activation without a terminal op is a loop defect and interrupts the turn. The legacy
+/// `{stop_reason}` verdict remains for engine-vocabulary loops.
+pub(crate) fn resolve_verdict(
+    returned: &str,
+    ctx: &dyn TurnCtx,
+) -> Result<LoopVerdict, BrainError> {
+    use brain_protocol::agentloop::{ActivationResult, ActivationResultOutcome};
+    if let Ok(result) = serde_json::from_str::<ActivationResult>(returned) {
+        return match result.outcome {
+            ActivationResultOutcome::Completed if ctx.loop_terminal().is_some() => {
+                // Placeholder only: the kernel maps the declared terminal onto the turn.
+                Ok(LoopVerdict {
+                    stop_reason: "end_turn".into(),
+                    terminal_committed: false,
+                })
+            }
+            ActivationResultOutcome::Completed => Err(BrainError::Agentloop(
+                "the message activation completed without turn_finish or turn_fail".into(),
+            )),
+            outcome => Err(BrainError::Agentloop(format!(
+                "the activation ended {outcome}: {}",
+                result
+                    .error
+                    .map(|error| String::from(error.message))
+                    .unwrap_or_else(|| "no error detail".into())
+            ))),
+        };
+    }
+    parse_verdict(returned)
+}
+
+/// Parse the guest's legacy verdict JSON into the seam's [`LoopVerdict`].
 pub(crate) fn parse_verdict(verdict_json: &str) -> Result<LoopVerdict, BrainError> {
     let verdict: serde_json::Value = serde_json::from_str(verdict_json).map_err(|error| {
         BrainError::Agentloop(format!("guest returned a non-JSON verdict: {error}"))
@@ -264,7 +335,8 @@ impl WasmAgentloop {
 #[async_trait]
 impl Agentloop for WasmAgentloop {
     async fn drive_turn(&self, ctx: &mut dyn TurnCtx) -> Result<LoopVerdict, BrainError> {
-        let (mut rx, mut activation) = self.engine.start_activation("message", "{}");
+        let payload = ctx.activation_message()?.to_string();
+        let (mut rx, mut activation) = self.engine.start_activation("message", &payload);
         let mut first_error: Option<BrainError> = None;
         let outcome = loop {
             tokio::select! {
@@ -281,7 +353,7 @@ impl Agentloop for WasmAgentloop {
             return Err(error);
         }
         let verdict_json = outcome.map_err(BrainError::Agentloop)?;
-        parse_verdict(&verdict_json)
+        resolve_verdict(&verdict_json, ctx)
     }
 }
 

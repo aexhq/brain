@@ -235,6 +235,38 @@ impl SealedPrefix {
     pub fn tool(&self, name: &str) -> Option<&ToolDecl> {
         self.tools.iter().find(|t| t.name == name)
     }
+    /// A per-call view of this sealed prefix for a loop-composed `model_stream` request.
+    ///
+    /// Presentation (system text, which sealed tools are shown and how, output/temperature
+    /// sampling) is loop policy; authority is not — the provider, model, dialect and every
+    /// executable tool binding stay exactly as sealed. The provider base-segment cache is
+    /// cleared because it renders the sealed presentation, not this call's.
+    pub(crate) fn loop_call_view(
+        &self,
+        system_prompt: Option<String>,
+        tools: Option<Vec<ToolDecl>>,
+        max_tokens: Option<u32>,
+        temperature: Option<f32>,
+    ) -> SealedPrefix {
+        let mut sampling = self.sampling.clone();
+        if let Some(max_tokens) = max_tokens {
+            sampling.max_tokens = max_tokens;
+        }
+        if let Some(temperature) = temperature {
+            sampling.temperature = Some(temperature);
+        }
+        SealedPrefix {
+            digest: self.digest.clone(),
+            system_prompt: system_prompt.unwrap_or_else(|| self.system_prompt.clone()),
+            tools: tools.unwrap_or_else(|| self.tools.clone()),
+            model: self.model.clone(),
+            dialect: self.dialect,
+            sampling,
+            limits: self.limits,
+            rendered_base: None,
+            prompt_cache_key: None,
+        }
+    }
     pub fn rendered_base(&self) -> Option<&serde_json::Value> {
         self.rendered_base.as_ref()
     }
