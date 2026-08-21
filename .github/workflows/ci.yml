@@ -32,6 +32,18 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  benchmark-leakage:
+    # This release gate is deliberately independent from fmt/clippy/tests: release-mode density
+    # and leakage compilation has little reusable output in common with the debug quality gate,
+    # and serializing it there needlessly extends the whole PR critical path.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@v2
       # Benchmark gates. Thresholds are backstops for a shared 2-vCPU runner (catch
       # order-of-magnitude regressions like the Nagle 40ms/write stall); the published
       # numbers come from the ARM target run recorded in BENCHMARKS.md.
