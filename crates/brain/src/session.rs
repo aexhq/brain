@@ -44,6 +44,7 @@ pub const PROVIDER_IDLE_TIMEOUT_ENV: &str = "BRAIN_PROVIDER_IDLE_TIMEOUT_MS";
 pub const PROVIDER_TOTAL_TIMEOUT_ENV: &str = "BRAIN_PROVIDER_TOTAL_TIMEOUT_MS";
 pub const EXTERNAL_TOOL_TIMEOUT_ENV: &str = "BRAIN_EXTERNAL_TOOL_TIMEOUT_MS";
 pub const MAX_MODEL_ROUNDS_ENV: &str = "BRAIN_MAX_MODEL_ROUNDS";
+pub const DEFAULT_MAX_ROUNDS_PER_TURN_ENV: &str = "BRAIN_DEFAULT_MAX_ROUNDS_PER_TURN";
 pub const MAX_TURNS_ENV: &str = "BRAIN_MAX_TURNS";
 pub const MAX_CONCURRENT_CREATES_ENV: &str = "BRAIN_MAX_CONCURRENT_CREATES";
 pub const MAX_EVENT_FOLLOWERS_ENV: &str = "BRAIN_MAX_EVENT_FOLLOWERS";
@@ -133,6 +134,9 @@ pub struct BrainConfig {
     pub provider_header_timeout: Duration,
     pub provider_idle_timeout: Duration,
     pub provider_total_timeout: Duration,
+    /// Sealed per-turn model-round ceiling for new sessions. Kernel runaway authorization, not
+    /// working policy: the graceful closing round wraps the turn up in text at the cap.
+    pub default_max_rounds: u32,
     /// Whether user-controlled provider base URLs may reach loopback/private/link-local addresses.
     /// Production keeps this false; explicit local development may opt into private endpoints.
     pub outbound_allow_private: bool,
@@ -189,6 +193,7 @@ impl Default for BrainConfig {
             provider_header_timeout: Duration::from_millis(DEFAULT_PROVIDER_HEADER_TIMEOUT_MS),
             provider_idle_timeout: Duration::from_millis(DEFAULT_PROVIDER_IDLE_TIMEOUT_MS),
             provider_total_timeout: Duration::from_millis(DEFAULT_PROVIDER_TOTAL_TIMEOUT_MS),
+            default_max_rounds: crate::config::Limits::default().max_rounds,
             outbound_allow_private: false,
             storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
             storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
@@ -301,6 +306,14 @@ impl BrainConfig {
             MIN_EXTERNAL_TOOL_TIMEOUT_MS,
             MAX_EXTERNAL_TOOL_TIMEOUT_MS,
         )?);
+        cfg.default_max_rounds = u32::try_from(parse_env_u64(
+            DEFAULT_MAX_ROUNDS_PER_TURN_ENV,
+            read(DEFAULT_MAX_ROUNDS_PER_TURN_ENV)?.as_deref(),
+            crate::config::Limits::default().max_rounds as u64,
+            1,
+            100_000,
+        )?)
+        .expect("bounded above by 100000");
         cfg.outbound_allow_private = parse_env_bool(
             OUTBOUND_ALLOW_PRIVATE_ENV,
             read(OUTBOUND_ALLOW_PRIVATE_ENV)?.as_deref(),
@@ -1985,7 +1998,7 @@ impl Brain {
                 .map(|(key, value)| (key.as_str().to_owned(), value.as_str().to_owned()))
                 .collect(),
         };
-        let (render_prefix, _) = build_prefix(&prefix)?;
+        let (render_prefix, _) = build_prefix(&prefix, self.cfg.default_max_rounds)?;
         prefix.rendered_base = crate::provider::render_base(&render_prefix);
         prefix.rendered_base_digest =
             hex::encode(Sha256::digest(serde_jcs::to_vec(&prefix.rendered_base)?));
@@ -8426,7 +8439,7 @@ fn turn_run(
     cancel: CancellationToken,
     message: Option<crate::turn::AdmittedMessage>,
 ) -> Result<TurnRun> {
-    let (prefix, dialect) = build_prefix(&r.st.head.prefix)?;
+    let (prefix, dialect) = build_prefix(&r.st.head.prefix, brain.cfg.default_max_rounds)?;
     let base_url = r.st.head.prefix.base_url.clone().unwrap_or_default();
     let session = SessionConfig::new(prefix.clone(), r.key.clone(), base_url);
     Ok(TurnRun {
@@ -10384,6 +10397,7 @@ fn output_token_parameter(provider: &str) -> OutputTokenParameter {
 /// seals to the same digest.
 pub fn build_prefix(
     p: &PrefixDoc,
+    max_rounds: u32,
 ) -> Result<(crate::Shared<crate::config::SealedPrefix>, Dialect)> {
     let dialect = dialect_of(&p.provider);
     if dialect == Dialect::AnthropicMessages && p.reasoning_effort.is_some() {
@@ -10426,6 +10440,10 @@ pub fn build_prefix(
         temperature: p.temperature.map(|t| t as f32),
         reasoning_effort: p.reasoning_effort.clone(),
         stop_sequences: Vec::new(),
+    });
+    def = def.limits(crate::config::Limits {
+        max_rounds,
+        ..crate::config::Limits::default()
     });
     let rendered_base = if p.rendered_base.is_null() {
         None
@@ -13013,8 +13031,8 @@ mod tests {
             hand_env_keys: vec![],
             metadata: HashMap::new(),
         };
-        let (a, da) = build_prefix(&p).unwrap();
-        let (b, db) = build_prefix(&p).unwrap();
+        let (a, da) = build_prefix(&p, 512).unwrap();
+        let (b, db) = build_prefix(&p, 512).unwrap();
         assert_eq!(a.digest(), b.digest());
         assert_eq!(da, db);
         assert_eq!(a.tools.len(), 2);
@@ -13023,7 +13041,7 @@ mod tests {
         openai.provider = "openai".into();
         openai.model = "gpt-5.4".into();
         openai.reasoning_effort = Some("high".into());
-        let (openai, _) = build_prefix(&openai).unwrap();
+        let (openai, _) = build_prefix(&openai, 512).unwrap();
         let rendered = crate::provider::openai::OpenAiChat::render_base(&openai);
         assert_eq!(rendered["max_completion_tokens"], 2_048);
         assert_eq!(rendered["reasoning_effort"], "high");
@@ -13031,7 +13049,7 @@ mod tests {
 
         let mut unsupported = p;
         unsupported.reasoning_effort = Some("high".into());
-        let error = build_prefix(&unsupported).unwrap_err();
+        let error = build_prefix(&unsupported, 512).unwrap_err();
         assert!(matches!(error, BrainError::Invalid(_)));
         assert!(error.to_string().contains("reasoning_effort"));
     }
@@ -14180,7 +14198,7 @@ mod tests {
             role: crate::message::Role::User,
             content: content.clone(),
         }];
-        let (prefix, _) = build_prefix(&head.doc.prefix).expect("rebuild sealed prefix");
+        let (prefix, _) = build_prefix(&head.doc.prefix, 512).expect("rebuild sealed prefix");
         let request = fake
             .build_request(
                 &prefix,
@@ -14416,7 +14434,8 @@ mod tests {
             )
             .await
             .unwrap();
-        for _ in 0..500 {
+        // Generous budget: live-retry cases sleep through jittered backoff before finishing.
+        for _ in 0..2_500 {
             let head = journal.get_head(&session_id).await.unwrap();
             if head.doc.turn.is_none() && head.last_seq > admitted_seq {
                 break;
@@ -14518,6 +14537,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clean_provider_failures_retry_in_place_without_replacement_budget() {
+        // Replacement budget ZERO: live retry is a separate mechanism from the durable
+        // digest-identical replacement path and must not consume it.
+        let (journal, fake, session_id, data_dir) = run_live_provider_case(
+            0,
+            vec![
+                Scripted::ProviderStatus {
+                    status: 500,
+                    body: "transient upstream failure".into(),
+                    retry_after_ms: None,
+                },
+                Scripted::ProviderStatus {
+                    status: 429,
+                    body: "rate limited".into(),
+                    retry_after_ms: Some(100),
+                },
+                Scripted::Text("recovered in place".into()),
+            ],
+        )
+        .await;
+        assert_eq!(fake.call_count.load(Ordering::Relaxed), 3);
+        let records = journal.read_records(&session_id, 0).await.unwrap();
+        assert!(records.iter().any(|entry| matches!(
+            &entry.record,
+            Record::TurnCompleted { stop_reason, .. } if stop_reason == "end_turn"
+        )));
+        assert!(
+            !records
+                .iter()
+                .any(|entry| matches!(entry.record, Record::ModelCallUnknown { .. })),
+            "a complete HTTP error response is definitive, never an unknown outcome"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|entry| matches!(entry.record, Record::ModelCallIntent { .. }))
+                .count(),
+            1,
+            "in-place retries reuse the committed intent"
+        );
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn persistent_clean_failures_exhaust_live_retries_and_fail_honestly() {
+        let script = (0..4)
+            .map(|_| Scripted::ProviderStatus {
+                status: 503,
+                body: "unavailable".into(),
+                retry_after_ms: Some(50),
+            })
+            .collect();
+        let (journal, fake, session_id, data_dir) = run_live_provider_case(1, script).await;
+        assert_eq!(
+            fake.call_count.load(Ordering::Relaxed),
+            4,
+            "one attempt plus exactly three live retries"
+        );
+        let records = journal.read_records(&session_id, 0).await.unwrap();
+        assert!(records.iter().any(|entry| matches!(
+            &entry.record,
+            Record::TurnFailed { code, .. } if code == "provider_error"
+        )));
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn quota_exhaustion_fails_fast_despite_the_429_status() {
+        let (journal, fake, session_id, data_dir) = run_live_provider_case(
+            1,
+            vec![Scripted::ProviderStatus {
+                status: 429,
+                body: r#"{"error":{"code":"insufficient_quota"}}"#.into(),
+                retry_after_ms: Some(50),
+            }],
+        )
+        .await;
+        assert_eq!(fake.call_count.load(Ordering::Relaxed), 1);
+        let records = journal.read_records(&session_id, 0).await.unwrap();
+        assert!(records.iter().any(|entry| matches!(
+            &entry.record,
+            Record::TurnFailed { code, .. } if code == "provider_error"
+        )));
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
     async fn deterministic_provider_4xx_is_not_unknown_or_retried() {
         let (journal, fake, session_id, data_dir) = run_live_provider_case(
             2,
@@ -14525,6 +14631,7 @@ mod tests {
                 Scripted::ProviderStatus {
                     status: 400,
                     body: "invalid model request".into(),
+                    retry_after_ms: None,
                 },
                 Scripted::Text("must not run".into()),
             ],

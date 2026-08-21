@@ -163,7 +163,12 @@ pub enum BrainError {
     Agentloop(String),
 
     #[error("provider error {status}: {body}")]
-    ProviderStatus { status: u16, body: String },
+    ProviderStatus {
+        status: u16,
+        body: String,
+        /// Provider-requested pause before a retry, parsed from `Retry-After` when present.
+        retry_after_ms: Option<u64>,
+    },
 
     #[error("hand unavailable: {0}")]
     HandUnavailable(String),

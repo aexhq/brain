@@ -447,6 +447,7 @@ mod tests {
         let overload = provider_op_error(BrainError::ProviderStatus {
             status: 529,
             body: "overloaded".into(),
+            retry_after_ms: None,
         })
         .expect("guest visible");
         assert_eq!(overload.code, al::AgentloopErrorCode::ProviderError);
@@ -454,6 +455,7 @@ mod tests {
         let auth = provider_op_error(BrainError::ProviderStatus {
             status: 401,
             body: "bad key".into(),
+            retry_after_ms: None,
         })
         .expect("guest visible");
         assert!(!auth.retryable);

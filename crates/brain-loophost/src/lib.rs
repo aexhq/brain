@@ -214,6 +214,17 @@ pub(crate) async fn service_ctx_op(
                 serde_json::json!({ "outcome": "terminal", "stop_reason": stop_reason })
             }
         }),
+        // The graceful at-cap round: tool_choice none, so the model closes the turn in text.
+        "engine.closing_round" => ctx.closing_round().await.map(|outcome| match outcome {
+            RoundOutcome::Cancelled => serde_json::json!({ "outcome": "cancelled" }),
+            RoundOutcome::Interrupted => serde_json::json!({ "outcome": "interrupted" }),
+            RoundOutcome::Final { refusal } => {
+                serde_json::json!({ "outcome": "final", "refusal": refusal })
+            }
+            RoundOutcome::ToolCalls { count } => {
+                serde_json::json!({ "outcome": "tool_calls", "count": count })
+            }
+        }),
         "engine.budget" => Ok(serde_json::json!({
             "rounds": ctx.rounds(),
             "max_rounds": ctx.max_rounds(),
