@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-standalone", "crates/brain-server"]
+members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-loophost", "crates/brain-standalone", "crates/brain-server"]
 resolver = "2"
 
 [workspace.package]
@@ -40,6 +40,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_jcs = "0.2"
 sha2 = "0.10"
+wasmtime = { version = "48", default-features = false, features = ["component-model", "async", "cranelift", "parallel-compilation", "runtime", "cache", "std"] }
+wasmtime-wasi = "48"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "signal"] }
 tokio-util = "0.7"

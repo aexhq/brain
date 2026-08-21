@@ -1,0 +1,14 @@
+{
+  "name": "@aexhq/loop-aex-guest",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The official aex agentloop as a wasm guest (engine-op composition v0).",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@bytecodealliance/componentize-js": "0.22.0",
+    "esbuild": "0.28.2"
+  }
+}

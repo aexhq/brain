@@ -59,6 +59,7 @@ async fn run() -> anyhow::Result<()> {
                     customer_delivery: None,
                     customer_transport: Some(customer_transport),
                     compactor: None,
+                    agentloop: None,
                 },
                 None,
             );
