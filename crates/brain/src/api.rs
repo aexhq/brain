@@ -667,11 +667,61 @@ fn customer_grant_subprotocol(headers: &HeaderMap) -> Result<String, Failure> {
 }
 
 pub async fn serve(state: AppState, addr: std::net::SocketAddr) -> anyhow::Result<()> {
+    let brain = state.brain.clone();
     let app = router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "brain listening");
-    axum::serve(nodelay(listener), app).await?;
+    // Drain-before-stop: on SIGTERM/ctrl-c the Brain refuses new work while admitted turns run
+    // to completion, and the HTTP server keeps serving so event followers stream those turns to
+    // their durable terminals. Selecting (not axum graceful shutdown) is deliberate: open SSE
+    // connections would otherwise hold shutdown forever; dropping the server resets them and
+    // reconnecting followers replay durable records from the replacement instance.
+    let serving = axum::serve(nodelay(listener), app);
+    tokio::select! {
+        result = serving => result?,
+        () = drain_on_shutdown(brain) => {}
+    }
     Ok(())
+}
+
+/// Wait for a shutdown signal, then drain: refuse new work and hold the process open until
+/// every admitted turn finished or the drain timeout passed.
+async fn drain_on_shutdown(brain: Arc<crate::session::Brain>) {
+    shutdown_signal().await;
+    brain.begin_drain();
+    let deadline = std::time::Instant::now() + brain.cfg.drain_timeout;
+    loop {
+        let active = brain.active_turns();
+        if active == 0 {
+            tracing::info!("drain complete; shutting down");
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!(
+                active_turns = active,
+                "drain timeout reached; shutting down with turns still active"
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler installs");
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = ctrl_c.await;
+    }
 }
 
 /// TCP_NODELAY on every accepted connection. Load-bearing for the event stream: SSE frames are
@@ -856,6 +906,12 @@ fn map_err(e: BrainError) -> Failure {
             S::TOO_MANY_REQUESTS,
             "rate_limited",
             "Brain is at capacity; retry with backoff",
+            false,
+        ),
+        BrainError::Draining => (
+            S::SERVICE_UNAVAILABLE,
+            "draining",
+            "this instance is draining for shutdown; retry against a replacement",
             false,
         ),
         BrainError::UndeclaredTool { .. } => (

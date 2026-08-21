@@ -141,6 +141,9 @@ pub enum BrainError {
     #[error("the brain is at capacity; retry with backoff")]
     Overloaded,
 
+    #[error("this brain instance is draining for shutdown; retry against a replacement")]
+    Draining,
+
     #[error("tool {name} is not declared in this session's sealed prefix")]
     UndeclaredTool { name: String },
 
