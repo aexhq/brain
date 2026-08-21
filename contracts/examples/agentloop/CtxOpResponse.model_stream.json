@@ -1,0 +1,29 @@
+{
+  "op_id": "op-m-0007",
+  "result": {
+    "op": "model_stream",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Updating the docs now."
+        },
+        {
+          "type": "tool_call",
+          "tool_call_id": "op-0002",
+          "name": "bash",
+          "input": {
+            "command": "sed -i s/flaky/stable/ README.md"
+          }
+        }
+      ],
+      "stop_reason": "tool_use",
+      "model": "claude-sonnet-5",
+      "usage": {
+        "input_tokens": 1204,
+        "output_tokens": 96,
+        "total_tokens": 1300
+      }
+    }
+  }
+}

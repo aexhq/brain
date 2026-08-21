@@ -1,8 +1,11 @@
 //! Brain-owned public protocols.
 //!
-//! JSON Schemas under `contracts/` are authoritative. [`hand`] and [`session`] are generated from
-//! them; [`contract`] contains the exact digest and operation hashing shared by Brain and Hands.
+//! JSON Schemas under `contracts/` are authoritative. [`hand`], [`session`] and [`agentloop`] are
+//! generated from them; [`contract`] contains the exact digests and operation hashing shared by
+//! Brain, Hands and loop hosts.
 
+#[allow(clippy::all, clippy::pedantic)]
+pub mod agentloop;
 pub mod contract;
 #[allow(clippy::all, clippy::pedantic)]
 pub mod hand;
@@ -94,3 +97,16 @@ pub const MAX_EXTERNAL_TOOL_RESPONSE_BYTES: usize = 768 * 1024;
 /// Maximum UTF-8 bytes in one idempotent stdin append. This matches the canonical minimum
 /// `PIPE_BUF`, allowing a Hand to perform one bounded write without partial-effect ambiguity.
 pub const MAX_WRITE_STDIN_BYTES: usize = 4 * 1024;
+
+/// Agentloop bounds the schema cannot express in bytes; enforced at the execution boundary.
+/// A loop-authored `custom`/`event` entry's RFC 8785 data stays inside the journal result budget.
+pub const MAX_LOOP_ENTRY_DATA_BYTES: usize = 96 * 1024;
+/// A `mark` carries the loop's compacted context and is chunked internally beyond record size.
+pub const MAX_LOOP_MARK_DATA_BYTES: usize = 2 * 1024 * 1024;
+/// Keyed loop state: per-session key count and per-value RFC 8785 bytes.
+pub const MAX_LOOP_KV_KEYS: usize = 64;
+pub const MAX_LOOP_KV_VALUE_BYTES: usize = 8 * 1024;
+/// Maximum encoded bytes in one complete activation request (session_start carries the tail).
+pub const MAX_ACTIVATION_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum encoded bytes in one ctx operation request or response.
+pub const MAX_CTX_OP_BYTES: usize = 768 * 1024;

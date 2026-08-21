@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use brain_protocol::{contract, hand, session};
+use brain_protocol::{agentloop, contract, hand, session};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -31,12 +31,14 @@ fn examples(dir: &str) -> Vec<(String, String, Value)> {
 
 fn schema_for(schema_json: &str, type_name: &str) -> jsonschema::Validator {
     let mut schema: Value = serde_json::from_str(schema_json).unwrap();
-    // Point the root at the named definition; $defs stay resolvable through the root.
-    schema
-        .as_object_mut()
-        .unwrap()
-        .insert("$ref".into(), Value::String(format!("#/$defs/{type_name}")));
-    schema.as_object_mut().unwrap().remove("$id");
+    // Point the root at the named definition; $defs stay resolvable through the root. Root-level
+    // constraints (e.g. a contract-identity const block) describe the whole contract document,
+    // not the referenced type, and in 2020-12 they would apply beside `$ref` — strip them.
+    let root = schema.as_object_mut().unwrap();
+    for key in ["$id", "type", "properties", "required", "additionalProperties"] {
+        root.remove(key);
+    }
+    root.insert("$ref".into(), Value::String(format!("#/$defs/{type_name}")));
     jsonschema::draft202012::new(&schema)
         .unwrap_or_else(|e| panic!("schema is not valid 2020-12 for {type_name}: {e}"))
 }
@@ -176,6 +178,99 @@ fn session_examples_validate_and_round_trip() {
             other => panic!("{name}: no round-trip mapping for session type {other}; add one"),
         }
     }
+}
+
+#[test]
+fn agentloop_examples_validate_and_round_trip() {
+    for (name, type_name, value) in examples("agentloop") {
+        validate(
+            contract::AGENTLOOP_CONTRACT_SCHEMA_JSON,
+            &name,
+            &type_name,
+            &value,
+        );
+        match type_name.as_str() {
+            "AgentloopSelector" => round_trip::<agentloop::AgentloopSelector>(&name, &value),
+            "ActivationRequest" => round_trip::<agentloop::ActivationRequest>(&name, &value),
+            "ActivationResult" => round_trip::<agentloop::ActivationResult>(&name, &value),
+            "CtxOpRequest" => round_trip::<agentloop::CtxOpRequest>(&name, &value),
+            "CtxOpResponse" => round_trip::<agentloop::CtxOpResponse>(&name, &value),
+            other => panic!("{name}: no round-trip mapping for agentloop type {other}; add one"),
+        }
+    }
+}
+
+#[test]
+fn every_ctx_op_has_request_and_result_examples() {
+    let schema: Value = serde_json::from_str(contract::AGENTLOOP_CONTRACT_SCHEMA_JSON).unwrap();
+    let ops: Vec<&str> = schema["properties"]["contract"]["properties"]["ops"]["const"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let ex = examples("agentloop");
+    for op in ops {
+        assert!(
+            ex.iter()
+                .any(|(_, ty, v)| ty == "CtxOpRequest" && v["op"]["op"] == op),
+            "missing CtxOpRequest example for {op}"
+        );
+        assert!(
+            ex.iter()
+                .any(|(_, ty, v)| ty == "CtxOpResponse" && v["result"]["op"] == op),
+            "missing CtxOpResponse result example for {op}"
+        );
+    }
+}
+
+#[test]
+fn contract_digest_files_stay_pinned_to_the_schemas() {
+    assert_eq!(
+        format!("{}", *contract::hand_contract_digest()),
+        contract::HAND_CONTRACT_DIGEST.trim(),
+        "hand contract.digest drifted; run tools/generate-protocol.py hand"
+    );
+    assert_eq!(
+        format!("{}", *contract::agentloop_contract_digest()),
+        contract::AGENTLOOP_CONTRACT_DIGEST.trim(),
+        "agentloop contract.digest drifted; run tools/generate-protocol.py agentloop"
+    );
+}
+
+#[test]
+fn ctx_op_request_digest_covers_effect_fields_and_excludes_op_id() {
+    let base: agentloop::CtxOpRequest = serde_json::from_value(serde_json::json!({
+        "op_id": "op-k-0001",
+        "activation_id": "act-0001",
+        "op": { "op": "kv_get", "keys": ["a"] }
+    }))
+    .unwrap();
+    let first = contract::ctx_op_request_digest(&base);
+
+    let renamed: agentloop::CtxOpRequest = serde_json::from_value(serde_json::json!({
+        "op_id": "op-k-0002",
+        "activation_id": "act-0001",
+        "op": { "op": "kv_get", "keys": ["a"] }
+    }))
+    .unwrap();
+    assert_eq!(
+        first,
+        contract::ctx_op_request_digest(&renamed),
+        "op_id must not participate in the request digest"
+    );
+
+    let different: agentloop::CtxOpRequest = serde_json::from_value(serde_json::json!({
+        "op_id": "op-k-0001",
+        "activation_id": "act-0001",
+        "op": { "op": "kv_get", "keys": ["b"] }
+    }))
+    .unwrap();
+    assert_ne!(
+        first,
+        contract::ctx_op_request_digest(&different),
+        "op payload must participate in the request digest"
+    );
 }
 
 #[test]

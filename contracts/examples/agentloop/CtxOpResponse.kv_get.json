@@ -1,0 +1,10 @@
+{
+  "op_id": "op-k-0010",
+  "result": {
+    "op": "kv_get",
+    "entries": {
+      "plan_mode": false,
+      "round_count": 42
+    }
+  }
+}

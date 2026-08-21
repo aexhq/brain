@@ -1,0 +1,19 @@
+{
+  "op_id": "op-t-0008",
+  "result": {
+    "op": "tools_dispatch",
+    "results": [
+      {
+        "tool_call_id": "op-0002",
+        "name": "bash",
+        "is_error": false,
+        "content": [
+          {
+            "type": "text",
+            "text": ""
+          }
+        ]
+      }
+    ]
+  }
+}

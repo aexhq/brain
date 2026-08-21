@@ -1,0 +1,11 @@
+{
+  "op_id": "op-k-0010",
+  "activation_id": "act-0002",
+  "op": {
+    "op": "kv_get",
+    "keys": [
+      "plan_mode",
+      "round_count"
+    ]
+  }
+}

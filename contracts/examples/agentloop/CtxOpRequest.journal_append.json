@@ -1,0 +1,31 @@
+{
+  "op_id": "op-j-0009",
+  "activation_id": "act-0002",
+  "op": {
+    "op": "journal_append",
+    "entries": [
+      {
+        "kind": "custom",
+        "data": {
+          "memo": "docs updated in this turn"
+        }
+      },
+      {
+        "kind": "event",
+        "name": "plan.updated",
+        "data": {
+          "steps_done": 3,
+          "steps_total": 3
+        }
+      },
+      {
+        "kind": "mark",
+        "covers_through_seq": 126,
+        "data": {
+          "summary": "Fixed flaky test, updated docs.",
+          "retained_from_seq": 124
+        }
+      }
+    ]
+  }
+}
