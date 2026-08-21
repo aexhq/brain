@@ -3,12 +3,14 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "The official aex agentloop as a wasm guest (engine-op composition v0).",
+  "description": "Official agentloop guests (aex engine-op v0, pi wrapping pinned pi-agent-core) plus the loop toolchain.",
   "scripts": {
     "build": "node build.mjs"
   },
   "devDependencies": {
     "@bytecodealliance/componentize-js": "0.22.0",
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2"
   }
 }

@@ -18,10 +18,19 @@ use crate::WasmAgentloop;
 /// A different toolchain string is a different sealed identity and is refused, never guessed.
 pub const LOOP_TOOLCHAIN: &str = "starlingmonkey-componentize-js-0.22.0";
 
+/// The version of pi-agent-core the official `pi` loop wraps and pins.
+pub const PI_LOOP_VERSION: &str = "0.84.2";
+
+struct OfficialSpec {
+    version: String,
+    component: PathBuf,
+}
+
 /// Selector→loop resolution over a content-addressed loop store. Officials resolve to the
 /// composition's prebuilt components; customs componentize at admission and load lazily.
 pub struct LoophostRegistry {
     aex: Arc<dyn Agentloop>,
+    officials: HashMap<String, OfficialSpec>,
     store_dir: PathBuf,
     /// The directory holding `componentize-one.mjs` with the pinned componentizer installed.
     toolchain_dir: PathBuf,
@@ -39,10 +48,49 @@ impl LoophostRegistry {
         std::fs::create_dir_all(store_dir.join("component"))?;
         Ok(Self {
             aex,
+            officials: HashMap::new(),
             store_dir,
             toolchain_dir: toolchain_dir.into(),
             engines: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Register a prebuilt official loop, selected `name@version` and loaded lazily.
+    pub fn with_official(
+        mut self,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        component: impl Into<PathBuf>,
+    ) -> Self {
+        self.officials.insert(
+            name.into(),
+            OfficialSpec {
+                version: version.into(),
+                component: component.into(),
+            },
+        );
+        self
+    }
+
+    fn load_component(
+        &self,
+        cache_key: &str,
+        component: &Path,
+        what: &str,
+    ) -> Result<Arc<WasmAgentloop>, BrainError> {
+        if let Some(engine) = self.engines.lock().expect("loop engines").get(cache_key) {
+            return Ok(engine.clone());
+        }
+        let engine = Arc::new(
+            WasmAgentloop::from_component_file(component).map_err(|error| {
+                BrainError::Agentloop(format!("{what} failed to load: {error}"))
+            })?,
+        );
+        self.engines
+            .lock()
+            .expect("loop engines")
+            .insert(cache_key.to_string(), engine.clone());
+        Ok(engine)
     }
 
     fn source_path(&self, digest: &str) -> PathBuf {
@@ -98,9 +146,6 @@ impl LoophostRegistry {
     }
 
     fn custom_loop(&self, digest: &str) -> Result<Arc<WasmAgentloop>, BrainError> {
-        if let Some(engine) = self.engines.lock().expect("loop engines").get(digest) {
-            return Ok(engine.clone());
-        }
         let component = self.component_path(digest);
         if !component.exists() {
             return Err(BrainError::Invalid(format!(
@@ -108,16 +153,7 @@ impl LoophostRegistry {
                  re-create the session with the bundle"
             )));
         }
-        let engine = Arc::new(
-            WasmAgentloop::from_component_file(&component).map_err(|error| {
-                BrainError::Agentloop(format!("custom loop {digest} failed to load: {error}"))
-            })?,
-        );
-        self.engines
-            .lock()
-            .expect("loop engines")
-            .insert(digest.to_string(), engine.clone());
-        Ok(engine)
+        self.load_component(digest, &component, &format!("custom loop {digest}"))
     }
 }
 
@@ -125,9 +161,18 @@ impl AgentloopRegistry for LoophostRegistry {
     fn resolve(&self, selector: &AgentloopSelectorDoc) -> brain::Result<Arc<dyn Agentloop>> {
         match selector {
             AgentloopSelectorDoc::Official { name, .. } if name == "aex" => Ok(self.aex.clone()),
-            AgentloopSelectorDoc::Official { name, version } => Err(BrainError::Invalid(format!(
-                "official agentloop {name}@{version} is not available in this composition"
-            ))),
+            AgentloopSelectorDoc::Official { name, version } => {
+                let Some(spec) = self.officials.get(name) else {
+                    return Err(BrainError::Invalid(format!(
+                        "official agentloop {name}@{version} is not available in this composition"
+                    )));
+                };
+                Ok(self.load_component(
+                    &format!("official:{name}"),
+                    &spec.component,
+                    &format!("official loop {name}@{version}"),
+                )?)
+            }
             AgentloopSelectorDoc::Custom {
                 source_bundle_sha256,
                 toolchain,
@@ -145,12 +190,17 @@ impl AgentloopRegistry for LoophostRegistry {
 
     fn pin_official(&self, name: &str) -> brain::Result<AgentloopSelectorDoc> {
         if name == "aex" {
-            Ok(AgentloopSelectorDoc::official_aex())
-        } else {
-            Err(BrainError::Invalid(format!(
-                "official agentloop {name:?} is not available in this composition"
-            )))
+            return Ok(AgentloopSelectorDoc::official_aex());
         }
+        if let Some(spec) = self.officials.get(name) {
+            return Ok(AgentloopSelectorDoc::Official {
+                name: name.to_string(),
+                version: spec.version.clone(),
+            });
+        }
+        Err(BrainError::Invalid(format!(
+            "official agentloop {name:?} is not available in this composition"
+        )))
     }
 
     fn admit_custom(

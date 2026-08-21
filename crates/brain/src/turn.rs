@@ -953,6 +953,28 @@ impl LoopTurnCtx<'_> {
             std::num::NonZeroU64::new(value.max(1))
                 .ok_or_else(|| BrainError::Agentloop(format!("{what} limit cannot be zero")))
         };
+        // The model-visible halves of the sealed grant ride the extensible metadata object, so
+        // a loop can present the tools its session was sealed with. Routes never travel.
+        let metadata = if self.run.prefix.tools.is_empty() {
+            None
+        } else {
+            let tools: Vec<serde_json::Value> = self
+                .run
+                .prefix
+                .tools
+                .iter()
+                .map(|tool| {
+                    serde_json::json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": tool.input_schema,
+                    })
+                })
+                .collect();
+            let mut object = serde_json::Map::new();
+            object.insert("tools".into(), serde_json::Value::Array(tools));
+            Some(al::JsonObject(object))
+        };
         Ok(al::SessionContextView {
             limits: al::SessionContextViewLimits {
                 max_parallel_tools: nonzero(
@@ -964,7 +986,7 @@ impl LoopTurnCtx<'_> {
                 // outer ceiling every turn lives under.
                 turn_wall_ms: nonzero(8 * 60 * 60 * 1000, "turn wall")?,
             },
-            metadata: None,
+            metadata,
             model: crate::loopctx::identifier(&self.run.prefix.model)?,
             session_id: self.run.session_id.parse().map_err(|_| {
                 BrainError::Agentloop("the session id does not satisfy the contract pattern".into())
