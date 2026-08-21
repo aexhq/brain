@@ -256,8 +256,39 @@ impl Api {
             .bearer_auth(TOKEN)
             .send()
             .await?;
-        anyhow::ensure!(r.status().as_u16() == 204, "delete {sid}: {}", r.status());
-        Ok(())
+        if r.status().as_u16() == 204 {
+            return Ok(());
+        }
+        anyhow::ensure!(r.status().as_u16() == 202, "delete {sid}: {}", r.status());
+        let location = r
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("/v1/sessions/{sid}/deletion"));
+        let url = if location.starts_with("http://") || location.starts_with("https://") {
+            location
+        } else {
+            format!("{}{location}", self.base)
+        };
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let status = self.http.get(&url).bearer_auth(TOKEN).send().await?;
+                anyhow::ensure!(
+                    status.status().is_success(),
+                    "deletion status {sid}: {}",
+                    status.status()
+                );
+                let body: Value = status.json().await?;
+                match body["state"].as_str() {
+                    Some("succeeded") => return Ok(()),
+                    Some("failed") => anyhow::bail!("deletion failed for {sid}: {body}"),
+                    _ => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("deletion stalled for {sid}"))?
     }
 
     /// Ask the server to malloc_trim, so a sample taken right after is post-trim.
