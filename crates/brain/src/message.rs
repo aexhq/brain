@@ -141,22 +141,40 @@ pub struct Usage {
 }
 
 impl Usage {
-    pub fn merge(&mut self, other: &Usage) {
-        fn add(a: &mut Option<u64>, b: Option<u64>) {
+    pub fn merge(&mut self, other: &Usage) -> crate::Result<()> {
+        fn add(a: &mut Option<u64>, b: Option<u64>, field: &str) -> crate::Result<()> {
             if let Some(b) = b {
-                *a = Some(a.unwrap_or(0) + b);
+                *a = Some(a.unwrap_or(0).checked_add(b).ok_or_else(|| {
+                    crate::BrainError::Protocol(format!(
+                        "provider usage field {field} overflowed u64"
+                    ))
+                })?);
             }
+            Ok(())
         }
-        add(&mut self.input_tokens, other.input_tokens);
-        add(&mut self.output_tokens, other.output_tokens);
+        let mut merged = *self;
+        add(&mut merged.input_tokens, other.input_tokens, "input_tokens")?;
         add(
-            &mut self.cache_read_input_tokens,
+            &mut merged.output_tokens,
+            other.output_tokens,
+            "output_tokens",
+        )?;
+        add(
+            &mut merged.cache_read_input_tokens,
             other.cache_read_input_tokens,
-        );
+            "cache_read_input_tokens",
+        )?;
         add(
-            &mut self.cache_creation_input_tokens,
+            &mut merged.cache_creation_input_tokens,
             other.cache_creation_input_tokens,
-        );
-        add(&mut self.reasoning_tokens, other.reasoning_tokens);
+            "cache_creation_input_tokens",
+        )?;
+        add(
+            &mut merged.reasoning_tokens,
+            other.reasoning_tokens,
+            "reasoning_tokens",
+        )?;
+        *self = merged;
+        Ok(())
     }
 }

@@ -1,93 +1,38 @@
 {
   "model": {
-    "provider": "anthropic",
-    "name": "claude-sonnet-5",
-    "api_key": "sk-ant-REDACTED",
-    "max_output_tokens": 8192
+    "provider": "openai",
+    "name": "gpt-5.4",
+    "api_key": "sk-REDACTED",
+    "max_output_tokens": 8192,
+    "context_window_tokens": 128000,
+    "reasoning_effort": "medium"
   },
   "system_prompt": "You are a careful engineer.",
   "tools": {
     "items": [
       {
         "definition": {
-          "name": "bash",
-          "description": "Run a shell command in the lane's persistent shell environment. stdout/stderr are the operation streams. A non-zero exit is a completed operation with that exit_code.",
+          "name": "sandbox",
+          "description": "Work in the session's generation-fenced default sandbox.",
           "input_schema": {
             "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "command"
-            ],
-            "properties": {
-              "command": {
-                "type": "string",
-                "minLength": 1
-              },
-              "timeout_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "minimum": 1,
-                "description": "Overrides bounds.timeout_ms for this call."
-              }
-            }
-          },
-          "output_schema": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "timed_out"
-            ],
-            "properties": {
-              "timed_out": {
-                "type": "boolean"
-              }
-            }
-          }
-        },
-        "executor": {
-          "kind": "hand",
-          "protocol": 1,
-          "checksum": "0ed0bae284be7259c3d82f498885dc7010747fdb4b9f3edcc3160c922dac161b",
-          "source": "preinstalled",
-          "required_env": []
-        }
-      },
-      {
-        "definition": {
-          "name": "task",
-          "description": "Delegate a bounded task to a child agent.",
-          "input_schema": {
-            "type": "object",
-            "properties": {
-              "description": {
-                "type": "string"
-              },
-              "prompt": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "description",
-              "prompt"
-            ],
-            "additionalProperties": false
+            "additionalProperties": true
           },
           "output_schema": {
             "type": "object",
             "additionalProperties": true
-          }
+          },
+          "contract_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         },
         "executor": {
-          "kind": "intrinsic",
-          "capability": "brain.subagents.v1"
+          "kind": "engine",
+          "capability": "brain.sandbox"
         }
       },
       {
         "definition": {
           "name": "host_result",
-          "description": "Return a result to the host.",
+          "description": "Return a structured result to the customer application.",
           "input_schema": {
             "type": "object",
             "additionalProperties": true
@@ -95,42 +40,29 @@
           "output_schema": {
             "type": "object",
             "additionalProperties": true
-          }
+          },
+          "contract_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         },
         "executor": {
-          "kind": "server",
-          "capability": "example.result.v1",
-          "scope": "root",
-          "completion": "return_direct",
-          "effect": "replay_safe",
-          "max_input_bytes": 98304
+          "kind": "customer_app",
+          "registration": "example.result.v1"
         }
-      }
-    ],
-    "mcp": [
-      {
-        "name": "github",
-        "url": "https://mcp.example.com/github",
-        "headers": {
-          "Authorization": "Bearer REDACTED"
-        },
-        "protocol": "auto"
       }
     ]
   },
-  "hand": {
-    "shape": "2gb",
-    "env": {
-      "GH_TOKEN": "REDACTED"
-    },
-    "sync_interval_seconds": 600
+  "network": {
+    "outbound": "none"
   },
-  "files": [
-    {
-      "path": "README.md",
-      "content_base64": "IyBIZWxsbwo="
-    }
-  ],
+  "provider_recovery_retries": 1,
+  "client": {
+    "id": "example-client",
+    "submit_retries": 1
+  },
+  "children": {
+    "max_depth": 4,
+    "max_direct_children": 32,
+    "max_descendants": 256
+  },
   "metadata": {
     "customer_ref": "job-77"
   }

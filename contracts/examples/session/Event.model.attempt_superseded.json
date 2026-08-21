@@ -1,0 +1,11 @@
+{
+  "type": "model.attempt_superseded",
+  "seq": 120,
+  "at": "2026-08-18T09:41:00Z",
+  "session_id": "ses_01HZX8Y2K3M4N5P6Q7R8S9T0",
+  "turn_id": "trn_01HZX8Y2K3M4N5P6Q7R8S9U1",
+  "logical_operation_id": "mdl_01HZX8Y2K3M4N5P6Q7R8S9U2",
+  "superseded_attempt_id": "att_01HZX8Y2K3M4N5P6Q7R8S9U2",
+  "replacement_attempt_id": "att_01HZX8Y2K3M4N5P6Q7R8S9U3",
+  "reason": "unknown"
+}

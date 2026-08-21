@@ -1,8 +1,8 @@
 //! Brain: one long-lived, product-neutral process that owns every session's decisions.
 //!
 //! The core loop is deliberately small: build a provider request from (sealed
-//! prefix, history), stream it, parse tool calls, dispatch them over the
-//! brain->hand ABI, append results, repeat. Every decision is made durable in
+//! prefix, history), stream it, parse tool calls, dispatch them through typed
+//! execution ports, append results, repeat. Every decision is made durable in
 //! one journal decision before it takes effect anywhere else, and an idle
 //! session is nothing but a cached fold of its journal (hydrate-act-commit-
 //! discard).
@@ -12,27 +12,38 @@
 
 pub mod adapter;
 pub mod api;
-pub mod attached;
 pub mod compact;
 pub mod config;
+pub mod customer;
 pub mod events;
 pub mod external;
 
+pub mod hand;
 pub mod journal;
 pub mod keys;
-pub mod local;
-pub mod mcp;
 pub mod message;
 pub mod outbound;
 pub mod provider;
 pub mod reclaim;
 pub mod session;
-pub mod subagent;
+pub mod storage;
 pub mod tools;
 pub mod turn;
 
 pub use config::{ProviderKey, SealedPrefix, SessionConfig, ToolDecl};
+pub use journal::{
+    MAX_DECISION_ACTIONS, MAX_DECISION_SERIALIZED_BYTES, MAX_MESSAGE_REQUEST_BYTES,
+    MAX_SERIALIZED_RECORD_BYTES,
+};
 pub use message::{ContentBlock, Message, Role, StopReason, Usage};
+pub use session::{
+    DEFAULT_EXTERNAL_TOOL_TIMEOUT_MS, DEFAULT_PROVIDER_HEADER_TIMEOUT_MS,
+    DEFAULT_PROVIDER_IDLE_TIMEOUT_MS, DEFAULT_PROVIDER_TOTAL_TIMEOUT_MS, EXTERNAL_TOOL_TIMEOUT_ENV,
+    MAX_EXTERNAL_TOOL_TIMEOUT_MS, MAX_PROVIDER_HEADER_TIMEOUT_MS, MAX_PROVIDER_IDLE_TIMEOUT_MS,
+    MAX_PROVIDER_TOTAL_TIMEOUT_MS, MIN_EXTERNAL_TOOL_TIMEOUT_MS, MIN_PROVIDER_HEADER_TIMEOUT_MS,
+    MIN_PROVIDER_IDLE_TIMEOUT_MS, MIN_PROVIDER_TOTAL_TIMEOUT_MS, PROVIDER_HEADER_TIMEOUT_ENV,
+    PROVIDER_IDLE_TIMEOUT_ENV, PROVIDER_TOTAL_TIMEOUT_ENV,
+};
 
 use std::sync::Arc;
 
@@ -67,14 +78,66 @@ pub enum BrainError {
     #[error("file payload exceeds the configured limit of {limit} bytes")]
     FileTooLarge { limit: usize },
 
+    #[error("session storage object exceeds the sealed limit of {limit} bytes")]
+    StorageObjectTooLarge { limit: u64 },
+
+    #[error("the default sandbox has never been materialized")]
+    SandboxNotMaterialized,
+
+    #[error("the requested sandbox generation is gone")]
+    SandboxGone,
+
+    #[error("sandbox generation does not match the current target")]
+    SandboxGenerationConflict,
+
+    #[error("sandbox capacity is exhausted")]
+    SandboxResourceExhausted,
+
+    #[error(
+        "session storage quota exceeded (published {published} + reserved {reserved} + requested {requested} > {limit})"
+    )]
+    StorageQuotaExceeded {
+        published: u64,
+        reserved: u64,
+        requested: u64,
+        limit: u64,
+    },
+
+    #[error(
+        "tenant storage quota exceeded (requested {requested} additional bytes; limit {limit})"
+    )]
+    TenantStorageQuotaExceeded { requested: u64, limit: u64 },
+
+    #[error(
+        "session journal retention quota exceeded (requested {requested} additional bytes; limit {limit})"
+    )]
+    SessionJournalQuotaExceeded { requested: u64, limit: u64 },
+
+    #[error(
+        "tenant journal retention quota exceeded (requested {requested} additional bytes; limit {limit})"
+    )]
+    TenantJournalQuotaExceeded { requested: u64, limit: u64 },
+
+    #[error("tenant retained-session identity quota exceeded (limit {limit})")]
+    TenantRetainedSessionQuotaExceeded { limit: u64 },
+
+    #[error("session already has upload {transfer_id} in progress")]
+    StorageUploadInProgress { transfer_id: String },
+
+    #[error("storage upload {0} expired")]
+    StorageUploadExpired(String),
+
+    #[error("sandbox transfer {0} is unknown; prepare a fresh transfer")]
+    SandboxTransferUnknown(String),
+
+    #[error("sandbox transfer {0} expired; inspect the file and prepare a fresh transfer")]
+    SandboxTransferExpired(String),
+
+    #[error("sandbox transfer outcome is ambiguous; inspect the file before retrying")]
+    SandboxTransferAmbiguous,
+
     #[error("the brain is at capacity; retry with backoff")]
     Overloaded,
-
-    #[error("subagent depth cap {cap} exceeded (requested depth {requested})")]
-    DepthCap { cap: u32, requested: u32 },
-
-    #[error("subagent fan-out cap {cap} exceeded ({requested} requested)")]
-    FanoutCap { cap: usize, requested: usize },
 
     #[error("tool {name} is not declared in this session's sealed prefix")]
     UndeclaredTool { name: String },
@@ -98,7 +161,7 @@ pub enum BrainError {
     #[error("hand unavailable: {0}")]
     HandUnavailable(String),
 
-    #[error("hand ABI error: {0}")]
+    #[error("hand operation error: {0}")]
     Hand(String),
 
     #[error("journal: {0}")]
@@ -129,7 +192,7 @@ pub type Result<T> = std::result::Result<T, BrainError>;
 pub type Shared<T> = Arc<T>;
 
 /// Mints an id: `prefix_` + `n` random alphanumeric characters. Session API ids
-/// (`ses_`, `trn_`) require 20..=32 alphanumerics after the prefix; ABI ids are
+/// (`ses_`, `trn_`) require 20..=32 alphanumerics after the prefix; internal operation ids are
 /// free-form up to 64 bytes.
 pub fn mint_id(prefix: &str, n: usize) -> String {
     use rand::Rng;

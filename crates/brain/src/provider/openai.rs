@@ -7,7 +7,7 @@
 
 use super::sse::SseDecoder;
 use super::{ModelRequest, Provider, ProviderEvent};
-use crate::config::{Dialect, ProviderKey, SealedPrefix};
+use crate::config::{Dialect, OutputTokenParameter, ProviderKey, SealedPrefix};
 use crate::message::{ContentBlock, Message, Role, StopReason, Usage};
 use crate::{BrainError, Result};
 use futures_util::stream::BoxStream;
@@ -121,12 +121,31 @@ impl OpenAiChat {
 
     pub fn body(prefix: &SealedPrefix, history: &[Message]) -> Result<Value> {
         let mut messages: Vec<Value> = Vec::with_capacity(history.len() + 1);
-        messages.push(json!({"role":"system","content":prefix.system_prompt}));
-
         for m in history {
             messages.extend(Self::render_one(m)?);
         }
 
+        let mut body = match prefix.rendered_base() {
+            Some(Value::Object(base)) => base.clone(),
+            Some(_) => {
+                return Err(BrainError::Journal(
+                    "stored OpenAI base segment is not an object".into(),
+                ));
+            }
+            None => Self::render_base(prefix),
+        };
+        let mut rendered_messages = body
+            .remove("messages")
+            .and_then(|value| value.as_array().cloned())
+            .ok_or_else(|| {
+                BrainError::Journal("stored OpenAI base has no messages array".into())
+            })?;
+        rendered_messages.extend(messages);
+        body.insert("messages".into(), Value::Array(rendered_messages));
+        Ok(Value::Object(body))
+    }
+
+    pub fn render_base(prefix: &SealedPrefix) -> Map<String, Value> {
         let tools: Vec<Value> = prefix
             .tools
             .iter()
@@ -146,13 +165,26 @@ impl OpenAiChat {
         let mut body = Map::new();
         body.insert("model".into(), json!(prefix.model));
         body.insert("stream".into(), json!(true));
-        body.insert("max_tokens".into(), json!(prefix.sampling.max_tokens));
+        body.insert(
+            match prefix.sampling.output_token_parameter {
+                OutputTokenParameter::MaxTokens => "max_tokens",
+                OutputTokenParameter::MaxCompletionTokens => "max_completion_tokens",
+            }
+            .into(),
+            json!(prefix.sampling.max_tokens),
+        );
+        body.insert(
+            "messages".into(),
+            json!([{"role":"system","content":prefix.system_prompt}]),
+        );
         if !tools.is_empty() {
             body.insert("tools".into(), json!(tools));
         }
-        body.insert("messages".into(), json!(messages));
         if let Some(t) = prefix.sampling.temperature {
             body.insert("temperature".into(), json!(t));
+        }
+        if let Some(reasoning_effort) = &prefix.sampling.reasoning_effort {
+            body.insert("reasoning_effort".into(), json!(reasoning_effort));
         }
         if !prefix.sampling.stop_sequences.is_empty() {
             body.insert("stop".into(), json!(prefix.sampling.stop_sequences));
@@ -161,7 +193,10 @@ impl OpenAiChat {
         // OpenAI-compatible servers report nothing at all -- which is absent,
         // and absent must not become zero downstream.
         body.insert("stream_options".into(), json!({"include_usage": true}));
-        Ok(Value::Object(body))
+        if let Some(key) = prefix.prompt_cache_key() {
+            body.insert("prompt_cache_key".into(), json!(key));
+        }
+        body
     }
 }
 
@@ -287,8 +322,12 @@ impl Provider for OpenAiChat {
         Self::request(Self::body(prefix, history)?, key, base_url)
     }
 
-    async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
-        crate::provider::http_stream(req, decode).await
+    async fn stream(
+        &self,
+        req: ModelRequest,
+        outbound: &crate::outbound::Outbound,
+    ) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
+        crate::provider::http_stream(req, outbound, decode).await
     }
 }
 
@@ -367,10 +406,7 @@ pub fn decode(_event: Option<&str>, data: &str) -> Result<Vec<ProviderEvent>> {
             .iter()
             .any(|e| matches!(e, ProviderEvent::MessageDone { .. }))
     {
-        out.push(ProviderEvent::MessageDone {
-            stop_reason: StopReason::Unknown,
-            usage,
-        });
+        out.push(ProviderEvent::Usage { usage });
     }
     Ok(out)
 }
@@ -418,7 +454,7 @@ pub fn decode_stream(bytes: &[u8]) -> Result<Vec<ProviderEvent>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentDef, ToolDecl, ToolRoute};
+    use crate::config::{AgentDef, GenOpts, OutputTokenParameter, ToolDecl, ToolRoute};
     use crate::provider::Accumulator;
 
     fn prefix() -> std::sync::Arc<SealedPrefix> {
@@ -426,11 +462,42 @@ mod tests {
             .tool(ToolDecl {
                 name: "read".into(),
                 description: "read".into(),
+                contract_digest: "a".repeat(64),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
                 route: ToolRoute::Intrinsic("brain.test.read".into()),
             })
             .seal()
+    }
+
+    #[test]
+    fn modern_gpt_profile_uses_current_completion_and_reasoning_fields() {
+        let definition = AgentDef::new("sys", "gpt-5.4", Dialect::OpenAiChat).sampling(GenOpts {
+            max_tokens: 8_192,
+            output_token_parameter: OutputTokenParameter::MaxCompletionTokens,
+            temperature: None,
+            reasoning_effort: Some("high".into()),
+            stop_sequences: Vec::new(),
+        });
+        let body = OpenAiChat::render_base(&definition.seal());
+        assert_eq!(body["max_completion_tokens"], 8_192);
+        assert_eq!(body["reasoning_effort"], "high");
+        assert!(!body.contains_key("max_tokens"));
+    }
+
+    #[test]
+    fn named_legacy_compatibility_profile_is_explicit() {
+        let definition =
+            AgentDef::new("sys", "deepseek-chat", Dialect::OpenAiChat).sampling(GenOpts {
+                max_tokens: 4_096,
+                output_token_parameter: OutputTokenParameter::MaxTokens,
+                temperature: None,
+                reasoning_effort: None,
+                stop_sequences: Vec::new(),
+            });
+        let body = OpenAiChat::render_base(&definition.seal());
+        assert_eq!(body["max_tokens"], 4_096);
+        assert!(!body.contains_key("max_completion_tokens"));
     }
 
     #[test]
@@ -445,7 +512,7 @@ mod tests {
             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
         let mut acc = Accumulator::new();
         for e in decode_stream(raw.as_bytes()).unwrap() {
-            acc.push(e);
+            acc.push(e).unwrap();
         }
         let (msg, stop, _) = acc.finish().unwrap();
         assert_eq!(stop, StopReason::ToolUse);
@@ -520,6 +587,7 @@ mod tests {
             .tool(ToolDecl {
                 name: "todo".into(),
                 description: "todo".into(),
+                contract_digest: "a".repeat(64),
                 input_schema: exact.clone(),
                 output_schema: json!({"type":"object"}),
                 route: ToolRoute::Intrinsic("brain.test.todo".into()),
@@ -546,12 +614,11 @@ mod tests {
             "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":3}}\n\n";
         let evs = decode_stream(raw.as_bytes()).unwrap();
         match &evs[0] {
-            ProviderEvent::MessageDone { usage, stop_reason } => {
+            ProviderEvent::Usage { usage } => {
                 assert_eq!(usage.input_tokens, Some(9));
                 assert_eq!(usage.cache_read_input_tokens, None);
-                assert_eq!(*stop_reason, StopReason::Unknown);
             }
-            other => panic!("expected MessageDone, got {other:?}"),
+            other => panic!("expected Usage, got {other:?}"),
         }
     }
 
@@ -564,7 +631,7 @@ mod tests {
         );
         let mut accumulator = Accumulator::new();
         for event in decode_stream(raw.as_bytes()).unwrap() {
-            accumulator.push(event);
+            accumulator.push(event).unwrap();
         }
         let (message, stop, usage) = accumulator.finish().unwrap();
         assert_eq!(stop, StopReason::Refusal);
@@ -581,14 +648,14 @@ mod tests {
         let raw = "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\n";
         let evs = decode_stream(raw.as_bytes()).unwrap();
         match &evs[0] {
-            ProviderEvent::MessageDone { usage, .. } => {
+            ProviderEvent::Usage { usage } => {
                 assert_eq!(
                     usage.cache_read_input_tokens,
                     Some(0),
                     "a reported zero must be Some(0), never None"
                 );
             }
-            other => panic!("expected MessageDone, got {other:?}"),
+            other => panic!("expected Usage, got {other:?}"),
         }
     }
 }

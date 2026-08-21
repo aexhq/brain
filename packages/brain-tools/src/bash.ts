@@ -1,27 +1,24 @@
 import { spawn } from "node:child_process";
 
-import { defineTool } from "@aexhq/brain";
+import { tool } from "@aexhq/brain";
 import { z } from "zod";
 
 const MAX_CAPTURE_BYTES = 1024 * 1024;
 
-const bash = defineTool({
-  module: import.meta.url,
-  name: "bash",
-  description: "Run a Bash command in the session Hand workspace.",
-  input: z.object({
+const bashInput = z.object({
     command: z.string().min(1),
     cwd: z.string().optional(),
     timeout_ms: z.number().int().positive().optional(),
-  }),
-  output: z.object({
+  });
+const bashOutput = z.object({
     stdout: z.string(),
     stderr: z.string(),
     exit_code: z.number().int().nullable(),
     signal: z.string().nullable(),
     truncated: z.boolean(),
-  }),
-  async execute(input, context) {
+  });
+
+const bash = tool(bashInput, async function bash(input, context) {
     const deadline = input.timeout_ms === undefined
       ? context.deadlineMs
       : Math.min(context.deadlineMs, Date.now() + input.timeout_ms);
@@ -61,7 +58,9 @@ const bash = defineTool({
       const timer = setTimeout(() => child.kill("SIGTERM"), delay);
       timer.unref();
     });
-  },
-});
+  })
+  .describe("Run a Bash command in the session Hand workspace.")
+  .returns(bashOutput)
+  .server(import.meta.url);
 
 export default bash;

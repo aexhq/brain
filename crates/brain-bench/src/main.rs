@@ -99,7 +99,7 @@ struct Api {
 struct Bench {
     api: Api,
     fake: Arc<FakeProvider>,
-    hand: Arc<echo::EchoHand>,
+    executor: Arc<echo::EchoExecutor>,
 }
 
 /// Compose the brain + the bench sidecar routes and serve on a loopback port.
@@ -116,20 +116,36 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
     fake.inspect_every
         .store(args.inspect_every.max(1), Ordering::Relaxed);
     fake.arrivals_cap.store(64, Ordering::Relaxed);
-    let hand = Arc::new(echo::EchoHand::default());
-    let cfg = BrainConfig {
+    let executor = Arc::new(echo::EchoExecutor::default());
+    let mut cfg = BrainConfig {
         // Admission must not be what we measure: raise it above any K used here.
         max_concurrent_model_rounds: 4096,
         max_concurrent_turns: 4096,
+        max_event_followers: 4096,
+        // Density intentionally packs more simultaneously retained sessions than the hosted
+        // tenant policy admits. Keep the per-session retention invariant, but exempt this
+        // process-isolated measurement from the aggregate tenant product quota just as it is
+        // exempt from production turn/follower admission above.
+        journal_max_tenant_bytes: brain::journal::MAX_JOURNAL_BYTES,
         idle_discard,
         ..BrainConfig::default()
     };
+    cfg.official_capabilities.insert(
+        "aex.bench_echo".into(),
+        brain::config::ServerToolPolicy {
+            capability: "bench.echo".into(),
+            scope: brain_protocol::session::ExternalToolScope::All,
+            completion: brain_protocol::session::ExternalToolCompletion::Continue,
+            effect: brain_protocol::session::ExternalToolEffect::ReplaySafe,
+            max_input_bytes: brain_protocol::MAX_EXTERNAL_TOOL_INPUT_BYTES,
+        },
+    );
     let factory_fake = fake.clone();
-    let brain = Brain::with_parts(
+    let brain = Brain::with_parts_and_external(
         cfg,
         Journal::new_memory("bench"),
         Arc::new(brain::keys::PlainCustody),
-        Arc::new(echo::EchoFactory { hand: hand.clone() }),
+        executor.clone(),
         Some(Arc::new(move |_| factory_fake.clone() as Arc<dyn Provider>)),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -138,7 +154,7 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         brain,
         token: TOKEN.into(),
     })
-    .merge(bench_routes(fake.clone(), hand.clone()));
+    .merge(bench_routes(fake.clone(), executor.clone()));
     tokio::spawn(async move {
         axum::serve(brain::api::nodelay(listener), app)
             .await
@@ -150,13 +166,13 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
             http: reqwest::Client::new(),
         },
         fake,
-        hand,
+        executor,
     })
 }
 
 /// The bench sidecar: /bench/trim (malloc_trim now) and /bench/guards (instrument counters
 /// checked server-side, so a child process can be audited over the wire).
-fn bench_routes(fake: Arc<FakeProvider>, hand: Arc<echo::EchoHand>) -> axum::Router {
+fn bench_routes(fake: Arc<FakeProvider>, executor: Arc<echo::EchoExecutor>) -> axum::Router {
     use axum::extract::Query;
     use axum::http::StatusCode;
     use axum::routing::{get, post};
@@ -165,7 +181,7 @@ fn bench_routes(fake: Arc<FakeProvider>, hand: Arc<echo::EchoHand>) -> axum::Rou
         model: u64,
         tools: u64,
     }
-    let (f, h) = (fake.clone(), hand.clone());
+    let (f, h) = (fake.clone(), executor.clone());
     axum::Router::new()
         .route(
             "/bench/trim",
@@ -204,24 +220,26 @@ impl Api {
             .post(format!("{}/v1/sessions", self.base))
             .bearer_auth(TOKEN)
             .json(&json!({
-                "model": {"provider": "anthropic", "name": "bench", "api_key": "sk-bench"},
+                // Keep semantic compaction out of the turn-throughput instrument. Its own
+                // correctness and wire-budget gates live in Brain's compaction test suite.
+                "model": {
+                    "provider": "anthropic",
+                    "name": "bench",
+                    "api_key": "sk-bench",
+                    "context_window_tokens": brain_protocol::MAX_MODEL_CONTEXT_WINDOW_TOKENS
+                },
                 // Brain deliberately has no implicit tools. The benchmark's scripted provider
-                // calls `bash`, so grant the echo Hand implementation explicitly just as a real
-                // session would grant an installed tool.
+                // calls `bash`, so map that model-visible definition to the sealed benchmark
+                // host capability. No legacy Hand adapter participates in this measurement.
                 "tools": {"items": [{
                     "definition": {
                         "name": "bash",
                         "description": "Execute the benchmark echo tool.",
+                        "contract_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                         "input_schema": {"type": "object", "additionalProperties": true},
                         "output_schema": {"type": "object", "additionalProperties": true}
                     },
-                    "executor": {
-                        "kind": "hand",
-                        "protocol": 1,
-                        "checksum": "0ed0bae284be7259c3d82f498885dc7010747fdb4b9f3edcc3160c922dac161b",
-                        "source": "preinstalled",
-                        "required_env": []
-                    }
+                    "executor": {"kind":"engine","capability":"aex.bench_echo"}
                 }]}
             }))
             .send()
@@ -238,8 +256,39 @@ impl Api {
             .bearer_auth(TOKEN)
             .send()
             .await?;
-        anyhow::ensure!(r.status().as_u16() == 204, "delete {sid}: {}", r.status());
-        Ok(())
+        if r.status().as_u16() == 204 {
+            return Ok(());
+        }
+        anyhow::ensure!(r.status().as_u16() == 202, "delete {sid}: {}", r.status());
+        let location = r
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("/v1/sessions/{sid}/deletion"));
+        let url = if location.starts_with("http://") || location.starts_with("https://") {
+            location
+        } else {
+            format!("{}{location}", self.base)
+        };
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let status = self.http.get(&url).bearer_auth(TOKEN).send().await?;
+                anyhow::ensure!(
+                    status.status().is_success(),
+                    "deletion status {sid}: {}",
+                    status.status()
+                );
+                let body: Value = status.json().await?;
+                match body["state"].as_str() {
+                    Some("succeeded") => return Ok(()),
+                    Some("failed") => anyhow::bail!("deletion failed for {sid}: {body}"),
+                    _ => tokio::time::sleep(Duration::from_millis(10)).await,
+                }
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("deletion stalled for {sid}"))?
     }
 
     /// Ask the server to malloc_trim, so a sample taken right after is post-trim.
@@ -278,48 +327,87 @@ fn expected_counts(sessions: usize, turns: usize, args: &Args) -> (u64, u64) {
 
 /// A live SSE reader over one session's event stream.
 struct EventStream {
+    api: Api,
+    sid: String,
+    last_event_id: u64,
     stream: futures_util::stream::BoxStream<'static, reqwest::Result<bytes::Bytes>>,
     buf: String,
-    pending: std::collections::VecDeque<Value>,
+    pending: std::collections::VecDeque<(Option<u64>, Value)>,
 }
 
 impl EventStream {
     async fn open(api: &Api, sid: &str) -> anyhow::Result<EventStream> {
-        let resp = api
-            .http
-            .get(format!(
-                "{}/v1/sessions/{sid}/events?after=0&follow=true",
-                api.base
-            ))
-            .bearer_auth(TOKEN)
-            .send()
-            .await?;
-        anyhow::ensure!(resp.status().is_success(), "events: {}", resp.status());
+        let stream = Self::connect(api, sid, 0).await?;
         Ok(EventStream {
-            stream: resp.bytes_stream().boxed(),
+            api: api.clone(),
+            sid: sid.to_string(),
+            last_event_id: 0,
+            stream,
             buf: String::new(),
             pending: Default::default(),
         })
     }
 
+    async fn connect(
+        api: &Api,
+        sid: &str,
+        after: u64,
+    ) -> anyhow::Result<futures_util::stream::BoxStream<'static, reqwest::Result<bytes::Bytes>>>
+    {
+        let resp = api
+            .http
+            .get(format!(
+                "{}/v1/sessions/{sid}/events?after={after}&follow=true",
+                api.base,
+            ))
+            .bearer_auth(TOKEN)
+            .send()
+            .await?;
+        anyhow::ensure!(resp.status().is_success(), "events: {}", resp.status());
+        Ok(resp.bytes_stream().boxed())
+    }
+
+    async fn reconnect(&mut self) -> anyhow::Result<()> {
+        self.stream = Self::connect(&self.api, &self.sid, self.last_event_id).await?;
+        self.buf.clear();
+        Ok(())
+    }
+
     async fn next(&mut self) -> anyhow::Result<Value> {
         loop {
-            if let Some(ev) = self.pending.pop_front() {
+            if let Some((id, ev)) = self.pending.pop_front() {
+                if let Some(id) = id {
+                    self.last_event_id = self.last_event_id.max(id);
+                }
                 return Ok(ev);
             }
-            let chunk = tokio::time::timeout(Duration::from_secs(30), self.stream.next())
+            let Some(chunk) = tokio::time::timeout(Duration::from_secs(30), self.stream.next())
                 .await
                 .map_err(|_| anyhow::anyhow!("event stream stalled 30s"))?
-                .ok_or_else(|| anyhow::anyhow!("event stream closed"))??;
+            else {
+                // The bounded live ring deliberately disconnects a lagging follower. Resume from
+                // the last server-issued durable id; journal replay fills the exact gap.
+                self.reconnect().await?;
+                continue;
+            };
+            let chunk = chunk?;
             self.buf.push_str(&String::from_utf8_lossy(&chunk));
             while let Some(pos) = self.buf.find("\n\n") {
                 let frame: String = self.buf.drain(..pos + 2).collect();
+                let mut id = None;
+                let mut event = None;
                 for line in frame.lines() {
+                    if let Some(value) = line.strip_prefix("id:") {
+                        id = value.trim().parse().ok();
+                    }
                     if let Some(data) = line.strip_prefix("data:")
                         && let Ok(v) = serde_json::from_str::<Value>(data.trim_start())
                     {
-                        self.pending.push_back(v);
+                        event = Some(v);
                     }
+                }
+                if let Some(event) = event {
+                    self.pending.push_back((id, event));
                 }
             }
         }
@@ -335,7 +423,12 @@ struct TurnSamples {
 
 /// Drive one session for `turns` sequential turns; every latency is measured at the client
 /// through real HTTP+SSE.
-async fn drive_session(api: &Api, sid: &str, turns: usize) -> anyhow::Result<TurnSamples> {
+async fn drive_session(
+    api: &Api,
+    sid: &str,
+    turns: usize,
+    require_ttft: bool,
+) -> anyhow::Result<TurnSamples> {
     let mut es = EventStream::open(api, sid).await?;
     let mut out = TurnSamples::default();
     for _ in 0..turns {
@@ -359,7 +452,13 @@ async fn drive_session(api: &Api, sid: &str, turns: usize) -> anyhow::Result<Tur
                 "assistant.delta" => {
                     ttft.get_or_insert(t0.elapsed());
                 }
-                "turn.completed" => break,
+                "turn.completed" => {
+                    anyhow::ensure!(
+                        !require_ttft || ttft.is_some(),
+                        "pure-text benchmark lost its first live delta"
+                    );
+                    break;
+                }
                 "turn.failed" => anyhow::bail!("turn failed: {ev}"),
                 _ => {}
             }
@@ -380,6 +479,7 @@ async fn drive_all(
     api: &Api,
     k: usize,
     turns: usize,
+    require_ttft: bool,
 ) -> anyhow::Result<(TurnSamples, f64, Vec<String>)> {
     let mut sids = Vec::with_capacity(k);
     for _ in 0..k {
@@ -390,7 +490,7 @@ async fn drive_all(
     for sid in &sids {
         let api = api.clone();
         let sid = sid.clone();
-        set.spawn(async move { drive_session(&api, &sid, turns).await });
+        set.spawn(async move { drive_session(&api, &sid, turns, require_ttft).await });
     }
     let mut all = TurnSamples::default();
     while let Some(r) = set.join_next().await {
@@ -437,13 +537,13 @@ fn fmt_summary(name: &str, s: &stats::Summary) -> String {
 async fn arm_turns(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
     let b = serve(args, Duration::from_secs(3600)).await?;
     let k = args.sessions;
-    let (all, wall_s, _sids) = drive_all(&b.api, k, args.turns).await?;
+    let (all, wall_s, _sids) = drive_all(&b.api, k, args.turns, args.tool_rounds == 0).await?;
     let (em, et) = expected_counts(k, args.turns, args);
     let mismatches = b.fake.policy_scan_mismatches.load(Ordering::SeqCst);
     anyhow::ensure!(mismatches == 0, "fake scan/parse mismatches: {mismatches}");
     let (gm, gt) = (
         b.fake.call_count.load(Ordering::SeqCst),
-        b.hand.calls.load(Ordering::SeqCst),
+        b.executor.calls.load(Ordering::SeqCst),
     );
     anyhow::ensure!(gm == em, "model calls: expected {em}, got {gm}");
     anyhow::ensure!(gt == et, "tool calls: expected {et}, got {gt}");
@@ -535,7 +635,7 @@ async fn arm_density(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
 
     let n = args.sessions;
     let m_base = sample(api.clone()).await?;
-    let (_all, _wall, sids) = drive_all(&api, n, args.turns).await?;
+    let (_all, _wall, sids) = drive_all(&api, n, args.turns, args.tool_rounds == 0).await?;
     let (em, et) = expected_counts(n, args.turns, args);
     api.guards(em, et).await?;
 
@@ -598,7 +698,7 @@ async fn arm_density(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
     // that the post-delete floor stops rising.
     let mut finals = vec![m_final.private_bytes()];
     for cycle in 2..=args.cycles.max(1) {
-        let (_a, _w, sids) = drive_all(&api, n, args.turns).await?;
+        let (_a, _w, sids) = drive_all(&api, n, args.turns, args.tool_rounds == 0).await?;
         api.guards(em * cycle as u64, et * cycle as u64).await?;
         for sid in &sids {
             api.delete_session(sid).await?;

@@ -3,8 +3,8 @@ info:
   title: Brain session API
   version: "1.0.0"
   description: |
-    Session engine for running agents. A session = one agent, one workspace, one optional
-    sandbox (Hand), and any number of messages over any lifetime. BYOK: you bring the model key.
+    Durable model sessions with ordinary child sessions, explicit storage, and generation-fenced
+    sandboxes. BYOK: you bring the model key.
 
     Auth: `Authorization: Bearer <api key>`. Errors: JSON `{"error": ApiError}`.
     Component types are defined in `schemas.json` (single source, generated into Rust and TypeScript).
@@ -15,15 +15,17 @@ security:
 tags:
   - name: sessions
   - name: turns
-  - name: files
-  - name: artifacts
+  - name: children
+  - name: sandbox
+  - name: storage
+  - name: customer-hand
 
 paths:
   /v1/sessions:
     post:
       tags: [sessions]
       operationId: createSession
-      summary: Create a session (seals model, prompt, tools; starts preparing the hand)
+      summary: Create a session (seals model, prompt, tools, and execution policy)
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -77,10 +79,12 @@ paths:
     delete:
       tags: [sessions]
       operationId: deleteSession
-      summary: Delete a session (irreversible; releases the hand, deletes workspace, artifacts and journal)
+      summary: Start irreversible recursive deletion of the session tree
       responses:
+        "202":
+          description: Deletion accepted; poll the Location response header
         "204":
-          description: Deleted
+          description: An earlier request already completed physical deletion
         default: { $ref: "#/components/responses/Error" }
 
   /v1/sessions/{session_id}/messages:
@@ -128,6 +132,10 @@ paths:
         - name: follow
           in: query
           schema: { type: boolean, default: true }
+        - name: through
+          in: query
+          description: Exact strong high-water for a finite replay; valid only with follow=false
+          schema: { type: integer, minimum: 0 }
       responses:
         "200":
           description: Event stream
@@ -157,125 +165,377 @@ paths:
     post:
       tags: [sessions]
       operationId: endSession
-      summary: End now — cancel the turn, stop background jobs, sync and release the hand; keep the workspace
+      summary: Durably fence the session subtree and accept asynchronous teardown
       responses:
-        "200":
-          description: OK
+        "202":
+          description: The subtree admission fence is durable; the returned Session is ending
           content:
             application/json:
               schema: { $ref: "schemas.json#/$defs/Session" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/files:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
+  /v1/sessions/{session_id}/deletion:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
     get:
-      tags: [files]
-      operationId: listFiles
-      summary: List workspace files (live from the hand when it is up, else from the last sync manifest)
-      parameters:
-        - name: path
-          in: query
-          schema: { type: string, default: "/workspace" }
-        - name: recursive
-          in: query
-          schema: { type: boolean, default: false }
+      tags: [sessions]
+      operationId: getDeletionStatus
+      summary: Read the durable recursive-deletion tombstone or retry state
       responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "schemas.json#/$defs/FileList" }
+        "200": { $ref: "#/components/responses/DeletionStatus" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/files/{path}:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - name: path
-        in: path
-        required: true
-        description: Absolute guest path, URL-encoded, e.g. `%2Fworkspace%2Fsrc%2Fmain.rs`.
-        schema: { type: string }
+  /v1/sessions/{session_id}/sandbox:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
     get:
-      tags: [files]
-      operationId: downloadFile
-      summary: Download one file (raw bytes; 64 MiB deployment ceiling)
+      tags: [sandbox]
+      operationId: getDefaultSandbox
       responses:
-        "200":
-          description: File bytes
-          content:
-            application/octet-stream:
-              schema: { type: string, format: binary }
+        "200": { $ref: "#/components/responses/SandboxStatus" }
         default: { $ref: "#/components/responses/Error" }
-    put:
-      tags: [files]
-      operationId: uploadFile
-      summary: Upload one file into the workspace (raw bytes; overwrites; checkpoints before acknowledgement; 64 MiB ceiling)
-      requestBody:
-        required: true
-        content:
-          application/octet-stream:
-            schema: { type: string, format: binary }
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "schemas.json#/$defs/FileEntry" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/persist:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
     post:
-      tags: [artifacts]
-      operationId: persistArtifact
-      summary: Copy a workspace file into durable, named artifact storage
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "schemas.json#/$defs/PersistRequest" }
+      tags: [sandbox]
+      operationId: createDefaultSandbox
+      summary: Idempotently materialize the root default sandbox
       responses:
-        "201":
-          description: Created
-          content:
-            application/json:
-              schema: { $ref: "schemas.json#/$defs/Artifact" }
+        "200": { $ref: "#/components/responses/SandboxStatus" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/artifacts:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-    get:
-      tags: [artifacts]
-      operationId: listArtifacts
-      summary: List artifacts
+  /v1/sessions/{session_id}/sandbox/files/list:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [sandbox]
+      operationId: listSandboxFiles
+      requestBody: { $ref: "#/components/requestBodies/SandboxFileList" }
       responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "schemas.json#/$defs/ArtifactList" }
+        "200": { $ref: "#/components/responses/SandboxFileList" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/artifacts/{name}:
+  /v1/sessions/{session_id}/sandbox/files/stat:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [sandbox]
+      operationId: statSandboxFile
+      requestBody: { $ref: "#/components/requestBodies/SandboxFilePath" }
+      responses:
+        "200": { $ref: "#/components/responses/SandboxFile" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/sandbox/files/read-inline:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [sandbox]
+      operationId: readSandboxFileInline
+      requestBody: { $ref: "#/components/requestBodies/SandboxFileRead" }
+      responses:
+        "200": { $ref: "#/components/responses/SandboxFileContent" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/sandbox/files/write-inline:
     parameters:
       - $ref: "#/components/parameters/SessionId"
-      - name: name
-        in: path
-        required: true
-        schema: { type: string }
-    get:
-      tags: [artifacts]
-      operationId: getArtifact
-      summary: Get one artifact with a short-lived download URL
+      - $ref: "#/components/parameters/RequiredIdempotencyKey"
+    post:
+      tags: [sandbox]
+      operationId: writeSandboxFileInline
+      requestBody: { $ref: "#/components/requestBodies/SandboxFileWrite" }
       responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "schemas.json#/$defs/Artifact" }
+        "200": { $ref: "#/components/responses/SandboxFile" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/sandbox/files/downloads:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [sandbox]
+      operationId: prepareSandboxFileDownload
+      summary: Prepare a short-lived generation-fenced direct download
+      description: >-
+        Process-local happy-path convenience. Brain does not automatically retry or recover this
+        transfer after restart, expiry, missing state, or an ambiguous response. Prepare a fresh
+        transfer after inspecting the file; use session storage plus copy for recovery-safe bytes.
+      requestBody: { $ref: "#/components/requestBodies/SandboxFilePath" }
+      responses:
+        "200": { $ref: "#/components/responses/StorageTransfer" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/sandbox/files/uploads:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [sandbox]
+      operationId: prepareSandboxFileUpload
+      summary: Prepare a short-lived generation-fenced direct upload
+      description: >-
+        Process-local happy-path convenience. Brain does not automatically retry or recover this
+        transfer after restart, expiry, missing state, or an ambiguous response. Prepare a fresh
+        transfer after inspecting the file; use session storage plus copy for recovery-safe bytes.
+      requestBody: { $ref: "#/components/requestBodies/SandboxFileUpload" }
+      responses:
+        "200": { $ref: "#/components/responses/StorageTransfer" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/sandbox/files/uploads/{transfer_id}/complete:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/TransferId"
+    post:
+      tags: [sandbox]
+      operationId: completeSandboxFileUpload
+      summary: Import one prepared upload into its originally fenced generation and path
+      description: >-
+        Completion is not automatically retried. Unknown, expired, or ambiguous process-local
+        state returns a typed error and requires file inspection plus a fresh prepare.
+      responses:
+        "200": { $ref: "#/components/responses/SandboxFile" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/sandbox/files/find:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [sandbox]
+      operationId: findSandboxFiles
+      requestBody: { $ref: "#/components/requestBodies/SandboxFileFind" }
+      responses:
+        "200": { $ref: "#/components/responses/SandboxFileList" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/sandbox/files/grep:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [sandbox]
+      operationId: grepSandboxFiles
+      requestBody: { $ref: "#/components/requestBodies/SandboxFileGrep" }
+      responses:
+        "200": { $ref: "#/components/responses/SandboxFileList" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/children:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    get:
+      tags: [children]
+      operationId: listChildren
+      parameters:
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        "200": { $ref: "#/components/responses/SessionList" }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      tags: [children]
+      operationId: createChild
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { $ref: "#/components/requestBodies/CreateChild" }
+      responses:
+        "201": { $ref: "#/components/responses/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/children/{child_id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/ChildId"
+    get:
+      tags: [children]
+      operationId: getChild
+      responses:
+        "200": { $ref: "#/components/responses/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/children/{child_id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/ChildId"
+      - $ref: "#/components/parameters/IdempotencyKey"
+    post:
+      tags: [children]
+      operationId: sendChildMessage
+      requestBody: { $ref: "#/components/requestBodies/ChildMessage" }
+      responses:
+        "202": { $ref: "#/components/responses/MessageAccepted" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/children/{child_id}/follow-up:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/ChildId"
+      - $ref: "#/components/parameters/IdempotencyKey"
+    post:
+      tags: [children]
+      operationId: followUpChild
+      requestBody: { $ref: "#/components/requestBodies/ChildMessage" }
+      responses:
+        "200": { $ref: "#/components/responses/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/children/{child_id}/wait:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/ChildId"
+    post:
+      tags: [children]
+      operationId: waitForChild
+      requestBody: { $ref: "#/components/requestBodies/WaitChild" }
+      responses:
+        "200": { $ref: "#/components/responses/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/children/{child_id}/interrupt:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/ChildId"
+    post:
+      tags: [children]
+      operationId: interruptChild
+      responses:
+        "200": { $ref: "#/components/responses/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/children/{child_id}/end:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/ChildId"
+    post:
+      tags: [children]
+      operationId: endChild
+      summary: Durably fence the child subtree and accept asynchronous teardown
+      responses:
+        "202": { $ref: "#/components/responses/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/storage/list:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [storage]
+      operationId: listStorage
+      requestBody: { $ref: "#/components/requestBodies/StorageList" }
+      responses:
+        "200": { $ref: "#/components/responses/StorageList" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/storage/stat:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [storage]
+      operationId: statStorageObject
+      requestBody: { $ref: "#/components/requestBodies/StorageKey" }
+      responses:
+        "200": { $ref: "#/components/responses/StorageObject" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/storage/read-inline:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [storage]
+      operationId: readStorageInline
+      requestBody: { $ref: "#/components/requestBodies/StorageRead" }
+      responses:
+        "200": { $ref: "#/components/responses/StorageContent" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/storage/write-inline:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [storage]
+      operationId: writeStorageInline
+      requestBody: { $ref: "#/components/requestBodies/StorageWrite" }
+      responses:
+        "200": { $ref: "#/components/responses/StorageObject" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/storage/downloads:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [storage]
+      operationId: prepareStorageDownload
+      requestBody: { $ref: "#/components/requestBodies/StorageKey" }
+      responses:
+        "200": { $ref: "#/components/responses/StorageTransfer" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/storage/uploads:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [storage]
+      operationId: prepareStorageUpload
+      requestBody: { $ref: "#/components/requestBodies/StorageUpload" }
+      responses:
+        "200": { $ref: "#/components/responses/StorageTransfer" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/storage/uploads/{transfer_id}/complete:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/TransferId"
+    post:
+      tags: [storage]
+      operationId: completeStorageUpload
+      responses:
+        "200": { $ref: "#/components/responses/StorageObject" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/storage/delete:
+    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+    post:
+      tags: [storage]
+      operationId: deleteStorageObject
+      requestBody: { $ref: "#/components/requestBodies/StorageKey" }
+      responses:
+        "204": { description: Deleted }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/storage/copy-from-sandbox:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/RequiredIdempotencyKey"
+    post:
+      tags: [storage, sandbox]
+      operationId: copyFromSandbox
+      requestBody: { $ref: "#/components/requestBodies/StorageSandboxCopy" }
+      responses:
+        "200": { $ref: "#/components/responses/StorageObject" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/storage/copy-to-sandbox:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/RequiredIdempotencyKey"
+    post:
+      tags: [storage, sandbox]
+      operationId: copyToSandbox
+      requestBody: { $ref: "#/components/requestBodies/StorageSandboxCopy" }
+      responses:
+        "200": { $ref: "#/components/responses/SandboxFile" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/customer-hand/grants:
+    post:
+      tags: [customer-hand]
+      operationId: createCustomerHandGrant
+      requestBody: { $ref: "#/components/requestBodies/CustomerGrant" }
+      responses:
+        "200": { $ref: "#/components/responses/CustomerGrant" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/customer-hand/socket:
+    get:
+      tags: [customer-hand]
+      operationId: connectCustomerHand
+      security: []
+      parameters:
+        - name: Sec-WebSocket-Protocol
+          in: header
+          required: true
+          schema: { type: string, pattern: '^aex-grant\\.' }
+      responses:
+        "101": { description: WebSocket upgraded }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/customer-hand/observations/{grant_id}:
+    post:
+      tags: [customer-hand]
+      operationId: observeCustomerHandOperation
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/GrantId" }]
+      requestBody: { $ref: "#/components/requestBodies/CustomerObservation" }
+      responses:
+        "204": { description: Observation applied }
         default: { $ref: "#/components/responses/Error" }
 
 components:
@@ -293,11 +553,359 @@ components:
       name: Idempotency-Key
       in: header
       required: false
-      description: Repeating a request with the same key within 24 h returns the original result.
+      description: Repeating the same logical request reuses its durable operation identity.
       schema: { type: string, maxLength: 128 }
+    RequiredIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Required exact-replay identity for an effectful operation.
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    ChildId:
+      name: child_id
+      in: path
+      required: true
+      schema: { $ref: "schemas.json#/$defs/SessionId" }
+    TransferId:
+      name: transfer_id
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+    GrantId:
+      name: grant_id
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+  requestBodies:
+    SandboxFilePath:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFilePathRequest" } } }
+    SandboxFileList:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileListRequest" } } }
+    SandboxFileRead:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileReadRequest" } } }
+    SandboxFileWrite:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileWriteRequest" } } }
+    SandboxFileUpload:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileUploadRequest" } } }
+    SandboxFileFind:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileFindRequest" } } }
+    SandboxFileGrep:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileGrepRequest" } } }
+    CreateChild:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/CreateChildRequest" } } }
+    ChildMessage:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/ChildMessageRequest" } } }
+    WaitChild:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/WaitChildRequest" } } }
+    StorageList:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageListRequest" } } }
+    StorageKey:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageKeyRequest" } } }
+    StorageRead:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageReadRequest" } } }
+    StorageWrite:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageWriteRequest" } } }
+    StorageUpload:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageUploadRequest" } } }
+    StorageSandboxCopy:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageSandboxCopyRequest" } } }
+    CustomerGrant:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/CustomerGrantRequest" } } }
+    CustomerObservation:
+      required: true
+      content: { application/json: { schema: { $ref: "#/components/schemas/CustomerObservation" } } }
   responses:
     Error:
       description: Error
       content:
         application/json:
           schema: { $ref: "schemas.json#/$defs/ApiErrorResponse" }
+    Session:
+      description: Ordinary Session projection
+      content: { application/json: { schema: { $ref: "schemas.json#/$defs/Session" } } }
+    SessionList:
+      description: Ordinary Session page
+      content: { application/json: { schema: { $ref: "schemas.json#/$defs/SessionList" } } }
+    MessageAccepted:
+      description: Turn admitted
+      content: { application/json: { schema: { $ref: "schemas.json#/$defs/MessageAccepted" } } }
+    DeletionStatus:
+      description: Durable deletion status
+      content: { application/json: { schema: { $ref: "#/components/schemas/DeletionStatus" } } }
+    SandboxStatus:
+      description: Generation-fenced default sandbox lifecycle
+      content: { application/json: { schema: { $ref: "../../hand/contract.json#/definitions/SandboxStatus" } } }
+    SandboxFile:
+      description: Sandbox file metadata
+      content: { application/json: { schema: { $ref: "../../hand/contract.json#/definitions/FileEntry" } } }
+    SandboxFileContent:
+      description: Bounded inline sandbox file
+      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileContent" } } }
+    SandboxFileList:
+      description: Sandbox file page
+      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileList" } } }
+    StorageObject:
+      description: Durable session-storage object
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageObject" } } }
+    StorageList:
+      description: Durable storage page
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageList" } } }
+    StorageContent:
+      description: Bounded inline durable object
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageContent" } } }
+    StorageTransfer:
+      description: Short-lived one-purpose transfer authority
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageTransfer" } } }
+    CustomerGrant:
+      description: Customer-Hand WebSocket and observation grants
+      content: { application/json: { schema: { $ref: "#/components/schemas/CustomerGrant" } } }
+  schemas:
+    DeletionStatus:
+      type: object
+      additionalProperties: false
+      required: [object, session_id, state, requested_at_ms, updated_at_ms, completed_at_ms]
+      properties:
+        object: { const: session.deletion }
+        session_id: { $ref: "schemas.json#/$defs/SessionId" }
+        state: { type: string, enum: [accepted, deleting, retrying, blocked, succeeded] }
+        requested_at_ms: { type: integer, minimum: 0 }
+        updated_at_ms: { type: integer, minimum: 0 }
+        completed_at_ms: { type: [integer, "null"], minimum: 0 }
+    SandboxFilePathRequest:
+      type: object
+      additionalProperties: false
+      required: [path, generation]
+      properties:
+        path: { type: string, minLength: 1, maxLength: 4096 }
+        generation: { type: string, minLength: 1, maxLength: 128 }
+    SandboxFileListRequest:
+      allOf:
+        - $ref: "#/components/schemas/SandboxFilePathRequest"
+        - type: object
+          properties:
+            cursor: { type: string, maxLength: 4096 }
+            limit: { type: integer, minimum: 1, maximum: 100, default: 100 }
+    SandboxFileReadRequest:
+      allOf:
+        - $ref: "#/components/schemas/SandboxFilePathRequest"
+        - type: object
+          properties:
+            max_bytes: { type: integer, minimum: 0, maximum: 1048576, default: 1048576 }
+    SandboxFileWriteRequest:
+      type: object
+      additionalProperties: false
+      required: [path, generation, content_base64]
+      properties:
+        path: { type: string, minLength: 1, maxLength: 4096 }
+        generation: { type: string, minLength: 1, maxLength: 128 }
+        content_base64: { type: string, maxLength: 1398108 }
+        overwrite: { type: boolean, default: false }
+    SandboxFileUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [path, generation, bytes, sha256]
+      properties:
+        path: { type: string, minLength: 1, maxLength: 4096 }
+        generation: { type: string, minLength: 1, maxLength: 128 }
+        bytes: { type: integer, minimum: 0, maximum: 536870912 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        overwrite: { type: boolean, default: false }
+    SandboxFileFindRequest:
+      type: object
+      additionalProperties: false
+      required: [path, generation, glob]
+      properties:
+        path: { type: string, minLength: 1, maxLength: 4096 }
+        generation: { type: string, minLength: 1, maxLength: 128 }
+        glob: { type: string, minLength: 1, maxLength: 4096 }
+        cursor: { type: string, maxLength: 4096 }
+        limit: { type: integer, minimum: 1, maximum: 100, default: 100 }
+    SandboxFileGrepRequest:
+      type: object
+      additionalProperties: false
+      required: [path, generation, query]
+      properties:
+        path: { type: string, minLength: 1, maxLength: 4096 }
+        generation: { type: string, minLength: 1, maxLength: 128 }
+        query: { type: string, minLength: 1, maxLength: 4096 }
+        cursor: { type: string, maxLength: 4096 }
+        limit: { type: integer, minimum: 1, maximum: 100, default: 100 }
+    SandboxFileList:
+      type: object
+      additionalProperties: false
+      required: [data, has_more, generation]
+      properties:
+        data: { type: array, maxItems: 100, items: { $ref: "../../hand/contract.json#/definitions/FileEntry" } }
+        has_more: { type: boolean }
+        next_cursor: { type: string }
+        generation: { type: string, minLength: 1, maxLength: 128 }
+    SandboxFileContent:
+      type: object
+      additionalProperties: false
+      required: [entry, content_base64]
+      properties:
+        entry: { $ref: "../../hand/contract.json#/definitions/FileEntry" }
+        content_base64: { type: string, maxLength: 1398108 }
+    CreateChildRequest:
+      type: object
+      additionalProperties: false
+      required: [prompt]
+      properties:
+        prompt: { type: string, minLength: 1, maxLength: 196608 }
+        name: { type: string, minLength: 1, maxLength: 128 }
+        fork_turns:
+          oneOf:
+            - { type: string, enum: [all, none] }
+            - { type: string, pattern: '^[1-9][0-9]*$' }
+    ChildMessageRequest:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message: { type: string, minLength: 1, maxLength: 196608 }
+    WaitChildRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        timeout_ms: { type: integer, minimum: 0, maximum: 300000, default: 30000 }
+    StorageListRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        prefix: { type: string, maxLength: 1024 }
+        cursor: { type: string, maxLength: 4096 }
+        limit: { type: integer, minimum: 1, maximum: 100, default: 100 }
+    StorageKeyRequest:
+      type: object
+      additionalProperties: false
+      required: [key]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 1024 }
+    StorageReadRequest:
+      type: object
+      additionalProperties: false
+      required: [key]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 1024 }
+        max_bytes: { type: integer, minimum: 0, maximum: 1048576, default: 1048576 }
+    StorageWriteRequest:
+      type: object
+      additionalProperties: false
+      required: [key, content_base64]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 1024 }
+        content_base64: { type: string, maxLength: 1398108 }
+        content_type: { type: string, minLength: 1, maxLength: 255 }
+        overwrite: { type: boolean, default: false }
+    StorageUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [key, bytes, sha256]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 1024 }
+        bytes: { type: integer, minimum: 0, maximum: 536870912 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        content_type: { type: string, minLength: 1, maxLength: 255 }
+        overwrite: { type: boolean, default: false }
+    StorageSandboxCopyRequest:
+      type: object
+      additionalProperties: false
+      required: [key, path, sandbox_generation]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 1024 }
+        path: { type: string, minLength: 1, maxLength: 4096 }
+        sandbox_generation: { type: string, minLength: 1, maxLength: 128 }
+        overwrite: { type: boolean, default: false }
+    StorageObject:
+      type: object
+      additionalProperties: false
+      required: [key, bytes, sha256, created_at, updated_at]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 1024 }
+        bytes: { type: integer, minimum: 0 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        content_type: { type: string, minLength: 1, maxLength: 255 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    StorageList:
+      type: object
+      additionalProperties: false
+      required: [data, has_more]
+      properties:
+        data: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/StorageObject" } }
+        has_more: { type: boolean }
+        next_cursor: { type: string, maxLength: 4096 }
+    StorageContent:
+      type: object
+      additionalProperties: false
+      required: [object, content_base64]
+      properties:
+        object: { $ref: "#/components/schemas/StorageObject" }
+        content_base64: { type: string, maxLength: 1398108 }
+    StorageTransfer:
+      type: object
+      additionalProperties: false
+      required: [transfer_id, method, url, headers, expires_at, max_bytes]
+      properties:
+        transfer_id: { type: string, minLength: 1, maxLength: 128 }
+        method: { type: string, enum: [GET, PUT] }
+        url: { type: string, minLength: 1, maxLength: 8192 }
+        headers: { type: object, maxProperties: 16, additionalProperties: { type: string, maxLength: 4096 } }
+        expires_at: { type: string, format: date-time }
+        max_bytes: { type: integer, minimum: 1 }
+    CustomerGrantRequest:
+      type: object
+      additionalProperties: false
+      required: [client_id]
+      properties:
+        client_id: { type: string, minLength: 1, maxLength: 128 }
+    CustomerGrant:
+      type: object
+      additionalProperties: false
+      required: [url, protocol, expires_at, grant_id, observation_url, observation_token]
+      properties:
+        url: { type: string, minLength: 1, maxLength: 8192 }
+        protocol: { type: string, minLength: 1, maxLength: 256 }
+        expires_at: { type: string, format: date-time }
+        grant_id: { type: string, minLength: 1, maxLength: 128 }
+        observation_url: { type: string, minLength: 1, maxLength: 8192 }
+        observation_token: { type: string, minLength: 1, maxLength: 256 }
+    CustomerObservation:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, epoch, operation_id, request_digest, replayed]
+          properties:
+            type: { const: receipt }
+            epoch: { type: integer, minimum: 0 }
+            operation_id: { type: string, minLength: 1, maxLength: 128 }
+            request_digest: { type: string, pattern: '^[0-9a-f]{64}$' }
+            replayed: { type: boolean }
+        - type: object
+          additionalProperties: false
+          required: [type, epoch, operation_id, request_digest, ok]
+          properties:
+            type: { const: terminal }
+            epoch: { type: integer, minimum: 0 }
+            operation_id: { type: string, minLength: 1, maxLength: 128 }
+            request_digest: { type: string, pattern: '^[0-9a-f]{64}$' }
+            ok: { type: boolean }
+            output: {}
+            error: { type: string, maxLength: 94208 }

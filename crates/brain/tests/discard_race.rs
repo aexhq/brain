@@ -6,7 +6,6 @@
 
 use brain::config::Dialect;
 use brain::journal::Journal;
-use brain::local::LocalFactory;
 use brain::provider::Provider;
 use brain::provider::fake::{FakeMode, FakeProvider};
 use brain::session::{Brain, BrainConfig};
@@ -34,7 +33,6 @@ async fn a_message_racing_the_idle_discard_always_lands() {
         },
         Journal::new_memory("discard-race"),
         Arc::new(brain::keys::PlainCustody),
-        Arc::new(LocalFactory::new(&data_dir)),
         Some(Arc::new(move |_| f.clone() as Arc<dyn Provider>)),
     );
     let token = "race-token".to_string();

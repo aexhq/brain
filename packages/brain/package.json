@@ -1,6 +1,6 @@
 {
   "name": "@aexhq/brain",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Client, tool authoring API, and local builder for the independent Brain session server",
   "license": "Apache-2.0",
   "repository": {
@@ -11,9 +11,10 @@
   "type": "module",
   "sideEffects": false,
   "engines": { "node": ">=22.0.0" },
-  "publishConfig": { "access": "public", "provenance": true },
+  "publishConfig": { "access": "public", "provenance": true, "tag": "next" },
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./internal": { "types": "./dist/internal.d.ts", "import": "./dist/internal.js" },
     "./session": { "types": "./dist/generated/session.d.ts", "import": "./dist/generated/session.js" },
     "./package.json": "./package.json"
   },

@@ -45,7 +45,24 @@ export async function buildToolModule(moduleUrl: string): Promise<PreparedBundle
       charset: "utf8",
       logLevel: "silent",
       stdin: {
-        contents: `import tool from ${JSON.stringify(relativeEntry)}; export default tool;`,
+        contents: `
+import selected from ${JSON.stringify(relativeEntry)};
+if (selected === null || typeof selected !== "object" || selected.kind !== "brain.tool" || selected.execution !== "aex_managed") {
+  throw new TypeError("default export is not an Aex-managed Brain Tool");
+}
+if (typeof selected.execute !== "function") throw new TypeError("Aex-managed Brain Tool has no executable handler");
+const runtime = Object.freeze({
+  kind: "brain.tool-runtime",
+  name: selected.name,
+  description: selected.description,
+  contractDigest: selected.contract.contractDigest,
+  input: selected.input,
+  output: selected.output,
+  requiredEnv: selected.requiredEnv,
+  execute: selected.execute,
+});
+export default runtime;
+`,
         resolveDir,
         sourcefile: "brain-tool-entry.mjs",
         loader: "js",
@@ -53,7 +70,7 @@ export async function buildToolModule(moduleUrl: string): Promise<PreparedBundle
     });
   } catch (cause) {
     throw new TypeError(
-      "Tool could not be bundled for Node 22. Native addons, unresolved dynamic modules, install-script output, and external runtime files are not supported; choose .local() when those are required.",
+      "Tool could not be bundled for Node 22. Native addons, unresolved dynamic modules, install-script output, and external runtime files are not supported; choose .client() when those are required.",
       { cause },
     );
   }
@@ -76,7 +93,7 @@ export async function buildToolModule(moduleUrl: string): Promise<PreparedBundle
   const text = output.text;
   if (/\bimport\s*\(/u.test(text)) {
     throw new TypeError(
-      "Tool bundle contains a dynamic import that cannot be prepared reproducibly; use static imports or choose .local().",
+      "Tool bundle contains a dynamic import that cannot be prepared reproducibly; use static imports or choose .client().",
     );
   }
   const normalizedRoot = normalize(resolveDir).replaceAll("\\", "/");

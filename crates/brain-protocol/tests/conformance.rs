@@ -1,10 +1,10 @@
 //! Conformance: the schemas are valid 2020-12, every example validates against the schema type
 //! named by its filename (`<TypeName>.<case>.json`), and round-trips byte-for-byte (as JSON
-//! values) through the generated Rust types. The tool manifest digest matches its pin.
+//! values) through the generated Rust types.
 
 use std::path::{Path, PathBuf};
 
-use brain_protocol::{abi, session, tools};
+use brain_protocol::{contract, hand, session};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -110,7 +110,7 @@ fn validate(schema_json: &str, name: &str, type_name: &str, value: &Value) {
 #[test]
 fn schemas_are_valid_2020_12() {
     for (name, json) in [
-        ("abi", brain_protocol::ABI_SCHEMA_JSON),
+        ("hand", contract::HAND_CONTRACT_SCHEMA_JSON),
         ("session", brain_protocol::SESSION_SCHEMA_JSON),
     ] {
         let schema: Value = serde_json::from_str(json).unwrap();
@@ -120,16 +120,34 @@ fn schemas_are_valid_2020_12() {
 }
 
 #[test]
-fn abi_examples_validate_and_round_trip() {
-    for (name, type_name, value) in examples("abi") {
-        validate(brain_protocol::ABI_SCHEMA_JSON, &name, &type_name, &value);
-        match type_name.as_str() {
-            "Request" => round_trip::<abi::Request>(&name, &value),
-            "HandFrame" => round_trip::<abi::HandFrame>(&name, &value),
-            "SyncManifest" => round_trip::<abi::SyncManifest>(&name, &value),
-            other => panic!("{name}: no round-trip mapping for ABI type {other}; add one"),
-        }
+fn remote_mcp_is_absent_from_the_single_current_contract() {
+    let session_schema = brain_protocol::SESSION_SCHEMA_JSON;
+    let hand_schema = contract::HAND_CONTRACT_SCHEMA_JSON;
+    for removed in [
+        "McpServerConfig",
+        "McpProtocol",
+        "RemoteMcpToolExecutor",
+        "remote_mcp",
+    ] {
+        assert!(
+            !session_schema.contains(removed),
+            "removed remote MCP vocabulary reappeared in the session contract: {removed}"
+        );
+        assert!(
+            !hand_schema.contains(removed),
+            "removed remote MCP vocabulary reappeared in the Hand contract: {removed}"
+        );
     }
+    let legacy = serde_json::json!({
+        "model": {"provider": "openai", "name": "m", "api_key": "secret"},
+        "tools": {"mcp": [{"name": "old", "url": "https://example.test"}]}
+    });
+    assert!(
+        schema_for(session_schema, "CreateSessionRequest")
+            .validate(&legacy)
+            .is_err()
+    );
+    assert!(serde_json::from_value::<session::CreateSessionRequest>(legacy).is_err());
 }
 
 #[test]
@@ -155,38 +173,8 @@ fn session_examples_validate_and_round_trip() {
             }
             "Event" => round_trip::<session::Event>(&name, &value),
             "ApiErrorResponse" => round_trip::<session::ApiErrorResponse>(&name, &value),
-            "Artifact" => round_trip::<session::Artifact>(&name, &value),
-            "FileList" => round_trip::<session::FileList>(&name, &value),
-            "PersistRequest" => round_trip::<session::PersistRequest>(&name, &value),
             other => panic!("{name}: no round-trip mapping for session type {other}; add one"),
         }
-    }
-}
-
-#[test]
-fn every_abi_op_has_a_request_and_a_reply_example() {
-    let ex = examples("abi");
-    for op in [
-        "hello",
-        "start",
-        "poll",
-        "cancel",
-        "release",
-        "lane_close",
-        "put",
-        "persist",
-        "sync",
-    ] {
-        assert!(
-            ex.iter()
-                .any(|(_, t, v)| t == "Request" && v["call"]["op"] == op),
-            "missing Request example for op {op}"
-        );
-        assert!(
-            ex.iter()
-                .any(|(_, t, v)| t == "HandFrame" && v["frame"]["result"]["reply"]["op"] == op),
-            "missing reply example for op {op}"
-        );
     }
 }
 
@@ -209,92 +197,275 @@ fn every_session_event_type_has_an_example() {
 }
 
 #[test]
-fn tool_manifest_validates_and_digest_matches_pin() {
-    let value: Value = serde_json::from_str(tools::TOOL_MANIFEST_V1_JSON).unwrap();
-    validate(
-        brain_protocol::ABI_SCHEMA_JSON,
-        "tools/manifest.json",
-        "ToolManifest",
-        &value,
-    );
-    round_trip::<abi::ToolManifest>("tools/manifest.json", &value);
+fn credential_debug_is_redacted_without_changing_wire_serialization() {
+    const API_SECRET: &str = "sentinel-provider-api-key";
+    const ENV_SECRET: &str = "sentinel-session-secret";
+    const BUNDLE_SECRET: &str = "c2VudGluZWwtYnVuZGxlLWJ5dGVz";
+    const URL_SECRET: &str = "sentinel-presigned-signature";
+    const HEADER_SECRET: &str = "sentinel-transfer-header";
+    const CAPABILITY_SECRET: &str = "secret-capability-sentinel";
 
-    let manifest = tools::manifest_v1();
-    let names: Vec<&str> = manifest.tools.iter().map(|t| t.name.as_ref()).collect();
-    let mut sorted = names.clone();
-    sorted.sort_unstable();
-    assert_eq!(names, sorted, "manifest tools must be sorted by name");
+    let create_value = serde_json::json!({
+        "model": {"provider": "openai", "name": "test-model", "api_key": API_SECRET},
+        "secrets": {"TOKEN": ENV_SECRET},
+    });
+    let create: session::CreateSessionRequest =
+        serde_json::from_value(create_value.clone()).unwrap();
+    let debug = format!("{create:?}");
+    assert!(!debug.contains(API_SECRET));
+    assert!(!debug.contains(ENV_SECRET));
+    let serialized = serde_json::to_value(&create).unwrap();
+    assert_eq!(serialized["model"]["api_key"], API_SECRET);
+    assert_eq!(serialized["secrets"]["TOKEN"], ENV_SECRET);
+
+    let bundle: session::ToolBundle = serde_json::from_value(serde_json::json!({
+        "bytes": 21,
+        "checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "content_base64": BUNDLE_SECRET,
+        "media_type": "application/javascript+esm",
+    }))
+    .unwrap();
+    assert!(!format!("{bundle:?}").contains(BUNDLE_SECRET));
     assert_eq!(
-        names,
-        ["bash", "edit", "glob", "grep", "ls", "read", "write"]
+        serde_json::to_value(&bundle).unwrap()["content_base64"],
+        BUNDLE_SECRET
     );
-    for tool in &manifest.tools {
-        jsonschema::meta::validate(&Value::Object(tool.input_schema.clone()))
-            .unwrap_or_else(|e| panic!("{}: input_schema invalid: {e}", *tool.name));
-        jsonschema::meta::validate(&Value::Object(tool.output_schema.clone()))
-            .unwrap_or_else(|e| panic!("{}: output_schema invalid: {e}", *tool.name));
+
+    let prepare_value = serde_json::json!({
+        "session_id": "session-1",
+        "root_id": "root-1",
+        "bindings": [],
+        "bundles": [{
+            "bundle_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "url": format!("https://objects.example.test/bundle?X-Amz-Signature={URL_SECRET}"),
+            "headers": {"Authorization": HEADER_SECRET},
+            "expires_at_ms": 123456,
+            "max_bytes": 4096,
+        }],
+        "network": {"kind": "none"},
+        "resources": {"timeout_ms": 1000, "max_output_bytes": 4096},
+        "secret_capability": {
+            "capability_ref": CAPABILITY_SECRET,
+            "expires_at_ms": 123456,
+            "env_names": ["TOKEN"],
+        },
+    });
+    let prepare: hand::PrepareSessionRequest =
+        serde_json::from_value(prepare_value.clone()).unwrap();
+    let prepare_debug = format!("{prepare:?}");
+    for secret in [URL_SECRET, HEADER_SECRET, CAPABILITY_SECRET] {
+        assert!(!prepare_debug.contains(secret), "Debug leaked {secret}");
     }
+    assert_eq!(serde_json::to_value(&prepare).unwrap(), prepare_value);
 
-    let digest = tools::manifest_digest(manifest);
-    assert_eq!(
-        &*digest,
-        tools::TOOL_MANIFEST_V1_DIGEST.trim(),
-        "manifest.digest is stale: run tools/gen.sh"
-    );
+    let transfer_value = serde_json::json!({
+        "kind": "object",
+        "object": {
+            "object_id": "object-1",
+            "bytes": 12,
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        },
+        "fetch": {
+            "transfer_id": "transfer-1",
+            "object_id": "object-1",
+            "method": "GET",
+            "url": format!("https://objects.example.test/input?X-Amz-Signature={URL_SECRET}"),
+            "headers": {"x-transfer-token": HEADER_SECRET},
+            "expires_at_ms": 123456,
+            "max_bytes": 12,
+        },
+    });
+    let transfer: hand::SandboxFileWriteSource =
+        serde_json::from_value(transfer_value.clone()).unwrap();
+    let transfer_debug = format!("{transfer:?}");
+    assert!(!transfer_debug.contains(URL_SECRET));
+    assert!(!transfer_debug.contains(HEADER_SECRET));
+    assert_eq!(serde_json::to_value(&transfer).unwrap(), transfer_value);
 }
 
 #[test]
-fn call_hash_matches_every_start_example() {
-    // The examples carry call_hash values computed independently (tools/make-examples.py); the
-    // TypeScript package checks the same files, so three implementations must agree.
-    let mut seen = 0;
-    for (name, _, value) in examples("abi") {
-        let req: abi::Request = match serde_json::from_value(value) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
-        if let abi::RequestCall::Start(start) = req.call {
-            assert_eq!(
-                tools::call_hash(&start),
-                start.call_hash,
-                "{name}: call_hash mismatch"
-            );
-            seen += 1;
-        }
-    }
-    assert!(seen >= 2, "expected at least two start examples");
-}
-
-#[test]
-fn call_hash_ignores_non_identity_fields_and_key_order() {
-    let (_, _, value) = examples("abi")
-        .into_iter()
-        .find(|(n, _, _)| n == "Request.start-attached.json")
-        .unwrap();
-    let abi::RequestCall::Start(mut req) =
-        serde_json::from_value::<abi::Request>(value).unwrap().call
-    else {
-        panic!("not a start")
-    };
-    let h1 = tools::call_hash(&req);
-    let mut changed = req.clone();
-    changed.detach = !changed.detach;
+fn execution_and_stdin_digests_omit_only_the_self_digest() {
+    let zero = "0000000000000000000000000000000000000000000000000000000000000000";
+    let one = "1111111111111111111111111111111111111111111111111111111111111111";
+    let execution_value = serde_json::json!({
+        "target": {
+            "kind": "additional",
+            "session_id": "session-1",
+            "root_id": "root-1",
+            "binding_ref": "binding-1",
+            "sandbox_id": "sandbox-1",
+        },
+        "expected_generation": "generation-1",
+        "execution_id": "execution-1",
+        "request_digest": zero,
+        "input": {"command": "printf hello", "interactive": false},
+        "resources": {"timeout_ms": 1000, "max_output_bytes": 4096},
+        "network": {"kind": "none"},
+    });
+    let mut execution: hand::SandboxExecutionRequest =
+        serde_json::from_value(execution_value).unwrap();
+    let first = contract::sandbox_execution_request_digest(&execution);
+    execution.request_digest = one.parse().unwrap();
+    assert_eq!(
+        first,
+        contract::sandbox_execution_request_digest(&execution)
+    );
+    execution.input.command = "printf changed".parse().unwrap();
     assert_ne!(
-        tools::call_hash(&changed),
-        h1,
-        "detach is part of the identity"
+        first,
+        contract::sandbox_execution_request_digest(&execution)
     );
-    req.operation_id = "op-9999".parse().unwrap();
-    req.batch_id = None;
-    req.wait_ms = 0;
-    req.max_bytes = 0;
-    req.correlation = Default::default();
+
+    let stdin_value = serde_json::json!({
+        "operation_id": "stdin-1",
+        "request_digest": zero,
+        "target": {
+            "kind": "additional",
+            "session_id": "session-1",
+            "root_id": "root-1",
+            "binding_ref": "binding-1",
+            "sandbox_id": "sandbox-1",
+        },
+        "expected_generation": "generation-1",
+        "execution_id": "execution-1",
+        "text": "hello",
+        "eof": false,
+    });
+    let mut stdin: hand::WriteStdinRequest = serde_json::from_value(stdin_value).unwrap();
+    let first = contract::write_stdin_request_digest(&stdin);
+    stdin.request_digest = one.parse().unwrap();
+    assert_eq!(first, contract::write_stdin_request_digest(&stdin));
+    stdin.text = "hello\n".parse().unwrap();
+    assert_ne!(first, contract::write_stdin_request_digest(&stdin));
+    stdin.text = "hello".parse().unwrap();
+    stdin.eof = true;
+    assert_ne!(first, contract::write_stdin_request_digest(&stdin));
+}
+
+#[test]
+fn file_effect_digests_refresh_transport_authority_without_changing_effect_identity() {
+    let zero = "0000000000000000000000000000000000000000000000000000000000000000";
+    let sha = "1111111111111111111111111111111111111111111111111111111111111111";
+    let target = serde_json::json!({
+        "kind": "default",
+        "session_id": "session-1",
+        "root_id": "root-1",
+        "binding_ref": "binding-1",
+    });
+    let object = serde_json::json!({
+        "object_id": "object-1",
+        "bytes": 5,
+        "sha256": sha,
+        "media_type": "text/plain",
+    });
+    let authority = serde_json::json!({
+        "transfer_id": "download-1",
+        "object_id": "object-1",
+        "method": "GET",
+        "url": "https://objects.example/first",
+        "headers": {"authorization": "first"},
+        "expires_at_ms": 1000,
+        "max_bytes": 5,
+    });
+
+    let mut write: hand::SandboxFileWriteRequest = serde_json::from_value(serde_json::json!({
+        "operation_id": "write-1",
+        "request_digest": zero,
+        "target": target,
+        "expected_generation": "generation-1",
+        "path": "/workspace/file.txt",
+        "source": {"kind": "object", "object": object, "fetch": authority},
+        "overwrite": false,
+    }))
+    .unwrap();
+    let write_digest = contract::sandbox_file_write_request_digest(&write);
+    let write_value = serde_json::to_value(&write).unwrap();
+    let mut refreshed_write = write_value.clone();
+    let fetch = refreshed_write["source"]["fetch"].as_object_mut().unwrap();
+    fetch.insert("transfer_id".into(), serde_json::json!("download-2"));
+    fetch.insert(
+        "url".into(),
+        serde_json::json!("https://objects.example/second"),
+    );
+    fetch.insert(
+        "headers".into(),
+        serde_json::json!({"authorization": "second"}),
+    );
+    fetch.insert("expires_at_ms".into(), serde_json::json!(2000));
+    write = serde_json::from_value(refreshed_write).unwrap();
     assert_eq!(
-        tools::call_hash(&req),
-        h1,
-        "operation_id/batch_id/wait_ms/max_bytes/correlation are not"
+        write_digest,
+        contract::sandbox_file_write_request_digest(&write),
+        "a refreshed download capability must replay the same immutable object write"
     );
-    let mut reordered = req.clone();
-    reordered.input = serde_json::json!({"command": "cargo test 2>&1 | tail -20"});
-    assert_eq!(tools::call_hash(&reordered), h1);
+    write.path = "/workspace/other.txt".parse().unwrap();
+    assert_ne!(
+        write_digest,
+        contract::sandbox_file_write_request_digest(&write)
+    );
+
+    let mut import: hand::SandboxCopyRequest = serde_json::from_value(serde_json::json!({
+        "operation_id": "copy-import-1",
+        "request_digest": zero,
+        "target": target,
+        "expected_generation": "generation-1",
+        "path": "/workspace/import.txt",
+        "object": object,
+        "transfer": authority,
+        "direction": "import",
+        "overwrite": false,
+    }))
+    .unwrap();
+    let import_digest = contract::sandbox_copy_request_digest(&import);
+    import.transfer.transfer_id = "download-2".parse().unwrap();
+    import.transfer.url = "https://objects.example/second".parse().unwrap();
+    import.transfer.headers = [("authorization".to_owned(), "second".parse().unwrap())]
+        .into_iter()
+        .collect();
+    import.transfer.expires_at_ms = std::num::NonZeroU64::new(2000).unwrap();
+    assert_eq!(
+        import_digest,
+        contract::sandbox_copy_request_digest(&import)
+    );
+    import.path = "/workspace/other.txt".parse().unwrap();
+    assert_ne!(
+        import_digest,
+        contract::sandbox_copy_request_digest(&import)
+    );
+
+    let mut export: hand::SandboxCopyRequest = serde_json::from_value(serde_json::json!({
+        "operation_id": "copy-export-1",
+        "request_digest": zero,
+        "target": target,
+        "expected_generation": "generation-1",
+        "path": "/workspace/export.txt",
+        "object": null,
+        "transfer": {
+            "transfer_id": "upload-1",
+            "object_id": "pending-1",
+            "method": "PUT",
+            "url": "https://objects.example/first",
+            "headers": {"authorization": "first"},
+            "expires_at_ms": 1000,
+            "max_bytes": 5
+        },
+        "direction": "export",
+        "overwrite": false,
+    }))
+    .unwrap();
+    let export_digest = contract::sandbox_copy_request_digest(&export);
+    export.transfer.url = "https://objects.example/second".parse().unwrap();
+    export.transfer.headers = [("authorization".to_owned(), "second".parse().unwrap())]
+        .into_iter()
+        .collect();
+    export.transfer.expires_at_ms = std::num::NonZeroU64::new(2000).unwrap();
+    assert_eq!(
+        export_digest,
+        contract::sandbox_copy_request_digest(&export)
+    );
+    export.transfer.transfer_id = "upload-2".parse().unwrap();
+    assert_ne!(
+        export_digest,
+        contract::sandbox_copy_request_digest(&export)
+    );
 }

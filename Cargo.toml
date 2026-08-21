@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brain-protocol", "crates/brain-hand-client", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-standalone", "crates/brain-server"]
+members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-standalone", "crates/brain-server"]
 resolver = "2"
 
 [workspace.package]
@@ -10,7 +10,6 @@ license = "Apache-2.0"
 [workspace.dependencies]
 # Brain owns its public session API and the Brain↔Hand wire protocol.
 brain-protocol = { path = "crates/brain-protocol" }
-brain-hand-client = { path = "crates/brain-hand-client" }
 brain = { path = "crates/brain" }
 brain-aws = { path = "crates/brain-aws" }
 
@@ -21,6 +20,7 @@ async-stream = "0.3"
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "credentials-process", "default-https-client", "rt-tokio", "sso"] }
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "ws"] }
 base64 = "0.22"
 bytes = "1"
@@ -46,6 +46,8 @@ tokio-util = "0.7"
 tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower = { version = "0.5", features = ["util"] }
+url = "2"
 walkdir = "2"
 zeroize = "1"
 

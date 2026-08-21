@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 
 use brain::Result;
 use brain::adapter::ToolExecutor;
-use brain::config::Dialect;
+use brain::config::{Dialect, ServerToolPolicy};
 use brain::journal::Journal;
-use brain::local::LocalFactory;
 use brain::provider::fake::{FakeProvider, Scripted};
 use brain::session::{Brain, BrainConfig};
 use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
+use brain_protocol::session::{ExternalToolCompletion, ExternalToolEffect, ExternalToolScope};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -117,7 +117,7 @@ async fn replay_events(
 
 #[tokio::test]
 async fn repair_then_return_direct_completes_without_an_extra_model_round() {
-    let temp = TempDir::new();
+    let _temp = TempDir::new();
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     fake.script([
         Scripted::ToolCalls(vec![(
@@ -143,11 +143,33 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
             max_concurrent_model_rounds: 4,
             max_concurrent_turns: 4,
             idle_discard: Duration::from_secs(300),
+            official_capabilities: [
+                (
+                    "aex.test_lookup".into(),
+                    ServerToolPolicy {
+                        capability: "test.lookup".into(),
+                        scope: ExternalToolScope::All,
+                        completion: ExternalToolCompletion::Continue,
+                        effect: ExternalToolEffect::ReplaySafe,
+                        max_input_bytes: 98_304,
+                    },
+                ),
+                (
+                    "aex.test_submit_result".into(),
+                    ServerToolPolicy {
+                        capability: "test.submit_result".into(),
+                        scope: ExternalToolScope::Root,
+                        completion: ExternalToolCompletion::ReturnDirect,
+                        effect: ExternalToolEffect::ReplaySafe,
+                        max_input_bytes: 98_304,
+                    },
+                ),
+            ]
+            .into(),
             ..BrainConfig::default()
         },
         Journal::new_memory("brain-external-test"),
         Arc::new(brain::keys::PlainCustody),
-        Arc::new(LocalFactory::new(temp.0.clone())),
         executor.clone(),
         Some(Arc::new(move |_| {
             provider.clone() as Arc<dyn brain::provider::Provider>
@@ -174,32 +196,26 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
                     "definition": {
                         "name": "lookup",
                         "description": "Perform ordinary work before the final submission",
+                        "contract_digest": "1".repeat(64),
                         "input_schema": {"type": "object", "additionalProperties": true},
                         "output_schema": {"type": "string"}
                     },
                     "executor": {
-                        "kind": "server",
-                        "capability": "test.lookup",
-                        "scope": "all",
-                        "completion": "continue",
-                        "effect": "replay_safe",
-                        "max_input_bytes": 98304
+                        "kind": "engine",
+                        "capability": "aex.test_lookup"
                     }
                 },
                 {
                     "definition": {
                         "name": "submit_result",
                         "description": "Submit a result",
+                        "contract_digest": "2".repeat(64),
                         "input_schema": {"type": "object", "additionalProperties": true},
                         "output_schema": {"type": "object"}
                     },
                     "executor": {
-                        "kind": "server",
-                        "capability": "test.submit_result",
-                        "scope": "root",
-                        "completion": "return_direct",
-                        "effect": "replay_safe",
-                        "max_input_bytes": 98304
+                        "kind": "engine",
+                        "capability": "aex.test_submit_result"
                     }
                 }
             ]}

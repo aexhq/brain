@@ -1,6 +1,5 @@
 use brain::config::Dialect;
 use brain::journal::Journal;
-use brain::local::LocalFactory;
 use brain::provider::fake::{FakeProvider, Scripted};
 use brain::session::{Brain, BrainConfig};
 use serde_json::{Value, json};
@@ -49,7 +48,7 @@ async fn events(http: &reqwest::Client, base: &str, token: &str, session_id: &st
 
 #[tokio::test]
 async fn message_key_replays_while_active_after_completion_and_after_cold_hydration() {
-    let temp = TempDir::new();
+    let _temp = TempDir::new();
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     fake.script([Scripted::Text("one durable response".into())]);
     fake.tokens_per_second.store(5, Ordering::Relaxed);
@@ -61,7 +60,6 @@ async fn message_key_replays_while_active_after_completion_and_after_cold_hydrat
         },
         Journal::new_memory("message-idempotency-test"),
         Arc::new(brain::keys::PlainCustody),
-        Arc::new(LocalFactory::new(temp.0.clone())),
         Some(Arc::new(move |_| {
             factory_fake.clone() as Arc<dyn brain::provider::Provider>
         })),
@@ -81,8 +79,7 @@ async fn message_key_replays_while_active_after_completion_and_after_cold_hydrat
         .post(format!("{base}/v1/sessions"))
         .bearer_auth(&token)
         .json(&json!({
-            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "hand": {"enabled": false}
+            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"}
         }))
         .send()
         .await

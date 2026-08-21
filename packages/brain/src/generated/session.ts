@@ -19,12 +19,19 @@ export type TurnId = string;
  */
 export type AgentId = string;
 /**
- * Brain-minted id of one tool call (equals the ABI operation_id for hand tools).
+ * Brain-minted id of one durable Tool operation. Managed Hands receive the same operation_id.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "CallId".
  */
 export type CallId = string;
+/**
+ * Brain-minted identity of one provisional provider attempt.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ModelAttemptId".
+ */
+export type ModelAttemptId = string;
 /**
  * RFC 3339, UTC.
  *
@@ -38,26 +45,19 @@ export type Timestamp = string;
  */
 export type Sha256Hex = string;
 /**
- * active = a turn is running or a background job is live; idle = waiting for the next message (hand may be running, suspended or released underneath); deleted = irreversible; failed = the session cannot continue (see Session.failure).
+ * Lifecycle only. Whether a turn is running is reported separately as turn_state.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "SessionState".
  */
-export type SessionState = "active" | "idle" | "deleted" | "failed";
+export type SessionState = "open" | "ending" | "ended" | "deleting" | "deleted" | "failed";
 /**
- * preparing = the selected runtime is launching or restoring; ready = running and connected; suspended = the adapter retains runtime state without active compute; released = compute was destroyed while durable workspace state remains; lost = the Hand died mid-run (in-flight calls are interrupted and never replayed).
+ * Current-turn activity, independent from session lifecycle.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "HandState".
+ * via the `definition` "SessionTurnState".
  */
-export type HandState = "preparing" | "ready" | "suspended" | "released" | "lost";
-/**
- * Baseline memory; vCPU = memory/2; bursts to 4x. Default 1gb.
- *
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "HandShape".
- */
-export type HandShape = "1gb" | "2gb" | "4gb" | "8gb";
+export type SessionTurnState = "idle" | "running";
 /**
  * openai and anthropic are certified; the rest are available uncertified.
  *
@@ -71,13 +71,6 @@ export type Provider =
  * via the `definition` "ToolName".
  */
 export type ToolName = string;
-/**
- * auto probes server/discover and falls back to the legacy adapter (initialize + Mcp-Session-Id).
- *
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "McpProtocol".
- */
-export type McpProtocol = "auto" | "2026-07" | "legacy";
 /**
  * Which agents may call a trusted server capability.
  *
@@ -101,19 +94,71 @@ export type ExternalToolCompletion = "continue" | "return_direct";
 export type ExternalToolEffect = "opaque" | "replay_safe";
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "HandToolSource".
- */
-export type HandToolSource = "bundle" | "preinstalled";
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ToolExecutor".
  */
-export type ToolExecutor =
-  | HandToolExecutor
-  | AttachedToolExecutor
-  | ServerToolExecutor
-  | IntrinsicToolExecutor
-  | McpToolExecutor;
+export type ToolExecutor = AexManagedToolExecutor | CustomerAppToolExecutor | EngineToolExecutor;
+/**
+ * Immutable direct outbound ceiling. Omission means none.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "NetworkPolicy".
+ */
+export type NetworkPolicy =
+  | {
+      outbound: "none";
+    }
+  | {
+      outbound: "public";
+    }
+  | {
+      outbound: "allowlist";
+      /**
+       * @minItems 1
+       * @maxItems 128
+       */
+      destinations: [
+        (
+          | {
+              host: string;
+              /**
+               * @minItems 1
+               * @maxItems 1
+               */
+              ports: [unknown];
+              protocol: "tls";
+            }
+          | {
+              cidr: string;
+              /**
+               * @minItems 1
+               * @maxItems 32
+               */
+              ports: [number, ...number[]];
+              protocol: "tcp";
+            }
+        ),
+        ...(
+          | {
+              host: string;
+              /**
+               * @minItems 1
+               * @maxItems 1
+               */
+              ports: [unknown];
+              protocol: "tls";
+            }
+          | {
+              cidr: string;
+              /**
+               * @minItems 1
+               * @maxItems 32
+               */
+              ports: [number, ...number[]];
+              protocol: "tcp";
+            }
+        )[]
+      ];
+    };
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ContentPart".
@@ -174,6 +219,11 @@ export type Event =
       session_id: SessionId;
       turn_id: TurnId;
       agent_id: AgentId;
+      attempt_id: ModelAttemptId;
+      /**
+       * Deltas are provisional until the matching assistant.message wins.
+       */
+      provisional: true;
       text: string;
     }
   | {
@@ -183,10 +233,30 @@ export type Event =
       session_id: SessionId;
       turn_id: TurnId;
       agent_id: AgentId;
+      attempt_id: ModelAttemptId;
       /**
        * The complete assistant text of one model round.
        */
       text: string;
+    }
+  | {
+      type: "replay.complete";
+      session_id: SessionId;
+      /**
+       * Strong durable HEAD high-water captured after subscription and reached by every replay page before this proof was emitted. This control event has no SSE id and is never journaled.
+       */
+      through_seq: number;
+    }
+  | {
+      type: "model.attempt_superseded";
+      seq: number;
+      at: Timestamp;
+      session_id: SessionId;
+      turn_id: TurnId;
+      logical_operation_id: string;
+      superseded_attempt_id: ModelAttemptId;
+      replacement_attempt_id: ModelAttemptId;
+      reason: "unknown";
     }
   | {
       type: "tool.call";
@@ -269,13 +339,21 @@ export type Event =
       usage: ProviderUsage;
     }
   | {
+      type: "storage.usage";
+      seq: number;
+      at: Timestamp;
+      session_id: SessionId;
+      storage: StorageInfo;
+    }
+  | {
       type: "session.updated";
       seq: number;
       at: Timestamp;
       session_id: SessionId;
       turn_id?: TurnId;
       state: SessionState;
-      hand: HandInfo;
+      turn_state: SessionTurnState;
+      turn_phase?: string;
     }
   | {
       type: "hand.lost";
@@ -287,10 +365,6 @@ export type Event =
        * Calls whose outcome is unknown; they are reported to the model as interrupted and never replayed.
        */
       interrupted_calls: CallId[];
-      /**
-       * RFC 3339, UTC.
-       */
-      workspace_synced_at?: string;
     }
   | {
       type: "turn.completed";
@@ -316,7 +390,7 @@ export type Event =
     };
 
 /**
- * Component types of the public session API. Paths are in openapi.yaml, which references these by $ref. Public state model: session `active | idle | deleted | failed`; hand state is a separate field. Absent provider counters are absent, never zero.
+ * Component types of the public session API. Paths are in openapi.yaml, which references these by $ref. Session lifecycle and current-turn activity are independent axes. Absent provider counters are absent, never zero.
  */
 export interface BrainSessionAPIV1Types {
   [k: string]: unknown | undefined;
@@ -340,9 +414,13 @@ export interface ModelConfig {
    */
   base_url?: string;
   max_output_tokens?: number;
+  /**
+   * Immutable model context window. Omission seals the conservative neutral default of 32768 tokens; custom model names are never guessed from a mutable catalog.
+   */
+  context_window_tokens?: number;
   temperature?: number;
   /**
-   * Passed through where the provider supports it.
+   * Sealed into supported OpenAI-family Chat profiles. The Anthropic MVP profile rejects this field before any external effect instead of silently dropping it.
    */
   reasoning_effort?: "low" | "medium" | "high";
 }
@@ -356,6 +434,10 @@ export interface ModelInfo {
   provider: Provider;
   name: string;
   base_url?: string;
+  /**
+   * Effective immutable context window used for request admission and semantic compaction.
+   */
+  context_window_tokens: number;
 }
 /**
  * The model-visible half of one Tool. Array order is preserved exactly in the immutable model prefix.
@@ -365,47 +447,24 @@ export interface ModelInfo {
  */
 export interface ToolDefinition {
   name: ToolName;
-  description: string;
+  description?: string;
   input_schema: {
     [k: string]: unknown | undefined;
   };
-  output_schema: {
+  output_schema?: {
     [k: string]: unknown | undefined;
   };
+  contract_digest: Sha256Hex;
 }
 /**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "McpServerConfig".
- */
-export interface McpServerConfig {
-  /**
-   * Prefix for its tools ("name__tool").
-   */
-  name: string;
-  url: string;
-  /**
-   * Sent on every request (e.g. Authorization). Encrypted per session, never returned.
-   */
-  headers?: {
-    [k: string]: string | undefined;
-  };
-  protocol?: McpProtocol;
-  /**
-   * Whitelist; default all.
-   */
-  allowed_tools?: string[];
-}
-/**
- * A checksum-sealed executable in the session's default Hand.
+ * A digest-sealed executable in the session's default Aex-managed realm.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "HandToolExecutor".
+ * via the `definition` "AexManagedToolExecutor".
  */
-export interface HandToolExecutor {
-  kind: "hand";
-  protocol: 1;
-  checksum: Sha256Hex;
-  source: HandToolSource;
+export interface AexManagedToolExecutor {
+  kind: "aex_managed";
+  bundle_digest: Sha256Hex;
   /**
    * Environment-key names only. Secret values never enter the seal.
    *
@@ -415,40 +474,19 @@ export interface HandToolExecutor {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "AttachedToolExecutor".
+ * via the `definition` "CustomerAppToolExecutor".
  */
-export interface AttachedToolExecutor {
-  kind: "attached";
-  callback_id: string;
+export interface CustomerAppToolExecutor {
+  kind: "customer_app";
+  registration: string;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "ServerToolExecutor".
+ * via the `definition` "EngineToolExecutor".
  */
-export interface ServerToolExecutor {
-  kind: "server";
+export interface EngineToolExecutor {
+  kind: "engine";
   capability: string;
-  scope: ExternalToolScope;
-  completion: ExternalToolCompletion;
-  effect: ExternalToolEffect;
-  max_input_bytes: number;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "IntrinsicToolExecutor".
- */
-export interface IntrinsicToolExecutor {
-  kind: "intrinsic";
-  capability: string;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "McpToolExecutor".
- */
-export interface McpToolExecutor {
-  kind: "mcp";
-  server: string;
-  remote_name: string;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
@@ -483,60 +521,6 @@ export interface ToolsConfig {
    * @maxItems 128
    */
   items?: ToolConfig[];
-  /**
-   * Optional remote interoperability servers. Discovery resolves once at create and appends sealed MCP Tool descriptors.
-   */
-  mcp?: McpServerConfig[];
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "HandConfig".
- */
-export interface HandConfig {
-  /**
-   * false = no sandbox; hand tools are unavailable.
-   */
-  enabled?: boolean;
-  shape?: HandShape;
-  /**
-   * Environment for the agent's shell. Encrypted per session, never returned.
-   */
-  env?: {
-    [k: string]: string | undefined;
-  };
-  /**
-   * Mid-turn workspace sync period.
-   */
-  sync_interval_seconds?: number;
-  /**
-   * Optional cap on how long a background job may keep the hand running after the turn ends. Absent or null = no cap.
-   */
-  max_background_minutes?: number | null;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "HandInfo".
- */
-export interface HandInfo {
-  state: HandState;
-  shape: HandShape;
-  /**
-   * How many microVM incarnations this session has had.
-   */
-  generation?: number;
-  /**
-   * When the current incarnation launched.
-   */
-  started_at?: string;
-  /**
-   * When the platform will sync + release this incarnation (8 h after launch).
-   */
-  wall_deadline_at?: string;
-  last_sync_at?: Timestamp;
-  /**
-   * Background jobs still running.
-   */
-  live_jobs?: number;
 }
 /**
  * Billed storage, visible from day one.
@@ -546,21 +530,20 @@ export interface HandInfo {
  */
 export interface StorageInfo {
   /**
-   * Synced workspace objects (packs + manifests) in storage.
+   * Durable objects scoped to the session.
    */
-  workspace_bytes: number;
+  session_storage_bytes: number;
   /**
-   * Bytes retained by the selected adapter for a suspended Hand, when reported.
+   * Outstanding staged upload bytes held against the sealed session quota until staging cleanup completes. These bytes are not yet published session objects.
    */
-  suspended_bytes: number;
-  artifact_bytes: number;
+  upload_reserved_bytes: number;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "SessionFailure".
  */
 export interface SessionFailure {
-  code: "tool_manifest_mismatch" | "provider_unusable" | "hand_unavailable" | "internal";
+  code: "binding_conflict" | "provider_unusable" | "hand_unavailable" | "internal";
   message: string;
   at: Timestamp;
 }
@@ -570,10 +553,30 @@ export interface SessionFailure {
  */
 export interface Session {
   id: SessionId;
+  parent_id?: SessionId;
+  /**
+   * Optional customer-visible task name for a child session.
+   */
+  name?: string;
+  context_fork?: ContextFork;
+  root_id: SessionId;
+  depth: number;
+  /**
+   * Authoritative durable journal high-water mark used for tenant discovery and delta folding.
+   */
+  last_seq: number;
   object: "session";
   state: SessionState;
+  turn_state: SessionTurnState;
+  /**
+   * Stable recovery/dispatch phase when a turn is running. Absent while idle.
+   */
+  turn_phase?: string;
+  /**
+   * Authoritative immutable execution shape inherited by every child. The hosted alpha supports only 1gb.
+   */
+  shape: "1gb";
   model: ModelInfo;
-  hand: HandInfo;
   storage: StorageInfo;
   created_at: Timestamp;
   updated_at: Timestamp;
@@ -589,6 +592,21 @@ export interface Session {
   };
 }
 /**
+ * Immutable pointer to the exact bounded parent model projection inherited at child admission. It never embeds parent prompt bytes.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ContextFork".
+ */
+export interface ContextFork {
+  source_session_id: SessionId;
+  source_context_generation: number;
+  source_through_sequence: number;
+  mode: "all" | "none" | "last_n";
+  last_n?: number;
+  resolved_turns: number;
+  source_projection_digest: string;
+}
+/**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "SessionList".
  */
@@ -599,18 +617,21 @@ export interface SessionList {
   next_cursor?: string;
 }
 /**
- * Small files placed into the workspace at create (limit 1 MiB each). Larger files: PUT /files/{path} after create.
- *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "FileInput".
+ * via the `definition` "CustomerClientConfig".
  */
-export interface FileInput {
-  /**
-   * Relative to /workspace.
-   */
-  path: string;
-  content_base64: string;
-  mode?: number;
+export interface CustomerClientConfig {
+  id: string;
+  submit_retries?: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ChildLimits".
+ */
+export interface ChildLimits {
+  max_depth?: number;
+  max_direct_children?: number;
+  max_descendants?: number;
 }
 /**
  * Everything here except metadata is part of the immutable prefix: it cannot change for the life of the session.
@@ -628,8 +649,16 @@ export interface CreateSessionRequest {
    * @maxItems 128
    */
   tool_bundles?: ToolBundle[];
-  hand?: HandConfig;
-  files?: FileInput[];
+  /**
+   * Write-only values for required managed Tool environment names; encrypted in custody.
+   */
+  secrets?: {
+    [k: string]: string | undefined;
+  };
+  network?: NetworkPolicy;
+  provider_recovery_retries?: number;
+  client?: CustomerClientConfig;
+  children?: ChildLimits;
   metadata?: {
     [k: string]: string | undefined;
   };
@@ -777,71 +806,6 @@ export interface ApiError1 {
   details?: {
     [k: string]: unknown | undefined;
   };
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "FileEntry".
- */
-export interface FileEntry {
-  path: string;
-  kind: "file" | "dir" | "symlink";
-  size?: number;
-  modified_at?: Timestamp;
-  sha256?: Sha256Hex;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "FileList".
- */
-export interface FileList {
-  object: "list";
-  data: FileEntry[];
-  /**
-   * Time of the manifest this listing reflects; null when the workspace has never synced.
-   */
-  synced_at: string | null;
-  /**
-   * hand = live listing from a running hand; manifest = from the last sync (hand released).
-   */
-  source: "hand" | "manifest";
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "PersistRequest".
- */
-export interface PersistRequest {
-  name: string;
-  /**
-   * Workspace path to persist as a named, downloadable artifact.
-   */
-  path: string;
-  media_type?: string;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "Artifact".
- */
-export interface Artifact {
-  object: "artifact";
-  session_id: SessionId;
-  name: string;
-  bytes: number;
-  sha256: Sha256Hex;
-  media_type: string;
-  created_at: Timestamp;
-  /**
-   * Short-lived; present on GET of a single artifact.
-   */
-  download_url?: string;
-  download_url_expires_at?: Timestamp;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "ArtifactList".
- */
-export interface ArtifactList {
-  object: "list";
-  data: Artifact[];
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema

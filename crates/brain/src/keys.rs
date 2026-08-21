@@ -17,6 +17,21 @@ use base64::engine::general_purpose::STANDARD as B64;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+/// AWS KMS direct Encrypt accepts at most 4096 plaintext bytes. Core validates this neutral
+/// custody contract before invoking any adapter so oversized credentials are a stable 4xx, not
+/// a late cloud-specific failure.
+pub const MAX_CUSTODY_PLAINTEXT_BYTES: usize = brain_protocol::MAX_SESSION_SECRET_DOCUMENT_BYTES;
+
+pub fn validate_custody_plaintext(label: &str, plaintext: &str) -> Result<()> {
+    let bytes = plaintext.len();
+    if bytes == 0 || bytes > MAX_CUSTODY_PLAINTEXT_BYTES {
+        return Err(BrainError::Invalid(format!(
+            "{label} must contain 1 to {MAX_CUSTODY_PLAINTEXT_BYTES} UTF-8 bytes"
+        )));
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 pub trait KeyCustody: Send + Sync {
     /// Encrypts a provider key for one session. Returns an opaque blob for the journal HEAD.

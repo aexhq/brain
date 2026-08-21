@@ -64,12 +64,31 @@ impl Anthropic {
     /// The pure request builder, exposed separately so the cold-start benchmark
     /// can call it without a trait object and without a client.
     pub fn body(prefix: &SealedPrefix, history: &[Message]) -> Result<Value> {
+        if prefix.sampling.reasoning_effort.is_some() {
+            return Err(BrainError::Invalid(
+                "reasoning_effort is not supported by the Anthropic MVP profile".into(),
+            ));
+        }
         let mut messages = Vec::with_capacity(history.len());
         for m in history {
             messages.extend(Self::render_one(m)?);
         }
 
-        let tools: Vec<Value> = prefix
+        let mut body = match prefix.rendered_base() {
+            Some(Value::Object(base)) => base.clone(),
+            Some(_) => {
+                return Err(BrainError::Journal(
+                    "stored Anthropic base segment is not an object".into(),
+                ));
+            }
+            None => Self::render_base(prefix),
+        };
+        body.insert("messages".into(), json!(messages));
+        Ok(Value::Object(body))
+    }
+
+    pub fn render_base(prefix: &SealedPrefix) -> Map<String, Value> {
+        let mut tools: Vec<Value> = prefix
             .tools
             .iter()
             .map(|t| {
@@ -87,11 +106,26 @@ impl Anthropic {
         body.insert("stream".into(), json!(true));
         // System prompt first, then tools, then messages: the render order the
         // prompt cache keys on. Reordering these silently invalidates every cached prefix.
-        body.insert("system".into(), json!(prefix.system_prompt));
+        // Anthropic caches only at explicit breakpoints. Put exactly one breakpoint at the end
+        // of the sealed immutable prefix: the last Tool when present, otherwise the system block.
         if !tools.is_empty() {
+            tools
+                .last_mut()
+                .and_then(Value::as_object_mut)
+                .expect("tool is an object")
+                .insert("cache_control".into(), json!({"type":"ephemeral"}));
+            body.insert("system".into(), json!(prefix.system_prompt));
             body.insert("tools".into(), json!(tools));
+        } else {
+            body.insert(
+                "system".into(),
+                json!([{
+                    "type": "text",
+                    "text": prefix.system_prompt,
+                    "cache_control": {"type":"ephemeral"}
+                }]),
+            );
         }
-        body.insert("messages".into(), json!(messages));
         if let Some(t) = prefix.sampling.temperature {
             body.insert("temperature".into(), json!(t));
         }
@@ -101,7 +135,7 @@ impl Anthropic {
                 json!(prefix.sampling.stop_sequences),
             );
         }
-        Ok(Value::Object(body))
+        body
     }
 }
 
@@ -121,8 +155,12 @@ impl Provider for Anthropic {
         Self::request(Self::body(prefix, history)?, key, base_url)
     }
 
-    async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
-        crate::provider::http_stream(req, decode).await
+    async fn stream(
+        &self,
+        req: ModelRequest,
+        outbound: &crate::outbound::Outbound,
+    ) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
+        crate::provider::http_stream(req, outbound, decode).await
     }
 }
 
@@ -198,10 +236,7 @@ pub fn decode(event: Option<&str>, data: &str) -> Result<Vec<ProviderEvent>> {
             // early, so it is folded as a usage-only event.
             let u = v.get("message").and_then(|m| m.get("usage"));
             if u.is_some() {
-                vec![ProviderEvent::MessageDone {
-                    stop_reason: StopReason::Unknown,
-                    usage: usage_of(u),
-                }]
+                vec![ProviderEvent::Usage { usage: usage_of(u) }]
             } else {
                 vec![]
             }
@@ -258,13 +293,14 @@ pub fn decode_stream(bytes: &[u8]) -> Result<Vec<ProviderEvent>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AgentDef, ToolDecl, ToolRoute};
+    use crate::config::{AgentDef, GenOpts, ToolDecl, ToolRoute};
 
     fn prefix() -> std::sync::Arc<SealedPrefix> {
         AgentDef::new("sys", "claude-test", Dialect::AnthropicMessages)
             .tool(ToolDecl {
                 name: "read".into(),
                 description: "read".into(),
+                contract_digest: "a".repeat(64),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
                 route: ToolRoute::Intrinsic("brain.test.read".into()),
@@ -284,8 +320,42 @@ mod tests {
         assert_eq!(v["model"], "claude-test");
         assert_eq!(v["system"], "sys");
         assert_eq!(v["tools"][0]["name"], "read");
+        assert_eq!(v["tools"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(v["messages"][0]["content"][0]["text"], "hi");
         assert_eq!(v["stream"], true);
+    }
+
+    #[test]
+    fn reasoning_effort_is_rejected_instead_of_silently_dropped() {
+        let definition =
+            AgentDef::new("sys", "claude-test", Dialect::AnthropicMessages).sampling(GenOpts {
+                reasoning_effort: Some("high".into()),
+                ..GenOpts::default()
+            });
+        let error = Anthropic
+            .build_request(
+                &definition.seal(),
+                &[Message::user_text("hi")],
+                &ProviderKey::new("sentinel"),
+                "https://api.anthropic.com",
+            )
+            .unwrap_err();
+        assert!(matches!(error, BrainError::Invalid(_)));
+        assert!(error.to_string().contains("reasoning_effort"));
+    }
+
+    #[test]
+    fn dynamic_messages_do_not_mutate_the_cached_base() {
+        let p = prefix();
+        let base = Value::Object(Anthropic::render_base(&p));
+        let first = Anthropic::body(&p, &[Message::user_text("one")]).unwrap();
+        let second =
+            Anthropic::body(&p, &[Message::user_text("one"), Message::user_text("two")]).unwrap();
+        for body in [&first, &second] {
+            let mut without_messages = body.as_object().unwrap().clone();
+            without_messages.remove("messages");
+            assert_eq!(Value::Object(without_messages), base);
+        }
     }
 
     #[test]
@@ -318,7 +388,7 @@ mod tests {
         let evs = decode_stream(raw.as_bytes()).unwrap();
         let mut acc = super::super::Accumulator::new();
         for e in evs {
-            acc.push(e);
+            acc.push(e).unwrap();
         }
         let (msg, stop, usage) = acc.finish().unwrap();
         assert_eq!(stop, StopReason::ToolUse);

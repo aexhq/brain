@@ -1,24 +1,21 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { defineTool } from "@aexhq/brain";
+import { tool } from "@aexhq/brain";
 import { z } from "zod";
 
-import { workspacePath } from "./path.js";
+import { workspaceOf, workspacePath } from "./path.js";
 
 const item = z.object({ text: z.string().min(1), done: z.boolean().default(false) });
 
-const todo = defineTool({
-  module: import.meta.url,
-  name: "todo",
-  description: "Read or replace the session's portable to-do list.",
-  input: z.discriminatedUnion("action", [
+const todoInput = z.discriminatedUnion("action", [
     z.object({ action: z.literal("get") }),
     z.object({ action: z.literal("set"), items: z.array(item).max(200) }),
-  ]),
-  output: z.object({ items: z.array(item) }),
-  async execute(input, context) {
-    const path = workspacePath(context.workspace, ".brain/todo.json");
+  ]);
+const todoOutput = z.object({ items: z.array(item) });
+
+const todo = tool(todoInput, async function todo(input, context) {
+    const path = workspacePath(workspaceOf(context), ".brain/todo.json");
     if (input.action === "set") {
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, `${JSON.stringify(input.items, null, 2)}\n`, "utf8");
@@ -30,7 +27,9 @@ const todo = defineTool({
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { items: [] };
       throw error;
     }
-  },
-});
+  })
+  .describe("Read or replace the session's portable to-do list.")
+  .returns(todoOutput)
+  .server(import.meta.url);
 
 export default todo;

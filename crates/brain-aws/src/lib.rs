@@ -5,19 +5,33 @@
 
 pub mod dynamo;
 pub mod kms;
+pub mod s3;
 
 use std::sync::Arc;
 
 use brain::Result;
-use brain::adapter::{HandFactory, ToolExecutor};
+use brain::adapter::ToolExecutor;
+use brain::hand::{HandPort, SandboxControlPort, SandboxFilesPort, SessionPreparationPort};
 use brain::journal::Journal;
 use brain::session::{Brain, BrainConfig};
+
+pub struct AwsRuntimePorts {
+    pub hand: Arc<dyn HandPort>,
+    pub session_preparation: Arc<dyn SessionPreparationPort>,
+    pub sandbox_files: Arc<dyn SandboxFilesPort>,
+    pub sandbox_control: Arc<dyn SandboxControlPort>,
+    pub external_executor: Option<Arc<dyn ToolExecutor>>,
+    pub customer_delivery: Option<Arc<dyn brain::customer::CustomerHandDeliveryPort>>,
+    pub customer_transport: Option<brain::customer::CustomerTransportConfig>,
+}
 
 #[derive(Debug, Clone)]
 pub struct AwsPersistenceConfig {
     pub region: String,
     pub journal_table: String,
     pub kms_key_id: String,
+    pub session_storage_bucket: String,
+    pub session_storage_prefix: String,
 }
 
 impl AwsPersistenceConfig {
@@ -29,9 +43,12 @@ impl AwsPersistenceConfig {
                 .map_err(|_| brain::BrainError::Invalid(format!("{name} is not set")))
         };
         Ok(Self {
-            region: std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-west-1".into()),
+            region: std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".into()),
             journal_table: get("BRAIN_JOURNAL_TABLE")?,
             kms_key_id: get("BRAIN_KMS_KEY_ID")?,
+            session_storage_bucket: get("BRAIN_SESSION_STORAGE_BUCKET")?,
+            session_storage_prefix: std::env::var("BRAIN_SESSION_STORAGE_PREFIX")
+                .unwrap_or_else(|_| "sessions".into()),
         })
     }
 }
@@ -40,9 +57,9 @@ impl AwsPersistenceConfig {
 pub async fn compose(
     cfg: BrainConfig,
     persistence: AwsPersistenceConfig,
-    hand_factory: Arc<dyn HandFactory>,
-    external_executor: Option<Arc<dyn ToolExecutor>>,
+    ports: AwsRuntimePorts,
 ) -> Result<Arc<Brain>> {
+    cfg.validate()?;
     if cfg.outbound_allow_private {
         return Err(brain::BrainError::Invalid(
             "BRAIN_OUTBOUND_ALLOW_PRIVATE may not be true in a hosted AWS composition".into(),
@@ -63,10 +80,34 @@ pub async fn compose(
         aws_sdk_kms::Client::new(&aws),
         persistence.kms_key_id,
     ));
-    Ok(match external_executor {
-        Some(executor) => {
-            Brain::with_parts_and_external(cfg, journal, custody, hand_factory, executor, None)
-        }
-        None => Brain::with_parts(cfg, journal, custody, hand_factory, None),
-    })
+    let storage = Arc::new(
+        s3::S3SessionStorage::new(
+            aws_sdk_s3::Client::new(&aws),
+            persistence.session_storage_bucket,
+        )
+        .with_prefix(persistence.session_storage_prefix)?
+        .with_transfer_ttl(cfg.storage_transfer_ttl)?,
+    );
+    let executor: Arc<dyn ToolExecutor> = match ports.external_executor {
+        Some(executor) => executor,
+        None => Arc::new(brain::adapter::DisabledToolExecutor),
+    };
+    Ok(Brain::with_parts_and_services(
+        cfg,
+        journal,
+        custody,
+        executor,
+        brain::session::BrainServices {
+            session_storage: Some(storage.clone()),
+            bundle_storage: Some(storage),
+            hand: Some(ports.hand),
+            session_preparation: Some(ports.session_preparation),
+            sandbox_files: Some(ports.sandbox_files),
+            sandbox_control: Some(ports.sandbox_control),
+            customer_delivery: ports.customer_delivery,
+            customer_transport: ports.customer_transport,
+            compactor: None,
+        },
+        None,
+    ))
 }

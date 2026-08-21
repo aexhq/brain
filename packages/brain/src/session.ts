@@ -19,7 +19,8 @@ import type { EventOptions } from "./transport.js";
 import { Transport } from "./transport.js";
 import { compileTools } from "./tools.js";
 import type { Tool } from "./tools.js";
-import { AttachedWorker, type WebSocketFactory } from "./attached.js";
+import { CustomerHand, type WebSocketFactory } from "./customer.js";
+import { SessionChildren, SessionSandbox, SessionStorage } from "./resources.js";
 
 export type SessionInput = string;
 
@@ -33,27 +34,31 @@ export interface ModelOptions {
   reasoningEffort?: "low" | "medium" | "high";
 }
 
-export interface McpServerOptions {
-  name: string;
-  url: string;
-  headers?: Record<string, string>;
-  protocol?: "auto" | "2026-07" | "legacy";
-  allowedTools?: readonly string[];
-}
-
 export interface CreateSessionOptions {
   model: ModelOptions;
   /** Omitted or empty grants no tools. A non-empty list is the exact grant. */
   tools?: readonly Tool[];
-  /** Optional remote MCP servers. Discovery happens once and is sealed at session creation. */
-  mcp?: readonly McpServerOptions[];
   systemPrompt?: string;
-  hand?: {
-    enabled?: boolean;
-    env?: Record<string, string>;
+  /** Write-only values for environment names declared by managed Tools. */
+  secrets?: Record<string, string>;
+  /** Maximum direct network authority available to managed sandboxes in this session. */
+  network?: NetworkPolicy;
+  /** Replacement attempts after an unrecoverable provider outcome. Defaults to one. */
+  providerRecoveryRetries?: number;
+  client?: {
+    /** Replacement sends to the same customer process/operation. Defaults to one. */
+    submitRetries?: number;
   };
   metadata?: Record<string, string>;
 }
+
+export type NetworkDestination =
+  | { host: string; ports: [443]; protocol: "tls" }
+  | { cidr: string; ports: [number, ...number[]]; protocol: "tcp" };
+
+export type NetworkPolicy =
+  | { outbound: "none" | "public" }
+  | { outbound: "allowlist"; destinations: [NetworkDestination, ...NetworkDestination[]] };
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -92,17 +97,20 @@ export interface SessionSummary {
 export class Sessions {
   readonly #transport: Transport;
   readonly #webSocketFactory: WebSocketFactory | undefined;
+  readonly #clientId: string | undefined;
+  #customerHand: Promise<CustomerHand> | undefined;
+  #closed = false;
 
-  constructor(transport: Transport, webSocketFactory?: WebSocketFactory) {
+  constructor(transport: Transport, webSocketFactory?: WebSocketFactory, clientId?: string) {
     this.#transport = transport;
     this.#webSocketFactory = webSocketFactory;
+    this.#clientId = clientId;
   }
 
   async create(options: CreateSessionOptions, request: RequestOptions = {}): Promise<Session> {
+    if (this.#closed) throw new SessionError("Brain client is closed");
     const compiledTools = await compileTools(options.tools);
-    if (compiledTools.attached.size > 0 && this.#webSocketFactory === undefined) {
-      throw new TypeError("This runtime does not provide WebSocket; pass a webSocketFactory to Brain");
-    }
+    await this.#ensureCustomerHand(compiledTools.clientRegistrations, request.signal);
     const body = {
       model: {
         provider: options.model.provider,
@@ -119,56 +127,31 @@ export class Sessions {
       },
       tools: {
         items: compiledTools.items,
-        ...(options.mcp === undefined
-          ? {}
-          : {
-              mcp: options.mcp.map((server) => ({
-                name: server.name,
-                url: server.url,
-                ...(server.headers === undefined ? {} : { headers: server.headers }),
-                ...(server.protocol === undefined ? {} : { protocol: server.protocol }),
-                ...(server.allowedTools === undefined
-                  ? {}
-                  : { allowed_tools: [...server.allowedTools] }),
-              })),
-            }),
       },
       ...(compiledTools.bundles.length === 0 ? {} : { tool_bundles: compiledTools.bundles }),
-      ...(options.hand === undefined
-        ? {}
-        : {
-            hand: {
-              ...(options.hand.enabled === undefined ? {} : { enabled: options.hand.enabled }),
-              ...(options.hand.env === undefined ? {} : { env: options.hand.env }),
-            },
-          }),
+      ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
       ...(options.systemPrompt === undefined ? {} : { system_prompt: options.systemPrompt }),
       ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
-    } as CreateSessionRequest;
+      ...(options.network === undefined ? {} : { network: options.network }),
+      ...(options.providerRecoveryRetries === undefined
+        ? {}
+        : { provider_recovery_retries: options.providerRecoveryRetries }),
+      ...((this.#clientId === undefined && options.client?.submitRetries === undefined)
+        ? {}
+        : {
+            client: {
+              ...(this.#clientId === undefined ? {} : { id: this.#clientId }),
+              ...(options.client?.submitRetries === undefined ? {} : { submit_retries: options.client.submitRetries }),
+            },
+          }),
+    } as unknown as CreateSessionRequest;
     const data = await this.#transport.json<SessionData>("POST", "/v1/sessions", {
       body,
       headers: { "Idempotency-Key": request.idempotencyKey ?? randomIdempotencyKey() },
       signal: request.signal,
       retry: true,
     });
-    let worker: AttachedWorker | undefined;
-    if (compiledTools.attached.size > 0) {
-      const connection = this.#transport.attachedConnection(data.id);
-      worker = new AttachedWorker(
-        connection.url,
-        connection.token,
-        compiledTools.attached,
-        this.#webSocketFactory!,
-      );
-      try {
-        await worker.ready;
-      } catch (cause) {
-        throw new SessionError(`Session ${data.id} was created but its attached Tool worker could not connect`, {
-          cause,
-        });
-      }
-    }
-    return new Session(this.#transport, data, worker);
+    return new Session(this.#transport, data);
   }
 
   async get(id: string, options: Pick<RequestOptions, "signal"> = {}): Promise<Session> {
@@ -195,17 +178,102 @@ export class Sessions {
       ...(list.next_cursor === undefined ? {} : { nextCursor: list.next_cursor }),
     };
   }
+
+  /** Stop the process-scoped customer runner and all reconnect/heartbeat activity. */
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    const hand = this.#customerHand;
+    this.#customerHand = undefined;
+    if (hand !== undefined) void hand.then((value) => value.close()).catch(() => undefined);
+  }
+
+  async #ensureCustomerHand(
+    registrations: readonly import("./tools.js").ClientRegistration[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (this.#closed) throw new SessionError("Brain client is closed");
+    if (registrations.length === 0) return;
+    if (this.#clientId === undefined) {
+      throw new TypeError("Customer-app Tools require Brain({ client: { id } })");
+    }
+    if (this.#webSocketFactory === undefined) {
+      throw new TypeError("This runtime does not provide WebSocket; pass a webSocketFactory to Brain");
+    }
+    if (this.#customerHand === undefined) {
+      let partial: CustomerHand | undefined;
+      const startup = (async () => {
+        try {
+          partial = new CustomerHand(
+            async () => {
+              // A request AbortSignal belongs only to that request. The multiplexed customer
+              // runner has its own lifetime and must remain reconnectable after the create ends.
+              const grant = await this.#transport.customerHandGrant(this.#clientId!);
+              return {
+                request: { url: grant.url, protocol: grant.protocol },
+                observe: (observation) => this.#transport.customerHandObserve(
+                  grant.observationUrl,
+                  grant.observationToken,
+                  observation,
+                ),
+              };
+            },
+            registrations,
+            this.#webSocketFactory!,
+            { clientId: this.#clientId! },
+          );
+          await partial.ready;
+          if (this.#closed) {
+            partial.close();
+            throw new SessionError("Brain client is closed");
+          }
+          return partial;
+        } catch (error) {
+          partial?.close();
+          throw error;
+        }
+      })();
+      this.#customerHand = startup;
+      void startup.catch(() => {
+        if (this.#customerHand === startup) this.#customerHand = undefined;
+      });
+      await waitWithSignal(startup, signal);
+      return;
+    }
+    const hand = await waitWithSignal(this.#customerHand, signal);
+    await waitWithSignal(hand.register(registrations), signal);
+  }
+}
+
+function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(abortError(signal.reason));
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = (): void => signal.removeEventListener("abort", onAbort);
+    const onAbort = (): void => {
+      cleanup();
+      reject(abortError(signal.reason));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => { cleanup(); resolve(value); },
+      (error) => { cleanup(); reject(error); },
+    );
+  });
 }
 
 export class Session implements SessionSummary {
   readonly #transport: Transport;
   #data: SessionData;
-  readonly #attachedWorker: AttachedWorker | undefined;
-
-  constructor(transport: Transport, data: SessionData, attachedWorker?: AttachedWorker) {
+  readonly sandbox: SessionSandbox;
+  readonly storage: SessionStorage;
+  readonly children: SessionChildren;
+  constructor(transport: Transport, data: SessionData) {
     this.#transport = transport;
     this.#data = data;
-    this.#attachedWorker = attachedWorker;
+    this.sandbox = new SessionSandbox(transport, data.id);
+    this.storage = new SessionStorage(transport, data.id);
+    this.children = new SessionChildren(transport, data.id);
   }
 
   get id(): string {
@@ -295,15 +363,28 @@ export class Session implements SessionSummary {
     return this;
   }
 
+  async end(options: Pick<RequestOptions, "signal"> = {}): Promise<this> {
+    this.#data = await this.#transport.json<SessionData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.id)}/end`,
+      { signal: options.signal },
+    );
+    return this;
+  }
+
   async delete(options: Pick<RequestOptions, "signal"> = {}): Promise<void> {
     await this.#transport.json<void>("DELETE", `/v1/sessions/${encodeURIComponent(this.id)}`, {
       signal: options.signal,
     });
-    this.#data = { ...this.#data, state: "deleted" };
-    this.#attachedWorker?.close();
+    this.#data = {
+      ...this.#data,
+      state: "deleting" as SessionState,
+      turn_state: "idle",
+    };
   }
 
   private markIdle(): void {
-    this.#data = { ...this.#data, state: "idle" };
+    const { turn_phase: _completedPhase, ...data } = this.#data;
+    this.#data = { ...data, turn_state: "idle" };
   }
 }

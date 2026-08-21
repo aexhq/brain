@@ -48,7 +48,8 @@ try {
       `assert.equal(typeof Brain, "function");\n` +
       `const compiled = await compileTools([read]);\n` +
       `assert.equal(compiled.items[0].definition.name, "read");\n` +
-      `assert.equal(compiled.items[0].executor.kind, "hand");\n` +
+      `assert.equal(compiled.items[0].executor.kind, "aex_managed");\n` +
+      `assert.equal(compiled.bundles.length, 1);\n` +
       `assert.ok(compiled.bundles[0].bytes > 0);\n`,
   );
   run(["install", "--no-audit", "--no-fund"], directory);
