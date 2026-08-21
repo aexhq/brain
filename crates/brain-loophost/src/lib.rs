@@ -116,6 +116,22 @@ impl WasmLoopEngine {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.epoch_interruption(true);
+        // The on-disk compilation cache turns every later load of the same component under the
+        // same engine config into a fast deserialize — across processes, so daemon restarts
+        // and every test after the first skip the multi-minute cranelift compile. wasmtime
+        // keys entries by engine config itself (the B11 requirement). An unavailable cache
+        // dir degrades to plain compilation: a cache is an optimization, never a dependency.
+        match wasmtime::CacheConfig::from_file(None)
+            .and_then(wasmtime::Cache::new)
+            .map_err(|error| error.to_string())
+        {
+            Ok(cache) => {
+                config.cache(Some(cache));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "wasmtime compilation cache unavailable; compiling without it");
+            }
+        }
         let engine = wt(Engine::new(&config))?;
         let ticker = engine.clone();
         std::thread::Builder::new()
