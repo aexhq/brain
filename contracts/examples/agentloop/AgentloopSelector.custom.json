@@ -1,0 +1,6 @@
+{
+  "kind": "custom",
+  "source_bundle_sha256": "8467bd3118eff613ff199dd409e5483b8fc083bf28b75313b56818739a0be610",
+  "source_bundle_bytes": 557843,
+  "toolchain": "aex-loop-toolchain-1"
+}

@@ -29,6 +29,16 @@ SCHEMAS = {
         ROOT / "contracts/session/v1/schemas.json",
         ROOT / "crates/brain-protocol/src/session.rs",
     ),
+    "agentloop": (
+        ROOT / "contracts/agentloop/v1/contract.json",
+        ROOT / "crates/brain-protocol/src/agentloop.rs",
+    ),
+}
+
+# Contracts whose RFC 8785 identity is pinned beside the schema.
+DIGESTS = {
+    "hand": ROOT / "contracts/hand/contract.digest",
+    "agentloop": ROOT / "contracts/agentloop/v1/contract.digest",
 }
 
 
@@ -86,9 +96,15 @@ def main() -> int:
         cwd=ROOT,
         check=True,
     )
-    if "hand" in selected:
-        digest_path = ROOT / "contracts/hand/contract.digest"
-        digest_path.write_text(hand_digest(SCHEMAS["hand"][0]) + "\n", encoding="ascii")
+    # Generated views must satisfy the repository fmt gate; format only what was regenerated.
+    subprocess.run(
+        ["rustfmt", "--edition", "2024", *(str(output) for _, output in selected.values())],
+        cwd=ROOT,
+        check=True,
+    )
+    for name, digest_path in DIGESTS.items():
+        if name in selected:
+            digest_path.write_text(hand_digest(SCHEMAS[name][0]) + "\n", encoding="ascii")
     return 0
 
 

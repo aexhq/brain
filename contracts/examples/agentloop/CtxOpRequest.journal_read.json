@@ -1,0 +1,13 @@
+{
+  "op_id": "op-r-0012",
+  "activation_id": "act-0002",
+  "op": {
+    "op": "journal_read",
+    "after_seq": 100,
+    "types": [
+      "user_message",
+      "assistant_message"
+    ],
+    "limit": 64
+  }
+}

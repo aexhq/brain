@@ -1,0 +1,11 @@
+{
+  "op_id": "op-k-0011",
+  "activation_id": "act-0002",
+  "op": {
+    "op": "kv_set",
+    "entries": {
+      "round_count": 43,
+      "stale_flag": null
+    }
+  }
+}

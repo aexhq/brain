@@ -31,6 +31,44 @@ pub fn hand_contract_digest() -> Digest {
     canonical_digest(&schema).expect("the embedded Hand schema is canonicalizable")
 }
 
+/// Canonical JSON Schema for the only supported Brain-to-loop-host agentloop contract.
+pub const AGENTLOOP_CONTRACT_SCHEMA_JSON: &str =
+    include_str!("../../../contracts/agentloop/v1/contract.json");
+
+/// Pinned SHA-256 of the agentloop schema's RFC 8785 canonical JSON representation.
+pub const AGENTLOOP_CONTRACT_DIGEST: &str =
+    include_str!("../../../contracts/agentloop/v1/contract.digest");
+
+/// Compute the compatibility identity of the embedded agentloop contract schema.
+pub fn agentloop_contract_digest() -> crate::agentloop::Digest {
+    let schema: Value = serde_json::from_str(AGENTLOOP_CONTRACT_SCHEMA_JSON)
+        .expect("embedded agentloop schema is valid");
+    let canonical = serde_jcs::to_vec(&schema).expect("the embedded agentloop schema is canonicalizable");
+    hex::encode(Sha256::digest(canonical))
+        .parse()
+        .expect("SHA-256 hex satisfies the agentloop Digest schema")
+}
+
+/// Compute a ctx operation's request identity over every effect-affecting field.
+///
+/// The dedup pair is `(op_id, this digest)`: `op_id` itself is excluded so it can pair with the
+/// digest, and everything else — the activation identity and the complete op payload —
+/// participates. Redelivery of the same pair returns the retained outcome; the same `op_id` with
+/// a different digest is a permanent conflict.
+pub fn ctx_op_request_digest(
+    request: &crate::agentloop::CtxOpRequest,
+) -> crate::agentloop::Digest {
+    let mut value = serde_json::to_value(request).expect("a ctx op request serializes");
+    let object = value
+        .as_object_mut()
+        .expect("a ctx op request is a JSON object");
+    object.remove("op_id");
+    let canonical = serde_jcs::to_vec(&value).expect("a ctx op request is canonicalizable");
+    hex::encode(Sha256::digest(canonical))
+        .parse()
+        .expect("SHA-256 hex satisfies the agentloop Digest schema")
+}
+
 /// Compute an operation request digest over every effect-affecting envelope field.
 ///
 /// `request_digest` is blanked to avoid recursion. Trace metadata is observability-only and is
