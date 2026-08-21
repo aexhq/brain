@@ -11,6 +11,7 @@
 //! downstream Hands and products consume immutable Brain identities.
 
 pub mod adapter;
+pub mod agentloop;
 pub mod api;
 pub mod compact;
 pub mod config;

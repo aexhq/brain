@@ -8384,6 +8384,7 @@ fn turn_run(
     let session = SessionConfig::new(prefix.clone(), r.key.clone(), base_url);
     Ok(TurnRun {
         engine: Arc::downgrade(brain),
+        agentloop: Arc::new(crate::agentloop::BuiltinAexLoop),
         session_id: session_id.to_string(),
         turn_id: turn_id.to_string(),
         prefix,
