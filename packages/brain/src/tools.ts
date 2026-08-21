@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import * as z from "zod";
 
@@ -8,248 +8,228 @@ export type JsonSchema = Record<string, unknown>;
 
 export interface ToolContext {
   readonly signal: AbortSignal;
-  readonly callId: string;
-  readonly workspace: string;
+  readonly operationId: string;
+  readonly sessionId: string;
   readonly deadlineMs: number;
+  /** Present only for Aex-managed execution. */
+  readonly workspace?: string;
 }
 
-export type ToolHandler<Input extends z.ZodType, Output extends z.ZodType> = (
+export type ToolHandler<Input extends z.ZodType, Output = unknown> = (
   input: z.output<Input>,
   context: ToolContext,
-) => z.input<Output> | Promise<z.input<Output>>;
+) => Output | Promise<Output>;
 
-export interface ToolDefinition {
-  readonly name: string;
-  readonly description: string;
-  readonly inputSchema: JsonSchema;
-  readonly outputSchema: JsonSchema;
+export interface ServerToolOptions {
+  readonly env?: readonly string[];
 }
 
-export type ToolExecution = "hand" | "attached" | "server" | "intrinsic" | "mcp";
+export interface ClientToolOptions {
+  /** Stable registration override. Normally derived from the Tool contract. */
+  readonly registration?: string;
+}
 
-interface HandExecutor {
-  readonly kind: "hand";
+export interface ToolBuilder<Input extends z.ZodType = z.ZodType, Output = unknown> {
+  readonly kind: "brain.tool-builder";
+  describe(description: string): ToolBuilder<Input, Output>;
+  named(name: string): ToolBuilder<Input, Output>;
+  returns<Schema extends z.ZodType>(schema: Schema): ToolBuilder<Input, z.output<Schema>>;
+  client(options?: ClientToolOptions): Tool<Input, Output>;
+  server(module: string, options?: ServerToolOptions): Tool<Input, Output>;
+}
+
+export interface ToolContract {
+  readonly name: string;
+  readonly description?: string;
+  readonly inputSchema: JsonSchema;
+  readonly outputSchema?: JsonSchema;
+  readonly contractDigest: string;
+}
+
+interface AexManagedExecutor {
+  readonly kind: "aex_managed";
   readonly module?: string;
   readonly prepared?: PreparedBundle;
-  readonly preinstalledChecksum?: string;
 }
 
-interface AttachedExecutor {
-  readonly kind: "attached";
-  readonly callbackId: string;
+interface CustomerAppExecutor {
+  readonly kind: "customer_app";
+  readonly registration: string;
 }
 
-interface ServerExecutor {
-  readonly kind: "server";
+interface EngineExecutor {
+  readonly kind: "engine";
   readonly capability: string;
-  readonly completion: "continue" | "return_direct";
-  readonly effect: "opaque" | "replay_safe";
-  readonly scope: "root" | "all";
-  readonly maxInputBytes: number;
-}
-
-interface IntrinsicExecutor {
-  readonly kind: "intrinsic";
-  readonly capability: string;
-}
-
-interface McpExecutor {
-  readonly kind: "mcp";
-  readonly server: string;
-  readonly remoteName: string;
 }
 
 export type ToolExecutor =
-  | HandExecutor
-  | AttachedExecutor
-  | ServerExecutor
-  | IntrinsicExecutor
-  | McpExecutor;
+  | AexManagedExecutor
+  | CustomerAppExecutor
+  | EngineExecutor;
+export type ToolExecution = ToolExecutor["kind"];
 
-export interface Tool<Input extends z.ZodType = z.ZodType, Output extends z.ZodType = z.ZodType> {
+export interface Tool<Input extends z.ZodType = z.ZodType, Output = unknown> {
   readonly kind: "brain.tool";
+  readonly contract: ToolContract;
   readonly name: string;
-  readonly description: string;
+  readonly description?: string;
   readonly input: Input;
-  readonly output: Output;
+  readonly output?: z.ZodType;
   readonly requiredEnv: readonly string[];
   readonly execution: ToolExecution;
   readonly executor: ToolExecutor;
+  readonly handler?: ToolHandler<Input, Output>;
+  /** Present only inside a bundled `.server()` module; compileTools never registers it locally. */
   readonly execute?: ToolHandler<Input, Output>;
-  /** Return an explicit attached-process selection of this tool. */
-  local(options?: { callbackId?: string }): Tool<Input, Output>;
 }
 
-export interface DefineToolOptions<Input extends z.ZodType, Output extends z.ZodType> {
-  /** Explicit source-module identity. Required for the default Hand execution mode. */
-  readonly module?: string;
-  readonly name: string;
-  readonly description: string;
+interface Draft<Input extends z.ZodType, Output> {
+  readonly name?: string;
+  readonly description?: string;
   readonly input: Input;
-  readonly output: Output;
-  readonly requiredEnv?: readonly string[];
-  readonly execute: ToolHandler<Input, Output>;
+  readonly output?: z.ZodType;
+  readonly handler: ToolHandler<Input, Output>;
 }
 
 const TOOL_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/u;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const REGISTRATION = /^[A-Za-z0-9_.:-]{1,128}$/u;
+const EMPTY_INPUT = z.object({});
 
-export function defineTool<Input extends z.ZodType, Output extends z.ZodType>(
-  options: DefineToolOptions<Input, Output>,
-): Tool<Input, Output> {
-  assertDefinition(options.name, options.description);
-  const requiredEnv = normalizeRequiredEnv(options.requiredEnv);
-  return makeTool({
-    name: options.name,
-    description: options.description,
-    input: options.input,
-    output: options.output,
-    requiredEnv,
-    executor: {
-      kind: "hand",
-      ...(options.module === undefined ? {} : { module: options.module }),
-    },
-    execute: options.execute,
-  });
-}
-
-export interface DefineServerToolOptions<Input extends z.ZodType, Output extends z.ZodType> {
-  readonly name: string;
-  readonly description: string;
-  readonly input: Input;
-  readonly output: Output;
-  readonly capability: string;
-  readonly completion?: "continue" | "return_direct";
-  readonly effect?: "opaque" | "replay_safe";
-  readonly scope?: "root" | "all";
-  readonly maxInputBytes?: number;
-}
-
-/** Define a model-visible value backed by a trusted capability registered in the server binary. */
-export function defineServerTool<Input extends z.ZodType, Output extends z.ZodType>(
-  options: DefineServerToolOptions<Input, Output>,
-): Tool<Input, Output> {
-  assertDefinition(options.name, options.description);
-  if (options.capability.trim() === "") throw new TypeError("Tool capability cannot be empty");
-  const maxInputBytes = options.maxInputBytes ?? 98_304;
-  if (!Number.isSafeInteger(maxInputBytes) || maxInputBytes < 1 || maxInputBytes > 98_304) {
-    throw new TypeError("maxInputBytes must be an integer from 1 through 98304");
+export function tool<Output>(
+  handler: ToolHandler<typeof EMPTY_INPUT, Output>,
+): ToolBuilder<typeof EMPTY_INPUT, Output>;
+export function tool<Input extends z.ZodType, Output>(
+  input: Input,
+  handler: ToolHandler<Input, Output>,
+): ToolBuilder<Input, Output>;
+export function tool<Input extends z.ZodType, Output>(
+  inputOrHandler: Input | ToolHandler<typeof EMPTY_INPUT, Output>,
+  maybeHandler?: ToolHandler<Input, Output>,
+): ToolBuilder<Input | typeof EMPTY_INPUT, Output> {
+  if (typeof inputOrHandler === "function") {
+    return makeBuilder({
+      ...(inputOrHandler.name === "" ? {} : { name: inputOrHandler.name }),
+      input: EMPTY_INPUT,
+      handler: inputOrHandler,
+    });
   }
-  return makeTool({
-    name: options.name,
-    description: options.description,
-    input: options.input,
-    output: options.output,
-    requiredEnv: [],
-    executor: {
-      kind: "server",
-      capability: options.capability,
-      completion: options.completion ?? "continue",
-      effect: options.effect ?? "opaque",
-      scope: options.scope ?? "all",
-      maxInputBytes,
+  if (typeof maybeHandler !== "function") throw new TypeError("tool(schema, handler) requires a function");
+  return makeBuilder({
+    ...(maybeHandler.name === "" ? {} : { name: maybeHandler.name }),
+    input: inputOrHandler,
+    handler: maybeHandler,
+  });
+}
+
+function makeBuilder<Input extends z.ZodType, Output>(draft: Draft<Input, Output>): ToolBuilder<Input, Output> {
+  return Object.freeze({
+    kind: "brain.tool-builder" as const,
+    describe(description: string) {
+      assertDescription(description);
+      return makeBuilder({ ...draft, description });
+    },
+    named(name: string) {
+      assertName(name);
+      return makeBuilder({ ...draft, name });
+    },
+    returns<Schema extends z.ZodType>(output: Schema) {
+      schemaOf(output, `${draft.name ?? "Tool"} output`);
+      return makeBuilder({ ...draft, output }) as unknown as ToolBuilder<Input, z.output<Schema>>;
+    },
+    client(options: ClientToolOptions = {}) {
+      const contract = compileContract(draft);
+      const registration = options.registration ?? `tool:${contract.contractDigest}`;
+      if (!REGISTRATION.test(registration)) throw new TypeError("Tool registration is invalid");
+      return freezeTool({
+        draft,
+        contract,
+        requiredEnv: [],
+        executor: { kind: "customer_app", registration },
+        handlerKey: "handler",
+      });
+    },
+    server(module: string, options: ServerToolOptions = {}) {
+      if (module.trim() === "") throw new TypeError("server(module) requires import.meta.url");
+      const contract = compileContract(draft);
+      return freezeTool({
+        draft,
+        contract,
+        requiredEnv: normalizeRequiredEnv(options.env),
+        executor: { kind: "aex_managed", module },
+        handlerKey: "execute",
+      });
     },
   });
 }
 
-export interface DefineIntrinsicToolOptions<Input extends z.ZodType, Output extends z.ZodType> {
-  readonly name: string;
-  readonly description: string;
-  readonly input: Input;
-  readonly output: Output;
-  readonly capability: string;
-}
-
-export function defineIntrinsicTool<Input extends z.ZodType, Output extends z.ZodType>(
-  options: DefineIntrinsicToolOptions<Input, Output>,
-): Tool<Input, Output> {
-  assertDefinition(options.name, options.description);
-  return makeTool({
-    ...options,
-    requiredEnv: [],
-    executor: { kind: "intrinsic", capability: options.capability },
-  });
-}
-
-export interface DefinePreinstalledToolOptions<Input extends z.ZodType, Output extends z.ZodType> {
-  readonly name: string;
-  readonly description: string;
-  readonly input: Input;
-  readonly output: Output;
-  readonly checksum: string;
-  readonly requiredEnv?: readonly string[];
-}
-
-/** Define an ordinary Tool whose executable is already present in a compatible Hand image. */
-export function definePreinstalledTool<Input extends z.ZodType, Output extends z.ZodType>(
-  options: DefinePreinstalledToolOptions<Input, Output>,
-): Tool<Input, Output> {
-  assertDefinition(options.name, options.description);
-  assertSha256(options.checksum, "preinstalled checksum");
-  return makeTool({
-    name: options.name,
-    description: options.description,
-    input: options.input,
-    output: options.output,
-    requiredEnv: normalizeRequiredEnv(options.requiredEnv),
-    executor: { kind: "hand", preinstalledChecksum: options.checksum },
-  });
-}
-
-interface MakeToolOptions<Input extends z.ZodType, Output extends z.ZodType> {
-  name: string;
-  description: string;
-  input: Input;
-  output: Output;
+interface FreezeOptions<Input extends z.ZodType, Output> {
+  draft: Draft<Input, Output>;
+  contract: ToolContract;
   requiredEnv: readonly string[];
   executor: ToolExecutor;
-  execute?: ToolHandler<Input, Output>;
+  handlerKey?: "handler" | "execute";
 }
 
-function makeTool<Input extends z.ZodType, Output extends z.ZodType>(
-  options: MakeToolOptions<Input, Output>,
-): Tool<Input, Output> {
-  const local = (localOptions: { callbackId?: string } = {}): Tool<Input, Output> => {
-    if (options.execute === undefined) {
-      throw new TypeError(`Tool ${options.name} has no callback implementation`);
-    }
-    const callbackId = localOptions.callbackId ?? `cb_${randomUUID().replaceAll("-", "")}`;
-    return makeTool({ ...options, executor: { kind: "attached", callbackId } });
-  };
+function freezeTool<Input extends z.ZodType, Output>(options: FreezeOptions<Input, Output>): Tool<Input, Output> {
   return Object.freeze({
     kind: "brain.tool" as const,
-    name: options.name,
-    description: options.description,
-    input: options.input,
-    output: options.output,
+    contract: Object.freeze(options.contract),
+    name: options.contract.name,
+    ...(options.contract.description === undefined ? {} : { description: options.contract.description }),
+    input: options.draft.input,
+    ...(options.draft.output === undefined ? {} : { output: options.draft.output }),
     requiredEnv: Object.freeze([...options.requiredEnv]),
     execution: options.executor.kind,
     executor: Object.freeze(options.executor),
-    ...(options.execute === undefined ? {} : { execute: options.execute }),
-    local,
+    ...(options.handlerKey === undefined ? {} : { [options.handlerKey]: options.draft.handler }),
   });
+}
+
+function compileContract<Input extends z.ZodType, Output>(draft: Draft<Input, Output>): ToolContract {
+  const name = draft.name;
+  if (name === undefined) {
+    throw new TypeError("Tool functions must be named; use .named(name) when build tooling removes the name");
+  }
+  assertName(name);
+  const inputSchema = schemaOf(draft.input, `${name} input`);
+  const outputSchema = draft.output === undefined ? undefined : schemaOf(draft.output, `${name} output`);
+  const canonical = {
+    name,
+    ...(draft.description === undefined ? {} : { description: draft.description }),
+    input_schema: inputSchema,
+    ...(outputSchema === undefined ? {} : { output_schema: outputSchema }),
+  };
+  return {
+    name,
+    ...(draft.description === undefined ? {} : { description: draft.description }),
+    inputSchema,
+    ...(outputSchema === undefined ? {} : { outputSchema }),
+    contractDigest: createHash("sha256").update(canonicalJson(canonical)).digest("hex"),
+  };
+}
+
+export interface ClientRegistration {
+  readonly registration: string;
+  readonly name: string;
+  readonly contractDigest: string;
+  readonly input: z.ZodType;
+  readonly output?: z.ZodType;
+  readonly handler: ToolHandler<z.ZodType>;
 }
 
 export interface WireToolDefinition {
   name: string;
-  description: string;
+  description?: string;
   input_schema: JsonSchema;
-  output_schema: JsonSchema;
+  output_schema?: JsonSchema;
+  contract_digest: string;
 }
 
 export type WireToolExecutor =
-  | { kind: "hand"; protocol: 1; checksum: string; source: "bundle" | "preinstalled"; required_env: string[] }
-  | { kind: "attached"; callback_id: string }
-  | {
-      kind: "server";
-      capability: string;
-      completion: "continue" | "return_direct";
-      effect: "opaque" | "replay_safe";
-      scope: "root" | "all";
-      max_input_bytes: number;
-    }
-  | { kind: "intrinsic"; capability: string }
-  | { kind: "mcp"; server: string; remote_name: string };
+  | { kind: "aex_managed"; bundle_digest: string; required_env: string[] }
+  | { kind: "customer_app"; registration: string }
+  | { kind: "engine"; capability: string };
 
 export interface WireTool {
   definition: WireToolDefinition;
@@ -266,43 +246,56 @@ export interface WireToolBundle {
 export interface CompiledTools {
   readonly items: WireTool[];
   readonly bundles: WireToolBundle[];
-  readonly attached: ReadonlyMap<string, Tool>;
+  readonly clientRegistrations: readonly ClientRegistration[];
 }
 
 export const MAX_TOOL_BUNDLE_BYTES = 4 * 1024 * 1024;
 export const MAX_SESSION_BUNDLE_BYTES = 16 * 1024 * 1024;
+const managedBundleCache = new WeakMap<Tool, Promise<{ checksum: string; bundle: PreparedBundle }>>();
 
-/** Build and seal the exact ordered tools sent in one create-session request. */
+/** Compile the ordered immutable Tool grant once at session creation. */
 export async function compileTools(selections: readonly Tool[] | undefined): Promise<CompiledTools> {
+  const selected = [...(selections ?? [])];
   const items: WireTool[] = [];
   const bundles: WireToolBundle[] = [];
-  const attached = new Map<string, Tool>();
+  const clientRegistrations: ClientRegistration[] = [];
   const names = new Set<string>();
+  const registrations = new Set<string>();
   let totalBundleBytes = 0;
 
-  for (const tool of selections ?? []) {
-    assertTool(tool);
-    if (names.has(tool.name)) throw new TypeError(`Brain tool ${tool.name} was selected more than once`);
-    names.add(tool.name);
-    const definition = await compileDefinition(tool);
+  for (const value of selected) {
+    assertTool(value);
+    if (names.has(value.name)) throw new TypeError(`Brain Tool ${value.name} was selected more than once`);
+    names.add(value.name);
+  }
+  const preparedManaged = await Promise.all(selected.map((value) =>
+    value.executor.kind === "aex_managed" ? prepareManagedTool(value, value.executor) : undefined));
+
+  for (const [index, value] of selected.entries()) {
+    const definition: WireToolDefinition = {
+      name: value.name,
+      ...(value.description === undefined ? {} : { description: value.description }),
+      input_schema: value.contract.inputSchema,
+      ...(value.contract.outputSchema === undefined ? {} : { output_schema: value.contract.outputSchema }),
+      contract_digest: value.contract.contractDigest,
+    };
     let executor: WireToolExecutor;
-    switch (tool.executor.kind) {
-      case "hand": {
-        const prepared = await prepareHandTool(tool, tool.executor);
+    switch (value.executor.kind) {
+      case "aex_managed": {
+        const prepared = preparedManaged[index];
+        if (prepared === undefined) throw new TypeError(`Brain Tool ${value.name} bundle preparation was lost`);
         executor = {
-          kind: "hand",
-          protocol: 1,
-          checksum: prepared.checksum,
-          source: prepared.source,
-          required_env: [...tool.requiredEnv],
+          kind: "aex_managed",
+          bundle_digest: prepared.checksum,
+          required_env: [...value.requiredEnv],
         };
         if (prepared.bundle !== undefined) {
           totalBundleBytes += prepared.bundle.bytes.byteLength;
           if (prepared.bundle.bytes.byteLength > MAX_TOOL_BUNDLE_BYTES) {
-            throw new TypeError(`Brain tool ${tool.name} bundle exceeds ${MAX_TOOL_BUNDLE_BYTES} bytes`);
+            throw new TypeError(`Brain Tool ${value.name} bundle exceeds ${MAX_TOOL_BUNDLE_BYTES} bytes`);
           }
           if (totalBundleBytes > MAX_SESSION_BUNDLE_BYTES) {
-            throw new TypeError(`Selected tool bundles exceed ${MAX_SESSION_BUNDLE_BYTES} bytes`);
+            throw new TypeError(`Selected Tool bundles exceed ${MAX_SESSION_BUNDLE_BYTES} bytes`);
           }
           bundles.push({
             checksum: prepared.bundle.checksum,
@@ -313,54 +306,87 @@ export async function compileTools(selections: readonly Tool[] | undefined): Pro
         }
         break;
       }
-      case "attached":
-        executor = { kind: "attached", callback_id: tool.executor.callbackId };
-        if (attached.has(tool.executor.callbackId)) {
-          throw new TypeError(`Attached callback identity ${tool.executor.callbackId} was selected twice`);
+      case "customer_app": {
+        if (registrations.has(value.executor.registration)) {
+          throw new TypeError(`Customer Tool registration ${value.executor.registration} was selected twice`);
         }
-        attached.set(tool.executor.callbackId, tool);
+        registrations.add(value.executor.registration);
+        if (value.handler === undefined) throw new TypeError(`Customer Tool ${value.name} has no handler`);
+        executor = { kind: "customer_app", registration: value.executor.registration };
+        clientRegistrations.push(Object.freeze({
+          registration: value.executor.registration,
+          name: value.name,
+          contractDigest: value.contract.contractDigest,
+          input: value.input,
+          ...(value.output === undefined ? {} : { output: value.output }),
+          handler: value.handler as ToolHandler<z.ZodType>,
+        }));
         break;
-      case "server":
-        executor = {
-          kind: "server",
-          capability: tool.executor.capability,
-          completion: tool.executor.completion,
-          effect: tool.executor.effect,
-          scope: tool.executor.scope,
-          max_input_bytes: tool.executor.maxInputBytes,
-        };
-        break;
-      case "intrinsic":
-        executor = { kind: "intrinsic", capability: tool.executor.capability };
-        break;
-      case "mcp":
-        executor = {
-          kind: "mcp",
-          server: tool.executor.server,
-          remote_name: tool.executor.remoteName,
-        };
+      }
+      case "engine":
+        executor = { kind: "engine", capability: value.executor.capability };
         break;
     }
     items.push({ definition, executor });
   }
-  return { items, bundles, attached };
+  return { items, bundles, clientRegistrations: Object.freeze(clientRegistrations) };
 }
 
-async function compileDefinition(tool: Tool): Promise<WireToolDefinition> {
-  return {
-    name: tool.name,
-    description: tool.description,
-    input_schema: schemaOf(tool.input, `${tool.name} input`),
-    output_schema: schemaOf(tool.output, `${tool.name} output`),
-  };
+async function prepareManagedTool(
+  value: Tool,
+  executor: AexManagedExecutor,
+): Promise<{ checksum: string; bundle: PreparedBundle }> {
+  const cached = managedBundleCache.get(value);
+  if (cached !== undefined) return await cached;
+  const pending = (async () => {
+    if (executor.prepared !== undefined) {
+      assertSha256(executor.prepared.checksum, "prepared bundle checksum");
+      const actual = createHash("sha256").update(executor.prepared.bytes).digest("hex");
+      if (actual !== executor.prepared.checksum) throw new TypeError(`Brain Tool ${value.name} bundle checksum is invalid`);
+      return { checksum: actual, bundle: executor.prepared };
+    }
+    if (executor.module === undefined) throw new TypeError(`Brain Tool ${value.name} has no server module`);
+    const bundle = await buildToolModule(executor.module);
+    return { checksum: bundle.checksum, bundle };
+  })();
+  managedBundleCache.set(value, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    if (managedBundleCache.get(value) === pending) managedBundleCache.delete(value);
+    throw error;
+  }
 }
+
+/** Internal constructor for Brain-owned fixed capability Tools. */
+export function capabilityTool<Input extends z.ZodType, Output = unknown>(options: {
+  name: string;
+  description: string;
+  input: Input;
+  output?: z.ZodType;
+  capability: string;
+}): Tool<Input, Output> {
+  const draft: Draft<Input, Output> = {
+    name: options.name,
+    description: options.description,
+    input: options.input,
+    ...(options.output === undefined ? {} : { output: options.output }),
+    handler: (() => { throw new TypeError("engine capability cannot execute in the SDK"); }) as ToolHandler<Input, Output>,
+  };
+  return freezeTool({
+    draft,
+    contract: compileContract(draft),
+    requiredEnv: [],
+    executor: { kind: "engine", capability: options.capability },
+  });
+}
+
+/** Brain-owned name for a fixed, server-authorized capability Tool. @internal */
+export const officialTool = capabilityTool;
 
 function schemaOf(schema: z.ZodType, label: string): JsonSchema {
   try {
-    const value = z.toJSONSchema(schema, {
-      target: "draft-2020-12",
-      unrepresentable: "throw",
-    }) as JsonSchema;
+    const value = z.toJSONSchema(schema, { target: "draft-2020-12", unrepresentable: "throw" }) as JsonSchema;
     if (Object.keys(value).length === 0) throw new TypeError(`${label} schema is empty`);
     return value;
   } catch (cause) {
@@ -368,37 +394,80 @@ function schemaOf(schema: z.ZodType, label: string): JsonSchema {
   }
 }
 
-async function prepareHandTool(
-  tool: Tool,
-  executor: HandExecutor,
-): Promise<{ checksum: string; source: "bundle" | "preinstalled"; bundle?: PreparedBundle }> {
-  if (executor.preinstalledChecksum !== undefined) {
-    return { checksum: executor.preinstalledChecksum, source: "preinstalled" };
-  }
-  if (executor.prepared !== undefined) {
-    assertSha256(executor.prepared.checksum, "prepared bundle checksum");
-    const actual = createHash("sha256").update(executor.prepared.bytes).digest("hex");
-    if (actual !== executor.prepared.checksum) throw new TypeError(`Brain tool ${tool.name} bundle checksum is invalid`);
-    return { checksum: actual, source: "bundle", bundle: executor.prepared };
-  }
-  if (executor.module === undefined) {
-    throw new TypeError(
-      `Brain tool ${tool.name} needs module: import.meta.url for Hand execution; choose .local() explicitly for an attached callback`,
-    );
-  }
-  const bundle = await buildToolModule(executor.module);
-  return { checksum: bundle.checksum, source: "bundle", bundle };
+/** RFC 8785 JSON Canonicalization Scheme for Tool contracts. @internal */
+export function canonicalJson(value: unknown): string {
+  return canonicalJsonInner(value, new Set<object>());
 }
 
-function assertTool(tool: Tool): void {
-  if (tool?.kind !== "brain.tool") throw new TypeError("Invalid Brain Tool value");
-  assertDefinition(tool.name, tool.description);
+function canonicalJsonInner(value: unknown, ancestors: Set<object>): string {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "string") {
+    assertUnicodeScalarString(value);
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("Canonical JSON cannot contain a non-finite number");
+    return JSON.stringify(value);
+  }
+  if (typeof value !== "object") {
+    throw new TypeError(`Canonical JSON cannot contain ${typeof value}`);
+  }
+  if (ancestors.has(value)) throw new TypeError("Canonical JSON cannot contain a cycle");
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const items: string[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (!(index in value)) throw new TypeError("Canonical JSON cannot contain a sparse array");
+        items.push(canonicalJsonInner(value[index], ancestors));
+      }
+      return `[${items.join(",")}]`;
+    }
+    const prototype = Object.getPrototypeOf(value) as unknown;
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError("Canonical JSON requires plain JSON objects");
+    }
+    const entries = Object.entries(value as Record<string, unknown>);
+    for (const [key] of entries) assertUnicodeScalarString(key);
+    // ECMAScript relational string comparison is lexicographic UTF-16 code-unit order, the
+    // ordering RFC 8785 requires. It is intentionally independent of ICU and host locale.
+    entries.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    return `{${entries
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJsonInner(item, ancestors)}`)
+      .join(",")}}`;
+  } finally {
+    ancestors.delete(value);
+  }
 }
 
-function assertDefinition(name: string, description: string): void {
-  if (!TOOL_NAME.test(name)) throw new TypeError(`Invalid Brain tool name ${JSON.stringify(name)}`);
+function assertUnicodeScalarString(value: string): void {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) {
+        throw new TypeError("Canonical JSON cannot contain an unpaired UTF-16 surrogate");
+      }
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      throw new TypeError("Canonical JSON cannot contain an unpaired UTF-16 surrogate");
+    }
+  }
+}
+
+function assertTool(value: Tool): void {
+  if (value?.kind !== "brain.tool") throw new TypeError("Tool builders must end in .client() or .server()");
+  assertName(value.name);
+}
+
+function assertName(name: string): void {
+  if (!TOOL_NAME.test(name)) throw new TypeError(`Invalid Brain Tool name ${JSON.stringify(name)}`);
+}
+
+function assertDescription(description: string): void {
   if (description.trim() === "" || description.length > 4096) {
-    throw new TypeError(`Brain tool ${name} description must contain 1 through 4096 characters`);
+    throw new TypeError("Tool description must contain 1 through 4096 characters");
   }
 }
 

@@ -1,6 +1,6 @@
 //! The SDK / configuration surface, and the sealed prefix.
 //!
-//! Core invariant: **the prefix is immutable for a session's life.** Tools, system prompt, MCP set,
+//! Core invariant: **the prefix is immutable for a session's life.** Tools, system prompt,
 //! and model cannot change
 //! mid-session; changing any of them forks a new session. One appended tool
 //! definition destroyed a 6,103-token cache entry, so this is enforced by
@@ -11,7 +11,6 @@ use crate::message::Usage;
 use crate::{BrainError, Result, Shared};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// A BYOK provider credential. Per-session and frozen.
@@ -57,6 +56,8 @@ pub enum Dialect {
 pub struct ToolDecl {
     pub name: String,
     pub description: String,
+    /// Immutable authoring contract digest, used to fence customer and managed executors.
+    pub contract_digest: String,
     /// JSON Schema for the tool input. Rendered verbatim into the request.
     pub input_schema: serde_json::Value,
     /// JSON Schema for the successful tool result. This is part of the sealed
@@ -73,15 +74,12 @@ pub enum ToolRoute {
     /// A deliberately selected Brain engine capability. The model-visible name is
     /// unrelated to this stable capability identifier.
     Intrinsic(String),
-    /// Forwarded over the Brain->Hand ABI using this exact execution seal.
+    /// Routed through the typed Hand operation/receipt seam using this exact execution seal.
     Hand(HandToolSeal),
-    /// A sealed remote MCP tool. Brain makes the outbound call through the single
-    /// SSRF-guarded `Outbound` seam; there is no separate connector tier.
-    Mcp { server: String, remote_name: String },
     /// A host-owned trusted executor registered under a stable capability.
     Server(ServerToolPolicy),
-    /// An explicitly attached SDK callback. Calls are never replayed after dispatch.
-    Attached { callback_id: String },
+    /// A customer-app registration routed through the durable CustomerCoordinator seam.
+    Customer { registration: String },
 }
 
 impl Default for ToolRoute {
@@ -94,11 +92,10 @@ impl Default for ToolRoute {
 pub struct HandToolSeal {
     pub protocol: i64,
     pub checksum: String,
-    pub source: brain_protocol::session::HandToolSource,
     pub required_env: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerToolPolicy {
     pub capability: String,
     pub scope: brain_protocol::session::ExternalToolScope,
@@ -107,24 +104,21 @@ pub struct ServerToolPolicy {
     pub max_input_bytes: usize,
 }
 
-/// An MCP server as declared at session start. Digested, because attaching one
-/// changes the tool list and therefore the prefix.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct McpServerDecl {
-    pub name: String,
-    pub url: String,
-    /// The NEGOTIATED protocol revision, sealed at create: `2026-07-28` for the
-    /// stateless spec, an initialization-era date for the legacy adapter. All
-    /// three fields reach the digest.
-    pub spec_version: String,
-}
-
 /// Sampling parameters. Digested: they are part of what makes a request
 /// reproducible, though not part of the cache prefix proper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputTokenParameter {
+    MaxTokens,
+    MaxCompletionTokens,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenOpts {
     pub max_tokens: u32,
+    pub output_token_parameter: OutputTokenParameter,
     pub temperature: Option<f32>,
+    pub reasoning_effort: Option<String>,
     pub stop_sequences: Vec<String>,
 }
 
@@ -132,7 +126,9 @@ impl Default for GenOpts {
     fn default() -> Self {
         GenOpts {
             max_tokens: 4096,
+            output_token_parameter: OutputTokenParameter::MaxCompletionTokens,
             temperature: None,
+            reasoning_effort: None,
             stop_sequences: Vec::new(),
         }
     }
@@ -141,29 +137,18 @@ impl Default for GenOpts {
 /// Caps that bound a session's blast radius. Not model-visible, not digested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// Maximum subagent nesting. Pi's example spawns an OS process per child
-    /// with **unbounded nesting**; this is the direct answer to that.
-    pub max_subagent_depth: u32,
-    /// Maximum children in one fan-out.
-    pub max_fanout: usize,
     /// Maximum model rounds in one turn before the loop is declared runaway.
     pub max_rounds: u32,
     /// Maximum tool calls dispatched concurrently from one assistant message.
     /// p90 batch size is 4; this is not sized for 64.
     pub max_parallel_tools: usize,
-    /// Maximum `task` subagent identities minted over the session's lifetime.
-    /// Counted from journaled `task` tool calls, so the cap survives re-materialise.
-    pub max_subagent_identities: u32,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Limits {
-            max_subagent_depth: 3,
-            max_fanout: 16,
             max_rounds: 128,
             max_parallel_tools: 8,
-            max_subagent_identities: 12,
         }
     }
 }
@@ -177,15 +162,10 @@ impl Default for Limits {
 pub struct AgentDef {
     pub system_prompt: String,
     pub tools: Vec<ToolDecl>,
-    pub mcp_servers: Vec<McpServerDecl>,
     pub model: String,
     pub dialect: Dialect,
     pub sampling: GenOpts,
     pub limits: Limits,
-    /// Named child agent definitions this agent may dispatch to. A child gets
-    /// its own sealed prefix -- a subagent is a session, and every session
-    /// seals.
-    pub subagents: BTreeMap<String, Arc<AgentDef>>,
 }
 
 impl AgentDef {
@@ -197,24 +177,14 @@ impl AgentDef {
         AgentDef {
             system_prompt: system_prompt.into(),
             tools: Vec::new(),
-            mcp_servers: Vec::new(),
             model: model.into(),
             dialect,
             sampling: GenOpts::default(),
             limits: Limits::default(),
-            subagents: BTreeMap::new(),
         }
     }
     pub fn tool(mut self, t: ToolDecl) -> Self {
         self.tools.push(t);
-        self
-    }
-    pub fn mcp(mut self, m: McpServerDecl) -> Self {
-        self.mcp_servers.push(m);
-        self
-    }
-    pub fn subagent(mut self, name: impl Into<String>, def: AgentDef) -> Self {
-        self.subagents.insert(name.into(), Arc::new(def));
         self
     }
     pub fn limits(mut self, l: Limits) -> Self {
@@ -233,12 +203,12 @@ impl AgentDef {
             digest,
             system_prompt: self.system_prompt,
             tools: self.tools,
-            mcp_servers: self.mcp_servers,
             model: self.model,
             dialect: self.dialect,
             sampling: self.sampling,
             limits: self.limits,
-            subagents: self.subagents,
+            rendered_base: None,
+            prompt_cache_key: None,
         })
     }
 }
@@ -250,12 +220,12 @@ pub struct SealedPrefix {
     digest: String,
     pub system_prompt: String,
     pub tools: Vec<ToolDecl>,
-    pub mcp_servers: Vec<McpServerDecl>,
     pub model: String,
     pub dialect: Dialect,
     pub sampling: GenOpts,
     pub limits: Limits,
-    pub subagents: BTreeMap<String, Arc<AgentDef>>,
+    rendered_base: Option<serde_json::Value>,
+    prompt_cache_key: Option<String>,
 }
 
 impl SealedPrefix {
@@ -264,6 +234,22 @@ impl SealedPrefix {
     }
     pub fn tool(&self, name: &str) -> Option<&ToolDecl> {
         self.tools.iter().find(|t| t.name == name)
+    }
+    pub fn rendered_base(&self) -> Option<&serde_json::Value> {
+        self.rendered_base.as_ref()
+    }
+    pub fn prompt_cache_key(&self) -> Option<&str> {
+        self.prompt_cache_key.as_deref()
+    }
+    pub(crate) fn with_provider_base(
+        mut self: Arc<Self>,
+        rendered_base: Option<serde_json::Value>,
+        prompt_cache_key: Option<String>,
+    ) -> Arc<Self> {
+        let prefix = Arc::get_mut(&mut self).expect("newly sealed prefix is uniquely owned");
+        prefix.rendered_base = rendered_base;
+        prefix.prompt_cache_key = prompt_cache_key;
+        self
     }
     /// The rejection path an SDK caller hits if they try to mutate mid-session.
     /// Present so the error is typed and attributable rather than a panic or a
@@ -274,37 +260,6 @@ impl SealedPrefix {
             what,
         }
     }
-    /// The uniform child prefix for subagents: the parent's prefix minus trusted server tools
-    /// explicitly scoped to the root. The child keeps the subagent capability itself -- depth is enforced at
-    /// dispatch, so one uniform child prefix serves every depth. Derived
-    /// deterministically from the sealed prefix: the SESSION digest is unchanged
-    /// and replay reconstructs children exactly.
-    pub(crate) fn task_child(&self) -> SealedPrefix {
-        SealedPrefix {
-            digest: self.digest.clone(),
-            system_prompt: self.system_prompt.clone(),
-            tools: self
-                .tools
-                .iter()
-                .filter(|tool| {
-                    !matches!(
-                        &tool.route,
-                        ToolRoute::Server(policy)
-                            if policy.scope
-                                == brain_protocol::session::ExternalToolScope::Root
-                    )
-                })
-                .cloned()
-                .collect(),
-            mcp_servers: self.mcp_servers.clone(),
-            model: self.model.clone(),
-            dialect: self.dialect,
-            sampling: self.sampling.clone(),
-            limits: self.limits,
-            subagents: self.subagents.clone(),
-        }
-    }
-
     /// Heap bytes owned by the prefix. Shared across every session that seals
     /// the same definition, so it is charged once to the host, not per session.
     pub fn heap_bytes(&self) -> usize {
@@ -344,11 +299,11 @@ pub fn prefix_digest(def: &AgentDef) -> String {
         model: &'a str,
         dialect: Dialect,
         tools: Vec<CanonTool<'a>>,
-        mcp: Vec<CanonMcp<'a>>,
         max_tokens: u32,
+        output_token_parameter: OutputTokenParameter,
         temperature: Option<f32>,
+        reasoning_effort: &'a Option<String>,
         stop_sequences: &'a [String],
-        subagents: Vec<(&'a str, String)>,
     }
     #[derive(Serialize)]
     struct CanonTool<'a> {
@@ -357,13 +312,6 @@ pub fn prefix_digest(def: &AgentDef) -> String {
         input_schema: &'a serde_json::Value,
         output_schema: &'a serde_json::Value,
     }
-    #[derive(Serialize)]
-    struct CanonMcp<'a> {
-        name: &'a str,
-        url: &'a str,
-        spec_version: &'a str,
-    }
-
     // Tool order is model-visible (it is the literal render order) so it is NOT
     // sorted here. Two definitions that differ only in tool order are two
     // different prefixes, because they are two different cache keys.
@@ -382,26 +330,11 @@ pub fn prefix_digest(def: &AgentDef) -> String {
                 output_schema: &t.output_schema,
             })
             .collect(),
-        mcp: def
-            .mcp_servers
-            .iter()
-            .map(|m| CanonMcp {
-                name: &m.name,
-                url: &m.url,
-                spec_version: &m.spec_version,
-            })
-            .collect(),
         max_tokens: def.sampling.max_tokens,
+        output_token_parameter: def.sampling.output_token_parameter,
         temperature: def.sampling.temperature,
+        reasoning_effort: &def.sampling.reasoning_effort,
         stop_sequences: &def.sampling.stop_sequences,
-        // Children are digested by their own digest: a change deep in a subagent
-        // definition changes the parent's digest too, which is what stops a
-        // "same prefix" claim from being true only at the top level.
-        subagents: def
-            .subagents
-            .iter()
-            .map(|(k, v)| (k.as_str(), prefix_digest(v)))
-            .collect(),
     };
 
     let bytes = serde_json::to_vec(&canon).expect("canonical prefix is always serializable");
@@ -441,9 +374,6 @@ impl SessionConfig {
     pub fn try_set_system_prompt(&self, _s: &str) -> Result<()> {
         Err(self.prefix.reject_mutation("system_prompt"))
     }
-    pub fn try_add_mcp(&self, _m: McpServerDecl) -> Result<()> {
-        Err(self.prefix.reject_mutation("mcp_servers"))
-    }
 }
 
 /// Aggregate usage, carried per session and per turn. Passed through from the
@@ -466,6 +396,7 @@ mod tests {
         AgentDef::new("you are a test", "test-model", Dialect::AnthropicMessages).tool(ToolDecl {
             name: "read".into(),
             description: "read a file".into(),
+            contract_digest: "a".repeat(64),
             input_schema: schema(),
             output_schema: serde_json::json!({"type":"object"}),
             route: ToolRoute::Intrinsic("brain.test.read".into()),
@@ -496,6 +427,7 @@ mod tests {
         let more = def().tool(ToolDecl {
             name: "write".into(),
             description: "write a file".into(),
+            contract_digest: "b".repeat(64),
             input_schema: schema(),
             output_schema: serde_json::json!({"type":"object"}),
             route: ToolRoute::Intrinsic("brain.test.write".into()),
@@ -512,6 +444,7 @@ mod tests {
         let mut swapped = def().tool(ToolDecl {
             name: "write".into(),
             description: "write a file".into(),
+            contract_digest: "b".repeat(64),
             input_schema: schema(),
             output_schema: serde_json::json!({"type":"object"}),
             route: ToolRoute::Intrinsic("brain.test.write".into()),
@@ -529,69 +462,12 @@ mod tests {
     fn routing_and_limits_are_not_digested() {
         let base = prefix_digest(&def());
         let mut d = def();
-        d.tools[0].route = ToolRoute::Mcp {
-            server: "test".into(),
-            remote_name: "read".into(),
-        };
-        d.limits.max_fanout = 999;
+        d.tools[0].route = ToolRoute::Intrinsic("brain.test.other-route".into());
+        d.limits.max_parallel_tools = 999;
         assert_eq!(
             prefix_digest(&d),
             base,
             "our routing is not model-visible prefix"
-        );
-    }
-
-    #[test]
-    fn subagent_change_propagates_to_parent_digest() {
-        let child = AgentDef::new("child v1", "test-model", Dialect::AnthropicMessages);
-        let p1 = def().subagent("explore", child);
-        let d1 = prefix_digest(&p1);
-        let child2 = AgentDef::new("child v2", "test-model", Dialect::AnthropicMessages);
-        let p2 = def().subagent("explore", child2);
-        assert_ne!(prefix_digest(&p2), d1);
-    }
-
-    #[test]
-    fn task_child_keeps_intrinsics_and_removes_root_scoped_server_tools() {
-        let sealed = AgentDef::new("parent", "test-model", Dialect::AnthropicMessages)
-            .tool(ToolDecl {
-                name: "delegate".into(),
-                description: "delegate".into(),
-                input_schema: serde_json::json!({"type":"object"}),
-                output_schema: serde_json::json!({"type":"string"}),
-                route: ToolRoute::Intrinsic("brain.subagents".into()),
-            })
-            .tool(ToolDecl {
-                name: "root_only".into(),
-                description: "root".into(),
-                input_schema: serde_json::json!({"type":"object"}),
-                output_schema: serde_json::json!({"type":"object"}),
-                route: ToolRoute::Server(ServerToolPolicy {
-                    capability: "test.root".into(),
-                    scope: brain_protocol::session::ExternalToolScope::Root,
-                    completion: brain_protocol::session::ExternalToolCompletion::Continue,
-                    effect: brain_protocol::session::ExternalToolEffect::Opaque,
-                    max_input_bytes: 1024,
-                }),
-            })
-            .tool(ToolDecl {
-                name: "read".into(),
-                description: "read".into(),
-                input_schema: serde_json::json!({"type":"object"}),
-                output_schema: serde_json::json!({"type":"object"}),
-                route: ToolRoute::Intrinsic("brain.test.read".into()),
-            })
-            .seal();
-        let child = sealed.task_child();
-        assert_eq!(child.digest(), sealed.digest());
-        assert_eq!(child.limits, sealed.limits);
-        assert_eq!(
-            child
-                .tools
-                .iter()
-                .map(|tool| tool.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["delegate", "read"]
         );
     }
 
@@ -604,14 +480,6 @@ mod tests {
         ));
         assert!(matches!(
             cfg.try_set_system_prompt("other"),
-            Err(BrainError::PrefixSealed { .. })
-        ));
-        assert!(matches!(
-            cfg.try_add_mcp(McpServerDecl {
-                name: "x".into(),
-                url: "http://y".into(),
-                spec_version: "2026-07-28".into()
-            }),
             Err(BrainError::PrefixSealed { .. })
         ));
     }

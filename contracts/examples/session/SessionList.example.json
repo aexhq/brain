@@ -3,25 +3,21 @@
   "data": [
     {
       "id": "ses_01HZX8Y2K3M4N5P6Q7R8S9T0",
+      "root_id": "ses_01HZX8Y2K3M4N5P6Q7R8S9T0",
+      "depth": 0,
+      "last_seq": 130,
       "object": "session",
-      "state": "idle",
+      "state": "open",
+      "turn_state": "idle",
+      "shape": "1gb",
       "model": {
         "provider": "anthropic",
-        "name": "claude-sonnet-5"
-      },
-      "hand": {
-        "state": "suspended",
-        "shape": "1gb",
-        "generation": 3,
-        "started_at": "2026-08-18T09:00:00Z",
-        "wall_deadline_at": "2026-08-18T17:00:00Z",
-        "last_sync_at": "2026-08-18T09:42:10Z",
-        "live_jobs": 0
+        "name": "claude-sonnet-5",
+        "context_window_tokens": 128000
       },
       "storage": {
-        "workspace_bytes": 17825792,
-        "suspended_bytes": 1073741824,
-        "artifact_bytes": 204800
+        "session_storage_bytes": 204800,
+        "upload_reserved_bytes": 0
       },
       "created_at": "2026-08-18T09:00:00Z",
       "updated_at": "2026-08-18T09:42:10Z",

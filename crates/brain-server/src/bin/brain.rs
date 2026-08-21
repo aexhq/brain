@@ -1,11 +1,11 @@
-//! Brain's neutral server entry point. The durable standalone composition is the default; the
-//! explicitly named development mode retains in-memory/local-subprocess adapters for tests.
+//! Brain's neutral server entry point. Production is the default and fails closed because hosted
+//! adapters are injected by the product composition. `local` is explicit and durable.
 
 use brain::api::{AppState, serve};
 use brain::journal::Journal;
 use brain::keys::{KeyCustody, blob_from_b64};
 use brain::session::{Brain, BrainConfig};
-use brain_standalone::{DockerConfig, DockerHandFactory, LocalKeyCustody, SqliteStore};
+use brain_standalone::durable_local_parts;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    let mode = std::env::var("BRAIN_MODE").unwrap_or_else(|_| "standalone".into());
+    let mode = std::env::var("BRAIN_MODE").unwrap_or_else(|_| "production".into());
     let address: std::net::SocketAddr = std::env::var("BRAIN_LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:3210".into())
         .parse()?;
@@ -30,64 +30,51 @@ async fn run() -> anyhow::Result<()> {
     std::fs::create_dir_all(&data)?;
     let token = operator_token(&data)?;
     let brain = match mode.as_str() {
-        "standalone" => {
-            let image = std::env::var("BRAIN_HAND_IMAGE").map_err(|_| {
-                anyhow::anyhow!(
-                    "BRAIN_HAND_IMAGE is required in standalone mode and must name a compatible immutable Hand image"
-                )
-            })?;
-            if image.trim().is_empty() {
-                anyhow::bail!("BRAIN_HAND_IMAGE cannot be empty");
-            }
-            let mut docker = DockerConfig::new(&data, image);
-            if let Ok(executable) = std::env::var("BRAIN_DOCKER_BIN") {
-                if executable.trim().is_empty() {
-                    anyhow::bail!("BRAIN_DOCKER_BIN cannot be empty");
-                }
-                docker.executable = executable.into();
-            }
-            if let Ok(network) = std::env::var("BRAIN_DOCKER_NETWORK") {
-                if network.trim().is_empty() {
-                    anyhow::bail!("BRAIN_DOCKER_NETWORK cannot be empty");
-                }
-                docker.network = Some(network);
-            }
-            let hands = Arc::new(DockerHandFactory::new(docker));
-            hands
-                .verify()
-                .await
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
-            let store = Arc::new(
-                SqliteStore::open(data.join("journal.sqlite3"))
-                    .map_err(|error| anyhow::anyhow!("{error}"))?,
+        "production" => anyhow::bail!(
+            "the neutral brain-server has no production adapters; start the hosted composition or set BRAIN_MODE=local explicitly"
+        ),
+        "local" => {
+            let parts = durable_local_parts(&data).map_err(|error| anyhow::anyhow!("{error}"))?;
+            audit_local(&parts.journal, &parts.custody).await?;
+            tracing::warn!(data = %data.display(), "LOCAL MODE: durable SQLite/custody with unsandboxed host Tool execution; network policy is not enforced");
+            let websocket_url = std::env::var("BRAIN_CUSTOMER_HAND_WEBSOCKET_URL")
+                .unwrap_or_else(|_| format!("ws://{address}/v1/customer-hand/socket"));
+            let observation_base_url = std::env::var("BRAIN_CUSTOMER_HAND_OBSERVATION_BASE_URL")
+                .unwrap_or_else(|_| format!("http://{address}"));
+            let customer_transport =
+                brain::customer::CustomerTransportConfig::new(websocket_url, observation_base_url)?;
+            let local_hand = parts.local_hand.clone();
+            let brain = Brain::with_parts_and_services(
+                BrainConfig::from_env().map_err(|error| anyhow::anyhow!("{error}"))?,
+                parts.journal,
+                parts.custody,
+                Arc::new(brain::adapter::DisabledToolExecutor),
+                brain::session::BrainServices {
+                    session_storage: Some(parts.session_storage),
+                    bundle_storage: Some(parts.bundle_storage),
+                    hand: Some(parts.hand),
+                    session_preparation: Some(parts.session_preparation),
+                    sandbox_files: Some(parts.sandbox_files),
+                    sandbox_control: Some(parts.sandbox_control),
+                    customer_delivery: None,
+                    customer_transport: Some(customer_transport),
+                    compactor: None,
+                },
+                None,
             );
-            let custody = Arc::new(
-                LocalKeyCustody::open(data.join("master.key"))
-                    .map_err(|error| anyhow::anyhow!("{error}"))?,
-            );
-            let owner = format!("brain-{}", brain::mint_id("node", 16));
-            let journal = Journal::new(store, owner);
-            audit_standalone(&journal, &custody, &hands).await?;
-            tracing::info!(data = %data.display(), "standalone mode: SQLite journal and Docker Hands");
-            Brain::with_parts(BrainConfig::default(), journal, custody, hands, None)
+            local_hand
+                .attach_secret_delivery(brain.clone())
+                .map_err(|error| {
+                    anyhow::anyhow!("local Hand secret delivery: {}", error.message.as_str())
+                })?;
+            brain
         }
-        "development" => {
-            tracing::warn!(
-                "DEVELOPMENT MODE: in-memory journal and host subprocess tools; sessions do not survive restart and tools are not sandboxed"
-            );
-            Brain::local(&data, BrainConfig::default())
-                .map_err(|error| anyhow::anyhow!("{error}"))?
-        }
-        other => anyhow::bail!("unsupported BRAIN_MODE={other}; use standalone or development"),
+        other => anyhow::bail!("unsupported BRAIN_MODE={other}; use production or local"),
     };
     serve(AppState { brain, token }, address).await
 }
 
-async fn audit_standalone(
-    journal: &Journal,
-    custody: &Arc<LocalKeyCustody>,
-    hands: &Arc<DockerHandFactory>,
-) -> anyhow::Result<()> {
+async fn audit_local(journal: &Journal, custody: &Arc<dyn KeyCustody>) -> anyhow::Result<()> {
     let heads = journal.list_sessions(1_000_000).await?;
     for head in &heads {
         custody
@@ -99,10 +86,7 @@ async fn audit_standalone(
                     head.session_id
                 )
             })?;
-        for (label, encoded) in [
-            ("MCP", head.doc.mcp_secrets_b64.as_str()),
-            ("Hand environment", head.doc.hand_secrets_b64.as_str()),
-        ] {
+        for (label, encoded) in [("Hand environment", head.doc.hand_secrets_b64.as_str())] {
             if encoded.is_empty() {
                 continue;
             }
@@ -116,20 +100,9 @@ async fn audit_standalone(
                     )
                 })?;
         }
-        hands
-            .verify_session_state(&head.session_id, &head.doc)
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "cannot reopen durable state for {}: {error}",
-                    head.session_id
-                )
-            })?;
     }
     if !heads.is_empty() {
-        tracing::info!(
-            sessions = heads.len(),
-            "standalone durable-state audit passed"
-        );
+        tracing::info!(sessions = heads.len(), "local durable-state audit passed");
     }
     Ok(())
 }
@@ -165,7 +138,7 @@ fn operator_token(data: &Path) -> anyhow::Result<String> {
             file.sync_all()?;
             tracing::warn!(
                 path = %path.display(),
-                "created the standalone operator token; read the protected file to retrieve it"
+                "created the local operator token; read the protected file to retrieve it"
             );
             Ok(value)
         }

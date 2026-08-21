@@ -1,15 +1,12 @@
 import { spawn } from "node:child_process";
 
-import { defineTool } from "@aexhq/brain";
+import { tool } from "@aexhq/brain";
 import { z } from "zod";
 
-const grep = defineTool({
-  module: import.meta.url,
-  name: "grep",
-  description: "Search text files in the Hand workspace with ripgrep.",
-  input: z.object({ pattern: z.string().min(1), path: z.string().default("."), limit: z.number().int().positive().max(10_000).default(1_000) }),
-  output: z.object({ matches: z.array(z.string()), truncated: z.boolean() }),
-  async execute({ pattern, path, limit }, context) {
+const grepInput = z.object({ pattern: z.string().min(1), path: z.string().default("."), limit: z.number().int().positive().max(10_000).default(1_000) });
+const grepOutput = z.object({ matches: z.array(z.string()), truncated: z.boolean() });
+
+const grep = tool(grepInput, async function grep({ pattern, path, limit }, context) {
     return await new Promise((resolve, reject) => {
       const child = spawn("rg", ["--line-number", "--no-heading", "--color", "never", "--", pattern, path], {
         cwd: context.workspace,
@@ -29,7 +26,9 @@ const grep = defineTool({
         resolve({ matches: lines.slice(0, limit), truncated: lines.length > limit });
       });
     });
-  },
-});
+  })
+  .describe("Search text files in the Hand workspace with ripgrep.")
+  .returns(grepOutput)
+  .server(import.meta.url);
 
 export default grep;

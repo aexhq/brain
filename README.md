@@ -60,9 +60,8 @@ Omitting `tools` exposes no model tools.
 | Component | Purpose |
 | --- | --- |
 | [`brain-protocol`](crates/brain-protocol) | Session API and Brain-to-Hand contracts |
-| [`brain-hand-client`](crates/brain-hand-client) | Client for the public Hand protocol |
 | [`brain`](crates/brain) | Session engine, providers, tool router, recovery, and adapter ports |
-| [`brain-standalone`](crates/brain-standalone) | SQLite journal, encrypted local custody, files, and Docker Hands |
+| [`brain-standalone`](crates/brain-standalone) | SQLite journal, encrypted local custody/storage, and an explicit local Hand |
 | [`brain-aws`](crates/brain-aws) | Neutral DynamoDB, KMS, and S3 adapters |
 | [`brain-server`](crates/brain-server) | Standalone server and development composition |
 | [`@aexhq/brain`](packages/brain) | TypeScript client, Tool API, customer Hand, schemas, and builder |
@@ -73,20 +72,19 @@ Hands implement Brain's public ports. Brain never imports a Hands implementation
 ## Run standalone
 
 ```sh
-export BRAIN_HAND_IMAGE='ghcr.io/aexhq/hands@sha256:<digest>'
+export BRAIN_MODE=local
 export BRAIN_DATA_DIR="$PWD/brain-data"
 cargo run --release -p brain-server --bin brain
 ```
 
 Brain binds `127.0.0.1:3210` by default. Set `BRAIN_API_TOKEN`, or read the generated mode-0600
-token from `$BRAIN_DATA_DIR/operator.token`. See [STANDALONE.md](STANDALONE.md) for Docker Compose,
-backups, networking, and trust boundaries.
+token from `$BRAIN_DATA_DIR/operator.token`. Local mode deliberately executes managed Tool bundles
+as unsandboxed host Node 22 subprocesses; use a hosted Hand for untrusted workloads.
 
 ## Embed Brain
 
 Implement the public Hand, journal, custody, storage, or trusted-tool ports your environment needs,
-then compose them with `Brain::with_parts`. The
-[`custom_adapter` test](crates/brain/tests/custom_adapter.rs) is a complete third-party example.
+then compose them with `Brain::with_parts_and_services`.
 
 ## Verification
 

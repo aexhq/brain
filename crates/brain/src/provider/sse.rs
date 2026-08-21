@@ -9,11 +9,13 @@
 
 use crate::{BrainError, Result};
 
-pub const DEFAULT_MAX_FRAME: usize = 1024 * 1024;
+pub const DEFAULT_MAX_FRAME: usize = 256 * 1024;
+const MAX_EVENTS_PER_FEED: usize = 4096;
 
 #[derive(Debug)]
 pub struct SseDecoder {
     buf: Vec<u8>,
+    line: Vec<u8>,
     max_frame: usize,
 }
 
@@ -27,6 +29,7 @@ impl Default for SseDecoder {
     fn default() -> Self {
         SseDecoder {
             buf: Vec::with_capacity(8192),
+            line: Vec::with_capacity(1024),
             max_frame: DEFAULT_MAX_FRAME,
         }
     }
@@ -35,58 +38,71 @@ impl Default for SseDecoder {
 impl SseDecoder {
     pub fn with_max_frame(max_frame: usize) -> Self {
         SseDecoder {
-            buf: Vec::with_capacity(8192),
+            buf: Vec::with_capacity(max_frame.min(8192)),
+            line: Vec::with_capacity(max_frame.min(1024)),
             max_frame,
         }
     }
 
     /// Feed bytes; drain whatever complete events they completed.
     pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>> {
-        self.buf.extend_from_slice(chunk);
-        if self.buf.len() > self.max_frame {
-            return Err(BrainError::Protocol(format!(
-                "SSE frame exceeded {} bytes without a terminator",
-                self.max_frame
-            )));
-        }
         let mut out = Vec::new();
-        while let Some(end) = find_terminator(&self.buf) {
-            let (frame, rest) = self.buf.split_at(end.0);
-            let ev = parse_frame(frame)?;
-            let rest = rest[end.1..].to_vec();
-            self.buf = rest;
-            if let Some(ev) = ev {
-                out.push(ev);
+        for &byte in chunk {
+            if byte != b'\n' {
+                if self.pending() >= self.max_frame {
+                    return Err(self.frame_too_large());
+                }
+                self.line.push(byte);
+                continue;
             }
+
+            let normalized = self
+                .line
+                .strip_suffix(b"\r")
+                .unwrap_or(self.line.as_slice());
+            if normalized.is_empty() {
+                if let Some(event) = parse_frame(&self.buf)? {
+                    if out.len() >= MAX_EVENTS_PER_FEED {
+                        return Err(BrainError::Protocol(format!(
+                            "provider chunk contained more than {MAX_EVENTS_PER_FEED} SSE events"
+                        )));
+                    }
+                    out.push(event);
+                }
+                self.buf.clear();
+            } else {
+                let separator = usize::from(!self.buf.is_empty());
+                if self
+                    .buf
+                    .len()
+                    .saturating_add(separator)
+                    .saturating_add(normalized.len())
+                    > self.max_frame
+                {
+                    return Err(self.frame_too_large());
+                }
+                if separator == 1 {
+                    self.buf.push(b'\n');
+                }
+                self.buf.extend_from_slice(normalized);
+            }
+            self.line.clear();
         }
         Ok(out)
+    }
+
+    fn frame_too_large(&self) -> BrainError {
+        BrainError::Protocol(format!(
+            "SSE frame exceeded {} bytes without a terminator",
+            self.max_frame
+        ))
     }
 
     /// Bytes still buffered at EOF. Non-empty means the stream ended mid-frame,
     /// which the caller reports rather than silently discarding.
     pub fn pending(&self) -> usize {
-        self.buf.len()
+        self.buf.len().saturating_add(self.line.len())
     }
-}
-
-/// Returns (offset of terminator, terminator length).
-fn find_terminator(buf: &[u8]) -> Option<(usize, usize)> {
-    let mut i = 0;
-    while i + 1 < buf.len() {
-        if buf[i] == b'\n' && buf[i + 1] == b'\n' {
-            return Some((i, 2));
-        }
-        if i + 3 < buf.len()
-            && buf[i] == b'\r'
-            && buf[i + 1] == b'\n'
-            && buf[i + 2] == b'\r'
-            && buf[i + 3] == b'\n'
-        {
-            return Some((i, 4));
-        }
-        i += 1;
-    }
-    None
 }
 
 fn parse_frame(frame: &[u8]) -> Result<Option<SseEvent>> {
@@ -189,8 +205,17 @@ mod tests {
     #[test]
     fn an_unterminated_frame_is_bounded_not_unbounded() {
         let mut d = SseDecoder::with_max_frame(64);
-        let err = d.feed(&[b'x'; 65]).unwrap_err();
+        assert!(d.feed(&[b'x'; 64]).unwrap().is_empty());
+        assert_eq!(d.pending(), 64);
+        let err = d.feed(b"x").unwrap_err();
         assert!(matches!(err, BrainError::Protocol(_)));
+        assert_eq!(
+            d.pending(),
+            64,
+            "the rejected byte must never enter the buffer"
+        );
+        assert!(d.buf.capacity() <= 64);
+        assert!(d.line.capacity() <= 64);
     }
 
     #[test]
@@ -198,5 +223,29 @@ mod tests {
         let mut d = SseDecoder::default();
         assert!(d.feed(b"data: half").unwrap().is_empty());
         assert_eq!(d.pending(), 10, "a truncated stream must not look complete");
+    }
+
+    #[test]
+    fn one_large_http_chunk_may_contain_many_small_frames() {
+        let frame = format!("data: {{\"value\":\"{}\"}}\n\n", "x".repeat(128));
+        let chunk = frame.as_bytes().repeat(2_048);
+        assert!(chunk.len() > DEFAULT_MAX_FRAME);
+        let mut decoder = SseDecoder::default();
+        let events = decoder.feed(&chunk).unwrap();
+        assert_eq!(events.len(), 2_048);
+        assert_eq!(decoder.pending(), 0);
+    }
+
+    #[test]
+    fn a_crlf_terminator_split_across_every_byte_stays_valid() {
+        let wire = b"event: answer\r\ndata: yes\r\n\r\n";
+        for split in 1..wire.len() {
+            let mut decoder = SseDecoder::default();
+            let mut events = decoder.feed(&wire[..split]).unwrap();
+            events.extend(decoder.feed(&wire[split..]).unwrap());
+            assert_eq!(events.len(), 1, "split {split}");
+            assert_eq!(events[0].data, "yes");
+            assert_eq!(decoder.pending(), 0);
+        }
     }
 }

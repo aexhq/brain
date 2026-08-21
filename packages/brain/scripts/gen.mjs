@@ -23,8 +23,24 @@ const session = await compile(schema, "BrainSessionAPI", {
 });
 await writeFile(path.join(generated, "session.ts"), session.replace(/\r\n/gu, "\n"));
 
+const handSchemaPath = path.join(contracts, "hand/contract.json");
+const handSchema = JSON.parse(await readFile(handSchemaPath, "utf8"));
+const hand = await compile(handSchema, "BrainHandContract", {
+  bannerComment: banner,
+  additionalProperties: false,
+  strictIndexSignatures: true,
+  unreachableDefinitions: true,
+  style: { singleQuote: false, printWidth: 100 },
+  cwd: path.dirname(handSchemaPath),
+});
+await writeFile(path.join(generated, "hand.ts"), hand.replace(/\r\n/gu, "\n"));
+
 const openapiPath = path.join(contracts, "session/v1/openapi.yaml");
-const paths = await openapiTS(pathToFileURL(openapiPath), { exportType: true });
+const paths = await openapiTS(pathToFileURL(openapiPath), {
+  exportType: true,
+  // Server-side serde defaults remain optional request fields on the public client surface.
+  defaultNonNullable: false,
+});
 await writeFile(path.join(generated, "paths.ts"), banner + astToString(paths));
 await writeFile(
   path.join(here, "../schemas/session.v1.json"),

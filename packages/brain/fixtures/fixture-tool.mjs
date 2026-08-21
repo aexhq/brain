@@ -7,7 +7,8 @@ export default {
   input: {},
   output: {},
   requiredEnv: [],
-  execution: "hand",
-  executor: { kind: "hand" },
+  execution: "aex_managed",
+  executor: { kind: "aex_managed" },
+  contract: { contractDigest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
   execute: async (input) => ({ ...input, escaped: escapeStringRegexp(String(input.value ?? "")) }),
 };

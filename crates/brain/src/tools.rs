@@ -4,13 +4,20 @@
 //! the same ordered `ToolConfig` array, and dispatch is derived only from the sealed executor
 //! descriptor. Model-visible names are data, never switches in the core.
 
-use crate::config::{HandToolSeal, ServerToolPolicy, ToolDecl, ToolRoute};
+use crate::config::{HandToolSeal, ToolDecl, ToolRoute};
 use crate::{BrainError, Result};
-use brain_protocol::abi::{
-    ToolExecutable, ToolExecutableSource, ToolManifest, ToolManifestVersion, ToolSpec, ToolSpecName,
-};
-use brain_protocol::session::{HandToolSource, ToolConfig, ToolExecutor};
+use brain_protocol::session::{ToolConfig, ToolExecutor};
 use serde::Deserialize;
+
+/// Closed engine capabilities implemented by Brain's state machine over typed ports. These are
+/// not host-side extension points: an SDK caller may select only these exact identifiers, and
+/// model-visible Tool names never participate in dispatch.
+pub fn is_direct_engine_capability(capability: &str) -> bool {
+    matches!(
+        capability,
+        "brain.subagents" | "brain.storage" | "brain.sandbox"
+    )
+}
 
 /// Resolve native tools in exact declaration order. Kind discriminator strings and protocol
 /// constants are checked here because generated Rust structs intentionally preserve JSON `const`
@@ -26,16 +33,15 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
     validate_schema(&name, "input", &input_schema)?;
     validate_schema(&name, "output", &output_schema)?;
     let route = match &tool.executor {
-        ToolExecutor::HandToolExecutor(exec) => {
-            if exec.kind != "hand" || exec.protocol != 1 {
+        ToolExecutor::AexManagedToolExecutor(exec) => {
+            if exec.kind != "aex_managed" {
                 return Err(BrainError::Invalid(format!(
                     "tool {name}: unsupported Hand executor descriptor"
                 )));
             }
             ToolRoute::Hand(HandToolSeal {
-                protocol: exec.protocol,
-                checksum: exec.checksum.to_string(),
-                source: exec.source,
+                protocol: 1,
+                checksum: exec.bundle_digest.to_string(),
                 required_env: exec
                     .required_env
                     .iter()
@@ -44,54 +50,35 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
                     .collect(),
             })
         }
-        ToolExecutor::AttachedToolExecutor(exec) => {
-            if exec.kind != "attached" {
+        ToolExecutor::CustomerAppToolExecutor(exec) => {
+            if exec.kind != "customer_app" {
                 return Err(BrainError::Invalid(format!(
-                    "tool {name}: invalid attached executor kind"
+                    "tool {name}: invalid customer-app executor kind"
                 )));
             }
-            ToolRoute::Attached {
-                callback_id: exec.callback_id.to_string(),
+            ToolRoute::Customer {
+                registration: exec.registration.to_string(),
             }
         }
-        ToolExecutor::ServerToolExecutor(exec) => {
-            if exec.kind != "server" {
+        ToolExecutor::EngineToolExecutor(exec) => {
+            if exec.kind != "engine" {
                 return Err(BrainError::Invalid(format!(
-                    "tool {name}: invalid server executor kind"
-                )));
-            }
-            ToolRoute::Server(ServerToolPolicy {
-                capability: exec.capability.to_string(),
-                scope: exec.scope,
-                completion: exec.completion,
-                effect: exec.effect,
-                max_input_bytes: exec.max_input_bytes.get() as usize,
-            })
-        }
-        ToolExecutor::IntrinsicToolExecutor(exec) => {
-            if exec.kind != "intrinsic" {
-                return Err(BrainError::Invalid(format!(
-                    "tool {name}: invalid intrinsic executor kind"
+                    "tool {name}: invalid engine executor kind"
                 )));
             }
             ToolRoute::Intrinsic(exec.capability.to_string())
-        }
-        ToolExecutor::McpToolExecutor(exec) => {
-            if exec.kind != "mcp" {
-                return Err(BrainError::Invalid(format!(
-                    "tool {name}: invalid MCP executor kind"
-                )));
-            }
-            ToolRoute::Mcp {
-                server: exec.server.clone(),
-                remote_name: exec.remote_name.clone(),
-            }
         }
     };
 
     Ok(ToolDecl {
         name,
-        description: tool.definition.description.to_string(),
+        description: tool
+            .definition
+            .description
+            .as_ref()
+            .map(|value| value.as_str().to_owned())
+            .unwrap_or_default(),
+        contract_digest: tool.definition.contract_digest.to_string(),
         input_schema,
         output_schema,
         route,
@@ -137,6 +124,55 @@ pub fn enforce_output(
     failed
 }
 
+/// Apply the one Brain-owned inline terminal bound to every executor route before the result
+/// decision is assembled. An effect may have completed, so oversize is converted into a small,
+/// honest failed ToolResult rather than allowing the journal transaction itself to fail.
+pub fn enforce_terminal_bound(
+    tool_name: &str,
+    outcome: crate::adapter::CallOutcome,
+) -> crate::adapter::CallOutcome {
+    let limit = brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES;
+    let value_too_large = outcome
+        .value
+        .as_ref()
+        .is_some_and(|value| !brain_protocol::contract::terminal_inline_fits(value));
+    let terminal_too_large = outcome.terminal.as_ref().is_some_and(|terminal| {
+        let projection = match terminal {
+            crate::adapter::TerminalOutcome::Complete { value, metadata } => {
+                serde_json::json!({"value": value, "metadata": metadata})
+            }
+            crate::adapter::TerminalOutcome::Fail { error } => {
+                serde_json::json!({"error": error})
+            }
+        };
+        !brain_protocol::contract::terminal_inline_fits(&projection)
+    });
+    if outcome.content.len() <= limit && !value_too_large && !terminal_too_large {
+        return outcome;
+    }
+    let mut failed = crate::adapter::CallOutcome::failed(format!(
+        "tool {tool_name} returned more than {limit} inline bytes; store large data in session storage or the sandbox and return a key/path"
+    ));
+    failed.duration_ms = outcome.duration_ms;
+    failed.truncated = true;
+    failed
+}
+
+/// Apply the complete sealed terminal post-processing pipeline. Hot dispatch and crash recovery
+/// must call this same function: an executor receipt cannot become journalable or non-journalable
+/// merely because Brain restarted between the effect and its canonical commit.
+pub fn enforce_outcome(
+    tool: Option<&ToolDecl>,
+    tool_name: &str,
+    outcome: crate::adapter::CallOutcome,
+) -> crate::adapter::CallOutcome {
+    let outcome = match tool {
+        Some(tool) => enforce_output(tool, outcome),
+        None => outcome,
+    };
+    enforce_terminal_bound(tool_name, outcome)
+}
+
 fn validation_error(
     name: &str,
     boundary: &str,
@@ -160,65 +196,6 @@ fn validation_error(
 /// Names of the resolved tools, for the HEAD prefix doc.
 pub fn names(decls: &[ToolDecl]) -> Vec<String> {
     decls.iter().map(|d| d.name.clone()).collect()
-}
-
-/// The digest the brain seals and sends in `hello`. Any hand that cannot serve exactly this
-/// manifest fails the session (`tool_manifest_mismatch`).
-pub fn hand_manifest(decls: &[ToolDecl]) -> Result<ToolManifest> {
-    let mut tools = Vec::new();
-    for decl in decls {
-        let ToolRoute::Hand(seal) = &decl.route else {
-            continue;
-        };
-        let input_schema = decl.input_schema.as_object().cloned().ok_or_else(|| {
-            BrainError::Invalid(format!("tool {} input_schema must be an object", decl.name))
-        })?;
-        let output_schema = decl.output_schema.as_object().cloned().ok_or_else(|| {
-            BrainError::Invalid(format!(
-                "tool {} output_schema must be an object",
-                decl.name
-            ))
-        })?;
-        tools.push(ToolSpec {
-            name: ToolSpecName::try_from(decl.name.clone())
-                .map_err(|e| BrainError::Invalid(format!("tool name: {e}")))?,
-            description: decl.description.clone(),
-            input_schema,
-            output_schema,
-            streams: None,
-            executable: ToolExecutable {
-                protocol: seal.protocol,
-                checksum: seal.checksum.clone().try_into().map_err(|e| {
-                    BrainError::Invalid(format!("tool {} checksum: {e}", decl.name))
-                })?,
-                source: match seal.source {
-                    HandToolSource::Bundle => ToolExecutableSource::Bundle,
-                    HandToolSource::Preinstalled => ToolExecutableSource::Preinstalled,
-                },
-                bytes: None,
-                get_url: None,
-                required_env: seal
-                    .required_env
-                    .iter()
-                    .map(|name| name.parse())
-                    .collect::<std::result::Result<Vec<_>, _>>()
-                    .map_err(|error| {
-                        BrainError::Invalid(format!(
-                            "tool {} required environment name: {error}",
-                            decl.name
-                        ))
-                    })?,
-            },
-        });
-    }
-    Ok(ToolManifest {
-        version: ToolManifestVersion::X1,
-        tools,
-    })
-}
-
-pub fn manifest_digest(manifest: &ToolManifest) -> String {
-    brain_protocol::tools::manifest_digest(manifest).to_string()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -257,23 +234,25 @@ mod tests {
                 "definition": {
                     "name": "run_anything",
                     "description": "A test Hand tool.",
+                    "contract_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "input_schema": {"type":"object"},
                     "output_schema": {"type":"object"}
                 },
                 "executor": {
-                    "kind":"hand", "protocol":1,
-                    "checksum":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "source":"bundle", "required_env":["TOKEN"]
+                    "kind":"aex_managed",
+                    "bundle_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "required_env":["TOKEN"]
                 }
             },
             {
                 "definition": {
                     "name": "delegate_anything",
                     "description": "A test intrinsic.",
+                    "contract_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                     "input_schema": {"type":"object"},
                     "output_schema": {"type":"string"}
                 },
-                "executor": {"kind":"intrinsic", "capability":"brain.subagents"}
+                "executor": {"kind":"engine", "capability":"brain.subagents"}
             }
         ]))
         .unwrap();
@@ -284,22 +263,13 @@ mod tests {
             &decls[1].route,
             ToolRoute::Intrinsic(capability) if capability == "brain.subagents"
         ));
-        let manifest = hand_manifest(&decls).unwrap();
-        assert_eq!(manifest.tools.len(), 1);
-        assert_eq!(&*manifest.tools[0].name, "run_anything");
-        assert_eq!(
-            manifest.tools[0].executable.required_env[0].as_str(),
-            "TOKEN"
-        );
-    }
-
-    #[test]
-    fn manifest_digest_matches_the_pin() {
-        let m = brain_protocol::tools::manifest_v1();
-        assert_eq!(
-            *brain_protocol::tools::manifest_digest(m),
-            manifest_digest(m)
-        );
+        assert!(matches!(
+            &decls[0].route,
+            ToolRoute::Hand(seal)
+                if seal.protocol == 1
+                    && seal.required_env == ["TOKEN"]
+                    && seal.checksum == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
     }
 
     #[test]
@@ -308,6 +278,7 @@ mod tests {
             "definition": {
                 "name": "arbitrary_name",
                 "description": "Schema gate.",
+                "contract_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "input_schema": {
                     "type": "object",
                     "properties": {"value": {"type": "integer"}},
@@ -319,7 +290,7 @@ mod tests {
                     "required": ["ok"]
                 }
             },
-            "executor": {"kind": "attached", "callback_id": "schema-gate"}
+            "executor": {"kind": "customer_app", "registration": "schema-gate"}
         }))
         .unwrap();
         let tool = resolve(&[item]).unwrap().remove(0);
@@ -355,10 +326,11 @@ mod tests {
             "definition": {
                 "name": "malformed",
                 "description": "Bad schema.",
+                "contract_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "input_schema": {"type": "not-a-json-schema-type"},
                 "output_schema": {"type": "object"}
             },
-            "executor": {"kind": "attached", "callback_id": "malformed"}
+            "executor": {"kind": "customer_app", "registration": "malformed"}
         }))
         .unwrap();
         assert!(resolve(&[malformed]).is_err());

@@ -1,0 +1,10 @@
+{
+  "type": "storage.usage",
+  "seq": 125,
+  "at": "2026-08-18T09:40:05Z",
+  "session_id": "ses_01HZX8Y2K3M4N5P6Q7R8S9T0",
+  "storage": {
+    "session_storage_bytes": 1048576,
+    "upload_reserved_bytes": 8388608
+  }
+}

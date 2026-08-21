@@ -23,6 +23,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub enum Scripted {
     Text(String),
     Refusal(String),
+    /// Ambiguous transport loss, optionally after a visible streamed prefix.
+    TransportError {
+        partial_text: Option<String>,
+        message: String,
+    },
+    /// A complete HTTP error response. 4xx is deterministic; 5xx uses the unknown budget.
+    ProviderStatus {
+        status: u16,
+        body: String,
+    },
     /// N tool calls **in one assistant message** -- this sameness is what makes
     /// them parallel rather than N turns.
     ToolCalls(Vec<(String, String, serde_json::Value)>),
@@ -409,7 +419,11 @@ impl Provider for FakeProvider {
         }
     }
 
-    async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
+    async fn stream(
+        &self,
+        req: ModelRequest,
+        _outbound: &crate::outbound::Outbound,
+    ) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
         let call_no = self.call_count.fetch_add(1, Ordering::SeqCst);
 
         // The fast path: decide the turn from raw bytes and record nothing.
@@ -512,6 +526,12 @@ impl FakeProvider {
                             tokio::time::sleep(std::time::Duration::from_nanos(
                                 1_000_000_000 / tps.max(1),
                             )).await;
+                        } else {
+                            // A real provider stream crosses an async socket boundary between
+                            // chunks. Preserve that scheduling boundary even in unpaced tests so
+                            // an instant large fake response cannot monopolize the runtime and
+                            // manufacture EventHub lag that cannot occur on the network path.
+                            tokio::task::yield_now().await;
                         }
                         yield Ok(ProviderEvent::TextDelta { index: 0, text: tok });
                     }
@@ -549,6 +569,15 @@ impl FakeProvider {
                                        cache_creation_input_tokens: None,
                                        reasoning_tokens: None },
                     });
+                }
+                Scripted::TransportError { partial_text, message } => {
+                    if let Some(text) = partial_text {
+                        yield Ok(ProviderEvent::TextDelta { index: 0, text });
+                    }
+                    yield Err(BrainError::Transport(message));
+                }
+                Scripted::ProviderStatus { status, body } => {
+                    yield Err(BrainError::ProviderStatus { status, body });
                 }
             }
         };
@@ -610,7 +639,7 @@ mod tests {
             headers: vec![],
             body: b"{\"messages\":[]}".to_vec(),
         };
-        let err = match f.stream(req).await {
+        let err = match f.stream(req, &crate::outbound::Outbound::new(true)).await {
             Ok(_) => panic!("exhaustion must not produce a stream"),
             Err(e) => e,
         };

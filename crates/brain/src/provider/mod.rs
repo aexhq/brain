@@ -16,9 +16,9 @@ pub mod fake;
 pub mod openai;
 pub mod sse;
 
-use crate::Result;
 use crate::config::{Dialect, ProviderKey, SealedPrefix};
 use crate::message::{ContentBlock, Message, StopReason, Usage};
+use crate::{BrainError, Result};
 use futures_util::stream::BoxStream;
 
 /// The bytes that would go on the wire, fully formed. Building one requires no
@@ -82,6 +82,10 @@ pub enum ProviderEvent {
     BlockDone {
         index: usize,
     },
+    /// Usage-only provider frame. It may precede content or follow the terminal stop frame.
+    Usage {
+        usage: Usage,
+    },
     /// Terminal. Carries whatever usage the provider actually reported --
     /// every field `Option`, because absent is never zero.
     MessageDone {
@@ -103,7 +107,11 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
         base_url: &str,
     ) -> Result<ModelRequest>;
 
-    async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>>;
+    async fn stream(
+        &self,
+        req: ModelRequest,
+        outbound: &crate::outbound::Outbound,
+    ) -> Result<BoxStream<'static, Result<ProviderEvent>>>;
 }
 
 /// Accumulates a dialect-neutral event stream into one complete assistant
@@ -120,15 +128,27 @@ pub struct Accumulator {
     pub usage: Usage,
     pub saw_terminal: bool,
     saw_refusal: bool,
+    total_bytes: usize,
+    tool_calls: usize,
 }
+
+pub const MAX_PROVIDER_ASSISTANT_BYTES: usize = 192 * 1024;
+pub const MAX_PROVIDER_DELTA_BYTES: usize = 64 * 1024;
+pub const MAX_PROVIDER_CONTENT_BLOCKS: usize = 64;
+pub const MAX_PROVIDER_TOOL_CALLS: usize = 32;
 
 #[derive(Debug)]
 enum PartialBlock {
-    Text(String),
+    Empty,
+    Text {
+        text: String,
+        done: bool,
+    },
     Tool {
         id: String,
         name: String,
         json: String,
+        done: bool,
     },
 }
 
@@ -137,58 +157,162 @@ impl Accumulator {
         Self::default()
     }
 
-    pub fn push(&mut self, ev: ProviderEvent) {
+    pub fn push(&mut self, ev: ProviderEvent) -> Result<()> {
+        if self.saw_terminal && !matches!(ev, ProviderEvent::Usage { .. }) {
+            return Err(BrainError::Protocol(
+                "provider emitted content or a second terminal event after message completion"
+                    .into(),
+            ));
+        }
+        let (index, added_bytes, starts_tool) = match &ev {
+            ProviderEvent::TextDelta { index, text }
+            | ProviderEvent::RefusalDelta { index, text } => (*index, text.len(), false),
+            ProviderEvent::ToolUseStart { index, id, name } => {
+                (*index, id.len().saturating_add(name.len()), true)
+            }
+            ProviderEvent::ToolInputDelta {
+                index,
+                partial_json,
+            } => (*index, partial_json.len(), false),
+            ProviderEvent::BlockDone { index } => (*index, 0, false),
+            ProviderEvent::Usage { .. } | ProviderEvent::MessageDone { .. } => (0, 0, false),
+        };
+        if !matches!(
+            ev,
+            ProviderEvent::Usage { .. } | ProviderEvent::MessageDone { .. }
+        ) && index >= MAX_PROVIDER_CONTENT_BLOCKS
+        {
+            return Err(BrainError::Protocol(format!(
+                "provider content block index {index} exceeds {}",
+                MAX_PROVIDER_CONTENT_BLOCKS - 1
+            )));
+        }
+        if added_bytes > MAX_PROVIDER_DELTA_BYTES {
+            return Err(BrainError::Protocol(format!(
+                "provider delta exceeds {MAX_PROVIDER_DELTA_BYTES} bytes"
+            )));
+        }
+        if self.total_bytes.saturating_add(added_bytes) > MAX_PROVIDER_ASSISTANT_BYTES {
+            return Err(BrainError::Protocol(format!(
+                "provider assistant content exceeds {MAX_PROVIDER_ASSISTANT_BYTES} bytes"
+            )));
+        }
+        if starts_tool && self.tool_calls >= MAX_PROVIDER_TOOL_CALLS {
+            return Err(BrainError::Protocol(format!(
+                "provider returned more than {MAX_PROVIDER_TOOL_CALLS} tool calls"
+            )));
+        }
         match ev {
             ProviderEvent::TextDelta { index, text } => {
-                self.ensure(index, || PartialBlock::Text(String::new()));
-                if let Some(PartialBlock::Text(s)) = self.blocks.get_mut(index) {
-                    s.push_str(&text);
+                self.ensure(index);
+                match &mut self.blocks[index] {
+                    PartialBlock::Empty => {
+                        self.blocks[index] = PartialBlock::Text { text, done: false };
+                    }
+                    PartialBlock::Text {
+                        text: value,
+                        done: false,
+                    } => value.push_str(&text),
+                    PartialBlock::Text { done: true, .. } => {
+                        return Err(BrainError::Protocol(format!(
+                            "provider emitted text for completed block {index}"
+                        )));
+                    }
+                    PartialBlock::Tool { .. } => return Err(block_type_conflict(index)),
                 }
             }
             ProviderEvent::RefusalDelta { index, text } => {
                 self.saw_refusal = true;
-                self.ensure(index, || PartialBlock::Text(String::new()));
-                if let Some(PartialBlock::Text(s)) = self.blocks.get_mut(index) {
-                    s.push_str(&text);
+                self.ensure(index);
+                match &mut self.blocks[index] {
+                    PartialBlock::Empty => {
+                        self.blocks[index] = PartialBlock::Text { text, done: false };
+                    }
+                    PartialBlock::Text {
+                        text: value,
+                        done: false,
+                    } => value.push_str(&text),
+                    PartialBlock::Text { done: true, .. } => {
+                        return Err(BrainError::Protocol(format!(
+                            "provider emitted refusal text for completed block {index}"
+                        )));
+                    }
+                    PartialBlock::Tool { .. } => return Err(block_type_conflict(index)),
                 }
             }
             ProviderEvent::ToolUseStart { index, id, name } => {
-                self.ensure(index, || PartialBlock::Text(String::new()));
+                self.ensure(index);
+                if !matches!(self.blocks[index], PartialBlock::Empty) {
+                    return Err(BrainError::Protocol(format!(
+                        "provider started content block {index} more than once"
+                    )));
+                }
                 self.blocks[index] = PartialBlock::Tool {
                     id,
                     name,
                     json: String::new(),
+                    done: false,
                 };
             }
             ProviderEvent::ToolInputDelta {
                 index,
                 partial_json,
             } => {
-                self.ensure(index, || PartialBlock::Tool {
-                    id: String::new(),
-                    name: String::new(),
-                    json: String::new(),
-                });
-                if let Some(PartialBlock::Tool { json, .. }) = self.blocks.get_mut(index) {
-                    json.push_str(&partial_json);
+                self.ensure(index);
+                match &mut self.blocks[index] {
+                    PartialBlock::Tool {
+                        json, done: false, ..
+                    } => json.push_str(&partial_json),
+                    PartialBlock::Tool { done: true, .. } => {
+                        return Err(BrainError::Protocol(format!(
+                            "provider emitted Tool JSON for completed block {index}"
+                        )));
+                    }
+                    PartialBlock::Empty => {
+                        return Err(BrainError::Protocol(format!(
+                            "provider emitted Tool JSON before starting block {index}"
+                        )));
+                    }
+                    PartialBlock::Text { .. } => return Err(block_type_conflict(index)),
                 }
             }
-            ProviderEvent::BlockDone { .. } => {}
+            ProviderEvent::BlockDone { index } => {
+                self.ensure(index);
+                match &mut self.blocks[index] {
+                    PartialBlock::Text { done, .. } | PartialBlock::Tool { done, .. } if !*done => {
+                        *done = true
+                    }
+                    PartialBlock::Empty => {
+                        return Err(BrainError::Protocol(format!(
+                            "provider completed absent content block {index}"
+                        )));
+                    }
+                    _ => {
+                        return Err(BrainError::Protocol(format!(
+                            "provider completed content block {index} more than once"
+                        )));
+                    }
+                }
+            }
+            ProviderEvent::Usage { usage } => self.usage.merge(&usage)?,
             ProviderEvent::MessageDone { stop_reason, usage } => {
                 // OpenAI emits usage in a final choices=[] chunk. Its unknown stop reason must
                 // not overwrite the real finish reason from the preceding chunk.
                 if stop_reason != StopReason::Unknown || self.stop_reason == StopReason::Unknown {
                     self.stop_reason = stop_reason;
                 }
-                self.usage.merge(&usage);
+                self.usage.merge(&usage)?;
                 self.saw_terminal = true;
             }
         }
+        self.total_bytes = self.total_bytes.saturating_add(added_bytes);
+        self.tool_calls += usize::from(starts_tool);
+        Ok(())
     }
 
-    fn ensure(&mut self, index: usize, f: impl Fn() -> PartialBlock) {
+    fn ensure(&mut self, index: usize) {
         while self.blocks.len() <= index {
-            self.blocks.push(f());
+            self.blocks.push(PartialBlock::Empty);
         }
     }
 
@@ -198,11 +322,19 @@ impl Accumulator {
     /// silently become a different call.
     pub fn finish(self) -> Result<(Message, StopReason, Usage)> {
         let mut content = Vec::with_capacity(self.blocks.len());
-        for b in self.blocks {
+        for (index, b) in self.blocks.into_iter().enumerate() {
             match b {
-                PartialBlock::Text(t) if t.is_empty() => {}
-                PartialBlock::Text(t) => content.push(ContentBlock::Text { text: t }),
-                PartialBlock::Tool { id, name, json } => {
+                // OpenAI reserves index zero for text and starts Tool calls at one. A pure
+                // Tool-call response therefore has exactly this one intentional empty slot.
+                PartialBlock::Empty if index == 0 => {}
+                PartialBlock::Empty => {
+                    return Err(BrainError::Protocol(
+                        "provider left a gap in its content block indexes".into(),
+                    ));
+                }
+                PartialBlock::Text { text, .. } if text.is_empty() => {}
+                PartialBlock::Text { text, .. } => content.push(ContentBlock::Text { text }),
+                PartialBlock::Tool { id, name, json, .. } => {
                     let input: serde_json::Value = if json.trim().is_empty() {
                         serde_json::Value::Object(Default::default())
                     } else {
@@ -227,6 +359,12 @@ impl Accumulator {
     }
 }
 
+fn block_type_conflict(index: usize) -> BrainError {
+    BrainError::Protocol(format!(
+        "provider changed the type of content block {index}"
+    ))
+}
+
 pub fn for_dialect(d: Dialect) -> Box<dyn Provider> {
     match d {
         Dialect::AnthropicMessages => Box::new(anthropic::Anthropic),
@@ -234,32 +372,28 @@ pub fn for_dialect(d: Dialect) -> Box<dyn Provider> {
     }
 }
 
-/// One HTTP client for the whole process.
-///
-/// Not an optimisation detail: a client per session would mean a TLS session
-/// cache, a connection pool and a DNS resolver per session, which is a large
-/// part of why process-per-session costs what it does. Brain makes the
-/// same point -- pooled TLS/HTTP clients are a named reason the mux exists.
-static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-
-pub fn http_client() -> &'static reqwest::Client {
-    HTTP.get_or_init(|| {
-        reqwest::Client::builder()
-            .pool_max_idle_per_host(64)
-            .build()
-            .expect("static http client")
-    })
+/// Exact provider-visible immutable request segment stored at session creation. Dynamic messages
+/// are appended to a clone of this object; later deployments do not re-render old session bases.
+pub fn render_base(prefix: &SealedPrefix) -> serde_json::Value {
+    match prefix.dialect {
+        Dialect::AnthropicMessages => {
+            serde_json::Value::Object(anthropic::Anthropic::render_base(prefix))
+        }
+        Dialect::OpenAiChat => serde_json::Value::Object(openai::OpenAiChat::render_base(prefix)),
+    }
 }
 
 /// Shared streaming path for every dialect: send, check status, decode SSE
 /// incrementally, hand each frame to the dialect decoder.
 pub(crate) async fn http_stream(
     req: ModelRequest,
+    outbound: &crate::outbound::Outbound,
     decode: fn(Option<&str>, &str) -> Result<Vec<ProviderEvent>>,
 ) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
     use futures_util::StreamExt;
 
-    let mut rb = http_client().post(&req.url).body(req.body);
+    let url = outbound.check_url(&req.url)?;
+    let mut rb = outbound.client().post(url).body(req.body);
     for (k, v) in &req.headers {
         rb = rb.header(k.as_str(), v.as_str());
     }
@@ -270,12 +404,22 @@ pub(crate) async fn http_stream(
 
     let status = resp.status();
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let mut stream = resp.bytes_stream();
+        let mut body = Vec::with_capacity(2048);
+        while body.len() < 2048 {
+            let Some(chunk) = stream.next().await else {
+                break;
+            };
+            let chunk = chunk.map_err(|error| crate::BrainError::Transport(error.to_string()))?;
+            let take = (2048 - body.len()).min(chunk.len());
+            body.extend_from_slice(&chunk[..take]);
+            if take < chunk.len() {
+                break;
+            }
+        }
         return Err(crate::BrainError::ProviderStatus {
             status: status.as_u16(),
-            // Bounded: a provider that answers an error with a megabyte of HTML
-            // must not put a megabyte into our error type.
-            body: body.chars().take(2048).collect(),
+            body: String::from_utf8_lossy(&body).into_owned(),
         });
     }
 
@@ -325,15 +469,18 @@ mod tests {
             index: 0,
             id: "t1".into(),
             name: "read".into(),
-        });
+        })
+        .unwrap();
         a.push(ProviderEvent::ToolInputDelta {
             index: 0,
             partial_json: "{\"path\": \"/etc/pas".into(),
-        });
+        })
+        .unwrap();
         a.push(ProviderEvent::MessageDone {
             stop_reason: StopReason::ToolUse,
             usage: Usage::default(),
-        });
+        })
+        .unwrap();
         let err = a.finish().unwrap_err();
         assert!(
             matches!(err, crate::BrainError::Protocol(_)),
@@ -348,12 +495,14 @@ mod tests {
             index: 0,
             id: "t1".into(),
             name: "read".into(),
-        });
+        })
+        .unwrap();
         for chunk in ["{\"pa", "th\": \"/e", "tc/hosts\"}"] {
             a.push(ProviderEvent::ToolInputDelta {
                 index: 0,
                 partial_json: chunk.into(),
-            });
+            })
+            .unwrap();
         }
         a.push(ProviderEvent::MessageDone {
             stop_reason: StopReason::ToolUse,
@@ -364,7 +513,8 @@ mod tests {
                 cache_creation_input_tokens: None,
                 reasoning_tokens: None,
             },
-        });
+        })
+        .unwrap();
         let (msg, stop, usage) = a.finish().unwrap();
         assert_eq!(stop, StopReason::ToolUse);
         // Absent stays absent.
@@ -373,5 +523,91 @@ mod tests {
         assert_eq!(uses.len(), 1);
         assert_eq!(uses[0].1, "read");
         assert_eq!(uses[0].2["path"], "/etc/hosts");
+    }
+
+    #[test]
+    fn accumulator_rejects_usage_overflow_without_wrapping() {
+        let mut accumulator = Accumulator::new();
+        accumulator
+            .push(ProviderEvent::Usage {
+                usage: Usage {
+                    input_tokens: Some(u64::MAX),
+                    ..Usage::default()
+                },
+            })
+            .unwrap();
+        let error = accumulator
+            .push(ProviderEvent::Usage {
+                usage: Usage {
+                    input_tokens: Some(1),
+                    ..Usage::default()
+                },
+            })
+            .unwrap_err();
+        assert!(matches!(error, BrainError::Protocol(_)));
+        assert_eq!(accumulator.usage.input_tokens, Some(u64::MAX));
+    }
+
+    #[test]
+    fn accumulator_rejects_type_changes_duplicates_and_post_terminal_deltas() {
+        let mut type_change = Accumulator::new();
+        type_change
+            .push(ProviderEvent::TextDelta {
+                index: 0,
+                text: "text".into(),
+            })
+            .unwrap();
+        assert!(
+            type_change
+                .push(ProviderEvent::ToolInputDelta {
+                    index: 0,
+                    partial_json: "{}".into(),
+                })
+                .is_err()
+        );
+
+        let mut duplicate = Accumulator::new();
+        let start = || ProviderEvent::ToolUseStart {
+            index: 1,
+            id: "call_1".into(),
+            name: "read".into(),
+        };
+        duplicate.push(start()).unwrap();
+        assert!(duplicate.push(start()).is_err());
+
+        let mut completed = Accumulator::new();
+        completed
+            .push(ProviderEvent::TextDelta {
+                index: 0,
+                text: "done".into(),
+            })
+            .unwrap();
+        completed
+            .push(ProviderEvent::BlockDone { index: 0 })
+            .unwrap();
+        assert!(
+            completed
+                .push(ProviderEvent::TextDelta {
+                    index: 0,
+                    text: "late".into(),
+                })
+                .is_err()
+        );
+
+        let mut terminal = Accumulator::new();
+        terminal
+            .push(ProviderEvent::MessageDone {
+                stop_reason: StopReason::EndTurn,
+                usage: Usage::default(),
+            })
+            .unwrap();
+        assert!(
+            terminal
+                .push(ProviderEvent::TextDelta {
+                    index: 0,
+                    text: "late".into(),
+                })
+                .is_err()
+        );
     }
 }

@@ -1,6 +1,5 @@
-name: image
-# Publish only after the exact main commit has passed the complete `ci` workflow. This prevents
-# a failing commit from moving `latest`; deployments consume only the immutable sha tag.
+name: publish Brain image
+
 on:
   workflow_run:
     workflows: [ci]
@@ -9,6 +8,11 @@ on:
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/brain
+  SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+
+concurrency:
+  group: brain-image-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -28,22 +32,72 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build candidate
-        run: docker build -t "$IMAGE:${{ github.event.workflow_run.head_sha }}-${{ matrix.arch }}" .
-      - name: Scan candidate
+      - name: Resolve the first per-architecture writer
+        id: candidate
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ref="$IMAGE:$SOURCE_SHA-$ARCH"
+          if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Reusing the first published candidate $ref; this run will not rebuild it."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build candidate once
+        if: steps.candidate.outputs.exists == 'false'
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --label "org.opencontainers.image.revision=$SOURCE_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            -t "$IMAGE:$SOURCE_SHA-$ARCH" .
+      - name: Scan the first-writer candidate
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.IMAGE }}:${{ github.event.workflow_run.head_sha }}-${{ matrix.arch }}
+          image-ref: ${{ env.IMAGE }}:${{ env.SOURCE_SHA }}-${{ matrix.arch }}
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
-      - name: Push candidate
-        run: docker push "$IMAGE:${{ github.event.workflow_run.head_sha }}-${{ matrix.arch }}"
+      - name: Publish candidate without overwriting
+        if: steps.candidate.outputs.exists == 'false'
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ref="$IMAGE:$SOURCE_SHA-$ARCH"
+          if docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+            echo "candidate tag appeared after the first-writer check; refusing overwrite" >&2
+            exit 1
+          fi
+          docker push "$ref"
+      - name: Verify immutable candidate identity
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ref="$IMAGE:$SOURCE_SHA-$ARCH"
+          raw=$(mktemp)
+          docker buildx imagetools inspect "$ref" --raw > "$raw"
+          jq -e '.schemaVersion == 2 and ((.manifests // []) | length == 0)' "$raw" >/dev/null
+          docker pull "$ref" >/dev/null
+          test "$(docker image inspect --format '{{.Architecture}}' "$ref")" = "$ARCH"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$ref")" = "$SOURCE_SHA"
+          digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | jq -er .digest)
+          echo "$ARCH candidate: \`$IMAGE@$digest\`" >> "$GITHUB_STEP_SUMMARY"
 
   manifest:
     needs: build
@@ -51,14 +105,93 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
     steps:
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - run: |
-          docker buildx imagetools create \
-            -t "$IMAGE:latest" -t "$IMAGE:sha-${{ github.event.workflow_run.head_sha }}" \
-            "$IMAGE:${{ github.event.workflow_run.head_sha }}-amd64" \
-            "$IMAGE:${{ github.event.workflow_run.head_sha }}-arm64"
+      - name: Publish or verify the immutable multi-architecture manifest
+        id: publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_OWNER: ${{ github.repository_owner }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          digest_of() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' | jq -er .digest
+          }
+          verify_index() {
+            local ref=$1 amd=$2 arm=$3 raw
+            raw=$(mktemp)
+            docker buildx imagetools inspect "$ref" --raw > "$raw"
+            jq -e --arg amd "$amd" --arg arm "$arm" '
+              .schemaVersion == 2 and
+              (.manifests | type == "array" and length == 2) and
+              ([.manifests[] | select(.digest == $amd and .platform.os == "linux" and .platform.architecture == "amd64")] | length == 1) and
+              ([.manifests[] | select(.digest == $arm and .platform.os == "linux" and .platform.architecture == "arm64")] | length == 1) and
+              ([.manifests[].digest] | unique | length == 2)
+            ' "$raw" >/dev/null
+          }
+
+          amd=$(digest_of "$IMAGE:$SOURCE_SHA-amd64")
+          arm=$(digest_of "$IMAGE:$SOURCE_SHA-arm64")
+          release="$IMAGE:sha-$SOURCE_SHA"
+          if docker buildx imagetools inspect "$release" >/dev/null 2>&1; then
+            verify_index "$release" "$amd" "$arm" || {
+              echo "$release already exists with different children; refusing overwrite" >&2
+              exit 1
+            }
+          else
+            docker buildx imagetools create \
+              -t "$release" \
+              "$IMAGE@$amd" \
+              "$IMAGE@$arm"
+          fi
+          verify_index "$release" "$amd" "$arm"
+          digest=$(digest_of "$release")
+
+          package_api="/orgs/$PACKAGE_OWNER/packages/container/brain"
+          visibility=$(gh api "$package_api" --jq .visibility 2>/dev/null || true)
+          if [ "$visibility" != public ]; then
+            if ! gh api --method PATCH "$package_api" -f visibility=public >/dev/null; then
+              echo "GHCR package visibility could not be bootstrapped automatically." >&2
+              echo "An aexhq package administrator must set brain to Public, then re-run." >&2
+              exit 1
+            fi
+          fi
+          test "$(gh api "$package_api" --jq .visibility)" = public
+          docker logout ghcr.io >/dev/null
+          if ! docker buildx imagetools inspect "$IMAGE@$digest" >/dev/null 2>&1; then
+            echo "Anonymous pull verification failed for $IMAGE@$digest" >&2
+            exit 1
+          fi
+
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          jq -n \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg image "$IMAGE" \
+            --arg manifest_digest "$digest" \
+            --arg amd64_digest "$amd" \
+            --arg arm64_digest "$arm" \
+            '{schema: 1, source_sha: $source_sha, image: $image, manifest_digest: $manifest_digest, platforms: {"linux/amd64": $amd64_digest, "linux/arm64": $arm64_digest}}' \
+            > "$RUNNER_TEMP/brain-image.json"
+          {
+            echo '### Brain image'
+            echo
+            echo "Immutable source tag: \`$release\`"
+            echo
+            echo "Resolved deploy identity: \`$IMAGE@$digest\`"
+            echo
+            echo "Platforms: \`linux/amd64@$amd\`, \`linux/arm64@$arm\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: brain-image-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/brain-image.json
+          if-no-files-found: error
+          retention-days: 90
