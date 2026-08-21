@@ -45,6 +45,8 @@ pub const PROVIDER_TOTAL_TIMEOUT_ENV: &str = "BRAIN_PROVIDER_TOTAL_TIMEOUT_MS";
 pub const EXTERNAL_TOOL_TIMEOUT_ENV: &str = "BRAIN_EXTERNAL_TOOL_TIMEOUT_MS";
 pub const MAX_MODEL_ROUNDS_ENV: &str = "BRAIN_MAX_MODEL_ROUNDS";
 pub const DEFAULT_MAX_ROUNDS_PER_TURN_ENV: &str = "BRAIN_DEFAULT_MAX_ROUNDS_PER_TURN";
+pub const DRAIN_TIMEOUT_ENV: &str = "BRAIN_DRAIN_TIMEOUT_MS";
+pub const DEFAULT_DRAIN_TIMEOUT_MS: u64 = 110_000;
 pub const MAX_TURNS_ENV: &str = "BRAIN_MAX_TURNS";
 pub const MAX_CONCURRENT_CREATES_ENV: &str = "BRAIN_MAX_CONCURRENT_CREATES";
 pub const MAX_EVENT_FOLLOWERS_ENV: &str = "BRAIN_MAX_EVENT_FOLLOWERS";
@@ -137,6 +139,9 @@ pub struct BrainConfig {
     /// Sealed per-turn model-round ceiling for new sessions. Kernel runaway authorization, not
     /// working policy: the graceful closing round wraps the turn up in text at the cap.
     pub default_max_rounds: u32,
+    /// How long a draining process waits for admitted turns before exiting anyway. Size it
+    /// under the orchestrator's stop timeout (Fargate caps stopTimeout at 120 s).
+    pub drain_timeout: Duration,
     /// Whether user-controlled provider base URLs may reach loopback/private/link-local addresses.
     /// Production keeps this false; explicit local development may opt into private endpoints.
     pub outbound_allow_private: bool,
@@ -194,6 +199,7 @@ impl Default for BrainConfig {
             provider_idle_timeout: Duration::from_millis(DEFAULT_PROVIDER_IDLE_TIMEOUT_MS),
             provider_total_timeout: Duration::from_millis(DEFAULT_PROVIDER_TOTAL_TIMEOUT_MS),
             default_max_rounds: crate::config::Limits::default().max_rounds,
+            drain_timeout: Duration::from_millis(DEFAULT_DRAIN_TIMEOUT_MS),
             outbound_allow_private: false,
             storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
             storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
@@ -314,6 +320,13 @@ impl BrainConfig {
             100_000,
         )?)
         .expect("bounded above by 100000");
+        cfg.drain_timeout = Duration::from_millis(parse_env_u64(
+            DRAIN_TIMEOUT_ENV,
+            read(DRAIN_TIMEOUT_ENV)?.as_deref(),
+            DEFAULT_DRAIN_TIMEOUT_MS,
+            1_000,
+            600_000,
+        )?);
         cfg.outbound_allow_private = parse_env_bool(
             OUTBOUND_ALLOW_PRIVATE_ENV,
             read(OUTBOUND_ALLOW_PRIVATE_ENV)?.as_deref(),
@@ -755,6 +768,9 @@ pub struct Brain {
     turn_permits: Arc<Semaphore>,
     create_permits: Arc<Semaphore>,
     sessions: Mutex<HashMap<String, mpsc::Sender<Command>>>,
+    /// Deploy drain: once set, new creates/messages and recovery starts are refused while
+    /// already-admitted turns run to completion. Never cleared — a draining process exits.
+    draining: AtomicBool,
     recovery_started: AtomicBool,
     recovery_next_shard: AtomicUsize,
     recovery_cursors: Mutex<Vec<Option<String>>>,
@@ -1370,6 +1386,7 @@ impl Brain {
             provider_factory: provider_factory.unwrap_or_else(default_provider_factory),
             hub: Arc::new(EventHub::with_max_followers(cfg.max_event_followers)),
             sessions: Mutex::new(HashMap::new()),
+            draining: AtomicBool::new(false),
             recovery_started: AtomicBool::new(false),
             recovery_next_shard: AtomicUsize::new(0),
             recovery_cursors: Mutex::new(vec![None; crate::journal::RECOVERY_SHARDS]),
@@ -1654,6 +1671,7 @@ impl Brain {
     /// compositions hold this permit across extraction and call `create_session_for_admitted`;
     /// direct callers retain the guard in `create_session_for` above.
     pub(crate) fn try_admit_create(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
+        self.refuse_while_draining()?;
         self.create_permits
             .clone()
             .try_acquire_owned()
@@ -2269,6 +2287,36 @@ impl Brain {
     /// Start bounded, sharded recovery discovery for nonterminal durable work. This is explicit
     /// so library users can construct a Brain outside a Tokio runtime; the HTTP router calls it
     /// automatically. Calling it more than once is harmless.
+    /// Begin the deploy drain: refuse new creates, messages and recovery starts while every
+    /// already-admitted turn runs to completion. Event followers keep streaming until the
+    /// process exits; on reconnect they replay durable records from the replacement.
+    pub fn begin_drain(&self) {
+        if !self.draining.swap(true, Ordering::SeqCst) {
+            tracing::info!(
+                active_turns = self.active_turns(),
+                "drain started; refusing new work while admitted turns finish"
+            );
+        }
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::SeqCst)
+    }
+
+    /// Turns currently holding an admission permit (message-driven and recovery-driven alike).
+    pub fn active_turns(&self) -> usize {
+        self.cfg
+            .max_concurrent_turns
+            .saturating_sub(self.turn_permits.available_permits())
+    }
+
+    fn refuse_while_draining(&self) -> Result<()> {
+        if self.is_draining() {
+            return Err(BrainError::Draining);
+        }
+        Ok(())
+    }
+
     pub fn start_recovery_worker(self: &Arc<Self>) {
         if self
             .recovery_started
@@ -2296,6 +2344,10 @@ impl Brain {
     }
 
     async fn recover_due_pass(self: &Arc<Self>) -> Result<usize> {
+        if self.is_draining() {
+            // Due anchors stay durable; the replacement process discovers them.
+            return Ok(0);
+        }
         let start = self
             .recovery_next_shard
             .fetch_add(self.cfg.recovery_shards_per_poll, Ordering::Relaxed);
@@ -2387,6 +2439,7 @@ impl Brain {
         metadata: HashMap<String, String>,
         idempotency_key: Option<&str>,
     ) -> Result<(String, u64)> {
+        self.refuse_while_draining()?;
         if metadata.len() > 32
             || metadata
                 .iter()
@@ -14534,6 +14587,74 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(data_dir);
         }
+    }
+
+    #[tokio::test]
+    async fn draining_refuses_new_work_while_admitted_turns_finish() {
+        let journal = Journal::new_memory("brain-drain");
+        let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+        fake.script([Scripted::Text("x".repeat(800))]);
+        // Paced emission gives the turn a real duration so the drain window is observable.
+        fake.tokens_per_second.store(400, Ordering::Relaxed);
+        let provider = fake.clone();
+        let brain = Brain::with_parts(
+            BrainConfig::default(),
+            journal.clone(),
+            Arc::new(crate::keys::PlainCustody),
+            Some(Arc::new(move |_| provider.clone())),
+        );
+        let created = brain
+            .create_session(
+                serde_json::from_value(json!({
+                    "model": {"provider":"anthropic", "name":"drain-test", "api_key":"sk-test"}
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let session_id = created.id.to_string();
+        brain
+            .message(
+                &session_id,
+                serde_json::from_value(json!("one slow answer")).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(brain.active_turns() > 0, "the turn holds its permit");
+
+        brain.begin_drain();
+        let refused = brain
+            .message(
+                &session_id,
+                serde_json::from_value(json!("refused")).unwrap(),
+            )
+            .await;
+        assert!(matches!(refused, Err(BrainError::Draining)));
+        let refused_create = brain
+            .create_session(
+                serde_json::from_value(json!({
+                    "model": {"provider":"anthropic", "name":"drain-test", "api_key":"sk-test"}
+                }))
+                .unwrap(),
+                None,
+            )
+            .await;
+        assert!(matches!(refused_create, Err(BrainError::Draining)));
+
+        // The admitted turn is never interrupted: it runs to its durable terminal.
+        for _ in 0..2_000 {
+            if brain.active_turns() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(brain.active_turns(), 0, "the admitted turn drained");
+        let records = journal.read_records(&session_id, 0).await.unwrap();
+        assert!(records.iter().any(|entry| matches!(
+            &entry.record,
+            Record::TurnCompleted { stop_reason, .. } if stop_reason == "end_turn"
+        )));
     }
 
     #[tokio::test]
