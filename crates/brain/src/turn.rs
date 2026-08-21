@@ -107,6 +107,10 @@ pub struct TurnRun {
     pub customer_timeout: std::time::Duration,
     /// Trusted metadata journaled with this message and forwarded only to host executors.
     pub context: std::collections::HashMap<String, String>,
+    /// The loop implementation driving this turn's policy. The engine composition installs
+    /// [`crate::agentloop::BuiltinAexLoop`]; remote loop hosts implement the same trait over
+    /// `contracts/agentloop/v1`.
+    pub agentloop: Arc<dyn crate::agentloop::Agentloop>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +154,73 @@ struct ManagedTerminalReceipt {
 enum PreparedCustomerDispatch {
     Intent(crate::customer::CustomerOperationIntent),
     Failure(CallOutcome),
+}
+
+/// One journaled-but-undispatched batch handed from the model round to dispatch.
+struct PendingBatch {
+    calls: Vec<(String, String, serde_json::Value)>,
+    prepared_customer: HashMap<String, PreparedCustomerDispatch>,
+}
+
+/// The model round's disposition toward the driving loop.
+enum ModelRoundGate {
+    Cancelled,
+    Interrupted,
+    Final { refusal: bool },
+    Calls(PendingBatch),
+}
+
+/// The kernel side of the agentloop seam for one turn. Policy lives in the loop; every method
+/// here is mechanism that journals before its effect.
+struct LoopTurnCtx<'a> {
+    run: &'a TurnRun,
+    st: &'a mut TurnState,
+    rounds: u64,
+    tool_calls: u64,
+    pending: Option<PendingBatch>,
+}
+
+#[async_trait::async_trait]
+impl crate::agentloop::TurnCtx for LoopTurnCtx<'_> {
+    async fn prepare_round(&mut self) -> Result<crate::agentloop::PrepareOutcome> {
+        self.run.loop_prepare(self.st).await
+    }
+
+    async fn model_round(&mut self) -> Result<crate::agentloop::RoundOutcome> {
+        match self.run.loop_model_round(self.st, &mut self.rounds).await? {
+            ModelRoundGate::Cancelled => Ok(crate::agentloop::RoundOutcome::Cancelled),
+            ModelRoundGate::Interrupted => Ok(crate::agentloop::RoundOutcome::Interrupted),
+            ModelRoundGate::Final { refusal } => {
+                Ok(crate::agentloop::RoundOutcome::Final { refusal })
+            }
+            ModelRoundGate::Calls(batch) => {
+                let count = batch.calls.len();
+                self.pending = Some(batch);
+                Ok(crate::agentloop::RoundOutcome::ToolCalls { count })
+            }
+        }
+    }
+
+    async fn dispatch_pending(&mut self) -> Result<crate::agentloop::DispatchOutcome> {
+        let batch = self.pending.take().ok_or_else(|| {
+            BrainError::Protocol("dispatch_pending called with no journaled batch".into())
+        })?;
+        self.run
+            .loop_dispatch(self.st, batch, self.rounds, &mut self.tool_calls)
+            .await
+    }
+
+    fn rounds(&self) -> u64 {
+        self.rounds
+    }
+
+    fn max_rounds(&self) -> u64 {
+        self.run.prefix.limits.max_rounds as u64
+    }
+
+    fn cancelled(&self) -> bool {
+        self.run.cancel.is_cancelled()
+    }
 }
 
 impl From<CallOutcome> for DispatchedOutcome {
@@ -230,11 +301,31 @@ impl TurnRun {
     async fn run_work_from(
         &self,
         st: &mut TurnState,
-        mut rounds: u64,
-        mut tool_calls: u64,
+        rounds: u64,
+        tool_calls: u64,
     ) -> Result<TurnReport> {
-        let max_rounds = self.prefix.limits.max_rounds as u64;
+        let agentloop = self.agentloop.clone();
+        let mut ctx = LoopTurnCtx {
+            run: self,
+            st,
+            rounds,
+            tool_calls,
+            pending: None,
+        };
+        let verdict = agentloop.drive_turn(&mut ctx).await?;
+        let LoopTurnCtx {
+            rounds, tool_calls, ..
+        } = ctx;
+        Ok(TurnReport {
+            stop_reason: verdict.stop_reason,
+            rounds,
+            tool_calls,
+            terminal_committed: verdict.terminal_committed,
+        })
+    }
 
+    /// Compact until the next round fits the sealed context budget.
+    async fn loop_prepare(&self, st: &mut TurnState) -> Result<crate::agentloop::PrepareOutcome> {
         loop {
             let preflight_request = self.provider.build_request(
                 &self.prefix,
@@ -265,12 +356,7 @@ impl TurnRun {
                     )?,
                 };
                 let Some(completed) = self.run_compaction(st, request).await? else {
-                    return Ok(TurnReport {
-                        stop_reason: "interrupted".into(),
-                        rounds,
-                        tool_calls,
-                        terminal_committed: false,
-                    });
+                    return Ok(crate::agentloop::PrepareOutcome::Interrupted);
                 };
                 let semantic = crate::compact::finish_plan(
                     plan,
@@ -291,27 +377,25 @@ impl TurnRun {
                     self.context_hard_tokens
                 )));
             }
+            return Ok(crate::agentloop::PrepareOutcome::Ready);
+        }
+    }
 
-            if rounds >= max_rounds {
-                return Ok(TurnReport {
-                    stop_reason: "max_rounds".into(),
-                    rounds,
-                    tool_calls,
-                    terminal_committed: false,
-                });
-            }
-
+    /// One model round against the kernel-managed context: the provider call with replacement
+    /// recovery, then one durable decision journaling the assistant message and every tool
+    /// intent before anything dispatches.
+    async fn loop_model_round(
+        &self,
+        st: &mut TurnState,
+        rounds: &mut u64,
+    ) -> Result<ModelRoundGate> {
+        {
             // One model round.
             let round = loop {
                 match self.root_round(st).await {
                     Ok(value) => break value,
                     Err(BrainError::Cancelled) => {
-                        return Ok(TurnReport {
-                            stop_reason: "cancelled".into(),
-                            rounds,
-                            tool_calls,
-                            terminal_committed: false,
-                        });
+                        return Ok(ModelRoundGate::Cancelled);
                     }
                     Err(error)
                         if st
@@ -322,12 +406,7 @@ impl TurnRun {
                     {
                         let attempt = st.head.provider_attempt.as_mut().expect("checked");
                         if attempt.replacements_used >= st.head.prefix.provider_recovery_retries {
-                            return Ok(TurnReport {
-                                stop_reason: "interrupted".into(),
-                                rounds,
-                                tool_calls,
-                                terminal_committed: false,
-                            });
+                            return Ok(ModelRoundGate::Interrupted);
                         }
                         tracing::warn!(
                             session = %self.session_id,
@@ -353,8 +432,8 @@ impl TurnRun {
                 attempt_id,
                 request_digest,
             } = round;
-            rounds += 1;
-            st.head.active_rounds = rounds;
+            *rounds += 1;
+            st.head.active_rounds = *rounds;
 
             // Journal the decision: the complete assistant message and every tool intent --
             // one durable write, BEFORE dispatch.
@@ -468,20 +547,36 @@ impl TurnRun {
             st.history.push(message.clone());
 
             if calls.is_empty() {
-                return Ok(TurnReport {
-                    stop_reason: if stop == StopReason::Refusal {
-                        "refusal".into()
-                    } else {
-                        "end_turn".into()
-                    },
-                    rounds,
-                    tool_calls,
-                    terminal_committed: false,
+                return Ok(ModelRoundGate::Final {
+                    refusal: stop == StopReason::Refusal,
                 });
             }
-            tool_calls += calls.len() as u64;
-            st.head.active_tool_calls = tool_calls;
+            Ok(ModelRoundGate::Calls(PendingBatch {
+                calls,
+                prepared_customer,
+            }))
+        }
+    }
 
+    /// Dispatch one journaled batch and journal its results — and, for a `return_direct` tool,
+    /// the turn terminal in the same durable decision.
+    async fn loop_dispatch(
+        &self,
+        st: &mut TurnState,
+        batch: PendingBatch,
+        rounds: u64,
+        tool_calls: &mut u64,
+    ) -> Result<crate::agentloop::DispatchOutcome> {
+        let PendingBatch {
+            calls,
+            prepared_customer,
+        } = batch;
+        let tool_calls = {
+            *tool_calls += calls.len() as u64;
+            st.head.active_tool_calls = *tool_calls;
+            *tool_calls
+        };
+        {
             // Dispatch the batch and journal the results.
             let outcomes = self.dispatch_batch(st, &calls, &prepared_customer).await?;
             let mut result_records = Vec::new();
@@ -745,22 +840,11 @@ impl TurnRun {
             st.history.push(Message::tool_results(blocks));
 
             if let Some(stop_reason) = terminal_report {
-                return Ok(TurnReport {
+                return Ok(crate::agentloop::DispatchOutcome::TerminalCommitted {
                     stop_reason: stop_reason.into(),
-                    rounds,
-                    tool_calls,
-                    terminal_committed: true,
                 });
             }
-
-            if self.cancel.is_cancelled() {
-                return Ok(TurnReport {
-                    stop_reason: "cancelled".into(),
-                    rounds,
-                    tool_calls,
-                    terminal_committed: false,
-                });
-            }
+            Ok(crate::agentloop::DispatchOutcome::Continue)
         }
     }
 
