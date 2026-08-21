@@ -30,6 +30,10 @@ fn sdk_component_path() -> PathBuf {
     guest_dir().join("dist/sdk-loop.component.wasm")
 }
 
+fn pi_component_path() -> PathBuf {
+    guest_dir().join("dist/pi-loop.component.wasm")
+}
+
 /// Build the guest components when absent. Requires Node + npm, exactly like the standalone
 /// managed-tool tests; the build is cached under guest/dist. Once-guarded so parallel tests
 /// never race the npm/componentize pipeline.
@@ -39,6 +43,7 @@ fn ensure_component() {
         if component_path().exists()
             && contract_component_path().exists()
             && sdk_component_path().exists()
+            && pi_component_path().exists()
         {
             return;
         }
@@ -62,6 +67,7 @@ fn ensure_component() {
         assert!(component_path().exists());
         assert!(contract_component_path().exists());
         assert!(sdk_component_path().exists());
+        assert!(pi_component_path().exists());
     });
 }
 
@@ -559,6 +565,131 @@ async fn an_sdk_authored_loop_drives_turns_end_to_end() {
     );
     let turn_events = loop_event_data(&second, "sdk.turn");
     assert_eq!(turn_events[0]["text"], "sdk answer two");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_official_pi_loop_drives_turns() {
+    ensure_component();
+    let store = std::env::temp_dir().join(format!(
+        "brain-pi-loop-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    let aex: Arc<dyn brain::agentloop::Agentloop> = Arc::new(
+        brain_loophost::WasmAgentloop::from_component_file(&component_path()).expect("aex loop"),
+    );
+    let registry =
+        brain_loophost::registry::LoophostRegistry::new(aex.clone(), &store, guest_dir())
+            .expect("registry")
+            .with_official(
+                "pi",
+                brain_loophost::registry::PI_LOOP_VERSION,
+                pi_component_path(),
+            );
+    let brain = serve_brain(
+        BrainServices {
+            agentloop: Some(aex),
+            agentloop_registry: Some(Arc::new(registry)),
+            ..BrainServices::default()
+        },
+        // The parent's first pi round asks for the task tool, the spawned child's single round
+        // pops next while pi's execute awaits the dispatch, then pi's follow-up round, then a
+        // text-only second turn.
+        vec![
+            Scripted::ToolCalls(vec![(
+                "call_task".into(),
+                "subagents".into(),
+                json!({
+                    "action": "spawn_agent",
+                    "task_name": "worker",
+                    "message": "child prompt",
+                    "fork_turns": "all"
+                }),
+            )]),
+            Scripted::Text("child answer".into()),
+            Scripted::Text("pi final answer".into()),
+            Scripted::Text("pi second answer".into()),
+        ],
+    )
+    .await;
+
+    let created: Value = brain
+        .http
+        .post(format!("{}/v1/sessions", brain.base))
+        .bearer_auth(&brain.token)
+        .json(&json!({
+            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+            "agentloop": "pi",
+            "tools": {"items": [{
+                "definition": {
+                    "name": "subagents",
+                    "description": "spawn a child session",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string"},
+                            "task_name": {"type": "string"},
+                            "message": {"type": "string"},
+                            "fork_turns": {"type": "string"}
+                        },
+                        "required": ["action", "task_name", "message"],
+                        "additionalProperties": true
+                    },
+                    "output_schema": {"type": "object", "additionalProperties": true},
+                    "contract_digest": "a".repeat(64),
+                },
+                "executor": {"kind": "engine", "capability": "brain.subagents"},
+            }]}
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        created["agentloop"],
+        json!({"kind": "official", "name": "pi", "version": "0.84.2"}),
+        "the pinned pi identity seals: {created}"
+    );
+    let session = created["id"].as_str().expect("session id").to_string();
+
+    brain.send_message(&session, "hello pi").await;
+    let first = brain.wait_turn(&session).await;
+    let completed = first
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .expect("the pi-driven turn completes");
+    assert_eq!(completed["stop_reason"], "end_turn");
+    assert_eq!(
+        transcript(&first)
+            .iter()
+            .filter(|kind| kind.as_str() == "assistant.message")
+            .count(),
+        2,
+        "pi drove the tool round and its follow-up: {:?}",
+        transcript(&first)
+    );
+    let tool_result = first
+        .iter()
+        .find(|event| event["type"] == "tool.result")
+        .expect("pi dispatched the sealed task tool");
+    assert_eq!(tool_result["name"], "subagents");
+    assert_eq!(tool_result["outcome"], "completed");
+
+    let high_water = max_seq(&first);
+    brain.send_message(&session, "and again").await;
+    let second = brain.wait_turn_after(&session, high_water).await;
+    assert!(
+        second
+            .iter()
+            .any(|event| event["type"] == "turn.completed" && event["stop_reason"] == "end_turn"),
+        "the resident pi conversation carries into turn 2"
+    );
+    let _ = std::fs::remove_dir_all(store);
 }
 
 #[tokio::test(flavor = "multi_thread")]
