@@ -43,7 +43,8 @@ pub const AGENTLOOP_CONTRACT_DIGEST: &str =
 pub fn agentloop_contract_digest() -> crate::agentloop::Digest {
     let schema: Value = serde_json::from_str(AGENTLOOP_CONTRACT_SCHEMA_JSON)
         .expect("embedded agentloop schema is valid");
-    let canonical = serde_jcs::to_vec(&schema).expect("the embedded agentloop schema is canonicalizable");
+    let canonical =
+        serde_jcs::to_vec(&schema).expect("the embedded agentloop schema is canonicalizable");
     hex::encode(Sha256::digest(canonical))
         .parse()
         .expect("SHA-256 hex satisfies the agentloop Digest schema")
@@ -55,9 +56,7 @@ pub fn agentloop_contract_digest() -> crate::agentloop::Digest {
 /// digest, and everything else — the activation identity and the complete op payload —
 /// participates. Redelivery of the same pair returns the retained outcome; the same `op_id` with
 /// a different digest is a permanent conflict.
-pub fn ctx_op_request_digest(
-    request: &crate::agentloop::CtxOpRequest,
-) -> crate::agentloop::Digest {
+pub fn ctx_op_request_digest(request: &crate::agentloop::CtxOpRequest) -> crate::agentloop::Digest {
     let mut value = serde_json::to_value(request).expect("a ctx op request serializes");
     let object = value
         .as_object_mut()

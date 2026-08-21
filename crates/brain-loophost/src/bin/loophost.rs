@@ -1,0 +1,37 @@
+//! The per-tenant loop-host daemon: loads one guest component and serves activations over the
+//! B1 wire. Configuration is by environment, matching the brain binary's convention:
+//!
+//! - `LOOPHOST_COMPONENT` (required): path to the guest wasm component.
+//! - `LOOPHOST_TOKEN` (required): shared secret the brain must present on connect.
+//! - `LOOPHOST_LISTEN` (default `127.0.0.1:0`): bind address.
+//!
+//! The bound address is reported as a single `listening <addr>` line on stdout — the parent
+//! reads it to learn an ephemeral port. Logs go to stderr so stdout stays machine-readable.
+
+use std::io::Write;
+
+fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+    let component = std::env::var("LOOPHOST_COMPONENT").map_err(|_| {
+        anyhow::anyhow!("LOOPHOST_COMPONENT is required (path to the guest component)")
+    })?;
+    let token = std::env::var("LOOPHOST_TOKEN")
+        .map_err(|_| anyhow::anyhow!("LOOPHOST_TOKEN is required"))?;
+    let listen = std::env::var("LOOPHOST_LISTEN").unwrap_or_else(|_| "127.0.0.1:0".into());
+
+    let engine =
+        brain_loophost::WasmLoopEngine::from_component_file(std::path::Path::new(&component))?;
+    tokio::runtime::Runtime::new()?.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(&listen).await?;
+        let addr = listener.local_addr()?;
+        println!("listening {addr}");
+        std::io::stdout().flush()?;
+        tracing::info!(%addr, component, "loop host serving");
+        brain_loophost::daemon::serve(listener, engine, token).await
+    })
+}

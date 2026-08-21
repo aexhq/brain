@@ -8457,6 +8457,9 @@ async fn fail_turn_now(
             ("provider_error", false)
         }
         BrainError::HandUnavailable(_) => ("hand_unavailable", false),
+        // "internal" until agentloop_error joins the public error-code enum alongside the
+        // session-create agentloop selector; the message names the loop precisely already.
+        BrainError::Agentloop(_) => ("internal", false),
         BrainError::SessionFailed(_) => ("session_failed", true),
         BrainError::Fenced => return Ok(()), // a newer owner exists; nothing to write
         _ => ("internal", false),

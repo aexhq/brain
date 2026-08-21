@@ -930,10 +930,13 @@ dependencies = [
  "axum",
  "brain",
  "brain-protocol",
+ "rand 0.9.5",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "wasmtime",
  "wasmtime-wasi",
 ]
