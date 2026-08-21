@@ -720,6 +720,9 @@ pub struct Brain {
     /// Guarded transport used for user-controlled provider base URLs.
     pub outbound: crate::outbound::Outbound,
     pub external_executor: Arc<dyn ToolExecutor>,
+    /// The loop implementation driving every turn's policy. Defaults to the official in-process
+    /// `aex` policy; a composition may install a loop-host adapter over `contracts/agentloop/v1`.
+    pub agentloop: Arc<dyn crate::agentloop::Agentloop>,
     /// Durable per-session object storage. Hosted composition supplies this adapter; `None` means
     /// the storage resource is unavailable, never an in-memory production fallback.
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
@@ -825,6 +828,8 @@ pub struct BrainServices {
     pub customer_delivery: Option<Arc<dyn crate::customer::CustomerHandDeliveryPort>>,
     pub customer_transport: Option<crate::customer::CustomerTransportConfig>,
     pub compactor: Option<Arc<dyn crate::compact::CompactionPort>>,
+    /// The agentloop driving every turn. `None` installs the official in-process `aex` policy.
+    pub agentloop: Option<Arc<dyn crate::agentloop::Agentloop>>,
 }
 
 fn hash_create_key(key: &str) -> String {
@@ -1341,6 +1346,9 @@ impl Brain {
             crate::customer::CustomerCoordinator::new(config, services.customer_delivery.clone())
         });
         Arc::new(Self {
+            agentloop: services
+                .agentloop
+                .unwrap_or_else(|| Arc::new(crate::agentloop::BuiltinAexLoop)),
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
             create_permits: Arc::new(Semaphore::new(cfg.max_concurrent_creates)),
@@ -8384,7 +8392,7 @@ fn turn_run(
     let session = SessionConfig::new(prefix.clone(), r.key.clone(), base_url);
     Ok(TurnRun {
         engine: Arc::downgrade(brain),
-        agentloop: Arc::new(crate::agentloop::BuiltinAexLoop),
+        agentloop: brain.agentloop.clone(),
         session_id: session_id.to_string(),
         turn_id: turn_id.to_string(),
         prefix,
