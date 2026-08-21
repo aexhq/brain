@@ -116,6 +116,11 @@ impl Anthropic {
                 .insert("cache_control".into(), json!({"type":"ephemeral"}));
             body.insert("system".into(), json!(prefix.system_prompt));
             body.insert("tools".into(), json!(tools));
+            if prefix.tool_choice_none {
+                // The closing round: tools stay in the request (histories with tool blocks
+                // require them on this wire) but the model must answer in text.
+                body.insert("tool_choice".into(), json!({"type": "none"}));
+            }
         } else {
             body.insert(
                 "system".into(),
@@ -323,6 +328,27 @@ mod tests {
         assert_eq!(v["tools"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(v["messages"][0]["content"][0]["text"], "hi");
         assert_eq!(v["stream"], true);
+        assert!(
+            v.get("tool_choice").is_none(),
+            "ordinary rounds never constrain tool choice"
+        );
+    }
+
+    #[test]
+    fn the_closing_view_renders_tool_choice_none_with_tools_kept() {
+        let p = prefix().closing_view();
+        let r = Anthropic
+            .build_request(
+                &p,
+                &[Message::user_text("hi")],
+                &ProviderKey::new("sk-x"),
+                "http://127.0.0.1:1",
+            )
+            .unwrap();
+        let v: Value = serde_json::from_slice(&r.body).unwrap();
+        // Tools must stay in the request: this wire rejects tool-block histories without them.
+        assert_eq!(v["tools"][0]["name"], "read");
+        assert_eq!(v["tool_choice"]["type"], "none");
     }
 
     #[test]

@@ -28,10 +28,11 @@ pub enum Scripted {
         partial_text: Option<String>,
         message: String,
     },
-    /// A complete HTTP error response. 4xx is deterministic; 5xx uses the unknown budget.
+    /// A complete HTTP error response. Deterministic 4xx fails fast; 408/429/5xx live-retry.
     ProviderStatus {
         status: u16,
         body: String,
+        retry_after_ms: Option<u64>,
     },
     /// N tool calls **in one assistant message** -- this sameness is what makes
     /// them parallel rather than N turns.
@@ -576,8 +577,16 @@ impl FakeProvider {
                     }
                     yield Err(BrainError::Transport(message));
                 }
-                Scripted::ProviderStatus { status, body } => {
-                    yield Err(BrainError::ProviderStatus { status, body });
+                Scripted::ProviderStatus {
+                    status,
+                    body,
+                    retry_after_ms,
+                } => {
+                    yield Err(BrainError::ProviderStatus {
+                        status,
+                        body,
+                        retry_after_ms,
+                    });
                 }
             }
         };

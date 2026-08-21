@@ -1125,6 +1125,7 @@ mod api_error_tests {
                 BrainError::ProviderStatus {
                     status: 500,
                     body: SECRET.into(),
+                    retry_after_ms: None,
                 },
                 StatusCode::BAD_GATEWAY,
                 "provider_error",

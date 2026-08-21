@@ -25,6 +25,10 @@ export function activate(kind, _payload) {
     }
     const budget = ctx("engine.budget");
     if (budget.rounds >= budget.max_rounds) {
+      // Close gracefully: one final text-only round so the turn ends with an answer.
+      const closing = ctx("engine.closing_round");
+      if (closing.outcome === "cancelled") return verdict("cancelled");
+      if (closing.outcome === "interrupted") return verdict("interrupted");
       return verdict("max_rounds");
     }
     const round = ctx("engine.model_round");

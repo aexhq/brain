@@ -82,11 +82,19 @@ struct TestBrain {
 }
 
 async fn serve_brain(services: BrainServices, script: Vec<Scripted>) -> TestBrain {
+    serve_brain_with(BrainConfig::default(), services, script).await
+}
+
+async fn serve_brain_with(
+    config: BrainConfig,
+    services: BrainServices,
+    script: Vec<Scripted>,
+) -> TestBrain {
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     fake.script(script);
     let factory_fake = fake.clone();
     let brain = Brain::with_parts_and_services(
-        BrainConfig::default(),
+        config,
         Journal::new_memory("loop-e2e"),
         Arc::new(brain::keys::PlainCustody),
         Arc::new(brain::adapter::DisabledToolExecutor),
@@ -481,6 +489,61 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
     assert!(
         !tail_types.contains(&"user_message"),
         "entries at or before covers_through_seq are covered by the mark"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_round_ceiling_closes_with_a_final_text_round_on_both_loop_hosts() {
+    ensure_component();
+    // Cap of one: the first round's tool call exhausts it, and the graceful closing round
+    // (tool_choice none) produces the wrap-up text instead of a truncation error.
+    let capped = || BrainConfig {
+        default_max_rounds: 1,
+        ..BrainConfig::default()
+    };
+    let script = || {
+        vec![
+            Scripted::ToolCalls(vec![(
+                "call_echo".into(),
+                "echo".into(),
+                json!({"value": "ping"}),
+            )]),
+            Scripted::Text("wrapping up at the ceiling".into()),
+        ]
+    };
+
+    let mut transcripts = Vec::new();
+    for services in [
+        BrainServices::default(),
+        brain_loophost::services_with_wasm_loop(&component_path()).expect("wasm loop"),
+    ] {
+        let brain = serve_brain_with(capped(), services, script()).await;
+        let session = brain.create_session().await;
+        brain.send_message(&session, "run until the cap").await;
+        let events = brain.wait_turn(&session).await;
+
+        let completed = events
+            .iter()
+            .find(|event| event["type"] == "turn.completed")
+            .expect("the capped turn completes");
+        assert_eq!(
+            completed["stop_reason"], "max_rounds",
+            "the ceiling stays the honest stop reason: {completed}"
+        );
+        let kinds = transcript(&events);
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|kind| kind.as_str() == "assistant.message")
+                .count(),
+            2,
+            "the closing round reached the transcript: {kinds:?}"
+        );
+        transcripts.push(kinds);
+    }
+    assert_eq!(
+        transcripts[0], transcripts[1],
+        "the builtin loop and the wasm guest close identically at the cap"
     );
 }
 

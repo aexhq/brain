@@ -147,7 +147,10 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Limits {
-            max_rounds: 128,
+            // A high runaway ceiling, not working policy: the field (pi, codex) ships no cap
+            // at all and opencode defaults to infinity. Real work must never be truncated by a
+            // default; the graceful closing round handles the pathological case.
+            max_rounds: 512,
             max_parallel_tools: 8,
         }
     }
@@ -198,6 +201,14 @@ impl AgentDef {
 
     /// Seal. Consumes the definition into a shared, immutable prefix.
     pub fn seal(self) -> Shared<SealedPrefix> {
+        if self.limits.max_rounds < 8 {
+            // The cap is kernel runaway authorization, not a work budget; a tight cap usually
+            // truncates legitimate multi-tool turns. Sealed as requested regardless.
+            tracing::warn!(
+                max_rounds = self.limits.max_rounds,
+                "sealing a session with a round cap below 8; real turns are likely to hit it"
+            );
+        }
         let digest = prefix_digest(&self);
         Arc::new(SealedPrefix {
             digest,
@@ -209,6 +220,7 @@ impl AgentDef {
             limits: self.limits,
             rendered_base: None,
             prompt_cache_key: None,
+            tool_choice_none: false,
         })
     }
 }
@@ -226,6 +238,9 @@ pub struct SealedPrefix {
     pub limits: Limits,
     rendered_base: Option<serde_json::Value>,
     prompt_cache_key: Option<String>,
+    /// Per-call request shaping, never part of the sealed identity: render `tool_choice: none`
+    /// so the model must answer in text. Set only on derived views for the closing round.
+    pub tool_choice_none: bool,
 }
 
 impl SealedPrefix {
@@ -234,6 +249,22 @@ impl SealedPrefix {
     }
     pub fn tool(&self, name: &str) -> Option<&ToolDecl> {
         self.tools.iter().find(|t| t.name == name)
+    }
+    /// A per-call view for the graceful at-cap closing round: the same sealed presentation with
+    /// `tool_choice: none`, so the model wraps up in text instead of requesting more work.
+    pub(crate) fn closing_view(&self) -> SealedPrefix {
+        SealedPrefix {
+            digest: self.digest.clone(),
+            system_prompt: self.system_prompt.clone(),
+            tools: self.tools.clone(),
+            model: self.model.clone(),
+            dialect: self.dialect,
+            sampling: self.sampling.clone(),
+            limits: self.limits,
+            rendered_base: None,
+            prompt_cache_key: None,
+            tool_choice_none: true,
+        }
     }
     /// A per-call view of this sealed prefix for a loop-composed `model_stream` request.
     ///
@@ -265,6 +296,7 @@ impl SealedPrefix {
             limits: self.limits,
             rendered_base: None,
             prompt_cache_key: None,
+            tool_choice_none: false,
         }
     }
     pub fn rendered_base(&self) -> Option<&serde_json::Value> {

@@ -275,6 +275,10 @@ impl crate::agentloop::TurnCtx for LoopTurnCtx<'_> {
         Ok(outcome)
     }
 
+    async fn closing_round(&mut self) -> Result<crate::agentloop::RoundOutcome> {
+        self.run.loop_closing_round(self.st, &mut self.rounds).await
+    }
+
     fn rounds(&self) -> u64 {
         self.rounds
     }
@@ -1461,6 +1465,148 @@ impl TurnRun {
         prepared_customer
     }
 
+    /// The graceful at-cap round: one more kernel-managed round with `tool_choice: none` so
+    /// the model closes the turn in text. Tool calls a defective provider still returns are
+    /// journaled with immediate not-executed failed results in the same decision and never
+    /// dispatched, so replayed history stays provider-valid (every tool_use is answered).
+    async fn loop_closing_round(
+        &self,
+        st: &mut TurnState,
+        rounds: &mut u64,
+    ) -> Result<crate::agentloop::RoundOutcome> {
+        let closing = self.prefix.closing_view();
+        let request = self.provider.build_request(
+            &closing,
+            &st.history,
+            &self.session.key,
+            &self.session.base_url,
+        )?;
+        crate::compact::validate_model_request_budget(
+            request.body_len(),
+            closing.sampling.max_tokens as usize,
+            self.context_window_tokens,
+            "model",
+        )?;
+        let round = loop {
+            match self.round_with_request(st, request.clone()).await {
+                Ok(round) => break round,
+                Err(BrainError::Cancelled) => {
+                    return Ok(crate::agentloop::RoundOutcome::Cancelled);
+                }
+                Err(error)
+                    if st
+                        .head
+                        .provider_attempt
+                        .as_ref()
+                        .is_some_and(|attempt| attempt.state == "unknown") =>
+                {
+                    let attempt = st.head.provider_attempt.as_mut().expect("checked");
+                    if attempt.replacements_used >= st.head.prefix.provider_recovery_retries {
+                        return Ok(crate::agentloop::RoundOutcome::Interrupted);
+                    }
+                    tracing::warn!(
+                        session = %self.session_id,
+                        logical_operation_id = %attempt.logical_operation_id,
+                        error = %error,
+                        "closing-round outcome unknown; authorizing digest-identical replacement"
+                    );
+                    attempt.replacements_used += 1;
+                    attempt.state = "replacement_ready".into();
+                    self.commit(st, vec![]).await?;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let RootRound {
+            mut message,
+            stop,
+            usage,
+            logical_operation_id,
+            attempt_id,
+            request_digest,
+        } = round;
+        *rounds += 1;
+        st.head.active_rounds = *rounds;
+        let calls = mint_tool_calls(&mut message);
+        validate_model_tool_call_count(calls.len())?;
+        let mut records = vec![
+            (
+                st.take_seq(),
+                Record::ModelCallCompleted {
+                    turn: self.turn_id.clone(),
+                    logical_operation_id,
+                    attempt_id: attempt_id.clone(),
+                    request_digest,
+                },
+            ),
+            (
+                st.take_seq(),
+                Record::Usage {
+                    turn: self.turn_id.clone(),
+                    agent: "root".into(),
+                    provider: self.provider_name.clone(),
+                    model: self.prefix.model.clone(),
+                    usage,
+                },
+            ),
+            (
+                st.take_seq(),
+                Record::Assistant {
+                    turn: self.turn_id.clone(),
+                    agent: "root".into(),
+                    attempt_id,
+                    content: message.content.clone(),
+                    stop,
+                },
+            ),
+        ];
+        const NOT_EXECUTED: &str = "[not executed: the turn reached its sealed round limit]";
+        let mut result_blocks = Vec::with_capacity(calls.len());
+        for (call, name, input) in &calls {
+            records.push((
+                st.take_seq(),
+                Record::ToolCall {
+                    turn: self.turn_id.clone(),
+                    agent: "root".into(),
+                    call: call.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                    detach: false,
+                },
+            ));
+            records.push((
+                st.take_seq(),
+                Record::ToolResult {
+                    turn: self.turn_id.clone(),
+                    agent: "root".into(),
+                    call: call.clone(),
+                    name: name.clone(),
+                    outcome: "failed".into(),
+                    content: NOT_EXECUTED.into(),
+                    is_error: true,
+                    exit_code: None,
+                    duration_ms: 0,
+                    truncated: false,
+                },
+            ));
+            result_blocks.push(ContentBlock::ToolResult {
+                tool_use_id: call.clone(),
+                content: NOT_EXECUTED.into(),
+                is_error: true,
+            });
+        }
+        st.head.provider_attempt = None;
+        st.head.active_phase = Some("ready_to_finish".into());
+        self.commit(st, records).await?;
+        st.history.push(message);
+        if !result_blocks.is_empty() {
+            st.history.push(Message::tool_results(result_blocks));
+        }
+        Ok(crate::agentloop::RoundOutcome::Final {
+            refusal: stop == StopReason::Refusal,
+        })
+    }
+
     /// Dispatch one journaled batch and journal its results — and, for a `return_direct` tool,
     /// the turn terminal in the same durable decision. Returns the per-call results in call
     /// order for the contract's `tools_dispatch` views; the engine path drops them.
@@ -2145,25 +2291,57 @@ impl TurnRun {
         if let Some(attempt) = &mut st.head.provider_attempt {
             attempt.state = "running".into();
         }
-        let result = model_round_request(
-            RoundCtx {
-                provider: &self.provider,
-                outbound: &self.outbound,
-                header_timeout: self.provider_header_timeout,
-                idle_timeout: self.provider_idle_timeout,
-                total_timeout: self.provider_total_timeout,
-                permits: &self.model_permits,
-                cancel: &self.cancel,
-                hub: &self.hub,
-                session_id: &self.session_id,
-                turn_id: &self.turn_id,
-                agent: "root",
-                attempt_id: &attempt_id,
-                seq: &st.seq,
-            },
-            request,
-        )
-        .await;
+        // Clean failures (a complete 408/429/5xx before anything streamed) retry in place with
+        // bounded backoff; once a delta reached a client, only the durable supersession path
+        // may replace the attempt. The model permit is released across every pause.
+        let mut live_attempt = 0u32;
+        let result = loop {
+            let mut emitted_deltas = false;
+            let result = model_round_request(
+                RoundCtx {
+                    provider: &self.provider,
+                    outbound: &self.outbound,
+                    header_timeout: self.provider_header_timeout,
+                    idle_timeout: self.provider_idle_timeout,
+                    total_timeout: self.provider_total_timeout,
+                    permits: &self.model_permits,
+                    cancel: &self.cancel,
+                    hub: &self.hub,
+                    session_id: &self.session_id,
+                    turn_id: &self.turn_id,
+                    agent: "root",
+                    attempt_id: &attempt_id,
+                    seq: &st.seq,
+                },
+                request.clone(),
+                &mut emitted_deltas,
+            )
+            .await;
+            match result {
+                Err(error)
+                    if !emitted_deltas && live_attempt < crate::provider::PROVIDER_LIVE_RETRIES =>
+                {
+                    let Some(delay) = crate::provider::live_retry_delay(&error, live_attempt)
+                    else {
+                        break Err(error);
+                    };
+                    live_attempt += 1;
+                    tracing::warn!(
+                        session = %self.session_id,
+                        attempt = live_attempt,
+                        delay_ms = delay.as_millis() as u64,
+                        error = %error,
+                        "provider request failed cleanly; retrying in place"
+                    );
+                    tokio::select! {
+                        biased;
+                        () = self.cancel.cancelled() => break Err(BrainError::Cancelled),
+                        () = tokio::time::sleep(delay) => {}
+                    }
+                }
+                other => break other,
+            }
+        };
         let (message, stop, usage) = match result {
             Ok(result) => result,
             Err(error) if provider_failure_is_unknown(&error) => {
@@ -2812,13 +2990,12 @@ pub(crate) fn managed_terminal_call_outcome(
     ))
 }
 
+/// Whether a provider failure may have reached (and billed) the provider without a canonical
+/// terminal response. Only such losses enter the durable digest-identical replacement path.
+/// A complete HTTP error response is definitive evidence of no billing: 408/429/5xx retry in
+/// place upstream and everything else fails fast.
 fn provider_failure_is_unknown(error: &BrainError) -> bool {
-    match error {
-        BrainError::Transport(_) | BrainError::Protocol(_) => true,
-        BrainError::ProviderStatus { status, .. } => *status >= 500,
-        BrainError::Cancelled | BrainError::Overloaded => false,
-        _ => false,
-    }
+    matches!(error, BrainError::Transport(_) | BrainError::Protocol(_))
 }
 
 fn customer_preparation_failure(error: BrainError) -> CallOutcome {
@@ -3034,6 +3211,7 @@ pub(crate) fn model_request_digest(request: &crate::provider::ModelRequest) -> S
 async fn model_round_request(
     ctx: RoundCtx<'_>,
     req: crate::provider::ModelRequest,
+    emitted_deltas: &mut bool,
 ) -> Result<(Message, StopReason, crate::message::Usage)> {
     let _permit = tokio::select! {
         permit = ctx.permits.clone().acquire_owned() => {
@@ -3072,6 +3250,7 @@ async fn model_round_request(
                         ctx.attempt_id,
                         text.clone(),
                     ) {
+                        *emitted_deltas = true;
                         ctx.hub.publish(ctx.session_id, e);
                     }
                 }

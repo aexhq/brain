@@ -404,6 +404,13 @@ pub(crate) async fn http_stream(
 
     let status = resp.status();
     if !status.is_success() {
+        // Delta-seconds form only; the HTTP-date form falls back to the kernel's own backoff.
+        let retry_after_ms = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|seconds| seconds.saturating_mul(1_000));
         let mut stream = resp.bytes_stream();
         let mut body = Vec::with_capacity(2048);
         while body.len() < 2048 {
@@ -420,6 +427,7 @@ pub(crate) async fn http_stream(
         return Err(crate::BrainError::ProviderStatus {
             status: status.as_u16(),
             body: String::from_utf8_lossy(&body).into_owned(),
+            retry_after_ms,
         });
     }
 
@@ -456,6 +464,117 @@ pub(crate) async fn http_stream(
         }
     };
     Ok(Box::pin(s))
+}
+
+// ------------------------------------------------------------------------------------------
+// Live retry policy (owner-settled): clean provider failures — a complete 408/429/5xx error
+// response before anything streamed — retry in place with bounded backoff. Ambiguous losses
+// (transport errors, mid-stream death) stay on the durable digest-identical replacement path,
+// which is billing-honest by construction. Never retried: deterministic 4xx (auth, validation,
+// context overflow) and quota exhaustion, which fail fast.
+// ------------------------------------------------------------------------------------------
+
+/// Maximum in-place retries for one provider round on clean failures.
+pub(crate) const PROVIDER_LIVE_RETRIES: u32 = 3;
+/// Full-jitter exponential backoff: `rand(0..min(cap, base << attempt))`.
+const PROVIDER_RETRY_BASE_MS: u64 = 1_000;
+const PROVIDER_RETRY_CAP_MS: u64 = 30_000;
+/// A provider-sent `Retry-After` is honored but never beyond this.
+const PROVIDER_RETRY_AFTER_CAP_MS: u64 = 60_000;
+
+/// The pause before live-retry number `attempt` (0-based) of a clean failure, or `None` when
+/// the failure class must not be retried in place.
+pub(crate) fn live_retry_delay(
+    error: &crate::BrainError,
+    attempt: u32,
+) -> Option<std::time::Duration> {
+    let crate::BrainError::ProviderStatus {
+        status,
+        body,
+        retry_after_ms,
+    } = error
+    else {
+        return None;
+    };
+    if !matches!(status, 408 | 429) && *status < 500 {
+        return None;
+    }
+    // OpenAI reports exhausted quota as a 429; waiting will not refill an account.
+    if *status == 429 && body.contains("insufficient_quota") {
+        return None;
+    }
+    let ms = match retry_after_ms {
+        Some(requested) => (*requested).min(PROVIDER_RETRY_AFTER_CAP_MS),
+        None => {
+            use rand::Rng;
+            let ceiling = PROVIDER_RETRY_BASE_MS
+                .checked_shl(attempt.min(16))
+                .unwrap_or(u64::MAX)
+                .min(PROVIDER_RETRY_CAP_MS);
+            rand::rng().random_range(0..=ceiling)
+        }
+    };
+    Some(std::time::Duration::from_millis(ms))
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use crate::BrainError;
+
+    fn status(status: u16, body: &str, retry_after_ms: Option<u64>) -> BrainError {
+        BrainError::ProviderStatus {
+            status,
+            body: body.into(),
+            retry_after_ms,
+        }
+    }
+
+    #[test]
+    fn clean_failures_retry_and_deterministic_ones_do_not() {
+        assert!(live_retry_delay(&status(429, "rate limited", None), 0).is_some());
+        assert!(live_retry_delay(&status(408, "timeout", None), 0).is_some());
+        assert!(live_retry_delay(&status(500, "oops", None), 0).is_some());
+        assert!(live_retry_delay(&status(529, "overloaded", None), 2).is_some());
+        assert!(live_retry_delay(&status(400, "bad request", None), 0).is_none());
+        assert!(live_retry_delay(&status(401, "bad key", None), 0).is_none());
+        assert!(live_retry_delay(&status(404, "no model", None), 0).is_none());
+        assert!(
+            live_retry_delay(&BrainError::Transport("connection reset".into()), 0).is_none(),
+            "ambiguous transport loss belongs to the durable replacement path"
+        );
+        assert!(live_retry_delay(&BrainError::Cancelled, 0).is_none());
+    }
+
+    #[test]
+    fn quota_exhaustion_fails_fast() {
+        let quota = status(
+            429,
+            r#"{"error":{"code":"insufficient_quota","message":"..."}}"#,
+            Some(1_000),
+        );
+        assert!(live_retry_delay(&quota, 0).is_none());
+    }
+
+    #[test]
+    fn retry_after_is_honored_and_capped() {
+        let asked = live_retry_delay(&status(429, "slow down", Some(2_000)), 0).unwrap();
+        assert_eq!(asked.as_millis(), 2_000);
+        let capped = live_retry_delay(&status(429, "slow down", Some(600_000)), 0).unwrap();
+        assert_eq!(capped.as_millis(), PROVIDER_RETRY_AFTER_CAP_MS as u128);
+    }
+
+    #[test]
+    fn backoff_stays_inside_the_jitter_ceiling() {
+        for attempt in 0..6 {
+            let delay = live_retry_delay(&status(503, "unavailable", None), attempt).unwrap();
+            let ceiling = PROVIDER_RETRY_BASE_MS
+                .checked_shl(attempt)
+                .unwrap_or(u64::MAX)
+                .min(PROVIDER_RETRY_CAP_MS);
+            assert!(delay.as_millis() <= ceiling as u128);
+        }
+    }
 }
 
 #[cfg(test)]

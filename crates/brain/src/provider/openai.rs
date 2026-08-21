@@ -179,6 +179,10 @@ impl OpenAiChat {
         );
         if !tools.is_empty() {
             body.insert("tools".into(), json!(tools));
+            if prefix.tool_choice_none {
+                // The closing round: the model must answer in text.
+                body.insert("tool_choice".into(), json!("none"));
+            }
         }
         if let Some(t) = prefix.sampling.temperature {
             body.insert("temperature".into(), json!(t));

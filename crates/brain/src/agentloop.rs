@@ -120,6 +120,14 @@ pub trait TurnCtx: Send {
     async fn model_round(&mut self) -> Result<RoundOutcome>;
     /// Dispatch the round's journaled tool intents and journal their results.
     async fn dispatch_pending(&mut self) -> Result<DispatchOutcome>;
+    /// The graceful at-cap round: one more model round with `tool_choice: none` so the model
+    /// wraps the turn up in text. Tool calls a defective provider still returns are journaled
+    /// with immediate not-executed results and never dispatched.
+    async fn closing_round(&mut self) -> Result<RoundOutcome> {
+        Err(BrainError::Agentloop(
+            "this composition has no closing round".into(),
+        ))
+    }
     /// Completed model rounds in this turn, cumulative across recovery.
     fn rounds(&self) -> u64;
     /// The sealed per-turn round ceiling (kernel authorization, not loop policy).
@@ -180,7 +188,14 @@ impl Agentloop for BuiltinAexLoop {
                 return Ok(LoopVerdict::stop("interrupted"));
             }
             if ctx.rounds() >= ctx.max_rounds() {
-                return Ok(LoopVerdict::stop("max_rounds"));
+                // The cap is reached mid-work: close gracefully with one text-only round so
+                // the turn ends with an answer, not a truncation. The stop reason still says
+                // the ceiling was the reason the loop stopped.
+                return Ok(LoopVerdict::stop(match ctx.closing_round().await? {
+                    RoundOutcome::Cancelled => "cancelled",
+                    RoundOutcome::Interrupted => "interrupted",
+                    RoundOutcome::Final { .. } | RoundOutcome::ToolCalls { .. } => "max_rounds",
+                }));
             }
             match ctx.model_round().await? {
                 RoundOutcome::Cancelled => return Ok(LoopVerdict::stop("cancelled")),
@@ -224,6 +239,7 @@ mod tests {
         script: Vec<RoundOutcome>,
         dispatch_script: Vec<DispatchOutcome>,
         prepare_script: Vec<PrepareOutcome>,
+        closing_script: Vec<RoundOutcome>,
         calls: Vec<&'static str>,
     }
 
@@ -237,6 +253,7 @@ mod tests {
                 script,
                 dispatch_script: Vec::new(),
                 prepare_script: Vec::new(),
+                closing_script: Vec::new(),
                 calls: Vec::new(),
             }
         }
@@ -264,6 +281,15 @@ mod tests {
                 DispatchOutcome::Continue
             } else {
                 self.dispatch_script.remove(0)
+            })
+        }
+        async fn closing_round(&mut self) -> Result<RoundOutcome> {
+            self.calls.push("closing");
+            self.rounds += 1;
+            Ok(if self.closing_script.is_empty() {
+                RoundOutcome::Final { refusal: false }
+            } else {
+                self.closing_script.remove(0)
             })
         }
         fn rounds(&self) -> u64 {
@@ -322,12 +348,16 @@ mod tests {
     }
 
     #[test]
-    fn the_round_ceiling_stops_before_the_model_is_called_again() {
+    fn the_round_ceiling_closes_gracefully_instead_of_calling_the_model_again() {
         let mut ctx = Scripted::new(vec![RoundOutcome::ToolCalls { count: 1 }]);
         ctx.max_rounds = 1;
         let verdict = drive(&mut ctx);
         assert_eq!(verdict, LoopVerdict::stop("max_rounds"));
-        assert_eq!(ctx.calls, vec!["prepare", "model", "dispatch", "prepare"]);
+        assert_eq!(
+            ctx.calls,
+            vec!["prepare", "model", "dispatch", "prepare", "closing"],
+            "the cap triggers one closing round, never an ordinary one"
+        );
     }
 
     #[test]
@@ -335,7 +365,20 @@ mod tests {
         let mut ctx = Scripted::new(vec![]);
         ctx.rounds = 128;
         assert_eq!(drive(&mut ctx), LoopVerdict::stop("max_rounds"));
-        assert_eq!(ctx.calls, vec!["prepare"]);
+        assert_eq!(ctx.calls, vec!["prepare", "closing"]);
+    }
+
+    #[test]
+    fn a_cancelled_or_interrupted_closing_round_keeps_its_honest_stop_reason() {
+        let mut cancelled = Scripted::new(vec![]);
+        cancelled.rounds = 128;
+        cancelled.closing_script = vec![RoundOutcome::Cancelled];
+        assert_eq!(drive(&mut cancelled), LoopVerdict::stop("cancelled"));
+
+        let mut interrupted = Scripted::new(vec![]);
+        interrupted.rounds = 128;
+        interrupted.closing_script = vec![RoundOutcome::Interrupted];
+        assert_eq!(drive(&mut interrupted), LoopVerdict::stop("interrupted"));
     }
 
     #[test]
