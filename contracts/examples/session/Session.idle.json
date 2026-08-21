@@ -22,5 +22,10 @@
   "turns": 4,
   "metadata": {
     "customer_ref": "job-77"
+  },
+  "agentloop": {
+    "kind": "official",
+    "name": "aex",
+    "version": "1"
   }
 }

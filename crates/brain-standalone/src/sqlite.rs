@@ -1848,6 +1848,7 @@ mod tests {
             last_message_ms: None,
             ended: false,
             prefix: PrefixDoc {
+                agentloop: None,
                 system_prompt: Some("test".into()),
                 provider: "openai".into(),
                 model: "test".into(),

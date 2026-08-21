@@ -746,9 +746,9 @@ pub struct Brain {
     /// Guarded transport used for user-controlled provider base URLs.
     pub outbound: crate::outbound::Outbound,
     pub external_executor: Arc<dyn ToolExecutor>,
-    /// The loop implementation driving every turn's policy. Defaults to the official in-process
-    /// `aex` policy; a composition may install a loop-host adapter over `contracts/agentloop/v1`.
-    pub agentloop: Arc<dyn crate::agentloop::Agentloop>,
+    /// Resolves each session's sealed selector to the loop implementation driving its turns.
+    /// The default registry serves only the official `aex` policy.
+    pub agentloop_registry: Arc<dyn crate::agentloop::AgentloopRegistry>,
     /// Durable per-session object storage. Hosted composition supplies this adapter; `None` means
     /// the storage resource is unavailable, never an in-memory production fallback.
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
@@ -857,8 +857,12 @@ pub struct BrainServices {
     pub customer_delivery: Option<Arc<dyn crate::customer::CustomerHandDeliveryPort>>,
     pub customer_transport: Option<crate::customer::CustomerTransportConfig>,
     pub compactor: Option<Arc<dyn crate::compact::CompactionPort>>,
-    /// The agentloop driving every turn. `None` installs the official in-process `aex` policy.
+    /// The implementation of the official `aex` loop. `None` installs the in-process builtin;
+    /// loop-host compositions install the wasm guest or the remote adapter here.
     pub agentloop: Option<Arc<dyn crate::agentloop::Agentloop>>,
+    /// Selector→loop resolution. `None` installs [`crate::agentloop::OfficialAexRegistry`]
+    /// over the `agentloop` slot: official `aex` only, everything else refused at create.
+    pub agentloop_registry: Option<Arc<dyn crate::agentloop::AgentloopRegistry>>,
 }
 
 fn hash_create_key(key: &str) -> String {
@@ -1374,10 +1378,13 @@ impl Brain {
         let customer = services.customer_transport.map(|config| {
             crate::customer::CustomerCoordinator::new(config, services.customer_delivery.clone())
         });
+        let aex_loop = services
+            .agentloop
+            .unwrap_or_else(|| Arc::new(crate::agentloop::BuiltinAexLoop));
         Arc::new(Self {
-            agentloop: services
-                .agentloop
-                .unwrap_or_else(|| Arc::new(crate::agentloop::BuiltinAexLoop)),
+            agentloop_registry: services.agentloop_registry.unwrap_or_else(|| {
+                Arc::new(crate::agentloop::OfficialAexRegistry { aex: aex_loop })
+            }),
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
             create_permits: Arc::new(Semaphore::new(cfg.max_concurrent_creates)),
@@ -1947,8 +1954,45 @@ impl Brain {
         let mut hand_env_keys: Vec<_> = hand_env.keys().cloned().collect();
         hand_env_keys.sort();
 
+        // Seal the loop identity before anything else commits, rejecting a loop this
+        // composition cannot run while the request is still refusable.
+        let agentloop_selector = match &req.agentloop {
+            None => self.agentloop_registry.pin_official("aex")?,
+            Some(brain_protocol::session::AgentloopConfig::String(name)) => {
+                self.agentloop_registry.pin_official(name.as_str())?
+            }
+            Some(brain_protocol::session::AgentloopConfig::Object {
+                source_bundle_sha256,
+                toolchain,
+                bundle_base64,
+            }) => {
+                use base64::Engine as _;
+                let bundle = base64::engine::general_purpose::STANDARD
+                    .decode(bundle_base64.as_str())
+                    .map_err(|_| {
+                        BrainError::Invalid("agentloop.bundle_base64 is not valid base64".into())
+                    })?;
+                if bundle.is_empty() || bundle.len() > 8 * 1024 * 1024 {
+                    return Err(BrainError::Invalid(
+                        "agentloop bundle must be between 1 byte and 8 MiB".into(),
+                    ));
+                }
+                let digest = hex::encode(Sha256::digest(&bundle));
+                if digest != source_bundle_sha256.as_str() {
+                    return Err(BrainError::Invalid(format!(
+                        "agentloop bundle digest is {digest}, not the declared {}",
+                        source_bundle_sha256.as_str()
+                    )));
+                }
+                self.agentloop_registry
+                    .admit_custom(&digest, toolchain.as_str(), &bundle)?
+            }
+        };
+        self.agentloop_registry.resolve(&agentloop_selector)?;
+
         let now = crate::wall_ms();
         let mut prefix = PrefixDoc {
+            agentloop: Some(agentloop_selector),
             system_prompt: req.system_prompt.clone().map(String::from),
             provider: provider.to_string(),
             model: req.model.name.to_string(),
@@ -8497,7 +8541,11 @@ fn turn_run(
     let session = SessionConfig::new(prefix.clone(), r.key.clone(), base_url);
     Ok(TurnRun {
         engine: Arc::downgrade(brain),
-        agentloop: brain.agentloop.clone(),
+        agentloop: {
+            let default = crate::journal::AgentloopSelectorDoc::official_aex();
+            let selector = r.st.head.prefix.agentloop.as_ref().unwrap_or(&default);
+            brain.agentloop_registry.resolve(selector)?
+        },
         message,
         session_id: session_id.to_string(),
         turn_id: turn_id.to_string(),
@@ -10526,7 +10574,33 @@ fn default_system_prompt() -> String {
 
 /// Builds the contract Session document from the head.
 pub fn session_doc(session_id: &str, doc: &HeadDoc) -> session::Session {
+    let agentloop = (|| {
+        Some(
+            match doc
+                .prefix
+                .agentloop
+                .clone()
+                .unwrap_or_else(crate::journal::AgentloopSelectorDoc::official_aex)
+            {
+                crate::journal::AgentloopSelectorDoc::Official { name, version } => {
+                    session::AgentloopInfo::Official {
+                        name: name.parse().ok()?,
+                        version: version.parse().ok()?,
+                    }
+                }
+                crate::journal::AgentloopSelectorDoc::Custom {
+                    source_bundle_sha256,
+                    toolchain,
+                    ..
+                } => session::AgentloopInfo::Custom {
+                    source_bundle_sha256: source_bundle_sha256.parse().ok()?,
+                    toolchain: toolchain.parse().ok()?,
+                },
+            },
+        )
+    })();
     session::Session {
+        agentloop,
         context_fork: doc.context_fork.as_ref().map(public_context_fork),
         created_at: crate::events::ts(doc.created_ms),
         current_turn: doc.turn.as_deref().and_then(|t| t.parse().ok()),
@@ -10601,6 +10675,9 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> session::Session {
 
 fn session_doc_summary(summary: &crate::journal::SessionSummary) -> session::Session {
     session::Session {
+        // The bounded listing summary does not carry the sealed prefix; the full session
+        // resource does. Absent here, never a fabricated default.
+        agentloop: None,
         context_fork: summary.context_fork.as_ref().map(public_context_fork),
         created_at: crate::events::ts(summary.created_ms),
         current_turn: summary.turn.as_deref().and_then(|turn| turn.parse().ok()),
@@ -13026,6 +13103,7 @@ mod tests {
     #[test]
     fn prefix_rebuild_is_deterministic() {
         let p = PrefixDoc {
+            agentloop: None,
             system_prompt: Some("sp".into()),
             provider: "anthropic".into(),
             model: "claude-x".into(),
@@ -13174,6 +13252,7 @@ mod tests {
             },
         ];
         let prefix = PrefixDoc {
+            agentloop: None,
             system_prompt: None,
             provider: "anthropic".into(),
             model: "m".into(),
@@ -13239,6 +13318,7 @@ mod tests {
     #[test]
     fn pending_external_scan_recovers_only_unanswered_sealed_calls() {
         let prefix = PrefixDoc {
+            agentloop: None,
             system_prompt: None,
             provider: "anthropic".into(),
             model: "m".into(),
@@ -14587,6 +14667,167 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(data_dir);
         }
+    }
+
+    #[tokio::test]
+    async fn the_agentloop_selector_seals_and_unavailable_loops_refuse_at_create() {
+        let journal = Journal::new_memory("agentloop-selector");
+        let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+        let provider = fake.clone();
+        let brain = Brain::with_parts(
+            BrainConfig::default(),
+            journal.clone(),
+            Arc::new(crate::keys::PlainCustody),
+            Some(Arc::new(move |_| provider.clone())),
+        );
+        let model = json!({"provider":"anthropic", "name":"selector-test", "api_key":"sk-test"});
+
+        let created = brain
+            .create_session(
+                serde_json::from_value(json!({"model": model, "agentloop": "aex"})).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&created).unwrap()["agentloop"],
+            json!({"kind": "official", "name": "aex", "version": "1"}),
+            "the sealed loop identity is echoed on the session resource"
+        );
+
+        let refused = brain
+            .create_session(
+                serde_json::from_value(json!({"model": model, "agentloop": "pi"})).unwrap(),
+                None,
+            )
+            .await;
+        assert!(
+            matches!(&refused, Err(BrainError::Invalid(message)) if message.contains("not available")),
+            "an official this composition lacks refuses at create: {refused:?}"
+        );
+
+        let bundle = b"export function activate() { return \"{}\" }";
+        let encoded = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(bundle)
+        };
+        let digest = hex::encode(Sha256::digest(bundle));
+        let wrong_digest = brain
+            .create_session(
+                serde_json::from_value(json!({"model": model, "agentloop": {
+                    "source_bundle_sha256": "0".repeat(64),
+                    "toolchain": "loopchain-1",
+                    "bundle_base64": encoded,
+                }}))
+                .unwrap(),
+                None,
+            )
+            .await;
+        assert!(
+            matches!(&wrong_digest, Err(BrainError::Invalid(message)) if message.contains("digest")),
+            "a bundle that does not match its declared digest never reaches the registry"
+        );
+        let custom = brain
+            .create_session(
+                serde_json::from_value(json!({"model": model, "agentloop": {
+                    "source_bundle_sha256": digest,
+                    "toolchain": "loopchain-1",
+                    "bundle_base64": encoded,
+                }}))
+                .unwrap(),
+                None,
+            )
+            .await;
+        assert!(
+            matches!(&custom, Err(BrainError::Invalid(message)) if message.contains("not enabled")),
+            "the default registry refuses customs honestly: {custom:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_composition_registry_resolves_per_session_loops() {
+        struct TwoOfficials;
+        impl crate::agentloop::AgentloopRegistry for TwoOfficials {
+            fn resolve(
+                &self,
+                selector: &crate::journal::AgentloopSelectorDoc,
+            ) -> Result<Arc<dyn crate::agentloop::Agentloop>> {
+                match selector {
+                    crate::journal::AgentloopSelectorDoc::Official { name, .. }
+                        if name == "aex" || name == "echo-loop" =>
+                    {
+                        Ok(Arc::new(crate::agentloop::BuiltinAexLoop))
+                    }
+                    _ => Err(BrainError::Invalid("unknown loop".into())),
+                }
+            }
+            fn pin_official(&self, name: &str) -> Result<crate::journal::AgentloopSelectorDoc> {
+                match name {
+                    "aex" => Ok(crate::journal::AgentloopSelectorDoc::official_aex()),
+                    "echo-loop" => Ok(crate::journal::AgentloopSelectorDoc::Official {
+                        name: "echo-loop".into(),
+                        version: "9".into(),
+                    }),
+                    _ => Err(BrainError::Invalid("unknown loop".into())),
+                }
+            }
+        }
+        let journal = Journal::new_memory("agentloop-registry");
+        let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+        fake.script([Scripted::Text("resolved answer".into())]);
+        let provider = fake.clone();
+        let brain = Brain::with_parts_and_services(
+            BrainConfig::default(),
+            journal.clone(),
+            Arc::new(crate::keys::PlainCustody),
+            Arc::new(crate::adapter::DisabledToolExecutor),
+            BrainServices {
+                agentloop_registry: Some(Arc::new(TwoOfficials)),
+                ..BrainServices::default()
+            },
+            Some(Arc::new(move |_| {
+                provider.clone() as Arc<dyn crate::provider::Provider>
+            })),
+        );
+        let created = brain
+            .create_session(
+                serde_json::from_value(json!({
+                    "model": {"provider":"anthropic", "name":"registry-test", "api_key":"sk-test"},
+                    "agentloop": "echo-loop"
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&created).unwrap()["agentloop"]["version"],
+            "9",
+            "the registry's pinned version seals"
+        );
+        let session_id = created.id.to_string();
+        let (_, admitted_seq) = brain
+            .message(
+                &session_id,
+                serde_json::from_value(json!("drive the sealed loop")).unwrap(),
+            )
+            .await
+            .unwrap();
+        for _ in 0..1_000 {
+            let head = journal.get_head(&session_id).await.unwrap();
+            if head.doc.turn.is_none() && head.last_seq > admitted_seq {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let records = journal.read_records(&session_id, 0).await.unwrap();
+        assert!(
+            records.iter().any(|entry| matches!(
+                &entry.record,
+                Record::TurnCompleted { stop_reason, .. } if stop_reason == "end_turn"
+            )),
+            "the per-session loop resolved at turn time and drove the turn"
+        );
     }
 
     #[tokio::test]

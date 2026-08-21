@@ -108,6 +108,7 @@ pub async fn compose(
             customer_transport: ports.customer_transport,
             compactor: None,
             agentloop: None,
+            agentloop_registry: None,
         },
         None,
     ))
