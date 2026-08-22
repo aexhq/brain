@@ -175,7 +175,10 @@ async fn local_offer_receipt_terminal_and_ack_round_trip() {
         .await
         .unwrap();
     let outcome = running.await.unwrap();
-    assert_eq!(outcome.outcome.outcome, "completed");
+    assert_eq!(
+        outcome.outcome.outcome,
+        brain_protocol::hand::TerminalOutcome::Completed
+    );
     assert_eq!(outcome.outcome.value, Some(serde_json::json!({"ok":true})));
     assert!(
         receiver.try_recv().is_err(),
@@ -263,7 +266,10 @@ async fn delivered_offer_without_receipt_is_resent_once_to_the_same_operation() 
         )
         .await
         .unwrap();
-    assert_eq!(running.await.unwrap().outcome.outcome, "completed");
+    assert_eq!(
+        running.await.unwrap().outcome.outcome,
+        brain_protocol::hand::TerminalOutcome::Completed
+    );
 }
 
 #[tokio::test]
@@ -297,7 +303,10 @@ async fn strict_submit_retry_zero_sends_once_and_reports_unknown_without_receipt
         .await
         .expect("strict classification is bounded")
         .unwrap();
-    assert_eq!(outcome.outcome.outcome, "interrupted");
+    assert_eq!(
+        outcome.outcome.outcome,
+        brain_protocol::hand::TerminalOutcome::Interrupted
+    );
     assert!(outcome.outcome.content.contains("unknown"));
     assert!(
         receiver.try_recv().is_err(),
@@ -361,7 +370,10 @@ async fn ambiguous_ack_delivery_retains_the_exact_terminal_until_retry() {
         .unwrap();
     let execution = running.await.unwrap();
     let receipt = execution.terminal_receipt.unwrap();
-    assert_eq!(execution.outcome.outcome, "completed");
+    assert_eq!(
+        execution.outcome.outcome,
+        brain_protocol::hand::TerminalOutcome::Completed
+    );
 
     assert_eq!(
         coordinator
@@ -430,7 +442,10 @@ async fn local_delivery_is_bounded_and_an_oversized_offer_is_rejected_before_adm
             CancellationToken::new(),
         )
         .await;
-    assert_eq!(saturated.outcome.outcome, "interrupted");
+    assert_eq!(
+        saturated.outcome.outcome,
+        brain_protocol::hand::TerminalOutcome::Interrupted
+    );
     let _ = receiver.recv().await;
 
     let oversized = coordinator
@@ -448,7 +463,10 @@ async fn local_delivery_is_bounded_and_an_oversized_offer_is_rejected_before_adm
             CancellationToken::new(),
         )
         .await;
-    assert_eq!(oversized.outcome.outcome, "failed");
+    assert_eq!(
+        oversized.outcome.outcome,
+        brain_protocol::hand::TerminalOutcome::Failed
+    );
     assert!(oversized.outcome.content.contains("24 KiB"));
     assert!(
         receiver.try_recv().is_err(),
@@ -790,7 +808,10 @@ async fn retained_terminal_applies_backpressure_without_eviction() {
             CancellationToken::new(),
         )
         .await;
-    assert_eq!(blocked.outcome.outcome, "interrupted");
+    assert_eq!(
+        blocked.outcome.outcome,
+        brain_protocol::hand::TerminalOutcome::Interrupted
+    );
     assert!(blocked.outcome.content.contains("capacity"));
     let state = coordinator.state.lock().await;
     assert_eq!(state.pending_operations.len(), 1);
@@ -825,7 +846,10 @@ async fn terminal_capacity_is_reserved_before_an_offer_can_reach_customer_code()
             CancellationToken::new(),
         )
         .await;
-    assert_eq!(blocked.outcome.outcome, "interrupted");
+    assert_eq!(
+        blocked.outcome.outcome,
+        brain_protocol::hand::TerminalOutcome::Interrupted
+    );
     assert!(blocked.outcome.content.contains("capacity"));
     assert!(
         receiver.try_recv().is_err(),

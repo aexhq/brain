@@ -11,7 +11,7 @@
 //! objects (see [`crate::adapter`]). Durable local and cloud implementations live behind the
 //! same public ports.
 
-use crate::adapter::{CallOutcome, DisabledToolExecutor, TerminalOutcome, ToolExecutor};
+use crate::adapter::{CallOutcome, DisabledToolExecutor, ToolExecutor, TurnTerminal};
 use crate::compact::{
     DEFAULT_CONTEXT_HARD_TOKENS, DEFAULT_CONTEXT_SOFT_TOKENS, DEFAULT_CONTEXT_TAIL_TOKENS,
 };
@@ -20,7 +20,8 @@ use crate::events::EventHub;
 use crate::journal::{
     ContextForkDoc, DELETION_TOMBSTONE_TTL_MS, DeletionState, DeletionStatusDoc, Entry, FailureDoc,
     Head, HeadDoc, Journal, Lease, PrefixDoc, ProviderAttemptState, Record, SessionLifecycle,
-    StorageDeleteReservationDoc, StorageUploadReservationDoc, TurnPhase, UploadReservationState,
+    StorageDeleteReservationDoc, StorageUploadReservationDoc, TurnPhase, TurnStopReason,
+    UploadReservationState,
 };
 use crate::keys::{KeyCustody, blob_from_b64, blob_to_b64, validate_custody_plaintext};
 use crate::message::{ContentBlock, Message, Role};
@@ -28,6 +29,8 @@ use crate::provider::Provider;
 use crate::turn::{TurnRun, TurnState};
 use crate::{BrainError, Result};
 use base64::Engine;
+use brain_protocol::hand::TerminalOutcome;
+use brain_protocol::session::ToolOutcome;
 use brain_protocol::session::{
     self, CreateSessionRequest, MessageRequestContent, Provider as ApiProvider,
 };
@@ -3355,7 +3358,7 @@ impl Brain {
         .await;
         match result {
             Ok(value) => CallOutcome {
-                outcome: "completed".into(),
+                outcome: TerminalOutcome::Completed,
                 content: serde_json::to_string(&value)
                     .unwrap_or_else(|_| "child operation completed".into()),
                 value: Some(value),
@@ -3366,7 +3369,7 @@ impl Brain {
                 terminal: None,
             },
             Err(BrainError::Cancelled) => CallOutcome {
-                outcome: "cancelled".into(),
+                outcome: TerminalOutcome::Cancelled,
                 content: "child operation cancelled".into(),
                 value: None,
                 is_error: true,
@@ -5207,7 +5210,7 @@ fn engine_outcome(
     let duration_ms = started.elapsed().as_millis() as u64;
     match result {
         Ok(value) => Ok(CallOutcome {
-            outcome: "completed".into(),
+            outcome: TerminalOutcome::Completed,
             content: serde_json::to_string(&value)?,
             value: Some(value),
             is_error: false,
@@ -5217,7 +5220,7 @@ fn engine_outcome(
             terminal: None,
         }),
         Err(BrainError::Cancelled) => Ok(CallOutcome {
-            outcome: "cancelled".into(),
+            outcome: TerminalOutcome::Cancelled,
             content: "engine operation cancelled".into(),
             value: None,
             is_error: true,
@@ -5848,7 +5851,7 @@ async fn recover_customer_calls(
                 agent: "root".into(),
                 call: call.call.clone(),
                 name: call.name.clone(),
-                outcome: outcome.outcome,
+                outcome: crate::events::tool_outcome(outcome.outcome),
                 content,
                 is_error: outcome.is_error,
                 exit_code: outcome.exit_code,
@@ -5968,7 +5971,7 @@ async fn recover_managed_calls(
                 agent: "root".into(),
                 call: call.call,
                 name: call.name,
-                outcome: outcome.outcome,
+                outcome: crate::events::tool_outcome(outcome.outcome),
                 content,
                 is_error: outcome.is_error,
                 exit_code: outcome.exit_code,
@@ -6042,7 +6045,7 @@ async fn recover_managed_calls(
                         call,
                         Some(operation),
                         CallOutcome {
-                            outcome: "interrupted".into(),
+                            outcome: TerminalOutcome::Interrupted,
                             value: None,
                             content: "managed Tool target disappeared before its durable terminal could be recovered".into(),
                             is_error: true,
@@ -6186,7 +6189,7 @@ async fn recover_managed_calls(
                         call,
                         Some(operation),
                         CallOutcome {
-                            outcome: "interrupted".into(),
+                            outcome: TerminalOutcome::Interrupted,
                             value: None,
                             content: "managed Tool target disappeared before its durable terminal could be recovered".into(),
                             is_error: true,
@@ -6234,7 +6237,7 @@ async fn recover_managed_calls(
                 agent: "root".into(),
                 call: call.call.clone(),
                 name: call.name.clone(),
-                outcome: outcome.outcome,
+                outcome: crate::events::tool_outcome(outcome.outcome),
                 content,
                 is_error: outcome.is_error,
                 exit_code: outcome.exit_code,
@@ -6294,11 +6297,11 @@ async fn recover_managed_calls(
         resident.st.head.active_rounds = 0;
         resident.st.head.active_tool_calls = 0;
         match terminal {
-            TerminalOutcome::Complete { value, metadata } => records.push((
+            TurnTerminal::Complete { value, metadata } => records.push((
                 resident.st.take_seq(),
                 Record::TurnCompleted {
                     turn: turn.clone(),
-                    stop_reason: "end_turn".into(),
+                    stop_reason: TurnStopReason::EndTurn,
                     rounds,
                     tool_calls,
                     result: Some(brain_protocol::session::TurnResult {
@@ -6311,7 +6314,7 @@ async fn recover_managed_calls(
                     }),
                 },
             )),
-            TerminalOutcome::Fail { error } => records.push((
+            TurnTerminal::Fail { error } => records.push((
                 resident.st.take_seq(),
                 Record::TurnFailed {
                     turn: turn.clone(),
@@ -6544,7 +6547,7 @@ async fn recover_external_calls(
             } else {
                 unreplayable = true;
                 CallOutcome {
-                    outcome: "interrupted".into(),
+                    outcome: TerminalOutcome::Interrupted,
                     value: None,
                     content: format!(
                         "external tool {} was interrupted and its opaque effect was not replayed",
@@ -6586,7 +6589,7 @@ async fn recover_external_calls(
                 agent: "root".into(),
                 call: call.call.clone(),
                 name: call.name.clone(),
-                outcome: outcome.outcome,
+                outcome: crate::events::tool_outcome(outcome.outcome),
                 content,
                 is_error: outcome.is_error,
                 exit_code: outcome.exit_code,
@@ -6608,12 +6611,12 @@ async fn recover_external_calls(
         resident.st.head.active_rounds = 0;
         resident.st.head.active_tool_calls = 0;
         match terminal {
-            TerminalOutcome::Complete { value, metadata } => {
+            TurnTerminal::Complete { value, metadata } => {
                 records.push((
                     resident.st.take_seq(),
                     Record::TurnCompleted {
                         turn: active_turn.clone(),
-                        stop_reason: "end_turn".into(),
+                        stop_reason: TurnStopReason::EndTurn,
                         rounds,
                         tool_calls,
                         result: Some(brain_protocol::session::TurnResult {
@@ -6627,7 +6630,7 @@ async fn recover_external_calls(
                     },
                 ));
             }
-            TerminalOutcome::Fail { error } => records.push((
+            TurnTerminal::Fail { error } => records.push((
                 resident.st.take_seq(),
                 Record::TurnFailed {
                     turn: active_turn.clone(),
@@ -6771,7 +6774,7 @@ async fn recover_provider_attempt(
         resident.st.take_seq(),
         Record::TurnCompleted {
             turn: turn.clone(),
-            stop_reason: "interrupted".into(),
+            stop_reason: TurnStopReason::Interrupted,
             rounds,
             tool_calls,
             result: None,
@@ -7545,7 +7548,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                     agent: task.agent.clone(),
                     call: task.call.clone(),
                     name: task.name.clone(),
-                    outcome: "interrupted".into(),
+                    outcome: ToolOutcome::Interrupted,
                     content: "tool executor disconnected while the session was not resident; the call was not replayed".into(),
                     is_error: true,
                     exit_code: None,
@@ -7581,7 +7584,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                 next_seq,
                 Record::TurnCompleted {
                     turn: turn.clone(),
-                    stop_reason: "interrupted".into(),
+                    stop_reason: TurnStopReason::Interrupted,
                     rounds,
                     tool_calls,
                     result: None,
@@ -8605,7 +8608,7 @@ async fn finish_turn(
 ) {
     match outcome {
         Ok(report) => {
-            tracing::info!(session = %session_id, turn = %turn_id, stop = %report.stop_reason, rounds = report.rounds, "turn done");
+            tracing::info!(session = %session_id, turn = %turn_id, stop = report.stop_reason.as_str(), rounds = report.rounds, "turn done");
         }
         Err(e) => {
             let _ = fail_turn_now(brain, session_id, turn_id, st, &e).await;

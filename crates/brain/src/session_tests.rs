@@ -1,6 +1,7 @@
 use super::*;
 use crate::provider::fake::{FakeProvider, Scripted};
 use crate::storage::SessionStoragePort as _;
+use brain_protocol::session::ToolOutcome;
 use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2419,7 +2420,7 @@ fn pending_volatile_scan_routes_by_the_seal() {
                 agent: "agt_child".into(),
                 call: "op_answered".into(),
                 name: "delegate_under_any_name".into(),
-                outcome: "completed".into(),
+                outcome: ToolOutcome::Completed,
                 content: "done".into(),
                 is_error: false,
                 exit_code: None,
@@ -2618,7 +2619,7 @@ fn pending_external_scan_recovers_only_unanswered_sealed_calls() {
             agent: "root".into(),
             call: "op_submit".into(),
             name: "submit".into(),
-            outcome: "completed".into(),
+            outcome: ToolOutcome::Completed,
             content: "done".into(),
             is_error: false,
             exit_code: None,
@@ -3458,7 +3459,7 @@ async fn managed_submit_unknown_survives_cleanup_crash_without_resubmission() {
             .filter(|entry| matches!(
                 &entry.record,
                 Record::ToolResult { call: result_call, outcome, .. }
-                    if result_call == &call && outcome == "interrupted"
+                    if result_call == &call && *outcome == ToolOutcome::Interrupted
             ))
             .count(),
         1
@@ -3655,7 +3656,7 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
             .filter(|entry| matches!(
                 &entry.record,
                 Record::ToolResult { call: result_call, outcome, .. }
-                    if result_call == &call && outcome == "interrupted"
+                    if result_call == &call && *outcome == ToolOutcome::Interrupted
             ))
             .count(),
         1
@@ -3956,7 +3957,7 @@ async fn provider_only_crash_with_zero_retries_commits_honest_interruption() {
     )));
     assert!(records.iter().any(|entry| matches!(
         &entry.record,
-        Record::TurnCompleted { stop_reason, .. } if stop_reason == "interrupted"
+        Record::TurnCompleted { stop_reason, .. } if *stop_reason == TurnStopReason::Interrupted
     )));
     assert!(!records.iter().any(|entry| matches!(
         &entry.record,
@@ -4149,7 +4150,7 @@ async fn live_unknown_zero_or_exhausted_budget_interrupts_honestly() {
         let records = journal.read_records(&session_id, 0).await.unwrap();
         assert!(records.iter().any(|entry| matches!(
             &entry.record,
-            Record::TurnCompleted { stop_reason, .. } if stop_reason == "interrupted"
+            Record::TurnCompleted { stop_reason, .. } if *stop_reason == TurnStopReason::Interrupted
         )));
         assert_eq!(
             records
@@ -4319,7 +4320,7 @@ async fn a_composition_registry_resolves_per_session_loops() {
     assert!(
         records.iter().any(|entry| matches!(
             &entry.record,
-            Record::TurnCompleted { stop_reason, .. } if stop_reason == "end_turn"
+            Record::TurnCompleted { stop_reason, .. } if *stop_reason == TurnStopReason::EndTurn
         )),
         "the per-session loop resolved at turn time and drove the turn"
     );
@@ -4391,7 +4392,7 @@ async fn draining_refuses_new_work_while_admitted_turns_finish() {
     let records = journal.read_records(&session_id, 0).await.unwrap();
     assert!(records.iter().any(|entry| matches!(
         &entry.record,
-        Record::TurnCompleted { stop_reason, .. } if stop_reason == "end_turn"
+        Record::TurnCompleted { stop_reason, .. } if *stop_reason == TurnStopReason::EndTurn
     )));
 }
 
@@ -4420,7 +4421,7 @@ async fn clean_provider_failures_retry_in_place_without_replacement_budget() {
     let records = journal.read_records(&session_id, 0).await.unwrap();
     assert!(records.iter().any(|entry| matches!(
         &entry.record,
-        Record::TurnCompleted { stop_reason, .. } if stop_reason == "end_turn"
+        Record::TurnCompleted { stop_reason, .. } if *stop_reason == TurnStopReason::EndTurn
     )));
     assert!(
         !records
@@ -4673,7 +4674,7 @@ async fn failed_strict_compaction_installs_no_partial_checkpoint_or_usage() {
     )));
     assert!(records.iter().any(|entry| matches!(
         &entry.record,
-        Record::TurnCompleted { stop_reason, .. } if stop_reason == "interrupted"
+        Record::TurnCompleted { stop_reason, .. } if *stop_reason == TurnStopReason::Interrupted
     )));
     let _ = std::fs::remove_dir_all(data_dir);
 }

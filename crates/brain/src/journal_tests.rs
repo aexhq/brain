@@ -1,4 +1,5 @@
 use super::*;
+use brain_protocol::session::ToolOutcome;
 
 fn user(turn: &str, text: &str) -> Record {
     Record::UserMessage {
@@ -25,7 +26,11 @@ fn result(call: &str, content: &str, is_error: bool) -> Record {
         agent: "root".into(),
         call: call.into(),
         name: "bash".into(),
-        outcome: if is_error { "failed" } else { "completed" }.into(),
+        outcome: if is_error {
+            ToolOutcome::Failed
+        } else {
+            ToolOutcome::Completed
+        },
         content: content.into(),
         is_error,
         exit_code: Some(if is_error { 1 } else { 0 }),
@@ -207,7 +212,7 @@ fn next_user_text_merges_with_an_interrupted_tool_result() {
         result("c1", "subagent interrupted", true),
         Record::TurnCompleted {
             turn: "t1".into(),
-            stop_reason: "interrupted".into(),
+            stop_reason: TurnStopReason::Interrupted,
             rounds: 1,
             tool_calls: 1,
             result: None,
@@ -476,7 +481,7 @@ fn decision_limits_reject_oversized_items_and_aggregate_batches_before_store_io(
                     agent: "root".into(),
                     call: format!("call_{index}"),
                     name: "tool".into(),
-                    outcome: "completed".into(),
+                    outcome: ToolOutcome::Completed,
                     content: "x".repeat(MAX_RECORD_CONTENT_BYTES),
                     is_error: false,
                     exit_code: None,
@@ -2104,7 +2109,7 @@ fn effect_retention_reserves_provider_completion_and_tool_terminal_decisions() {
         agent: "root".into(),
         call: "op_retention".into(),
         name: "managed".into(),
-        outcome: "completed".into(),
+        outcome: ToolOutcome::Completed,
         content: "x".repeat(MAX_RECORD_CONTENT_BYTES),
         is_error: false,
         exit_code: Some(0),
@@ -2326,7 +2331,7 @@ async fn effect_terminal_commits_without_new_quota_after_intent_reservation() {
         agent: "root".into(),
         call: "op_effect_reserve".into(),
         name: "managed".into(),
-        outcome: "completed".into(),
+        outcome: ToolOutcome::Completed,
         content: "terminal".into(),
         is_error: false,
         exit_code: Some(0),

@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::adapter::CallOutcome;
 use crate::{BrainError, Result};
+use brain_protocol::hand::TerminalOutcome;
 
 pub use brain_protocol::MAX_CUSTOMER_OBSERVATION_BYTES as MAX_CUSTOMER_HTTP_OBSERVATION_BYTES;
 /// Leaves deterministic metadata headroom below API Gateway WebSocket's 32 KiB frame maximum.
@@ -1022,7 +1023,7 @@ impl CustomerCoordinator {
                 let value = output.unwrap_or(Value::Null);
                 CustomerExecution {
                     outcome: CallOutcome {
-                        outcome: "completed".into(),
+                        outcome: TerminalOutcome::Completed,
                         content: serde_json::to_string(&value).unwrap_or_else(|_| "null".into()),
                         value: Some(value),
                         is_error: false,
@@ -1649,7 +1650,7 @@ fn retryable_customer_execution(message: impl Into<String>) -> CustomerExecution
 
 fn interrupted(message: impl Into<String>) -> CallOutcome {
     let mut outcome = CallOutcome::failed(message);
-    outcome.outcome = "interrupted".into();
+    outcome.outcome = TerminalOutcome::Interrupted;
     outcome
 }
 

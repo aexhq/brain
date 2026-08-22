@@ -13,6 +13,7 @@
 use async_trait::async_trait;
 
 use crate::BrainError;
+use crate::journal::TurnStopReason;
 
 type Result<T> = std::result::Result<T, BrainError>;
 
@@ -45,21 +46,21 @@ pub enum DispatchOutcome {
     /// Results are journaled; the loop decides what happens next.
     Continue,
     /// A `return_direct` tool committed the turn terminal atomically with its result.
-    TerminalCommitted { stop_reason: String },
+    TerminalCommitted { stop_reason: TurnStopReason },
 }
 
 /// The verdict a loop returns; the kernel maps it onto the durable turn terminal.
 #[derive(Debug, PartialEq, Eq)]
 pub struct LoopVerdict {
-    pub stop_reason: String,
+    pub stop_reason: TurnStopReason,
     /// True when the terminal was already committed inside dispatch (`return_direct`).
     pub terminal_committed: bool,
 }
 
 impl LoopVerdict {
-    fn stop(reason: &str) -> Self {
+    fn stop(reason: TurnStopReason) -> Self {
         Self {
-            stop_reason: reason.into(),
+            stop_reason: reason,
             terminal_committed: false,
         }
     }
@@ -249,26 +250,30 @@ impl Agentloop for BuiltinAexLoop {
     async fn drive_turn(&self, ctx: &mut dyn TurnCtx) -> Result<LoopVerdict> {
         loop {
             if ctx.prepare_round().await? == PrepareOutcome::Interrupted {
-                return Ok(LoopVerdict::stop("interrupted"));
+                return Ok(LoopVerdict::stop(TurnStopReason::Interrupted));
             }
             if ctx.rounds() >= ctx.max_rounds() {
                 // The cap is reached mid-work: close gracefully with one text-only round so
                 // the turn ends with an answer, not a truncation. The stop reason still says
                 // the ceiling was the reason the loop stopped.
                 return Ok(LoopVerdict::stop(match ctx.closing_round().await? {
-                    RoundOutcome::Cancelled => "cancelled",
-                    RoundOutcome::Interrupted => "interrupted",
-                    RoundOutcome::Final { .. } | RoundOutcome::ToolCalls { .. } => "max_rounds",
+                    RoundOutcome::Cancelled => TurnStopReason::Cancelled,
+                    RoundOutcome::Interrupted => TurnStopReason::Interrupted,
+                    RoundOutcome::Final { .. } | RoundOutcome::ToolCalls { .. } => {
+                        TurnStopReason::MaxRounds
+                    }
                 }));
             }
             match ctx.model_round().await? {
-                RoundOutcome::Cancelled => return Ok(LoopVerdict::stop("cancelled")),
-                RoundOutcome::Interrupted => return Ok(LoopVerdict::stop("interrupted")),
+                RoundOutcome::Cancelled => return Ok(LoopVerdict::stop(TurnStopReason::Cancelled)),
+                RoundOutcome::Interrupted => {
+                    return Ok(LoopVerdict::stop(TurnStopReason::Interrupted));
+                }
                 RoundOutcome::Final { refusal } => {
                     return Ok(LoopVerdict::stop(if refusal {
-                        "refusal"
+                        TurnStopReason::Refusal
                     } else {
-                        "end_turn"
+                        TurnStopReason::EndTurn
                     }));
                 }
                 RoundOutcome::ToolCalls { .. } => match ctx.dispatch_pending().await? {
@@ -280,7 +285,7 @@ impl Agentloop for BuiltinAexLoop {
                     }
                     DispatchOutcome::Continue => {
                         if ctx.cancelled() {
-                            return Ok(LoopVerdict::stop("cancelled"));
+                            return Ok(LoopVerdict::stop(TurnStopReason::Cancelled));
                         }
                     }
                 },
@@ -398,7 +403,7 @@ mod tests {
             RoundOutcome::Final { refusal: false },
         ]);
         let verdict = drive(&mut ctx);
-        assert_eq!(verdict, LoopVerdict::stop("end_turn"));
+        assert_eq!(verdict, LoopVerdict::stop(TurnStopReason::EndTurn));
         assert_eq!(
             ctx.calls,
             vec!["prepare", "model", "dispatch", "prepare", "model"]
@@ -408,7 +413,7 @@ mod tests {
     #[test]
     fn refusal_maps_to_the_refusal_stop_reason() {
         let mut ctx = Scripted::new(vec![RoundOutcome::Final { refusal: true }]);
-        assert_eq!(drive(&mut ctx), LoopVerdict::stop("refusal"));
+        assert_eq!(drive(&mut ctx), LoopVerdict::stop(TurnStopReason::Refusal));
     }
 
     #[test]
@@ -416,7 +421,7 @@ mod tests {
         let mut ctx = Scripted::new(vec![RoundOutcome::ToolCalls { count: 1 }]);
         ctx.max_rounds = 1;
         let verdict = drive(&mut ctx);
-        assert_eq!(verdict, LoopVerdict::stop("max_rounds"));
+        assert_eq!(verdict, LoopVerdict::stop(TurnStopReason::MaxRounds));
         assert_eq!(
             ctx.calls,
             vec!["prepare", "model", "dispatch", "prepare", "closing"],
@@ -428,7 +433,10 @@ mod tests {
     fn resumed_turns_count_prior_rounds_toward_the_ceiling() {
         let mut ctx = Scripted::new(vec![]);
         ctx.rounds = 128;
-        assert_eq!(drive(&mut ctx), LoopVerdict::stop("max_rounds"));
+        assert_eq!(
+            drive(&mut ctx),
+            LoopVerdict::stop(TurnStopReason::MaxRounds)
+        );
         assert_eq!(ctx.calls, vec!["prepare", "closing"]);
     }
 
@@ -437,12 +445,18 @@ mod tests {
         let mut cancelled = Scripted::new(vec![]);
         cancelled.rounds = 128;
         cancelled.closing_script = vec![RoundOutcome::Cancelled];
-        assert_eq!(drive(&mut cancelled), LoopVerdict::stop("cancelled"));
+        assert_eq!(
+            drive(&mut cancelled),
+            LoopVerdict::stop(TurnStopReason::Cancelled)
+        );
 
         let mut interrupted = Scripted::new(vec![]);
         interrupted.rounds = 128;
         interrupted.closing_script = vec![RoundOutcome::Interrupted];
-        assert_eq!(drive(&mut interrupted), LoopVerdict::stop("interrupted"));
+        assert_eq!(
+            drive(&mut interrupted),
+            LoopVerdict::stop(TurnStopReason::Interrupted)
+        );
     }
 
     #[test]
@@ -452,33 +466,45 @@ mod tests {
             RoundOutcome::Final { refusal: false },
         ]);
         ctx.cancelled_after_dispatches = Some(1);
-        assert_eq!(drive(&mut ctx), LoopVerdict::stop("cancelled"));
+        assert_eq!(
+            drive(&mut ctx),
+            LoopVerdict::stop(TurnStopReason::Cancelled)
+        );
     }
 
     #[test]
     fn a_return_direct_terminal_passes_through_with_its_stop_reason() {
         let mut ctx = Scripted::new(vec![RoundOutcome::ToolCalls { count: 1 }]);
         ctx.dispatch_script = vec![DispatchOutcome::TerminalCommitted {
-            stop_reason: "end_turn".into(),
+            stop_reason: TurnStopReason::EndTurn,
         }];
         let verdict = drive(&mut ctx);
         assert!(verdict.terminal_committed);
-        assert_eq!(verdict.stop_reason, "end_turn");
+        assert_eq!(verdict.stop_reason, TurnStopReason::EndTurn);
     }
 
     #[test]
     fn interrupted_compaction_and_recovery_exhaustion_both_interrupt() {
         let mut ctx = Scripted::new(vec![]);
         ctx.prepare_script = vec![PrepareOutcome::Interrupted];
-        assert_eq!(drive(&mut ctx), LoopVerdict::stop("interrupted"));
+        assert_eq!(
+            drive(&mut ctx),
+            LoopVerdict::stop(TurnStopReason::Interrupted)
+        );
 
         let mut ctx = Scripted::new(vec![RoundOutcome::Interrupted]);
-        assert_eq!(drive(&mut ctx), LoopVerdict::stop("interrupted"));
+        assert_eq!(
+            drive(&mut ctx),
+            LoopVerdict::stop(TurnStopReason::Interrupted)
+        );
     }
 
     #[test]
     fn cancellation_inside_the_round_maps_to_cancelled() {
         let mut ctx = Scripted::new(vec![RoundOutcome::Cancelled]);
-        assert_eq!(drive(&mut ctx), LoopVerdict::stop("cancelled"));
+        assert_eq!(
+            drive(&mut ctx),
+            LoopVerdict::stop(TurnStopReason::Cancelled)
+        );
     }
 }

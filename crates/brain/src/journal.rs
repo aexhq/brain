@@ -296,8 +296,7 @@ pub enum Record {
         agent: String,
         call: String,
         name: String,
-        /// `completed | failed | cancelled | deadline_exceeded | interrupted`.
-        outcome: String,
+        outcome: brain_protocol::session::ToolOutcome,
         /// What the model was shown, bounded by [`MAX_RECORD_CONTENT_BYTES`].
         content: String,
         is_error: bool,
@@ -339,7 +338,7 @@ pub enum Record {
     },
     TurnCompleted {
         turn: String,
-        stop_reason: String,
+        stop_reason: TurnStopReason,
         rounds: u64,
         tool_calls: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1006,6 +1005,64 @@ pub fn fold(entries: &[Entry]) -> Fold {
 // ---------------------------------------------------------------------------------------------
 // HEAD
 // ---------------------------------------------------------------------------------------------
+
+/// Turn-level stop reasons as journaled. One value wider than the public contract: a recovery
+/// that interrupts a turn journals `Interrupted`, which the public wire reports as `error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnStopReason {
+    EndTurn,
+    Refusal,
+    MaxRounds,
+    Cancelled,
+    Interrupted,
+    Error,
+}
+
+impl std::str::FromStr for TurnStopReason {
+    type Err = BrainError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Ok(match value {
+            "end_turn" => TurnStopReason::EndTurn,
+            "refusal" => TurnStopReason::Refusal,
+            "max_rounds" => TurnStopReason::MaxRounds,
+            "cancelled" => TurnStopReason::Cancelled,
+            "interrupted" => TurnStopReason::Interrupted,
+            "error" => TurnStopReason::Error,
+            other => {
+                return Err(BrainError::Journal(format!(
+                    "unknown turn stop reason {other:?}"
+                )));
+            }
+        })
+    }
+}
+
+impl TurnStopReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TurnStopReason::EndTurn => "end_turn",
+            TurnStopReason::Refusal => "refusal",
+            TurnStopReason::MaxRounds => "max_rounds",
+            TurnStopReason::Cancelled => "cancelled",
+            TurnStopReason::Interrupted => "interrupted",
+            TurnStopReason::Error => "error",
+        }
+    }
+
+    /// The public `turn.completed` narrowing: the wire has no `interrupted`.
+    pub fn to_public(self) -> brain_protocol::session::StopReason {
+        use brain_protocol::session::StopReason;
+        match self {
+            TurnStopReason::EndTurn => StopReason::EndTurn,
+            TurnStopReason::Refusal => StopReason::Refusal,
+            TurnStopReason::MaxRounds => StopReason::MaxRounds,
+            TurnStopReason::Cancelled => StopReason::Cancelled,
+            TurnStopReason::Interrupted | TurnStopReason::Error => StopReason::Error,
+        }
+    }
+}
 
 /// Session lifecycle vocabulary shared by `HeadDoc`, `ControlDoc`, projections and the public
 /// `session.updated` transition record. Journal/wire encodings are the snake_case names.

@@ -9,11 +9,10 @@ use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse}
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-/// What one durable Tool call produced. `outcome` uses the contract vocabulary:
-/// `completed | failed | cancelled | deadline_exceeded | interrupted`.
+/// What one durable Tool call produced.
 #[derive(Debug, Clone)]
 pub struct CallOutcome {
-    pub outcome: String,
+    pub outcome: brain_protocol::hand::TerminalOutcome,
     /// Successful structured value before presentation formatting. Brain validates this against
     /// the sealed output schema immediately before it commits the result.
     pub value: Option<Value>,
@@ -23,13 +22,13 @@ pub struct CallOutcome {
     pub duration_ms: u64,
     pub truncated: bool,
     /// Present only when a host-executed return-direct tool asks Brain to end the turn.
-    pub terminal: Option<TerminalOutcome>,
+    pub terminal: Option<TurnTerminal>,
 }
 
 /// A trusted external executor may return a replayable client value or a structured turn error.
 /// Brain does not interpret either payload; it only journals it with the turn terminal.
 #[derive(Debug, Clone)]
-pub enum TerminalOutcome {
+pub enum TurnTerminal {
     Complete {
         value: Value,
         metadata: std::collections::HashMap<String, String>,
@@ -42,7 +41,7 @@ pub enum TerminalOutcome {
 impl CallOutcome {
     pub fn failed(content: impl Into<String>) -> Self {
         Self {
-            outcome: "failed".into(),
+            outcome: brain_protocol::hand::TerminalOutcome::Failed,
             value: None,
             content: content.into(),
             is_error: true,
