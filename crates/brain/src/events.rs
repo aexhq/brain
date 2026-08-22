@@ -265,10 +265,10 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
             at,
             seq,
             session_id: sid,
-            state: session_state(state)?,
+            state: session_state(*state),
             turn_phase: None,
             turn_id: turn.as_deref().and_then(|t| t.parse().ok()),
-            turn_state: session_turn_state(state, turn.as_deref()),
+            turn_state: session_turn_state(turn.as_deref()),
         },
         Record::HandLost {
             turn,
@@ -354,19 +354,19 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
     })
 }
 
-pub fn session_state(s: &str) -> Option<session::SessionState> {
+pub fn session_state(s: crate::journal::SessionLifecycle) -> session::SessionState {
+    use crate::journal::SessionLifecycle;
     match s {
-        "open" => Some(session::SessionState::Open),
-        "ending" => Some(session::SessionState::Ending),
-        "ended" => Some(session::SessionState::Ended),
-        "deleting" => Some(session::SessionState::Deleting),
-        "deleted" => Some(session::SessionState::Deleted),
-        "failed" => Some(session::SessionState::Failed),
-        _ => None,
+        SessionLifecycle::Open => session::SessionState::Open,
+        SessionLifecycle::Ending => session::SessionState::Ending,
+        SessionLifecycle::Ended => session::SessionState::Ended,
+        SessionLifecycle::Deleting => session::SessionState::Deleting,
+        SessionLifecycle::Deleted => session::SessionState::Deleted,
+        SessionLifecycle::Failed => session::SessionState::Failed,
     }
 }
 
-pub fn session_turn_state(_state: &str, turn: Option<&str>) -> session::SessionTurnState {
+pub fn session_turn_state(turn: Option<&str>) -> session::SessionTurnState {
     if turn.is_some() {
         session::SessionTurnState::Running
     } else {
@@ -719,46 +719,46 @@ mod tests {
     fn lifecycle_and_turn_activity_are_independent_on_session_updates() {
         let cases = [
             (
-                "open",
+                crate::journal::SessionLifecycle::Open,
                 session::SessionState::Open,
                 session::SessionTurnState::Idle,
             ),
             (
-                "ending",
+                crate::journal::SessionLifecycle::Ending,
                 session::SessionState::Ending,
                 session::SessionTurnState::Idle,
             ),
             (
-                "ended",
+                crate::journal::SessionLifecycle::Ended,
                 session::SessionState::Ended,
                 session::SessionTurnState::Idle,
             ),
             (
-                "deleting",
+                crate::journal::SessionLifecycle::Deleting,
                 session::SessionState::Deleting,
                 session::SessionTurnState::Idle,
             ),
             (
-                "deleted",
+                crate::journal::SessionLifecycle::Deleted,
                 session::SessionState::Deleted,
                 session::SessionTurnState::Idle,
             ),
             (
-                "failed",
+                crate::journal::SessionLifecycle::Failed,
                 session::SessionState::Failed,
                 session::SessionTurnState::Idle,
             ),
         ];
 
         for (internal, lifecycle, turn_state) in cases {
-            assert_eq!(session_state(internal), Some(lifecycle));
-            assert_eq!(session_turn_state(internal, None), turn_state);
+            assert_eq!(session_state(internal), lifecycle);
+            assert_eq!(session_turn_state(None), turn_state);
             let event = derive(
                 "ses_aaaaaaaaaaaaaaaaaaaa",
                 1,
                 0,
                 &Record::State {
-                    state: internal.into(),
+                    state: internal,
                     turn: None,
                 },
             )
@@ -777,21 +777,8 @@ mod tests {
         }
 
         assert_eq!(
-            session_turn_state("open", Some("trn_aaaaaaaaaaaaaaaaaaaa")),
+            session_turn_state(Some("trn_aaaaaaaaaaaaaaaaaaaa")),
             session::SessionTurnState::Running
-        );
-        assert!(session_state("future_state").is_none());
-        assert!(
-            derive(
-                "ses_aaaaaaaaaaaaaaaaaaaa",
-                1,
-                0,
-                &Record::State {
-                    state: "future_state".into(),
-                    turn: None,
-                },
-            )
-            .is_none()
         );
     }
 

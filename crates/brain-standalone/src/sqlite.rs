@@ -366,7 +366,7 @@ impl JournalStore for SqliteStore {
                     summary,
                     now,
                     doc_value.tenant_id,
-                    doc_value.state,
+                    doc_value.state.as_str(),
                     tenant_session_sort_key(doc_value.updated_ms, session_id),
                     integer(retention.metered_bytes, "session journal meter")?,
                     integer(retention.effect_reserve_bytes, "session effect reserve")?,
@@ -578,7 +578,7 @@ impl JournalStore for SqliteStore {
                     summary,
                     integer(next_fence, "fence")?,
                     integer(sequence, "sequence")?,
-                    doc.state,
+                    doc.state.as_str(),
                     tenant_session_sort_key(doc.updated_ms, session_id),
                     integer(next_retention.metered_bytes, "end journal meter")?,
                     integer(next_retention.effect_reserve_bytes, "end effect reserve")?,
@@ -902,7 +902,7 @@ impl JournalStore for SqliteStore {
                     summary,
                     integer(high_water, "sequence")?,
                     integer(now_ms.saturating_add(LEASE_MS), "lease expiry")?,
-                    doc_value.state,
+                    doc_value.state.as_str(),
                     tenant_session_sort_key(doc_value.updated_ms, session_id),
                     integer(retention.metered_bytes, "session journal meter")?,
                     integer(retention.effect_reserve_bytes, "session effect reserve")?,
@@ -1066,7 +1066,7 @@ impl JournalStore for SqliteStore {
                  WHERE deletion_jobs.state <> 'succeeded' OR excluded.state = 'succeeded'",
                 params![
                     status.session_id,
-                    status.state,
+                    status.state.as_str(),
                     encode(status, "deletion status")?,
                     integer(status.expires_at_ms, "deletion expiry")?,
                 ],
@@ -1265,7 +1265,7 @@ impl JournalStore for SqliteStore {
                  ORDER BY list_key ASC LIMIT ?4"
             }
         };
-        let state = query.state.unwrap_or("");
+        let state = query.state.map(|state| state.as_str()).unwrap_or("");
         let cursor = query.cursor.unwrap_or("");
         let fetch = query.limit.saturating_add(1) as u64;
         let mut statement = connection
@@ -1828,7 +1828,7 @@ mod tests {
             context_fork: None,
             depth: 0,
             last_seq: 1,
-            state: "open".into(),
+            state: brain::journal::SessionLifecycle::Open,
             failure: None,
             turn: None,
             active_phase: None,
@@ -1987,7 +1987,7 @@ mod tests {
             parent_id: head.doc.parent_id.clone(),
             metered_storage_bytes: head.doc.tenant_metered_storage_bytes,
             metered_journal_bytes: head.retention.metered_bytes,
-            state: "succeeded".into(),
+            state: brain::journal::DeletionState::Succeeded,
             requested_at_ms: 1,
             updated_at_ms: 2,
             completed_at_ms: Some(2),
@@ -2049,7 +2049,7 @@ mod tests {
                 .unwrap()
                 .retention
                 .metered_bytes,
-            state: "succeeded".into(),
+            state: brain::journal::DeletionState::Succeeded,
             requested_at_ms: 3,
             updated_at_ms: 4,
             completed_at_ms: Some(4),
@@ -2145,7 +2145,7 @@ mod tests {
             parent_id: None,
             metered_storage_bytes: 0,
             metered_journal_bytes: retained.metered_bytes,
-            state: "succeeded".into(),
+            state: brain::journal::DeletionState::Succeeded,
             requested_at_ms: 1,
             updated_at_ms: 2,
             completed_at_ms: Some(2),

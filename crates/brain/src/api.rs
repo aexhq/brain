@@ -11,7 +11,7 @@
 //! enter the journal.
 
 use crate::events::{event_is_ephemeral, event_seq, event_type};
-use crate::journal::Record;
+use crate::journal::{DeletionState, Record, SessionLifecycle};
 use crate::session::{Brain, TrustedPrincipal};
 use crate::{BrainError, mint_id};
 use axum::body::Bytes;
@@ -1150,7 +1150,7 @@ async fn delete_session(
         if status.tenant_id != principal.as_str() {
             return Err(map_err(BrainError::NoSuchSession(id)));
         }
-        if status.state == "succeeded" {
+        if status.state == DeletionState::Succeeded {
             return Ok(StatusCode::NO_CONTENT.into_response());
         }
     } else {
@@ -1201,7 +1201,7 @@ async fn get_deletion_status(
     let mut response = Json(DeletionStatusResponse {
         object: "session.deletion",
         session_id: status.session_id,
-        state: status.state,
+        state: status.state.as_str().to_string(),
         requested_at_ms: status.requested_at_ms,
         updated_at_ms: status.updated_at_ms,
         completed_at_ms: status.completed_at_ms,
@@ -2310,7 +2310,7 @@ async fn stream_events(
 
     // Existence check first: a stream for a missing session must 404, not hang.
     let head = state.brain.head(&id).await.map_err(map_err)?;
-    if head.doc.state == "deleted" {
+    if head.doc.state == SessionLifecycle::Deleted {
         return Err(Failure(
             StatusCode::NOT_FOUND,
             api_code("not_found"),
