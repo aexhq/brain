@@ -85,8 +85,10 @@ def main() -> int:
 
     selected = SCHEMAS if args.target == "all" else {args.target: SCHEMAS[args.target]}
     for schema, output in selected.values():
+        # Builders are suppressed: nothing consumes them, and every credential-bearing builder
+        # would need its own redacted Debug impl.
         subprocess.run(
-            ["cargo", "typify", "--output", str(output), str(schema)],
+            ["cargo", "typify", "--no-builder", "--output", str(output), str(schema)],
             cwd=ROOT,
             check=True,
         )
