@@ -32,7 +32,7 @@ use brain::config::Dialect;
 use brain::journal::Journal;
 use brain::provider::Provider;
 use brain::provider::fake::{FakeMode, FakeProvider};
-use brain::session::{Brain, BrainConfig};
+use brain::session::{Brain, BrainConfig, BrainServices};
 use clap::Parser;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -141,11 +141,12 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         },
     );
     let factory_fake = fake.clone();
-    let brain = Brain::with_parts_and_external(
+    let brain = Brain::with_parts_and_services(
         cfg,
         Journal::new_memory("bench"),
         Arc::new(brain::keys::PlainCustody),
         executor.clone(),
+        BrainServices::default(),
         Some(Arc::new(move |_| factory_fake.clone() as Arc<dyn Provider>)),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

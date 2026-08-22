@@ -1,7 +1,8 @@
+use brain::adapter::DisabledToolExecutor;
 use brain::config::Dialect;
 use brain::journal::Journal;
 use brain::provider::fake::{FakeProvider, Scripted};
-use brain::session::{Brain, BrainConfig};
+use brain::session::{Brain, BrainConfig, BrainServices};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,13 +54,15 @@ async fn message_key_replays_while_active_after_completion_and_after_cold_hydrat
     fake.script([Scripted::Text("one durable response".into())]);
     fake.tokens_per_second.store(5, Ordering::Relaxed);
     let factory_fake = fake.clone();
-    let brain = Brain::with_parts(
+    let brain = Brain::with_parts_and_services(
         BrainConfig {
             idle_discard: Duration::from_millis(40),
             ..BrainConfig::default()
         },
         Journal::new_memory("message-idempotency-test"),
         Arc::new(brain::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
         Some(Arc::new(move |_| {
             factory_fake.clone() as Arc<dyn brain::provider::Provider>
         })),

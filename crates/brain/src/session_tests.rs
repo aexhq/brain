@@ -1,0 +1,5489 @@
+use super::*;
+use crate::provider::fake::{FakeProvider, Scripted};
+use crate::storage::SessionStoragePort as _;
+use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
+use serde_json::json;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+fn typed_create(value: serde_json::Value) -> CreateSessionRequest {
+    serde_json::from_value(value).expect("test CreateSessionRequest deserializes")
+}
+
+#[test]
+fn journal_retention_config_rejects_malformed_and_inconsistent_policy() {
+    assert_eq!(parse_strict_env_u64("TEST_LIMIT", None, 17).unwrap(), 17);
+    assert_eq!(
+        parse_strict_env_u64("TEST_LIMIT", Some("42"), 17).unwrap(),
+        42
+    );
+    for raw in ["", "-1", "1.5", "not-a-number"] {
+        assert!(matches!(
+            parse_strict_env_u64("TEST_LIMIT", Some(raw), 17),
+            Err(BrainError::Invalid(_))
+        ));
+    }
+
+    let mut cfg = BrainConfig::default();
+    cfg.journal_max_session_bytes = crate::journal::MIN_SESSION_JOURNAL_BYTES;
+    cfg.journal_max_tenant_bytes = cfg.journal_max_session_bytes;
+    cfg.journal_max_tenant_sessions = 1;
+    cfg.validate().unwrap();
+
+    cfg.journal_max_tenant_bytes = cfg.journal_max_session_bytes - 1;
+    assert!(matches!(cfg.validate(), Err(BrainError::Invalid(_))));
+    cfg.journal_max_tenant_bytes = cfg.journal_max_session_bytes;
+    cfg.journal_max_tenant_sessions = 0;
+    assert!(matches!(cfg.validate(), Err(BrainError::Invalid(_))));
+}
+
+#[test]
+fn process_environment_policy_uses_exact_defaults_and_bounds() {
+    let cfg = BrainConfig::from_env_values(|_| Ok(None)).unwrap();
+    assert_eq!(
+        cfg.max_concurrent_model_rounds,
+        DEFAULT_MAX_CONCURRENT_MODEL_ROUNDS
+    );
+    assert_eq!(cfg.max_concurrent_turns, DEFAULT_MAX_CONCURRENT_TURNS);
+    assert_eq!(cfg.max_concurrent_creates, DEFAULT_MAX_CONCURRENT_CREATES);
+    assert_eq!(cfg.max_event_followers, DEFAULT_MAX_EVENT_FOLLOWERS);
+    assert_eq!(cfg.max_resident_sessions, DEFAULT_MAX_RESIDENT_SESSIONS);
+    assert_eq!(
+        cfg.storage_max_tenant_bytes,
+        DEFAULT_STORAGE_MAX_TENANT_BYTES
+    );
+    assert_eq!(
+        cfg.max_concurrent_recoveries,
+        DEFAULT_MAX_CONCURRENT_RECOVERIES
+    );
+
+    for (name, default, minimum, maximum) in [
+        (
+            MAX_MODEL_ROUNDS_ENV,
+            DEFAULT_MAX_CONCURRENT_MODEL_ROUNDS,
+            1,
+            MAX_CONCURRENT_MODEL_ROUNDS,
+        ),
+        (
+            MAX_TURNS_ENV,
+            DEFAULT_MAX_CONCURRENT_TURNS,
+            1,
+            MAX_CONCURRENT_TURNS,
+        ),
+        (
+            MAX_CONCURRENT_CREATES_ENV,
+            DEFAULT_MAX_CONCURRENT_CREATES,
+            1,
+            MAX_CONCURRENT_CREATES,
+        ),
+        (
+            MAX_EVENT_FOLLOWERS_ENV,
+            DEFAULT_MAX_EVENT_FOLLOWERS,
+            1,
+            MAX_EVENT_FOLLOWERS,
+        ),
+        (
+            MAX_RESIDENT_SESSIONS_ENV,
+            DEFAULT_MAX_RESIDENT_SESSIONS,
+            1,
+            MAX_RESIDENT_SESSIONS,
+        ),
+        (
+            MAX_ADDITIONAL_SANDBOXES_ENV,
+            DEFAULT_MAX_ADDITIONAL_SANDBOXES,
+            1,
+            MAX_ADDITIONAL_SANDBOXES,
+        ),
+        (
+            RECOVERY_SHARDS_PER_POLL_ENV,
+            DEFAULT_RECOVERY_SHARDS_PER_POLL,
+            1,
+            crate::journal::RECOVERY_SHARDS,
+        ),
+        (
+            RECOVERY_PAGE_SIZE_ENV,
+            DEFAULT_RECOVERY_PAGE_SIZE,
+            1,
+            MAX_RECOVERY_PAGE_SIZE,
+        ),
+        (
+            MAX_CONCURRENT_RECOVERIES_ENV,
+            DEFAULT_MAX_CONCURRENT_RECOVERIES,
+            1,
+            MAX_CONCURRENT_RECOVERIES,
+        ),
+    ] {
+        assert_eq!(
+            parse_env_usize(name, None, default, minimum, maximum).unwrap(),
+            default
+        );
+        assert_eq!(
+            parse_env_usize(name, Some(&minimum.to_string()), default, minimum, maximum).unwrap(),
+            minimum
+        );
+        assert_eq!(
+            parse_env_usize(name, Some(&maximum.to_string()), default, minimum, maximum).unwrap(),
+            maximum
+        );
+        assert!(
+            parse_env_usize(
+                name,
+                Some(&maximum.saturating_add(1).to_string()),
+                default,
+                minimum,
+                maximum,
+            )
+            .is_err()
+        );
+        for invalid in ["", "-1", "1.5", "not-a-number"] {
+            assert!(
+                parse_env_usize(name, Some(invalid), default, minimum, maximum).is_err(),
+                "{name} accepted {invalid:?}"
+            );
+        }
+    }
+
+    for (name, default, minimum, maximum) in [
+        (
+            PROVIDER_HEADER_TIMEOUT_ENV,
+            DEFAULT_PROVIDER_HEADER_TIMEOUT_MS,
+            MIN_PROVIDER_HEADER_TIMEOUT_MS,
+            MAX_PROVIDER_HEADER_TIMEOUT_MS,
+        ),
+        (
+            PROVIDER_IDLE_TIMEOUT_ENV,
+            DEFAULT_PROVIDER_IDLE_TIMEOUT_MS,
+            MIN_PROVIDER_IDLE_TIMEOUT_MS,
+            MAX_PROVIDER_IDLE_TIMEOUT_MS,
+        ),
+        (
+            PROVIDER_TOTAL_TIMEOUT_ENV,
+            DEFAULT_PROVIDER_TOTAL_TIMEOUT_MS,
+            MIN_PROVIDER_TOTAL_TIMEOUT_MS,
+            MAX_PROVIDER_TOTAL_TIMEOUT_MS,
+        ),
+        (
+            EXTERNAL_TOOL_TIMEOUT_ENV,
+            DEFAULT_EXTERNAL_TOOL_TIMEOUT_MS,
+            MIN_EXTERNAL_TOOL_TIMEOUT_MS,
+            MAX_EXTERNAL_TOOL_TIMEOUT_MS,
+        ),
+        (
+            STORAGE_TRANSFER_TTL_ENV,
+            crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
+            MIN_STORAGE_TRANSFER_TTL_MS,
+            MAX_STORAGE_TRANSFER_TTL_MS,
+        ),
+        (
+            RECOVERY_POLL_ENV,
+            DEFAULT_RECOVERY_POLL_MS,
+            MIN_RECOVERY_POLL_MS,
+            MAX_RECOVERY_POLL_MS,
+        ),
+    ] {
+        assert_eq!(
+            parse_env_u64(name, None, default, minimum, maximum).unwrap(),
+            default
+        );
+        assert_eq!(
+            parse_env_u64(name, Some(&minimum.to_string()), default, minimum, maximum).unwrap(),
+            minimum
+        );
+        assert_eq!(
+            parse_env_u64(name, Some(&maximum.to_string()), default, minimum, maximum).unwrap(),
+            maximum
+        );
+        assert!(
+            parse_env_u64(
+                name,
+                Some(&maximum.saturating_add(1).to_string()),
+                default,
+                minimum,
+                maximum,
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn process_environment_policy_rejects_cross_field_and_string_drift() {
+    let load = |values: &[(&str, &str)]| {
+        BrainConfig::from_env_values(|name| {
+            Ok(values
+                .iter()
+                .find_map(|(candidate, value)| (*candidate == name).then(|| (*value).into())))
+        })
+    };
+
+    assert!(load(&[(MAX_TURNS_ENV, "0")]).is_err());
+    assert!(load(&[(OUTBOUND_ALLOW_PRIVATE_ENV, "TRUE")]).is_err());
+    assert!(
+        load(&[
+            (STORAGE_MAX_OBJECT_BYTES_ENV, "2"),
+            (STORAGE_MAX_SESSION_BYTES_ENV, "1"),
+        ])
+        .is_err()
+    );
+    assert!(
+        load(&[
+            (PROVIDER_HEADER_TIMEOUT_ENV, "3000"),
+            (PROVIDER_TOTAL_TIMEOUT_ENV, "2000"),
+        ])
+        .is_err()
+    );
+    assert!(load(&[(EXTERNAL_EXECUTOR_TOKEN_ENV, "secret-without-url")]).is_err());
+    assert!(
+        load(&[(
+            EXTERNAL_EXECUTOR_URL_ENV,
+            "http://127.0.0.1:1234/tools?credential=sentinel",
+        )])
+        .is_err()
+    );
+    assert!(
+        load(&[
+            (EXTERNAL_EXECUTOR_URL_ENV, "http://127.0.0.1:1234/tools"),
+            (EXTERNAL_EXECUTOR_TOKEN_ENV, "invalid\nheader"),
+        ])
+        .is_err()
+    );
+    assert!(
+        load(&[
+            (EXTERNAL_EXECUTOR_URL_ENV, "http://127.0.0.1:1234/tools"),
+            (EXTERNAL_EXECUTOR_CAPABILITIES_ENV, "aex.output,aex.output"),
+        ])
+        .is_err()
+    );
+    load(&[
+        (EXTERNAL_EXECUTOR_URL_ENV, "http://127.0.0.1:1234/tools"),
+        (EXTERNAL_EXECUTOR_TOKEN_ENV, "valid-token"),
+        (EXTERNAL_EXECUTOR_CAPABILITIES_ENV, "aex.output,aex.web"),
+    ])
+    .unwrap();
+}
+
+#[test]
+fn transport_timeout_policy_accepts_exact_bounds_and_rejects_invalid_order() {
+    let mut cfg = BrainConfig {
+        provider_header_timeout: Duration::from_millis(MIN_PROVIDER_HEADER_TIMEOUT_MS),
+        provider_idle_timeout: Duration::from_millis(MIN_PROVIDER_IDLE_TIMEOUT_MS),
+        provider_total_timeout: Duration::from_millis(MIN_PROVIDER_TOTAL_TIMEOUT_MS),
+        external_call_timeout: Duration::from_millis(MIN_EXTERNAL_TOOL_TIMEOUT_MS),
+        ..BrainConfig::default()
+    };
+    cfg.validate().unwrap();
+
+    cfg.provider_header_timeout = Duration::from_millis(MAX_PROVIDER_HEADER_TIMEOUT_MS);
+    cfg.provider_idle_timeout = Duration::from_millis(MAX_PROVIDER_IDLE_TIMEOUT_MS);
+    cfg.provider_total_timeout = Duration::from_millis(MAX_PROVIDER_TOTAL_TIMEOUT_MS);
+    cfg.external_call_timeout = Duration::from_millis(MAX_EXTERNAL_TOOL_TIMEOUT_MS);
+    cfg.validate().unwrap();
+
+    cfg.provider_header_timeout =
+        Duration::from_millis(MIN_PROVIDER_HEADER_TIMEOUT_MS.saturating_sub(1));
+    assert!(matches!(cfg.validate(), Err(BrainError::Invalid(_))));
+    cfg.provider_header_timeout = Duration::from_millis(MAX_PROVIDER_HEADER_TIMEOUT_MS);
+    cfg.provider_idle_timeout =
+        Duration::from_millis(MAX_PROVIDER_IDLE_TIMEOUT_MS.saturating_add(1));
+    assert!(matches!(cfg.validate(), Err(BrainError::Invalid(_))));
+    cfg.provider_idle_timeout = Duration::from_millis(MAX_PROVIDER_IDLE_TIMEOUT_MS);
+    cfg.external_call_timeout =
+        Duration::from_millis(MAX_EXTERNAL_TOOL_TIMEOUT_MS.saturating_add(1));
+    assert!(matches!(cfg.validate(), Err(BrainError::Invalid(_))));
+
+    cfg.external_call_timeout = Duration::from_millis(DEFAULT_EXTERNAL_TOOL_TIMEOUT_MS);
+    cfg.provider_header_timeout = Duration::from_millis(DEFAULT_PROVIDER_HEADER_TIMEOUT_MS);
+    cfg.provider_idle_timeout = Duration::from_millis(DEFAULT_PROVIDER_IDLE_TIMEOUT_MS);
+    cfg.provider_total_timeout =
+        Duration::from_millis(DEFAULT_PROVIDER_IDLE_TIMEOUT_MS.saturating_sub(1));
+    assert!(matches!(cfg.validate(), Err(BrainError::Invalid(_))));
+}
+
+#[tokio::test]
+async fn resident_actor_admission_is_hard_bounded_and_prunes_dead_root_cells() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-resident-cap-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            max_resident_sessions: 2,
+            idle_discard: Duration::from_millis(100),
+            ..BrainConfig::default()
+        },
+        Journal::new_memory("brain-resident-cap"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        None,
+    );
+    let first = brain
+        .spawn_actor("ses_resident_1", ActorStartup::Lazy)
+        .await
+        .unwrap();
+    let second = brain
+        .spawn_actor("ses_resident_2", ActorStartup::Lazy)
+        .await
+        .unwrap();
+    let third = brain
+        .spawn_actor("ses_resident_3", ActorStartup::Lazy)
+        .await
+        .expect("pressure evicts one safe idle resident");
+    assert!(brain.sessions.lock().expect("sessions").len() <= 2);
+
+    {
+        let mut cells = brain.root_secret_cells.lock().expect("root secret cells");
+        for index in 0..1_000 {
+            cells.insert(format!("root-{index}"), Weak::new());
+        }
+    }
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if first.is_closed()
+                && second.is_closed()
+                && brain.sessions.lock().expect("sessions").is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("idle residents release their slots");
+    assert!(
+        brain
+            .root_secret_cells
+            .lock()
+            .expect("root secret cells")
+            .is_empty()
+    );
+
+    let fourth = brain
+        .spawn_actor("ses_resident_4", ActorStartup::Lazy)
+        .await
+        .expect("released resident capacity is immediately reusable");
+    assert!(!third.is_closed() || !fourth.is_closed());
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn resident_pressure_returns_overload_when_every_slot_is_active() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-resident-active-cap-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            max_resident_sessions: 1,
+            ..BrainConfig::default()
+        },
+        Journal::new_memory("brain-resident-active-cap"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        None,
+    );
+    // The resident permit is the authoritative process bound and remains held across every
+    // active turn/effect. With no idle actor registered for pressure, admission waits once
+    // for the fixed short window and fails honestly.
+    let _active = brain.resident_permits.clone().try_acquire_owned().unwrap();
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        brain
+            .spawn_actor("ses_resident_busy", ActorStartup::Lazy)
+            .await,
+        Err(BrainError::Overloaded)
+    ));
+    assert!(started.elapsed() >= Duration::from_millis(200));
+    assert!(brain.sessions.lock().expect("sessions").is_empty());
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn end_returns_the_durable_fence_before_async_teardown_converges() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-async-end-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    let journal = Journal::new_memory("brain-async-end");
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        None,
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+            })),
+            Some("async-end"),
+        )
+        .await
+        .unwrap();
+    let session_id = created.id.to_string();
+    assert_eq!(
+        created.model.context_window_tokens,
+        i64::from(brain_protocol::DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS)
+    );
+
+    let accepted = brain.end(&session_id).await.unwrap();
+    assert_eq!(accepted.state, session::SessionState::Ending);
+    assert_eq!(accepted.turn_state, session::SessionTurnState::Idle);
+    assert!(
+        journal.get_head(&session_id).await.unwrap().doc.ended,
+        "the response must be backed by the durable admission fence"
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if journal.get_head(&session_id).await.unwrap().doc.state == "ended" {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("background end convergence");
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn end_fences_before_a_cancellation_resistant_effect_and_recovery_never_reopens() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-end-resistant-effect-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create resistant effect data dir");
+    let journal = Journal::new_memory("brain-end-resistant-effect");
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([Scripted::tool("submit", json!({"answer": 42}))]);
+    let provider = fake.clone();
+    let executor = Arc::new(CancellationResistantExecutor::default());
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            official_capabilities: HashMap::from([("aex.submit".into(), submit_policy())]),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        executor.clone(),
+        BrainServices::default(),
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let root = brain
+        .create_session(
+            typed_create(json!({
+                "model": {
+                    "provider":"anthropic", "name":"resistant-effect", "api_key":"key"
+                },
+                "tools": {"items": [{
+                    "definition": {
+                        "name":"submit", "description":"submit a final result",
+                        "contract_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "input_schema":{"type":"object"},
+                        "output_schema":{"type":"object"}
+                    },
+                    "executor":{"kind":"engine", "capability":"aex.submit"}
+                }]}
+            })),
+            Some("resistant-end"),
+        )
+        .await
+        .expect("create resistant-effect root");
+    let root_id = root.id.to_string();
+
+    // Persist a depth-two descendant so admission has to evaluate the immutable ancestor
+    // chain while the root actor itself is parked inside the resistant effect.
+    let root_head = journal.get_head(&root_id).await.expect("root head");
+    let child_id = "ses_resistantendchild0000";
+    let mut child = root_head.doc.clone();
+    child.root_id = root_id.clone();
+    child.parent_id = Some(root_id.clone());
+    child.ancestor_ids = vec![root_id.clone()];
+    child.depth = 1;
+    child.last_seq = 1;
+    child.create_key_hash = None;
+    child.create_request_hash = None;
+    child.context_fork = None;
+    child.default_sandbox = None;
+    journal
+        .create(
+            child_id,
+            &child,
+            &Record::State {
+                state: "open".into(),
+                turn: None,
+            },
+        )
+        .await
+        .expect("create resistant-effect child");
+    let grandchild_id = "ses_resistantendgrand0000";
+    let mut grandchild = child.clone();
+    grandchild.parent_id = Some(child_id.into());
+    grandchild.ancestor_ids = vec![root_id.clone(), child_id.into()];
+    grandchild.depth = 2;
+    journal
+        .create(
+            grandchild_id,
+            &grandchild,
+            &Record::State {
+                state: "open".into(),
+                turn: None,
+            },
+        )
+        .await
+        .expect("create resistant-effect grandchild");
+
+    brain
+        .message(
+            &root_id,
+            MessageRequestContent::String("run the resistant effect".parse().unwrap()),
+        )
+        .await
+        .expect("admit root turn");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while executor.calls.load(Ordering::Acquire) == 0 {
+            executor.entered.notified().await;
+        }
+    })
+    .await
+    .expect("external effect starts");
+
+    let accepted = tokio::time::timeout(Duration::from_secs(1), brain.end(&root_id))
+        .await
+        .expect("END acceptance cannot wait for a cancellation-resistant effect")
+        .expect("END fence commits");
+    assert_eq!(accepted.state, session::SessionState::Ending);
+    assert!(!executor.released.load(Ordering::Acquire));
+    let fenced = journal.get_head(&root_id).await.expect("fenced root");
+    assert_eq!(fenced.doc.state, "ending");
+    assert!(fenced.doc.ended);
+    assert!(
+        fenced.doc.turn.is_some(),
+        "pending work remains recoverable"
+    );
+
+    let descendant_error = brain
+        .message(
+            grandchild_id,
+            MessageRequestContent::String("late follow-up".parse().unwrap()),
+        )
+        .await
+        .expect_err("the durable ancestor fence closes deep admission immediately");
+    assert!(matches!(descendant_error, BrainError::Fenced));
+
+    executor.release();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let head = journal.get_head(&root_id).await.unwrap();
+            if head.doc.turn.is_none() && executor.calls.load(Ordering::Acquire) >= 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a new owner reconciles the resistant effect after the fence");
+    assert!(matches!(
+        journal.get_head(&root_id).await.unwrap().doc.state.as_str(),
+        "ending" | "ended"
+    ));
+    let records = journal
+        .read_records(&root_id, 0)
+        .await
+        .expect("root records");
+    let ending_seq = records
+        .iter()
+        .find(|entry| matches!(&entry.record, Record::State { state, .. } if state == "ending"))
+        .expect("durable ending record")
+        .seq;
+    assert!(
+        records.iter().all(|entry| {
+            entry.seq <= ending_seq
+                || !matches!(&entry.record, Record::State { state, .. } if state == "open")
+        }),
+        "turn reconciliation after the END fence must never reopen the lifecycle"
+    );
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn end_recovery_terminates_only_owned_child_sandboxes_then_all_root_inventory() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-end-additional-sandboxes-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create sandbox teardown data dir");
+    let journal = Journal::new_memory("brain-end-additional-sandboxes");
+    let control = Arc::new(EndSandboxControl::default());
+    control.failures_remaining.store(1, Ordering::Release);
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            recovery_poll_interval: Duration::from_millis(10),
+            recovery_shards_per_poll: crate::journal::RECOVERY_SHARDS,
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            sandbox_control: Some(control.clone()),
+            ..BrainServices::default()
+        },
+        None,
+    );
+    brain.start_recovery_worker();
+    let root = brain
+        .create_session(
+            typed_create(json!({
+                "model":{"provider":"anthropic", "name":"end-sandboxes", "api_key":"key"}
+            })),
+            Some("end-additional-sandboxes"),
+        )
+        .await
+        .expect("create sandbox teardown root");
+    let root_id = root.id.to_string();
+    let root_head = journal.get_head(&root_id).await.expect("root head");
+    let child_id = "ses_endsandboxchild00000";
+    let mut child = root_head.doc.clone();
+    child.root_id = root_id.clone();
+    child.parent_id = Some(root_id.clone());
+    child.ancestor_ids = vec![root_id.clone()];
+    child.depth = 1;
+    child.last_seq = 1;
+    child.turn = None;
+    child.turns = 0;
+    child.create_key_hash = None;
+    child.create_request_hash = None;
+    child.context_fork = None;
+    child.default_sandbox = None;
+    journal
+        .create(
+            child_id,
+            &child,
+            &Record::State {
+                state: "open".into(),
+                turn: None,
+            },
+        )
+        .await
+        .expect("create sandbox teardown child");
+
+    let root_sandbox =
+        reserve_live_additional_sandbox(&journal, &root_id, &root_id, "op_root_sandbox").await;
+    let child_sandbox =
+        reserve_live_additional_sandbox(&journal, &root_id, child_id, "op_child_sandbox").await;
+
+    let accepted = brain.end(child_id).await.expect("accept child END fence");
+    assert_eq!(accepted.state, session::SessionState::Ending);
+    assert_eq!(
+        journal
+            .get_sandbox(&root_id, &root_sandbox.sandbox_id)
+            .await
+            .unwrap()
+            .status
+            .state,
+        brain_protocol::hand::SandboxState::Running,
+        "a child END must not terminate an additional sandbox owned by its root"
+    );
+
+    // The first Hand termination fails after the END response. With no further API traffic,
+    // the durable ending due-key must cause recovery to retry and reach ENDED.
+    tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            if journal.get_head(child_id).await.unwrap().doc.state == "ended" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("no-traffic recovery terminates the child-owned sandbox");
+    let child_terminal = journal
+        .get_sandbox(&root_id, &child_sandbox.sandbox_id)
+        .await
+        .expect("child sandbox tombstone");
+    assert!(sandbox_status_releases_slot(&child_terminal.status));
+    assert!(child_terminal.slot_released);
+    let root_live = journal
+        .get_sandbox(&root_id, &root_sandbox.sandbox_id)
+        .await
+        .expect("root sandbox remains live");
+    assert_eq!(
+        root_live.status.state,
+        brain_protocol::hand::SandboxState::Running
+    );
+    assert!(!root_live.slot_released);
+
+    let root_accepted = brain.end(&root_id).await.expect("accept root END fence");
+    assert_eq!(root_accepted.state, session::SessionState::Ending);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if journal.get_head(&root_id).await.unwrap().doc.state == "ended" {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("root END terminates every remaining root inventory item");
+    let root_terminal = journal
+        .get_sandbox(&root_id, &root_sandbox.sandbox_id)
+        .await
+        .expect("root sandbox tombstone");
+    assert!(sandbox_status_releases_slot(&root_terminal.status));
+    assert!(root_terminal.slot_released);
+    let terminated = control
+        .terminated
+        .lock()
+        .expect("terminated sandboxes")
+        .clone();
+    assert_eq!(
+        terminated
+            .iter()
+            .filter(|sandbox_id| *sandbox_id == &child_sandbox.sandbox_id)
+            .count(),
+        1,
+        "a terminal child tombstone is not terminated again by root END"
+    );
+    assert!(terminated.contains(&root_sandbox.sandbox_id));
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[test]
+fn complete_create_contract_bounds_are_enforced_before_resolution() {
+    let omitted = typed_create(json!({
+        "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+    }));
+    validate_create_request(&omitted).expect("omitted values use schema defaults");
+
+    let exact = typed_create(json!({
+        "model": {
+            "provider":"anthropic", "name":"model", "api_key":"key",
+            "max_output_tokens": brain_protocol::MAX_MODEL_OUTPUT_TOKENS,
+            "context_window_tokens": brain_protocol::MAX_MODEL_CONTEXT_WINDOW_TOKENS,
+            "temperature": 2.0
+        },
+        "provider_recovery_retries": 8,
+        "client": {"id":"app", "submit_retries":8},
+        "children": {
+            "max_depth":8, "max_direct_children":128,
+            "max_descendants":1024
+        }
+    }));
+    validate_create_request(&exact).expect("every exact public maximum is accepted");
+
+    for (label, value) in [
+        (
+            "provider_recovery_retries",
+            json!({"model":{"provider":"anthropic","name":"model","api_key":"key"},"provider_recovery_retries":9}),
+        ),
+        (
+            "client.submit_retries",
+            json!({"model":{"provider":"anthropic","name":"model","api_key":"key"},"client":{"id":"app","submit_retries":9}}),
+        ),
+        (
+            "children.max_depth",
+            json!({"model":{"provider":"anthropic","name":"model","api_key":"key"},"children":{"max_depth":9}}),
+        ),
+        (
+            "children.max_direct_children",
+            json!({"model":{"provider":"anthropic","name":"model","api_key":"key"},"children":{"max_direct_children":129}}),
+        ),
+        (
+            "children.max_descendants",
+            json!({"model":{"provider":"anthropic","name":"model","api_key":"key"},"children":{"max_descendants":1025}}),
+        ),
+        (
+            "model.max_output_tokens",
+            json!({"model":{"provider":"anthropic","name":"model","api_key":"key","max_output_tokens":u64::from(brain_protocol::MAX_MODEL_OUTPUT_TOKENS)+1}}),
+        ),
+        (
+            "model.context_window_tokens below minimum",
+            json!({"model":{"provider":"anthropic","name":"model","api_key":"key","context_window_tokens":i64::from(brain_protocol::MIN_MODEL_CONTEXT_WINDOW_TOKENS)-1}}),
+        ),
+        (
+            "model.context_window_tokens above maximum",
+            json!({"model":{"provider":"anthropic","name":"model","api_key":"key","context_window_tokens":i64::from(brain_protocol::MAX_MODEL_CONTEXT_WINDOW_TOKENS)+1}}),
+        ),
+        (
+            "model.temperature",
+            json!({"model":{"provider":"anthropic","name":"model","api_key":"key","temperature":2.01}}),
+        ),
+    ] {
+        let request = typed_create(value);
+        let error = validate_create_request(&request)
+            .expect_err("a value above the public maximum must be rejected");
+        assert!(
+            matches!(error, BrainError::Invalid(_)),
+            "{label} produced {error:?}"
+        );
+    }
+
+    let secrets = (0..129)
+        .map(|index| (format!("SECRET_{index}"), json!("value")))
+        .collect::<serde_json::Map<_, _>>();
+    let request = typed_create(json!({
+        "model":{"provider":"anthropic","name":"model","api_key":"key"},
+        "secrets": secrets
+    }));
+    assert!(matches!(
+        validate_create_request(&request),
+        Err(BrainError::Invalid(_))
+    ));
+
+    let exact_secret_document = typed_create(json!({
+        "model":{"provider":"anthropic","name":"model","api_key":"key"},
+        "secrets":{"A":"é".repeat(2044)}
+    }));
+    assert_eq!(
+        serde_jcs::to_vec(&exact_secret_document.secrets)
+            .unwrap()
+            .len(),
+        brain_protocol::MAX_SESSION_SECRET_DOCUMENT_BYTES
+    );
+    validate_create_request(&exact_secret_document)
+        .expect("an exact-size custody document is accepted");
+    let oversized_secret_document = typed_create(json!({
+        "model":{"provider":"anthropic","name":"model","api_key":"key"},
+        "secrets":{"A":"é".repeat(2045)}
+    }));
+    assert!(matches!(
+        validate_create_request(&oversized_secret_document),
+        Err(BrainError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
+async fn context_capacity_rejects_before_custody_or_hand_effects() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-context-admission-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    let custody = Arc::new(CountingCustody::default());
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-context-admission"),
+        custody.clone(),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        None,
+    );
+    let error = brain
+        .create_session(
+            typed_create(json!({
+                "model": {
+                    "provider":"anthropic",
+                    "name":"unknown-small-model",
+                    "api_key":"key",
+                    "max_output_tokens": brain_protocol::MAX_MODEL_OUTPUT_TOKENS
+                }
+            })),
+            Some("context-admission"),
+        )
+        .await
+        .expect_err("the conservative default window cannot fit a 128K output reserve");
+    assert!(matches!(error, BrainError::Invalid(_)));
+    assert_eq!(custody.encrypts.load(Ordering::Relaxed), 0);
+    assert!(
+        !data_dir.exists(),
+        "Hand staging must not run after a pure validation failure"
+    );
+}
+
+fn submit_policy() -> crate::config::ServerToolPolicy {
+    crate::config::ServerToolPolicy {
+        capability: "aex.submit".into(),
+        scope: brain_protocol::session::ExternalToolScope::Root,
+        completion: brain_protocol::session::ExternalToolCompletion::ReturnDirect,
+        effect: brain_protocol::session::ExternalToolEffect::ReplaySafe,
+        max_input_bytes: 1024,
+    }
+}
+
+#[derive(Default)]
+struct RecoveryExecutor {
+    calls: AtomicUsize,
+    call_ids: Mutex<Vec<String>>,
+}
+
+#[derive(Default)]
+struct CancellationResistantExecutor {
+    calls: AtomicUsize,
+    entered: Notify,
+    released: AtomicBool,
+    release_waiters: Notify,
+}
+
+#[derive(Default)]
+struct EndSandboxControl {
+    failures_remaining: AtomicUsize,
+    attempts: Mutex<Vec<String>>,
+    terminated: Mutex<Vec<String>>,
+}
+
+impl EndSandboxControl {
+    fn sandbox_id(target: &brain_protocol::hand::SandboxTarget) -> String {
+        serde_json::to_value(target)
+            .expect("serialize sandbox target")
+            .get("sandbox_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("additional target sandbox id")
+            .to_owned()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::hand::SandboxControlPort for EndSandboxControl {
+    async fn create(
+        &self,
+        _request: brain_protocol::hand::CreateSandboxRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxStatus> {
+        panic!("unused")
+    }
+
+    async fn inspect(
+        &self,
+        _target: brain_protocol::hand::SandboxTarget,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxStatus> {
+        panic!("unused")
+    }
+
+    async fn execute(
+        &self,
+        _request: brain_protocol::hand::SandboxExecutionRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SubmitReceipt> {
+        panic!("unused")
+    }
+
+    async fn write_stdin(
+        &self,
+        _request: brain_protocol::hand::WriteStdinRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::WriteStdinReceipt> {
+        panic!("unused")
+    }
+
+    async fn terminate(
+        &self,
+        target: brain_protocol::hand::SandboxTarget,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxStatus> {
+        let sandbox_id = Self::sandbox_id(&target);
+        self.attempts
+            .lock()
+            .expect("sandbox terminate attempts")
+            .push(sandbox_id.clone());
+        if self
+            .failures_remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(serde_json::from_value(json!({
+                "code":"temporarily_unavailable",
+                "message":"injected transient termination failure",
+                "retryable":true
+            }))
+            .expect("valid Hand error"));
+        }
+        self.terminated
+            .lock()
+            .expect("terminated sandboxes")
+            .push(sandbox_id.clone());
+        Ok(serde_json::from_value(json!({
+            "state":"terminated",
+            "target":target,
+            "generation":format!("gen_{sandbox_id}"),
+            "target_ref":format!("tgt_{sandbox_id}"),
+            "changed_at_ms":crate::wall_ms(),
+            "reason":"session_ended"
+        }))
+        .expect("valid terminal sandbox status"))
+    }
+}
+
+async fn reserve_live_additional_sandbox(
+    journal: &Journal,
+    root_id: &str,
+    owner_session_id: &str,
+    operation_id: &str,
+) -> crate::journal::SandboxInventoryDoc {
+    let (sandbox_id, generation, target) =
+        additional_sandbox_identity(root_id, owner_session_id, operation_id)
+            .expect("additional sandbox identity");
+    journal
+        .reserve_sandbox(&crate::journal::SandboxReserveRequest {
+            root_id: root_id.to_owned(),
+            owner_session_id: owner_session_id.to_owned(),
+            sandbox_id,
+            operation_id: operation_id.to_owned(),
+            request_digest: hex::encode(Sha256::digest(operation_id.as_bytes())),
+            generation_intent: generation.clone(),
+            initial_status: serde_json::from_value(json!({
+                "state":"running",
+                "target":target,
+                "generation":generation,
+                "target_ref":format!("tgt_{operation_id}"),
+                "changed_at_ms":crate::wall_ms(),
+                "expires_at_ms":crate::wall_ms() + 60_000
+            }))
+            .expect("valid live sandbox status"),
+            now_ms: crate::wall_ms(),
+        })
+        .await
+        .expect("reserve additional sandbox")
+}
+
+impl CancellationResistantExecutor {
+    fn release(&self) {
+        self.released.store(true, Ordering::Release);
+        self.release_waiters.notify_waiters();
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor for CancellationResistantExecutor {
+    fn supports(&self, capability: &str) -> bool {
+        capability == "aex.submit"
+    }
+
+    async fn call(
+        &self,
+        capability: &str,
+        request: ExternalToolCallRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ExternalToolCallResponse> {
+        assert_eq!(capability, "aex.submit");
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        self.entered.notify_waiters();
+        loop {
+            let notified = self.release_waiters.notified();
+            if self.released.load(Ordering::Acquire) {
+                break;
+            }
+            notified.await;
+        }
+        Ok(serde_json::from_value(json!({
+            "outcome": "completed",
+            "content": "accepted after the END fence",
+            "is_error": false,
+            "disposition": "complete_turn",
+            "result": request.input,
+            "result_metadata": {"recovered": "true"}
+        }))
+        .expect("valid resistant-effect response"))
+    }
+}
+
+struct ReservationStorage {
+    journal: Journal,
+    prepares: AtomicUsize,
+    aborts: AtomicUsize,
+    fail_next_abort: AtomicBool,
+    fail_next_write_before_effect: AtomicBool,
+    saw_durable_reservation: AtomicBool,
+    writes: AtomicUsize,
+    pending: Mutex<HashMap<String, crate::storage::StorageUploadRequest>>,
+    staged: Mutex<HashSet<String>>,
+    objects: Mutex<HashMap<String, crate::storage::StorageObject>>,
+}
+
+struct DirectTransferPreparation;
+
+struct DirectTransferFiles {
+    storage: Arc<ReservationStorage>,
+    imports: AtomicUsize,
+    exports: AtomicUsize,
+}
+
+#[derive(Default)]
+struct UnknownManagedPorts {
+    submits: AtomicUsize,
+    status_calls: AtomicUsize,
+    dematerialize_calls: AtomicUsize,
+    fail_next_dematerialize: AtomicBool,
+}
+
+struct ScriptedCompactor {
+    failures_remaining: AtomicUsize,
+    calls: AtomicUsize,
+}
+
+#[derive(Default)]
+struct CountingCustody {
+    encrypts: AtomicUsize,
+    decrypts: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl KeyCustody for CountingCustody {
+    async fn encrypt(&self, session_id: &str, key: &ProviderKey) -> Result<Vec<u8>> {
+        self.encrypts.fetch_add(1, Ordering::Relaxed);
+        crate::keys::PlainCustody.encrypt(session_id, key).await
+    }
+
+    async fn decrypt(&self, session_id: &str, blob: &[u8]) -> Result<ProviderKey> {
+        self.decrypts.fetch_add(1, Ordering::Relaxed);
+        crate::keys::PlainCustody.decrypt(session_id, blob).await
+    }
+}
+
+async fn connect_customer_process(
+    coordinator: &Arc<crate::customer::CustomerCoordinator>,
+    process_id: &str,
+) -> (
+    crate::customer::CustomerGrant,
+    tokio::sync::mpsc::Receiver<crate::customer::CustomerCommand>,
+    u64,
+) {
+    let grant = coordinator.grant("local", "app").await.unwrap();
+    let proof = crate::customer::frame_proof(&grant.protocol);
+    let connection_id = crate::mint_id("conn", 20);
+    crate::customer::CustomerHandIngressPort::receive(
+        coordinator.as_ref(),
+        crate::customer::CustomerGatewayInput {
+            route: crate::customer::CustomerGatewayRoute::Connect,
+            connection_id: connection_id.clone(),
+            request_id: crate::mint_id("req", 16),
+            route_key: "$connect".into(),
+            source_ip: "127.0.0.1".into(),
+            subprotocol: Some(grant.protocol.clone()),
+            body: None,
+        },
+    )
+    .await
+    .unwrap();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+    coordinator
+        .bind_local_sender(&connection_id, sender)
+        .await
+        .unwrap();
+    crate::customer::CustomerHandIngressPort::receive(
+        coordinator.as_ref(),
+        crate::customer::CustomerGatewayInput {
+            route: crate::customer::CustomerGatewayRoute::Message,
+            connection_id: connection_id.clone(),
+            request_id: crate::mint_id("req", 16),
+            route_key: "$default".into(),
+            source_ip: "127.0.0.1".into(),
+            subprotocol: None,
+            body: Some(
+                json!({
+                    "type":"register", "client_id":"app",
+                    "process_id":process_id, "proof":proof
+                })
+                .to_string(),
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let Some(crate::customer::CustomerCommand::Ready { epoch }) = receiver.recv().await else {
+        panic!("customer ready")
+    };
+    crate::customer::CustomerHandIngressPort::receive(
+        coordinator.as_ref(),
+        crate::customer::CustomerGatewayInput {
+            route: crate::customer::CustomerGatewayRoute::Message,
+            connection_id,
+            request_id: crate::mint_id("req", 16),
+            route_key: "$default".into(),
+            source_ip: "127.0.0.1".into(),
+            subprotocol: None,
+            body: Some(
+                json!({
+                    "type":"register_tools", "epoch":epoch, "batch_id":"batch:test",
+                    "proof":proof,
+                    "registrations":[{
+                        "registration":"lookup", "name":"lookup",
+                        "contract_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }]
+                })
+                .to_string(),
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        receiver.recv().await,
+        Some(crate::customer::CustomerCommand::Registered { .. })
+    ));
+    (grant, receiver, epoch)
+}
+
+#[async_trait::async_trait]
+impl crate::compact::CompactionPort for ScriptedCompactor {
+    async fn compact(
+        &self,
+        request: crate::compact::CompactionRequest,
+        model: crate::compact::CompactionModel<'_>,
+    ) -> Result<crate::compact::CompactionResult> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        if self
+            .failures_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(BrainError::Transport("compactor reset".into()));
+        }
+        Ok(crate::compact::CompactionResult {
+            summary: format!(
+                "{}\nsemantic early fact preserved",
+                request.previous_summary.unwrap_or_default()
+            ),
+            provider: model.provider_name.into(),
+            model: model.session.prefix.model.clone(),
+            usage: crate::message::Usage {
+                input_tokens: Some(7),
+                output_tokens: Some(3),
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                reasoning_tokens: None,
+            },
+        })
+    }
+}
+
+impl ReservationStorage {
+    fn new(journal: Journal) -> Self {
+        Self {
+            journal,
+            prepares: AtomicUsize::new(0),
+            aborts: AtomicUsize::new(0),
+            fail_next_abort: AtomicBool::new(false),
+            fail_next_write_before_effect: AtomicBool::new(false),
+            saw_durable_reservation: AtomicBool::new(false),
+            writes: AtomicUsize::new(0),
+            pending: Mutex::new(HashMap::new()),
+            staged: Mutex::new(HashSet::new()),
+            objects: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::hand::SessionPreparationPort for DirectTransferPreparation {
+    async fn prepare(
+        &self,
+        _request: brain_protocol::hand::PrepareSessionRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::PreparedSession> {
+        Ok(
+            serde_json::from_value(json!({"preparation_ref":"prep_direct_transfer"}))
+                .expect("prepared session"),
+        )
+    }
+
+    async fn materialize_default(
+        &self,
+        request: brain_protocol::hand::CreateSandboxRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxStatus> {
+        Ok(serde_json::from_value(json!({
+            "state":"running",
+            "target":request.target,
+            "generation":request.generation_intent,
+            "target_ref":"target_direct_transfer",
+            "changed_at_ms":crate::wall_ms(),
+            "expires_at_ms":crate::wall_ms() + 60 * 60 * 1_000,
+        }))
+        .expect("running default sandbox"))
+    }
+
+    async fn dematerialize_default(
+        &self,
+        target: brain_protocol::hand::SandboxTarget,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxStatus> {
+        Ok(serde_json::from_value(json!({
+            "state":"terminated",
+            "target":target,
+            "changed_at_ms":crate::wall_ms(),
+            "expires_at_ms":null,
+        }))
+        .expect("terminated default sandbox"))
+    }
+
+    async fn purge_tree(&self, _root_id: &str) -> crate::hand::HandResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::hand::HandPort for UnknownManagedPorts {
+    async fn resolve_binding(
+        &self,
+        _binding: brain_protocol::hand::SealedBinding,
+    ) -> crate::hand::HandResult<brain_protocol::hand::ResolvedBinding> {
+        unreachable!("binding resolution is injected into the crash fold")
+    }
+
+    async fn submit(
+        &self,
+        _request: brain_protocol::hand::SubmitRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SubmitReceipt> {
+        self.submits.fetch_add(1, Ordering::AcqRel);
+        Err(serde_json::from_value(json!({
+            "code":"operation_unknown",
+            "message":"guest Submit may have run before the physical generation was lost",
+            "retryable":false
+        }))
+        .expect("operation-unknown Hand error"))
+    }
+
+    async fn observe(
+        &self,
+        _request: brain_protocol::hand::ObserveRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::OperationObservation> {
+        panic!("an unknown submit has no operation receipt to observe")
+    }
+
+    async fn cancel(
+        &self,
+        _request: brain_protocol::hand::CancelRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::CancellationReceipt> {
+        panic!("an unknown submit has no operation receipt to cancel")
+    }
+
+    async fn acknowledge_terminal(
+        &self,
+        _request: brain_protocol::hand::AcknowledgeTerminalRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::Acknowledgement> {
+        panic!("an unknown submit has no terminal receipt to acknowledge")
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::hand::SessionPreparationPort for UnknownManagedPorts {
+    async fn prepare(
+        &self,
+        _request: brain_protocol::hand::PrepareSessionRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::PreparedSession> {
+        unreachable!("the test session has no managed bundle preparation")
+    }
+
+    async fn materialize_default(
+        &self,
+        _request: brain_protocol::hand::CreateSandboxRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxStatus> {
+        panic!("OperationUnknown must not authorize replacement materialization")
+    }
+
+    async fn dematerialize_default(
+        &self,
+        target: brain_protocol::hand::SandboxTarget,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxStatus> {
+        self.dematerialize_calls.fetch_add(1, Ordering::AcqRel);
+        if self.fail_next_dematerialize.swap(false, Ordering::AcqRel) {
+            return Err(serde_json::from_value(json!({
+                "code":"temporarily_unavailable",
+                "message":"injected crash boundary before terminal sandbox cleanup",
+                "retryable":true
+            }))
+            .expect("transient Hand error"));
+        }
+        Ok(serde_json::from_value(json!({
+            "state":"terminated",
+            "target":target,
+            "generation":"gen_unknown_submit",
+            "target_ref":"tgt_unknown_submit",
+            "changed_at_ms":crate::wall_ms(),
+            "expires_at_ms":null,
+            "reason":"operation_unknown_reconciled"
+        }))
+        .expect("terminal unknown target status"))
+    }
+
+    async fn purge_tree(&self, _root_id: &str) -> crate::hand::HandResult<()> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::hand::SandboxFilesPort for UnknownManagedPorts {
+    async fn status(
+        &self,
+        target: brain_protocol::hand::SandboxTarget,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxStatus> {
+        self.status_calls.fetch_add(1, Ordering::AcqRel);
+        Ok(serde_json::from_value(json!({
+            "state":"running",
+            "target":target,
+            "generation":"gen_unknown_submit",
+            "target_ref":"tgt_unknown_submit",
+            "changed_at_ms":crate::wall_ms(),
+            "expires_at_ms":crate::wall_ms() + 60_000
+        }))
+        .expect("fenced unknown target status"))
+    }
+
+    async fn list(
+        &self,
+        _request: crate::hand::SandboxFileListRequest,
+    ) -> crate::hand::HandResult<crate::hand::SandboxFileList> {
+        unreachable!("unused")
+    }
+
+    async fn stat(
+        &self,
+        _request: brain_protocol::hand::SandboxFileRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::FileEntry> {
+        unreachable!("unused")
+    }
+
+    async fn read(
+        &self,
+        _request: brain_protocol::hand::SandboxFileRequest,
+    ) -> crate::hand::HandResult<crate::hand::SandboxFileContent> {
+        unreachable!("unused")
+    }
+
+    async fn write(
+        &self,
+        _request: brain_protocol::hand::SandboxFileWriteRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxFileWriteResult> {
+        unreachable!("unused")
+    }
+
+    async fn find(
+        &self,
+        _request: crate::hand::SandboxSearchRequest,
+    ) -> crate::hand::HandResult<crate::hand::SandboxFileList> {
+        unreachable!("unused")
+    }
+
+    async fn grep(
+        &self,
+        _request: crate::hand::SandboxSearchRequest,
+    ) -> crate::hand::HandResult<crate::hand::SandboxFileList> {
+        unreachable!("unused")
+    }
+
+    async fn transfer(
+        &self,
+        _request: brain_protocol::hand::SandboxCopyRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxCopyResult> {
+        unreachable!("unused")
+    }
+}
+
+fn direct_transfer_file(
+    path: &str,
+    bytes: u64,
+    sha256: Option<&str>,
+) -> brain_protocol::hand::FileEntry {
+    serde_json::from_value(json!({
+        "path":path,
+        "kind":"file",
+        "bytes":bytes,
+        "sha256":sha256,
+        "modified_at_ms":crate::wall_ms(),
+    }))
+    .expect("direct transfer file")
+}
+
+#[async_trait::async_trait]
+impl crate::hand::SandboxFilesPort for DirectTransferFiles {
+    async fn status(
+        &self,
+        _target: brain_protocol::hand::SandboxTarget,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxStatus> {
+        unreachable!("status is not used by the direct transfer test")
+    }
+
+    async fn list(
+        &self,
+        _request: crate::hand::SandboxFileListRequest,
+    ) -> crate::hand::HandResult<crate::hand::SandboxFileList> {
+        unreachable!("list is not used by the direct transfer test")
+    }
+
+    async fn stat(
+        &self,
+        request: brain_protocol::hand::SandboxFileRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::FileEntry> {
+        Ok(direct_transfer_file(
+            &String::from(request.path),
+            2 * 1024 * 1024,
+            None,
+        ))
+    }
+
+    async fn read(
+        &self,
+        _request: brain_protocol::hand::SandboxFileRequest,
+    ) -> crate::hand::HandResult<crate::hand::SandboxFileContent> {
+        unreachable!("read is not used by the direct transfer test")
+    }
+
+    async fn write(
+        &self,
+        _request: brain_protocol::hand::SandboxFileWriteRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxFileWriteResult> {
+        unreachable!("write is not used by the direct transfer test")
+    }
+
+    async fn find(
+        &self,
+        _request: crate::hand::SandboxSearchRequest,
+    ) -> crate::hand::HandResult<crate::hand::SandboxFileList> {
+        unreachable!("find is not used by the direct transfer test")
+    }
+
+    async fn grep(
+        &self,
+        _request: crate::hand::SandboxSearchRequest,
+    ) -> crate::hand::HandResult<crate::hand::SandboxFileList> {
+        unreachable!("grep is not used by the direct transfer test")
+    }
+
+    async fn transfer(
+        &self,
+        request: brain_protocol::hand::SandboxCopyRequest,
+    ) -> crate::hand::HandResult<brain_protocol::hand::SandboxCopyResult> {
+        let path = String::from(request.path.clone());
+        let result = match request.direction {
+            brain_protocol::hand::SandboxCopyRequestDirection::Export => {
+                self.exports.fetch_add(1, Ordering::Relaxed);
+                let transfer_id = String::from(request.transfer.transfer_id.clone());
+                self.storage
+                    .staged
+                    .lock()
+                    .expect("staged uploads")
+                    .insert(transfer_id);
+                json!({
+                    "operation_id":request.operation_id,
+                    "request_digest":request.request_digest,
+                    "replayed":false,
+                    "file":direct_transfer_file(&path, 2 * 1024 * 1024, None),
+                    "object":{
+                        "object_id":request.transfer.object_id,
+                        "bytes":2 * 1024 * 1024,
+                        "sha256":"d".repeat(64),
+                    }
+                })
+            }
+            brain_protocol::hand::SandboxCopyRequestDirection::Import => {
+                self.imports.fetch_add(1, Ordering::Relaxed);
+                let object = request.object.expect("import object");
+                json!({
+                    "operation_id":request.operation_id,
+                    "request_digest":request.request_digest,
+                    "replayed":false,
+                    "file":direct_transfer_file(&path, object.bytes, Some(&object.sha256)),
+                    "object":null,
+                })
+            }
+        };
+        Ok(serde_json::from_value(result).expect("sandbox copy result"))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::storage::SessionStoragePort for ReservationStorage {
+    async fn list(
+        &self,
+        _session_id: &str,
+        _prefix: Option<&str>,
+        _cursor: Option<&str>,
+        _limit: u32,
+    ) -> Result<crate::storage::StoragePage> {
+        Ok(crate::storage::StoragePage {
+            objects: Vec::new(),
+            next_cursor: None,
+        })
+    }
+
+    async fn stat(&self, session_id: &str, key: &str) -> Result<crate::storage::StorageObject> {
+        self.objects
+            .lock()
+            .expect("storage objects")
+            .get(&format!("{session_id}\0{key}"))
+            .cloned()
+            .ok_or_else(|| BrainError::FileNotFound(key.into()))
+    }
+
+    async fn read(&self, _session_id: &str, key: &str, _max_bytes: u64) -> Result<Vec<u8>> {
+        Err(BrainError::FileNotFound(key.into()))
+    }
+
+    async fn write(
+        &self,
+        request: crate::storage::StorageWriteRequest,
+    ) -> Result<crate::storage::StorageObject> {
+        self.writes.fetch_add(1, Ordering::Relaxed);
+        if self
+            .fail_next_write_before_effect
+            .swap(false, Ordering::Relaxed)
+        {
+            return Err(BrainError::Journal(
+                "simulated crash before inline publication".into(),
+            ));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&request.content_base64)
+            .map_err(|_| BrainError::Invalid("test content is not base64".into()))?;
+        let now = crate::wall_ms();
+        let map_key = format!("{}\0{}", request.session_id, request.key);
+        let created_at_ms = self
+            .objects
+            .lock()
+            .expect("storage objects")
+            .get(&map_key)
+            .map_or(now, |object| object.created_at_ms);
+        let object = crate::storage::StorageObject {
+            key: request.key,
+            bytes: bytes.len() as u64,
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            content_type: request.content_type,
+            publication_id: Some(request.publication_id),
+            created_at_ms,
+            updated_at_ms: now,
+        };
+        self.objects
+            .lock()
+            .expect("storage objects")
+            .insert(map_key, object.clone());
+        Ok(object)
+    }
+
+    async fn prepare_download(
+        &self,
+        session_id: &str,
+        key: &str,
+    ) -> Result<crate::storage::StorageTransferTicket> {
+        let object = self.stat(session_id, key).await?;
+        Ok(crate::storage::StorageTransferTicket {
+            object_id: crate::storage::stored_object_id(&object.sha256),
+            transfer_id: crate::mint_id("xfer", 24),
+            method: "GET".into(),
+            url: "https://storage.invalid/download".into(),
+            headers: HashMap::new(),
+            expires_at_ms: crate::wall_ms() + 60 * 60 * 1_000,
+            max_bytes: object.bytes,
+        })
+    }
+
+    async fn prepare_upload(
+        &self,
+        request: crate::storage::StorageUploadRequest,
+    ) -> Result<crate::storage::StorageTransferTicket> {
+        self.prepares.fetch_add(1, Ordering::Relaxed);
+        let head = self.journal.get_head(&request.session_id).await?;
+        let durable = head.doc.storage_reserved_bytes == request.bytes
+            && head.doc.storage_upload.as_ref().is_some_and(|upload| {
+                upload.transfer_id == request.transfer_id && upload.state == "reserved"
+            });
+        self.saw_durable_reservation
+            .store(durable, Ordering::Relaxed);
+        self.pending
+            .lock()
+            .expect("pending uploads")
+            .insert(request.transfer_id.clone(), request.clone());
+        Ok(crate::storage::StorageTransferTicket {
+            object_id: crate::storage::pending_object_id(&request.transfer_id),
+            transfer_id: request.transfer_id,
+            method: "PUT".into(),
+            url: "https://storage.invalid/upload".into(),
+            headers: HashMap::new(),
+            expires_at_ms: request.expires_at_ms,
+            max_bytes: request.bytes,
+        })
+    }
+
+    async fn complete_upload(
+        &self,
+        session_id: &str,
+        transfer_id: &str,
+    ) -> Result<crate::storage::StorageObject> {
+        if !self
+            .staged
+            .lock()
+            .expect("staged uploads")
+            .contains(transfer_id)
+        {
+            return Err(BrainError::FileNotFound(transfer_id.into()));
+        }
+        let request = self
+            .pending
+            .lock()
+            .expect("pending uploads")
+            .get(transfer_id)
+            .cloned()
+            .ok_or_else(|| BrainError::FileNotFound(transfer_id.into()))?;
+        if request.session_id != session_id {
+            return Err(BrainError::FileNotFound(transfer_id.into()));
+        }
+        let now = crate::wall_ms();
+        let object = crate::storage::StorageObject {
+            key: request.key.clone(),
+            bytes: request.bytes,
+            sha256: request.sha256.unwrap_or_else(|| "d".repeat(64)),
+            content_type: request.content_type,
+            publication_id: Some(request.transfer_id),
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        self.objects
+            .lock()
+            .expect("storage objects")
+            .insert(format!("{session_id}\0{}", request.key), object.clone());
+        Ok(object)
+    }
+
+    async fn abort_upload(&self, _session_id: &str, transfer_id: &str) -> Result<()> {
+        self.aborts.fetch_add(1, Ordering::Relaxed);
+        if self.fail_next_abort.swap(false, Ordering::Relaxed) {
+            return Err(BrainError::Journal("transient staging deletion".into()));
+        }
+        self.pending
+            .lock()
+            .expect("pending uploads")
+            .remove(transfer_id);
+        self.staged
+            .lock()
+            .expect("staged uploads")
+            .remove(transfer_id);
+        Ok(())
+    }
+
+    async fn delete(&self, session_id: &str, key: &str) -> Result<()> {
+        self.objects
+            .lock()
+            .expect("storage objects")
+            .remove(&format!("{session_id}\0{key}"));
+        Ok(())
+    }
+
+    async fn purge_session_page(
+        &self,
+        _session_id: &str,
+        _cursor: Option<&str>,
+    ) -> Result<crate::storage::StoragePurgePage> {
+        Ok(crate::storage::StoragePurgePage {
+            deleted_versions: 0,
+            deleted_markers: 0,
+            next_cursor: None,
+        })
+    }
+}
+
+#[test]
+fn direct_sandbox_transfer_admission_is_count_and_byte_bounded() {
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-direct-transfer-admission"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        None,
+    );
+    let entry = |session_id: &str, id: &str, bytes: u64| DirectSandboxTransfer {
+        session_id: session_id.into(),
+        storage_key: direct_sandbox_transfer_key(id),
+        declared_bytes: bytes,
+        expires_at_ms: crate::wall_ms() + 60_000,
+        cleanup_at_ms: crate::wall_ms() + 120_000,
+        storage_transfer_id: None,
+        destination: None,
+        state: DirectSandboxTransferState::Preparing,
+    };
+    for index in 0..MAX_PENDING_SANDBOX_TRANSFERS_PER_SESSION {
+        let id = format!("sbxfer_count_{index}");
+        brain
+            .reserve_direct_sandbox_transfer(&id, entry("ses_count", &id, 1))
+            .expect("exact per-session count is admitted");
+    }
+    let over = "sbxfer_count_over";
+    assert!(matches!(
+        brain.reserve_direct_sandbox_transfer(over, entry("ses_count", over, 1)),
+        Err(BrainError::Overloaded)
+    ));
+
+    let bytes_brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-direct-transfer-bytes"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        None,
+    );
+    bytes_brain
+        .reserve_direct_sandbox_transfer(
+            "sbxfer_bytes_exact",
+            entry(
+                "ses_bytes",
+                "sbxfer_bytes_exact",
+                MAX_PENDING_SANDBOX_TRANSFER_BYTES_PER_SESSION,
+            ),
+        )
+        .expect("exact per-session bytes are admitted");
+    assert!(matches!(
+        bytes_brain.reserve_direct_sandbox_transfer(
+            "sbxfer_bytes_over",
+            entry("ses_bytes", "sbxfer_bytes_over", 1),
+        ),
+        Err(BrainError::Overloaded)
+    ));
+}
+
+#[tokio::test]
+async fn direct_sandbox_transfers_stage_hidden_bytes_and_replay_only_exact_success() {
+    let journal = Journal::new_memory("brain-direct-sandbox-transfers");
+    let storage = Arc::new(ReservationStorage::new(journal.clone()));
+    let files = Arc::new(DirectTransferFiles {
+        storage: storage.clone(),
+        imports: AtomicUsize::new(0),
+        exports: AtomicUsize::new(0),
+    });
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            storage_transfer_ttl: Duration::from_secs(60 * 60),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            session_storage: Some(storage.clone()),
+            session_preparation: Some(Arc::new(DirectTransferPreparation)),
+            sandbox_files: Some(files.clone()),
+            ..BrainServices::default()
+        },
+        None,
+    );
+    let session = brain
+        .create_session(
+            typed_create(json!({
+                "model":{"provider":"anthropic", "name":"direct-transfer", "api_key":"key"}
+            })),
+            Some("direct-sandbox-transfer"),
+        )
+        .await
+        .expect("create direct-transfer session");
+    let session_id = session.id.to_string();
+    let status = brain
+        .materialize_default_sandbox(&session_id)
+        .await
+        .expect("materialize default sandbox");
+    let generation = status
+        .generation
+        .map(String::from)
+        .expect("materialized generation");
+
+    let download = brain
+        .sandbox_file_prepare_download(
+            &session_id,
+            generation.clone(),
+            "/workspace/source.bin".into(),
+        )
+        .await
+        .expect("prepare sandbox download");
+    assert!(download.transfer_id.starts_with("sbxfer_"));
+    assert_eq!(download.method, "GET");
+    assert_eq!(files.exports.load(Ordering::Relaxed), 1);
+    let download_key = brain
+        .direct_sandbox_transfers
+        .lock()
+        .expect("direct transfers")
+        .get(&download.transfer_id)
+        .expect("retained download")
+        .storage_key
+        .clone();
+    assert!(crate::storage::is_internal_storage_key(&download_key));
+    assert!(matches!(
+        brain.storage_stat(&session_id, &download_key).await,
+        Err(BrainError::Invalid(_))
+    ));
+
+    let upload = brain
+        .sandbox_file_prepare_upload(
+            &session_id,
+            generation,
+            "/workspace/upload.bin".into(),
+            2 * 1024 * 1024,
+            "e".repeat(64),
+            true,
+        )
+        .await
+        .expect("prepare sandbox upload");
+    let (underlying, upload_key) = {
+        let transfers = brain
+            .direct_sandbox_transfers
+            .lock()
+            .expect("direct transfers");
+        let transfer = transfers.get(&upload.transfer_id).expect("retained upload");
+        (
+            transfer
+                .storage_transfer_id
+                .clone()
+                .expect("underlying storage transfer"),
+            transfer.storage_key.clone(),
+        )
+    };
+    assert_ne!(upload.transfer_id, underlying);
+    storage
+        .staged
+        .lock()
+        .expect("staged uploads")
+        .insert(underlying);
+    let completed = brain
+        .sandbox_file_complete_upload(&session_id, &upload.transfer_id)
+        .await
+        .expect("complete sandbox upload");
+    assert_eq!(
+        String::from(completed.path.clone()),
+        "/workspace/upload.bin"
+    );
+    let replayed = brain
+        .sandbox_file_complete_upload(&session_id, &upload.transfer_id)
+        .await
+        .expect("replay exact completed outcome");
+    assert_eq!(String::from(replayed.path), "/workspace/upload.bin");
+    assert_eq!(files.imports.load(Ordering::Relaxed), 1);
+    assert!(
+        storage
+            .objects
+            .lock()
+            .expect("storage objects")
+            .get(&format!("{session_id}\0{upload_key}"))
+            .is_none(),
+        "successful import best-effort purges hidden staging"
+    );
+
+    let restarted = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        journal,
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            session_storage: Some(storage),
+            sandbox_files: Some(files),
+            ..BrainServices::default()
+        },
+        None,
+    );
+    assert!(matches!(
+        restarted
+            .sandbox_file_complete_upload(&session_id, &upload.transfer_id)
+            .await,
+        Err(BrainError::SandboxTransferUnknown(_))
+    ));
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor for RecoveryExecutor {
+    fn supports(&self, capability: &str) -> bool {
+        capability == "aex.submit"
+    }
+
+    async fn call(
+        &self,
+        capability: &str,
+        request: ExternalToolCallRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ExternalToolCallResponse> {
+        assert_eq!(capability, "aex.submit");
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.call_ids
+            .lock()
+            .expect("recovery call ids")
+            .push(request.call_id.to_string());
+        Ok(serde_json::from_value(json!({
+            "outcome": "completed",
+            "content": "accepted after recovery",
+            "is_error": false,
+            "disposition": "complete_turn",
+            "result": request.input,
+            "result_metadata": {"recovered": "true"}
+        }))
+        .expect("valid recovery response"))
+    }
+}
+
+#[test]
+fn base_urls_resolve_and_compatible_requires_one() {
+    assert_eq!(
+        resolve_base_url(&ApiProvider::Anthropic, None).unwrap(),
+        "https://api.anthropic.com"
+    );
+    assert_eq!(
+        resolve_base_url(&ApiProvider::Deepseek, None).unwrap(),
+        "https://api.deepseek.com"
+    );
+    assert!(resolve_base_url(&ApiProvider::OpenaiCompatible, None).is_err());
+    assert!(resolve_base_url(&ApiProvider::Openai, Some("http://insecure")).is_err());
+    assert_eq!(
+        resolve_base_url(&ApiProvider::Openai, Some("https://proxy.example/")).unwrap(),
+        "https://proxy.example"
+    );
+}
+
+#[test]
+fn child_fork_excludes_spawning_tool_use_and_partial_sibling_results() {
+    let prompt = Message::user_text("delegate the focused task");
+    let spawning = Message::assistant(vec![
+        ContentBlock::ToolUse {
+            id: "op_spawn".into(),
+            name: "subagents".into(),
+            input: json!({"action":"spawn","prompt":"work"}),
+        },
+        ContentBlock::ToolUse {
+            id: "op_sibling".into(),
+            name: "subagents".into(),
+            input: json!({"action":"spawn","prompt":"other"}),
+        },
+    ]);
+    let partial = Message::tool_results(vec![ContentBlock::ToolResult {
+        tool_use_id: "op_sibling".into(),
+        content: "created sibling".into(),
+        is_error: false,
+    }]);
+    let history = vec![prompt.clone(), spawning.clone(), partial];
+    assert_eq!(
+        complete_fork_projection(&history),
+        std::slice::from_ref(&prompt)
+    );
+
+    let complete = Message::tool_results(vec![
+        ContentBlock::ToolResult {
+            tool_use_id: "op_spawn".into(),
+            content: "created".into(),
+            is_error: false,
+        },
+        ContentBlock::ToolResult {
+            tool_use_id: "op_sibling".into(),
+            content: "created sibling".into(),
+            is_error: false,
+        },
+    ]);
+    let closed = vec![prompt, spawning, complete];
+    assert_eq!(complete_fork_projection(&closed), closed.as_slice());
+}
+
+#[test]
+fn child_fork_modes_select_only_complete_recent_turns() {
+    let history = vec![
+        Message::user_text("one"),
+        Message::assistant(vec![ContentBlock::text("answer one")]),
+        Message::user_text("two"),
+        Message::assistant(vec![ContentBlock::text("answer two")]),
+        Message::user_text("three"),
+    ];
+    let (all, all_turns) = select_fork_history(&history, &ForkTurns::All);
+    assert_eq!(all, history);
+    assert_eq!(all_turns, 3);
+    let (last_two, turns) = select_fork_history(&history, &ForkTurns::Last(2));
+    assert_eq!(turns, 2);
+    assert_eq!(last_two.first(), Some(&Message::user_text("two")));
+    assert_eq!(ForkTurns::parse(None).unwrap(), ForkTurns::All);
+    assert!(ForkTurns::parse(Some("0")).is_err());
+}
+
+#[tokio::test]
+async fn descendants_share_one_root_scoped_custody_decryption_cell() {
+    let custody = Arc::new(CountingCustody::default());
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-root-secret-cache"),
+        custody.clone(),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        None,
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model": {
+                    "provider":"anthropic",
+                    "name":"model",
+                    "api_key":"root-provider-secret"
+                }
+            })),
+            Some("root-secret-cache"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(custody.encrypts.load(Ordering::Relaxed), 1);
+    assert_eq!(custody.decrypts.load(Ordering::Relaxed), 0);
+
+    let root = brain
+        .journal
+        .get_head(&created.id.to_string())
+        .await
+        .unwrap();
+    let mut child = root.doc.clone();
+    child.parent_id = Some(root.session_id.clone());
+    child.ancestor_ids = vec![root.session_id.clone()];
+    child.depth = 1;
+    let (root_cell, root_secrets) = brain.root_execution_secrets(&root.doc).await.unwrap();
+    let (child_cell, child_secrets) = brain.root_execution_secrets(&child).await.unwrap();
+    assert!(Arc::ptr_eq(&root_cell, &child_cell));
+    assert_eq!(root_secrets.key.expose(), "root-provider-secret");
+    assert_eq!(child_secrets.key.expose(), "root-provider-secret");
+    assert_eq!(custody.decrypts.load(Ordering::Relaxed), 1);
+
+    drop(root_secrets);
+    drop(child_secrets);
+    drop(root_cell);
+    drop(child_cell);
+    let (_new_cell, _new_secrets) = brain.root_execution_secrets(&root.doc).await.unwrap();
+    assert_eq!(
+        custody.decrypts.load(Ordering::Relaxed),
+        2,
+        "the weak cache must release secret material after the last residency"
+    );
+}
+
+#[tokio::test]
+async fn child_create_atomically_admits_prompt_and_rebuilds_exact_parent_fork() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-child-fork-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    let journal = Journal::new_memory("brain-child-fork");
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([
+        Scripted::Text("parent answer".into()),
+        Scripted::Text("child answer".into()),
+    ]);
+    let provider = fake.clone();
+    let provider_factory: ProviderFactory = Arc::new(move |_| provider.clone());
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        Some(provider_factory),
+    );
+    let root = brain
+        .create_session(
+            typed_create(json!({
+                "model": {
+                    "provider":"anthropic", "name":"child-fork-test", "api_key":"key"
+                }
+            })),
+            Some("child-fork-root"),
+        )
+        .await
+        .unwrap();
+    let root_id = root.id.to_string();
+    brain
+        .message(
+            &root_id,
+            MessageRequestContent::String("parent prompt".parse().unwrap()),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if journal.get_head(&root_id).await.unwrap().doc.turn.is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("parent turn completes");
+
+    let child = brain
+        .create_child(
+            &root_id,
+            "child prompt".into(),
+            Some("focused".into()),
+            None,
+            Some("spawn-1"),
+        )
+        .await
+        .unwrap();
+    let child_id = child.id.to_string();
+    assert_eq!(child.name.as_deref().map(String::as_str), Some("focused"));
+    assert_eq!(
+        child.context_fork.as_ref().map(|fork| fork.mode),
+        Some(session::ContextForkMode::All)
+    );
+    let initial = journal.read_records_through(&child_id, 0, 1).await.unwrap();
+    assert!(matches!(
+        &initial[..],
+        [Entry {
+            record: Record::UserMessage {
+                starts_turn: true,
+                content,
+                ..
+            },
+            ..
+        }] if content == &vec![ContentBlock::text("child prompt")]
+    ));
+    let listed = journal
+        .list_child_page(&crate::journal::ChildListQuery {
+            parent_id: &root_id,
+            limit: 10,
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(listed.sessions.len(), 1);
+    assert_eq!(listed.sessions[0].session_id, child_id);
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if journal
+                .get_head(&child_id)
+                .await
+                .unwrap()
+                .doc
+                .turn
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("child initial turn completes");
+    let child_head = journal.get_head(&child_id).await.unwrap();
+    let child_entries = journal.read_records(&child_id, 0).await.unwrap();
+    let history = materialize_session_history(&brain, &child_head.doc, &child_entries)
+        .await
+        .unwrap();
+    assert_eq!(history[0], Message::user_text("parent prompt"));
+    assert_eq!(
+        history[1],
+        Message::assistant(vec![ContentBlock::text("parent answer")])
+    );
+    assert_eq!(history[2], Message::user_text("child prompt"));
+    assert_eq!(
+        history[3],
+        Message::assistant(vec![ContentBlock::text("child answer")])
+    );
+
+    let replay = brain
+        .create_child(
+            &root_id,
+            "child prompt".into(),
+            Some("focused".into()),
+            None,
+            Some("spawn-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.id, child.id);
+    assert!(matches!(
+        brain
+            .create_child(
+                &root_id,
+                "different prompt".into(),
+                Some("focused".into()),
+                None,
+                Some("spawn-1"),
+            )
+            .await,
+        Err(BrainError::IdempotencyConflict)
+    ));
+    fake.assert_drained(2, "ordinary child fork").unwrap();
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[test]
+fn prefix_rebuild_is_deterministic() {
+    let p = PrefixDoc {
+        agentloop: None,
+        system_prompt: Some("sp".into()),
+        provider: "anthropic".into(),
+        model: "claude-x".into(),
+        base_url: Some("https://api.anthropic.com".into()),
+        max_output_tokens: Some(2048),
+        context_window_tokens: 32 * 1024,
+        context_soft_tokens: 18 * 1024,
+        context_hard_tokens: 22 * 1024,
+        context_tail_tokens: 4 * 1024,
+        context_summary_tokens: 4 * 1024,
+        temperature: Some(0.5),
+        reasoning_effort: None,
+        provider_recovery_retries: 1,
+        storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
+        storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
+        storage_transfer_ttl_ms: crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
+        max_child_depth: 4,
+        max_direct_children: 32,
+        max_descendants: 256,
+        max_additional_sandboxes_per_root: 2,
+        network: serde_json::json!({"outbound":"none"}),
+        customer_client_id: None,
+        customer_submit_retries: 1,
+        rendered_base: serde_json::Value::Null,
+        rendered_base_digest: String::new(),
+        prompt_cache_key: String::new(),
+        tools: serde_json::from_value(json!([
+            {
+                "definition": {
+                    "name":"run", "description":"run",
+                    "contract_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "input_schema":{"type":"object"},
+                    "output_schema":{"type":"object"}
+                },
+                "executor": {
+                    "kind":"aex_managed",
+                    "bundle_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "required_env":[]
+                }
+            },
+            {
+                "definition": {
+                    "name":"delegate", "description":"delegate",
+                    "contract_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "input_schema":{"type":"object"},
+                    "output_schema":{"type":"string"}
+                },
+                "executor":{"kind":"engine", "capability":"brain.subagents"}
+            }
+        ])).unwrap(),
+        managed_bundles: vec![],
+        official_capabilities: HashMap::new(),
+        hand_enabled: true,
+        shape: "1gb".into(),
+        sync_interval_seconds: 600,
+        hand_env_keys: vec![],
+        metadata: HashMap::new(),
+    };
+    let (a, da) = build_prefix(&p, 512).unwrap();
+    let (b, db) = build_prefix(&p, 512).unwrap();
+    assert_eq!(a.digest(), b.digest());
+    assert_eq!(da, db);
+    assert_eq!(a.tools.len(), 2);
+
+    let mut openai = p.clone();
+    openai.provider = "openai".into();
+    openai.model = "gpt-5.4".into();
+    openai.reasoning_effort = Some("high".into());
+    let (openai, _) = build_prefix(&openai, 512).unwrap();
+    let rendered = crate::provider::openai::OpenAiChat::render_base(&openai);
+    assert_eq!(rendered["max_completion_tokens"], 2_048);
+    assert_eq!(rendered["reasoning_effort"], "high");
+    assert!(!rendered.contains_key("max_tokens"));
+
+    let mut unsupported = p;
+    unsupported.reasoning_effort = Some("high".into());
+    let error = build_prefix(&unsupported, 512).unwrap_err();
+    assert!(matches!(error, BrainError::Invalid(_)));
+    assert!(error.to_string().contains("reasoning_effort"));
+}
+
+#[test]
+fn dialects_route_by_provider() {
+    assert_eq!(dialect_of("anthropic"), Dialect::AnthropicMessages);
+    assert_eq!(dialect_of("deepseek"), Dialect::OpenAiChat);
+    assert_eq!(dialect_of("openai"), Dialect::OpenAiChat);
+}
+
+#[test]
+fn pending_volatile_scan_routes_by_the_seal() {
+    let task = |seq: u64, agent: &str, call: &str, detach: bool| Entry {
+        seq,
+        ts_ms: 0,
+        record: Record::ToolCall {
+            turn: "trn_test".into(),
+            agent: agent.into(),
+            call: call.into(),
+            name: "delegate_under_any_name".into(),
+            input: serde_json::json!({}),
+            detach,
+        },
+    };
+    let entries = vec![
+        task(1, "root", "op_pending", false),
+        task(2, "agt_child", "op_answered", false),
+        Entry {
+            seq: 3,
+            ts_ms: 0,
+            record: Record::ToolResult {
+                turn: "trn_test".into(),
+                agent: "agt_child".into(),
+                call: "op_answered".into(),
+                name: "delegate_under_any_name".into(),
+                outcome: "completed".into(),
+                content: "done".into(),
+                is_error: false,
+                exit_code: None,
+                duration_ms: 1,
+                truncated: false,
+            },
+        },
+        task(4, "root", "op_detached", true),
+        Entry {
+            seq: 5,
+            ts_ms: 0,
+            record: Record::CustomerCallIntent {
+                turn: "trn_test".into(),
+                call: "op_customer".into(),
+                client_id: "app".into(),
+                process_id: "process:test".into(),
+                request_digest: "b".repeat(64),
+                deadline_at_ms: 9_999_999,
+            },
+        },
+        Entry {
+            seq: 6,
+            ts_ms: 0,
+            record: Record::ToolCall {
+                turn: "trn_test".into(),
+                agent: "root".into(),
+                call: "op_customer".into(),
+                name: "customer_lookup".into(),
+                input: serde_json::json!({"id":7}),
+                detach: false,
+            },
+        },
+    ];
+    let prefix = PrefixDoc {
+        agentloop: None,
+        system_prompt: None,
+        provider: "anthropic".into(),
+        model: "m".into(),
+        base_url: None,
+        max_output_tokens: None,
+        context_window_tokens: 32 * 1024,
+        context_soft_tokens: 18 * 1024,
+        context_hard_tokens: 22 * 1024,
+        context_tail_tokens: 4 * 1024,
+        context_summary_tokens: 4 * 1024,
+        temperature: None,
+        reasoning_effort: None,
+        provider_recovery_retries: 1,
+        storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
+        storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
+        storage_transfer_ttl_ms: crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
+        max_child_depth: 4,
+        max_direct_children: 32,
+        max_descendants: 256,
+        max_additional_sandboxes_per_root: 2,
+        network: serde_json::json!({"outbound":"none"}),
+        customer_client_id: Some("app".into()),
+        customer_submit_retries: 1,
+        rendered_base: serde_json::json!({}),
+        rendered_base_digest: String::new(),
+        prompt_cache_key: String::new(),
+        tools: serde_json::from_value(json!([
+            {
+                "definition": {
+                    "name":"delegate_under_any_name", "description":"delegate",
+                    "contract_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "input_schema":{"type":"object"}, "output_schema":{"type":"string"}
+                },
+                "executor":{"kind":"engine", "capability":"brain.subagents"}
+            },
+            {
+                "definition": {
+                    "name":"customer_lookup", "description":"lookup",
+                    "contract_digest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "input_schema":{"type":"object"}, "output_schema":{"type":"object"}
+                },
+                "executor":{"kind":"customer_app", "registration":"lookup"}
+            }
+        ]))
+        .unwrap(),
+        managed_bundles: vec![],
+        official_capabilities: HashMap::new(),
+        hand_enabled: false,
+        shape: "1gb".into(),
+        sync_interval_seconds: 600,
+        hand_env_keys: vec![],
+        metadata: HashMap::new(),
+    };
+    let pending = pending_volatile(&entries, &prefix);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].call, "op_pending");
+    let customer = pending_customer(&entries, &prefix, "tenant", "ses_test");
+    assert_eq!(customer.len(), 1);
+    assert_eq!(customer[0].call, "op_customer");
+    assert_eq!(customer[0].intent.process_id, "process:test");
+}
+
+#[test]
+fn pending_external_scan_recovers_only_unanswered_sealed_calls() {
+    let prefix = PrefixDoc {
+        agentloop: None,
+        system_prompt: None,
+        provider: "anthropic".into(),
+        model: "m".into(),
+        base_url: None,
+        max_output_tokens: None,
+        context_window_tokens: 32 * 1024,
+        context_soft_tokens: 18 * 1024,
+        context_hard_tokens: 22 * 1024,
+        context_tail_tokens: 4 * 1024,
+        context_summary_tokens: 4 * 1024,
+        temperature: None,
+        reasoning_effort: None,
+        provider_recovery_retries: 1,
+        storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
+        storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
+        storage_transfer_ttl_ms: crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
+        max_child_depth: 4,
+        max_direct_children: 32,
+        max_descendants: 256,
+        max_additional_sandboxes_per_root: 2,
+        network: serde_json::json!({"outbound":"none"}),
+        customer_client_id: None,
+        customer_submit_retries: 1,
+        rendered_base: serde_json::json!({}),
+        rendered_base_digest: String::new(),
+        prompt_cache_key: String::new(),
+        tools: serde_json::from_value(json!([{
+            "definition": {
+                "name":"submit", "description":"submit",
+                "contract_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "input_schema":{"type":"object"},
+                "output_schema":{"type":"object"}
+            },
+            "executor": {"kind":"engine", "capability":"aex.submit"}
+        }]))
+        .unwrap(),
+        managed_bundles: vec![],
+        official_capabilities: HashMap::from([("aex.submit".into(), submit_policy())]),
+        hand_enabled: false,
+        shape: "1gb".into(),
+        sync_interval_seconds: 600,
+        hand_env_keys: vec![],
+        metadata: HashMap::new(),
+    };
+    let mut context = HashMap::new();
+    context.insert("request".into(), "out_1".into());
+    let mut entries = vec![
+        Entry {
+            seq: 1,
+            ts_ms: 0,
+            record: Record::UserMessage {
+                turn: "trn_test".into(),
+                content: vec![ContentBlock::text("answer")],
+                starts_turn: false,
+                metadata: context,
+                idempotency_key_hash: None,
+                request_hash: None,
+            },
+        },
+        Entry {
+            seq: 2,
+            ts_ms: 0,
+            record: Record::Assistant {
+                turn: "trn_test".into(),
+                agent: "root".into(),
+                attempt_id: "att_aaaaaaaaaaaaaaaaaaaa".into(),
+                content: vec![],
+                stop: crate::message::StopReason::ToolUse,
+            },
+        },
+        Entry {
+            seq: 3,
+            ts_ms: 0,
+            record: Record::ToolCall {
+                turn: "trn_test".into(),
+                agent: "root".into(),
+                call: "op_submit".into(),
+                name: "submit".into(),
+                input: json!({"answer": 42}),
+                detach: false,
+            },
+        },
+    ];
+    let pending = pending_external(&entries, &prefix);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].call, "op_submit");
+    assert_eq!(pending[0].context["request"], "out_1");
+    assert!(!pending[0].parallel_batch);
+
+    entries.push(Entry {
+        seq: 4,
+        ts_ms: 0,
+        record: Record::ToolResult {
+            turn: "trn_test".into(),
+            agent: "root".into(),
+            call: "op_submit".into(),
+            name: "submit".into(),
+            outcome: "completed".into(),
+            content: "done".into(),
+            is_error: false,
+            exit_code: None,
+            duration_ms: 1,
+            truncated: false,
+        },
+    });
+    assert!(pending_external(&entries, &prefix).is_empty());
+}
+
+#[tokio::test]
+async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-external-recovery-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create recovery data dir");
+    let journal = Journal::new_memory("brain-recovery-test");
+    let executor = Arc::new(RecoveryExecutor::default());
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            official_capabilities: HashMap::from([("aex.submit".into(), submit_policy())]),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        executor.clone(),
+        BrainServices::default(),
+        None,
+    );
+    let created = brain
+        .create_session(
+            serde_json::from_value(json!({
+                "model": {
+                    "provider": "anthropic",
+                    "name": "unused-during-terminal-recovery",
+                    "api_key": "sk-test"
+                },
+                "tools": {
+                    "items": [{
+                        "definition": {
+                            "name": "submit",
+                            "description": "Submit the final value",
+                            "contract_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "input_schema": {"type": "object"},
+                            "output_schema": {"type": "object"}
+                        },
+                        "executor": {"kind": "engine", "capability": "aex.submit"}
+                    }]
+                }
+            }))
+            .expect("valid create request"),
+            None,
+        )
+        .await
+        .expect("create session");
+    let session_id = created.id.to_string();
+
+    // Let the eager actor finish its initial hand-state decision before fencing its fold.
+    for _ in 0..100 {
+        if journal
+            .get_head(&session_id)
+            .await
+            .expect("head while waiting")
+            .last_seq
+            >= 2
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    let mut head = journal
+        .claim(&session_id)
+        .await
+        .expect("claim for crash setup");
+    let turn = "trn_aaaaaaaaaaaaaaaaaaaa".to_string();
+    let call = "op_aaaaaaaaaaaaaaaa".to_string();
+    let input = json!({"answer": 42});
+    head.doc.state = "open".into();
+    head.doc.turn = Some(turn.clone());
+    head.doc.turns += 1;
+    head.doc.last_message_ms = Some(crate::wall_ms());
+    let first_seq = head.last_seq + 1;
+    let records = vec![
+        (
+            first_seq,
+            Record::UserMessage {
+                turn: turn.clone(),
+                content: vec![ContentBlock::text("return a typed value")],
+                starts_turn: false,
+                metadata: HashMap::from([("request_id".into(), "out_test".into())]),
+                idempotency_key_hash: None,
+                request_hash: None,
+            },
+        ),
+        (first_seq + 1, Record::TurnStarted { turn: turn.clone() }),
+        (
+            first_seq + 2,
+            Record::Assistant {
+                turn: turn.clone(),
+                agent: "root".into(),
+                attempt_id: "att_aaaaaaaaaaaaaaaaaaaa".into(),
+                content: vec![ContentBlock::ToolUse {
+                    id: call.clone(),
+                    name: "submit".into(),
+                    input: input.clone(),
+                }],
+                stop: crate::message::StopReason::ToolUse,
+            },
+        ),
+        (
+            first_seq + 3,
+            Record::ToolCall {
+                turn: turn.clone(),
+                agent: "root".into(),
+                call: call.clone(),
+                name: "submit".into(),
+                input: input.clone(),
+                detach: false,
+            },
+        ),
+    ];
+    let mut lease = Lease {
+        fence: head.fence,
+        last_seq: head.last_seq,
+        retention: head.retention,
+    };
+    journal
+        .commit(&session_id, &mut lease, &records, &head.doc, first_seq + 3)
+        .await
+        .expect("commit pending external intent");
+    let crash_entries = journal
+        .read_records(&session_id, 0)
+        .await
+        .expect("read simulated crash records");
+    let resolved = resolve_sealed_tools(&head.doc.prefix);
+    assert!(
+        resolved.iter().any(|tool| {
+            tool.name == "submit"
+                && matches!(
+                    &tool.route,
+                    crate::config::ToolRoute::Server(policy) if policy.capability == "aex.submit"
+                )
+        }),
+        "resolved tools: {resolved:?}; prefix tools: {:?}",
+        head.doc.prefix.tools
+    );
+    assert!(crash_entries.iter().any(|entry| matches!(
+        &entry.record,
+        Record::ToolCall { call: recorded, .. } if recorded == &call
+    )));
+    let pending = pending_external(&crash_entries, &head.doc.prefix);
+    assert_eq!(
+        pending.len(),
+        1,
+        "the committed server-tool intent is pending"
+    );
+    assert_eq!(pending[0].policy.capability, "aex.submit");
+    // Model the durable failure transition that follows an observed owner loss. It releases
+    // the stale lease and installs the bounded retry due-time atomically, so the background
+    // scheduler can resume without customer traffic and without waiting another lease term.
+    journal
+        .defer_recovery(&session_id)
+        .await
+        .expect("release crashed owner and schedule recovery");
+
+    let resident = hydrate(&brain, &session_id)
+        .await
+        .expect("hydrate and replay pending call");
+    assert_eq!(executor.calls.load(Ordering::Relaxed), 1);
+    assert_eq!(resident.st.head.state, "open");
+    assert!(resident.st.head.turn.is_none());
+    assert_eq!(
+        executor
+            .call_ids
+            .lock()
+            .expect("recovery call ids")
+            .as_slice(),
+        [call.as_str()]
+    );
+
+    let recovered = journal
+        .read_records(&session_id, first_seq + 3)
+        .await
+        .expect("recovery records");
+    assert!(recovered.iter().any(|entry| matches!(
+        &entry.record,
+        Record::ToolResult { call: recovered_call, .. } if recovered_call == &call
+    )));
+    let result = recovered.iter().find_map(|entry| match &entry.record {
+        Record::TurnCompleted {
+            result: Some(result),
+            ..
+        } => Some(result),
+        _ => None,
+    });
+    let result = result.expect("terminal result committed during hydrate");
+    assert_eq!(result.call_id.to_string(), call);
+    assert_eq!(result.value, input);
+    assert_eq!(result.metadata.get("recovered"), Some(&"true".into()));
+
+    journal
+        .release(&session_id, &resident.st.lease)
+        .await
+        .expect("release recovered lease");
+    drop(resident);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn customer_terminal_before_brain_crash_replays_without_reexecuting_the_effect() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-customer-recovery-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let journal = Journal::new_memory("brain-customer-crashed");
+    let transport = crate::customer::CustomerTransportConfig::new(
+        "ws://127.0.0.1:3210/v1/customer-hand/socket",
+        "http://127.0.0.1:3210",
+    )
+    .unwrap();
+    let crashed = Brain::with_parts_and_services(
+        BrainConfig {
+            external_call_timeout: Duration::from_secs(2),
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            customer_transport: Some(transport.clone()),
+            ..BrainServices::default()
+        },
+        None,
+    );
+    let created = crashed
+        .create_session(
+            typed_create(json!({
+                "model":{"provider":"anthropic","name":"customer-recovery","api_key":"sk-test"},
+                "client":{"id":"app","submit_retries":1},
+                "tools":{"items":[{
+                    "definition":{
+                        "name":"lookup", "description":"lookup",
+                        "contract_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "input_schema":{"type":"object"}, "output_schema":{"type":"object"}
+                    },
+                    "executor":{"kind":"customer_app","registration":"lookup"}
+                }]}
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+    let session_id = created.id.to_string();
+    let crashed_customer = crashed.customer.as_ref().unwrap().clone();
+    let (crashed_grant, mut crashed_socket, crashed_epoch) =
+        connect_customer_process(&crashed_customer, "process:stable").await;
+
+    let mut head = journal.claim(&session_id).await.unwrap();
+    let turn = "trn_customercrash0000000".to_owned();
+    let call = "op_customercrash".to_owned();
+    let input = json!({"id":7});
+    let intent = crashed_customer
+        .prepare_operation(
+            "local",
+            "app",
+            &session_id,
+            &call,
+            "lookup",
+            "lookup",
+            &"a".repeat(64),
+            input.clone(),
+            crate::wall_ms() + 5_000,
+        )
+        .await
+        .unwrap();
+    head.doc.state = "open".into();
+    head.doc.turn = Some(turn.clone());
+    head.doc.active_phase = Some("ready_to_dispatch_tools".into());
+    head.doc.active_rounds = 1;
+    head.doc.active_tool_calls = 1;
+    head.doc.turns += 1;
+    let first_seq = head.last_seq + 1;
+    let records = vec![
+        (
+            first_seq,
+            Record::UserMessage {
+                turn: turn.clone(),
+                content: vec![ContentBlock::text("look up id 7")],
+                starts_turn: false,
+                metadata: HashMap::new(),
+                idempotency_key_hash: None,
+                request_hash: None,
+            },
+        ),
+        (first_seq + 1, Record::TurnStarted { turn: turn.clone() }),
+        (
+            first_seq + 2,
+            Record::Assistant {
+                turn: turn.clone(),
+                agent: "root".into(),
+                attempt_id: "att_customercrash0000000".into(),
+                content: vec![ContentBlock::ToolUse {
+                    id: call.clone(),
+                    name: "lookup".into(),
+                    input: input.clone(),
+                }],
+                stop: crate::message::StopReason::ToolUse,
+            },
+        ),
+        (
+            first_seq + 3,
+            Record::CustomerCallIntent {
+                turn: turn.clone(),
+                call: call.clone(),
+                client_id: intent.client_id.clone(),
+                process_id: intent.process_id.clone(),
+                request_digest: intent.request_digest.clone(),
+                deadline_at_ms: intent.deadline_at_ms,
+            },
+        ),
+        (
+            first_seq + 4,
+            Record::ToolCall {
+                turn: turn.clone(),
+                agent: "root".into(),
+                call: call.clone(),
+                name: "lookup".into(),
+                input,
+                detach: false,
+            },
+        ),
+    ];
+    let mut lease = Lease {
+        fence: head.fence,
+        last_seq: head.last_seq,
+        retention: head.retention,
+    };
+    journal
+        .commit(&session_id, &mut lease, &records, &head.doc, first_seq + 4)
+        .await
+        .unwrap();
+
+    // The application runs the effect once and publishes its terminal, but Brain crashes
+    // before the ToolResult decision. The application process retains that exact fact.
+    let first_execution = {
+        let customer = crashed_customer.clone();
+        let intent = intent.clone();
+        tokio::spawn(async move {
+            customer
+                .execute_prepared(intent, 0, CancellationToken::new())
+                .await
+        })
+    };
+    let Some(crate::customer::CustomerCommand::Offer(first_offer)) = crashed_socket.recv().await
+    else {
+        panic!("first customer offer")
+    };
+    crashed_customer
+        .observation(
+            &crashed_grant.grant_id,
+            &crashed_grant.observation_token,
+            crate::customer::CustomerObservation::Receipt {
+                epoch: crashed_epoch,
+                operation_id: first_offer.operation_id.clone(),
+                request_digest: first_offer.request_digest.clone(),
+                replayed: false,
+            },
+        )
+        .await
+        .unwrap();
+    crashed_customer
+        .observation(
+            &crashed_grant.grant_id,
+            &crashed_grant.observation_token,
+            crate::customer::CustomerObservation::Terminal {
+                epoch: crashed_epoch,
+                operation_id: first_offer.operation_id,
+                request_digest: first_offer.request_digest,
+                ok: true,
+                output: Some(json!({"value":7})),
+                error: None,
+            },
+        )
+        .await
+        .unwrap();
+    let uncommitted = first_execution.await.unwrap();
+    assert!(uncommitted.terminal_receipt.is_some());
+    journal.release(&session_id, &lease).await.unwrap();
+    drop(crashed);
+
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([Scripted::Text("done after replay".into())]);
+    let provider = fake.clone();
+    let recovering = Brain::with_parts_and_services(
+        BrainConfig {
+            external_call_timeout: Duration::from_secs(2),
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.cloned_as("brain-customer-recovering"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            customer_transport: Some(transport),
+            ..BrainServices::default()
+        },
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let recovering_customer = recovering.customer.as_ref().unwrap().clone();
+    let (replay_grant, mut replay_socket, replay_epoch) =
+        connect_customer_process(&recovering_customer, "process:stable").await;
+    let hydration = {
+        let recovering = recovering.clone();
+        let session_id = session_id.clone();
+        tokio::spawn(async move { hydrate(&recovering, &session_id).await })
+    };
+    let Some(crate::customer::CustomerCommand::Offer(replay_offer)) = replay_socket.recv().await
+    else {
+        panic!("replayed customer offer")
+    };
+    assert_eq!(replay_offer.operation_id, call);
+    assert_eq!(replay_offer.request_digest, intent.request_digest);
+    // Retained application terminal replay: no handler/effect runs a second time.
+    recovering_customer
+        .observation(
+            &replay_grant.grant_id,
+            &replay_grant.observation_token,
+            crate::customer::CustomerObservation::Terminal {
+                epoch: replay_epoch,
+                operation_id: replay_offer.operation_id,
+                request_digest: replay_offer.request_digest,
+                ok: true,
+                output: Some(json!({"value":7})),
+                error: None,
+            },
+        )
+        .await
+        .unwrap();
+    let Some(crate::customer::CustomerCommand::Ack {
+        operation_id,
+        request_digest,
+        ..
+    }) = replay_socket.recv().await
+    else {
+        panic!("post-commit customer ack")
+    };
+    assert_eq!(operation_id, call);
+    assert_eq!(request_digest, intent.request_digest);
+    let resident = tokio::time::timeout(Duration::from_secs(3), hydration)
+        .await
+        .expect("customer recovery completed")
+        .unwrap()
+        .unwrap();
+    assert!(resident.st.head.pending_customer_acks.is_empty());
+    assert!(resident.st.head.turn.is_none());
+    assert_eq!(fake.call_count.load(Ordering::Relaxed), 1);
+    let recovered = journal
+        .read_records(&session_id, first_seq + 4)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered
+            .iter()
+            .filter(|entry| matches!(entry.record, Record::ToolResult { ref call, .. } if call == &operation_id))
+            .count(),
+        1
+    );
+    assert!(
+        recovered
+            .iter()
+            .any(|entry| matches!(entry.record, Record::CustomerTerminalReceived { .. }))
+    );
+    assert!(
+        recovered
+            .iter()
+            .any(|entry| matches!(entry.record, Record::CustomerTerminalAcknowledged { .. }))
+    );
+    journal
+        .release(&session_id, &resident.st.lease)
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn journaled_customer_terminal_is_reacked_after_process_restart() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-customer-ack-recovery-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let journal = Journal::new_memory("brain-customer-ack-crashed");
+    let transport = crate::customer::CustomerTransportConfig::new(
+        "ws://127.0.0.1:3210/v1/customer-hand/socket",
+        "http://127.0.0.1:3210",
+    )
+    .unwrap();
+    let crashed = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            customer_transport: Some(transport.clone()),
+            ..BrainServices::default()
+        },
+        None,
+    );
+    let created = crashed
+        .create_session(
+            typed_create(json!({
+                "model":{"provider":"anthropic","name":"unused","api_key":"sk-test"},
+                "client":{"id":"app"}
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+    let session_id = created.id.to_string();
+    let mut head = journal.claim(&session_id).await.unwrap();
+    let call = "op_ackrestart0000".to_owned();
+    let request_digest = "a".repeat(64);
+    let terminal_digest = "b".repeat(64);
+    head.doc
+        .pending_customer_acks
+        .push(crate::journal::CustomerTerminalAckDoc {
+            turn: "trn_ackrestart00000000".into(),
+            call: call.clone(),
+            client_id: "app".into(),
+            process_id: "process:stable".into(),
+            request_digest: request_digest.clone(),
+            terminal_digest: terminal_digest.clone(),
+        });
+    let seq = head.last_seq + 1;
+    let mut lease = Lease {
+        fence: head.fence,
+        last_seq: head.last_seq,
+        retention: head.retention,
+    };
+    journal
+        .commit(
+            &session_id,
+            &mut lease,
+            &[(
+                seq,
+                Record::CustomerTerminalReceived {
+                    turn: "trn_ackrestart00000000".into(),
+                    call: call.clone(),
+                    client_id: "app".into(),
+                    process_id: "process:stable".into(),
+                    request_digest: request_digest.clone(),
+                    terminal_digest: terminal_digest.clone(),
+                },
+            )],
+            &head.doc,
+            seq,
+        )
+        .await
+        .unwrap();
+    journal.release(&session_id, &lease).await.unwrap();
+    drop(crashed);
+
+    let recovering = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        journal.cloned_as("brain-customer-ack-recovering"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            customer_transport: Some(transport),
+            ..BrainServices::default()
+        },
+        None,
+    );
+    let customer = recovering.customer.as_ref().unwrap().clone();
+    let (_, mut socket, epoch) = connect_customer_process(&customer, "process:stable").await;
+    let hydration = {
+        let recovering = recovering.clone();
+        let session_id = session_id.clone();
+        tokio::spawn(async move { hydrate(&recovering, &session_id).await })
+    };
+    let Some(crate::customer::CustomerCommand::Ack {
+        epoch: ack_epoch,
+        operation_id,
+        request_digest: ack_request,
+        terminal_digest: ack_terminal,
+    }) = socket.recv().await
+    else {
+        panic!("durable ack replay")
+    };
+    assert_eq!(ack_epoch, epoch);
+    assert_eq!(operation_id, call);
+    assert_eq!(ack_request, request_digest);
+    assert_eq!(ack_terminal, terminal_digest);
+    let resident = hydration.await.unwrap().unwrap();
+    assert!(resident.st.head.pending_customer_acks.is_empty());
+    let records = journal.read_records(&session_id, seq).await.unwrap();
+    assert!(
+        records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::CustomerTerminalAcknowledged { .. }))
+    );
+    journal
+        .release(&session_id, &resident.st.lease)
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn managed_submit_unknown_survives_cleanup_crash_without_resubmission() {
+    let journal = Journal::new_memory("brain-managed-submit-unknown");
+    let ports = Arc::new(UnknownManagedPorts::default());
+    ports.fail_next_dematerialize.store(true, Ordering::Release);
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([Scripted::Text("continued after an honest unknown".into())]);
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            hand: Some(ports.clone()),
+            session_preparation: Some(ports.clone()),
+            sandbox_files: Some(ports.clone()),
+            ..BrainServices::default()
+        },
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model":{"provider":"anthropic","name":"managed-unknown","api_key":"key"}
+            })),
+            Some("managed-submit-unknown"),
+        )
+        .await
+        .expect("create unknown-submit recovery session");
+    let session_id = created.id.to_string();
+    let mut resident = hydrate(&brain, &session_id)
+        .await
+        .expect("claim initial crash fold");
+
+    let turn = "trn_managedunknown000000".to_owned();
+    let call = "op_managedunknown0000".to_owned();
+    let name = "managed_unknown_test".to_owned();
+    let binding_ref = "bnd_managedunknown0000";
+    let input = json!({"effect":"already_may_have_run"});
+    let mut envelope: brain_protocol::hand::OperationEnvelope = serde_json::from_value(json!({
+        "operation_id":call,
+        "request_digest":"0".repeat(64),
+        "session_id":session_id,
+        "root_id":resident.st.head.root_id,
+        "turn_id":turn,
+        "caller_id":"agent_root",
+        "fence":resident.st.lease.fence,
+        "generation":null,
+        "binding_ref":binding_ref,
+        "capability":name,
+        "input":{"kind":"inline","value":input},
+        "target_ref":null,
+        "deadline_at_ms":crate::wall_ms() + 60_000,
+        "resources":managed_hand_resources().unwrap(),
+        "network":sealed_sandbox_network(&resident.st.head).unwrap(),
+        "trace":{}
+    }))
+    .expect("valid managed operation envelope");
+    envelope.request_digest = brain_protocol::contract::operation_request_digest(&envelope);
+    let binding: brain_protocol::hand::ResolvedBinding = serde_json::from_value(json!({
+        "binding_ref":binding_ref,
+        "capabilities":["execution","session_preparation"],
+        "hand_id":"hand_managedunknown",
+        "limits":{
+            "max_inline_input_bytes":brain_protocol::MAX_MANAGED_TOOL_INPUT_BYTES,
+            "max_inline_result_bytes":brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES,
+            "max_wait_ms":1
+        },
+        "realm":"aex_managed",
+        "recovery":"retained"
+    }))
+    .expect("valid resolved binding");
+    resident.managed_bindings = Arc::new(HashMap::from([(name.clone(), binding)]));
+    resident.st.head.state = "open".into();
+    resident.st.head.turn = Some(turn.clone());
+    resident.st.head.active_phase = Some("managed_running".into());
+    resident.st.head.active_rounds = 1;
+    resident.st.head.active_tool_calls = 1;
+    resident.st.head.turns += 1;
+    let first_seq = resident.st.take_seq();
+    let turn_started_seq = resident.st.take_seq();
+    let assistant_seq = resident.st.take_seq();
+    let tool_call_seq = resident.st.take_seq();
+    let managed_intent_seq = resident.st.take_seq();
+    let records = vec![
+        (
+            first_seq,
+            Record::UserMessage {
+                turn: turn.clone(),
+                content: vec![ContentBlock::text("run the managed effect")],
+                starts_turn: false,
+                metadata: HashMap::new(),
+                idempotency_key_hash: None,
+                request_hash: None,
+            },
+        ),
+        (turn_started_seq, Record::TurnStarted { turn: turn.clone() }),
+        (
+            assistant_seq,
+            Record::Assistant {
+                turn: turn.clone(),
+                agent: "root".into(),
+                attempt_id: "att_managedunknown00000".into(),
+                content: vec![ContentBlock::ToolUse {
+                    id: call.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                }],
+                stop: crate::message::StopReason::ToolUse,
+            },
+        ),
+        (
+            tool_call_seq,
+            Record::ToolCall {
+                turn: turn.clone(),
+                agent: "root".into(),
+                call: call.clone(),
+                name: name.clone(),
+                input,
+                detach: false,
+            },
+        ),
+        (
+            managed_intent_seq,
+            Record::ManagedCallIntent {
+                turn: turn.clone(),
+                call: call.clone(),
+                name: name.clone(),
+                envelope,
+            },
+        ),
+    ];
+    commit(&brain, &session_id, &mut resident.st, records)
+        .await
+        .expect("commit crash-after-Submit intent");
+
+    let crash_entries = journal.read_records(&session_id, 0).await.unwrap();
+    assert_eq!(
+        pending_managed(&crash_entries).unwrap().len(),
+        1,
+        "the simulated crash leaves one durable managed intent; records={:?}",
+        crash_entries
+            .iter()
+            .map(|entry| (entry.seq, entry.record.kind_name()))
+            .collect::<Vec<_>>()
+    );
+    let error = recover_managed_calls(&brain, &session_id, &mut resident, &crash_entries)
+        .await
+        .expect_err("inject a crash boundary after the unknown marker and status commit");
+    assert!(matches!(error, BrainError::HandUnavailable(_)), "{error:?}");
+    assert_eq!(ports.submits.load(Ordering::Acquire), 1);
+    let after_unknown = journal.read_records(&session_id, 0).await.unwrap();
+    assert_eq!(
+        after_unknown
+            .iter()
+            .filter(|entry| matches!(entry.record, Record::ManagedCallUnknown { .. }))
+            .count(),
+        1,
+        "OperationUnknown is a single durable revocation of submit replay"
+    );
+    assert!(after_unknown.iter().any(|entry| matches!(
+        &entry.record,
+        Record::DefaultSandboxChanged { status }
+            if status.reason.as_ref().is_some_and(|reason| reason.as_str() == MANAGED_UNKNOWN_SANDBOX_REASON)
+                && status.generation.as_ref().is_some_and(|generation| generation.as_str() == "gen_unknown_submit")
+                && status.target_ref.as_ref().is_some_and(|target_ref| target_ref.as_str() == "tgt_unknown_submit")
+                && status.expires_at_ms.is_some()
+    )));
+    journal
+        .release(&session_id, &resident.st.lease)
+        .await
+        .expect("release simulated crashed recovery owner");
+    drop(resident);
+    drop(brain);
+
+    let provider = fake.clone();
+    let recovering = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.cloned_as("brain-managed-submit-unknown-restart"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            hand: Some(ports.clone()),
+            session_preparation: Some(ports.clone()),
+            sandbox_files: Some(ports.clone()),
+            ..BrainServices::default()
+        },
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let recovered = hydrate(&recovering, &session_id)
+        .await
+        .expect("restart consumes the unknown marker without Submit");
+    assert_eq!(
+        ports.submits.load(Ordering::Acquire),
+        1,
+        "the journaled unknown marker permanently forbids a second Submit"
+    );
+    assert_eq!(ports.dematerialize_calls.load(Ordering::Acquire), 2);
+    assert_eq!(
+        recovered
+            .st
+            .head
+            .default_sandbox
+            .as_ref()
+            .expect("reconciled default sandbox")
+            .state,
+        brain_protocol::hand::SandboxState::Terminated
+    );
+    assert!(recovered.st.head.turn.is_none());
+    let final_records = journal.read_records(&session_id, 0).await.unwrap();
+    assert_eq!(
+        final_records
+            .iter()
+            .filter(|entry| matches!(
+                &entry.record,
+                Record::ToolResult { call: result_call, outcome, .. }
+                    if result_call == &call && outcome == "interrupted"
+            ))
+            .count(),
+        1
+    );
+    fake.assert_drained(1, "managed OperationUnknown recovery")
+        .unwrap();
+    recovering
+        .journal
+        .release(&session_id, &recovered.st.lease)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
+    let journal = Journal::new_memory("brain-stale-managed-ending");
+    let ports = Arc::new(UnknownManagedPorts::default());
+    ports.fail_next_dematerialize.store(true, Ordering::Release);
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            hand: Some(ports.clone()),
+            session_preparation: Some(ports.clone()),
+            sandbox_files: Some(ports.clone()),
+            ..BrainServices::default()
+        },
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model":{"provider":"anthropic","name":"stale-managed","api_key":"key"}
+            })),
+            Some("stale-managed-ending"),
+        )
+        .await
+        .expect("create stale managed recovery session");
+    let session_id = created.id.to_string();
+    let mut resident = hydrate(&brain, &session_id)
+        .await
+        .expect("claim stale managed session");
+    let turn = "trn_stalemanaged0000000".to_owned();
+    let call = "op_stalemanaged000000".to_owned();
+    let name = "managed_stale_test".to_owned();
+    let mut envelope: brain_protocol::hand::OperationEnvelope = serde_json::from_value(json!({
+        "operation_id":call,
+        "request_digest":"0".repeat(64),
+        "session_id":session_id,
+        "root_id":resident.st.head.root_id,
+        "turn_id":turn,
+        "caller_id":"agent_root",
+        "fence":resident.st.lease.fence,
+        "generation":null,
+        "binding_ref":"bnd_stalemanaged0000",
+        "capability":name,
+        "input":{"kind":"inline","value":{"effect":"may_have_started"}},
+        "target_ref":null,
+        "deadline_at_ms":crate::wall_ms() + 60_000,
+        "resources":managed_hand_resources().unwrap(),
+        "network":sealed_sandbox_network(&resident.st.head).unwrap(),
+        "trace":{}
+    }))
+    .expect("valid stale managed envelope");
+    envelope.request_digest = brain_protocol::contract::operation_request_digest(&envelope);
+
+    resident.st.head.turn = Some(turn.clone());
+    resident.st.head.active_phase = Some("managed_running".into());
+    resident.st.head.active_rounds = 1;
+    resident.st.head.active_tool_calls = 1;
+    let intent_records = vec![
+        (
+            resident.st.take_seq(),
+            Record::TurnStarted { turn: turn.clone() },
+        ),
+        (
+            resident.st.take_seq(),
+            Record::ToolCall {
+                turn: turn.clone(),
+                agent: "root".into(),
+                call: call.clone(),
+                name: name.clone(),
+                input: json!({"effect":"may_have_started"}),
+                detach: false,
+            },
+        ),
+        (
+            resident.st.take_seq(),
+            Record::ManagedCallIntent {
+                turn: turn.clone(),
+                call: call.clone(),
+                name: name.clone(),
+                envelope,
+            },
+        ),
+    ];
+    commit(&brain, &session_id, &mut resident.st, intent_records)
+        .await
+        .expect("commit managed intent");
+
+    resident.st.head.turn = None;
+    resident.st.head.active_phase = None;
+    resident.st.head.active_rounds = 0;
+    resident.st.head.active_tool_calls = 0;
+    let failed_records = vec![
+        (
+            resident.st.take_seq(),
+            Record::TurnFailed {
+                turn: turn.clone(),
+                code: "internal".into(),
+                message: "sandbox capacity is exhausted".into(),
+                details: None,
+            },
+        ),
+        (
+            resident.st.take_seq(),
+            Record::State {
+                state: "open".into(),
+                turn: None,
+            },
+        ),
+    ];
+    commit(&brain, &session_id, &mut resident.st, failed_records)
+        .await
+        .expect("commit failed turn without a managed result");
+    resident.st.head.ended = true;
+    resident.st.head.state = "ending".into();
+    let ending = vec![(
+        resident.st.take_seq(),
+        Record::State {
+            state: "ending".into(),
+            turn: None,
+        },
+    )];
+    commit(&brain, &session_id, &mut resident.st, ending)
+        .await
+        .expect("commit ending lifecycle");
+
+    let crash_entries = journal.read_records(&session_id, 0).await.unwrap();
+    let error = recover_managed_calls(&brain, &session_id, &mut resident, &crash_entries)
+        .await
+        .expect_err("inject cleanup loss after submit replay is revoked");
+    assert!(matches!(error, BrainError::HandUnavailable(_)), "{error:?}");
+    assert_eq!(ports.submits.load(Ordering::Acquire), 0);
+    journal
+        .release(&session_id, &resident.st.lease)
+        .await
+        .expect("release simulated cleanup crash owner");
+    drop(resident);
+    drop(brain);
+
+    let provider = fake.clone();
+    let recovering = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.cloned_as("brain-stale-managed-ending-restart"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            hand: Some(ports.clone()),
+            session_preparation: Some(ports.clone()),
+            sandbox_files: Some(ports.clone()),
+            ..BrainServices::default()
+        },
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let recovered = hydrate(&recovering, &session_id)
+        .await
+        .expect("restart reconciles the stale managed intent");
+    assert_eq!(ports.submits.load(Ordering::Acquire), 0);
+    assert_eq!(ports.dematerialize_calls.load(Ordering::Acquire), 2);
+    assert_eq!(recovered.st.head.state, "ending");
+    assert!(recovered.st.head.turn.is_none());
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|entry| matches!(entry.record, Record::ManagedCallUnknown { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|entry| matches!(
+                &entry.record,
+                Record::ToolResult { call: result_call, outcome, .. }
+                    if result_call == &call && outcome == "interrupted"
+            ))
+            .count(),
+        1
+    );
+    assert!(pending_managed(&records).unwrap().is_empty());
+
+    let mut resident = Some(recovered);
+    assert!(
+        continue_end_session(&recovering, &session_id, &mut resident)
+            .await
+            .expect("ending cleanup converges")
+    );
+    assert_eq!(
+        journal.get_head(&session_id).await.unwrap().doc.state,
+        "ended"
+    );
+    if let Some(resident) = resident {
+        recovering
+            .journal
+            .release(&session_id, &resident.st.lease)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn deleting_managed_session_hydrates_without_repreparing_hand_definitions() {
+    let journal = Journal::new_memory("brain-deleting-managed-hydrate");
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        None,
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model":{"provider":"anthropic","name":"deleting-managed","api_key":"key"}
+            })),
+            Some("deleting-managed-hydrate"),
+        )
+        .await
+        .expect("create deleting managed session");
+    let session_id = created.id.to_string();
+    let mut resident = hydrate(&brain, &session_id)
+        .await
+        .expect("claim deleting managed session");
+    let bundle_digest = "a".repeat(64);
+    resident.st.head.prefix.managed_bundles.push(
+        serde_json::from_value(json!({
+            "bundle_digest":bundle_digest,
+            "bytes":1,
+            "contract_digest":"b".repeat(64),
+            "object":{
+                "bytes":1,
+                "media_type":"application/javascript+esm",
+                "object_id":format!("bundle_{bundle_digest}"),
+                "sha256":bundle_digest,
+            },
+            "required_env":[],
+            "runtime":"node22",
+            "tool_name":"managed_delete_test",
+        }))
+        .expect("valid managed bundle descriptor"),
+    );
+    resident.st.head.state = "deleting".into();
+    resident.st.head.ended = true;
+    resident.st.head.turn = None;
+    resident.st.head.active_phase = None;
+    let state_seq = resident.st.take_seq();
+    commit(
+        &brain,
+        &session_id,
+        &mut resident.st,
+        vec![(
+            state_seq,
+            Record::State {
+                state: "deleting".into(),
+                turn: None,
+            },
+        )],
+    )
+    .await
+    .expect("commit deleting lifecycle with a managed descriptor");
+    journal
+        .release(&session_id, &resident.st.lease)
+        .await
+        .expect("release deleting session before cold hydration");
+    drop(resident);
+
+    let recovered = hydrate(&brain, &session_id)
+        .await
+        .expect("deleting hydration must not require or recreate Hand definitions");
+    assert_eq!(recovered.st.head.state, "deleting");
+    assert!(!recovered.st.head.prefix.managed_bundles.is_empty());
+    assert!(recovered.managed_bindings.is_empty());
+    journal
+        .release(&session_id, &recovered.st.lease)
+        .await
+        .expect("release recovered deleting session");
+}
+
+async fn simulate_provider_only_crash(
+    retries: u32,
+    attempt_state: &str,
+) -> (Arc<Brain>, Journal, Arc<FakeProvider>, String, u64, PathBuf) {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-provider-recovery-{}-{}-{retries}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create provider recovery data dir");
+    let journal = Journal::new_memory(format!("brain-provider-recovery-{retries}"));
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([Scripted::Text("replacement completed".into())]);
+    let provider = fake.clone();
+    let provider_factory: ProviderFactory = Arc::new(move |_| provider.clone());
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        Some(provider_factory),
+    );
+    let created = brain
+        .create_session(
+            serde_json::from_value(json!({
+                "model": {
+                    "provider": "anthropic",
+                    "name": "provider-recovery-test",
+                    "api_key": "sk-test"
+                },
+                "provider_recovery_retries": retries
+            }))
+            .expect("valid provider recovery create"),
+            None,
+        )
+        .await
+        .expect("create provider recovery session");
+    let session_id = created.id.to_string();
+    for _ in 0..100 {
+        if journal
+            .get_head(&session_id)
+            .await
+            .expect("recovery head")
+            .last_seq
+            >= 2
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    let mut head = journal.claim(&session_id).await.expect("claim crash owner");
+    let turn = "trn_providercrash00000000".to_owned();
+    let content = vec![ContentBlock::text("recover provider-only phase")];
+    let history = vec![Message {
+        role: crate::message::Role::User,
+        content: content.clone(),
+    }];
+    let (prefix, _) = build_prefix(&head.doc.prefix, 512).expect("rebuild sealed prefix");
+    let request = fake
+        .build_request(
+            &prefix,
+            &history,
+            &ProviderKey::new("sk-test"),
+            head.doc.prefix.base_url.as_deref().expect("base URL"),
+        )
+        .expect("build crashed request");
+    let request_digest = crate::turn::model_request_digest(&request);
+    let logical_operation_id = "mdl_providercrash00000000".to_owned();
+    let attempt_id = "att_providercrash00000000".to_owned();
+    head.doc.state = "open".into();
+    head.doc.turn = Some(turn.clone());
+    head.doc.active_phase = Some(if attempt_state == "intent" {
+        "model_intent_committed".into()
+    } else {
+        "model_running".into()
+    });
+    head.doc.provider_attempt = Some(crate::journal::ProviderAttemptDoc {
+        logical_operation_id: logical_operation_id.clone(),
+        attempt_id: attempt_id.clone(),
+        request_digest: request_digest.clone(),
+        state: attempt_state.into(),
+        replacements_used: 0,
+    });
+    head.doc.active_context = HashMap::new();
+    head.doc.active_rounds = 0;
+    head.doc.active_tool_calls = 0;
+    head.doc.turns += 1;
+    let first_seq = head.last_seq + 1;
+    let records = vec![
+        (
+            first_seq,
+            Record::UserMessage {
+                turn: turn.clone(),
+                content,
+                starts_turn: false,
+                metadata: HashMap::new(),
+                idempotency_key_hash: None,
+                request_hash: None,
+            },
+        ),
+        (first_seq + 1, Record::TurnStarted { turn: turn.clone() }),
+        (
+            first_seq + 2,
+            Record::ModelCallIntent {
+                turn: turn.clone(),
+                logical_operation_id,
+                attempt_id,
+                request_digest,
+                replacement: 0,
+            },
+        ),
+    ];
+    let mut lease = Lease {
+        fence: head.fence,
+        last_seq: head.last_seq,
+        retention: head.retention,
+    };
+    journal
+        .commit(&session_id, &mut lease, &records, &head.doc, first_seq + 2)
+        .await
+        .expect("commit simulated provider crash");
+    journal
+        .defer_recovery(&session_id)
+        .await
+        .expect("release failed provider owner and schedule recovery");
+    (brain, journal, fake, session_id, first_seq + 2, data_dir)
+}
+
+#[tokio::test]
+async fn provider_only_crash_replaces_the_same_logical_request_by_default() {
+    for state in ["intent", "running"] {
+        let (brain, journal, fake, session_id, crash_seq, data_dir) =
+            simulate_provider_only_crash(1, state).await;
+        let resident = hydrate(&brain, &session_id)
+            .await
+            .expect("hydrate provider-only crash");
+        assert_eq!(fake.call_count.load(Ordering::Relaxed), 1);
+        assert_eq!(resident.st.head.state, "open");
+        assert!(resident.st.head.turn.is_none());
+        let records = journal
+            .read_records(&session_id, crash_seq)
+            .await
+            .expect("read provider recovery records");
+        assert!(records.iter().any(|entry| matches!(
+            &entry.record,
+            Record::ModelCallUnknown {
+                possibly_duplicated: true,
+                ..
+            }
+        )));
+        assert!(records.iter().any(|entry| matches!(
+            &entry.record,
+            Record::ModelCallIntent { replacement: 1, .. }
+        )));
+        assert!(
+            records
+                .iter()
+                .any(|entry| matches!(&entry.record, Record::ModelCallCompleted { .. }))
+        );
+        journal
+            .release(&session_id, &resident.st.lease)
+            .await
+            .expect("release recovered provider lease");
+        drop(resident);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+}
+
+#[tokio::test]
+async fn provider_only_crash_with_zero_retries_commits_honest_interruption() {
+    let (brain, journal, fake, session_id, crash_seq, data_dir) =
+        simulate_provider_only_crash(0, "running").await;
+    let resident = hydrate(&brain, &session_id)
+        .await
+        .expect("hydrate provider-only crash");
+    assert_eq!(fake.call_count.load(Ordering::Relaxed), 0);
+    assert_eq!(resident.st.head.state, "open");
+    assert!(resident.st.head.turn.is_none());
+    let records = journal
+        .read_records(&session_id, crash_seq)
+        .await
+        .expect("read strict interruption records");
+    assert!(records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::ModelCallUnknown {
+            possibly_duplicated: true,
+            ..
+        }
+    )));
+    assert!(records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::TurnCompleted { stop_reason, .. } if stop_reason == "interrupted"
+    )));
+    assert!(!records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::ModelCallIntent { replacement: 1, .. }
+    )));
+    journal
+        .release(&session_id, &resident.st.lease)
+        .await
+        .expect("release interrupted provider lease");
+    drop(resident);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn recovery_worker_resumes_provider_only_crash_without_customer_traffic() {
+    let (_crashed_brain, journal, fake, session_id, crash_seq, data_dir) =
+        simulate_provider_only_crash(1, "running").await;
+    let provider = fake.clone();
+    let recovering = Brain::with_parts_and_services(
+        BrainConfig {
+            recovery_poll_interval: Duration::from_millis(5),
+            recovery_shards_per_poll: crate::journal::RECOVERY_SHARDS,
+            recovery_page_size: 16,
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.cloned_as("brain-recovery-worker"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    recovering.start_recovery_worker();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let head = journal.get_head(&session_id).await.unwrap();
+            if head.doc.turn.is_none() && head.last_seq > crash_seq {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("due recovery completed without a follow-up request");
+    assert_eq!(fake.call_count.load(Ordering::Relaxed), 1);
+    let records = journal.read_records(&session_id, crash_seq).await.unwrap();
+    assert!(
+        records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::ModelCallIntent { replacement: 1, .. }))
+    );
+    assert!(
+        records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::TurnCompleted { .. }))
+    );
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+async fn run_live_provider_case(
+    retries: u32,
+    script: Vec<Scripted>,
+) -> (Journal, Arc<FakeProvider>, String, PathBuf) {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-live-provider-recovery-{}-{}-{retries}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create live provider recovery dir");
+    let journal = Journal::new_memory(format!("brain-live-provider-{retries}"));
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script(script);
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let created = brain
+        .create_session(
+            serde_json::from_value(json!({
+                "model": {"provider":"anthropic", "name":"live-recovery", "api_key":"sk-test"},
+                "provider_recovery_retries": retries
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let session_id = created.id.to_string();
+    let (_, admitted_seq) = brain
+        .message(
+            &session_id,
+            serde_json::from_value(json!("exercise recovery")).unwrap(),
+        )
+        .await
+        .unwrap();
+    // Generous budget: live-retry cases sleep through jittered backoff before finishing.
+    for _ in 0..2_500 {
+        let head = journal.get_head(&session_id).await.unwrap();
+        if head.doc.turn.is_none() && head.last_seq > admitted_seq {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let head = journal.get_head(&session_id).await.unwrap();
+    assert!(
+        head.doc.turn.is_none(),
+        "live provider turn remained active"
+    );
+    (journal, fake, session_id, data_dir)
+}
+
+#[tokio::test]
+async fn live_unknown_before_or_after_stream_bytes_uses_the_same_replacement_budget() {
+    for partial_text in [None, Some("provisional bytes".to_owned())] {
+        let (journal, fake, session_id, data_dir) = run_live_provider_case(
+            1,
+            vec![
+                Scripted::TransportError {
+                    partial_text,
+                    message: "ambiguous reset".into(),
+                },
+                Scripted::Text("replacement completed".into()),
+            ],
+        )
+        .await;
+        assert_eq!(fake.call_count.load(Ordering::Relaxed), 2);
+        let records = journal.read_records(&session_id, 0).await.unwrap();
+        let intents = records
+            .iter()
+            .filter_map(|entry| match &entry.record {
+                Record::ModelCallIntent {
+                    logical_operation_id,
+                    request_digest,
+                    replacement,
+                    ..
+                } => Some((logical_operation_id, request_digest, replacement)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(intents.len(), 2);
+        assert_eq!(intents[0].0, intents[1].0);
+        assert_eq!(intents[0].1, intents[1].1);
+        assert_eq!(*intents[1].2, 1);
+        assert!(
+            records
+                .iter()
+                .any(|entry| matches!(entry.record, Record::ModelCallCompleted { .. }))
+        );
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+}
+
+#[tokio::test]
+async fn live_unknown_zero_or_exhausted_budget_interrupts_honestly() {
+    for (retries, script, expected_calls) in [
+        (
+            0,
+            vec![Scripted::TransportError {
+                partial_text: None,
+                message: "strict reset".into(),
+            }],
+            1,
+        ),
+        (
+            1,
+            vec![
+                Scripted::TransportError {
+                    partial_text: None,
+                    message: "first reset".into(),
+                },
+                Scripted::TransportError {
+                    partial_text: Some("then reset".into()),
+                    message: "second reset".into(),
+                },
+            ],
+            2,
+        ),
+    ] {
+        let (journal, fake, session_id, data_dir) = run_live_provider_case(retries, script).await;
+        assert_eq!(fake.call_count.load(Ordering::Relaxed), expected_calls);
+        let records = journal.read_records(&session_id, 0).await.unwrap();
+        assert!(records.iter().any(|entry| matches!(
+            &entry.record,
+            Record::TurnCompleted { stop_reason, .. } if stop_reason == "interrupted"
+        )));
+        assert_eq!(
+            records
+                .iter()
+                .filter(|entry| matches!(entry.record, Record::ModelCallUnknown { .. }))
+                .count(),
+            expected_calls as usize
+        );
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+}
+
+#[tokio::test]
+async fn the_agentloop_selector_seals_and_unavailable_loops_refuse_at_create() {
+    let journal = Journal::new_memory("agentloop-selector");
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let model = json!({"provider":"anthropic", "name":"selector-test", "api_key":"sk-test"});
+
+    let created = brain
+        .create_session(
+            serde_json::from_value(json!({"model": model, "agentloop": "aex"})).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&created).unwrap()["agentloop"],
+        json!({"kind": "official", "name": "aex", "version": "1"}),
+        "the sealed loop identity is echoed on the session resource"
+    );
+
+    let refused = brain
+        .create_session(
+            serde_json::from_value(json!({"model": model, "agentloop": "pi"})).unwrap(),
+            None,
+        )
+        .await;
+    assert!(
+        matches!(&refused, Err(BrainError::Invalid(message)) if message.contains("not available")),
+        "an official this composition lacks refuses at create: {refused:?}"
+    );
+
+    let bundle = b"export function activate() { return \"{}\" }";
+    let encoded = {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(bundle)
+    };
+    let digest = hex::encode(Sha256::digest(bundle));
+    let wrong_digest = brain
+        .create_session(
+            serde_json::from_value(json!({"model": model, "agentloop": {
+                "source_bundle_sha256": "0".repeat(64),
+                "toolchain": "loopchain-1",
+                "bundle_base64": encoded,
+            }}))
+            .unwrap(),
+            None,
+        )
+        .await;
+    assert!(
+        matches!(&wrong_digest, Err(BrainError::Invalid(message)) if message.contains("digest")),
+        "a bundle that does not match its declared digest never reaches the registry"
+    );
+    let custom = brain
+        .create_session(
+            serde_json::from_value(json!({"model": model, "agentloop": {
+                "source_bundle_sha256": digest,
+                "toolchain": "loopchain-1",
+                "bundle_base64": encoded,
+            }}))
+            .unwrap(),
+            None,
+        )
+        .await;
+    assert!(
+        matches!(&custom, Err(BrainError::Invalid(message)) if message.contains("not enabled")),
+        "the default registry refuses customs honestly: {custom:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_composition_registry_resolves_per_session_loops() {
+    struct TwoOfficials;
+    impl crate::agentloop::AgentloopRegistry for TwoOfficials {
+        fn resolve(
+            &self,
+            selector: &crate::journal::AgentloopSelectorDoc,
+        ) -> Result<Arc<dyn crate::agentloop::Agentloop>> {
+            match selector {
+                crate::journal::AgentloopSelectorDoc::Official { name, .. }
+                    if name == "aex" || name == "echo-loop" =>
+                {
+                    Ok(Arc::new(crate::agentloop::BuiltinAexLoop))
+                }
+                _ => Err(BrainError::Invalid("unknown loop".into())),
+            }
+        }
+        fn pin_official(&self, name: &str) -> Result<crate::journal::AgentloopSelectorDoc> {
+            match name {
+                "aex" => Ok(crate::journal::AgentloopSelectorDoc::official_aex()),
+                "echo-loop" => Ok(crate::journal::AgentloopSelectorDoc::Official {
+                    name: "echo-loop".into(),
+                    version: "9".into(),
+                }),
+                _ => Err(BrainError::Invalid("unknown loop".into())),
+            }
+        }
+    }
+    let journal = Journal::new_memory("agentloop-registry");
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([Scripted::Text("resolved answer".into())]);
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            agentloop_registry: Some(Arc::new(TwoOfficials)),
+            ..BrainServices::default()
+        },
+        Some(Arc::new(move |_| {
+            provider.clone() as Arc<dyn crate::provider::Provider>
+        })),
+    );
+    let created = brain
+        .create_session(
+            serde_json::from_value(json!({
+                "model": {"provider":"anthropic", "name":"registry-test", "api_key":"sk-test"},
+                "agentloop": "echo-loop"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&created).unwrap()["agentloop"]["version"],
+        "9",
+        "the registry's pinned version seals"
+    );
+    let session_id = created.id.to_string();
+    let (_, admitted_seq) = brain
+        .message(
+            &session_id,
+            serde_json::from_value(json!("drive the sealed loop")).unwrap(),
+        )
+        .await
+        .unwrap();
+    for _ in 0..1_000 {
+        let head = journal.get_head(&session_id).await.unwrap();
+        if head.doc.turn.is_none() && head.last_seq > admitted_seq {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert!(
+        records.iter().any(|entry| matches!(
+            &entry.record,
+            Record::TurnCompleted { stop_reason, .. } if stop_reason == "end_turn"
+        )),
+        "the per-session loop resolved at turn time and drove the turn"
+    );
+}
+
+#[tokio::test]
+async fn draining_refuses_new_work_while_admitted_turns_finish() {
+    let journal = Journal::new_memory("brain-drain");
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([Scripted::Text("x".repeat(800))]);
+    // Paced emission gives the turn a real duration so the drain window is observable.
+    fake.tokens_per_second.store(400, Ordering::Relaxed);
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let created = brain
+        .create_session(
+            serde_json::from_value(json!({
+                "model": {"provider":"anthropic", "name":"drain-test", "api_key":"sk-test"}
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let session_id = created.id.to_string();
+    brain
+        .message(
+            &session_id,
+            serde_json::from_value(json!("one slow answer")).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(brain.active_turns() > 0, "the turn holds its permit");
+
+    brain.begin_drain();
+    let refused = brain
+        .message(
+            &session_id,
+            serde_json::from_value(json!("refused")).unwrap(),
+        )
+        .await;
+    assert!(matches!(refused, Err(BrainError::Draining)));
+    let refused_create = brain
+        .create_session(
+            serde_json::from_value(json!({
+                "model": {"provider":"anthropic", "name":"drain-test", "api_key":"sk-test"}
+            }))
+            .unwrap(),
+            None,
+        )
+        .await;
+    assert!(matches!(refused_create, Err(BrainError::Draining)));
+
+    // The admitted turn is never interrupted: it runs to its durable terminal.
+    for _ in 0..2_000 {
+        if brain.active_turns() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(brain.active_turns(), 0, "the admitted turn drained");
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert!(records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::TurnCompleted { stop_reason, .. } if stop_reason == "end_turn"
+    )));
+}
+
+#[tokio::test]
+async fn clean_provider_failures_retry_in_place_without_replacement_budget() {
+    // Replacement budget ZERO: live retry is a separate mechanism from the durable
+    // digest-identical replacement path and must not consume it.
+    let (journal, fake, session_id, data_dir) = run_live_provider_case(
+        0,
+        vec![
+            Scripted::ProviderStatus {
+                status: 500,
+                body: "transient upstream failure".into(),
+                retry_after_ms: None,
+            },
+            Scripted::ProviderStatus {
+                status: 429,
+                body: "rate limited".into(),
+                retry_after_ms: Some(100),
+            },
+            Scripted::Text("recovered in place".into()),
+        ],
+    )
+    .await;
+    assert_eq!(fake.call_count.load(Ordering::Relaxed), 3);
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert!(records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::TurnCompleted { stop_reason, .. } if stop_reason == "end_turn"
+    )));
+    assert!(
+        !records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::ModelCallUnknown { .. })),
+        "a complete HTTP error response is definitive, never an unknown outcome"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|entry| matches!(entry.record, Record::ModelCallIntent { .. }))
+            .count(),
+        1,
+        "in-place retries reuse the committed intent"
+    );
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn persistent_clean_failures_exhaust_live_retries_and_fail_honestly() {
+    let script = (0..4)
+        .map(|_| Scripted::ProviderStatus {
+            status: 503,
+            body: "unavailable".into(),
+            retry_after_ms: Some(50),
+        })
+        .collect();
+    let (journal, fake, session_id, data_dir) = run_live_provider_case(1, script).await;
+    assert_eq!(
+        fake.call_count.load(Ordering::Relaxed),
+        4,
+        "one attempt plus exactly three live retries"
+    );
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert!(records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::TurnFailed { code, .. } if code == "provider_error"
+    )));
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn quota_exhaustion_fails_fast_despite_the_429_status() {
+    let (journal, fake, session_id, data_dir) = run_live_provider_case(
+        1,
+        vec![Scripted::ProviderStatus {
+            status: 429,
+            body: r#"{"error":{"code":"insufficient_quota"}}"#.into(),
+            retry_after_ms: Some(50),
+        }],
+    )
+    .await;
+    assert_eq!(fake.call_count.load(Ordering::Relaxed), 1);
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert!(records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::TurnFailed { code, .. } if code == "provider_error"
+    )));
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn deterministic_provider_4xx_is_not_unknown_or_retried() {
+    let (journal, fake, session_id, data_dir) = run_live_provider_case(
+        2,
+        vec![
+            Scripted::ProviderStatus {
+                status: 400,
+                body: "invalid model request".into(),
+                retry_after_ms: None,
+            },
+            Scripted::Text("must not run".into()),
+        ],
+    )
+    .await;
+    assert_eq!(fake.call_count.load(Ordering::Relaxed), 1);
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert!(
+        !records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::ModelCallUnknown { .. }))
+    );
+    assert!(
+        records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::TurnFailed { .. }))
+    );
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+async fn run_compaction_case(
+    retries: u32,
+    compactor_failures: usize,
+) -> (
+    Journal,
+    Arc<FakeProvider>,
+    Arc<ScriptedCompactor>,
+    String,
+    PathBuf,
+) {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-compaction-journal-{}-{}-{retries}-{compactor_failures}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let journal = Journal::new_memory(format!("brain-compaction-{retries}"));
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([
+        Scripted::Text(format!(
+            "early exact fact /workspace/file.rs id=alpha {}",
+            "x".repeat(2_000)
+        )),
+        Scripted::Text("provider ran after compaction".into()),
+    ]);
+    let provider = fake.clone();
+    let compactor = Arc::new(ScriptedCompactor {
+        failures_remaining: AtomicUsize::new(compactor_failures),
+        calls: AtomicUsize::new(0),
+    });
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            context_soft_tokens: 100,
+            context_hard_tokens: 5_000,
+            context_tail_tokens: 1,
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            session_storage: None,
+            customer_delivery: None,
+            customer_transport: None,
+            compactor: Some(compactor.clone()),
+            ..BrainServices::default()
+        },
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let created = brain
+        .create_session(
+            serde_json::from_value(json!({
+                "model": {"provider":"anthropic", "name":"compact", "api_key":"sk-test"},
+                "provider_recovery_retries": retries
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let session_id = created.id.to_string();
+    for message in ["first", "second"] {
+        let (_, admitted) = brain
+            .message(&session_id, serde_json::from_value(json!(message)).unwrap())
+            .await
+            .unwrap();
+        for _ in 0..500 {
+            let head = journal.get_head(&session_id).await.unwrap();
+            if head.doc.turn.is_none() && head.last_seq > admitted {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(
+            journal
+                .get_head(&session_id)
+                .await
+                .unwrap()
+                .doc
+                .turn
+                .is_none()
+        );
+    }
+    (journal, fake, compactor, session_id, data_dir)
+}
+
+#[tokio::test]
+async fn compaction_unknown_retries_with_one_canonical_usage_and_atomic_checkpoint() {
+    let (journal, fake, compactor, session_id, data_dir) = run_compaction_case(1, 1).await;
+    assert_eq!(compactor.calls.load(Ordering::Relaxed), 2);
+    assert_eq!(fake.call_count.load(Ordering::Relaxed), 2);
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    let intents = records
+        .iter()
+        .filter_map(|entry| match &entry.record {
+            Record::CompactionIntent {
+                logical_operation_id,
+                request_digest,
+                replacement,
+                ..
+            } => Some((logical_operation_id, request_digest, replacement)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(intents.len(), 2);
+    assert_eq!(intents[0].0, intents[1].0);
+    assert_eq!(intents[0].1, intents[1].1);
+    assert_eq!(*intents[1].2, 1);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|entry| matches!(entry.record, Record::CompactionUnknown { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|entry| matches!(
+                &entry.record,
+                Record::Usage { agent, usage, .. }
+                    if agent == "compactor" && usage.input_tokens == Some(7)
+            ))
+            .count(),
+        1,
+        "only the installed compaction usage is canonical"
+    );
+    assert!(
+        records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::CompactionCompleted { .. }))
+    );
+    assert!(
+        records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::ContextInstalled { .. }))
+    );
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn failed_strict_compaction_installs_no_partial_checkpoint_or_usage() {
+    let (journal, fake, compactor, session_id, data_dir) = run_compaction_case(0, 1).await;
+    assert_eq!(compactor.calls.load(Ordering::Relaxed), 1);
+    assert_eq!(fake.call_count.load(Ordering::Relaxed), 1);
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert!(
+        records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::CompactionUnknown { .. }))
+    );
+    assert!(!records.iter().any(|entry| matches!(
+        entry.record,
+        Record::ContextInstalled { .. } | Record::ContextChunk { .. }
+    )));
+    assert!(!records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::Usage { agent, .. } if agent == "compactor"
+    )));
+    assert!(records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::TurnCompleted { stop_reason, .. } if stop_reason == "interrupted"
+    )));
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn tenant_storage_quota_rejection_restores_the_live_actor_fold() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-storage-tenant-quota-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create tenant quota data dir");
+    let journal = Journal::new_memory("brain-storage-tenant-quota");
+    let storage = Arc::new(ReservationStorage::new(journal.clone()));
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            storage_max_object_bytes: 8,
+            storage_max_session_bytes: 20,
+            storage_max_tenant_bytes: 8,
+            storage_transfer_ttl: Duration::from_secs(60 * 60),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            session_storage: Some(storage.clone()),
+            ..BrainServices::default()
+        },
+        None,
+    );
+    let create = || {
+        serde_json::from_value(json!({
+            "model": {
+                "provider": "anthropic",
+                "name": "storage-quota-test",
+                "api_key": "sk-test"
+            }
+        }))
+        .expect("valid storage quota create")
+    };
+    let first = brain
+        .create_session(create(), None)
+        .await
+        .expect("create first root");
+    let second = brain
+        .create_session(create(), None)
+        .await
+        .expect("create second root");
+    brain
+        .storage_prepare_upload(
+            &first.id,
+            crate::storage::StorageUploadIntent {
+                key: "full.bin".into(),
+                bytes: 8,
+                sha256: Some("a".repeat(64)),
+                content_type: None,
+                overwrite: false,
+            },
+        )
+        .await
+        .expect("first root consumes tenant quota");
+
+    for _ in 0..2 {
+        let error = brain
+            .storage_prepare_upload(
+                &second.id,
+                crate::storage::StorageUploadIntent {
+                    key: "rejected.bin".into(),
+                    bytes: 1,
+                    sha256: Some("b".repeat(64)),
+                    content_type: None,
+                    overwrite: false,
+                },
+            )
+            .await
+            .expect_err("the same live actor must re-run tenant admission on retry");
+        assert!(matches!(
+            error,
+            BrainError::TenantStorageQuotaExceeded {
+                requested: 1,
+                limit: 8
+            }
+        ));
+    }
+    assert_eq!(
+        storage.prepares.load(Ordering::Relaxed),
+        1,
+        "a rejected resident reservation must never reach the storage adapter"
+    );
+    let rejected = journal
+        .get_head(&second.id)
+        .await
+        .expect("authoritative rejected root");
+    assert_eq!(rejected.doc.session_storage_bytes, 0);
+    assert_eq!(rejected.doc.storage_reserved_bytes, 0);
+    assert_eq!(rejected.doc.tenant_metered_storage_bytes, 0);
+    assert!(rejected.doc.storage_upload.is_none());
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn deep_ancestor_end_fence_discards_the_mutated_resident_before_retry() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-deep-ancestor-fence-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create ancestor fence data dir");
+    let journal = Journal::new_memory("brain-deep-ancestor-fence");
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        Some(Arc::new(move |_| provider.clone())),
+    );
+    let root = brain
+        .create_session(
+            typed_create(json!({
+                "model": {
+                    "provider": "anthropic",
+                    "name": "ancestor-fence-test",
+                    "api_key": "sk-test"
+                }
+            })),
+            Some("ancestor-fence-root"),
+        )
+        .await
+        .expect("create ancestor fence root");
+    let root_id = root.id.to_string();
+    let root_head = journal.get_head(&root_id).await.expect("root head");
+
+    let child_id = "ses_ancestorfencechild000";
+    let mut child = root_head.doc.clone();
+    child.root_id = root_id.clone();
+    child.parent_id = Some(root_id.clone());
+    child.ancestor_ids = vec![root_id.clone()];
+    child.depth = 1;
+    child.create_key_hash = None;
+    child.create_request_hash = None;
+    child.turn = None;
+    child.turns = 0;
+    child.last_seq = 1;
+    child.context_fork = None;
+    child.default_sandbox = None;
+    journal
+        .create(
+            child_id,
+            &child,
+            &Record::State {
+                state: "open".into(),
+                turn: None,
+            },
+        )
+        .await
+        .expect("create depth-one child");
+
+    let grandchild_id = "ses_ancestorfencegrand000";
+    let mut grandchild = child.clone();
+    grandchild.parent_id = Some(child_id.into());
+    grandchild.ancestor_ids = vec![root_id.clone(), child_id.into()];
+    grandchild.depth = 2;
+    journal
+        .create(
+            grandchild_id,
+            &grandchild,
+            &Record::State {
+                state: "open".into(),
+                turn: None,
+            },
+        )
+        .await
+        .expect("create depth-two child");
+
+    // The descendant can claim and hydrate before the root fence. Its next admission mutates
+    // a local TurnStarted projection, but the atomic journal decision must observe this root
+    // transition and fence that stale resident.
+    let _ = brain
+        .cancel(grandchild_id)
+        .await
+        .expect("hydrate descendant before root fence");
+    let mut fenced_root = journal.claim(&root_id).await.expect("claim root fence");
+    fenced_root.doc.ended = true;
+    fenced_root.doc.state = "ending".into();
+    let mut root_lease = Lease {
+        fence: fenced_root.fence,
+        last_seq: fenced_root.last_seq,
+        retention: fenced_root.retention,
+    };
+    let root_fence_seq = fenced_root.last_seq + 1;
+    journal
+        .commit(
+            &root_id,
+            &mut root_lease,
+            &[(
+                root_fence_seq,
+                Record::State {
+                    state: "ending".into(),
+                    turn: None,
+                },
+            )],
+            &fenced_root.doc,
+            root_fence_seq,
+        )
+        .await
+        .expect("commit constant-size root admission fence");
+
+    for attempt in 0..2 {
+        let error = brain
+            .message(
+                grandchild_id,
+                MessageRequestContent::String(format!("late message {attempt}").parse().unwrap()),
+            )
+            .await
+            .expect_err("root fence rejects every deep admission");
+        assert!(matches!(error, BrainError::Fenced));
+        if attempt == 0 {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    let closed = brain
+                        .sessions
+                        .lock()
+                        .expect("session actors")
+                        .get(grandchild_id)
+                        .is_none_or(tokio::sync::mpsc::Sender::is_closed);
+                    if closed {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("fenced descendant actor is reclaimed");
+        }
+    }
+    let durable = journal
+        .get_head(grandchild_id)
+        .await
+        .expect("durable descendant remains quiescent");
+    assert_eq!(durable.last_seq, 1);
+    assert_eq!(durable.doc.turns, 0);
+    assert!(durable.doc.turn.is_none());
+    assert_eq!(fake.call_count.load(Ordering::Relaxed), 0);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn staged_overwrite_never_adopts_an_older_byte_identical_object() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-storage-provenance-staged-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create staged provenance data dir");
+    let journal = Journal::new_memory("brain-storage-provenance-staged");
+    let storage = Arc::new(ReservationStorage::new(journal.clone()));
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            storage_max_object_bytes: 16,
+            storage_max_session_bytes: 32,
+            storage_max_tenant_bytes: 32,
+            storage_transfer_ttl: Duration::from_secs(60 * 60),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            session_storage: Some(storage.clone()),
+            ..BrainServices::default()
+        },
+        None,
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model": {
+                    "provider": "anthropic",
+                    "name": "staged-provenance-test",
+                    "api_key": "sk-test"
+                }
+            })),
+            None,
+        )
+        .await
+        .expect("create staged provenance root");
+    let session_id = created.id.to_string();
+    let bytes = b"same";
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let old = brain
+        .storage_write_inline(
+            &session_id,
+            "same.bin".into(),
+            encoded,
+            Some("text/plain".into()),
+            false,
+        )
+        .await
+        .expect("publish old object");
+    let ticket = brain
+        .storage_prepare_upload(
+            &session_id,
+            crate::storage::StorageUploadIntent {
+                key: "same.bin".into(),
+                bytes: bytes.len() as u64,
+                sha256: Some(hex::encode(Sha256::digest(bytes))),
+                content_type: Some("application/json".into()),
+                overwrite: true,
+            },
+        )
+        .await
+        .expect("reserve byte-identical overwrite");
+
+    assert!(matches!(
+        brain
+            .storage_complete_upload(&session_id, &ticket.transfer_id)
+            .await,
+        Err(BrainError::FileNotFound(_))
+    ));
+    brain
+        .storage_reconcile(&session_id)
+        .await
+        .expect("a future reservation remains pending, not falsely completed");
+    let pending = journal.get_head(&session_id).await.unwrap();
+    assert!(pending.doc.storage_upload.as_ref().is_some_and(|upload| {
+        upload.transfer_id == ticket.transfer_id && upload.state == "reserved"
+    }));
+    let still_old = storage.stat(&session_id, "same.bin").await.unwrap();
+    assert_eq!(still_old.publication_id, old.publication_id);
+    assert_eq!(still_old.content_type.as_deref(), Some("text/plain"));
+
+    // Even a buggy destination carrying the new publication id is not exact proof if its
+    // sealed content type differs.
+    storage
+        .objects
+        .lock()
+        .expect("storage objects")
+        .get_mut(&format!("{session_id}\0same.bin"))
+        .expect("old object")
+        .publication_id = Some(ticket.transfer_id.clone());
+    assert!(matches!(
+        brain
+            .storage_complete_upload(&session_id, &ticket.transfer_id)
+            .await,
+        Err(BrainError::FileNotFound(_))
+    ));
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert!(!records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::StorageUploadPublished { transfer_id, .. }
+            if transfer_id == &ticket.transfer_id
+    )));
+
+    storage
+        .staged
+        .lock()
+        .expect("staged uploads")
+        .insert(ticket.transfer_id.clone());
+    let published = brain
+        .storage_complete_upload(&session_id, &ticket.transfer_id)
+        .await
+        .expect("the exact staged transfer publishes");
+    assert_eq!(
+        published.publication_id.as_deref(),
+        Some(ticket.transfer_id.as_str())
+    );
+    assert_eq!(published.content_type.as_deref(), Some("application/json"));
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn inline_overwrite_retry_reexecutes_after_pre_publication_crash() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-storage-provenance-inline-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create inline provenance data dir");
+    let journal = Journal::new_memory("brain-storage-provenance-inline");
+    let storage = Arc::new(ReservationStorage::new(journal.clone()));
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            storage_max_object_bytes: 16,
+            storage_max_session_bytes: 32,
+            storage_max_tenant_bytes: 32,
+            storage_transfer_ttl: Duration::from_secs(60 * 60),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            session_storage: Some(storage.clone()),
+            ..BrainServices::default()
+        },
+        None,
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model": {
+                    "provider": "anthropic",
+                    "name": "inline-provenance-test",
+                    "api_key": "sk-test"
+                }
+            })),
+            None,
+        )
+        .await
+        .expect("create inline provenance root");
+    let session_id = created.id.to_string();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(b"same");
+    let old = brain
+        .storage_write_inline(
+            &session_id,
+            "same.bin".into(),
+            encoded.clone(),
+            Some("text/plain".into()),
+            false,
+        )
+        .await
+        .expect("publish old inline object");
+    storage
+        .fail_next_write_before_effect
+        .store(true, Ordering::Relaxed);
+    assert!(
+        brain
+            .storage_write_inline(
+                &session_id,
+                "same.bin".into(),
+                encoded.clone(),
+                Some("application/json".into()),
+                true,
+            )
+            .await
+            .is_err()
+    );
+    let reserved = journal.get_head(&session_id).await.unwrap();
+    let intent_id = reserved
+        .doc
+        .storage_upload
+        .as_ref()
+        .filter(|upload| upload.state == "inline_reserved")
+        .expect("durable inline intent survives pre-effect crash")
+        .transfer_id
+        .clone();
+    let unchanged = storage.stat(&session_id, "same.bin").await.unwrap();
+    assert_eq!(unchanged.publication_id, old.publication_id);
+    brain
+        .storage_reconcile(&session_id)
+        .await
+        .expect("future inline intent remains pending");
+    assert_eq!(
+        journal
+            .get_head(&session_id)
+            .await
+            .unwrap()
+            .doc
+            .storage_upload
+            .as_ref()
+            .map(|upload| upload.state.as_str()),
+        Some("inline_reserved")
+    );
+
+    let retried = brain
+        .storage_write_inline(
+            &session_id,
+            "same.bin".into(),
+            encoded,
+            Some("application/json".into()),
+            true,
+        )
+        .await
+        .expect("retry executes the unpublished inline intent");
+    assert_eq!(retried.publication_id.as_deref(), Some(intent_id.as_str()));
+    assert_eq!(retried.content_type.as_deref(), Some("application/json"));
+    assert_eq!(storage.writes.load(Ordering::Relaxed), 3);
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn copied_upload_is_adopted_after_crash_and_expiry_without_customer_traffic() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-storage-copy-crash-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create copy crash data dir");
+    let journal = Journal::new_memory("brain-storage-copy-crash");
+    let storage = Arc::new(ReservationStorage::new(journal.clone()));
+    let cfg = BrainConfig {
+        recovery_poll_interval: Duration::from_millis(5),
+        recovery_shards_per_poll: crate::journal::RECOVERY_SHARDS,
+        recovery_page_size: 16,
+        idle_discard: Duration::from_secs(300),
+        storage_max_object_bytes: 8,
+        storage_max_session_bytes: 20,
+        storage_max_tenant_bytes: 8,
+        storage_transfer_ttl: Duration::from_secs(60 * 60),
+        ..BrainConfig::default()
+    };
+    let compose = |owner: &str| {
+        Brain::with_parts_and_services(
+            cfg.clone(),
+            journal.cloned_as(owner),
+            Arc::new(crate::keys::PlainCustody),
+            Arc::new(crate::adapter::DisabledToolExecutor),
+            BrainServices {
+                session_storage: Some(storage.clone()),
+                ..BrainServices::default()
+            },
+            None,
+        )
+    };
+    let crashed = compose("brain-storage-copy-owner-a");
+    let created = crashed
+        .create_session(
+            serde_json::from_value(json!({
+                "model": {
+                    "provider": "anthropic",
+                    "name": "storage-copy-crash-test",
+                    "api_key": "sk-test"
+                }
+            }))
+            .expect("valid copy crash create"),
+            None,
+        )
+        .await
+        .expect("create copy crash root");
+    let session_id = created.id.to_string();
+    let ticket = crashed
+        .storage_prepare_upload(
+            &session_id,
+            crate::storage::StorageUploadIntent {
+                key: "copied.bin".into(),
+                bytes: 8,
+                sha256: Some("c".repeat(64)),
+                content_type: Some("application/octet-stream".into()),
+                overwrite: false,
+            },
+        )
+        .await
+        .expect("reserve copy crash upload");
+
+    // The adapter publishes destination bytes, then the Brain process loses the response
+    // before it can journal StorageUploadPublished.
+    storage
+        .staged
+        .lock()
+        .expect("staged uploads")
+        .insert(ticket.transfer_id.clone());
+    crate::storage::SessionStoragePort::complete_upload(
+        storage.as_ref(),
+        &session_id,
+        &ticket.transfer_id,
+    )
+    .await
+    .expect("simulate successful CopyObject with lost response");
+    let mut expired = journal
+        .cloned_as("brain-storage-copy-owner-a")
+        .claim(&session_id)
+        .await
+        .expect("claim copied reservation");
+    expired
+        .doc
+        .storage_upload
+        .as_mut()
+        .expect("copied reservation")
+        .expires_at_ms = crate::wall_ms().saturating_sub(1);
+    let mut lease = Lease {
+        fence: expired.fence,
+        last_seq: expired.last_seq,
+        retention: expired.retention,
+    };
+    let expirer = journal.cloned_as("brain-storage-copy-owner-a");
+    expirer
+        .commit(&session_id, &mut lease, &[], &expired.doc, expired.last_seq)
+        .await
+        .expect("persist post-crash expired reservation");
+    expirer
+        .release(&session_id, &lease)
+        .await
+        .expect("release crashed owner");
+
+    let recovering = compose("brain-storage-copy-owner-b");
+    recovering.start_recovery_worker();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let head = journal.get_head(&session_id).await.unwrap();
+            if head
+                .doc
+                .storage_upload
+                .as_ref()
+                .is_some_and(|upload| upload.state == "completed")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("due worker adopts copied bytes without customer traffic");
+
+    let adopted = journal.get_head(&session_id).await.expect("adopted head");
+    assert_eq!(adopted.doc.session_storage_bytes, 8);
+    assert_eq!(adopted.doc.storage_reserved_bytes, 0);
+    assert_eq!(adopted.doc.tenant_metered_storage_bytes, 8);
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert!(
+        records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::StorageUploadPublished { .. }))
+    );
+    assert!(
+        records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::StorageUploadCompleted { .. }))
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::StorageUploadExpired { .. }))
+    );
+    let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn storage_upload_reservation_is_durable_bounded_and_retried_after_restart() {
+    let data_dir = std::env::temp_dir().join(format!(
+        "brain-storage-reservation-{}-{}",
+        std::process::id(),
+        crate::wall_ms()
+    ));
+    std::fs::create_dir_all(&data_dir).expect("create storage reservation data dir");
+    let journal = Journal::new_memory("brain-storage-reservation");
+    let storage = Arc::new(ReservationStorage::new(journal.clone()));
+    let cfg = BrainConfig {
+        idle_discard: Duration::from_secs(300),
+        storage_max_object_bytes: 8,
+        storage_max_session_bytes: 20,
+        storage_transfer_ttl: Duration::from_secs(60 * 60),
+        ..BrainConfig::default()
+    };
+    let compose = |storage: Arc<ReservationStorage>| {
+        Brain::with_parts_and_services(
+            cfg.clone(),
+            journal.clone(),
+            Arc::new(crate::keys::PlainCustody),
+            Arc::new(crate::adapter::DisabledToolExecutor),
+            BrainServices {
+                session_storage: Some(storage),
+                customer_delivery: None,
+                customer_transport: None,
+                compactor: None,
+                ..BrainServices::default()
+            },
+            None,
+        )
+    };
+    let brain = compose(storage.clone());
+    let created = brain
+        .create_session(
+            serde_json::from_value(json!({
+                "model": {
+                    "provider": "anthropic",
+                    "name": "storage-test",
+                    "api_key": "sk-test"
+                }
+            }))
+            .expect("valid storage test create"),
+            None,
+        )
+        .await
+        .expect("create storage test session");
+    let session_id = created.id.to_string();
+    let too_large = brain
+        .storage_prepare_upload(
+            &session_id,
+            crate::storage::StorageUploadIntent {
+                key: "large.bin".into(),
+                bytes: 9,
+                sha256: Some("a".repeat(64)),
+                content_type: None,
+                overwrite: false,
+            },
+        )
+        .await;
+    assert!(matches!(
+        too_large,
+        Err(BrainError::StorageObjectTooLarge { limit: 8 })
+    ));
+    assert_eq!(storage.prepares.load(Ordering::Relaxed), 0);
+
+    let ticket = brain
+        .storage_prepare_upload(
+            &session_id,
+            crate::storage::StorageUploadIntent {
+                key: "bounded.bin".into(),
+                bytes: 8,
+                sha256: Some("b".repeat(64)),
+                content_type: Some("application/octet-stream".into()),
+                overwrite: false,
+            },
+        )
+        .await
+        .expect("reserve bounded upload");
+    assert!(storage.saw_durable_reservation.load(Ordering::Relaxed));
+    let reserved = journal.get_head(&session_id).await.expect("reserved head");
+    assert_eq!(reserved.doc.session_storage_bytes, 0);
+    assert_eq!(reserved.doc.storage_reserved_bytes, 8);
+    assert_eq!(
+        reserved
+            .doc
+            .storage_upload
+            .as_ref()
+            .map(|upload| upload.transfer_id.as_str()),
+        Some(ticket.transfer_id.as_str())
+    );
+    let competing = brain
+        .storage_prepare_upload(
+            &session_id,
+            crate::storage::StorageUploadIntent {
+                key: "other.bin".into(),
+                bytes: 1,
+                sha256: Some("c".repeat(64)),
+                content_type: None,
+                overwrite: false,
+            },
+        )
+        .await;
+    assert!(matches!(
+        competing,
+        Err(BrainError::StorageUploadInProgress { .. })
+    ));
+
+    // Simulate process loss after the reservation by advancing only its persisted deadline.
+    let mut crashed = journal
+        .claim(&session_id)
+        .await
+        .expect("claim expired upload");
+    crashed
+        .doc
+        .storage_upload
+        .as_mut()
+        .expect("reservation")
+        .expires_at_ms = crate::wall_ms().saturating_sub(1);
+    let mut lease = Lease {
+        fence: crashed.fence,
+        last_seq: crashed.last_seq,
+        retention: crashed.retention,
+    };
+    journal
+        .commit(&session_id, &mut lease, &[], &crashed.doc, crashed.last_seq)
+        .await
+        .expect("persist expired deadline");
+    journal
+        .release(&session_id, &lease)
+        .await
+        .expect("release crashed storage owner");
+
+    let restarted = compose(storage.clone());
+    storage.fail_next_abort.store(true, Ordering::Relaxed);
+    assert!(restarted.storage_reconcile(&session_id).await.is_err());
+    let after_failure = journal
+        .get_head(&session_id)
+        .await
+        .expect("head after abort failure");
+    assert_eq!(after_failure.doc.storage_reserved_bytes, 8);
+    assert!(after_failure.doc.storage_upload.is_some());
+    restarted
+        .storage_reconcile(&session_id)
+        .await
+        .expect("retry expired staging deletion");
+    let after_retry = journal
+        .get_head(&session_id)
+        .await
+        .expect("head after cleanup");
+    assert_eq!(after_retry.doc.storage_reserved_bytes, 0);
+    assert!(after_retry.doc.storage_upload.is_none());
+    assert_eq!(storage.aborts.load(Ordering::Relaxed), 2);
+    let storage_records = journal
+        .read_records(&session_id, 0)
+        .await
+        .expect("storage journal");
+    assert!(
+        storage_records
+            .iter()
+            .any(|entry| matches!(entry.record, Record::StorageUploadExpired { .. }))
+    );
+    let gauges: Vec<_> = storage_records
+        .iter()
+        .filter_map(|entry| {
+            crate::events::derive(&session_id, entry.seq, entry.ts_ms, &entry.record)
+        })
+        .filter_map(|event| match event {
+            brain_protocol::session::Event::StorageUsage { storage, .. } => {
+                Some((storage.session_storage_bytes, storage.upload_reserved_bytes))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(gauges, vec![(0, 8), (0, 0)]);
+    let _ = std::fs::remove_dir_all(data_dir);
+}

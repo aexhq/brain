@@ -10,7 +10,7 @@ use brain::adapter::ToolExecutor;
 use brain::config::{Dialect, ServerToolPolicy};
 use brain::journal::Journal;
 use brain::provider::fake::{FakeProvider, Scripted};
-use brain::session::{Brain, BrainConfig};
+use brain::session::{Brain, BrainConfig, BrainServices};
 use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
 use brain_protocol::session::{ExternalToolCompletion, ExternalToolEffect, ExternalToolScope};
 use serde_json::{Value, json};
@@ -138,7 +138,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
     ]);
     let executor = Arc::new(RepairExecutor::default());
     let provider = fake.clone();
-    let brain = Brain::with_parts_and_external(
+    let brain = Brain::with_parts_and_services(
         BrainConfig {
             max_concurrent_model_rounds: 4,
             max_concurrent_turns: 4,
@@ -171,6 +171,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
         Journal::new_memory("brain-external-test"),
         Arc::new(brain::keys::PlainCustody),
         executor.clone(),
+        BrainServices::default(),
         Some(Arc::new(move |_| {
             provider.clone() as Arc<dyn brain::provider::Provider>
         })),
