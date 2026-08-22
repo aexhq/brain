@@ -32,6 +32,7 @@ async fn create_replays_one_session_and_rejects_key_reuse_with_another_body() {
     let app = brain::api::router(brain::api::AppState {
         brain,
         token: token.clone(),
+        require_tenant: false,
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -118,6 +119,7 @@ async fn create_session_accepts_tool_bundle_sized_http_bodies() {
     let app = brain::api::router(brain::api::AppState {
         brain,
         token: token.clone(),
+        require_tenant: false,
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 

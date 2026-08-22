@@ -993,8 +993,15 @@ fn managed_bundle_descriptors(
 fn bundle_object_matches_descriptor(
     object: &brain_protocol::hand::ObjectReference,
     descriptor: &brain_protocol::hand::BundleDescriptor,
-) -> bool {
-    serde_jcs::to_vec(object).ok() == serde_jcs::to_vec(&descriptor.object).ok()
+) -> Result<bool> {
+    // An uncomputable comparison is an error, never a match: `.ok() == .ok()` would report
+    // two canonicalization failures as equality.
+    let object = serde_jcs::to_vec(object)
+        .map_err(|error| BrainError::Journal(format!("bundle object canonicalization: {error}")))?;
+    let descriptor = serde_jcs::to_vec(&descriptor.object).map_err(|error| {
+        BrainError::Journal(format!("bundle descriptor canonicalization: {error}"))
+    })?;
+    Ok(object == descriptor)
 }
 
 pub(crate) fn managed_hand_resources() -> Result<brain_protocol::hand::ResourceCeiling> {
@@ -1972,7 +1979,7 @@ impl Brain {
                     .map_err(|_| {
                         BrainError::Invalid("agentloop.bundle_base64 is not valid base64".into())
                     })?;
-                if bundle.is_empty() || bundle.len() > 8 * 1024 * 1024 {
+                if bundle.is_empty() || bundle.len() > brain_protocol::MAX_LOOP_BUNDLE_BYTES {
                     return Err(BrainError::Invalid(
                         "agentloop bundle must be between 1 byte and 8 MiB".into(),
                     ));
@@ -2100,7 +2107,7 @@ impl Brain {
                     .ok_or_else(|| {
                         BrainError::Journal("stored Tool bundle has no immutable descriptor".into())
                     })?;
-                if !bundle_object_matches_descriptor(&object, descriptor) {
+                if !bundle_object_matches_descriptor(&object, descriptor)? {
                     return Err(BrainError::Journal(
                         "Tool-bundle storage returned an object outside the immutable descriptor"
                             .into(),
@@ -2199,7 +2206,7 @@ impl Brain {
             return Err(error);
         }
 
-        Ok(session_doc(&session_id, &doc))
+        session_doc(&session_id, &doc)
     }
 
     async fn replay_create(
@@ -2216,7 +2223,7 @@ impl Brain {
         if &head.doc.create_key_hash != key_hash || &head.doc.create_request_hash != request_hash {
             return Err(BrainError::IdempotencyConflict);
         }
-        Ok(Some(session_doc(session_id, &head.doc)))
+        Ok(Some(session_doc(session_id, &head.doc)?))
     }
 
     // -- routing to actors -------------------------------------------------------------------
@@ -2527,14 +2534,14 @@ impl Brain {
         let doc = self
             .deliver(session_id, |reply| Command::Cancel { reply })
             .await??;
-        Ok(session_doc(session_id, &doc))
+        session_doc(session_id, &doc)
     }
 
     pub async fn end(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
         let doc = self
             .deliver(session_id, |reply| Command::End { reply })
             .await??;
-        Ok(session_doc(session_id, &doc))
+        session_doc(session_id, &doc)
     }
 
     /// Current logical status of the root tree's shared default sandbox. Reading status never
@@ -3258,7 +3265,7 @@ impl Brain {
         if head.doc.parent_id.as_deref() != Some(parent_id) {
             return Err(BrainError::NoSuchSession(child_id.to_owned()));
         }
-        Ok(session_doc(child_id, &head.doc))
+        session_doc(child_id, &head.doc)
     }
 
     pub async fn wait_child(
@@ -4776,7 +4783,7 @@ impl Brain {
         if head.doc.state == "deleted" {
             return Err(BrainError::NoSuchSession(session_id.into()));
         }
-        Ok(session_doc(session_id, &head.doc))
+        session_doc(session_id, &head.doc)
     }
 
     pub async fn get_for(
@@ -4799,11 +4806,11 @@ impl Brain {
 
     pub async fn list(self: &Arc<Self>, limit: usize) -> Result<Vec<session::Session>> {
         let heads = self.journal.list_sessions(limit).await?;
-        Ok(heads
+        heads
             .iter()
             .filter(|h| h.doc.state != "deleted")
             .map(|h| session_doc(&h.session_id, &h.doc))
-            .collect())
+            .collect()
     }
 
     pub async fn list_for(
@@ -8707,7 +8714,7 @@ async fn create_child_session(
             if existing.doc.turn.is_some() {
                 let _ = brain.spawn_actor(&child_id, ActorStartup::Recovery).await;
             }
-            return Ok(session_doc(&child_id, &existing.doc));
+            return session_doc(&child_id, &existing.doc);
         }
         Err(BrainError::NoSuchSession(_)) => {}
         Err(error) => return Err(error),
@@ -8785,7 +8792,7 @@ async fn create_child_session(
     // customer traffic.
     let _ = brain.spawn_actor(&child_id, ActorStartup::Recovery).await;
     let created = brain.journal.get_head(&child_id).await?;
-    Ok(session_doc(&child_id, &created.doc))
+    session_doc(&child_id, &created.doc)
 }
 
 fn fork_turn_opener(message: &Message) -> bool {
@@ -10572,38 +10579,51 @@ fn default_system_prompt() -> String {
         .to_string()
 }
 
-/// Builds the contract Session document from the head.
-pub fn session_doc(session_id: &str, doc: &HeadDoc) -> session::Session {
-    let agentloop = (|| {
-        Some(
-            match doc
-                .prefix
-                .agentloop
-                .clone()
-                .unwrap_or_else(crate::journal::AgentloopSelectorDoc::official_aex)
-            {
-                crate::journal::AgentloopSelectorDoc::Official { name, version } => {
-                    session::AgentloopInfo::Official {
-                        name: name.parse().ok()?,
-                        version: version.parse().ok()?,
-                    }
+/// Builds the contract Session document from the head. A sealed value that no longer parses
+/// as its contract type is journal corruption and errors loudly, naming the field — the REST
+/// read never substitutes placeholders or omits sealed identity.
+pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> {
+    let corrupt = |what: &str| {
+        BrainError::Journal(format!(
+            "session {session_id}: journaled {what} violates the public contract"
+        ))
+    };
+    let agentloop = Some(
+        match doc
+            .prefix
+            .agentloop
+            .clone()
+            .unwrap_or_else(crate::journal::AgentloopSelectorDoc::official_aex)
+        {
+            crate::journal::AgentloopSelectorDoc::Official { name, version } => {
+                session::AgentloopInfo::Official {
+                    name: name.parse().map_err(|_| corrupt("agentloop name"))?,
+                    version: version.parse().map_err(|_| corrupt("agentloop version"))?,
                 }
-                crate::journal::AgentloopSelectorDoc::Custom {
-                    source_bundle_sha256,
-                    toolchain,
-                    ..
-                } => session::AgentloopInfo::Custom {
-                    source_bundle_sha256: source_bundle_sha256.parse().ok()?,
-                    toolchain: toolchain.parse().ok()?,
-                },
+            }
+            crate::journal::AgentloopSelectorDoc::Custom {
+                source_bundle_sha256,
+                toolchain,
+                ..
+            } => session::AgentloopInfo::Custom {
+                source_bundle_sha256: source_bundle_sha256
+                    .parse()
+                    .map_err(|_| corrupt("agentloop bundle digest"))?,
+                toolchain: toolchain
+                    .parse()
+                    .map_err(|_| corrupt("agentloop toolchain"))?,
             },
-        )
-    })();
-    session::Session {
+        },
+    );
+    Ok(session::Session {
         agentloop,
         context_fork: doc.context_fork.as_ref().map(public_context_fork),
         created_at: crate::events::ts(doc.created_ms),
-        current_turn: doc.turn.as_deref().and_then(|t| t.parse().ok()),
+        current_turn: doc
+            .turn
+            .as_deref()
+            .map(|t| t.parse().map_err(|_| corrupt("turn id")))
+            .transpose()?,
         failure: doc.failure.as_ref().map(|f| session::SessionFailure {
             at: crate::events::ts(f.at_ms),
             code: match f.code.as_str() {
@@ -10614,14 +10634,16 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> session::Session {
             },
             message: f.message.clone(),
         }),
-        id: session_id
-            .parse()
-            .unwrap_or_else(|_| "ses_00000000000000000000".parse().expect("fallback id")),
-        parent_id: doc.parent_id.as_deref().and_then(|id| id.parse().ok()),
+        id: session_id.parse().map_err(|_| corrupt("session id"))?,
+        parent_id: doc
+            .parent_id
+            .as_deref()
+            .map(|id| id.parse().map_err(|_| corrupt("parent session id")))
+            .transpose()?,
         root_id: doc
             .root_id
             .parse()
-            .unwrap_or_else(|_| "ses_00000000000000000000".parse().expect("fallback id")),
+            .map_err(|_| corrupt("root session id"))?,
         depth: i64::from(doc.depth),
         last_seq: doc.last_seq,
         last_message_at: doc.last_message_ms.map(crate::events::ts),
@@ -10654,14 +10676,19 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> session::Session {
                 _ => ApiProvider::OpenaiCompatible,
             },
         },
-        name: doc.child_name.as_deref().and_then(|name| name.parse().ok()),
+        name: doc
+            .child_name
+            .as_deref()
+            .map(|name| name.parse().map_err(|_| corrupt("child name")))
+            .transpose()?,
         object: session::SessionObject::Session,
         state: crate::events::session_state(&doc.state)
             .expect("journal session lifecycle is a closed enum"),
         turn_phase: doc
             .active_phase
             .as_deref()
-            .and_then(|phase| phase.parse().ok()),
+            .map(|phase| phase.parse().map_err(|_| corrupt("turn phase")))
+            .transpose()?,
         turn_state: crate::events::session_turn_state(&doc.state, doc.turn.as_deref()),
         shape: doc.prefix.shape.clone(),
         storage: session::StorageInfo {
@@ -10670,7 +10697,7 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> session::Session {
         },
         turns: doc.turns,
         updated_at: crate::events::ts(doc.updated_ms),
-    }
+    })
 }
 
 fn session_doc_summary(summary: &crate::journal::SessionSummary) -> session::Session {
@@ -11312,7 +11339,7 @@ mod tests {
         // Persist a depth-two descendant so admission has to evaluate the immutable ancestor
         // chain while the root actor itself is parked inside the resistant effect.
         let root_head = journal.get_head(&root_id).await.expect("root head");
-        let child_id = "ses_resistant_end_child";
+        let child_id = "ses_resistantendchild0000";
         let mut child = root_head.doc.clone();
         child.root_id = root_id.clone();
         child.parent_id = Some(root_id.clone());
@@ -11334,7 +11361,7 @@ mod tests {
             )
             .await
             .expect("create resistant-effect child");
-        let grandchild_id = "ses_resistant_end_grandchild";
+        let grandchild_id = "ses_resistantendgrand0000";
         let mut grandchild = child.clone();
         grandchild.parent_id = Some(child_id.into());
         grandchild.ancestor_ids = vec![root_id.clone(), child_id.into()];
@@ -11463,7 +11490,7 @@ mod tests {
             .expect("create sandbox teardown root");
         let root_id = root.id.to_string();
         let root_head = journal.get_head(&root_id).await.expect("root head");
-        let child_id = "ses_end_sandbox_child";
+        let child_id = "ses_endsandboxchild00000";
         let mut child = root_head.doc.clone();
         child.root_id = root_id.clone();
         child.parent_id = Some(root_id.clone());
@@ -15315,7 +15342,7 @@ mod tests {
         let root_id = root.id.to_string();
         let root_head = journal.get_head(&root_id).await.expect("root head");
 
-        let child_id = "ses_ancestor_fence_child";
+        let child_id = "ses_ancestorfencechild000";
         let mut child = root_head.doc.clone();
         child.root_id = root_id.clone();
         child.parent_id = Some(root_id.clone());
@@ -15340,7 +15367,7 @@ mod tests {
             .await
             .expect("create depth-one child");
 
-        let grandchild_id = "ses_ancestor_fence_grandchild";
+        let grandchild_id = "ses_ancestorfencegrand000";
         let mut grandchild = child.clone();
         grandchild.parent_id = Some(child_id.into());
         grandchild.ancestor_ids = vec![root_id.clone(), child_id.into()];

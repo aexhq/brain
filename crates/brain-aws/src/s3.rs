@@ -108,17 +108,31 @@ impl S3SessionStorage {
             .await
             .map_err(|error| s3_error("head session object", error))?;
         let metadata = output.metadata();
+        // Session objects are written exclusively by this composition with length and sha256
+        // metadata; a HEAD without them is an unexpected object, not a 0-byte/empty-digest one.
         let updated_at_ms = output
             .last_modified()
             .and_then(|time| time.to_millis().ok())
-            .unwrap_or(0) as u64;
+            .ok_or_else(|| {
+                BrainError::Journal(format!("session object {object_key} has no last-modified"))
+            })? as u64;
+        let bytes = output
+            .content_length()
+            .filter(|length| *length >= 0)
+            .ok_or_else(|| {
+                BrainError::Journal(format!("session object {object_key} has no content length"))
+            })? as u64;
         Ok(StorageObject {
             key: key.into(),
-            bytes: output.content_length().unwrap_or(0).max(0) as u64,
+            bytes,
             sha256: metadata
                 .and_then(|values| values.get("sha256"))
                 .cloned()
-                .unwrap_or_default(),
+                .ok_or_else(|| {
+                    BrainError::Journal(format!(
+                        "session object {object_key} has no sha256 metadata"
+                    ))
+                })?,
             content_type: output.content_type().map(str::to_owned),
             publication_id: metadata
                 .and_then(|values| values.get("publication-id"))

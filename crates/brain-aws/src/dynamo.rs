@@ -2041,7 +2041,12 @@ impl JournalStore for DynamoJournal {
                     .ok_or_else(|| BrainError::Journal(format!("recovery row missing {name}")))
             };
             let pk = string("pk")?;
-            let session_id = pk.strip_prefix("S#").unwrap_or(&pk).to_owned();
+            let session_id = pk
+                .strip_prefix("S#")
+                .ok_or_else(|| {
+                    BrainError::Journal(format!("recovery row pk {pk:?} is not a session key"))
+                })?
+                .to_owned();
             let due_key = string("recovery_due_key")?;
             let due_ms = due_key
                 .split_once('#')

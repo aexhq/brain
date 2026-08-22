@@ -182,6 +182,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
     let app = brain::api::router(brain::api::AppState {
         brain,
         token: token.into(),
+        require_tenant: false,
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = reqwest::Client::new();

@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use brain::BrainError;
@@ -37,9 +38,14 @@ pub struct WireClient {
 
 impl WireClient {
     /// Connect and authenticate. Fails fast on a wrong token (the daemon answers `hello_ack`
-    /// only after accepting the token; a refusal closes the connection).
+    /// only after accepting the token; a refusal closes the connection). Both the TCP connect
+    /// and the handshake carry deadlines: a wedged or unreachable daemon fails the
+    /// composition's startup loudly instead of hanging it.
     pub async fn connect(addr: SocketAddr, token: &str) -> anyhow::Result<Arc<Self>> {
-        let stream = TcpStream::connect(addr).await?;
+        const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+        let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
+            .await
+            .map_err(|_| anyhow::anyhow!("loop host did not accept the connection within 10s"))??;
         let (mut reader, mut writer) = stream.into_split();
         wire::write_frame(
             &mut writer,
@@ -48,7 +54,10 @@ impl WireClient {
             },
         )
         .await?;
-        match wire::read_frame(&mut reader).await {
+        match tokio::time::timeout(CONNECT_TIMEOUT, wire::read_frame(&mut reader))
+            .await
+            .map_err(|_| anyhow::anyhow!("loop host did not answer hello within 10s"))?
+        {
             Ok(Frame::HelloAck) => {}
             Ok(other) => anyhow::bail!(
                 "loop host answered hello with a {} frame",
@@ -214,8 +223,15 @@ impl Agentloop for RemoteAgentloop {
             return Err(BrainError::Agentloop(CONNECTION_LOST.into()));
         }
 
+        // Guest-side silence is bounded: contiguous guest compute is capped by the daemon's
+        // CPU slice (30s), so an activation that produces no frame for far longer than that
+        // means a wedged daemon or a half-open connection — fail the turn honestly instead of
+        // pinning it until the session wall. The clock only runs while the guest owes us a
+        // frame; time spent servicing a ctx op (provider calls included) resets it.
+        const ACTIVATION_IDLE_LIMIT: Duration = Duration::from_secs(120);
         let mut first_error: Option<BrainError> = None;
         let outcome = loop {
+            let idle = tokio::time::sleep(ACTIVATION_IDLE_LIMIT);
             tokio::select! {
                 biased;
                 Some((id, payload)) = ctx_rx.recv() => {
@@ -236,6 +252,12 @@ impl Agentloop for RemoteAgentloop {
                 }
                 done = &mut done_rx => {
                     break done.unwrap_or_else(|_| Err(CONNECTION_LOST.to_string()));
+                }
+                _ = idle => {
+                    break Err(format!(
+                        "loop host produced no frame for {}s; treating the activation as lost",
+                        ACTIVATION_IDLE_LIMIT.as_secs()
+                    ));
                 }
             }
         };

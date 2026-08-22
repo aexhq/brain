@@ -961,6 +961,19 @@ export type components = {
             message: string;
             at: components["schemas"]["Timestamp"];
         };
+        Sha256Hex: string;
+        /** @description The sealed agentloop identity of a session. */
+        AgentloopInfo: {
+            /** @constant */
+            kind: "official";
+            name: string;
+            version: string;
+        } | {
+            /** @constant */
+            kind: "custom";
+            source_bundle_sha256: components["schemas"]["Sha256Hex"];
+            toolchain: string;
+        };
         Session: {
             id: components["schemas"]["SessionId"];
             parent_id?: components["schemas"]["SessionId"];
@@ -990,6 +1003,7 @@ export type components = {
             turns: number;
             current_turn?: components["schemas"]["TurnId"];
             failure?: components["schemas"]["SessionFailure"];
+            agentloop?: components["schemas"]["AgentloopInfo"];
             /** @description Customer key/value; up to 16 pairs. */
             metadata: {
                 [key: string]: string;
@@ -1024,7 +1038,6 @@ export type components = {
             reasoning_effort?: "low" | "medium" | "high";
         };
         ToolName: string;
-        Sha256Hex: string;
         /** @description The model-visible half of one Tool. Array order is preserved exactly in the immutable model prefix. */
         ToolDefinition: {
             name: components["schemas"]["ToolName"];
@@ -1102,6 +1115,14 @@ export type components = {
             /** @default 1 */
             submit_retries?: number;
         };
+        /** @description Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop. */
+        AgentloopConfig: string | {
+            source_bundle_sha256: components["schemas"]["Sha256Hex"];
+            /** @description The pinned loop-toolchain identity the bundle was built for. */
+            toolchain: string;
+            /** @description The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix. */
+            bundle_base64: string;
+        };
         ChildLimits: {
             /** @default 4 */
             max_depth?: number;
@@ -1125,6 +1146,7 @@ export type components = {
             /** @default 1 */
             provider_recovery_retries?: number;
             client?: components["schemas"]["CustomerClientConfig"];
+            agentloop?: components["schemas"]["AgentloopConfig"];
             children?: components["schemas"]["ChildLimits"];
             metadata?: {
                 [key: string]: string;
@@ -1355,6 +1377,19 @@ export type components = {
             session_id: components["schemas"]["SessionId"];
             turn_id: components["schemas"]["TurnId"];
             error: components["schemas"]["ApiError"];
+        } | {
+            /** @enum {string} */
+            type: "loop.event";
+            seq: number;
+            at: components["schemas"]["Timestamp"];
+            session_id: components["schemas"]["SessionId"];
+            turn_id: components["schemas"]["TurnId"];
+            /** @description Loop-chosen event name. */
+            name: string;
+            /** @description The loop-authored event payload, journaled as a loop `event` entry before it is delivered. */
+            data: {
+                [key: string]: unknown;
+            };
         };
         /** @enum {string} */
         TargetKind: "default" | "additional";

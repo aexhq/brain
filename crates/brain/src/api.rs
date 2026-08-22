@@ -40,6 +40,9 @@ pub struct AppState {
     pub brain: Arc<Brain>,
     /// The dev-plane bearer token. Identity proper is slice 4.
     pub token: String,
+    /// Hosted compositions set this: every request must carry `x-brain-tenant-id`, and a
+    /// missing header is a request error — never a silent booking to tenant "local".
+    pub require_tenant: bool,
 }
 
 /// Ordinary control requests contain only bounded identifiers, paths, cursors and page options.
@@ -984,10 +987,21 @@ fn map_err(e: BrainError) -> Failure {
 
 fn auth(state: &AppState, headers: &HeaderMap) -> Result<TrustedPrincipal, Failure> {
     if bearer_token(headers) == Some(state.token.as_str()) {
-        let tenant_id = headers
+        let tenant_id = match headers
             .get("x-brain-tenant-id")
             .and_then(|value| value.to_str().ok())
-            .unwrap_or("local");
+        {
+            Some(tenant) => tenant,
+            None if state.require_tenant => {
+                return Err(Failure(
+                    StatusCode::BAD_REQUEST,
+                    api_code("invalid_request"),
+                    "x-brain-tenant-id header is required by this composition".into(),
+                ));
+            }
+            // Single-tenant local/dev composition: the one implicit tenant.
+            None => "local",
+        };
         TrustedPrincipal::new(tenant_id).map_err(map_err)
     } else {
         Err(Failure(
@@ -1631,7 +1645,7 @@ async fn send_message(
     Ok((
         StatusCode::ACCEPTED,
         Json(MessageAccepted {
-            seq: NonZeroU64::new(seq.max(1)).expect("nonzero"),
+            seq: NonZeroU64::new(seq).expect("journal seqs start at 1; zero is corrupt"),
             session_id: id.parse().map_err(|_| {
                 Failure(
                     StatusCode::BAD_REQUEST,
@@ -2164,7 +2178,7 @@ async fn admit_child_message(
         .await
         .map_err(map_err)?;
     Ok(MessageAccepted {
-        seq: NonZeroU64::new(seq.max(1)).expect("nonzero"),
+        seq: NonZeroU64::new(seq).expect("journal seqs start at 1; zero is corrupt"),
         session_id: child_id.parse().map_err(|_| {
             Failure(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2233,6 +2247,20 @@ struct WaitChildRequest {
     timeout_ms: Option<u64>,
 }
 
+/// The wait ceiling is 5 minutes; asking for more is rejected, never silently clamped.
+fn wait_child_timeout_ms(requested: Option<u64>) -> Result<u64, Failure> {
+    const WAIT_CHILD_MAX_MS: u64 = 300_000;
+    match requested {
+        None => Ok(30_000),
+        Some(ms) if ms <= WAIT_CHILD_MAX_MS => Ok(ms),
+        Some(ms) => Err(Failure(
+            StatusCode::BAD_REQUEST,
+            api_code("invalid_request"),
+            format!("timeout_ms {ms} exceeds the {WAIT_CHILD_MAX_MS}ms wait ceiling"),
+        )),
+    }
+}
+
 async fn wait_child(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2246,7 +2274,7 @@ async fn wait_child(
             .wait_child(
                 &id,
                 &child_id,
-                std::time::Duration::from_millis(request.timeout_ms.unwrap_or(30_000).min(300_000)),
+                std::time::Duration::from_millis(wait_child_timeout_ms(request.timeout_ms)?),
             )
             .await
             .map_err(map_err)?,
@@ -2643,12 +2671,22 @@ async fn stream_events(
     Query(q): Query<EventsQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<SseFrame, Infallible>>>, Failure> {
     authorize_session(&state, &headers, &id).await?;
-    // Last-Event-ID (reconnect) wins over ?after.
-    let after = headers
-        .get("last-event-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(q.after);
+    // Last-Event-ID (reconnect) wins over ?after. A present-but-malformed resume cursor is a
+    // request error: silently replaying from ?after would hand the client the wrong window.
+    let after = match headers.get("last-event-id") {
+        None => q.after,
+        Some(value) => value
+            .to_str()
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .ok_or_else(|| {
+                Failure(
+                    StatusCode::BAD_REQUEST,
+                    api_code("invalid_request"),
+                    "Last-Event-ID must be a decimal event seq".into(),
+                )
+            })?,
+    };
 
     // Existence check first: a stream for a missing session must 404, not hang.
     let head = state.brain.head(&id).await.map_err(map_err)?;

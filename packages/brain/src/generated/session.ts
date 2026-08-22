@@ -98,6 +98,23 @@ export type ExternalToolEffect = "opaque" | "replay_safe";
  */
 export type ToolExecutor = AexManagedToolExecutor | CustomerAppToolExecutor | EngineToolExecutor;
 /**
+ * The sealed agentloop identity of a session.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "AgentloopInfo".
+ */
+export type AgentloopInfo =
+  | {
+      kind: "official";
+      name: string;
+      version: string;
+    }
+  | {
+      kind: "custom";
+      source_bundle_sha256: Sha256Hex;
+      toolchain: string;
+    };
+/**
  * Immutable direct outbound ceiling. Omission means none.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
@@ -158,6 +175,25 @@ export type NetworkPolicy =
             }
         )[]
       ];
+    };
+/**
+ * Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "AgentloopConfig".
+ */
+export type AgentloopConfig =
+  | string
+  | {
+      source_bundle_sha256: Sha256Hex;
+      /**
+       * The pinned loop-toolchain identity the bundle was built for.
+       */
+      toolchain: string;
+      /**
+       * The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix.
+       */
+      bundle_base64: string;
     };
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
@@ -387,6 +423,23 @@ export type Event =
       session_id: SessionId;
       turn_id: TurnId;
       error: ApiError1;
+    }
+  | {
+      type: "loop.event";
+      seq: number;
+      at: Timestamp;
+      session_id: SessionId;
+      turn_id: TurnId;
+      /**
+       * Loop-chosen event name.
+       */
+      name: string;
+      /**
+       * The loop-authored event payload, journaled as a loop `event` entry before it is delivered.
+       */
+      data: {
+        [k: string]: unknown | undefined;
+      };
     };
 
 /**
@@ -584,6 +637,7 @@ export interface Session {
   turns: number;
   current_turn?: TurnId;
   failure?: SessionFailure;
+  agentloop?: AgentloopInfo;
   /**
    * Customer key/value; up to 16 pairs.
    */
@@ -658,6 +712,7 @@ export interface CreateSessionRequest {
   network?: NetworkPolicy;
   provider_recovery_retries?: number;
   client?: CustomerClientConfig;
+  agentloop?: AgentloopConfig;
   children?: ChildLimits;
   metadata?: {
     [k: string]: string | undefined;

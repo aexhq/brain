@@ -48,8 +48,8 @@ const EPOCH_TICK: Duration = Duration::from_millis(10);
 const EPOCH_DEADLINE_TICKS: u64 = 3_000;
 /// One loop instance may grow to 256 MiB of linear memory before allocation fails.
 const MEMORY_LIMIT_BYTES: usize = 256 << 20;
-/// Bounded ctx-op payloads in both directions, mirroring `brain_protocol::MAX_CTX_OP_BYTES`.
-const MAX_OP_BYTES: usize = 768 * 1024;
+/// Bounded ctx-op payloads in both directions — the protocol constant, one authority.
+const MAX_OP_BYTES: usize = brain_protocol::MAX_CTX_OP_BYTES;
 
 /// One guest ctx op awaiting service: the op JSON and the channel its response goes back on.
 pub type CtxRequest = (String, oneshot::Sender<String>);
@@ -336,7 +336,18 @@ pub(crate) async fn service_ctx_op(
         Ok(value) => value,
         Err(_) => return error_json("invalid_request", "ctx op payload is not JSON"),
     };
-    let op = request["op"].as_str().unwrap_or_default();
+    let Some(op) = request["op"].as_str() else {
+        // An `op_id` marks a contract-envelope attempt that failed typed parsing above; give
+        // the author that diagnosis instead of a misleading "unknown ctx op".
+        return error_json(
+            "invalid_request",
+            if request.get("op_id").is_some() {
+                "the payload does not parse as a contracts/agentloop/v1 ctx op envelope"
+            } else {
+                "ctx op payload has no string \"op\""
+            },
+        );
+    };
     if engine_ops == EngineOps::ContractOnly
         && op.starts_with("engine.")
         && op != "engine.session_start"

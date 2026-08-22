@@ -73,7 +73,15 @@ async fn run() -> anyhow::Result<()> {
         }
         other => anyhow::bail!("unsupported BRAIN_MODE={other}; use production or local"),
     };
-    serve(AppState { brain, token }, address).await
+    serve(
+        AppState {
+            brain,
+            token,
+            require_tenant: false,
+        },
+        address,
+    )
+    .await
 }
 
 async fn audit_local(journal: &Journal, custody: &Arc<dyn KeyCustody>) -> anyhow::Result<()> {

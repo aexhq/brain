@@ -114,3 +114,6 @@ pub const MAX_LOOP_KV_VALUE_BYTES: usize = 8 * 1024;
 pub const MAX_ACTIVATION_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum encoded bytes in one ctx operation request or response.
 pub const MAX_CTX_OP_BYTES: usize = 768 * 1024;
+/// Upload bound for a custom loop source bundle. The frozen agentloop contract's
+/// `source_bundle_bytes.maximum` is the authority; a unit test pins this constant to it.
+pub const MAX_LOOP_BUNDLE_BYTES: usize = 8 * 1024 * 1024;
