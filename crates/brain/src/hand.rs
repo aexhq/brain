@@ -4,6 +4,8 @@
 //! [`HandPort::submit`], commits a terminal observation before
 //! [`HandPort::acknowledge_terminal`], and never substitutes one Hand for another.
 
+use crate::journal::HeadDoc;
+use crate::{BrainError, Result};
 use async_trait::async_trait;
 use brain_protocol::hand::{
     AcknowledgeTerminalRequest, Acknowledgement, CancelRequest, CancellationReceipt,
@@ -115,4 +117,48 @@ pub trait SandboxControlPort: Send + Sync {
     async fn execute(&self, request: SandboxExecutionRequest) -> HandResult<SubmitReceipt>;
     async fn write_stdin(&self, request: WriteStdinRequest) -> HandResult<WriteStdinReceipt>;
     async fn terminate(&self, target: SandboxTarget) -> HandResult<SandboxStatus>;
+}
+
+pub(crate) fn managed_hand_resources() -> Result<brain_protocol::hand::ResourceCeiling> {
+    serde_json::from_value(serde_json::json!({
+        "timeout_ms": 600_000,
+        "max_output_bytes": brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES,
+    }))
+    .map_err(BrainError::from)
+}
+
+pub(crate) fn sealed_sandbox_network(
+    doc: &HeadDoc,
+) -> Result<brain_protocol::hand::NetworkCeiling> {
+    let network = match doc
+        .prefix
+        .network
+        .get("outbound")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("none")
+    {
+        "none" => serde_json::json!({"kind":"none"}),
+        "public" => serde_json::json!({"kind":"public"}),
+        "allowlist" => serde_json::json!({
+            "kind":"allowlist",
+            "destinations": doc.prefix.network.get("destinations").cloned().unwrap_or_else(|| serde_json::json!([])),
+        }),
+        other => {
+            return Err(BrainError::Invalid(format!(
+                "sealed network policy has unknown outbound mode {other}"
+            )));
+        }
+    };
+    serde_json::from_value(network).map_err(BrainError::from)
+}
+
+pub(crate) fn map_hand_port_error(error: brain_protocol::hand::HandError) -> BrainError {
+    use brain_protocol::hand::HandErrorCode;
+    match error.code {
+        HandErrorCode::SandboxNotMaterialized => BrainError::SandboxNotMaterialized,
+        HandErrorCode::SandboxGone => BrainError::SandboxGone,
+        HandErrorCode::GenerationConflict => BrainError::SandboxGenerationConflict,
+        HandErrorCode::ResourceExhausted => BrainError::SandboxResourceExhausted,
+        _ => BrainError::Hand(error.message.to_string()),
+    }
 }
