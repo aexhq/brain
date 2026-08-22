@@ -442,7 +442,7 @@ async fn end_returns_the_durable_fence_before_async_teardown_converges() {
 
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if journal.get_head(&session_id).await.unwrap().doc.state == "ended" {
+            if journal.get_head(&session_id).await.unwrap().doc.state == SessionLifecycle::Ended {
                 break;
             }
             tokio::task::yield_now().await;
@@ -519,7 +519,7 @@ async fn end_fences_before_a_cancellation_resistant_effect_and_recovery_never_re
             child_id,
             &child,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -535,7 +535,7 @@ async fn end_fences_before_a_cancellation_resistant_effect_and_recovery_never_re
             grandchild_id,
             &grandchild,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -564,7 +564,7 @@ async fn end_fences_before_a_cancellation_resistant_effect_and_recovery_never_re
     assert_eq!(accepted.state, session::SessionState::Ending);
     assert!(!executor.released.load(Ordering::Acquire));
     let fenced = journal.get_head(&root_id).await.expect("fenced root");
-    assert_eq!(fenced.doc.state, "ending");
+    assert_eq!(fenced.doc.state, SessionLifecycle::Ending);
     assert!(fenced.doc.ended);
     assert!(
         fenced.doc.turn.is_some(),
@@ -602,13 +602,13 @@ async fn end_fences_before_a_cancellation_resistant_effect_and_recovery_never_re
         .expect("root records");
     let ending_seq = records
         .iter()
-        .find(|entry| matches!(&entry.record, Record::State { state, .. } if state == "ending"))
+        .find(|entry| matches!(&entry.record, Record::State { state, .. } if *state == SessionLifecycle::Ending))
         .expect("durable ending record")
         .seq;
     assert!(
         records.iter().all(|entry| {
             entry.seq <= ending_seq
-                || !matches!(&entry.record, Record::State { state, .. } if state == "open")
+                || !matches!(&entry.record, Record::State { state, .. } if *state == SessionLifecycle::Open)
         }),
         "turn reconciliation after the END fence must never reopen the lifecycle"
     );
@@ -672,7 +672,7 @@ async fn end_recovery_terminates_only_owned_child_sandboxes_then_all_root_invent
             child_id,
             &child,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -701,7 +701,7 @@ async fn end_recovery_terminates_only_owned_child_sandboxes_then_all_root_invent
     // the durable ending due-key must cause recovery to retry and reach ENDED.
     tokio::time::timeout(Duration::from_secs(6), async {
         loop {
-            if journal.get_head(child_id).await.unwrap().doc.state == "ended" {
+            if journal.get_head(child_id).await.unwrap().doc.state == SessionLifecycle::Ended {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -729,7 +729,7 @@ async fn end_recovery_terminates_only_owned_child_sandboxes_then_all_root_invent
     assert_eq!(root_accepted.state, session::SessionState::Ending);
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if journal.get_head(&root_id).await.unwrap().doc.state == "ended" {
+            if journal.get_head(&root_id).await.unwrap().doc.state == SessionLifecycle::Ended {
                 break;
             }
             tokio::task::yield_now().await;
@@ -1683,7 +1683,8 @@ impl crate::storage::SessionStoragePort for ReservationStorage {
         let head = self.journal.get_head(&request.session_id).await?;
         let durable = head.doc.storage_reserved_bytes == request.bytes
             && head.doc.storage_upload.as_ref().is_some_and(|upload| {
-                upload.transfer_id == request.transfer_id && upload.state == "reserved"
+                upload.transfer_id == request.transfer_id
+                    && upload.state == UploadReservationState::Reserved
             });
         self.saw_durable_reservation
             .store(durable, Ordering::Relaxed);
@@ -2699,7 +2700,7 @@ async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() 
     let turn = "trn_aaaaaaaaaaaaaaaaaaaa".to_string();
     let call = "op_aaaaaaaaaaaaaaaa".to_string();
     let input = json!({"answer": 42});
-    head.doc.state = "open".into();
+    head.doc.state = SessionLifecycle::Open;
     head.doc.turn = Some(turn.clone());
     head.doc.turns += 1;
     head.doc.last_message_ms = Some(crate::wall_ms());
@@ -2791,7 +2792,7 @@ async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() 
         .await
         .expect("hydrate and replay pending call");
     assert_eq!(executor.calls.load(Ordering::Relaxed), 1);
-    assert_eq!(resident.st.head.state, "open");
+    assert_eq!(resident.st.head.state, SessionLifecycle::Open);
     assert!(resident.st.head.turn.is_none());
     assert_eq!(
         executor
@@ -2900,7 +2901,7 @@ async fn customer_terminal_before_brain_crash_replays_without_reexecuting_the_ef
         )
         .await
         .unwrap();
-    head.doc.state = "open".into();
+    head.doc.state = SessionLifecycle::Open;
     head.doc.turn = Some(turn.clone());
     head.doc.active_phase = Some(TurnPhase::ReadyToDispatchTools);
     head.doc.active_rounds = 1;
@@ -3311,7 +3312,7 @@ async fn managed_submit_unknown_survives_cleanup_crash_without_resubmission() {
     }))
     .expect("valid resolved binding");
     resident.managed_bindings = Arc::new(HashMap::from([(name.clone(), binding)]));
-    resident.st.head.state = "open".into();
+    resident.st.head.state = SessionLifecycle::Open;
     resident.st.head.turn = Some(turn.clone());
     resident.st.head.active_phase = Some(TurnPhase::ManagedRunning);
     resident.st.head.active_rounds = 1;
@@ -3582,7 +3583,7 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
         (
             resident.st.take_seq(),
             Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         ),
@@ -3591,11 +3592,11 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
         .await
         .expect("commit failed turn without a managed result");
     resident.st.head.ended = true;
-    resident.st.head.state = "ending".into();
+    resident.st.head.state = SessionLifecycle::Ending;
     let ending = vec![(
         resident.st.take_seq(),
         Record::State {
-            state: "ending".into(),
+            state: SessionLifecycle::Ending,
             turn: None,
         },
     )];
@@ -3638,7 +3639,7 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
         .expect("restart reconciles the stale managed intent");
     assert_eq!(ports.submits.load(Ordering::Acquire), 0);
     assert_eq!(ports.dematerialize_calls.load(Ordering::Acquire), 2);
-    assert_eq!(recovered.st.head.state, "ending");
+    assert_eq!(recovered.st.head.state, SessionLifecycle::Ending);
     assert!(recovered.st.head.turn.is_none());
     let records = journal.read_records(&session_id, 0).await.unwrap();
     assert_eq!(
@@ -3669,7 +3670,7 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
     );
     assert_eq!(
         journal.get_head(&session_id).await.unwrap().doc.state,
-        "ended"
+        SessionLifecycle::Ended
     );
     if let Some(resident) = resident {
         recovering
@@ -3722,7 +3723,7 @@ async fn deleting_managed_session_hydrates_without_repreparing_hand_definitions(
         }))
         .expect("valid managed bundle descriptor"),
     );
-    resident.st.head.state = "deleting".into();
+    resident.st.head.state = SessionLifecycle::Deleting;
     resident.st.head.ended = true;
     resident.st.head.turn = None;
     resident.st.head.active_phase = None;
@@ -3734,7 +3735,7 @@ async fn deleting_managed_session_hydrates_without_repreparing_hand_definitions(
         vec![(
             state_seq,
             Record::State {
-                state: "deleting".into(),
+                state: SessionLifecycle::Deleting,
                 turn: None,
             },
         )],
@@ -3750,7 +3751,7 @@ async fn deleting_managed_session_hydrates_without_repreparing_hand_definitions(
     let recovered = hydrate(&brain, &session_id)
         .await
         .expect("deleting hydration must not require or recreate Hand definitions");
-    assert_eq!(recovered.st.head.state, "deleting");
+    assert_eq!(recovered.st.head.state, SessionLifecycle::Deleting);
     assert!(!recovered.st.head.prefix.managed_bundles.is_empty());
     assert!(recovered.managed_bindings.is_empty());
     journal
@@ -3761,7 +3762,7 @@ async fn deleting_managed_session_hydrates_without_repreparing_hand_definitions(
 
 async fn simulate_provider_only_crash(
     retries: u32,
-    attempt_state: &str,
+    attempt_state: ProviderAttemptState,
 ) -> (Arc<Brain>, Journal, Arc<FakeProvider>, String, u64, PathBuf) {
     let data_dir = std::env::temp_dir().join(format!(
         "brain-provider-recovery-{}-{}-{retries}",
@@ -3833,9 +3834,9 @@ async fn simulate_provider_only_crash(
     let request_digest = crate::turn::model_request_digest(&request);
     let logical_operation_id = "mdl_providercrash00000000".to_owned();
     let attempt_id = "att_providercrash00000000".to_owned();
-    head.doc.state = "open".into();
+    head.doc.state = SessionLifecycle::Open;
     head.doc.turn = Some(turn.clone());
-    head.doc.active_phase = Some(if attempt_state == "intent" {
+    head.doc.active_phase = Some(if attempt_state == ProviderAttemptState::Intent {
         TurnPhase::ModelIntentCommitted
     } else {
         TurnPhase::ModelRunning
@@ -3844,7 +3845,7 @@ async fn simulate_provider_only_crash(
         logical_operation_id: logical_operation_id.clone(),
         attempt_id: attempt_id.clone(),
         request_digest: request_digest.clone(),
-        state: attempt_state.into(),
+        state: attempt_state,
         replacements_used: 0,
     });
     head.doc.active_context = HashMap::new();
@@ -3894,14 +3895,14 @@ async fn simulate_provider_only_crash(
 
 #[tokio::test]
 async fn provider_only_crash_replaces_the_same_logical_request_by_default() {
-    for state in ["intent", "running"] {
+    for state in [ProviderAttemptState::Intent, ProviderAttemptState::Running] {
         let (brain, journal, fake, session_id, crash_seq, data_dir) =
             simulate_provider_only_crash(1, state).await;
         let resident = hydrate(&brain, &session_id)
             .await
             .expect("hydrate provider-only crash");
         assert_eq!(fake.call_count.load(Ordering::Relaxed), 1);
-        assert_eq!(resident.st.head.state, "open");
+        assert_eq!(resident.st.head.state, SessionLifecycle::Open);
         assert!(resident.st.head.turn.is_none());
         let records = journal
             .read_records(&session_id, crash_seq)
@@ -3935,12 +3936,12 @@ async fn provider_only_crash_replaces_the_same_logical_request_by_default() {
 #[tokio::test]
 async fn provider_only_crash_with_zero_retries_commits_honest_interruption() {
     let (brain, journal, fake, session_id, crash_seq, data_dir) =
-        simulate_provider_only_crash(0, "running").await;
+        simulate_provider_only_crash(0, ProviderAttemptState::Running).await;
     let resident = hydrate(&brain, &session_id)
         .await
         .expect("hydrate provider-only crash");
     assert_eq!(fake.call_count.load(Ordering::Relaxed), 0);
-    assert_eq!(resident.st.head.state, "open");
+    assert_eq!(resident.st.head.state, SessionLifecycle::Open);
     assert!(resident.st.head.turn.is_none());
     let records = journal
         .read_records(&session_id, crash_seq)
@@ -3972,7 +3973,7 @@ async fn provider_only_crash_with_zero_retries_commits_honest_interruption() {
 #[tokio::test]
 async fn recovery_worker_resumes_provider_only_crash_without_customer_traffic() {
     let (_crashed_brain, journal, fake, session_id, crash_seq, data_dir) =
-        simulate_provider_only_crash(1, "running").await;
+        simulate_provider_only_crash(1, ProviderAttemptState::Running).await;
     let provider = fake.clone();
     let recovering = Brain::with_parts_and_services(
         BrainConfig {
@@ -4831,7 +4832,7 @@ async fn deep_ancestor_end_fence_discards_the_mutated_resident_before_retry() {
             child_id,
             &child,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -4848,7 +4849,7 @@ async fn deep_ancestor_end_fence_discards_the_mutated_resident_before_retry() {
             grandchild_id,
             &grandchild,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -4864,7 +4865,7 @@ async fn deep_ancestor_end_fence_discards_the_mutated_resident_before_retry() {
         .expect("hydrate descendant before root fence");
     let mut fenced_root = journal.claim(&root_id).await.expect("claim root fence");
     fenced_root.doc.ended = true;
-    fenced_root.doc.state = "ending".into();
+    fenced_root.doc.state = SessionLifecycle::Ending;
     let mut root_lease = Lease {
         fence: fenced_root.fence,
         last_seq: fenced_root.last_seq,
@@ -4878,7 +4879,7 @@ async fn deep_ancestor_end_fence_discards_the_mutated_resident_before_retry() {
             &[(
                 root_fence_seq,
                 Record::State {
-                    state: "ending".into(),
+                    state: SessionLifecycle::Ending,
                     turn: None,
                 },
             )],
@@ -5007,7 +5008,7 @@ async fn staged_overwrite_never_adopts_an_older_byte_identical_object() {
         .expect("a future reservation remains pending, not falsely completed");
     let pending = journal.get_head(&session_id).await.unwrap();
     assert!(pending.doc.storage_upload.as_ref().is_some_and(|upload| {
-        upload.transfer_id == ticket.transfer_id && upload.state == "reserved"
+        upload.transfer_id == ticket.transfer_id && upload.state == UploadReservationState::Reserved
     }));
     let still_old = storage.stat(&session_id, "same.bin").await.unwrap();
     assert_eq!(still_old.publication_id, old.publication_id);
@@ -5125,7 +5126,7 @@ async fn inline_overwrite_retry_reexecutes_after_pre_publication_crash() {
         .doc
         .storage_upload
         .as_ref()
-        .filter(|upload| upload.state == "inline_reserved")
+        .filter(|upload| upload.state == UploadReservationState::InlineReserved)
         .expect("durable inline intent survives pre-effect crash")
         .transfer_id
         .clone();
@@ -5276,7 +5277,7 @@ async fn copied_upload_is_adopted_after_crash_and_expiry_without_customer_traffi
                 .doc
                 .storage_upload
                 .as_ref()
-                .is_some_and(|upload| upload.state == "completed")
+                .is_some_and(|upload| upload.state == UploadReservationState::Completed)
             {
                 break;
             }

@@ -221,13 +221,13 @@ impl JournalStore for DynamoJournal {
             .item("tenant_pk", AttributeValue::S(tenant_pk(&doc.tenant_id)))
             .item(
                 "tenant_state_pk",
-                AttributeValue::S(tenant_state_pk(&doc.tenant_id, &doc.state)),
+                AttributeValue::S(tenant_state_pk(&doc.tenant_id, doc.state.as_str())),
             )
             .item(
                 "tenant_sk",
                 AttributeValue::S(tenant_session_sort_key(doc.updated_ms, session_id)),
             )
-            .item("state", AttributeValue::S(doc.state.clone()))
+            .item("state", AttributeValue::S(doc.state.as_str().to_string()))
             .item("updated_ms", AttributeValue::N(doc.updated_ms.to_string()))
             .item("root_id", AttributeValue::S(doc.root_id.clone()))
             .item(
@@ -692,13 +692,16 @@ impl JournalStore for DynamoJournal {
                 )
                 .expression_attribute_values(
                     ":tenant_state",
-                    AttributeValue::S(tenant_state_pk(&doc.tenant_id, &doc.state)),
+                    AttributeValue::S(tenant_state_pk(&doc.tenant_id, doc.state.as_str())),
                 )
                 .expression_attribute_values(
                     ":tenant_sk",
                     AttributeValue::S(tenant_session_sort_key(doc.updated_ms, session_id)),
                 )
-                .expression_attribute_values(":state", AttributeValue::S(doc.state.clone()))
+                .expression_attribute_values(
+                    ":state",
+                    AttributeValue::S(doc.state.as_str().to_string()),
+                )
                 .expression_attribute_values(
                     ":updated_ms",
                     AttributeValue::N(doc.updated_ms.to_string()),
@@ -1023,7 +1026,7 @@ impl JournalStore for DynamoJournal {
             .expression_attribute_values(":tenant", AttributeValue::S(tenant_pk(&doc.tenant_id)))
             .expression_attribute_values(
                 ":tenant_state",
-                AttributeValue::S(tenant_state_pk(&doc.tenant_id, &doc.state)),
+                AttributeValue::S(tenant_state_pk(&doc.tenant_id, doc.state.as_str())),
             )
             .expression_attribute_values(
                 ":tenant_sk",
@@ -1033,7 +1036,10 @@ impl JournalStore for DynamoJournal {
                 ":expires",
                 AttributeValue::N((now_ms + LEASE_MS).to_string()),
             )
-            .expression_attribute_values(":state", AttributeValue::S(doc.state.clone()))
+            .expression_attribute_values(
+                ":state",
+                AttributeValue::S(doc.state.as_str().to_string()),
+            )
             .expression_attribute_values(
                 ":updated_ms",
                 AttributeValue::N(doc.updated_ms.to_string()),
@@ -1399,7 +1405,7 @@ impl JournalStore for DynamoJournal {
             .table_name(&self.table)
             .item("pk", AttributeValue::S(deletion_pk(&status.session_id)))
             .item("sk", AttributeValue::S("STATUS".into()))
-            .item("deletion_state", AttributeValue::S(status.state.clone()))
+            .item("deletion_state", AttributeValue::S(status.state.as_str().to_string()))
             .item("body", AttributeValue::S(body))
             .item(
                 "ttl_epoch_s",
@@ -1409,7 +1415,7 @@ impl JournalStore for DynamoJournal {
                 "attribute_not_exists(deletion_state) OR deletion_state <> :succeeded OR :new_state = :succeeded",
             )
             .expression_attribute_values(":succeeded", AttributeValue::S("succeeded".into()))
-            .expression_attribute_values(":new_state", AttributeValue::S(status.state.clone()))
+            .expression_attribute_values(":new_state", AttributeValue::S(status.state.as_str().to_string()))
             .send()
             .await;
         match request {
@@ -1609,7 +1615,9 @@ impl JournalStore for DynamoJournal {
                 if self
                     .get_deletion_status(&status.session_id)
                     .await?
-                    .is_some_and(|existing| existing.state == "succeeded")
+                    .is_some_and(|existing| {
+                        existing.state == brain::journal::DeletionState::Succeeded
+                    })
                 {
                     Ok(())
                 } else {
@@ -1631,7 +1639,7 @@ impl JournalStore for DynamoJournal {
             Some(state) => (
                 TENANT_STATE_SESSIONS_INDEX,
                 "tenant_state_pk",
-                tenant_state_pk(query.tenant_id, state),
+                tenant_state_pk(query.tenant_id, state.as_str()),
             ),
             None => (
                 TENANT_SESSIONS_INDEX,
@@ -2069,7 +2077,7 @@ impl JournalStore for DynamoJournal {
             items.push(RecoveryItem {
                 session_id,
                 due_ms,
-                state: string("state")?,
+                state: string("state")?.parse()?,
                 active_phase: item
                     .get("active_phase")
                     .and_then(|value| value.as_s().ok())

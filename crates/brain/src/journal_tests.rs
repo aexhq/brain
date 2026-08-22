@@ -301,7 +301,7 @@ fn head_doc_round_trips() {
         context_fork: None,
         depth: 0,
         last_seq: 1,
-        state: "open".into(),
+        state: SessionLifecycle::Open,
         failure: None,
         turn: None,
         active_phase: None,
@@ -371,7 +371,7 @@ fn head_doc_round_trips() {
     let s = serde_json::to_string(&doc).unwrap();
     let back: HeadDoc = serde_json::from_str(&s).unwrap();
     assert_eq!(back.prefix.model, "claude");
-    assert_eq!(back.state, "open");
+    assert_eq!(back.state, SessionLifecycle::Open);
 }
 
 fn head_doc() -> HeadDoc {
@@ -385,7 +385,7 @@ fn head_doc() -> HeadDoc {
         context_fork: None,
         depth: 0,
         last_seq: 1,
-        state: "open".into(),
+        state: SessionLifecycle::Open,
         failure: None,
         turn: None,
         active_phase: None,
@@ -498,7 +498,7 @@ fn decision_limits_reject_oversized_items_and_aggregate_batches_before_store_io(
             (
                 index as u64 + 2,
                 Record::State {
-                    state: "open".into(),
+                    state: SessionLifecycle::Open,
                     turn: None,
                 },
             )
@@ -524,7 +524,7 @@ async fn memory_journal_full_lifecycle() {
         "ses_m",
         &doc,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
     )
@@ -535,7 +535,7 @@ async fn memory_journal_full_lifecycle() {
             "ses_m",
             &doc,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None
             }
         )
@@ -584,7 +584,7 @@ async fn memory_journal_full_lifecycle() {
         parent_id: deletion_head.doc.parent_id.clone(),
         metered_storage_bytes: deletion_head.doc.tenant_metered_storage_bytes,
         metered_journal_bytes: deletion_head.retention.metered_bytes,
-        state: "succeeded".into(),
+        state: DeletionState::Succeeded,
         requested_at_ms: 1,
         updated_at_ms: 2,
         completed_at_ms: Some(2),
@@ -609,7 +609,7 @@ async fn record_pages_are_bounded_and_stop_at_a_fixed_high_water() {
             "ses_page",
             &doc,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -626,7 +626,7 @@ async fn record_pages_are_bounded_and_stop_at_a_fixed_high_water() {
             (
                 seq,
                 Record::State {
-                    state: "open".into(),
+                    state: SessionLifecycle::Open,
                     turn: None,
                 },
             )
@@ -693,7 +693,7 @@ async fn memory_journal_fences_out_a_stale_owner() {
         "ses_f",
         &doc,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
     )
@@ -766,7 +766,7 @@ async fn sandbox_inventory_reserves_cap_atomically_and_keeps_terminal_tombstones
         "ses_sandbox_root",
         &root,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
         "owner",
@@ -852,7 +852,7 @@ async fn sandbox_inventory_reserves_cap_atomically_and_keeps_terminal_tombstones
 async fn lease_heartbeat_prevents_recovery_steal_until_it_stops() {
     let store = MemoryStore::default();
     let mut doc = head_doc();
-    doc.state = "open".into();
+    doc.state = SessionLifecycle::Open;
     doc.turn = Some("trn_heartbeat".into());
     doc.active_phase = Some(TurnPhase::ModelRunning);
     create_memory_store(
@@ -860,7 +860,7 @@ async fn lease_heartbeat_prevents_recovery_steal_until_it_stops() {
         "ses_heartbeat",
         &doc,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: doc.turn.clone(),
         },
         "owner-a",
@@ -901,7 +901,7 @@ async fn lease_renewal_preserves_scheduled_upload_expiry_and_idle_due_absence() 
         overwrite: false,
         previous_bytes: 0,
         expires_at_ms: 900_000,
-        state: "reserved".into(),
+        state: UploadReservationState::Reserved,
     });
     // Create itself must not smuggle a pre-existing public storage reservation. The test is
     // only exercising the independently durable expiry anchor carried by the reservation.
@@ -912,7 +912,7 @@ async fn lease_renewal_preserves_scheduled_upload_expiry_and_idle_due_absence() 
         "ses_reserved",
         &reserved,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
         "owner-a",
@@ -945,7 +945,7 @@ async fn lease_renewal_preserves_scheduled_upload_expiry_and_idle_due_absence() 
         "ses_idle",
         &idle,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
         "owner-a",
@@ -1002,7 +1002,7 @@ fn unacknowledged_customer_terminal_keeps_a_quiescent_session_recoverable() {
 #[test]
 fn accepted_end_remains_due_until_the_subtree_reaches_ended() {
     let mut doc = head_doc();
-    doc.state = "ending".into();
+    doc.state = SessionLifecycle::Ending;
     doc.ended = true;
     let projected = doc.with_recovery_projection(100_000);
     assert_eq!(
@@ -1011,7 +1011,7 @@ fn accepted_end_remains_due_until_the_subtree_reaches_ended() {
     );
 
     let mut ended = projected;
-    ended.state = "ended".into();
+    ended.state = SessionLifecycle::Ended;
     assert_eq!(
         ended.with_recovery_projection(200_000).recovery_due_ms,
         None,
@@ -1024,7 +1024,7 @@ async fn successful_quiescent_commit_returns_the_canonical_cleared_projection() 
     let store = Arc::new(MemoryStore::default());
     let journal = Journal::new(store, "owner-a");
     let mut active = head_doc();
-    active.state = "open".into();
+    active.state = SessionLifecycle::Open;
     active.turn = Some("trn_done".into());
     active.active_phase = Some(TurnPhase::ModelRunning);
     journal
@@ -1032,7 +1032,7 @@ async fn successful_quiescent_commit_returns_the_canonical_cleared_projection() 
             "ses_projection",
             &active,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: active.turn.clone(),
             },
         )
@@ -1040,7 +1040,7 @@ async fn successful_quiescent_commit_returns_the_canonical_cleared_projection() 
         .unwrap();
     let head = journal.claim("ses_projection").await.unwrap();
     let mut doc = head.doc;
-    doc.state = "open".into();
+    doc.state = SessionLifecycle::Open;
     doc.turn = None;
     doc.active_phase = None;
     let mut lease = Lease {
@@ -1078,7 +1078,7 @@ async fn final_deletion_atomically_replaces_content_anchor_with_bounded_tombston
         "ses_deleted",
         &doc,
         &Record::State {
-            state: "deleting".into(),
+            state: SessionLifecycle::Deleting,
             turn: None,
         },
         "owner-a",
@@ -1098,7 +1098,7 @@ async fn final_deletion_atomically_replaces_content_anchor_with_bounded_tombston
             .unwrap()
             .retention
             .metered_bytes,
-        state: "succeeded".into(),
+        state: DeletionState::Succeeded,
         requested_at_ms: 1,
         updated_at_ms: 2,
         completed_at_ms: Some(2),
@@ -1120,7 +1120,7 @@ async fn final_deletion_atomically_replaces_content_anchor_with_bounded_tombston
         terminal
     );
     let mut stale = terminal.clone();
-    stale.state = "retrying".into();
+    stale.state = DeletionState::Retrying;
     stale.completed_at_ms = None;
     store.put_deletion_status(&stale).await.unwrap();
     assert_eq!(
@@ -1130,7 +1130,7 @@ async fn final_deletion_atomically_replaces_content_anchor_with_bounded_tombston
             .unwrap()
             .unwrap()
             .state,
-        "succeeded"
+        DeletionState::Succeeded
     );
 }
 
@@ -1154,7 +1154,7 @@ async fn tenant_storage_meter_is_shared_atomic_and_released_once() {
                 id,
                 doc,
                 &Record::State {
-                    state: "open".into(),
+                    state: SessionLifecycle::Open,
                     turn: None,
                 },
             )
@@ -1267,7 +1267,7 @@ async fn tenant_storage_meter_is_shared_atomic_and_released_once() {
         parent_id: None,
         metered_storage_bytes: 6,
         metered_journal_bytes: left_lease.retention.metered_bytes,
-        state: "succeeded".into(),
+        state: DeletionState::Succeeded,
         requested_at_ms: 1,
         updated_at_ms: 2,
         completed_at_ms: Some(2),
@@ -1316,7 +1316,7 @@ async fn root_bundle_bytes_reserve_tenant_capacity_at_create_and_release_once() 
             "ses_bundle_first",
             &first,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -1343,7 +1343,7 @@ async fn root_bundle_bytes_reserve_tenant_capacity_at_create_and_release_once() 
                 "ses_bundle_rejected",
                 &rejected,
                 &Record::State {
-                    state: "open".into(),
+                    state: SessionLifecycle::Open,
                     turn: None,
                 },
             )
@@ -1370,7 +1370,7 @@ async fn root_bundle_bytes_reserve_tenant_capacity_at_create_and_release_once() 
             .unwrap()
             .retention
             .metered_bytes,
-        state: "succeeded".into(),
+        state: DeletionState::Succeeded,
         requested_at_ms: 1,
         updated_at_ms: 2,
         completed_at_ms: Some(2),
@@ -1393,7 +1393,7 @@ async fn root_bundle_bytes_reserve_tenant_capacity_at_create_and_release_once() 
             "ses_bundle_rejected",
             &rejected,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -1411,7 +1411,7 @@ async fn final_child_deletion_removes_the_strong_parent_adjacency() {
         "ses_parent",
         &parent,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
         "owner-a",
@@ -1429,7 +1429,7 @@ async fn final_child_deletion_removes_the_strong_parent_adjacency() {
         "ses_child",
         &child,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
         "owner-a",
@@ -1463,7 +1463,7 @@ async fn final_child_deletion_removes_the_strong_parent_adjacency() {
                 .unwrap()
                 .retention
                 .metered_bytes,
-            state: "succeeded".into(),
+            state: DeletionState::Succeeded,
             requested_at_ms: 1,
             updated_at_ms: 2,
             completed_at_ms: Some(2),
@@ -1499,7 +1499,7 @@ async fn child_admission_is_atomic_at_the_direct_limit_and_releases_once() {
         "ses_quota_root",
         &root,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
         "owner-a",
@@ -1523,7 +1523,7 @@ async fn child_admission_is_atomic_at_the_direct_limit_and_releases_once() {
                 &child_id,
                 &child,
                 &Record::State {
-                    state: "open".into(),
+                    state: SessionLifecycle::Open,
                     turn: None,
                 },
                 "owner-a",
@@ -1566,7 +1566,7 @@ async fn child_admission_is_atomic_at_the_direct_limit_and_releases_once() {
         parent_id: Some("ses_quota_root".into()),
         metered_storage_bytes: 0,
         metered_journal_bytes: released_journal_bytes,
-        state: "succeeded".into(),
+        state: DeletionState::Succeeded,
         requested_at_ms: 1,
         updated_at_ms: 2,
         completed_at_ms: Some(2),
@@ -1595,7 +1595,7 @@ async fn child_admission_is_atomic_at_the_direct_limit_and_releases_once() {
         "ses_quota_replacement",
         &replacement,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
         "owner-a",
@@ -1607,7 +1607,7 @@ async fn child_admission_is_atomic_at_the_direct_limit_and_releases_once() {
     let claimed = store.claim("ses_quota_root", "owner-a", 4).await.unwrap();
     let mut fenced = claimed.doc;
     fenced.ended = true;
-    fenced.state = "ending".into();
+    fenced.state = SessionLifecycle::Ending;
     store
         .commit(
             "ses_quota_root",
@@ -1635,7 +1635,7 @@ async fn child_admission_is_atomic_at_the_direct_limit_and_releases_once() {
             "ses_after_end_fence",
             &late,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
             "owner-b",
@@ -1658,7 +1658,7 @@ async fn descendant_limit_is_shared_across_breadth_and_depth() {
         "ses_desc_root",
         &root,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
         "owner-a",
@@ -1675,7 +1675,7 @@ async fn descendant_limit_is_shared_across_breadth_and_depth() {
         "ses_desc_child",
         &child,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
         "owner-a",
@@ -1692,7 +1692,7 @@ async fn descendant_limit_is_shared_across_breadth_and_depth() {
         "ses_desc_grandchild",
         &grandchild,
         &Record::State {
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             turn: None,
         },
         "owner-a",
@@ -1709,7 +1709,7 @@ async fn descendant_limit_is_shared_across_breadth_and_depth() {
             "ses_desc_sibling",
             &sibling,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
             "owner-a",
@@ -1731,7 +1731,7 @@ async fn ancestor_fence_atomically_rejects_a_deep_turn_and_new_descendant() {
             "ses_root",
             &root,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -1748,7 +1748,7 @@ async fn ancestor_fence_atomically_rejects_a_deep_turn_and_new_descendant() {
             "ses_child",
             &child,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -1764,7 +1764,7 @@ async fn ancestor_fence_atomically_rejects_a_deep_turn_and_new_descendant() {
             "ses_grandchild",
             &grandchild,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: None,
             },
         )
@@ -1776,7 +1776,7 @@ async fn ancestor_fence_atomically_rejects_a_deep_turn_and_new_descendant() {
     let grandchild_head = journal.claim("ses_grandchild").await.unwrap();
     let mut root_head = journal.claim("ses_root").await.unwrap();
     root_head.doc.ended = true;
-    root_head.doc.state = "ending".into();
+    root_head.doc.state = SessionLifecycle::Ending;
     let mut root_lease = Lease {
         fence: root_head.fence,
         last_seq: root_head.last_seq,
@@ -1789,7 +1789,7 @@ async fn ancestor_fence_atomically_rejects_a_deep_turn_and_new_descendant() {
             &[(
                 2,
                 Record::State {
-                    state: "ending".into(),
+                    state: SessionLifecycle::Ending,
                     turn: None,
                 },
             )],
@@ -1800,7 +1800,7 @@ async fn ancestor_fence_atomically_rejects_a_deep_turn_and_new_descendant() {
         .unwrap();
 
     let mut grandchild_doc = grandchild_head.doc.clone();
-    grandchild_doc.state = "open".into();
+    grandchild_doc.state = SessionLifecycle::Open;
     grandchild_doc.turn = Some("trn_after_fence".into());
     let mut grandchild_lease = Lease {
         fence: grandchild_head.fence,
@@ -1839,7 +1839,7 @@ async fn ancestor_fence_atomically_rejects_a_deep_turn_and_new_descendant() {
                 "ses_great_grandchild",
                 &great_grandchild,
                 &Record::State {
-                    state: "open".into(),
+                    state: SessionLifecycle::Open,
                     turn: None,
                 },
             )
@@ -1920,7 +1920,7 @@ fn retention_policy_validation_is_ordered_and_adapter_representable() {
 #[test]
 fn every_effect_class_reserves_before_dispatch_and_recovery_does_not_duplicate_it() {
     let first = Record::State {
-        state: "open".into(),
+        state: SessionLifecycle::Open,
         turn: None,
     };
     let initial = initial_retention(&first, u64::MAX).unwrap();
@@ -2060,7 +2060,7 @@ fn effect_retention_reserves_provider_completion_and_tool_terminal_decisions() {
         2 * MAX_DECISION_SERIALIZED_BYTES as u64
     );
     let first = Record::State {
-        state: "open".into(),
+        state: SessionLifecycle::Open,
         turn: None,
     };
     let initial = initial_retention(&first, u64::MAX).unwrap();
@@ -2126,7 +2126,7 @@ async fn retained_identity_quota_is_shared_by_roots_and_children_and_released_on
     };
     let journal = Journal::new(store.clone(), "owner-retention").with_retention_limits(limits);
     let first = Record::State {
-        state: "open".into(),
+        state: SessionLifecycle::Open,
         turn: None,
     };
     let mut root = head_doc();
@@ -2173,7 +2173,7 @@ async fn retained_identity_quota_is_shared_by_roots_and_children_and_released_on
         parent_id: Some(root.root_id.clone()),
         metered_storage_bytes: 0,
         metered_journal_bytes: child_head.retention.metered_bytes,
-        state: "succeeded".into(),
+        state: DeletionState::Succeeded,
         requested_at_ms: 1,
         updated_at_ms: 2,
         completed_at_ms: Some(2),
@@ -2202,7 +2202,7 @@ async fn retained_identity_quota_is_shared_by_roots_and_children_and_released_on
 #[tokio::test]
 async fn journal_quota_rejection_is_atomic_and_end_uses_precharged_lifecycle_capacity() {
     let first = Record::State {
-        state: "open".into(),
+        state: SessionLifecycle::Open,
         turn: None,
     };
     let initial = initial_retention(&first, u64::MAX).unwrap();
@@ -2250,7 +2250,7 @@ async fn journal_quota_rejection_is_atomic_and_end_uses_precharged_lifecycle_cap
         .await
         .expect("END consumes its create-time reserve even at the ordinary append ceiling");
     assert!(fenced.newly_fenced);
-    assert_eq!(fenced.head.doc.state, "ending");
+    assert_eq!(fenced.head.doc.state, SessionLifecycle::Ending);
     assert_eq!(fenced.head.retention.metered_bytes, initial.metered_bytes);
     assert!(fenced.head.retention.lifecycle_reserve_bytes < initial.lifecycle_reserve_bytes);
 }
@@ -2258,7 +2258,7 @@ async fn journal_quota_rejection_is_atomic_and_end_uses_precharged_lifecycle_cap
 #[tokio::test]
 async fn effect_terminal_commits_without_new_quota_after_intent_reservation() {
     let first = Record::State {
-        state: "open".into(),
+        state: SessionLifecycle::Open,
         turn: None,
     };
     let initial = initial_retention(&first, u64::MAX).unwrap();
@@ -2364,7 +2364,7 @@ async fn recovery_cursor_reaches_later_due_rows_while_early_rows_remain_due() {
     for (index, id) in ids.iter().enumerate() {
         let mut doc = head_doc();
         doc.root_id = id.clone();
-        doc.state = "open".into();
+        doc.state = SessionLifecycle::Open;
         doc.turn = Some(format!("trn_cursor_{index:08}"));
         doc.active_phase = Some(TurnPhase::ModelRunning);
         doc.recovery_due_ms = Some(1);
@@ -2373,7 +2373,7 @@ async fn recovery_cursor_reaches_later_due_rows_while_early_rows_remain_due() {
             id,
             &doc,
             &Record::State {
-                state: "open".into(),
+                state: SessionLifecycle::Open,
                 turn: doc.turn.clone(),
             },
             "owner-a",
@@ -2408,6 +2408,6 @@ async fn recovery_cursor_reaches_later_due_rows_while_early_rows_remain_due() {
         first
             .items
             .iter()
-            .all(|item| item.due_ms == 1 && item.state == "open")
+            .all(|item| item.due_ms == 1 && item.state == SessionLifecycle::Open)
     );
 }

@@ -18,9 +18,9 @@ use crate::compact::{
 use crate::config::{AgentDef, Dialect, GenOpts, OutputTokenParameter, ProviderKey, SessionConfig};
 use crate::events::EventHub;
 use crate::journal::{
-    ContextForkDoc, DELETION_TOMBSTONE_TTL_MS, DeletionStatusDoc, Entry, FailureDoc, Head, HeadDoc,
-    Journal, Lease, PrefixDoc, Record, StorageDeleteReservationDoc, StorageUploadReservationDoc,
-    TurnPhase,
+    ContextForkDoc, DELETION_TOMBSTONE_TTL_MS, DeletionState, DeletionStatusDoc, Entry, FailureDoc,
+    Head, HeadDoc, Journal, Lease, PrefixDoc, ProviderAttemptState, Record, SessionLifecycle,
+    StorageDeleteReservationDoc, StorageUploadReservationDoc, TurnPhase, UploadReservationState,
 };
 use crate::keys::{KeyCustody, blob_from_b64, blob_to_b64, validate_custody_plaintext};
 use crate::message::{ContentBlock, Message, Role};
@@ -2092,7 +2092,7 @@ impl Brain {
             context_fork: None,
             depth: 0,
             last_seq: 1,
-            state: "open".into(),
+            state: SessionLifecycle::Open,
             failure: None,
             turn: None,
             active_phase: None,
@@ -2132,7 +2132,7 @@ impl Brain {
                 &session_id,
                 &doc,
                 &Record::State {
-                    state: "open".into(),
+                    state: SessionLifecycle::Open,
                     turn: None,
                 },
             )
@@ -2199,7 +2199,7 @@ impl Brain {
         }
         // Not resident: prove the session exists before spawning.
         let head = self.journal.get_head(session_id).await?;
-        if head.doc.state == "deleted" {
+        if head.doc.state == SessionLifecycle::Deleted {
             return Err(BrainError::SessionDeleted(session_id.into()));
         }
         self.spawn_actor(session_id, ActorStartup::Lazy).await
@@ -2540,7 +2540,7 @@ impl Brain {
         } else {
             self.journal.get_head(&session.doc.root_id).await?
         };
-        if root.doc.state != "open" || root.doc.ended {
+        if root.doc.state != SessionLifecycle::Open || root.doc.ended {
             return Err(BrainError::SessionDeleted(root.doc.root_id.clone()));
         }
         let status = root
@@ -4376,7 +4376,7 @@ impl Brain {
             .journal
             .get_deletion_status(session_id)
             .await?
-            .is_some_and(|status| status.state == "succeeded")
+            .is_some_and(|status| status.state == DeletionState::Succeeded)
         {
             return Ok(());
         }
@@ -4731,7 +4731,7 @@ impl Brain {
     /// before acknowledging it, so an in-memory snapshot cannot be more authoritative.
     pub async fn get(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
         let head = self.journal.get_head(session_id).await?;
-        if head.doc.state == "deleted" {
+        if head.doc.state == SessionLifecycle::Deleted {
             return Err(BrainError::NoSuchSession(session_id.into()));
         }
         session_doc(session_id, &head.doc)
@@ -4759,7 +4759,7 @@ impl Brain {
         let heads = self.journal.list_sessions(limit).await?;
         heads
             .iter()
-            .filter(|h| h.doc.state != "deleted")
+            .filter(|h| h.doc.state != SessionLifecycle::Deleted)
             .map(|h| session_doc(&h.session_id, &h.doc))
             .collect()
     }
@@ -4771,6 +4771,13 @@ impl Brain {
         limit: usize,
         cursor: Option<&str>,
     ) -> Result<(Vec<session::Session>, Option<String>)> {
+        let state = state
+            .map(|value| {
+                value.parse::<SessionLifecycle>().map_err(|_| {
+                    BrainError::Invalid(format!("unknown session state filter {value:?}"))
+                })
+            })
+            .transpose()?;
         let page = self
             .journal
             .list_session_page(&crate::journal::SessionListQuery {
@@ -4858,7 +4865,7 @@ impl crate::hand::SecretDeliveryPort for Brain {
                     "secret custody is temporarily unavailable",
                 )
             })?;
-        if head.doc.root_id != grant.root_id || head.doc.state != "open" {
+        if head.doc.root_id != grant.root_id || head.doc.state != SessionLifecycle::Open {
             return Err(secret_delivery_error(
                 HandErrorCode::CapabilityUnavailable,
                 false,
@@ -6317,7 +6324,7 @@ async fn recover_managed_calls(
         records.push((
             resident.st.take_seq(),
             Record::State {
-                state: resident.st.head.state.clone(),
+                state: resident.st.head.state,
                 turn: None,
             },
         ));
@@ -6633,7 +6640,7 @@ async fn recover_external_calls(
         records.push((
             resident.st.take_seq(),
             Record::State {
-                state: resident.st.head.state.clone(),
+                state: resident.st.head.state,
                 turn: None,
             },
         ));
@@ -6659,7 +6666,7 @@ async fn recover_external_calls(
         records.push((
             resident.st.take_seq(),
             Record::State {
-                state: resident.st.head.state.clone(),
+                state: resident.st.head.state,
                 turn: None,
             },
         ));
@@ -6719,9 +6726,9 @@ async fn recover_provider_attempt(
                 }
             },
         ));
-        attempt.state = "unknown".into();
+        attempt.state = ProviderAttemptState::Unknown;
     }
-    if attempt.state == "replacement_ready" {
+    if attempt.state == ProviderAttemptState::ReplacementReady {
         resident.st.head.provider_attempt = Some(attempt);
         resident.st.head.active_phase = Some(if is_compaction {
             TurnPhase::ReadyToCompact
@@ -6731,16 +6738,16 @@ async fn recover_provider_attempt(
         commit(brain, session_id, &mut resident.st, records).await?;
         return Ok(());
     }
-    if attempt.state != "unknown" {
+    if attempt.state != ProviderAttemptState::Unknown {
         return Err(BrainError::Journal(format!(
             "active provider attempt has invalid state {}",
-            attempt.state
+            attempt.state.as_str()
         )));
     }
 
     if attempt.replacements_used < resident.st.head.prefix.provider_recovery_retries {
         attempt.replacements_used += 1;
-        attempt.state = "replacement_ready".into();
+        attempt.state = ProviderAttemptState::ReplacementReady;
         resident.st.head.provider_attempt = Some(attempt);
         resident.st.head.active_phase = Some(if is_compaction {
             TurnPhase::ReadyToCompact
@@ -6773,7 +6780,7 @@ async fn recover_provider_attempt(
     records.push((
         resident.st.take_seq(),
         Record::State {
-            state: resident.st.head.state.clone(),
+            state: resident.st.head.state,
             turn: None,
         },
     ));
@@ -6790,7 +6797,7 @@ fn can_discard_under_pressure(resident: &Option<Resident>) -> bool {
     !has_pending_terminal_ack(resident)
         && !has_reserved_storage_upload(resident)
         && resident.as_ref().is_none_or(|resident| {
-            resident.st.head.state != "deleting"
+            resident.st.head.state != SessionLifecycle::Deleting
                 && resident.st.head.active_phase.is_none()
                 && resident.st.head.turn.is_none()
         })
@@ -6856,13 +6863,13 @@ async fn actor(
     if startup != ActorStartup::Lazy {
         match hydrate(&brain, &session_id).await {
             Ok(r) => {
-                if r.st.head.state == "deleting" {
+                if r.st.head.state == SessionLifecycle::Deleting {
                     resident = Some(r);
                     if let Err(error) = delete_session(&brain, &session_id, &mut resident).await {
                         tracing::warn!(session = %session_id, error = %error, "background session deletion will retry");
                     }
                     return;
-                } else if r.st.head.state == "ending" {
+                } else if r.st.head.state == SessionLifecycle::Ending {
                     resident = Some(r);
                     match continue_end_session(&brain, &session_id, &mut resident).await {
                         Ok(true) => {
@@ -7060,7 +7067,7 @@ async fn actor(
                                     task.cancel.cancel();
                                     drop(task);
                                 }
-                                let pending = doc.state == "ending";
+                                let pending = doc.state == SessionLifecycle::Ending;
                                 // The response proves the constant-size durable admission fence;
                                 // descendant traversal and Hand release happen only afterwards.
                                 let _ = reply.send(Ok(doc));
@@ -7476,7 +7483,7 @@ async fn ensure_resident<'a>(
 /// the adapter from its persisted state.
 async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
     let mut head = brain.journal.claim(session_id).await?;
-    if head.doc.state == "deleted" {
+    if head.doc.state == SessionLifecycle::Deleted {
         return Err(BrainError::SessionDeleted(session_id.into()));
     }
     let _heartbeat = start_lease_heartbeat(
@@ -7497,7 +7504,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
                 .doc
                 .storage_upload
                 .as_ref()
-                .is_some_and(|upload| upload.state == "published"),
+                .is_some_and(|upload| upload.state == UploadReservationState::Published),
         None,
     );
     let context_after = head
@@ -7641,7 +7648,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
     // A deleting session is past the subtree END barrier and can never execute another turn.
     // Re-preparing its managed bindings here recreates Hand definition rows immediately before
     // `purge_tree` removes them, so every cold deletion retry sees another nonempty purge page.
-    let managed_bindings = if head.doc.state == "deleting" {
+    let managed_bindings = if head.doc.state == SessionLifecycle::Deleting {
         Arc::new(HashMap::new())
     } else {
         brain.prepare_managed_session(session_id, &head.doc).await?
@@ -7957,12 +7964,12 @@ async fn default_sandbox_for_effect(
 ) -> Result<brain_protocol::hand::SandboxTarget> {
     use brain_protocol::hand::SandboxState;
 
-    if st.head.ended || st.head.state != "open" {
+    if st.head.ended || st.head.state != SessionLifecycle::Open {
         return Err(BrainError::SessionDeleted(session_id.to_owned()));
     }
     let (root_state, root_ended, status) = if st.head.root_id == session_id {
         (
-            st.head.state.clone(),
+            st.head.state,
             st.head.ended,
             st.head.default_sandbox.clone(),
         )
@@ -7970,7 +7977,7 @@ async fn default_sandbox_for_effect(
         let root = brain.journal.get_head(&st.head.root_id).await?;
         (root.doc.state, root.doc.ended, root.doc.default_sandbox)
     };
-    if root_ended || root_state != "open" {
+    if root_ended || root_state != SessionLifecycle::Open {
         return Err(BrainError::SessionDeleted(st.head.root_id.clone()));
     }
     let status = status.ok_or(BrainError::SandboxNotMaterialized)?;
@@ -8450,7 +8457,7 @@ async fn admit(
     metadata: HashMap<String, String>,
     idempotency: Option<MessageIdentity>,
 ) -> Result<(String, u64, CancellationToken)> {
-    if r.st.head.state == "failed" {
+    if r.st.head.state == SessionLifecycle::Failed {
         return Err(BrainError::SessionFailed(
             r.st.head
                 .failure
@@ -8464,7 +8471,7 @@ async fn admit(
     let started_seq = r.st.take_seq();
     // Turn activity is a separate axis. The lifecycle remains open while `turn` and
     // `active_phase` identify the admitted work.
-    r.st.head.state = "open".into();
+    r.st.head.state = SessionLifecycle::Open;
     r.st.head.turn = Some(turn_id.clone());
     r.st.head.active_phase = Some(TurnPhase::ReadyToBuildModelRequest);
     r.st.head.provider_attempt = None;
@@ -8627,7 +8634,7 @@ async fn fail_turn_now(
     let failed_seq = st.take_seq();
     let state_seq = st.take_seq();
     if session_fatal && !st.head.ended {
-        st.head.state = "failed".into();
+        st.head.state = SessionLifecycle::Failed;
         st.head.failure = Some(FailureDoc {
             code: "binding_conflict".into(),
             message: e.to_string(),
@@ -8652,7 +8659,7 @@ async fn fail_turn_now(
         (
             state_seq,
             Record::State {
-                state: st.head.state.clone(),
+                state: st.head.state,
                 turn: None,
             },
         ),
@@ -8742,7 +8749,7 @@ async fn create_child_session(
         context_fork: Some(context_fork),
         depth: parent.doc.depth + 1,
         last_seq: 1,
-        state: "open".into(),
+        state: SessionLifecycle::Open,
         failure: None,
         turn: Some(turn_id.clone()),
         active_phase: Some(TurnPhase::ReadyToBuildModelRequest),
@@ -9042,7 +9049,7 @@ async fn begin_end_session(
     *resident = None;
     if fenced.newly_fenced {
         let record = Record::State {
-            state: "ending".into(),
+            state: SessionLifecycle::Ending,
             turn: fenced.head.doc.turn.clone(),
         };
         if let Some(event) = crate::events::derive(
@@ -9070,9 +9077,10 @@ async fn continue_end_session(
         start_lease_heartbeat(brain, session_id, &resident.st.lease, true, None)
     };
     let r = ensure_resident(brain, session_id, resident).await?;
-    if r.st.head.state != "ending" {
+    if r.st.head.state != SessionLifecycle::Ending {
         drop(heartbeat);
-        return Ok(r.st.head.state == "ended" || r.st.head.state == "deleting");
+        return Ok(r.st.head.state == SessionLifecycle::Ended
+            || r.st.head.state == SessionLifecycle::Deleting);
     }
 
     let mut children_settled = true;
@@ -9124,12 +9132,12 @@ async fn continue_end_session(
     if r.st.head.root_id == session_id {
         dematerialize_default_sandbox_for_end(brain, session_id, r).await?;
     }
-    r.st.head.state = "ended".into();
+    r.st.head.state = SessionLifecycle::Ended;
     r.st.head.active_phase = None;
     r.st.head.provider_attempt = None;
     let seq = r.st.take_seq();
     let rec = Record::State {
-        state: "ended".into(),
+        state: SessionLifecycle::Ended,
         turn: None,
     };
     commit(brain, session_id, &mut r.st, vec![(seq, rec)]).await?;
@@ -9263,7 +9271,7 @@ async fn delete_session(
             if let Some(mut status) = brain.journal.get_deletion_status(session_id).await? {
                 status.attempts = status.attempts.saturating_add(1);
                 status.updated_at_ms = crate::wall_ms();
-                status.state = "retrying".into();
+                status.state = DeletionState::Retrying;
                 // Tombstones carry no adapter text, provider content, object locators or secrets.
                 // Detailed diagnostics remain in the structured server log below.
                 status.last_error = Some(deletion_error_code(&error).into());
@@ -9304,7 +9312,7 @@ async fn begin_delete_session(
     }
     let end_pending = {
         let r = ensure_resident(brain, session_id, resident).await?;
-        r.st.head.state == "ending"
+        r.st.head.state == SessionLifecycle::Ending
     };
     if end_pending && !continue_end_session(brain, session_id, resident).await? {
         return Err(BrainError::HandUnavailable(
@@ -9312,10 +9320,10 @@ async fn begin_delete_session(
         ));
     }
     let r = ensure_resident(brain, session_id, resident).await?;
-    if r.st.head.state != "deleting" {
+    if r.st.head.state != SessionLifecycle::Deleting {
         // This decision is the admission fence for every later mutation. It lands before any
         // external cleanup, and remains indexed until all cleanup has succeeded.
-        r.st.head.state = "deleting".into();
+        r.st.head.state = SessionLifecycle::Deleting;
         r.st.head.ended = true;
         r.st.head.turn = None;
         r.st.head.active_phase = None;
@@ -9329,7 +9337,7 @@ async fn begin_delete_session(
             vec![(
                 seq,
                 Record::State {
-                    state: "deleting".into(),
+                    state: SessionLifecycle::Deleting,
                     turn: None,
                 },
             )],
@@ -9345,7 +9353,7 @@ async fn begin_delete_session(
         parent_id: r.st.head.parent_id.clone(),
         metered_storage_bytes: r.st.head.tenant_metered_storage_bytes,
         metered_journal_bytes: r.st.lease.retention.metered_bytes,
-        state: "deleting".into(),
+        state: DeletionState::Deleting,
         requested_at_ms: existing
             .as_ref()
             .map_or(now, |status| status.requested_at_ms),
@@ -9372,7 +9380,7 @@ async fn continue_delete_session(
     };
     {
         let r = ensure_resident(brain, session_id, resident).await?;
-        if r.st.head.state != "deleting" {
+        if r.st.head.state != SessionLifecycle::Deleting {
             return Err(BrainError::Invalid(
                 "session deletion cleanup requires the durable deleting fence".into(),
             ));
@@ -9451,7 +9459,7 @@ async fn continue_delete_session(
             parent_id: r.st.head.parent_id.clone(),
             metered_storage_bytes: r.st.head.tenant_metered_storage_bytes,
             metered_journal_bytes: r.st.lease.retention.metered_bytes,
-            state: "succeeded".into(),
+            state: DeletionState::Succeeded,
             requested_at_ms: prior.as_ref().map_or(now, |status| status.requested_at_ms),
             updated_at_ms: now,
             completed_at_ms: Some(now),
@@ -9509,7 +9517,7 @@ async fn sleep_until_storage_expiry(resident: &Option<Resident>) {
             )
         })
         .map(|upload| {
-            if upload.state == "published" {
+            if upload.state == UploadReservationState::Published {
                 crate::wall_ms()
             } else {
                 upload.expires_at_ms
@@ -9580,11 +9588,11 @@ async fn expire_storage_upload(
     let Some(upload) = st.head.storage_upload.clone() else {
         return Ok(());
     };
-    if upload.state == "completed" {
+    if upload.state == UploadReservationState::Completed {
         return Ok(());
     }
     let storage = brain.storage_port()?.clone();
-    if upload.state == "published" {
+    if upload.state == UploadReservationState::Published {
         let object = storage.stat(session_id, &upload.key).await?;
         if !matches_storage_publication(&object, &upload) {
             return Err(BrainError::Journal(
@@ -9595,7 +9603,7 @@ async fn expire_storage_upload(
             .abort_upload(session_id, &upload.transfer_id)
             .await?;
         let mut completed = upload.clone();
-        completed.state = "completed".into();
+        completed.state = UploadReservationState::Completed;
         st.head.storage_reserved_bytes = 0;
         st.head.storage_upload = Some(completed);
         let seq = st.take_seq();
@@ -9616,7 +9624,7 @@ async fn expire_storage_upload(
         )
         .await;
     }
-    if upload.state == "reserved" {
+    if upload.state == UploadReservationState::Reserved {
         match storage.stat(session_id, &upload.key).await {
             Ok(object) if matches_storage_publication(&object, &upload) => {
                 // `complete_upload` may have copied destination bytes before its response or the
@@ -9634,7 +9642,7 @@ async fn expire_storage_upload(
                 st.head.storage_reserved_bytes = 0;
                 let mut published = upload.clone();
                 published.sha256 = Some(object.sha256.clone());
-                published.state = "published".into();
+                published.state = UploadReservationState::Published;
                 st.head.storage_upload = Some(published);
                 let seq = st.take_seq();
                 commit(
@@ -9660,7 +9668,7 @@ async fn expire_storage_upload(
                     .await?;
                 let mut completed = upload.clone();
                 completed.sha256 = Some(object.sha256.clone());
-                completed.state = "completed".into();
+                completed.state = UploadReservationState::Completed;
                 st.head.storage_upload = Some(completed);
                 let seq = st.take_seq();
                 return commit(
@@ -9695,7 +9703,7 @@ async fn expire_storage_upload(
     if upload.expires_at_ms > crate::wall_ms() {
         return Ok(());
     }
-    if upload.state == "inline_reserved" {
+    if upload.state == UploadReservationState::InlineReserved {
         match storage.stat(session_id, &upload.key).await {
             Ok(object) if matches_storage_publication(&object, &upload) => {
                 st.head.session_storage_bytes = st
@@ -9708,7 +9716,7 @@ async fn expire_storage_upload(
                     })?;
                 st.head.storage_reserved_bytes = 0;
                 let mut completed = upload.clone();
-                completed.state = "completed".into();
+                completed.state = UploadReservationState::Completed;
                 st.head.storage_upload = Some(completed);
                 let seq = st.take_seq();
                 return commit(
@@ -9739,15 +9747,15 @@ async fn expire_storage_upload(
             }
             Err(error) => return Err(error),
         }
-    } else if upload.state != "reserved" {
+    } else if upload.state != UploadReservationState::Reserved {
         return Err(BrainError::Journal(format!(
             "storage upload has invalid state {}",
-            upload.state
+            upload.state.as_str()
         )));
     }
     // Deletion precedes reservation release. A transient S3 failure therefore leaves the hard
     // bound in place and the next operation retries cleanup instead of admitting more bytes.
-    if upload.state == "reserved" {
+    if upload.state == UploadReservationState::Reserved {
         storage
             .abort_upload(session_id, &upload.transfer_id)
             .await?;
@@ -9865,9 +9873,9 @@ async fn prepare_storage_upload_state_for_transfer(
             .as_deref()
             .is_some_and(|transfer_id| transfer_id == upload.transfer_id);
         if same_intent
-            && ((upload.state == "reserved"
+            && ((upload.state == UploadReservationState::Reserved
                 && (requested_transfer_id.is_none() || same_requested_transfer))
-                || (upload.state == "completed" && same_requested_transfer))
+                || (upload.state == UploadReservationState::Completed && same_requested_transfer))
         {
             return brain
                 .storage_port()?
@@ -9883,7 +9891,7 @@ async fn prepare_storage_upload_state_for_transfer(
                 })
                 .await;
         }
-        if upload.state != "completed" {
+        if upload.state != UploadReservationState::Completed {
             return Err(BrainError::StorageUploadInProgress {
                 transfer_id: upload.transfer_id.clone(),
             });
@@ -9935,7 +9943,7 @@ async fn prepare_storage_upload_state_for_transfer(
         overwrite: intent.overwrite,
         previous_bytes,
         expires_at_ms,
-        state: "reserved".into(),
+        state: UploadReservationState::Reserved,
     };
     st.head.storage_reserved_bytes = intent.bytes;
     st.head.storage_upload = Some(upload.clone());
@@ -9996,7 +10004,7 @@ pub(crate) async fn complete_storage_upload_state(
     ensure_storage_readable(&st.head, session_id)?;
     let requested_expired = st.head.storage_upload.as_ref().is_some_and(|upload| {
         upload.transfer_id == transfer_id
-            && upload.state == "reserved"
+            && upload.state == UploadReservationState::Reserved
             && upload.expires_at_ms <= crate::wall_ms()
     });
     expire_storage_upload(brain, session_id, st).await?;
@@ -10011,11 +10019,11 @@ pub(crate) async fn complete_storage_upload_state(
         .ok_or_else(|| BrainError::FileNotFound(format!("storage upload {transfer_id}")))?;
     let storage = brain.storage_port()?.clone();
 
-    if upload.state == "completed" {
+    if upload.state == UploadReservationState::Completed {
         return storage.stat(session_id, &upload.key).await;
     }
 
-    let object = if upload.state == "published" {
+    let object = if upload.state == UploadReservationState::Published {
         let object = storage.stat(session_id, &upload.key).await?;
         if !matches_storage_publication(&object, &upload) {
             return Err(BrainError::Journal(
@@ -10044,7 +10052,7 @@ pub(crate) async fn complete_storage_upload_state(
         st.head.storage_reserved_bytes = 0;
         let mut published = upload.clone();
         published.sha256 = Some(object.sha256.clone());
-        published.state = "published".into();
+        published.state = UploadReservationState::Published;
         st.head.storage_upload = Some(published);
         let storage_gauges = (
             st.head.session_storage_bytes,
@@ -10075,7 +10083,7 @@ pub(crate) async fn complete_storage_upload_state(
     storage.abort_upload(session_id, &transfer_id).await?;
     let mut completed = upload.clone();
     completed.sha256 = Some(object.sha256.clone());
-    completed.state = "completed".into();
+    completed.state = UploadReservationState::Completed;
     st.head.storage_upload = Some(completed);
     st.head.storage_reserved_bytes = 0;
     let storage_gauges = (
@@ -10160,10 +10168,10 @@ pub(crate) async fn write_storage_inline_state(
             && upload.sha256 == intent.sha256
             && upload.content_type == intent.content_type
             && upload.overwrite == intent.overwrite;
-        if upload.state == "completed" && same {
+        if upload.state == UploadReservationState::Completed && same {
             return storage.stat(session_id, &key).await;
         }
-        if upload.state == "inline_reserved" && same {
+        if upload.state == UploadReservationState::InlineReserved && same {
             let object = match storage.stat(session_id, &key).await {
                 Ok(object) if matches_storage_publication(&object, &upload) => object,
                 Ok(_) if overwrite => {
@@ -10205,7 +10213,7 @@ pub(crate) async fn write_storage_inline_state(
                 .ok_or_else(|| BrainError::Journal("session storage meter overflowed".into()))?;
             st.head.storage_reserved_bytes = 0;
             let mut completed = upload.clone();
-            completed.state = "completed".into();
+            completed.state = UploadReservationState::Completed;
             st.head.storage_upload = Some(completed);
             let storage_gauges = (
                 st.head.session_storage_bytes,
@@ -10230,7 +10238,7 @@ pub(crate) async fn write_storage_inline_state(
             .await?;
             return Ok(object);
         }
-        if upload.state != "completed" {
+        if upload.state != UploadReservationState::Completed {
             return Err(BrainError::StorageUploadInProgress {
                 transfer_id: upload.transfer_id,
             });
@@ -10279,7 +10287,7 @@ pub(crate) async fn write_storage_inline_state(
         overwrite,
         previous_bytes,
         expires_at_ms,
-        state: "inline_reserved".into(),
+        state: UploadReservationState::InlineReserved,
     };
     st.head.storage_reserved_bytes = upload.bytes;
     st.head.storage_upload = Some(upload.clone());
@@ -10324,7 +10332,7 @@ pub(crate) async fn write_storage_inline_state(
     st.head.session_storage_bytes = visible_after;
     st.head.storage_reserved_bytes = 0;
     let mut completed = upload.clone();
-    completed.state = "completed".into();
+    completed.state = UploadReservationState::Completed;
     st.head.storage_upload = Some(completed);
     let storage_gauges = (
         st.head.session_storage_bytes,
@@ -10361,7 +10369,7 @@ async fn do_delete_storage_object(
     ensure_storage_readable(&r.st.head, session_id)?;
     reconcile_storage_mutations(brain, session_id, &mut r.st).await?;
     if let Some(upload) = &r.st.head.storage_upload
-        && upload.state != "completed"
+        && upload.state != UploadReservationState::Completed
     {
         return Err(BrainError::StorageUploadInProgress {
             transfer_id: upload.transfer_id.clone(),
@@ -10683,13 +10691,12 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
             .map(|name| name.parse().map_err(|_| corrupt("child name")))
             .transpose()?,
         object: session::SessionObject::Session,
-        state: crate::events::session_state(&doc.state)
-            .expect("journal session lifecycle is a closed enum"),
+        state: crate::events::session_state(doc.state),
         turn_phase: doc
             .active_phase
             .map(|phase| phase.as_str().parse().map_err(|_| corrupt("turn phase")))
             .transpose()?,
-        turn_state: crate::events::session_turn_state(&doc.state, doc.turn.as_deref()),
+        turn_state: crate::events::session_turn_state(doc.turn.as_deref()),
         shape: doc.prefix.shape.clone(),
         storage: session::StorageInfo {
             session_storage_bytes: doc.session_storage_bytes,
@@ -10766,15 +10773,14 @@ fn session_doc_summary(summary: &crate::journal::SessionSummary) -> session::Ses
             .as_deref()
             .and_then(|name| name.parse().ok()),
         object: session::SessionObject::Session,
-        state: crate::events::session_state(&summary.state)
-            .expect("journal session lifecycle is a closed enum"),
+        state: crate::events::session_state(summary.state),
         turn_phase: summary.active_phase.map(|phase| {
             phase
                 .as_str()
                 .parse()
                 .expect("the protocol turn-phase vocabulary covers every journal phase")
         }),
-        turn_state: crate::events::session_turn_state(&summary.state, summary.turn.as_deref()),
+        turn_state: crate::events::session_turn_state(summary.turn.as_deref()),
         shape: summary.shape.clone(),
         storage: session::StorageInfo {
             session_storage_bytes: summary.session_storage_bytes,

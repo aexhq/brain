@@ -19,7 +19,7 @@
 use crate::adapter::{CallOutcome, TerminalOutcome, ToolExecutor};
 use crate::config::{SealedPrefix, SessionConfig, ToolRoute};
 use crate::events::EventHub;
-use crate::journal::{self, HeadDoc, Journal, Lease, Record, TurnPhase};
+use crate::journal::{self, HeadDoc, Journal, Lease, ProviderAttemptState, Record, TurnPhase};
 use crate::message::{ContentBlock, Message, StopReason};
 use crate::provider::{Accumulator, Provider, ProviderEvent};
 use crate::{BrainError, Result, Shared};
@@ -747,7 +747,7 @@ impl LoopTurnCtx<'_> {
                         .head
                         .provider_attempt
                         .as_ref()
-                        .is_some_and(|attempt| attempt.state == "unknown") =>
+                        .is_some_and(|attempt| attempt.state == ProviderAttemptState::Unknown) =>
                 {
                     let attempt = self.st.head.provider_attempt.as_mut().expect("checked");
                     if attempt.replacements_used >= self.st.head.prefix.provider_recovery_retries {
@@ -766,7 +766,7 @@ impl LoopTurnCtx<'_> {
                         "loop model_stream outcome unknown; authorizing digest-identical replacement"
                     );
                     attempt.replacements_used += 1;
-                    attempt.state = "replacement_ready".into();
+                    attempt.state = ProviderAttemptState::ReplacementReady;
                     self.run.commit(self.st, vec![]).await?;
                 }
                 Err(error) => {
@@ -1317,11 +1317,9 @@ impl TurnRun {
                         return Ok(ModelRoundGate::Cancelled);
                     }
                     Err(error)
-                        if st
-                            .head
-                            .provider_attempt
-                            .as_ref()
-                            .is_some_and(|attempt| attempt.state == "unknown") =>
+                        if st.head.provider_attempt.as_ref().is_some_and(|attempt| {
+                            attempt.state == ProviderAttemptState::Unknown
+                        }) =>
                     {
                         let attempt = st.head.provider_attempt.as_mut().expect("checked");
                         if attempt.replacements_used >= st.head.prefix.provider_recovery_retries {
@@ -1334,7 +1332,7 @@ impl TurnRun {
                             "provider outcome unknown; authorizing digest-identical replacement"
                         );
                         attempt.replacements_used += 1;
-                        attempt.state = "replacement_ready".into();
+                        attempt.state = ProviderAttemptState::ReplacementReady;
                         st.head.active_phase = Some(TurnPhase::ReadyToBuildModelRequest);
                         // Persist the consumed recovery budget before the replacement send. A
                         // crash here resumes this ready attempt without consuming it twice.
@@ -1520,7 +1518,7 @@ impl TurnRun {
                         .head
                         .provider_attempt
                         .as_ref()
-                        .is_some_and(|attempt| attempt.state == "unknown") =>
+                        .is_some_and(|attempt| attempt.state == ProviderAttemptState::Unknown) =>
                 {
                     let attempt = st.head.provider_attempt.as_mut().expect("checked");
                     if attempt.replacements_used >= st.head.prefix.provider_recovery_retries {
@@ -1533,7 +1531,7 @@ impl TurnRun {
                         "closing-round outcome unknown; authorizing digest-identical replacement"
                     );
                     attempt.replacements_used += 1;
-                    attempt.state = "replacement_ready".into();
+                    attempt.state = ProviderAttemptState::ReplacementReady;
                     self.commit(st, vec![]).await?;
                 }
                 Err(error) => return Err(error),
@@ -1802,7 +1800,7 @@ impl TurnRun {
                 result_records.push((
                     st.take_seq(),
                     Record::State {
-                        state: st.head.state.clone(),
+                        state: st.head.state,
                         turn: None,
                     },
                 ));
@@ -1953,7 +1951,7 @@ impl TurnRun {
                 (
                     state_seq,
                     Record::State {
-                        state: st.head.state.clone(),
+                        state: st.head.state,
                         turn: None,
                     },
                 ),
@@ -2100,10 +2098,14 @@ impl TurnRun {
         let (logical_operation_id, mut replacements_used) = match st.head.provider_attempt.as_ref()
         {
             Some(attempt) if attempt.logical_operation_id.starts_with("cmp_") => {
-                if !matches!(attempt.state.as_str(), "unknown" | "replacement_ready") {
+                if !matches!(
+                    attempt.state,
+                    journal::ProviderAttemptState::Unknown
+                        | journal::ProviderAttemptState::ReplacementReady
+                ) {
                     return Err(BrainError::Journal(format!(
                         "compaction attempt cannot resume from state {}",
-                        attempt.state
+                        attempt.state.as_str()
                     )));
                 }
                 if attempt.request_digest != request_digest {
@@ -2132,7 +2134,7 @@ impl TurnRun {
                 logical_operation_id: logical_operation_id.clone(),
                 attempt_id: attempt_id.clone(),
                 request_digest: request_digest.clone(),
-                state: "intent".into(),
+                state: ProviderAttemptState::Intent,
                 replacements_used,
             });
             self.commit(
@@ -2151,7 +2153,7 @@ impl TurnRun {
             .await?;
             st.head.active_phase = Some(TurnPhase::CompactionRunning);
             if let Some(attempt) = &mut st.head.provider_attempt {
-                attempt.state = "running".into();
+                attempt.state = ProviderAttemptState::Running;
             }
             let permit = tokio::select! {
                 permit = self.model_permits.clone().acquire_owned() => {
@@ -2194,7 +2196,7 @@ impl TurnRun {
                 Err(error) if provider_failure_is_unknown(&error) => {
                     st.head.active_phase = Some(TurnPhase::CompactionUnknown);
                     if let Some(attempt) = &mut st.head.provider_attempt {
-                        attempt.state = "unknown".into();
+                        attempt.state = ProviderAttemptState::Unknown;
                     }
                     self.commit(
                         st,
@@ -2220,7 +2222,7 @@ impl TurnRun {
                         .as_mut()
                         .expect("compaction attempt");
                     attempt.replacements_used = replacements_used;
-                    attempt.state = "replacement_ready".into();
+                    attempt.state = ProviderAttemptState::ReplacementReady;
                     st.head.active_phase = Some(TurnPhase::ReadyToCompact);
                     self.commit(st, vec![]).await?;
                 }
@@ -2281,7 +2283,7 @@ impl TurnRun {
             logical_operation_id: logical_operation_id.clone(),
             attempt_id: attempt_id.clone(),
             request_digest: request_digest.clone(),
-            state: "intent".into(),
+            state: ProviderAttemptState::Intent,
             replacements_used,
         });
         let mut intent_records = Vec::with_capacity(2);
@@ -2311,7 +2313,7 @@ impl TurnRun {
         self.commit(st, intent_records).await?;
         st.head.active_phase = Some(TurnPhase::ModelRunning);
         if let Some(attempt) = &mut st.head.provider_attempt {
-            attempt.state = "running".into();
+            attempt.state = ProviderAttemptState::Running;
         }
         // Clean failures (a complete 408/429/5xx before anything streamed) retry in place with
         // bounded backoff; once a delta reached a client, only the durable supersession path
@@ -2369,7 +2371,7 @@ impl TurnRun {
             Err(error) if provider_failure_is_unknown(&error) => {
                 st.head.active_phase = Some(TurnPhase::ModelUnknown);
                 if let Some(attempt) = &mut st.head.provider_attempt {
-                    attempt.state = "unknown".into();
+                    attempt.state = ProviderAttemptState::Unknown;
                 }
                 let seq = st.take_seq();
                 self.commit(

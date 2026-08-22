@@ -354,7 +354,7 @@ pub enum Record {
     },
     /// A session/hand state transition worth telling clients about (`session.updated`).
     State {
-        state: String,
+        state: SessionLifecycle,
         turn: Option<String>,
     },
     HandLost {
@@ -1007,6 +1007,119 @@ pub fn fold(entries: &[Entry]) -> Fold {
 // HEAD
 // ---------------------------------------------------------------------------------------------
 
+/// Session lifecycle vocabulary shared by `HeadDoc`, `ControlDoc`, projections and the public
+/// `session.updated` transition record. Journal/wire encodings are the snake_case names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionLifecycle {
+    Open,
+    Ending,
+    Ended,
+    Deleting,
+    Deleted,
+    Failed,
+}
+
+impl SessionLifecycle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionLifecycle::Open => "open",
+            SessionLifecycle::Ending => "ending",
+            SessionLifecycle::Ended => "ended",
+            SessionLifecycle::Deleting => "deleting",
+            SessionLifecycle::Deleted => "deleted",
+            SessionLifecycle::Failed => "failed",
+        }
+    }
+}
+
+impl std::str::FromStr for SessionLifecycle {
+    type Err = BrainError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Ok(match value {
+            "open" => SessionLifecycle::Open,
+            "ending" => SessionLifecycle::Ending,
+            "ended" => SessionLifecycle::Ended,
+            "deleting" => SessionLifecycle::Deleting,
+            "deleted" => SessionLifecycle::Deleted,
+            "failed" => SessionLifecycle::Failed,
+            other => {
+                return Err(BrainError::Journal(format!(
+                    "unknown session lifecycle state {other:?}"
+                )));
+            }
+        })
+    }
+}
+
+/// Durable provider attempt states for the current logical model/compaction operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAttemptState {
+    Intent,
+    Running,
+    Unknown,
+    ReplacementReady,
+}
+
+impl ProviderAttemptState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProviderAttemptState::Intent => "intent",
+            ProviderAttemptState::Running => "running",
+            ProviderAttemptState::Unknown => "unknown",
+            ProviderAttemptState::ReplacementReady => "replacement_ready",
+        }
+    }
+}
+
+/// Storage upload reservation states. Published retains its byte reservation until staging
+/// deletion succeeds; completed is a bounded replay tombstone and reserves zero bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadReservationState {
+    Reserved,
+    InlineReserved,
+    Published,
+    Completed,
+}
+
+impl UploadReservationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UploadReservationState::Reserved => "reserved",
+            UploadReservationState::InlineReserved => "inline_reserved",
+            UploadReservationState::Published => "published",
+            UploadReservationState::Completed => "completed",
+        }
+    }
+}
+
+/// Confirmed-deletion progression; the vocabulary is the public DeletionStatus contract
+/// (`contracts/session/v1/openapi.yaml`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletionState {
+    Accepted,
+    Deleting,
+    Retrying,
+    Blocked,
+    Succeeded,
+}
+
+impl DeletionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeletionState::Accepted => "accepted",
+            DeletionState::Deleting => "deleting",
+            DeletionState::Retrying => "retrying",
+            DeletionState::Blocked => "blocked",
+            DeletionState::Succeeded => "succeeded",
+        }
+    }
+}
+
 /// Total active-turn phase vocabulary. `HeadDoc::active_phase` is `Some` iff a turn is active;
 /// the wire and journal encodings are the snake_case names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1101,7 +1214,7 @@ pub struct HeadDoc {
     pub depth: u32,
     /// Authoritative durable event high-water mark, denormalized for bounded tenant discovery.
     pub last_seq: u64,
-    pub state: String,
+    pub state: SessionLifecycle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<FailureDoc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1196,7 +1309,7 @@ pub struct LoopStateDoc {
 pub struct ControlDoc {
     pub tenant_id: String,
     pub last_seq: u64,
-    pub state: String,
+    pub state: SessionLifecycle,
     pub failure: Option<FailureDoc>,
     pub turn: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1261,7 +1374,7 @@ pub struct StorageUploadReservationDoc {
     pub expires_at_ms: u64,
     /// `reserved | published | completed`. Published retains its byte reservation until staging
     /// deletion succeeds; completed is a bounded replay tombstone and reserves zero bytes.
-    pub state: String,
+    pub state: UploadReservationState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1300,14 +1413,16 @@ impl HeadDoc {
     /// owner can reconcile its durable effects. That recovery must clear the turn without ever
     /// reopening the lifecycle. Likewise, deletion/terminal lifecycle states dominate any late
     /// turn completion.
-    pub fn lifecycle_after_turn(&self) -> String {
+    pub fn lifecycle_after_turn(&self) -> SessionLifecycle {
         if self.ended {
-            match self.state.as_str() {
-                "ended" | "deleting" | "deleted" => self.state.clone(),
-                _ => "ending".into(),
+            match self.state {
+                SessionLifecycle::Ended
+                | SessionLifecycle::Deleting
+                | SessionLifecycle::Deleted => self.state,
+                _ => SessionLifecycle::Ending,
             }
         } else {
-            "open".into()
+            SessionLifecycle::Open
         }
     }
 
@@ -1317,7 +1432,7 @@ impl HeadDoc {
         ControlDoc {
             tenant_id: self.tenant_id.clone(),
             last_seq: self.last_seq,
-            state: self.state.clone(),
+            state: self.state,
             failure: self.failure.clone(),
             turn: self.turn.clone(),
             active_phase: self.active_phase,
@@ -1486,7 +1601,7 @@ pub struct ProviderAttemptDoc {
     pub logical_operation_id: String,
     pub attempt_id: String,
     pub request_digest: String,
-    pub state: String,
+    pub state: ProviderAttemptState,
     pub replacements_used: u32,
 }
 
@@ -1696,7 +1811,7 @@ pub struct EndFence {
 #[derive(Debug, Clone)]
 pub struct SessionListQuery<'a> {
     pub tenant_id: &'a str,
-    pub state: Option<&'a str>,
+    pub state: Option<SessionLifecycle>,
     pub limit: usize,
     pub cursor: Option<&'a str>,
 }
@@ -1779,7 +1894,7 @@ pub struct SandboxPage {
 pub struct RecoveryItem {
     pub session_id: String,
     pub due_ms: u64,
-    pub state: String,
+    pub state: SessionLifecycle,
     pub active_phase: Option<TurnPhase>,
     pub last_seq: u64,
     pub root_id: String,
@@ -1820,8 +1935,8 @@ pub struct DeletionStatusDoc {
     /// HEAD+CONFIG with this tombstone. It includes unspent recovery/effect reservations.
     #[serde(default)]
     pub metered_journal_bytes: u64,
-    /// `accepted | running | succeeded`.
-    pub state: String,
+    /// Confirmed-deletion progression.
+    pub state: DeletionState,
     pub requested_at_ms: u64,
     pub updated_at_ms: u64,
     pub completed_at_ms: Option<u64>,
@@ -1857,7 +1972,7 @@ pub struct SessionSummary {
     pub child_name: Option<String>,
     pub context_fork: Option<ContextForkDoc>,
     pub depth: u32,
-    pub state: String,
+    pub state: SessionLifecycle,
     pub failure: Option<FailureDoc>,
     pub turn: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1887,7 +2002,7 @@ impl SessionSummary {
             child_name: doc.child_name.clone(),
             context_fork: doc.context_fork.clone(),
             depth: doc.depth,
-            state: doc.state.clone(),
+            state: doc.state,
             failure: doc.failure.clone(),
             turn: doc.turn.clone(),
             active_phase: doc.active_phase,
@@ -2912,10 +3027,9 @@ impl JournalStore for MemoryStore {
 
     async fn put_deletion_status(&self, status: &DeletionStatusDoc) -> Result<()> {
         let mut deletions = self.deletions.lock().expect("memory deletion jobs");
-        if deletions
-            .get(&status.session_id)
-            .is_some_and(|existing| existing.state == "succeeded" && status.state != "succeeded")
-        {
+        if deletions.get(&status.session_id).is_some_and(|existing| {
+            existing.state == DeletionState::Succeeded && status.state != DeletionState::Succeeded
+        }) {
             return Ok(());
         }
         deletions.insert(status.session_id.clone(), status.clone());
@@ -2925,7 +3039,7 @@ impl JournalStore for MemoryStore {
     async fn get_deletion_status(&self, session_id: &str) -> Result<Option<DeletionStatusDoc>> {
         let mut deletions = self.deletions.lock().expect("memory deletion jobs");
         if deletions.get(session_id).is_some_and(|status| {
-            status.state == "succeeded" && status.expires_at_ms <= crate::wall_ms()
+            status.state == DeletionState::Succeeded && status.expires_at_ms <= crate::wall_ms()
         }) {
             deletions.remove(session_id);
         }
@@ -2936,7 +3050,7 @@ impl JournalStore for MemoryStore {
         let mut deletions = self.deletions.lock().expect("memory deletion jobs");
         if deletions
             .get(&status.session_id)
-            .is_some_and(|existing| existing.state == "succeeded")
+            .is_some_and(|existing| existing.state == DeletionState::Succeeded)
         {
             return Ok(());
         }
@@ -3244,7 +3358,7 @@ impl JournalStore for MemoryStore {
                                 RecoveryItem {
                                     session_id: session_id.clone(),
                                     due_ms,
-                                    state: session.doc.state.clone(),
+                                    state: session.doc.state,
                                     active_phase: session.doc.active_phase,
                                     last_seq: session.last_seq,
                                     root_id: session.doc.root_id.clone(),
@@ -3309,13 +3423,13 @@ pub fn project_end_fence(head: &Head, now_ms: u64) -> Result<Option<(HeadDoc, u6
         .ok_or_else(|| BrainError::Journal("journal sequence exhausted".into()))?;
     let mut doc = head.doc.clone();
     doc.ended = true;
-    doc.state = "ending".into();
+    doc.state = SessionLifecycle::Ending;
     doc.updated_ms = now_ms;
     doc.last_seq = sequence;
     doc.recovery_attempt = 0;
     doc = doc.with_recovery_projection(now_ms);
     let record = Record::State {
-        state: "ending".into(),
+        state: SessionLifecycle::Ending,
         turn: doc.turn.clone(),
     };
     validate_decision(&head.session_id, &[(sequence, record.clone())], &doc)?;
