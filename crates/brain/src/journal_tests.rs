@@ -2416,3 +2416,72 @@ async fn recovery_cursor_reaches_later_due_rows_while_early_rows_remain_due() {
             .all(|item| item.due_ms == 1 && item.state == SessionLifecycle::Open)
     );
 }
+
+/// The journal enums have two encodings: serde (JSON docs) and as_str (store keys/attributes,
+/// logs). They must agree for every variant, and FromStr must accept exactly what they emit —
+/// otherwise a Dynamo attribute and its ControlDoc JSON could name the same state differently.
+#[test]
+fn enum_string_encodings_agree() {
+    macro_rules! check {
+        ($($variant:expr),+ $(,)?) => {
+            $(
+                let json = serde_json::to_value($variant).expect("serializes");
+                assert_eq!(json, serde_json::Value::String($variant.as_str().to_string()));
+            )+
+        };
+    }
+    check!(
+        SessionLifecycle::Open,
+        SessionLifecycle::Ending,
+        SessionLifecycle::Ended,
+        SessionLifecycle::Deleting,
+        SessionLifecycle::Deleted,
+        SessionLifecycle::Failed,
+        TurnPhase::ReadyToBuildModelRequest,
+        TurnPhase::ReadyToContinueModel,
+        TurnPhase::ReadyToDispatchTools,
+        TurnPhase::ReadyToFinish,
+        TurnPhase::ReadyToCompact,
+        TurnPhase::ModelIntentCommitted,
+        TurnPhase::ModelRunning,
+        TurnPhase::ModelUnknown,
+        TurnPhase::CompactionIntentCommitted,
+        TurnPhase::CompactionRunning,
+        TurnPhase::CompactionUnknown,
+        TurnPhase::ManagedRunning,
+        TurnPhase::ManagedCancelling,
+        TurnStopReason::EndTurn,
+        TurnStopReason::Refusal,
+        TurnStopReason::MaxRounds,
+        TurnStopReason::Cancelled,
+        TurnStopReason::Interrupted,
+        TurnStopReason::Error,
+        ProviderAttemptState::Intent,
+        ProviderAttemptState::Running,
+        ProviderAttemptState::Unknown,
+        ProviderAttemptState::ReplacementReady,
+        UploadReservationState::Reserved,
+        UploadReservationState::InlineReserved,
+        UploadReservationState::Published,
+        UploadReservationState::Completed,
+        DeletionState::Accepted,
+        DeletionState::Deleting,
+        DeletionState::Retrying,
+        DeletionState::Blocked,
+        DeletionState::Succeeded,
+    );
+
+    // FromStr round-trips for the parsed-on-read families.
+    for phase in [
+        "ready_to_build_model_request",
+        "managed_cancelling",
+        "model_unknown",
+    ] {
+        assert_eq!(phase.parse::<TurnPhase>().unwrap().as_str(), phase);
+    }
+    for state in ["open", "deleting", "failed"] {
+        assert_eq!(state.parse::<SessionLifecycle>().unwrap().as_str(), state);
+    }
+    assert!("banana".parse::<TurnPhase>().is_err());
+    assert!("banana".parse::<SessionLifecycle>().is_err());
+}
