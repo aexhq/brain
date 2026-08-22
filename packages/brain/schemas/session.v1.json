@@ -496,6 +496,9 @@
         "failure": {
           "$ref": "#/$defs/SessionFailure"
         },
+        "agentloop": {
+          "$ref": "#/$defs/AgentloopInfo"
+        },
         "metadata": {
           "type": "object",
           "maxProperties": 16,
@@ -609,6 +612,82 @@
         "submit_retries": { "type": "integer", "minimum": 0, "maximum": 8, "default": 1 }
       }
     },
+    "AgentloopConfig": {
+      "description": "Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "description": "An official loop by name (e.g. \"aex\", \"pi\"), resolved to the composition's pinned version and sealed as (name, version)."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source_bundle_sha256", "toolchain", "bundle_base64"],
+          "description": "A customer loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.",
+          "properties": {
+            "source_bundle_sha256": {
+              "$ref": "#/$defs/Sha256Hex"
+            },
+            "toolchain": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "description": "The pinned loop-toolchain identity the bundle was built for."
+            },
+            "bundle_base64": {
+              "type": "string",
+              "maxLength": 11184812,
+              "writeOnly": true,
+              "description": "The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."
+            }
+          }
+        }
+      ]
+    },
+    "AgentloopInfo": {
+      "description": "The sealed agentloop identity of a session.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name", "version"],
+          "properties": {
+            "kind": { "type": "string", "const": "official" },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "source_bundle_sha256", "toolchain"],
+          "properties": {
+            "kind": { "type": "string", "const": "custom" },
+            "source_bundle_sha256": { "$ref": "#/$defs/Sha256Hex" },
+            "toolchain": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            }
+          }
+        }
+      ]
+    },
     "ChildLimits": {
       "type": "object",
       "additionalProperties": false,
@@ -692,6 +771,9 @@
         },
         "client": {
           "$ref": "#/$defs/CustomerClientConfig"
+        },
+        "agentloop": {
+          "$ref": "#/$defs/AgentloopConfig"
         },
         "children": {
           "$ref": "#/$defs/ChildLimits"
@@ -1655,6 +1737,51 @@
             },
             "error": {
               "$ref": "#/$defs/ApiError"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "seq",
+            "at",
+            "session_id",
+            "turn_id",
+            "name",
+            "data"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "loop.event"
+              ]
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "session_id": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "turn_id": {
+              "$ref": "#/$defs/TurnId"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "description": "Loop-chosen event name."
+            },
+            "data": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "The loop-authored event payload, journaled as a loop `event` entry before it is delivered."
             }
           }
         }

@@ -25,11 +25,19 @@ pub const EVENT_HUB_RING_EVENTS: usize = 8;
 pub const DEFAULT_MAX_EVENT_FOLLOWERS: usize = 64;
 
 pub fn ts(ms: u64) -> Timestamp {
-    Timestamp(chrono::DateTime::from_timestamp_millis(ms as i64).unwrap_or_else(chrono::Utc::now))
+    // Timestamps are kernel-written wall-clock ms; a value chrono cannot represent is journal
+    // corruption and must be loud — substituting a plausible time would mask it.
+    Timestamp(
+        chrono::DateTime::from_timestamp_millis(ms as i64).unwrap_or_else(|| {
+            panic!("journal timestamp {ms}ms is outside the representable range")
+        }),
+    )
 }
 
 fn seq_nz(seq: u64) -> NonZeroU64 {
-    NonZeroU64::new(seq.max(1)).expect("nonzero")
+    // Journal seqs start at 1; a zero here is corruption, and clamping it to 1 would collide
+    // with a real record's seq instead of failing.
+    NonZeroU64::new(seq).unwrap_or_else(|| panic!("journal seq 0 is corrupt"))
 }
 
 fn preview(content: &str) -> (String, bool) {
@@ -87,6 +95,11 @@ pub fn usage_of(u: &crate::message::Usage) -> ProviderUsage {
 }
 
 /// Derives the SSE event for one durable record, or None for internal-only records.
+///
+/// This is a derived, non-authoritative projection: every `.ok()?` below is a deliberate
+/// projection drop — a journal-written id that no longer parses as its contract type
+/// suppresses that event from the stream while the journal keeps the truth (REST reads of
+/// the same state error loudly instead; see `session_doc`).
 pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option<Event> {
     let sid: session::SessionId = session_id.parse().ok()?;
     let at = ts(ts_ms);
@@ -308,7 +321,7 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
         },
         Record::LoopEvent { turn, name, data } => Event::LoopEvent {
             at,
-            data: data.as_object().cloned().unwrap_or_default(),
+            data: data.clone(),
             name: name.parse().ok()?,
             seq,
             session_id: sid,

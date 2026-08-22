@@ -43,7 +43,9 @@ impl AwsPersistenceConfig {
                 .map_err(|_| brain::BrainError::Invalid(format!("{name} is not set")))
         };
         Ok(Self {
-            region: std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".into()),
+            // No fallback region: a hosted composition booted without AWS_REGION would
+            // otherwise silently pin itself to one region — a deploy mistake must fail boot.
+            region: get("AWS_REGION")?,
             journal_table: get("BRAIN_JOURNAL_TABLE")?,
             kms_key_id: get("BRAIN_KMS_KEY_ID")?,
             session_storage_bucket: get("BRAIN_SESSION_STORAGE_BUCKET")?,

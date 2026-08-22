@@ -21,6 +21,13 @@ jobs:
           node-version: "22.23.2"
           cache: npm
       - run: npm ci
+      # Generated contract artifacts must match their source schemas — a contract change
+      # without a regen ships stale published types (found by the 2026-08-22 audit).
+      - name: generated artifacts are fresh
+        if: runner.os == 'Linux'
+        run: |
+          npm run gen -w packages/brain
+          git diff --exit-code packages/brain
       - run: npm test
       - run: npm run package-smoke
 

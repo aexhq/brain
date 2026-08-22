@@ -305,12 +305,12 @@ pub(crate) fn project_entry(
         },
         Record::LoopCustom { data, .. } => al::JournalEntryView::LoopCustom {
             at,
-            data: al::JsonObject(object_of(data)?),
+            data: al::JsonObject(data.clone()),
             seq: seq(seq_value)?,
         },
         Record::LoopEvent { name, data, .. } => al::JournalEntryView::LoopEvent {
             at,
-            data: al::JsonObject(object_of(data)?),
+            data: al::JsonObject(data.clone()),
             name: identifier(name)?,
             seq: seq(seq_value)?,
         },
@@ -321,7 +321,7 @@ pub(crate) fn project_entry(
         } => al::JournalEntryView::LoopMark {
             at,
             covers_through_seq: seq(*covers_through_seq)?,
-            data: al::JsonObject(object_of(data)?),
+            data: al::JsonObject(data.clone()),
             seq: seq(seq_value)?,
         },
         _ => return Ok(None),
@@ -421,7 +421,7 @@ mod tests {
             &crate::journal::Record::LoopEvent {
                 turn: "trn".into(),
                 name: "todo.updated".into(),
-                data: json!({"open": 3}),
+                data: json!({"open": 3}).as_object().cloned().expect("object"),
             },
         )
         .expect("projects")

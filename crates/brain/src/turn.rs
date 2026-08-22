@@ -493,12 +493,12 @@ impl LoopTurnCtx<'_> {
             let record = match entry {
                 al::LoopEntry::Custom { data } => Record::LoopCustom {
                     turn: turn.clone(),
-                    data: serde_json::Value::Object(data.0),
+                    data: data.0,
                 },
                 al::LoopEntry::Event { name, data } => Record::LoopEvent {
                     turn: turn.clone(),
                     name: name.to_string(),
-                    data: serde_json::Value::Object(data.0),
+                    data: data.0,
                 },
                 al::LoopEntry::Mark {
                     covers_through_seq,
@@ -506,7 +506,7 @@ impl LoopTurnCtx<'_> {
                 } => Record::LoopMark {
                     turn: turn.clone(),
                     covers_through_seq: covers_through_seq.0.get(),
-                    data: serde_json::Value::Object(data.0),
+                    data: data.0,
                 },
             };
             self.st.pending_loop.push((seq, record));
@@ -950,7 +950,7 @@ impl LoopTurnCtx<'_> {
     fn session_view(&self) -> Result<brain_protocol::agentloop::SessionContextView> {
         use brain_protocol::agentloop as al;
         let nonzero = |value: u64, what: &str| {
-            std::num::NonZeroU64::new(value.max(1))
+            std::num::NonZeroU64::new(value)
                 .ok_or_else(|| BrainError::Agentloop(format!("{what} limit cannot be zero")))
         };
         // The model-visible halves of the sealed grant ride the extensible metadata object, so
@@ -1021,7 +1021,7 @@ impl LoopTurnCtx<'_> {
                     .iter()
                     .find(|entry| entry.seq == mark_seq)
                     .and_then(|entry| match &entry.record {
-                        Record::LoopMark { data, .. } => data.as_object().cloned(),
+                        Record::LoopMark { data, .. } => Some(data.clone()),
                         _ => None,
                     })
                     .ok_or_else(|| {

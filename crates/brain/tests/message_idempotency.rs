@@ -71,6 +71,7 @@ async fn message_key_replays_while_active_after_completion_and_after_cold_hydrat
     let app = brain::api::router(brain::api::AppState {
         brain,
         token: token.clone(),
+        require_tenant: false,
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 

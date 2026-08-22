@@ -229,6 +229,37 @@ pub fn external_tool_response_wire_fits(response: &ExternalToolCallResponse) -> 
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_bundle_byte_bound_matches_the_frozen_contract() {
+        let schema: Value = serde_json::from_str(AGENTLOOP_CONTRACT_SCHEMA_JSON).unwrap();
+        let maximum = schema["definitions"]["custom_selector"]["properties"]["source_bundle_bytes"]
+            ["maximum"]
+            .as_u64()
+            .or_else(|| {
+                // The schema layout is not load-bearing here: find the one
+                // source_bundle_bytes.maximum wherever it lives.
+                fn find(value: &Value) -> Option<u64> {
+                    match value {
+                        Value::Object(map) => {
+                            if let Some(bound) = map
+                                .get("source_bundle_bytes")
+                                .and_then(|v| v.get("maximum"))
+                                .and_then(Value::as_u64)
+                            {
+                                return Some(bound);
+                            }
+                            map.values().find_map(find)
+                        }
+                        Value::Array(items) => items.iter().find_map(find),
+                        _ => None,
+                    }
+                }
+                find(&schema)
+            })
+            .expect("the agentloop contract bounds source_bundle_bytes");
+        assert_eq!(crate::MAX_LOOP_BUNDLE_BYTES as u64, maximum);
+    }
+
     fn external_response(content: String, result: Value) -> ExternalToolCallResponse {
         serde_json::from_value(serde_json::json!({
             "outcome": "completed",

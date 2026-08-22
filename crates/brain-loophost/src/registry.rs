@@ -177,6 +177,7 @@ impl LoophostRegistry {
             .arg(&source)
             .arg(&wit)
             .arg(&staged)
+            .arg(LOOP_TOOLCHAIN)
             .current_dir(&self.toolchain_dir);
         let output = match tokio::time::timeout(COMPONENTIZE_TIMEOUT, command.output()).await {
             Err(_elapsed) => {

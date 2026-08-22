@@ -442,7 +442,9 @@ pub fn plan(
                     _ => None,
                 })
             })
-            .unwrap_or_default()
+            // An installed summary IS the first message's text block; feeding the compactor
+            // an empty previous summary would silently degrade every later compaction.
+            .expect("an installed summary must be the first history message's text block")
     });
     let tail = history[cut..].to_vec();
     Some(CompactionPlan {

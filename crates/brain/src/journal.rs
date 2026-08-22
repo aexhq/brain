@@ -460,22 +460,24 @@ pub enum Record {
     },
     /// A loop-authored opaque entry (`contracts/agentloop/v1` `journal_append` kind `custom`).
     /// Never model input, never an SSE event; readable back through `journal_read`.
+    /// `data` is typed as an object because the contract only admits objects — a journal row
+    /// that fails this shape fails deserialization loudly instead of projecting a fabrication.
     LoopCustom {
         turn: String,
-        data: serde_json::Value,
+        data: serde_json::Map<String, serde_json::Value>,
     },
     /// A loop-authored application-visible entry; surfaces on SSE as `loop.event`.
     LoopEvent {
         turn: String,
         name: String,
-        data: serde_json::Value,
+        data: serde_json::Map<String, serde_json::Value>,
     },
     /// The loop's hydration floor: `data` carries its compacted working context and the next
     /// `session_start` tail begins after `covers_through_seq`.
     LoopMark {
         turn: String,
         covers_through_seq: u64,
-        data: serde_json::Value,
+        data: serde_json::Map<String, serde_json::Value>,
     },
     /// One durable `kv_set` batch: key to value, `null` deletes. The session's kv map is the
     /// fold of these records; caps are enforced at the op boundary before the record exists.

@@ -362,6 +362,7 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
     let app = brain::api::router(brain::api::AppState {
         brain: brain.clone(),
         token: OPERATOR_TOKEN.into(),
+        require_tenant: false,
     });
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let http = Client::new();
