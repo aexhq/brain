@@ -30,6 +30,7 @@ use brain::journal::{
 use brain::{BrainError, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::time::Duration;
 
 pub const TENANT_SESSIONS_INDEX: &str = "tenant-sessions";
 pub const TENANT_STATE_SESSIONS_INDEX: &str = "tenant-state-sessions";
@@ -55,13 +56,173 @@ fn deletion_pk(session_id: &str) -> String {
 pub struct DynamoJournal {
     db: aws_sdk_dynamodb::Client,
     table: String,
+    /// Short-lived per-tenant meter snapshot for the commit-path quota precheck.
+    /// The hot path must stay one authoritative write round trip; this bounds the
+    /// added reads to one per tenant per TTL window.
+    meter_cache: std::sync::Mutex<std::collections::HashMap<String, MeterSnapshot>>,
 }
+
+#[derive(Clone, Copy)]
+struct MeterSnapshot {
+    storage_bytes: i64,
+    journal_bytes: i64,
+    fetched: std::time::Instant,
+}
+
+const METER_CACHE_TTL: Duration = Duration::from_secs(5);
+const METER_ADD_ATTEMPTS: u32 = 5;
 
 impl DynamoJournal {
     pub fn new(db: aws_sdk_dynamodb::Client, table: impl Into<String>) -> Self {
         Self {
             db,
             table: table.into(),
+            meter_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Commit-path tenant quota check against a bounded-staleness meter snapshot.
+    ///
+    /// Tenant meters are deliberately NOT part of the commit transaction: every commit of
+    /// every session of a tenant would otherwise serialize (and TransactionConflict) on one
+    /// item — the measured same-tenant livelock. Quota therefore becomes a capacity boundary
+    /// with bounded overshoot (in-flight commits within one cache TTL), not an exact ledger,
+    /// which matches its product framing. Meter maintenance is `apply_meter_adds` after the
+    /// authoritative transaction.
+    async fn commit_meter_precheck(
+        &self,
+        tenant_id: &str,
+        storage_delta: i64,
+        storage_limit: u64,
+        retention_delta: i64,
+        retention_limit: u64,
+    ) -> Result<()> {
+        if storage_delta <= 0 && retention_delta <= 0 {
+            return Ok(());
+        }
+        let cached = {
+            let cache = self.meter_cache.lock().expect("meter cache");
+            cache.get(tenant_id).copied()
+        };
+        let snapshot = match cached {
+            Some(snapshot) if snapshot.fetched.elapsed() < METER_CACHE_TTL => snapshot,
+            _ => {
+                let fresh = self.load_meter_snapshot(tenant_id).await?;
+                self.meter_cache
+                    .lock()
+                    .expect("meter cache")
+                    .insert(tenant_id.to_string(), fresh);
+                fresh
+            }
+        };
+        // Drifted-negative meters read as zero: drift must never manufacture quota headroom
+        // beyond the limit nor block a tenant below it.
+        if storage_delta > 0 {
+            let used = snapshot.storage_bytes.max(0) as u64;
+            if used.saturating_add(storage_delta as u64) > storage_limit {
+                return Err(BrainError::TenantStorageQuotaExceeded {
+                    requested: storage_delta as u64,
+                    limit: storage_limit,
+                });
+            }
+        }
+        if retention_delta > 0 {
+            let used = snapshot.journal_bytes.max(0) as u64;
+            if used.saturating_add(retention_delta as u64) > retention_limit {
+                return Err(BrainError::TenantJournalQuotaExceeded {
+                    requested: retention_delta as u64,
+                    limit: retention_limit,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn load_meter_snapshot(&self, tenant_id: &str) -> Result<MeterSnapshot> {
+        let read = |sk: &'static str| {
+            self.db
+                .get_item()
+                .table_name(&self.table)
+                .key("pk", AttributeValue::S(tenant_pk(tenant_id)))
+                .key("sk", AttributeValue::S(sk.into()))
+                .send()
+        };
+        let (storage, retention) = tokio::join!(read(TENANT_STORAGE_SK), read(TENANT_RETENTION_SK));
+        let bytes = |output: std::result::Result<
+            aws_sdk_dynamodb::operation::get_item::GetItemOutput,
+            _,
+        >,
+                     label: &str|
+         -> Result<i64> {
+            let output = output
+                .map_err(|error| BrainError::Journal(format!("{label}: {}", describe(&error))))?;
+            Ok(output
+                .item()
+                .and_then(|item| item.get("total_bytes"))
+                .and_then(|value| value.as_n().ok())
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0))
+        };
+        Ok(MeterSnapshot {
+            storage_bytes: bytes(storage, "get tenant storage meter")?,
+            journal_bytes: bytes(retention, "get tenant retention meter")?,
+            fetched: std::time::Instant::now(),
+        })
+    }
+
+    /// Apply tenant meter deltas as unconditional atomic ADDs after an authoritative
+    /// transaction committed. ADD is conflict-free, so same-tenant sessions never
+    /// serialize here. A delta lost to a crash or exhausted retries is bounded drift,
+    /// reconciled by deletion accounting — never a reason to fail the committed decision.
+    async fn apply_meter_adds(&self, tenant_id: &str, storage_delta: i64, retention_delta: i64) {
+        for (sk, delta, label) in [
+            (TENANT_STORAGE_SK, storage_delta, "storage"),
+            (TENANT_RETENTION_SK, retention_delta, "retention"),
+        ] {
+            if delta == 0 {
+                continue;
+            }
+            let mut attempt = 0u32;
+            loop {
+                let outcome = self
+                    .db
+                    .update_item()
+                    .table_name(&self.table)
+                    .key("pk", AttributeValue::S(tenant_pk(tenant_id)))
+                    .key("sk", AttributeValue::S(sk.into()))
+                    .update_expression("ADD total_bytes :delta")
+                    .expression_attribute_values(":delta", AttributeValue::N(delta.to_string()))
+                    .send()
+                    .await;
+                match outcome {
+                    Ok(_) => {
+                        let mut cache = self.meter_cache.lock().expect("meter cache");
+                        if let Some(snapshot) = cache.get_mut(tenant_id) {
+                            match label {
+                                "storage" => snapshot.storage_bytes += delta,
+                                _ => snapshot.journal_bytes += delta,
+                            }
+                        }
+                        break;
+                    }
+                    Err(error) if attempt < METER_ADD_ATTEMPTS => {
+                        attempt += 1;
+                        let _ = &error;
+                        tokio::time::sleep(std::time::Duration::from_millis(20u64 << attempt))
+                            .await;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            tenant = tenant_id,
+                            meter = label,
+                            delta,
+                            error = %describe(&error),
+                            "tenant meter add abandoned after retries; drift reconciles at deletion"
+                        );
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -790,54 +951,14 @@ impl JournalStore for DynamoJournal {
                 transaction =
                     transaction.transact_items(TransactWriteItem::builder().put(link).build());
             }
-            let retention_meter_index = if journal_delta == 0 {
-                None
-            } else {
-                let mut meter = Update::builder()
-                    .table_name(&self.table)
-                    .key("pk", AttributeValue::S(tenant_pk(&doc.tenant_id)))
-                    .key("sk", AttributeValue::S(TENANT_RETENTION_SK.into()))
-                    .expression_attribute_values(
-                        ":delta",
-                        AttributeValue::N(journal_delta.to_string()),
-                    );
-                if journal_delta > 0 {
-                    let requested = journal_delta as u64;
-                    let remaining = retention_limits.tenant_bytes.checked_sub(requested).ok_or(
-                        BrainError::TenantJournalQuotaExceeded {
-                            requested,
-                            limit: retention_limits.tenant_bytes,
-                        },
-                    )?;
-                    meter = meter
-                        .condition_expression("total_bytes <= :remaining")
-                        .update_expression("ADD total_bytes :delta")
-                        .expression_attribute_values(
-                            ":remaining",
-                            AttributeValue::N(remaining.to_string()),
-                        );
-                } else {
-                    meter = meter
-                        .condition_expression("total_bytes >= :release")
-                        .update_expression("ADD total_bytes :delta")
-                        .expression_attribute_values(
-                            ":release",
-                            AttributeValue::N(journal_delta.unsigned_abs().to_string()),
-                        );
-                }
-                let meter = meter.build().map_err(|error| {
-                    BrainError::Journal(format!("end fence tenant retention meter: {error}"))
-                })?;
-                let index = transaction
-                    .get_transact_items()
-                    .as_ref()
-                    .map_or(0, Vec::len);
-                transaction =
-                    transaction.transact_items(TransactWriteItem::builder().update(meter).build());
-                Some(index)
-            };
+            // The end-fence State record's meter delta rides outside the transaction as a
+            // conflict-free ADD (same reasoning as commit). Ending a session is never
+            // refused for byte quota: the record is bounded and refusing an end would
+            // strand the session at exactly the moment the tenant wants capacity back.
             match transaction.send().await {
                 Ok(_) => {
+                    self.apply_meter_adds(&doc.tenant_id, 0, journal_delta)
+                        .await;
                     return Ok(EndFence {
                         head: Head {
                             session_id: session_id.into(),
@@ -848,20 +969,6 @@ impl JournalStore for DynamoJournal {
                         },
                         newly_fenced: true,
                     });
-                }
-                Err(error)
-                    if retention_meter_index
-                        .is_some_and(|index| transaction_condition_failed_at(&error, index)) =>
-                {
-                    if journal_delta > 0 {
-                        return Err(BrainError::TenantJournalQuotaExceeded {
-                            requested: journal_delta as u64,
-                            limit: retention_limits.tenant_bytes,
-                        });
-                    }
-                    return Err(BrainError::Journal(
-                        "tenant journal meter rejected an impossible end-fence release".into(),
-                    ));
                 }
                 Err(error) if conditional_failure(&error) => continue,
                 Err(error) => {
@@ -1126,131 +1233,25 @@ impl JournalStore for DynamoJournal {
                 .map_err(|error| BrainError::Journal(format!("child link update: {error}")))?;
             tx = tx.transact_items(TransactWriteItem::builder().put(link).build());
         }
-        let meter_index = if tenant_storage_delta == 0 {
-            None
-        } else {
-            let delta = tenant_storage_delta;
-            // `:zero` is referenced only by the growth expression; binding it on the release
-            // branch made DynamoDB reject EVERY storage-releasing commit (session end) with
-            // "ExpressionAttributeValues unused: {:zero}" — an endless end-retry loop.
-            let mut meter = Update::builder()
-                .table_name(&self.table)
-                .key("pk", AttributeValue::S(tenant_pk(&doc.tenant_id)))
-                .key("sk", AttributeValue::S(TENANT_STORAGE_SK.into()))
-                .expression_attribute_values(":delta", AttributeValue::N(delta.to_string()));
-            if delta > 0 {
-                let requested = delta as u64;
-                let remaining = tenant_storage_limit.checked_sub(requested).ok_or(
-                    BrainError::TenantStorageQuotaExceeded {
-                        requested,
-                        limit: tenant_storage_limit,
-                    },
-                )?;
-                meter = meter
-                    .condition_expression(
-                        "attribute_not_exists(total_bytes) OR total_bytes <= :remaining",
-                    )
-                    .update_expression(
-                        "SET total_bytes = if_not_exists(total_bytes, :zero) + :delta",
-                    )
-                    .expression_attribute_values(":zero", AttributeValue::N("0".into()))
-                    .expression_attribute_values(
-                        ":remaining",
-                        AttributeValue::N(remaining.to_string()),
-                    );
-            } else {
-                meter = meter
-                    .condition_expression("total_bytes >= :release")
-                    .update_expression("ADD total_bytes :delta")
-                    .expression_attribute_values(
-                        ":release",
-                        AttributeValue::N(delta.unsigned_abs().to_string()),
-                    );
-            }
-            let meter = meter
-                .build()
-                .map_err(|error| BrainError::Journal(format!("tenant storage meter: {error}")))?;
-            // Cancellation reasons preserve the transaction item order. Record the exact slot
-            // before appending the meter so a quota condition is never confused with a fence.
-            let index = tx.get_transact_items().as_ref().map_or(0, Vec::len);
-            tx = tx.transact_items(TransactWriteItem::builder().update(meter).build());
-            Some((index, delta))
-        };
-        let retention_meter_index = if tenant_retention_delta == 0 {
-            None
-        } else {
-            let delta = tenant_retention_delta;
-            let mut meter = Update::builder()
-                .table_name(&self.table)
-                .key("pk", AttributeValue::S(tenant_pk(&doc.tenant_id)))
-                .key("sk", AttributeValue::S(TENANT_RETENTION_SK.into()))
-                .expression_attribute_values(":delta", AttributeValue::N(delta.to_string()));
-            if delta > 0 {
-                let requested = delta as u64;
-                let remaining = retention_limits.tenant_bytes.checked_sub(requested).ok_or(
-                    BrainError::TenantJournalQuotaExceeded {
-                        requested,
-                        limit: retention_limits.tenant_bytes,
-                    },
-                )?;
-                meter = meter
-                    .condition_expression("total_bytes <= :remaining")
-                    .update_expression("ADD total_bytes :delta")
-                    .expression_attribute_values(
-                        ":remaining",
-                        AttributeValue::N(remaining.to_string()),
-                    );
-            } else {
-                meter = meter
-                    .condition_expression("total_bytes >= :release")
-                    .update_expression("ADD total_bytes :delta")
-                    .expression_attribute_values(
-                        ":release",
-                        AttributeValue::N(delta.unsigned_abs().to_string()),
-                    );
-            }
-            let meter = meter
-                .build()
-                .map_err(|error| BrainError::Journal(format!("tenant journal meter: {error}")))?;
-            let index = tx.get_transact_items().as_ref().map_or(0, Vec::len);
-            tx = tx.transact_items(TransactWriteItem::builder().update(meter).build());
-            Some((index, delta))
-        };
-        // Retry the identical transaction on cross-session TransactionConflict (shared
-        // tenant-meter contention) under one stable client request token, so a retry of an
-        // invisibly-committed attempt settles as success instead of failing its own
-        // conditions. Only non-conflict failures reach classification.
-        let classify = |error| {
-            if let Some((index, delta)) = meter_index
-                && transaction_condition_failed_at(&error, index)
-            {
-                if delta > 0 {
-                    return BrainError::TenantStorageQuotaExceeded {
-                        requested: delta as u64,
-                        limit: tenant_storage_limit,
-                    };
-                }
-                return BrainError::Journal(
-                    "tenant storage meter rejected an impossible negative transition".into(),
-                );
-            }
-            if let Some((index, delta)) = retention_meter_index
-                && transaction_condition_failed_at(&error, index)
-            {
-                if delta > 0 {
-                    return BrainError::TenantJournalQuotaExceeded {
-                        requested: delta as u64,
-                        limit: retention_limits.tenant_bytes,
-                    };
-                }
-                return BrainError::Journal(
-                    "tenant journal meter rejected an impossible negative transition".into(),
-                );
-            }
-            match conditional_failure(&error) {
-                true => BrainError::Fenced,
-                false => BrainError::Journal(format!("commit: {}", describe(&error))),
-            }
+        // Tenant meters ride OUTSIDE the commit transaction: quota is prechecked against a
+        // bounded-staleness snapshot, and the deltas are applied as conflict-free atomic
+        // ADDs after the authoritative write. Including them in the transaction made every
+        // same-tenant commit serialize on one item (the measured K>=2 livelock).
+        self.commit_meter_precheck(
+            &doc.tenant_id,
+            tenant_storage_delta,
+            tenant_storage_limit,
+            tenant_retention_delta,
+            retention_limits.tenant_bytes,
+        )
+        .await?;
+        // Retry the identical transaction on TransactionConflict (e.g. a concurrent deletion
+        // transaction touching this session's items) under one stable client request token,
+        // so a retry of an invisibly-committed attempt settles as success instead of failing
+        // its own conditions. Only non-conflict failures reach classification.
+        let classify = |error| match conditional_failure(&error) {
+            true => BrainError::Fenced,
+            false => BrainError::Journal(format!("commit: {}", describe(&error))),
         };
         let token = transaction_token(&[
             session_id.as_bytes(),
@@ -1268,6 +1269,8 @@ impl JournalStore for DynamoJournal {
                 Err(error) => return Err(classify(error)),
             }
         }
+        self.apply_meter_adds(&doc.tenant_id, tenant_storage_delta, tenant_retention_delta)
+            .await;
         Ok(())
     }
 
@@ -1537,16 +1540,14 @@ impl JournalStore for DynamoJournal {
             .transact_items(TransactWriteItem::builder().delete(delete_head).build())
             .transact_items(TransactWriteItem::builder().delete(delete_config).build());
         if status.metered_storage_bytes > 0 {
+            // Unconditional release: meters are approximate (commit-path ADDs can drift on
+            // a crash window), and a floor condition here would strand deletion forever on
+            // any downward drift. Negative meters read as zero at quota checks.
             let release_meter = Update::builder()
                 .table_name(&self.table)
                 .key("pk", AttributeValue::S(tenant_pk(&status.tenant_id)))
                 .key("sk", AttributeValue::S(TENANT_STORAGE_SK.into()))
-                .condition_expression("total_bytes >= :release")
                 .update_expression("ADD total_bytes :minus_release")
-                .expression_attribute_values(
-                    ":release",
-                    AttributeValue::N(status.metered_storage_bytes.to_string()),
-                )
                 .expression_attribute_values(
                     ":minus_release",
                     AttributeValue::N(format!("-{}", status.metered_storage_bytes)),
@@ -1558,16 +1559,15 @@ impl JournalStore for DynamoJournal {
             transaction = transaction
                 .transact_items(TransactWriteItem::builder().update(release_meter).build());
         }
+        // Same drift tolerance as the storage release: the session-count floor stays as a
+        // condition (counts only ever move transactionally at create/finalize, so a failed
+        // floor there is real corruption worth surfacing), but the byte floor goes.
         let mut release_retention = Update::builder()
             .table_name(&self.table)
             .key("pk", AttributeValue::S(tenant_pk(&status.tenant_id)))
             .key("sk", AttributeValue::S(TENANT_RETENTION_SK.into()))
-            .condition_expression("total_bytes >= :release AND session_count >= :one")
+            .condition_expression("session_count >= :one")
             .expression_attribute_values(":one", AttributeValue::N("1".into()))
-            .expression_attribute_values(
-                ":release",
-                AttributeValue::N(status.metered_journal_bytes.to_string()),
-            )
             .expression_attribute_values(":minus_one", AttributeValue::N("-1".into()));
         release_retention = if status.metered_journal_bytes == 0 {
             release_retention.update_expression("ADD session_count :minus_one")
