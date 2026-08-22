@@ -2498,7 +2498,11 @@ impl TurnRun {
                 result = submit => result.map_err(|_| BrainError::HandUnavailable(
                     "managed Tool submit exceeded its sealed deadline".into()
                 ))?,
-                () = self.cancel.cancelled() => return Err(BrainError::Cancelled),
+                () = self.cancel.cancelled() => {
+                    return self
+                        .finish_managed_submit_unknown(st, operation_id, name, &request_digest)
+                        .await;
+                }
             };
             match result {
                 Ok(receipt) => break receipt,
@@ -2618,6 +2622,8 @@ impl TurnRun {
                 ));
             }
             if self.cancel.is_cancelled() && !cancellation_sent {
+                st.head.active_phase = Some(crate::session::MANAGED_CANCELLING_PHASE.into());
+                self.commit(st, vec![]).await?;
                 let request: brain_protocol::hand::CancelRequest =
                     serde_json::from_value(serde_json::json!({
                         "operation": receipt.operation,
@@ -2672,6 +2678,9 @@ impl TurnRun {
         name: &str,
         request_digest: &str,
     ) -> Result<DispatchedOutcome> {
+        if self.cancel.is_cancelled() {
+            st.head.active_phase = Some(crate::session::MANAGED_CANCELLING_PHASE.into());
+        }
         self.commit(
             st,
             vec![(
