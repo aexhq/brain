@@ -23,6 +23,7 @@
 mod echo;
 mod mem;
 mod stats;
+mod writebehind;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -70,6 +71,18 @@ struct Args {
     /// exist to separate a leak (grows every cycle) from allocator fragmentation (plateaus).
     #[arg(long, default_value_t = 3)]
     cycles: usize,
+    /// Journal backend under test: memory (no durability; the harness floor),
+    /// sqlite (WAL + synchronous=FULL, the local-mode store), or dynamo (the
+    /// production store; latency only meaningful in-region with the table).
+    #[arg(long, default_value = "memory")]
+    journal: String,
+    /// sqlite backend: database file path. Default: a fresh file per run in the
+    /// system temp dir, so runs never measure a pre-grown database.
+    #[arg(long)]
+    sqlite_path: Option<String>,
+    /// dynamo backend: table name (falls back to BRAIN_JOURNAL_TABLE).
+    #[arg(long)]
+    dynamo_table: Option<String>,
     /// Gate thresholds (used by `ci`; also enforced on other arms when set).
     #[arg(long)]
     gate_max_kib_per_session: Option<f64>,
@@ -93,6 +106,10 @@ const TOKEN: &str = "bench-token";
 struct Api {
     base: String,
     http: reqwest::Client,
+    /// Optional tenant header. BRAIN_BENCH_TENANTS=per-session gives each driven session
+    /// its own tenant so the durable backend measures per-session commit latency instead
+    /// of same-tenant meter contention (which is a separate, real ceiling).
+    tenant: Option<String>,
 }
 
 /// An in-process bench server, with direct handles on the instruments.
@@ -122,6 +139,10 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         max_concurrent_model_rounds: 4096,
         max_concurrent_turns: 4096,
         max_event_followers: 4096,
+        // K>128 sweeps need every driven session resident at once; creates are
+        // admission-limited to 4 by default and the sweep opens K sessions up front.
+        max_resident_sessions: 4096,
+        max_concurrent_creates: 256,
         // Density intentionally packs more simultaneously retained sessions than the hosted
         // tenant policy admits. Keep the per-session retention invariant, but exempt this
         // process-isolated measurement from the aggregate tenant product quota just as it is
@@ -141,9 +162,81 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         },
     );
     let factory_fake = fake.clone();
+    let journal = match args.journal.as_str() {
+        "memory" => Journal::new_memory("bench"),
+        "sqlite" => {
+            let path = args.sqlite_path.clone().unwrap_or_else(|| {
+                std::env::temp_dir()
+                    .join(format!("brain-bench-{}.sqlite3", std::process::id()))
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            let store = brain_standalone::SqliteStore::open(&path)
+                .map_err(|e| anyhow::anyhow!("open sqlite journal {path}: {e}"))?;
+            eprintln!("journal: sqlite at {path}");
+            Journal::new(Arc::new(store), "bench")
+        }
+        "dynamo" => {
+            let table = args
+                .dynamo_table
+                .clone()
+                .or_else(|| std::env::var("BRAIN_JOURNAL_TABLE").ok())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("--journal dynamo needs --dynamo-table or BRAIN_JOURNAL_TABLE")
+                })?;
+            let aws = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+            let client = aws_sdk_dynamodb::Client::new(&aws);
+            eprintln!(
+                "journal: dynamo table {table} in {}",
+                aws.region().map(|r| r.to_string()).unwrap_or_default()
+            );
+            Journal::new(
+                Arc::new(brain_aws::dynamo::DynamoJournal::new(client, table)),
+                "bench",
+            )
+        }
+        // Local-first arms: memory-authoritative acks, async persistence measured by the
+        // writebehind module (persistence lag, backlog, loss window).
+        "writebehind-sqlite" => {
+            let path = args.sqlite_path.clone().unwrap_or_else(|| {
+                std::env::temp_dir()
+                    .join(format!("brain-bench-wb-{}.sqlite3", std::process::id()))
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            eprintln!("journal: write-behind -> sqlite at {path}");
+            Journal::new(
+                Arc::new(writebehind::WriteBehindStore::new(
+                    writebehind::Sink::Sqlite(path),
+                )),
+                "bench",
+            )
+        }
+        "writebehind-dynamo" => {
+            let table = args
+                .dynamo_table
+                .clone()
+                .or_else(|| std::env::var("BRAIN_JOURNAL_TABLE").ok())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--journal writebehind-dynamo needs --dynamo-table or BRAIN_JOURNAL_TABLE"
+                    )
+                })?;
+            eprintln!("journal: write-behind -> dynamo table {table}");
+            Journal::new(
+                Arc::new(writebehind::WriteBehindStore::new(
+                    writebehind::Sink::Dynamo { table },
+                )),
+                "bench",
+            )
+        }
+        other => anyhow::bail!(
+            "unknown --journal {other} (memory|sqlite|dynamo|writebehind-sqlite|writebehind-dynamo)"
+        ),
+    };
     let brain = Brain::with_parts_and_services(
         cfg,
-        Journal::new_memory("bench"),
+        journal,
         Arc::new(brain::keys::PlainCustody),
         executor.clone(),
         BrainServices::default(),
@@ -166,6 +259,7 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         api: Api {
             base,
             http: reqwest::Client::new(),
+            tenant: None,
         },
         fake,
         executor,
@@ -216,11 +310,20 @@ fn bench_routes(fake: Arc<FakeProvider>, executor: Arc<echo::EchoExecutor>) -> a
 }
 
 impl Api {
+    fn tenant_headers(&self) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(tenant) = &self.tenant {
+            headers.insert("x-brain-tenant-id", tenant.parse().expect("tenant header"));
+        }
+        headers
+    }
+
     async fn create_session(&self) -> anyhow::Result<String> {
         let r = self
             .http
             .post(format!("{}/v1/sessions", self.base))
             .bearer_auth(TOKEN)
+            .headers(self.tenant_headers())
             .json(&json!({
                 // Keep semantic compaction out of the turn-throughput instrument. Its own
                 // correctness and wire-budget gates live in Brain's compaction test suite.
@@ -256,6 +359,7 @@ impl Api {
             .http
             .delete(format!("{}/v1/sessions/{sid}", self.base))
             .bearer_auth(TOKEN)
+            .headers(self.tenant_headers())
             .send()
             .await?;
         if r.status().as_u16() == 204 {
@@ -275,7 +379,13 @@ impl Api {
         };
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                let status = self.http.get(&url).bearer_auth(TOKEN).send().await?;
+                let status = self
+                    .http
+                    .get(&url)
+                    .bearer_auth(TOKEN)
+                    .headers(self.tenant_headers())
+                    .send()
+                    .await?;
                 anyhow::ensure!(
                     status.status().is_success(),
                     "deletion status {sid}: {}",
@@ -363,6 +473,7 @@ impl EventStream {
                 api.base,
             ))
             .bearer_auth(TOKEN)
+            .headers(api.tenant_headers())
             .send()
             .await?;
         anyhow::ensure!(resp.status().is_success(), "events: {}", resp.status());
@@ -439,6 +550,7 @@ async fn drive_session(
             .http
             .post(format!("{}/v1/sessions/{sid}/messages", api.base))
             .bearer_auth(TOKEN)
+            .headers(api.tenant_headers())
             .json(&json!({"content": "go"}))
             .send()
             .await?;
@@ -483,16 +595,27 @@ async fn drive_all(
     turns: usize,
     require_ttft: bool,
 ) -> anyhow::Result<(TurnSamples, f64, Vec<String>)> {
+    // BRAIN_BENCH_TENANTS=per-session isolates each session under its own tenant, so a
+    // durable backend's shared tenant-meter items measure per-session latency rather than
+    // same-tenant transaction contention.
+    let per_session_tenants = std::env::var("BRAIN_BENCH_TENANTS")
+        .map(|v| v == "per-session")
+        .unwrap_or(false);
+    let mut apis = Vec::with_capacity(k);
     let mut sids = Vec::with_capacity(k);
-    for _ in 0..k {
-        sids.push(api.create_session().await?);
+    for i in 0..k {
+        let mut session_api = api.clone();
+        if per_session_tenants {
+            session_api.tenant = Some(format!("bench-t{i}"));
+        }
+        sids.push(session_api.create_session().await?);
+        apis.push(session_api);
     }
     let wall = Instant::now();
     let mut set = tokio::task::JoinSet::new();
-    for sid in &sids {
-        let api = api.clone();
+    for (sid, session_api) in sids.iter().zip(apis) {
         let sid = sid.clone();
-        set.spawn(async move { drive_session(&api, &sid, turns, require_ttft).await });
+        set.spawn(async move { drive_session(&session_api, &sid, turns, require_ttft).await });
     }
     let mut all = TurnSamples::default();
     while let Some(r) = set.join_next().await {
@@ -547,8 +670,24 @@ async fn arm_turns(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
         b.fake.call_count.load(Ordering::SeqCst),
         b.executor.calls.load(Ordering::SeqCst),
     );
-    anyhow::ensure!(gm == em, "model calls: expected {em}, got {gm}");
-    anyhow::ensure!(gt == et, "tool calls: expected {et}, got {gt}");
+    // A durable backend can legitimately add a kernel-side provider retry (one extra
+    // model call), which the strict count guard treats as corruption. BRAIN_BENCH_LAX=1
+    // downgrades count drift to a warning so backend-latency spikes keep their samples;
+    // the CI composition (memory journal) stays strict.
+    let lax = std::env::var("BRAIN_BENCH_LAX")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if lax {
+        if gm != em {
+            eprintln!("WARN model calls: expected {em}, got {gm}");
+        }
+        if gt != et {
+            eprintln!("WARN tool calls: expected {et}, got {gt}");
+        }
+    } else {
+        anyhow::ensure!(gm == em, "model calls: expected {em}, got {gm}");
+        anyhow::ensure!(gt == et, "tool calls: expected {et}, got {gt}");
+    }
 
     let turns_per_sec = (k * args.turns) as f64 / wall_s;
     let turn = stats::summarize(&all.turn_ms);
@@ -559,6 +698,9 @@ async fn arm_turns(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
     );
     println!("  {}", fmt_summary("turn_latency", &turn));
     println!("  {}", fmt_summary("admit(POST->turn.started)", &admit));
+    if let Some(line) = writebehind::report_after_drain().await {
+        println!("  {line}");
+    }
     if args.tool_rounds == 0 {
         let ttft = stats::summarize(&all.ttft_ms);
         println!("  {}", fmt_summary("ttft_added(POST->first delta)", &ttft));
@@ -629,6 +771,7 @@ async fn arm_density(args: &Args, book: &mut GateBook) -> anyhow::Result<()> {
     let api = Api {
         base,
         http: reqwest::Client::new(),
+        tenant: None,
     };
     let sample = |api: Api| async move {
         api.trim().await?;

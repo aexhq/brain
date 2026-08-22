@@ -486,7 +486,25 @@ impl JournalStore for DynamoJournal {
             .map_or(0, Vec::len);
         transaction = transaction
             .transact_items(TransactWriteItem::builder().update(retention_meter).build());
-        match transaction.send().await {
+        // Same conflict-retry discipline as commit — create transacts on the shared tenant
+        // meters and can collide with any sibling session's commit.
+        let token = transaction_token(&[session_id.as_bytes(), b"create"]);
+        let mut attempt = 0u32;
+        let outcome = loop {
+            match transaction
+                .clone()
+                .client_request_token(token.clone())
+                .send()
+                .await
+            {
+                Err(error) if transaction_conflicted(&error) && attempt < 5 => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(20u64 << attempt)).await;
+                }
+                other => break other,
+            }
+        };
+        match outcome {
             Ok(_) => Ok(()),
             Err(error)
                 if create_meter_index
@@ -522,8 +540,12 @@ impl JournalStore for DynamoJournal {
                     Err(read_error) => return Err(read_error),
                 }
                 let Some(parent_id) = &doc.parent_id else {
-                    return Err(BrainError::Invalid(format!(
-                        "session {session_id} already exists"
+                    // A root create failed a transaction condition, yet no HEAD exists for
+                    // this id: the failed condition was one of the meter/quota items, not an
+                    // id collision. Report it honestly instead of "already exists".
+                    return Err(BrainError::Journal(format!(
+                        "create failed a transaction condition without an existing HEAD: {}",
+                        describe(&error)
                     )));
                 };
                 let parent = match self.get_head(parent_id).await {
@@ -1194,7 +1216,11 @@ impl JournalStore for DynamoJournal {
             tx = tx.transact_items(TransactWriteItem::builder().update(meter).build());
             Some((index, delta))
         };
-        tx.send().await.map_err(|error| {
+        // Retry the identical transaction on cross-session TransactionConflict (shared
+        // tenant-meter contention) under one stable client request token, so a retry of an
+        // invisibly-committed attempt settles as success instead of failing its own
+        // conditions. Only non-conflict failures reach classification.
+        let classify = |error| {
             if let Some((index, delta)) = meter_index
                 && transaction_condition_failed_at(&error, index)
             {
@@ -1225,7 +1251,23 @@ impl JournalStore for DynamoJournal {
                 true => BrainError::Fenced,
                 false => BrainError::Journal(format!("commit: {}", describe(&error))),
             }
-        })?;
+        };
+        let token = transaction_token(&[
+            session_id.as_bytes(),
+            &fence.to_be_bytes(),
+            &high_water.to_be_bytes(),
+        ]);
+        let mut attempt = 0u32;
+        loop {
+            match tx.clone().client_request_token(token.clone()).send().await {
+                Ok(_) => break,
+                Err(error) if transaction_conflicted(&error) && attempt < 5 => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(20u64 << attempt)).await;
+                }
+                Err(error) => return Err(classify(error)),
+            }
+        }
         Ok(())
     }
 
@@ -2234,6 +2276,52 @@ fn transaction_condition_failed_at<R>(
         == Some("ConditionalCheckFailed")
 }
 
+/// A `TransactionCanceledException` whose only meaningful reasons are `TransactionConflict`
+/// is a retryable cross-transaction collision — typically two sessions of one tenant
+/// updating the shared tenant meter item — not a condition failure. Without this
+/// distinction, `conditional_failure` misreports ordinary contention as `Fenced` on commit
+/// and as "session already exists" on create (found by the 2026-08-22 kernel-overhead
+/// spike, which failed any two concurrent same-tenant sessions).
+fn transaction_conflicted<R>(
+    error: &SdkError<aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError, R>,
+) -> bool {
+    use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
+    let SdkError::ServiceError(service) = error else {
+        return false;
+    };
+    let TransactWriteItemsError::TransactionCanceledException(cancelled) = service.err() else {
+        return false;
+    };
+    let mut saw_conflict = false;
+    for reason in cancelled.cancellation_reasons() {
+        match reason.code() {
+            Some("TransactionConflict") => saw_conflict = true,
+            Some("None") | None => {}
+            // Any other reason (condition failure, throttle, validation) decides the outcome.
+            Some(_) => return false,
+        }
+    }
+    saw_conflict
+}
+
+/// Stable idempotency token for one logical transaction, so an identical retry after an
+/// invisibly-committed attempt settles as success (DynamoDB dedupes for 10 minutes)
+/// instead of failing its own conditions.
+fn transaction_token(parts: &[&[u8]]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    let digest = hasher.finalize();
+    let mut token = String::with_capacity(32);
+    for byte in &digest[..16] {
+        use std::fmt::Write;
+        let _ = write!(token, "{byte:02x}");
+    }
+    token
+}
+
 fn not_found<E: ProvideErrorMetadata, R>(e: &SdkError<E, R>) -> bool {
     matches!(e, SdkError::ServiceError(s) if s.err().code() == Some("ResourceNotFoundException"))
 }
@@ -2246,5 +2334,77 @@ fn describe<E: ProvideErrorMetadata, R>(e: &SdkError<E, R>) -> String {
             s.err().message().unwrap_or("")
         ),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod conflict_tests {
+    use super::*;
+    use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
+    use aws_sdk_dynamodb::types::CancellationReason;
+    use aws_sdk_dynamodb::types::error::TransactionCanceledException;
+
+    fn cancelled(codes: &[&str]) -> SdkError<TransactWriteItemsError, ()> {
+        let reasons: Vec<CancellationReason> = codes
+            .iter()
+            .map(|code| CancellationReason::builder().code(*code).build())
+            .collect();
+        let err = TransactionCanceledException::builder()
+            .set_cancellation_reasons(Some(reasons))
+            .meta(
+                aws_sdk_dynamodb::error::ErrorMetadata::builder()
+                    .code("TransactionCanceledException")
+                    .build(),
+            )
+            .build();
+        SdkError::service_error(
+            TransactWriteItemsError::TransactionCanceledException(err),
+            (),
+        )
+    }
+
+    #[test]
+    fn pure_conflict_is_retryable() {
+        assert!(transaction_conflicted(&cancelled(&[
+            "None",
+            "None",
+            "None",
+            "TransactionConflict"
+        ])));
+    }
+
+    #[test]
+    fn condition_failure_wins_over_conflict() {
+        // A real condition failure must reach classification (fence/quota), never retry.
+        assert!(!transaction_conflicted(&cancelled(&[
+            "ConditionalCheckFailed",
+            "TransactionConflict"
+        ])));
+    }
+
+    #[test]
+    fn no_conflict_reason_is_not_a_conflict() {
+        assert!(!transaction_conflicted(&cancelled(&["None", "None"])));
+        assert!(!transaction_conflicted(&cancelled(&[
+            "ConditionalCheckFailed"
+        ])));
+    }
+
+    #[test]
+    fn conflicted_error_is_still_a_conditional_failure_for_legacy_callers() {
+        // Guards the ordering contract: the conflict-retry loop must run BEFORE
+        // `conditional_failure` maps TransactionCanceledException to Fenced.
+        assert!(conditional_failure(&cancelled(&["TransactionConflict"])));
+    }
+
+    #[test]
+    fn transaction_tokens_are_stable_and_bounded() {
+        let a = transaction_token(&[b"ses_x", &1u64.to_be_bytes()]);
+        let b = transaction_token(&[b"ses_x", &1u64.to_be_bytes()]);
+        let c = transaction_token(&[b"ses_x", &2u64.to_be_bytes()]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        // DynamoDB ClientRequestToken allows at most 36 characters.
+        assert_eq!(a.len(), 32);
     }
 }

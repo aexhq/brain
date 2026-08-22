@@ -14,7 +14,12 @@ path = "src/main.rs"
 [dependencies]
 brain.workspace = true
 brain-server = { path = "../brain-server", default-features = false }
+brain-standalone = { path = "../brain-standalone" }
+brain-aws = { path = "../brain-aws" }
 brain-protocol.workspace = true
+aws-config = { workspace = true }
+aws-sdk-dynamodb = { workspace = true }
+rusqlite = { workspace = true }
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
