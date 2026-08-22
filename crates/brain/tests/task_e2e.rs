@@ -11,16 +11,46 @@ use brain_protocol::session::{CreateSessionRequest, MessageRequestContent};
 use futures_util::stream::BoxStream;
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 
 #[derive(Debug, Default)]
 struct OrdinaryChildProvider {
     requests: Mutex<Vec<Value>>,
+    block_root_continuation: AtomicBool,
+    root_continuation_started: AtomicBool,
+    root_continuation_notify: Notify,
+    root_continuation_release: Notify,
 }
 
 impl OrdinaryChildProvider {
+    fn is_root_continuation(request: &Value) -> bool {
+        let messages = request["messages"].as_array().into_iter().flatten();
+        messages
+            .filter_map(|message| message["content"].as_array())
+            .flatten()
+            .any(|block| block["type"] == "tool_use" && block["name"] == "subagents")
+    }
+
+    async fn wait_for_root_continuation(&self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if self.root_continuation_started.load(Ordering::Acquire) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "root provider continuation did not start"
+            );
+            tokio::select! {
+                () = self.root_continuation_notify.notified() => {}
+                () = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
+        }
+    }
+
     fn response(request: &Value) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
         let messages = request["messages"]
             .as_array()
@@ -115,6 +145,13 @@ impl Provider for OrdinaryChildProvider {
             .lock()
             .expect("provider requests")
             .push(body.clone());
+        if self.block_root_continuation.load(Ordering::Acquire) && Self::is_root_continuation(&body)
+        {
+            self.root_continuation_started
+                .store(true, Ordering::Release);
+            self.root_continuation_notify.notify_waiters();
+            self.root_continuation_release.notified().await;
+        }
         Self::response(&body)
     }
 }
@@ -317,4 +354,63 @@ async fn official_spawn_creates_an_ordinary_child_at_a_complete_fork_boundary() 
             .iter()
             .all(|block| block["type"] != "tool_result")
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn end_fences_a_root_while_its_post_spawn_provider_call_is_stalled() {
+    let _tmp = TempDir::new();
+    let journal = Journal::new_memory("ordinary-child-stalled-root-e2e");
+    let provider = Arc::new(OrdinaryChildProvider::default());
+    provider
+        .block_root_continuation
+        .store(true, Ordering::Release);
+    let provider_factory = provider.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            max_concurrent_model_rounds: 2,
+            max_concurrent_turns: 2,
+            idle_discard: Duration::from_secs(60),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(brain::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        Arc::new(move |_| provider_factory.clone() as Arc<dyn Provider>),
+    );
+
+    let root = brain
+        .create_session(create_request(), Some("ordinary-child-stalled-root"))
+        .await
+        .expect("create root");
+    let root_id = root.id.to_string();
+    brain
+        .message(
+            &root_id,
+            MessageRequestContent::String("root prompt".parse().expect("message")),
+        )
+        .await
+        .expect("start root turn");
+    provider.wait_for_root_continuation().await;
+
+    let (children, _) = brain
+        .list_children(&root_id, None, 100)
+        .await
+        .expect("list direct children");
+    assert_eq!(
+        children.len(),
+        1,
+        "spawn committed before the provider stall"
+    );
+
+    let accepted = tokio::time::timeout(Duration::from_secs(1), brain.end(&root_id))
+        .await
+        .expect("END must not wait for the stalled provider")
+        .expect("END admission fence");
+    assert_eq!(
+        accepted.state,
+        brain_protocol::session::SessionState::Ending
+    );
+
+    provider.root_continuation_release.notify_waiters();
 }
