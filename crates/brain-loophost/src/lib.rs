@@ -103,6 +103,21 @@ fn error_json(code: &str, message: &str) -> String {
         .to_string()
 }
 
+/// Whether a guest may drive the kernel-managed `engine.*` round vocabulary.
+///
+/// Only the composition's official aex loop is engine-mode; every other guest — customer
+/// uploads and seeded officials alike — speaks `contracts/agentloop/v1` only, and the round
+/// drivers are refused rather than left reachable with unspecified mixed-vocabulary
+/// semantics. `engine.session_start` stays open to every guest: it is the read-only residency
+/// hydration the host itself fetches for cold instances.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EngineOps {
+    /// The composition's trusted engine-vocabulary loop (the official aex component).
+    Trusted,
+    /// Contract-only guests: `engine.*` round ops answer `invalid_request`.
+    ContractOnly,
+}
+
 /// The compiled guest component plus its engine, shared by the in-process host and the daemon.
 /// Compilation happens once at construction; instantiation per activation restores the
 /// wizer-snapshotted memory copy-on-write.
@@ -311,6 +326,7 @@ impl SessionInstances {
 pub(crate) async fn service_ctx_op(
     ctx: &mut dyn TurnCtx,
     payload: &str,
+    engine_ops: EngineOps,
     first_error: &mut Option<BrainError>,
 ) -> String {
     if let Ok(request) = serde_json::from_str::<brain_protocol::agentloop::CtxOpRequest>(payload) {
@@ -321,6 +337,18 @@ pub(crate) async fn service_ctx_op(
         Err(_) => return error_json("invalid_request", "ctx op payload is not JSON"),
     };
     let op = request["op"].as_str().unwrap_or_default();
+    if engine_ops == EngineOps::ContractOnly
+        && op.starts_with("engine.")
+        && op != "engine.session_start"
+    {
+        return error_json(
+            "invalid_request",
+            &format!(
+                "{op:?} is reserved for the composition's official aex loop; \
+                 this loop speaks contracts/agentloop/v1 only"
+            ),
+        );
+    }
     let served: Result<serde_json::Value, BrainError> = match op {
         "engine.prepare_round" => ctx.prepare_round().await.map(|outcome| match outcome {
             PrepareOutcome::Ready => serde_json::json!({ "outcome": "ready" }),
@@ -464,6 +492,7 @@ async fn serve_local_activation(
     kind: &str,
     payload: &str,
     ctx: &mut dyn TurnCtx,
+    engine_ops: EngineOps,
     first_error: &mut Option<BrainError>,
 ) -> Result<String, String> {
     let mut rx = instance.arm();
@@ -472,7 +501,7 @@ async fn serve_local_activation(
         tokio::select! {
             biased;
             Some((payload, reply)) = rx.recv() => {
-                let response = service_ctx_op(ctx, &payload, first_error).await;
+                let response = service_ctx_op(ctx, &payload, engine_ops, first_error).await;
                 let _ = reply.send(response);
             }
             result = &mut activation => break result,
@@ -512,12 +541,25 @@ pub(crate) fn payload_session_id(payload: &serde_json::Value) -> Result<String, 
 /// The remote counterpart is [`remote::RemoteAgentloop`].
 pub struct WasmAgentloop {
     instances: SessionInstances,
+    engine_ops: EngineOps,
 }
 
 impl WasmAgentloop {
+    /// The composition's trusted engine-vocabulary loop (the official aex component).
     pub fn from_component_file(path: &Path) -> anyhow::Result<Self> {
+        Self::with_engine_ops(path, EngineOps::Trusted)
+    }
+
+    /// A contract-only guest — customer uploads and seeded officials. The `engine.*` round
+    /// vocabulary is refused; the guest speaks `contracts/agentloop/v1`.
+    pub fn contract_only_from_component_file(path: &Path) -> anyhow::Result<Self> {
+        Self::with_engine_ops(path, EngineOps::ContractOnly)
+    }
+
+    fn with_engine_ops(path: &Path, engine_ops: EngineOps) -> anyhow::Result<Self> {
         Ok(Self {
             instances: SessionInstances::new(WasmLoopEngine::from_component_file(path)?),
+            engine_ops,
         })
     }
 }
@@ -541,6 +583,7 @@ impl Agentloop for WasmAgentloop {
                 "session_start",
                 &hydration,
                 ctx,
+                self.engine_ops,
                 &mut first_error,
             )
             .await;
@@ -570,6 +613,7 @@ impl Agentloop for WasmAgentloop {
             "message",
             &message_payload.to_string(),
             ctx,
+            self.engine_ops,
             &mut first_error,
         )
         .await;

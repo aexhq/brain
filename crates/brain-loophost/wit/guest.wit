@@ -3,8 +3,10 @@ package loophost:abi;
 // The guest ABI is deliberately two strings wide: payloads are JSON, versioned inside the
 // payload, so the ABI never churns as the op vocabulary evolves (design ledger B2). The public
 // wire semantics live in contracts/agentloop/v1; engine-scoped ops (the `engine.*` vocabulary
-// used by the official aex loop while the kernel manages context) ride the same envelope and
-// are not reachable from customer bundles.
+// used by the official aex loop while the kernel manages context) ride the same envelope. The
+// host enforces the split: contract-only guests (customer uploads and seeded officials) get
+// `invalid_request` for every `engine.*` round op, with one read-only exception —
+// `engine.session_start`, the residency hydration any guest may fetch.
 interface host {
   call: func(payload: string) -> string;
 }

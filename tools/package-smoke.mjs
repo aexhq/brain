@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,8 @@ try {
   const brain = pack("@aexhq/brain");
   const tools = pack("@aexhq/brain-tools");
   const agentloop = pack("@aexhq/agentloop");
+  const loopPi = pack("@aexhq/loop-pi");
+  const loopCodex = pack("@aexhq/loop-codex");
   writeFileSync(
     join(directory, "package.json"),
     `${JSON.stringify({
@@ -39,8 +41,19 @@ try {
         "@aexhq/brain": `file:${brain}`,
         "@aexhq/brain-tools": `file:${tools}`,
         "@aexhq/agentloop": `file:${agentloop}`,
+        "@aexhq/loop-pi": `file:${loopPi}`,
+        "@aexhq/loop-codex": `file:${loopCodex}`,
       },
     }, null, 2)}\n`,
+  );
+  // The independence proof: the identity a consumer installs from the packed loop package is
+  // byte-for-byte the identity the repo build produced — pack-time prepack rebuilds through
+  // the public buildLoopBundle and must land on the same deterministic digest.
+  const repoIdentity = (workspace) =>
+    JSON.parse(readFileSync(join(root, "packages", workspace, "dist", "identity.json"), "utf8"));
+  writeFileSync(
+    join(directory, "expected-identities.json"),
+    JSON.stringify({ pi: repoIdentity("loop-pi"), codex: repoIdentity("loop-codex") }),
   );
   writeFileSync(
     join(directory, "loop.mjs"),
@@ -80,7 +93,18 @@ try {
       `assert.deepEqual(ops, ["turn_finish"]);\n` +
       `const bundle = await buildLoopBundle({ entry: "./loop.mjs" });\n` +
       `assert.equal(bundle.sha256.length, 64);\n` +
-      `assert.ok(bundle.source.includes("activate"));\n`,
+      `assert.ok(bundle.source.includes("activate"));\n` +
+      `const { LOOP_TOOLCHAIN } = await import("@aexhq/agentloop/build");\n` +
+      `const { readFile } = await import("node:fs/promises");\n` +
+      `const { createRequire } = await import("node:module");\n` +
+      `const require = createRequire(import.meta.url);\n` +
+      `const expected = JSON.parse(await readFile("./expected-identities.json", "utf8"));\n` +
+      `const installedIdentity = async (specifier) =>\n` +
+      `  JSON.parse(await readFile(require.resolve(specifier), "utf8"));\n` +
+      `assert.deepEqual(await installedIdentity("@aexhq/loop-pi/identity"), expected.pi);\n` +
+      `assert.deepEqual(await installedIdentity("@aexhq/loop-codex/identity"), expected.codex);\n` +
+      `assert.equal(expected.pi.toolchain, LOOP_TOOLCHAIN);\n` +
+      `assert.equal(expected.codex.toolchain, LOOP_TOOLCHAIN);\n`,
   );
   run(["install", "--no-audit", "--no-fund"], directory);
   execFileSync(process.execPath, ["smoke.mjs"], { cwd: directory, stdio: "inherit" });
