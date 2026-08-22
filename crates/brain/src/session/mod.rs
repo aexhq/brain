@@ -3243,6 +3243,20 @@ fn optional_bounded_string(
     Ok(Some(value.to_owned()))
 }
 
+/// Engine capability page limits share one bound: 1..=100 accepted, per-action default.
+fn engine_page_limit(input: &serde_json::Value, what: &str, default: u64) -> Result<u64> {
+    let limit = input
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(default);
+    if !(1..=100).contains(&limit) {
+        return Err(BrainError::Invalid(format!(
+            "{what} limit must be between 1 and 100"
+        )));
+    }
+    Ok(limit)
+}
+
 fn required_identifier(input: &serde_json::Value, field: &str, scope: &str) -> Result<String> {
     let value = required_bounded_string(input, field, 128, scope)?;
     value

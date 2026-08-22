@@ -86,15 +86,7 @@ impl Brain {
                 }
                 "list" => {
                     let cursor = optional_bounded_string(&input, "cursor", 4096)?;
-                    let limit = input
-                        .get("limit")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(20);
-                    if !(1..=100).contains(&limit) {
-                        return Err(BrainError::Invalid(
-                            "sandbox list limit must be between 1 and 100".into(),
-                        ));
-                    }
+                    let limit = engine_page_limit(&input, "sandbox list", 20)?;
                     let page = self
                         .journal
                         .list_sandbox_page(&crate::journal::SandboxListQuery {
@@ -298,15 +290,7 @@ impl Brain {
                         self.additional_sandbox_for_action(&root_id, &input).await?;
                     let path = required_bounded_string(&input, "path", 4096, "sandbox")?;
                     let cursor = optional_bounded_string(&input, "cursor", 4096)?;
-                    let limit = input
-                        .get("limit")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(50);
-                    if !(1..=100).contains(&limit) {
-                        return Err(BrainError::Invalid(
-                            "sandbox file list limit must be between 1 and 100".into(),
-                        ));
-                    }
+                    let limit = engine_page_limit(&input, "sandbox file list", 50)?;
                     let page = self
                         .sandbox_files
                         .as_ref()
@@ -414,15 +398,7 @@ impl Brain {
                     };
                     let expression = required_bounded_string(&input, field, 4096, "sandbox")?;
                     let cursor = optional_bounded_string(&input, "cursor", 4096)?;
-                    let limit = input
-                        .get("limit")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(50);
-                    if !(1..=100).contains(&limit) {
-                        return Err(BrainError::Invalid(
-                            "sandbox search limit must be between 1 and 100".into(),
-                        ));
-                    }
+                    let limit = engine_page_limit(&input, "sandbox search", 50)?;
                     let request = sandbox_search_request(
                         &item.status.target,
                         &generation,
