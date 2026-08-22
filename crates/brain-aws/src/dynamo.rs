@@ -1094,11 +1094,13 @@ impl JournalStore for DynamoJournal {
             None
         } else {
             let delta = tenant_storage_delta;
+            // `:zero` is referenced only by the growth expression; binding it on the release
+            // branch made DynamoDB reject EVERY storage-releasing commit (session end) with
+            // "ExpressionAttributeValues unused: {:zero}" — an endless end-retry loop.
             let mut meter = Update::builder()
                 .table_name(&self.table)
                 .key("pk", AttributeValue::S(tenant_pk(&doc.tenant_id)))
                 .key("sk", AttributeValue::S(TENANT_STORAGE_SK.into()))
-                .expression_attribute_values(":zero", AttributeValue::N("0".into()))
                 .expression_attribute_values(":delta", AttributeValue::N(delta.to_string()));
             if delta > 0 {
                 let requested = delta as u64;
@@ -1115,6 +1117,7 @@ impl JournalStore for DynamoJournal {
                     .update_expression(
                         "SET total_bytes = if_not_exists(total_bytes, :zero) + :delta",
                     )
+                    .expression_attribute_values(":zero", AttributeValue::N("0".into()))
                     .expression_attribute_values(
                         ":remaining",
                         AttributeValue::N(remaining.to_string()),
