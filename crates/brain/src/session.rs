@@ -20,6 +20,7 @@ use crate::events::EventHub;
 use crate::journal::{
     ContextForkDoc, DELETION_TOMBSTONE_TTL_MS, DeletionStatusDoc, Entry, FailureDoc, Head, HeadDoc,
     Journal, Lease, PrefixDoc, Record, StorageDeleteReservationDoc, StorageUploadReservationDoc,
+    TurnPhase,
 };
 use crate::keys::{KeyCustody, blob_from_b64, blob_to_b64, validate_custody_plaintext};
 use crate::message::{ContentBlock, Message, Role};
@@ -6321,7 +6322,7 @@ async fn recover_managed_calls(
             },
         ));
     } else {
-        resident.st.head.active_phase = Some("ready_to_continue_model".into());
+        resident.st.head.active_phase = Some(TurnPhase::ReadyToContinueModel);
     }
     commit(brain, session_id, &mut resident.st, records).await?;
     let _ = recover_managed_terminal_acks(brain, session_id, resident).await;
@@ -6690,7 +6691,7 @@ async fn recover_provider_attempt(
         return Ok(());
     };
     let Some(mut attempt) = resident.st.head.provider_attempt.clone() else {
-        resident.st.head.active_phase = Some("ready_to_build_model_request".into());
+        resident.st.head.active_phase = Some(TurnPhase::ReadyToBuildModelRequest);
         commit(brain, session_id, &mut resident.st, vec![]).await?;
         return Ok(());
     };
@@ -6723,9 +6724,9 @@ async fn recover_provider_attempt(
     if attempt.state == "replacement_ready" {
         resident.st.head.provider_attempt = Some(attempt);
         resident.st.head.active_phase = Some(if is_compaction {
-            "ready_to_compact".into()
+            TurnPhase::ReadyToCompact
         } else {
-            "ready_to_build_model_request".into()
+            TurnPhase::ReadyToBuildModelRequest
         });
         commit(brain, session_id, &mut resident.st, records).await?;
         return Ok(());
@@ -6742,9 +6743,9 @@ async fn recover_provider_attempt(
         attempt.state = "replacement_ready".into();
         resident.st.head.provider_attempt = Some(attempt);
         resident.st.head.active_phase = Some(if is_compaction {
-            "ready_to_compact".into()
+            TurnPhase::ReadyToCompact
         } else {
-            "ready_to_build_model_request".into()
+            TurnPhase::ReadyToBuildModelRequest
         });
         commit(brain, session_id, &mut resident.st, records).await?;
         return Ok(());
@@ -7409,7 +7410,7 @@ async fn settle_running(
                 outcome: Err(error),
                 ..
             },
-        )) if st.head.active_phase.as_deref() == Some("managed_running")
+        )) if st.head.active_phase == Some(TurnPhase::ManagedRunning)
             && matches!(
                 error,
                 BrainError::HandUnavailable(_) | BrainError::Cancelled
@@ -8465,7 +8466,7 @@ async fn admit(
     // `active_phase` identify the admitted work.
     r.st.head.state = "open".into();
     r.st.head.turn = Some(turn_id.clone());
-    r.st.head.active_phase = Some("ready_to_build_model_request".into());
+    r.st.head.active_phase = Some(TurnPhase::ReadyToBuildModelRequest);
     r.st.head.provider_attempt = None;
     r.st.head.active_context = metadata.clone();
     r.st.head.active_rounds = 0;
@@ -8744,7 +8745,7 @@ async fn create_child_session(
         state: "open".into(),
         failure: None,
         turn: Some(turn_id.clone()),
-        active_phase: Some("ready_to_build_model_request".into()),
+        active_phase: Some(TurnPhase::ReadyToBuildModelRequest),
         provider_attempt: None,
         active_context: HashMap::new(),
         active_rounds: 0,
@@ -10686,8 +10687,7 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
             .expect("journal session lifecycle is a closed enum"),
         turn_phase: doc
             .active_phase
-            .as_deref()
-            .map(|phase| phase.parse().map_err(|_| corrupt("turn phase")))
+            .map(|phase| phase.as_str().parse().map_err(|_| corrupt("turn phase")))
             .transpose()?,
         turn_state: crate::events::session_turn_state(&doc.state, doc.turn.as_deref()),
         shape: doc.prefix.shape.clone(),
@@ -10768,10 +10768,12 @@ fn session_doc_summary(summary: &crate::journal::SessionSummary) -> session::Ses
         object: session::SessionObject::Session,
         state: crate::events::session_state(&summary.state)
             .expect("journal session lifecycle is a closed enum"),
-        turn_phase: summary
-            .active_phase
-            .as_deref()
-            .and_then(|phase| phase.parse().ok()),
+        turn_phase: summary.active_phase.map(|phase| {
+            phase
+                .as_str()
+                .parse()
+                .expect("the protocol turn-phase vocabulary covers every journal phase")
+        }),
         turn_state: crate::events::session_turn_state(&summary.state, summary.turn.as_deref()),
         shape: summary.shape.clone(),
         storage: session::StorageInfo {

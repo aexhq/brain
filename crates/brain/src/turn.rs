@@ -19,7 +19,7 @@
 use crate::adapter::{CallOutcome, TerminalOutcome, ToolExecutor};
 use crate::config::{SealedPrefix, SessionConfig, ToolRoute};
 use crate::events::EventHub;
-use crate::journal::{self, HeadDoc, Journal, Lease, Record};
+use crate::journal::{self, HeadDoc, Journal, Lease, Record, TurnPhase};
 use crate::message::{ContentBlock, Message, StopReason};
 use crate::provider::{Accumulator, Provider, ProviderEvent};
 use crate::{BrainError, Result, Shared};
@@ -824,7 +824,7 @@ impl LoopTurnCtx<'_> {
             ),
         ];
         self.st.head.provider_attempt = None;
-        self.st.head.active_phase = Some("ready_to_continue_model".into());
+        self.st.head.active_phase = Some(TurnPhase::ReadyToContinueModel);
         self.run.commit(self.st, records).await?;
         // Keep the resident history exactly what a cold replay would rebuild from the records
         // just committed, so a mixed engine/contract session folds consistently.
@@ -925,7 +925,7 @@ impl LoopTurnCtx<'_> {
                 },
             ));
         }
-        self.st.head.active_phase = Some("ready_to_dispatch_tools".into());
+        self.st.head.active_phase = Some(TurnPhase::ReadyToDispatchTools);
         self.run.commit(self.st, records).await?;
         let batch = PendingBatch {
             calls: kernel_calls,
@@ -1335,7 +1335,7 @@ impl TurnRun {
                         );
                         attempt.replacements_used += 1;
                         attempt.state = "replacement_ready".into();
-                        st.head.active_phase = Some("ready_to_build_model_request".into());
+                        st.head.active_phase = Some(TurnPhase::ReadyToBuildModelRequest);
                         // Persist the consumed recovery budget before the replacement send. A
                         // crash here resumes this ready attempt without consuming it twice.
                         self.commit(st, vec![]).await?;
@@ -1420,9 +1420,9 @@ impl TurnRun {
             }
             st.head.provider_attempt = None;
             st.head.active_phase = Some(if calls.is_empty() {
-                "ready_to_finish".into()
+                TurnPhase::ReadyToFinish
             } else {
-                "ready_to_dispatch_tools".into()
+                TurnPhase::ReadyToDispatchTools
             });
             self.commit(st, records).await?;
             st.history.push(message.clone());
@@ -1618,7 +1618,7 @@ impl TurnRun {
             });
         }
         st.head.provider_attempt = None;
-        st.head.active_phase = Some("ready_to_finish".into());
+        st.head.active_phase = Some(TurnPhase::ReadyToFinish);
         self.commit(st, records).await?;
         st.history.push(message);
         if !result_blocks.is_empty() {
@@ -1795,7 +1795,7 @@ impl TurnRun {
                     }
                 }
             } else {
-                st.head.active_phase = Some("ready_to_continue_model".into());
+                st.head.active_phase = Some(TurnPhase::ReadyToContinueModel);
                 None
             };
             if terminal_report.is_some() {
@@ -2069,7 +2069,7 @@ impl TurnRun {
         ));
         st.head.context = Some(pointer);
         st.head.provider_attempt = None;
-        st.head.active_phase = Some("ready_to_build_model_request".into());
+        st.head.active_phase = Some(TurnPhase::ReadyToBuildModelRequest);
         self.commit(st, records).await?;
         st.history = Vec::with_capacity(plan.tail.len() + 1);
         st.history.push(Message::user_text(plan.summary));
@@ -2127,7 +2127,7 @@ impl TurnRun {
 
         loop {
             let attempt_id = crate::mint_id("att", 20);
-            st.head.active_phase = Some("compaction_intent_committed".into());
+            st.head.active_phase = Some(TurnPhase::CompactionIntentCommitted);
             st.head.provider_attempt = Some(crate::journal::ProviderAttemptDoc {
                 logical_operation_id: logical_operation_id.clone(),
                 attempt_id: attempt_id.clone(),
@@ -2149,7 +2149,7 @@ impl TurnRun {
                 )],
             )
             .await?;
-            st.head.active_phase = Some("compaction_running".into());
+            st.head.active_phase = Some(TurnPhase::CompactionRunning);
             if let Some(attempt) = &mut st.head.provider_attempt {
                 attempt.state = "running".into();
             }
@@ -2192,7 +2192,7 @@ impl TurnRun {
                     }));
                 }
                 Err(error) if provider_failure_is_unknown(&error) => {
-                    st.head.active_phase = Some("compaction_unknown".into());
+                    st.head.active_phase = Some(TurnPhase::CompactionUnknown);
                     if let Some(attempt) = &mut st.head.provider_attempt {
                         attempt.state = "unknown".into();
                     }
@@ -2221,7 +2221,7 @@ impl TurnRun {
                         .expect("compaction attempt");
                     attempt.replacements_used = replacements_used;
                     attempt.state = "replacement_ready".into();
-                    st.head.active_phase = Some("ready_to_compact".into());
+                    st.head.active_phase = Some(TurnPhase::ReadyToCompact);
                     self.commit(st, vec![]).await?;
                 }
                 Err(error) => return Err(error),
@@ -2276,7 +2276,7 @@ impl TurnRun {
             .transpose()?
             .unwrap_or_else(|| (crate::mint_id("mdl", 20), 0, None));
         let attempt_id = crate::mint_id("att", 20);
-        st.head.active_phase = Some("model_intent_committed".into());
+        st.head.active_phase = Some(TurnPhase::ModelIntentCommitted);
         st.head.provider_attempt = Some(crate::journal::ProviderAttemptDoc {
             logical_operation_id: logical_operation_id.clone(),
             attempt_id: attempt_id.clone(),
@@ -2309,7 +2309,7 @@ impl TurnRun {
             },
         ));
         self.commit(st, intent_records).await?;
-        st.head.active_phase = Some("model_running".into());
+        st.head.active_phase = Some(TurnPhase::ModelRunning);
         if let Some(attempt) = &mut st.head.provider_attempt {
             attempt.state = "running".into();
         }
@@ -2367,7 +2367,7 @@ impl TurnRun {
         let (message, stop, usage) = match result {
             Ok(result) => result,
             Err(error) if provider_failure_is_unknown(&error) => {
-                st.head.active_phase = Some("model_unknown".into());
+                st.head.active_phase = Some(TurnPhase::ModelUnknown);
                 if let Some(attempt) = &mut st.head.provider_attempt {
                     attempt.state = "unknown".into();
                 }
@@ -2468,7 +2468,7 @@ impl TurnRun {
             }))?;
         envelope.request_digest = brain_protocol::contract::operation_request_digest(&envelope);
         let request_digest = envelope.request_digest.to_string();
-        st.head.active_phase = Some("managed_running".into());
+        st.head.active_phase = Some(TurnPhase::ManagedRunning);
         self.commit(
             st,
             vec![(
