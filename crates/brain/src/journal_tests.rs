@@ -854,7 +854,7 @@ async fn lease_heartbeat_prevents_recovery_steal_until_it_stops() {
     let mut doc = head_doc();
     doc.state = "open".into();
     doc.turn = Some("trn_heartbeat".into());
-    doc.active_phase = Some("model_running".into());
+    doc.active_phase = Some(TurnPhase::ModelRunning);
     create_memory_store(
         &store,
         "ses_heartbeat",
@@ -1026,7 +1026,7 @@ async fn successful_quiescent_commit_returns_the_canonical_cleared_projection() 
     let mut active = head_doc();
     active.state = "open".into();
     active.turn = Some("trn_done".into());
-    active.active_phase = Some("model_running".into());
+    active.active_phase = Some(TurnPhase::ModelRunning);
     journal
         .create(
             "ses_projection",
@@ -2366,7 +2366,7 @@ async fn recovery_cursor_reaches_later_due_rows_while_early_rows_remain_due() {
         doc.root_id = id.clone();
         doc.state = "open".into();
         doc.turn = Some(format!("trn_cursor_{index:08}"));
-        doc.active_phase = Some("model_running".into());
+        doc.active_phase = Some(TurnPhase::ModelRunning);
         doc.recovery_due_ms = Some(1);
         create_memory_store(
             &store,

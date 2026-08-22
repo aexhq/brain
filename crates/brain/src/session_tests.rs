@@ -2902,7 +2902,7 @@ async fn customer_terminal_before_brain_crash_replays_without_reexecuting_the_ef
         .unwrap();
     head.doc.state = "open".into();
     head.doc.turn = Some(turn.clone());
-    head.doc.active_phase = Some("ready_to_dispatch_tools".into());
+    head.doc.active_phase = Some(TurnPhase::ReadyToDispatchTools);
     head.doc.active_rounds = 1;
     head.doc.active_tool_calls = 1;
     head.doc.turns += 1;
@@ -3313,7 +3313,7 @@ async fn managed_submit_unknown_survives_cleanup_crash_without_resubmission() {
     resident.managed_bindings = Arc::new(HashMap::from([(name.clone(), binding)]));
     resident.st.head.state = "open".into();
     resident.st.head.turn = Some(turn.clone());
-    resident.st.head.active_phase = Some("managed_running".into());
+    resident.st.head.active_phase = Some(TurnPhase::ManagedRunning);
     resident.st.head.active_rounds = 1;
     resident.st.head.active_tool_calls = 1;
     resident.st.head.turns += 1;
@@ -3532,7 +3532,7 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
     envelope.request_digest = brain_protocol::contract::operation_request_digest(&envelope);
 
     resident.st.head.turn = Some(turn.clone());
-    resident.st.head.active_phase = Some("managed_running".into());
+    resident.st.head.active_phase = Some(TurnPhase::ManagedRunning);
     resident.st.head.active_rounds = 1;
     resident.st.head.active_tool_calls = 1;
     let intent_records = vec![
@@ -3836,9 +3836,9 @@ async fn simulate_provider_only_crash(
     head.doc.state = "open".into();
     head.doc.turn = Some(turn.clone());
     head.doc.active_phase = Some(if attempt_state == "intent" {
-        "model_intent_committed".into()
+        TurnPhase::ModelIntentCommitted
     } else {
-        "model_running".into()
+        TurnPhase::ModelRunning
     });
     head.doc.provider_attempt = Some(crate::journal::ProviderAttemptDoc {
         logical_operation_id: logical_operation_id.clone(),

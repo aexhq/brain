@@ -266,7 +266,10 @@ impl JournalStore for DynamoJournal {
             head = head.item("parent_id", AttributeValue::S(parent_id.clone()));
         }
         if let Some(active_phase) = &doc.active_phase {
-            head = head.item("active_phase", AttributeValue::S(active_phase.clone()));
+            head = head.item(
+                "active_phase",
+                AttributeValue::S(active_phase.as_str().to_string()),
+            );
         }
         if let Some(due_ms) = doc.recovery_due_ms {
             head = head
@@ -703,7 +706,11 @@ impl JournalStore for DynamoJournal {
                 .expression_attribute_values(":root_id", AttributeValue::S(doc.root_id.clone()))
                 .expression_attribute_values(
                     ":active_phase",
-                    AttributeValue::S(doc.active_phase.clone().unwrap_or_default()),
+                    AttributeValue::S(
+                        doc.active_phase
+                            .map(|phase| phase.as_str().to_string())
+                            .unwrap_or_default(),
+                    ),
                 )
                 .expression_attribute_values(
                     ":parent_id",
@@ -1038,7 +1045,11 @@ impl JournalStore for DynamoJournal {
             )
             .expression_attribute_values(
                 ":active_phase",
-                AttributeValue::S(doc.active_phase.clone().unwrap_or_default()),
+                AttributeValue::S(
+                    doc.active_phase
+                        .map(|phase| phase.as_str().to_string())
+                        .unwrap_or_default(),
+                ),
             )
             .expression_attribute_values(
                 ":parent_id",
@@ -2063,7 +2074,8 @@ impl JournalStore for DynamoJournal {
                     .get("active_phase")
                     .and_then(|value| value.as_s().ok())
                     .filter(|value| !value.is_empty())
-                    .cloned(),
+                    .map(|value| value.parse())
+                    .transpose()?,
                 last_seq: number("last_seq")?,
                 root_id: string("root_id")?,
                 parent_id: item

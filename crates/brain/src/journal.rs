@@ -1007,6 +1007,73 @@ pub fn fold(entries: &[Entry]) -> Fold {
 // HEAD
 // ---------------------------------------------------------------------------------------------
 
+/// Total active-turn phase vocabulary. `HeadDoc::active_phase` is `Some` iff a turn is active;
+/// the wire and journal encodings are the snake_case names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnPhase {
+    ReadyToBuildModelRequest,
+    ReadyToContinueModel,
+    ReadyToDispatchTools,
+    ReadyToFinish,
+    ReadyToCompact,
+    ModelIntentCommitted,
+    ModelRunning,
+    ModelUnknown,
+    CompactionIntentCommitted,
+    CompactionRunning,
+    CompactionUnknown,
+    ManagedRunning,
+    ManagedCancelling,
+}
+
+impl TurnPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TurnPhase::ReadyToBuildModelRequest => "ready_to_build_model_request",
+            TurnPhase::ReadyToContinueModel => "ready_to_continue_model",
+            TurnPhase::ReadyToDispatchTools => "ready_to_dispatch_tools",
+            TurnPhase::ReadyToFinish => "ready_to_finish",
+            TurnPhase::ReadyToCompact => "ready_to_compact",
+            TurnPhase::ModelIntentCommitted => "model_intent_committed",
+            TurnPhase::ModelRunning => "model_running",
+            TurnPhase::ModelUnknown => "model_unknown",
+            TurnPhase::CompactionIntentCommitted => "compaction_intent_committed",
+            TurnPhase::CompactionRunning => "compaction_running",
+            TurnPhase::CompactionUnknown => "compaction_unknown",
+            TurnPhase::ManagedRunning => "managed_running",
+            TurnPhase::ManagedCancelling => "managed_cancelling",
+        }
+    }
+}
+
+impl std::str::FromStr for TurnPhase {
+    type Err = BrainError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Ok(match value {
+            "ready_to_build_model_request" => TurnPhase::ReadyToBuildModelRequest,
+            "ready_to_continue_model" => TurnPhase::ReadyToContinueModel,
+            "ready_to_dispatch_tools" => TurnPhase::ReadyToDispatchTools,
+            "ready_to_finish" => TurnPhase::ReadyToFinish,
+            "ready_to_compact" => TurnPhase::ReadyToCompact,
+            "model_intent_committed" => TurnPhase::ModelIntentCommitted,
+            "model_running" => TurnPhase::ModelRunning,
+            "model_unknown" => TurnPhase::ModelUnknown,
+            "compaction_intent_committed" => TurnPhase::CompactionIntentCommitted,
+            "compaction_running" => TurnPhase::CompactionRunning,
+            "compaction_unknown" => TurnPhase::CompactionUnknown,
+            "managed_running" => TurnPhase::ManagedRunning,
+            "managed_cancelling" => TurnPhase::ManagedCancelling,
+            other => {
+                return Err(BrainError::Journal(format!(
+                    "unknown active-turn phase {other:?}"
+                )));
+            }
+        })
+    }
+}
+
 /// Everything durable about a session that is not a record. Rewritten whole on each commit
 /// (single writer under the fence), carried as one JSON attribute.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1041,7 +1108,7 @@ pub struct HeadDoc {
     pub turn: Option<String>,
     /// Total active-turn phase. `None` iff no turn is active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_phase: Option<String>,
+    pub active_phase: Option<TurnPhase>,
     /// Bounded projection of the current logical provider operation/attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_attempt: Option<ProviderAttemptDoc>,
@@ -1133,7 +1200,7 @@ pub struct ControlDoc {
     pub failure: Option<FailureDoc>,
     pub turn: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_phase: Option<String>,
+    pub active_phase: Option<TurnPhase>,
     pub provider_attempt: Option<ProviderAttemptDoc>,
     pub active_context: HashMap<String, String>,
     pub active_rounds: u64,
@@ -1253,7 +1320,7 @@ impl HeadDoc {
             state: self.state.clone(),
             failure: self.failure.clone(),
             turn: self.turn.clone(),
-            active_phase: self.active_phase.clone(),
+            active_phase: self.active_phase,
             provider_attempt: self.provider_attempt.clone(),
             active_context: self.active_context.clone(),
             active_rounds: self.active_rounds,
@@ -1713,7 +1780,7 @@ pub struct RecoveryItem {
     pub session_id: String,
     pub due_ms: u64,
     pub state: String,
-    pub active_phase: Option<String>,
+    pub active_phase: Option<TurnPhase>,
     pub last_seq: u64,
     pub root_id: String,
     pub parent_id: Option<String>,
@@ -1794,7 +1861,7 @@ pub struct SessionSummary {
     pub failure: Option<FailureDoc>,
     pub turn: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_phase: Option<String>,
+    pub active_phase: Option<TurnPhase>,
     pub turns: u64,
     pub last_seq: u64,
     pub created_ms: u64,
@@ -1823,7 +1890,7 @@ impl SessionSummary {
             state: doc.state.clone(),
             failure: doc.failure.clone(),
             turn: doc.turn.clone(),
-            active_phase: doc.active_phase.clone(),
+            active_phase: doc.active_phase,
             turns: doc.turns,
             last_seq: doc.last_seq,
             created_ms: doc.created_ms,
@@ -3178,7 +3245,7 @@ impl JournalStore for MemoryStore {
                                     session_id: session_id.clone(),
                                     due_ms,
                                     state: session.doc.state.clone(),
-                                    active_phase: session.doc.active_phase.clone(),
+                                    active_phase: session.doc.active_phase,
                                     last_seq: session.last_seq,
                                     root_id: session.doc.root_id.clone(),
                                     parent_id: session.doc.parent_id.clone(),
