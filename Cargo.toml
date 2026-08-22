@@ -12,6 +12,8 @@ license = "Apache-2.0"
 brain-protocol = { path = "crates/brain-protocol" }
 brain = { path = "crates/brain" }
 brain-aws = { path = "crates/brain-aws" }
+brain-standalone = { path = "crates/brain-standalone" }
+brain-loophost = { path = "crates/brain-loophost" }
 
 anyhow = "1"
 aes-gcm = "0.10"

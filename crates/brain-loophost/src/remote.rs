@@ -236,7 +236,7 @@ impl Agentloop for RemoteAgentloop {
                 biased;
                 Some((id, payload)) = ctx_rx.recv() => {
                     // The daemon hosts the composition's official aex component only (its one
-                    // LOOPHOST_COMPONENT), so the wire serves the engine vocabulary.
+                    // BRAIN_LOOPHOST_COMPONENT), so the wire serves the engine vocabulary.
                     let response =
                         service_ctx_op(ctx, &payload, crate::EngineOps::Trusted, &mut first_error)
                             .await;
@@ -305,9 +305,9 @@ impl SpawnedLoopHost {
             }
         }
         let mut child = command
-            .env("LOOPHOST_COMPONENT", component)
-            .env("LOOPHOST_TOKEN", &token)
-            .env("LOOPHOST_LISTEN", "127.0.0.1:0")
+            .env("BRAIN_LOOPHOST_COMPONENT", component)
+            .env("BRAIN_LOOPHOST_TOKEN", &token)
+            .env("BRAIN_LOOPHOST_LISTEN", "127.0.0.1:0")
             .stdout(std::process::Stdio::piped())
             .spawn()?;
         let stdout = child.stdout.take().expect("piped stdout");

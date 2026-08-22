@@ -8,8 +8,8 @@
 //!
 //! The brain is COMPOSED, not configured into a cloud: [`Brain::with_parts`] takes a journal
 //! store, key custody, typed Hand services and (optionally) a provider factory -- all trait
-//! objects (see [`crate::adapter`]). [`Brain::local`] is the explicitly unsafe development
-//! composition; durable standalone and cloud implementations live behind the same public ports.
+//! objects (see [`crate::adapter`]). Durable local and cloud implementations live behind the
+//! same public ports.
 
 use crate::adapter::{CallOutcome, DisabledToolExecutor, TerminalOutcome, ToolExecutor};
 use crate::compact::{
