@@ -25,15 +25,7 @@ impl Brain {
                         validate_storage_prefix(prefix)?;
                     }
                     let cursor = optional_bounded_string(&input, "cursor", 4096)?;
-                    let limit = input
-                        .get("limit")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(20);
-                    if !(1..=100).contains(&limit) {
-                        return Err(BrainError::Invalid(
-                            "storage list limit must be between 1 and 100".into(),
-                        ));
-                    }
+                    let limit = engine_page_limit(&input, "storage list", 20)?;
                     ensure_storage_readable(&st.head, session_id)?;
                     let page = self
                         .storage_port()?
