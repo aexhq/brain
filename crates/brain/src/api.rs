@@ -40,9 +40,18 @@ pub struct AppState {
     pub brain: Arc<Brain>,
     /// The dev-plane bearer token. Identity proper is slice 4.
     pub token: String,
-    /// Hosted compositions set this: every request must carry `x-brain-tenant-id`, and a
-    /// missing header is a request error — never a silent booking to tenant "local".
-    pub require_tenant: bool,
+    /// Hosted compositions require `x-brain-tenant-id` on every request; a single-tenant
+    /// composition names its one implicit tenant explicitly — never a silent hardcoded default.
+    pub tenancy: Tenancy,
+}
+
+/// How requests are booked to tenants.
+#[derive(Debug, Clone)]
+pub enum Tenancy {
+    /// Every request must carry `x-brain-tenant-id`; a missing header is a request error.
+    Required,
+    /// Single-tenant composition: requests without the header book to this tenant.
+    Implicit(String),
 }
 
 /// Ordinary control requests contain only bounded identifiers, paths, cursors and page options.
@@ -987,20 +996,21 @@ fn map_err(e: BrainError) -> Failure {
 
 fn auth(state: &AppState, headers: &HeaderMap) -> Result<TrustedPrincipal, Failure> {
     if bearer_token(headers) == Some(state.token.as_str()) {
-        let tenant_id = match headers
-            .get("x-brain-tenant-id")
-            .and_then(|value| value.to_str().ok())
-        {
-            Some(tenant) => tenant,
-            None if state.require_tenant => {
+        let tenant_id = match (
+            headers
+                .get("x-brain-tenant-id")
+                .and_then(|value| value.to_str().ok()),
+            &state.tenancy,
+        ) {
+            (Some(tenant), _) => tenant,
+            (None, Tenancy::Required) => {
                 return Err(Failure(
                     StatusCode::BAD_REQUEST,
                     api_code("invalid_request"),
                     "x-brain-tenant-id header is required by this composition".into(),
                 ));
             }
-            // Single-tenant local/dev composition: the one implicit tenant.
-            None => "local",
+            (None, Tenancy::Implicit(tenant)) => tenant.as_str(),
         };
         TrustedPrincipal::new(tenant_id).map_err(map_err)
     } else {

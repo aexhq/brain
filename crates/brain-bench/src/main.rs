@@ -154,7 +154,7 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
     let app = brain::api::router(brain::api::AppState {
         brain,
         token: TOKEN.into(),
-        require_tenant: false,
+        tenancy: brain::api::Tenancy::Implicit("local".into()),
     })
     .merge(bench_routes(fake.clone(), executor.clone()));
     tokio::spawn(async move {

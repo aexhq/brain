@@ -189,7 +189,7 @@ async fn serve_brain_with(
     let app = brain::api::router(brain::api::AppState {
         brain,
         token: token.clone(),
-        require_tenant: false,
+        tenancy: brain::api::Tenancy::Implicit("local".into()),
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     TestBrain {

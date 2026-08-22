@@ -49,7 +49,7 @@ async fn unauthenticated_create_never_polls_the_body() {
     let app = router(AppState {
         brain,
         token: "operator-token".into(),
-        require_tenant: false,
+        tenancy: brain::api::Tenancy::Implicit("local".into()),
     });
     let polls = Arc::new(AtomicUsize::new(0));
     let observed = polls.clone();
@@ -70,7 +70,7 @@ async fn a_tenanted_composition_refuses_requests_without_the_tenant_header() {
     let app = router(AppState {
         brain,
         token: "operator-token".into(),
-        require_tenant: true,
+        tenancy: brain::api::Tenancy::Required,
     });
     // Authenticated but header-less: booked to no tenant, refused — never tenant "local".
     let response = app
@@ -94,7 +94,7 @@ async fn saturated_create_admission_rejects_before_polling_another_body() {
     let app = router(AppState {
         brain,
         token: "operator-token".into(),
-        require_tenant: false,
+        tenancy: brain::api::Tenancy::Implicit("local".into()),
     });
 
     let first_polled = Arc::new(Notify::new());

@@ -44,7 +44,7 @@ async fn a_message_racing_the_idle_discard_always_lands() {
     let app = brain::api::router(brain::api::AppState {
         brain,
         token: token.clone(),
-        require_tenant: false,
+        tenancy: brain::api::Tenancy::Implicit("local".into()),
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let http = reqwest::Client::new();
