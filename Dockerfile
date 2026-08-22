@@ -3,13 +3,15 @@ WORKDIR /src
 COPY . .
 RUN cargo build --locked --release -p brain-server --bin brain
 
-FROM docker:29.7.0-cli AS docker-cli
-
 FROM debian:bookworm-slim
+# Local mode executes managed Tool bundles through the host node runtime (and bash for shell
+# tools); pin the same node major the repository's JS toolchain uses.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get purge -y curl gnupg \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=build /src/target/release/brain /usr/local/bin/brain
 EXPOSE 3210
 ENTRYPOINT ["/usr/local/bin/brain"]
