@@ -37,20 +37,40 @@ pub const STEAL_GRACE_MS: u64 = 5_000;
 pub const RECOVERY_BACKOFF_BASE_MS: u64 = 1_000;
 pub const RECOVERY_BACKOFF_MAX_MS: u64 = 5 * 60_000;
 
+/// Everything one durable CREATE decision needs, computed once by [`Journal`]: the store
+/// applies it atomically and adds nothing.
+pub struct CreateDecision<'a> {
+    pub session_id: &'a str,
+    pub doc: &'a HeadDoc,
+    pub first: &'a Record,
+    pub now_ms: u64,
+    pub tenant_storage_limit: u64,
+    pub retention: JournalRetention,
+    pub retention_limits: JournalRetentionLimits,
+}
+
+/// Everything one durable COMMIT decision needs, computed once by [`Journal`]. Deltas and
+/// projections are policy outputs; the store's job is the single conditional write.
+pub struct CommitDecision<'a> {
+    pub session_id: &'a str,
+    /// The lease owner this commit is conditioned on; a superseded owner's write must fail.
+    pub owner: &'a str,
+    pub fence: u64,
+    pub records: &'a [(u64, Record)],
+    pub doc: &'a HeadDoc,
+    pub high_water: u64,
+    pub now_ms: u64,
+    pub tenant_storage_delta: i64,
+    pub tenant_storage_limit: u64,
+    pub retention: JournalRetention,
+    pub tenant_retention_delta: i64,
+    pub retention_limits: JournalRetentionLimits,
+}
+
 #[async_trait::async_trait]
 pub trait JournalStore: Send + Sync {
     #[allow(clippy::too_many_arguments)]
-    async fn create(
-        &self,
-        session_id: &str,
-        doc: &HeadDoc,
-        first: &Record,
-        _owner: &str,
-        now_ms: u64,
-        tenant_storage_limit: u64,
-        retention: JournalRetention,
-        retention_limits: JournalRetentionLimits,
-    ) -> Result<()>;
+    async fn create(&self, decision: &CreateDecision<'_>) -> Result<()>;
     async fn claim(&self, session_id: &str, owner: &str, now_ms: u64) -> Result<Head>;
     /// Atomically close this session's subtree admission, supersede any live owner, append the
     /// lifecycle State record, and expose immediate recovery. This MUST be one store decision:
@@ -64,21 +84,7 @@ pub trait JournalStore: Send + Sync {
     async fn get_head(&self, session_id: &str) -> Result<Head>;
     async fn read_record_page(&self, query: &RecordPageQuery<'_>) -> Result<RecordPage>;
     #[allow(clippy::too_many_arguments)]
-    async fn commit(
-        &self,
-        session_id: &str,
-        _owner: &str,
-        fence: u64,
-        records: &[(u64, Record)],
-        doc: &HeadDoc,
-        high_water: u64,
-        now_ms: u64,
-        tenant_storage_delta: i64,
-        tenant_storage_limit: u64,
-        retention: JournalRetention,
-        tenant_retention_delta: i64,
-        retention_limits: JournalRetentionLimits,
-    ) -> Result<()>;
+    async fn commit(&self, decision: &CommitDecision<'_>) -> Result<()>;
     async fn release(&self, session_id: &str, owner: &str, fence: u64) -> Result<()>;
     /// Failure-path transition that atomically releases ownership and schedules the next bounded
     /// recovery attempt. A separate commit+release would either keep work hidden behind the old
@@ -188,16 +194,15 @@ impl Journal {
         validate_decision(session_id, &[(1, first.clone())], &doc)?;
         let retention = initial_retention(first, self.retention_limits.session_bytes)?;
         self.store
-            .create(
+            .create(&CreateDecision {
                 session_id,
-                &doc,
+                doc: &doc,
                 first,
-                &self.owner,
                 now_ms,
-                self.tenant_storage_limit,
+                tenant_storage_limit: self.tenant_storage_limit,
                 retention,
-                self.retention_limits,
-            )
+                retention_limits: self.retention_limits,
+            })
             .await
     }
 
@@ -286,20 +291,20 @@ impl Journal {
         )?;
         let tenant_retention_delta = retention_delta(lease.retention, next_retention)?;
         self.store
-            .commit(
+            .commit(&CommitDecision {
                 session_id,
-                &self.owner,
-                lease.fence,
+                owner: &self.owner,
+                fence: lease.fence,
                 records,
-                &doc,
+                doc: &doc,
                 high_water,
                 now_ms,
                 tenant_storage_delta,
-                self.tenant_storage_limit,
-                next_retention,
+                tenant_storage_limit: self.tenant_storage_limit,
+                retention: next_retention,
                 tenant_retention_delta,
-                self.retention_limits,
-            )
+                retention_limits: self.retention_limits,
+            })
             .await?;
         lease.last_seq = high_water;
         lease.retention = next_retention;

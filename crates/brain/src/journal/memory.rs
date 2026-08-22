@@ -33,17 +33,16 @@ pub struct MemoryStore {
 
 #[async_trait::async_trait]
 impl JournalStore for MemoryStore {
-    async fn create(
-        &self,
-        session_id: &str,
-        doc: &HeadDoc,
-        first: &Record,
-        _owner: &str,
-        now_ms: u64,
-        tenant_storage_limit: u64,
-        retention: JournalRetention,
-        retention_limits: JournalRetentionLimits,
-    ) -> Result<()> {
+    async fn create(&self, decision: &CreateDecision<'_>) -> Result<()> {
+        let &CreateDecision {
+            session_id,
+            doc,
+            first,
+            now_ms,
+            tenant_storage_limit,
+            retention,
+            retention_limits,
+        } = decision;
         validate_ancestor_path(doc)?;
         validate_config_doc(doc)?;
         validate_decision(session_id, &[(1, first.clone())], doc)?;
@@ -371,21 +370,21 @@ impl JournalStore for MemoryStore {
         })
     }
 
-    async fn commit(
-        &self,
-        session_id: &str,
-        owner: &str,
-        fence: u64,
-        records: &[(u64, Record)],
-        doc: &HeadDoc,
-        high_water: u64,
-        now_ms: u64,
-        tenant_storage_delta: i64,
-        tenant_storage_limit: u64,
-        retention: JournalRetention,
-        tenant_retention_delta: i64,
-        retention_limits: JournalRetentionLimits,
-    ) -> Result<()> {
+    async fn commit(&self, decision: &CommitDecision<'_>) -> Result<()> {
+        let &CommitDecision {
+            session_id,
+            owner,
+            fence,
+            records,
+            doc,
+            high_water,
+            now_ms,
+            tenant_storage_delta,
+            tenant_storage_limit,
+            retention,
+            tenant_retention_delta,
+            retention_limits,
+        } = decision;
         validate_decision(session_id, records, doc)?;
         let mut map = self.sessions.lock().expect("memory journal");
         if requires_ancestor_admission(records) {
