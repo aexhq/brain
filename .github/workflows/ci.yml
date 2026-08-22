@@ -43,6 +43,32 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # The Rust generated views must match their source schemas, exactly like the TypeScript gate
+  # above: a schema change without a regen (or a hand-edit of a generated file) is invisible to
+  # every other job because the stale .rs files still compile.
+  protocol-gen:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+          components: rustfmt
+      - name: cache cargo-typify
+        id: typify-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-typify
+          key: cargo-typify-0.7.0-${{ runner.os }}
+      - if: steps.typify-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-typify --locked --version 0.7.0
+      - name: generated protocol views are fresh
+        run: |
+          python3 tools/generate-protocol.py all
+          git diff --exit-code crates/brain-protocol/src contracts
+      - name: security postprocessor invariants hold
+        run: python3 tools/postprocess-generated.py --check
+
   test:
     runs-on: ubuntu-24.04
     steps:
@@ -97,12 +123,13 @@ jobs:
   # every leg succeeded (`if: always()` because a skipped required check would satisfy GitHub).
   build-test:
     if: always()
-    needs: [lint, test, test-loophost]
+    needs: [lint, protocol-gen, test, test-loophost]
     runs-on: ubuntu-24.04
     steps:
       - name: every gate passed
         run: |
           test "${{ needs.lint.result }}" = "success"
+          test "${{ needs.protocol-gen.result }}" = "success"
           test "${{ needs.test.result }}" = "success"
           test "${{ needs.test-loophost.result }}" = "success"
 
