@@ -13,7 +13,6 @@ brain-protocol = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
-axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
@@ -36,5 +35,3 @@ zeroize = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
-reqwest = { workspace = true }
-tower = { workspace = true }

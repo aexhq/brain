@@ -4,12 +4,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub mod api;
+
 use brain::session::{Brain, BrainConfig, BrainServices, ProviderFactory};
 use brain_standalone::durable_local_parts;
 
 /// Optional custom-agentloop wiring: the official aex loop as a wasm component plus a
 /// content-addressed store for customer loops. Absent, the in-process built-in loop runs —
 /// identical policy, no wasm isolation boundary.
+#[cfg(feature = "loophost")]
 pub struct LoophostOptions {
     /// Path to the componentized official aex loop.
     pub aex_component: PathBuf,
@@ -27,6 +30,7 @@ pub struct LocalOptions {
     pub transport_urls: Option<(String, String)>,
     /// `None` composes the real providers.
     pub provider_factory: Option<ProviderFactory>,
+    #[cfg(feature = "loophost")]
     pub loophost: Option<LoophostOptions>,
 }
 
@@ -51,6 +55,7 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
     });
     let customer_transport =
         brain::customer::CustomerTransportConfig::new(websocket_url, observation_base_url)?;
+    #[cfg(feature = "loophost")]
     let loop_services = match &options.loophost {
         Some(loophost) => brain_loophost::registry::services_with_loop_store(
             &loophost.aex_component,
@@ -59,6 +64,8 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
         )?,
         None => BrainServices::default(),
     };
+    #[cfg(not(feature = "loophost"))]
+    let loop_services = BrainServices::default();
     let local_hand = parts.local_hand.clone();
     let brain = Brain::with_parts_and_services(
         options.cfg,

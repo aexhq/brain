@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 brain.workspace = true
+brain-server = { path = "../brain-server", default-features = false }
 brain-protocol.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
