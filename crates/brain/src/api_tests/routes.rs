@@ -1,4 +1,4 @@
-use super::END_ACCEPTED_STATUS;
+use super::sessions::END_ACCEPTED_STATUS;
 use axum::http::StatusCode;
 use std::collections::BTreeSet;
 
@@ -8,7 +8,7 @@ fn normalized(path: &str) -> String {
 
 #[test]
 fn every_public_router_path_is_documented_and_every_documented_path_is_live() {
-    let source = include_str!("../api.rs");
+    let source = include_str!("../api/mod.rs");
     let route = regex::Regex::new(r#"(?s)\.route\(\s*\"([^\"]+)\""#).unwrap();
     let router_paths = route
         .captures_iter(source)
@@ -61,22 +61,33 @@ fn root_and_child_end_share_the_async_acceptance_status() {
     }
 }
 
-/// Every `api_code("...")` literal in api.rs must satisfy the open ApiErrorCode pattern, so a
-/// typo fails here instead of panicking inside an error path at runtime.
+/// Every `api_code("...")` literal in the api module must satisfy the open ApiErrorCode
+/// pattern, so a typo fails here instead of panicking inside an error path at runtime.
 #[test]
 fn every_api_code_literal_parses() {
-    let source = include_str!("../api.rs");
+    let sources = [
+        include_str!("../api/mod.rs"),
+        include_str!("../api/children.rs"),
+        include_str!("../api/customer_ws.rs"),
+        include_str!("../api/error.rs"),
+        include_str!("../api/sandbox_files.rs"),
+        include_str!("../api/sessions.rs"),
+        include_str!("../api/sse.rs"),
+        include_str!("../api/storage.rs"),
+    ];
     let mut checked = 0;
-    for (index, _) in source.match_indices("api_code(\"") {
-        let rest = &source[index + "api_code(\"".len()..];
-        let literal = &rest[..rest.find('"').expect("terminated literal")];
-        literal
-            .parse::<brain_protocol::session::ApiErrorCode>()
-            .unwrap_or_else(|error| panic!("api_code({literal:?}) is invalid: {error}"));
-        checked += 1;
+    for source in sources {
+        for (index, _) in source.match_indices("api_code(\"") {
+            let rest = &source[index + "api_code(\"".len()..];
+            let literal = &rest[..rest.find('"').expect("terminated literal")];
+            literal
+                .parse::<brain_protocol::session::ApiErrorCode>()
+                .unwrap_or_else(|error| panic!("api_code({literal:?}) is invalid: {error}"));
+            checked += 1;
+        }
     }
     assert!(
         checked > 20,
-        "expected the api.rs error table, found {checked} literals"
+        "expected the api error table, found {checked} literals"
     );
 }

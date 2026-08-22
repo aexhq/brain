@@ -1,4 +1,4 @@
-use super::{bearer_token, customer_grant_subprotocol, observation_grant_header};
+use super::customer_ws::{bearer_token, customer_grant_subprotocol, observation_grant_header};
 use axum::http::{HeaderMap, HeaderValue, header};
 
 #[test]
