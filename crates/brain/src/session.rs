@@ -5970,11 +5970,6 @@ async fn recover_managed_calls(
     if pending.is_empty() {
         return Ok(false);
     }
-    let hand = brain.hand.as_ref().ok_or_else(|| {
-        BrainError::HandUnavailable(
-            "managed Hand is unavailable for durable operation recovery".into(),
-        )
-    })?;
     let tools = crate::tools::resolve(&resident.st.head.prefix.tools)?;
     let active_turn = resident.st.head.turn.clone();
     let rounds = resident.st.head.active_rounds;
@@ -5982,12 +5977,60 @@ async fn recover_managed_calls(
     let mut recovered = Vec::new();
     let mut sandbox_gone = None;
 
-    'managed_calls: for call in pending {
-        if active_turn.as_deref() != Some(call.turn.as_str()) {
-            return Err(BrainError::Journal(
-                "managed operation recovery references a non-active turn".into(),
-            ));
+    let (stale, pending): (Vec<_>, Vec<_>) = pending
+        .into_iter()
+        .partition(|call| active_turn.as_deref() != Some(call.turn.as_str()));
+    for call in stale {
+        if !call.submit_unknown {
+            let unknown = vec![(
+                resident.st.take_seq(),
+                Record::ManagedCallUnknown {
+                    turn: call.turn.clone(),
+                    call: call.call.clone(),
+                    request_digest: call.envelope.request_digest.to_string(),
+                },
+            )];
+            commit(brain, session_id, &mut resident.st, unknown).await?;
         }
+        reconcile_managed_unknown_default_sandbox(brain, session_id, &mut resident.st).await?;
+        let outcome = crate::tools::enforce_outcome(
+            tools.iter().find(|tool| tool.name == call.name),
+            &call.name,
+            crate::turn::managed_unknown_call_outcome(&call.name),
+        );
+        let content = if outcome.content.is_empty() {
+            format!("[{}: no output]", outcome.outcome)
+        } else {
+            outcome.content
+        };
+        let result = vec![(
+            resident.st.take_seq(),
+            Record::ToolResult {
+                turn: call.turn,
+                agent: "root".into(),
+                call: call.call,
+                name: call.name,
+                outcome: outcome.outcome,
+                content,
+                is_error: outcome.is_error,
+                exit_code: outcome.exit_code,
+                duration_ms: outcome.duration_ms,
+                truncated: outcome.truncated,
+            },
+        )];
+        commit(brain, session_id, &mut resident.st, result).await?;
+    }
+    if pending.is_empty() {
+        return Ok(true);
+    }
+
+    let hand = brain.hand.as_ref().ok_or_else(|| {
+        BrainError::HandUnavailable(
+            "managed Hand is unavailable for durable operation recovery".into(),
+        )
+    })?;
+
+    'managed_calls: for call in pending {
         if call.submit_unknown {
             reconcile_managed_unknown_default_sandbox(brain, session_id, &mut resident.st).await?;
             recovered.push((
@@ -14296,6 +14339,215 @@ mod tests {
             .release(&session_id, &recovered.st.lease)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
+        let journal = Journal::new_memory("brain-stale-managed-ending");
+        let ports = Arc::new(UnknownManagedPorts::default());
+        ports.fail_next_dematerialize.store(true, Ordering::Release);
+        let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+        let provider = fake.clone();
+        let brain = Brain::with_parts_and_services(
+            BrainConfig {
+                idle_discard: Duration::from_secs(300),
+                ..BrainConfig::default()
+            },
+            journal.clone(),
+            Arc::new(crate::keys::PlainCustody),
+            Arc::new(crate::adapter::DisabledToolExecutor),
+            BrainServices {
+                hand: Some(ports.clone()),
+                session_preparation: Some(ports.clone()),
+                sandbox_files: Some(ports.clone()),
+                ..BrainServices::default()
+            },
+            Some(Arc::new(move |_| provider.clone())),
+        );
+        let created = brain
+            .create_session(
+                typed_create(json!({
+                    "model":{"provider":"anthropic","name":"stale-managed","api_key":"key"}
+                })),
+                Some("stale-managed-ending"),
+            )
+            .await
+            .expect("create stale managed recovery session");
+        let session_id = created.id.to_string();
+        let mut resident = hydrate(&brain, &session_id)
+            .await
+            .expect("claim stale managed session");
+        let turn = "trn_stalemanaged0000000".to_owned();
+        let call = "op_stalemanaged000000".to_owned();
+        let name = "managed_stale_test".to_owned();
+        let mut envelope: brain_protocol::hand::OperationEnvelope = serde_json::from_value(json!({
+            "operation_id":call,
+            "request_digest":"0".repeat(64),
+            "session_id":session_id,
+            "root_id":resident.st.head.root_id,
+            "turn_id":turn,
+            "caller_id":"agent_root",
+            "fence":resident.st.lease.fence,
+            "generation":null,
+            "binding_ref":"bnd_stalemanaged0000",
+            "capability":name,
+            "input":{"kind":"inline","value":{"effect":"may_have_started"}},
+            "target_ref":null,
+            "deadline_at_ms":crate::wall_ms() + 60_000,
+            "resources":managed_hand_resources().unwrap(),
+            "network":sealed_sandbox_network(&resident.st.head).unwrap(),
+            "trace":{}
+        }))
+        .expect("valid stale managed envelope");
+        envelope.request_digest = brain_protocol::contract::operation_request_digest(&envelope);
+
+        resident.st.head.turn = Some(turn.clone());
+        resident.st.head.active_phase = Some("managed_running".into());
+        resident.st.head.active_rounds = 1;
+        resident.st.head.active_tool_calls = 1;
+        let intent_records = vec![
+            (
+                resident.st.take_seq(),
+                Record::TurnStarted { turn: turn.clone() },
+            ),
+            (
+                resident.st.take_seq(),
+                Record::ToolCall {
+                    turn: turn.clone(),
+                    agent: "root".into(),
+                    call: call.clone(),
+                    name: name.clone(),
+                    input: json!({"effect":"may_have_started"}),
+                    detach: false,
+                },
+            ),
+            (
+                resident.st.take_seq(),
+                Record::ManagedCallIntent {
+                    turn: turn.clone(),
+                    call: call.clone(),
+                    name: name.clone(),
+                    envelope,
+                },
+            ),
+        ];
+        commit(&brain, &session_id, &mut resident.st, intent_records)
+            .await
+            .expect("commit managed intent");
+
+        resident.st.head.turn = None;
+        resident.st.head.active_phase = None;
+        resident.st.head.active_rounds = 0;
+        resident.st.head.active_tool_calls = 0;
+        let failed_records = vec![
+            (
+                resident.st.take_seq(),
+                Record::TurnFailed {
+                    turn: turn.clone(),
+                    code: "internal".into(),
+                    message: "sandbox capacity is exhausted".into(),
+                    details: None,
+                },
+            ),
+            (
+                resident.st.take_seq(),
+                Record::State {
+                    state: "open".into(),
+                    turn: None,
+                },
+            ),
+        ];
+        commit(&brain, &session_id, &mut resident.st, failed_records)
+            .await
+            .expect("commit failed turn without a managed result");
+        resident.st.head.ended = true;
+        resident.st.head.state = "ending".into();
+        let ending = vec![(
+            resident.st.take_seq(),
+            Record::State {
+                state: "ending".into(),
+                turn: None,
+            },
+        )];
+        commit(&brain, &session_id, &mut resident.st, ending)
+            .await
+            .expect("commit ending lifecycle");
+
+        let crash_entries = journal.read_records(&session_id, 0).await.unwrap();
+        let error = recover_managed_calls(&brain, &session_id, &mut resident, &crash_entries)
+            .await
+            .expect_err("inject cleanup loss after submit replay is revoked");
+        assert!(matches!(error, BrainError::HandUnavailable(_)), "{error:?}");
+        assert_eq!(ports.submits.load(Ordering::Acquire), 0);
+        journal
+            .release(&session_id, &resident.st.lease)
+            .await
+            .expect("release simulated cleanup crash owner");
+        drop(resident);
+        drop(brain);
+
+        let provider = fake.clone();
+        let recovering = Brain::with_parts_and_services(
+            BrainConfig {
+                idle_discard: Duration::from_secs(300),
+                ..BrainConfig::default()
+            },
+            journal.cloned_as("brain-stale-managed-ending-restart"),
+            Arc::new(crate::keys::PlainCustody),
+            Arc::new(crate::adapter::DisabledToolExecutor),
+            BrainServices {
+                hand: Some(ports.clone()),
+                session_preparation: Some(ports.clone()),
+                sandbox_files: Some(ports.clone()),
+                ..BrainServices::default()
+            },
+            Some(Arc::new(move |_| provider.clone())),
+        );
+        let recovered = hydrate(&recovering, &session_id)
+            .await
+            .expect("restart reconciles the stale managed intent");
+        assert_eq!(ports.submits.load(Ordering::Acquire), 0);
+        assert_eq!(ports.dematerialize_calls.load(Ordering::Acquire), 2);
+        assert_eq!(recovered.st.head.state, "ending");
+        assert!(recovered.st.head.turn.is_none());
+        let records = journal.read_records(&session_id, 0).await.unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|entry| matches!(entry.record, Record::ManagedCallUnknown { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|entry| matches!(
+                    &entry.record,
+                    Record::ToolResult { call: result_call, outcome, .. }
+                        if result_call == &call && outcome == "interrupted"
+                ))
+                .count(),
+            1
+        );
+        assert!(pending_managed(&records).unwrap().is_empty());
+
+        let mut resident = Some(recovered);
+        assert!(
+            continue_end_session(&recovering, &session_id, &mut resident)
+                .await
+                .expect("ending cleanup converges")
+        );
+        assert_eq!(
+            journal.get_head(&session_id).await.unwrap().doc.state,
+            "ended"
+        );
+        if let Some(resident) = resident {
+            recovering
+                .journal
+                .release(&session_id, &resident.st.lease)
+                .await
+                .unwrap();
+        }
     }
 
     async fn simulate_provider_only_crash(
