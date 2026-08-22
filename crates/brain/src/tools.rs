@@ -33,42 +33,21 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
     let output_schema = serde_json::Value::Object(tool.definition.output_schema.clone());
     validate_schema(&name, "input", &input_schema)?;
     validate_schema(&name, "output", &output_schema)?;
+    // The executor union is kind-tagged at the serde layer, so a payload declaring one realm
+    // can no longer deserialize as another; no per-arm kind re-checks remain.
     let route = match &tool.executor {
-        ToolExecutor::AexManagedToolExecutor(exec) => {
-            if exec.kind != "aex_managed" {
-                return Err(BrainError::Invalid(format!(
-                    "tool {name}: unsupported Hand executor descriptor"
-                )));
-            }
-            ToolRoute::Hand(HandToolSeal {
-                protocol: 1,
-                checksum: exec.bundle_digest.to_string(),
-                required_env: exec
-                    .required_env
-                    .iter()
-                    .cloned()
-                    .map(String::from)
-                    .collect(),
-            })
-        }
-        ToolExecutor::CustomerAppToolExecutor(exec) => {
-            if exec.kind != "customer_app" {
-                return Err(BrainError::Invalid(format!(
-                    "tool {name}: invalid customer-app executor kind"
-                )));
-            }
-            ToolRoute::Customer {
-                registration: exec.registration.to_string(),
-            }
-        }
-        ToolExecutor::EngineToolExecutor(exec) => {
-            if exec.kind != "engine" {
-                return Err(BrainError::Invalid(format!(
-                    "tool {name}: invalid engine executor kind"
-                )));
-            }
-            ToolRoute::Intrinsic(exec.capability.to_string())
-        }
+        ToolExecutor::AexManaged {
+            bundle_digest,
+            required_env,
+        } => ToolRoute::Hand(HandToolSeal {
+            protocol: 1,
+            checksum: bundle_digest.to_string(),
+            required_env: required_env.iter().cloned().map(String::from).collect(),
+        }),
+        ToolExecutor::CustomerApp { registration } => ToolRoute::Customer {
+            registration: registration.to_string(),
+        },
+        ToolExecutor::Engine { capability } => ToolRoute::Intrinsic(capability.to_string()),
     };
 
     Ok(ToolDecl {

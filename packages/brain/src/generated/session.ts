@@ -96,7 +96,25 @@ export type ExternalToolEffect = "opaque" | "replay_safe";
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ToolExecutor".
  */
-export type ToolExecutor = AexManagedToolExecutor | CustomerAppToolExecutor | EngineToolExecutor;
+export type ToolExecutor =
+  | {
+      kind: "aex_managed";
+      bundle_digest: Sha256Hex;
+      /**
+       * Environment-key names only. Secret values never enter the seal.
+       *
+       * @maxItems 64
+       */
+      required_env: string[];
+    }
+  | {
+      kind: "customer_app";
+      registration: string;
+    }
+  | {
+      kind: "engine";
+      capability: string;
+    };
 /**
  * The sealed agentloop identity of a session.
  *
@@ -508,38 +526,6 @@ export interface ToolDefinition {
     [k: string]: unknown | undefined;
   };
   contract_digest: Sha256Hex;
-}
-/**
- * A digest-sealed executable in the session's default Aex-managed realm.
- *
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "AexManagedToolExecutor".
- */
-export interface AexManagedToolExecutor {
-  kind: "aex_managed";
-  bundle_digest: Sha256Hex;
-  /**
-   * Environment-key names only. Secret values never enter the seal.
-   *
-   * @maxItems 64
-   */
-  required_env: string[];
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "CustomerAppToolExecutor".
- */
-export interface CustomerAppToolExecutor {
-  kind: "customer_app";
-  registration: string;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "EngineToolExecutor".
- */
-export interface EngineToolExecutor {
-  kind: "engine";
-  capability: string;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
