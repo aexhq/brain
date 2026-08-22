@@ -1,8 +1,8 @@
 # Working in this repository
 
-- Brain owns the neutral session API, Brain-to-Hand protocol, Brain-side Hand client, and public
-  Hand composition ports. Change schemas and generated views together; never hand-edit generated
-  contract files.
+- Brain owns the neutral session API, Brain-to-Hand protocol, and public Hand composition ports.
+  Change schemas and generated views together; never hand-edit generated contract files (CI
+  regenerates and diffs them).
 - `hands` and downstream products consume immutable Brain tags or revisions. Brain must not depend
   on a Hands implementation crate or product-specific runtime.
 - Journal every decision before its external effect. Seal the session prefix for its lifetime,

@@ -859,7 +859,6 @@ dependencies = [
  "brain-protocol",
  "chrono",
  "futures-util",
- "globset",
  "hex",
  "jsonschema",
  "libc",
@@ -875,7 +874,6 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
- "walkdir",
  "zeroize",
 ]
 
@@ -965,10 +963,7 @@ dependencies = [
  "anyhow",
  "brain",
  "brain-standalone",
- "futures-util",
  "libc",
- "reqwest",
- "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

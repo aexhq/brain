@@ -8,7 +8,7 @@ description = "The loop host: runs agentloop guest components (JS compiled into 
 publish = false
 
 [dependencies]
-brain = { path = "../brain" }
+brain = { workspace = true }
 brain-protocol = { workspace = true }
 
 anyhow = { workspace = true }
