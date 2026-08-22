@@ -1114,6 +1114,9 @@ struct UnknownManagedPorts {
     status_calls: AtomicUsize,
     dematerialize_calls: AtomicUsize,
     fail_next_dematerialize: AtomicBool,
+    block_submit: AtomicBool,
+    submit_started: tokio::sync::Notify,
+    release_submit: tokio::sync::Notify,
 }
 
 struct ScriptedCompactor {
@@ -1335,6 +1338,10 @@ impl crate::hand::HandPort for UnknownManagedPorts {
         _request: brain_protocol::hand::SubmitRequest,
     ) -> crate::hand::HandResult<brain_protocol::hand::SubmitReceipt> {
         self.submits.fetch_add(1, Ordering::AcqRel);
+        if self.block_submit.load(Ordering::Acquire) {
+            self.submit_started.notify_one();
+            self.release_submit.notified().await;
+        }
         Err(serde_json::from_value(json!({
             "code":"operation_unknown",
             "message":"guest Submit may have run before the physical generation was lost",
@@ -3238,11 +3245,27 @@ async fn journaled_customer_terminal_is_reacked_after_process_restart() {
 
 #[tokio::test]
 async fn managed_submit_unknown_survives_cleanup_crash_without_resubmission() {
-    let journal = Journal::new_memory("brain-managed-submit-unknown");
+    assert_managed_submit_unknown_recovery(false).await;
+}
+
+#[tokio::test]
+async fn cancelled_managed_submit_stays_cancelled_across_cleanup_crash() {
+    assert_managed_submit_unknown_recovery(true).await;
+}
+
+async fn assert_managed_submit_unknown_recovery(cancellation_requested: bool) {
+    let case = if cancellation_requested {
+        "brain-managed-submit-cancelled"
+    } else {
+        "brain-managed-submit-unknown"
+    };
+    let journal = Journal::new_memory(case);
     let ports = Arc::new(UnknownManagedPorts::default());
     ports.fail_next_dematerialize.store(true, Ordering::Release);
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
-    fake.script([Scripted::Text("continued after an honest unknown".into())]);
+    if !cancellation_requested {
+        fake.script([Scripted::Text("continued after an honest unknown".into())]);
+    }
     let provider = fake.clone();
     let brain = Brain::with_parts_and_services(
         BrainConfig {
@@ -3315,7 +3338,11 @@ async fn managed_submit_unknown_survives_cleanup_crash_without_resubmission() {
     resident.managed_bindings = Arc::new(HashMap::from([(name.clone(), binding)]));
     resident.st.head.state = SessionLifecycle::Open;
     resident.st.head.turn = Some(turn.clone());
-    resident.st.head.active_phase = Some(TurnPhase::ManagedRunning);
+    resident.st.head.active_phase = Some(if cancellation_requested {
+        TurnPhase::ManagedCancelling
+    } else {
+        TurnPhase::ManagedRunning
+    });
     resident.st.head.active_rounds = 1;
     resident.st.head.active_tool_calls = 1;
     resident.st.head.turns += 1;
@@ -3421,7 +3448,7 @@ async fn managed_submit_unknown_survives_cleanup_crash_without_resubmission() {
             idle_discard: Duration::from_secs(300),
             ..BrainConfig::default()
         },
-        journal.cloned_as("brain-managed-submit-unknown-restart"),
+        journal.cloned_as(format!("{case}-restart")),
         Arc::new(crate::keys::PlainCustody),
         Arc::new(crate::adapter::DisabledToolExecutor),
         BrainServices {
@@ -3464,8 +3491,27 @@ async fn managed_submit_unknown_survives_cleanup_crash_without_resubmission() {
             .count(),
         1
     );
-    fake.assert_drained(1, "managed OperationUnknown recovery")
-        .unwrap();
+    let expected_stop = if cancellation_requested {
+        TurnStopReason::Cancelled
+    } else {
+        TurnStopReason::EndTurn
+    };
+    assert_eq!(
+        final_records
+            .iter()
+            .filter(|entry| matches!(
+                &entry.record,
+                Record::TurnCompleted { stop_reason, .. } if *stop_reason == expected_stop
+            ))
+            .count(),
+        1,
+        "the recovered turn must preserve its requested terminal disposition"
+    );
+    fake.assert_drained(
+        u64::from(!cancellation_requested),
+        "managed OperationUnknown recovery",
+    )
+    .unwrap();
     recovering
         .journal
         .release(&session_id, &recovered.st.lease)
@@ -5486,4 +5532,143 @@ async fn storage_upload_reservation_is_durable_bounded_and_retried_after_restart
         .collect();
     assert_eq!(gauges, vec![(0, 8), (0, 0)]);
     let _ = std::fs::remove_dir_all(data_dir);
+}
+
+#[tokio::test]
+async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
+    let journal = Journal::new_memory("brain-managed-submit-live-cancel");
+    let ports = Arc::new(UnknownManagedPorts::default());
+    ports.block_submit.store(true, Ordering::Release);
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    let name = "managed_cancel_test".to_owned();
+    fake.script([Scripted::tool(&name, json!({"sleep":30}))]);
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            hand: Some(ports.clone()),
+            session_preparation: Some(ports.clone()),
+            sandbox_files: Some(ports.clone()),
+            ..BrainServices::default()
+        },
+        Arc::new(move |_| provider.clone()),
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model":{"provider":"anthropic","name":"managed-cancel","api_key":"key"}
+            })),
+            Some("managed-submit-live-cancel"),
+        )
+        .await
+        .expect("create live cancellation session");
+    let session_id = created.id.to_string();
+    let mut resident = hydrate(&brain, &session_id)
+        .await
+        .expect("claim live cancellation session");
+    let bundle_digest = "a".repeat(64);
+    resident.st.head.prefix.hand_enabled = true;
+    resident.st.head.prefix.tools = serde_json::from_value(json!([{
+        "definition": {
+            "name":name,
+            "description":"block until cancellation",
+            "contract_digest":"b".repeat(64),
+            "input_schema":{"type":"object"},
+            "output_schema":{}
+        },
+        "executor": {
+            "kind":"aex_managed",
+            "bundle_digest":bundle_digest,
+            "required_env":[]
+        }
+    }]))
+    .expect("managed Tool seal");
+    let binding: brain_protocol::hand::ResolvedBinding = serde_json::from_value(json!({
+        "binding_ref":"bnd_managedcancel0000",
+        "capabilities":["execution","session_preparation"],
+        "hand_id":"hand_managedcancel",
+        "limits":{
+            "max_inline_input_bytes":brain_protocol::MAX_MANAGED_TOOL_INPUT_BYTES,
+            "max_inline_result_bytes":brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES,
+            "max_wait_ms":1
+        },
+        "realm":"aex_managed",
+        "recovery":"retained"
+    }))
+    .expect("valid managed binding");
+    resident.managed_bindings = Arc::new(HashMap::from([(name, binding)]));
+
+    let content = vec![ContentBlock::text("run the managed effect")];
+    let (turn, user_seq, cancel) = admit(
+        &brain,
+        &session_id,
+        &mut resident,
+        content.clone(),
+        HashMap::new(),
+        None,
+    )
+    .await
+    .expect("admit managed turn");
+    let run = turn_run(
+        &brain,
+        &session_id,
+        &turn,
+        &resident,
+        HashMap::new(),
+        cancel.clone(),
+        Some(crate::turn::AdmittedMessage {
+            seq: user_seq,
+            at_ms: crate::wall_ms(),
+            content,
+        }),
+    )
+    .expect("build managed turn");
+    let mut state = resident.st;
+    let running = tokio::spawn(async move {
+        let outcome = run.run(&mut state).await;
+        (state, outcome)
+    });
+    tokio::time::timeout(Duration::from_secs(5), ports.submit_started.notified())
+        .await
+        .expect("managed Submit began");
+    cancel.cancel();
+
+    let (state, report) = tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .expect("cancelled managed turn completed")
+        .expect("managed turn task");
+    let report = report.expect("cancelled turn report");
+    assert_eq!(report.stop_reason, TurnStopReason::Cancelled);
+    assert_eq!(ports.submits.load(Ordering::Acquire), 1);
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|entry| matches!(entry.record, Record::ManagedCallUnknown { .. }))
+            .count(),
+        1,
+        "cancellation durably revokes every future Submit replay"
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|entry| matches!(
+                &entry.record,
+                Record::TurnCompleted { stop_reason, .. }
+                    if *stop_reason == TurnStopReason::Cancelled
+            ))
+            .count(),
+        1
+    );
+    fake.assert_drained(1, "live managed cancellation").unwrap();
+    journal
+        .release(&session_id, &state.lease)
+        .await
+        .expect("release cancelled managed turn owner");
 }

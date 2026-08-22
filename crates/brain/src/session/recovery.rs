@@ -530,6 +530,8 @@ pub(super) async fn recover_managed_calls(
     let active_turn = resident.st.head.turn.clone();
     let rounds = resident.st.head.active_rounds;
     let tool_calls = resident.st.head.active_tool_calls;
+    let cancellation_requested =
+        resident.st.head.active_phase == Some(TurnPhase::ManagedCancelling);
     let mut recovered = Vec::new();
     let mut sandbox_gone = None;
 
@@ -748,8 +750,60 @@ pub(super) async fn recover_managed_calls(
         }
 
         crate::turn::verify_managed_observation(&observation, &operation)?;
+        if cancellation_requested && observation.state != OperationState::Terminal {
+            let cancel: brain_protocol::hand::CancelRequest =
+                serde_json::from_value(serde_json::json!({
+                    "operation": operation,
+                    "reason": "turn_cancelled",
+                }))?;
+            match hand.cancel(cancel).await {
+                Ok(_) => {}
+                Err(error) if error.code == HandErrorCode::OperationUnknown => {
+                    let unknown = vec![(
+                        resident.st.take_seq(),
+                        Record::ManagedCallUnknown {
+                            turn: call.turn.clone(),
+                            call: call.call.clone(),
+                            request_digest: call.envelope.request_digest.to_string(),
+                        },
+                    )];
+                    commit(brain, session_id, &mut resident.st, unknown).await?;
+                    reconcile_managed_unknown_default_sandbox(brain, session_id, &mut resident.st)
+                        .await?;
+                    recovered.push((
+                        call.clone(),
+                        Some(operation),
+                        crate::turn::managed_unknown_call_outcome(&call.name),
+                        None,
+                    ));
+                    continue 'managed_calls;
+                }
+                Err(error) if error.code == HandErrorCode::SandboxGone => {
+                    sandbox_gone = Some(managed_operation_gone_status(&operation)?);
+                    recovered.push((
+                        call,
+                        Some(operation),
+                        CallOutcome {
+                            outcome: TerminalOutcome::Interrupted,
+                            value: None,
+                            content:
+                                "managed Tool target disappeared while cancellation was pending"
+                                    .into(),
+                            is_error: true,
+                            exit_code: None,
+                            duration_ms: 0,
+                            truncated: false,
+                            terminal: None,
+                        },
+                        None,
+                    ));
+                    continue 'managed_calls;
+                }
+                Err(error) => return Err(map_hand_port_error(error)),
+            }
+        }
         if observation.state != OperationState::Terminal {
-            if crate::wall_ms() >= call.envelope.deadline_at_ms.get() {
+            if !cancellation_requested && crate::wall_ms() >= call.envelope.deadline_at_ms.get() {
                 let cancel: brain_protocol::hand::CancelRequest =
                     serde_json::from_value(serde_json::json!({
                         "operation": operation,
@@ -882,7 +936,33 @@ pub(super) async fn recover_managed_calls(
             Record::DefaultSandboxChanged { status },
         ));
     }
-    if let Some((call, name, terminal)) = terminal {
+    if cancellation_requested {
+        let turn = active_turn.expect("pending managed cancellation required an active turn");
+        resident.st.head.state = resident.st.head.lifecycle_after_turn();
+        resident.st.head.turn = None;
+        resident.st.head.active_phase = None;
+        resident.st.head.provider_attempt = None;
+        resident.st.head.active_context.clear();
+        resident.st.head.active_rounds = 0;
+        resident.st.head.active_tool_calls = 0;
+        records.push((
+            resident.st.take_seq(),
+            Record::TurnCompleted {
+                turn,
+                stop_reason: TurnStopReason::Cancelled,
+                rounds,
+                tool_calls,
+                result: None,
+            },
+        ));
+        records.push((
+            resident.st.take_seq(),
+            Record::State {
+                state: resident.st.head.state,
+                turn: None,
+            },
+        ));
+    } else if let Some((call, name, terminal)) = terminal {
         let turn = active_turn.expect("pending managed call required an active turn");
         resident.st.head.state = resident.st.head.lifecycle_after_turn();
         resident.st.head.turn = None;

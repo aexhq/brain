@@ -4344,11 +4344,13 @@ async fn settle_running(
                 outcome: Err(error),
                 ..
             },
-        )) if st.head.active_phase == Some(TurnPhase::ManagedRunning)
-            && matches!(
-                error,
-                BrainError::HandUnavailable(_) | BrainError::Cancelled
-            ) =>
+        )) if matches!(
+            st.head.active_phase,
+            Some(TurnPhase::ManagedRunning | TurnPhase::ManagedCancelling)
+        ) && matches!(
+            error,
+            BrainError::HandUnavailable(_) | BrainError::Cancelled
+        ) =>
         {
             // The managed intent is already durable and the effect may have crossed the Hand
             // boundary. Never manufacture a failed turn here. Release the lease with a due
