@@ -15,6 +15,14 @@ on:
         description: Exact 40-character Brain commit selected by the workflow ref
         type: string
         required: true
+      release_scope:
+        description: Package set to stage; promotion always consumes the selected stage artifact
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - brain-tools
       stage_run_id:
         description: Successful stage workflow run containing the immutable archives (promote only)
         type: string
@@ -97,9 +105,15 @@ jobs:
         shell: bash
         env:
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          RELEASE_SCOPE: ${{ inputs.release_scope }}
         run: |
           set -euo pipefail
           release_dir="$RUNNER_TEMP/brain-npm-release"
+          case "$RELEASE_SCOPE" in
+            all) unset RELEASE_WORKSPACES ;;
+            brain-tools) export RELEASE_WORKSPACES=brain-tools ;;
+            *) echo "unsupported release scope: $RELEASE_SCOPE" >&2; exit 1 ;;
+          esac
           node tools/npm-release.mjs pack "$release_dir"
           versions=$(node tools/npm-release.mjs versions "$release_dir/manifest.json")
           echo "versions=$versions" >> "$GITHUB_OUTPUT"

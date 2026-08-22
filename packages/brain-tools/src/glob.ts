@@ -19,6 +19,7 @@ const glob = tool(globInput, async function glob({ pattern, limit }, context) {
     paths.sort();
     return { paths: paths.slice(0, limit), truncated: paths.length > limit };
   })
+  .named("glob")
   .describe("List Hand workspace paths matching a glob pattern.")
   .returns(globOutput)
   .server(import.meta.url);

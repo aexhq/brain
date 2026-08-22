@@ -59,6 +59,7 @@ const bash = tool(bashInput, async function bash(input, context) {
       timer.unref();
     });
   })
+  .named("bash")
   .describe("Run a Bash command in the session Hand workspace.")
   .returns(bashOutput)
   .server(import.meta.url);

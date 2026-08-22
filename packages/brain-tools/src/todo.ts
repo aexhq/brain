@@ -28,6 +28,7 @@ const todo = tool(todoInput, async function todo(input, context) {
       throw error;
     }
   })
+  .named("todo")
   .describe("Read or replace the session's portable to-do list.")
   .returns(todoOutput)
   .server(import.meta.url);
