@@ -744,8 +744,8 @@ impl LocalWorkspace {
         emit: impl Fn(&str, u64, String) + Send + Sync + 'static,
         t0: Instant,
     ) -> CallOutcome {
-        let fail = |message: String, outcome: &str| CallOutcome {
-            outcome: outcome.into(),
+        let fail = |message: String, outcome: HandTerminalOutcome| CallOutcome {
+            outcome,
             value: None,
             content: message,
             is_error: true,
@@ -758,7 +758,7 @@ impl LocalWorkspace {
             if !self.env.contains_key(name) {
                 return fail(
                     format!("required environment variable {name} is unavailable"),
-                    "failed",
+                    HandTerminalOutcome::Failed,
                 );
             }
         }
@@ -786,10 +786,18 @@ impl LocalWorkspace {
         });
         let request_bytes = match serde_json::to_vec(&request) {
             Ok(bytes) => bytes,
-            Err(error) => return fail(format!("encode managed Tool request: {error}"), "failed"),
+            Err(error) => {
+                return fail(
+                    format!("encode managed Tool request: {error}"),
+                    HandTerminalOutcome::Failed,
+                );
+            }
         };
         if let Err(error) = tokio::fs::write(&request_path, request_bytes).await {
-            return fail(format!("stage managed Tool request: {error}"), "failed");
+            return fail(
+                format!("stage managed Tool request: {error}"),
+                HandTerminalOutcome::Failed,
+            );
         }
 
         let mut cmd = tokio::process::Command::new("node");
@@ -816,7 +824,7 @@ impl LocalWorkspace {
                 let _ = tokio::fs::remove_file(&request_path).await;
                 return fail(
                     format!("could not spawn Node 22 managed Tool runner: {error}"),
-                    "failed",
+                    HandTerminalOutcome::Failed,
                 );
             }
         };
@@ -879,12 +887,15 @@ impl LocalWorkspace {
         let _ = tokio::fs::remove_file(result_path.with_extension("json.tmp")).await;
 
         if cancelled {
-            return fail("managed Tool call was cancelled".into(), "cancelled");
+            return fail(
+                "managed Tool call was cancelled".into(),
+                HandTerminalOutcome::Cancelled,
+            );
         }
         if timed_out {
             return fail(
                 format!("managed Tool exceeded its {timeout_ms} ms remaining deadline"),
-                "deadline_exceeded",
+                HandTerminalOutcome::DeadlineExceeded,
             );
         }
         let exit_code = status.and_then(|status| status.code()).map(i64::from);
@@ -895,7 +906,7 @@ impl LocalWorkspace {
                     format!("managed Tool output encoding failed: {error}")
                 });
                 CallOutcome {
-                    outcome: "completed".into(),
+                    outcome: HandTerminalOutcome::Completed,
                     value: Some(output),
                     content,
                     is_error: exit_code != Some(0),
@@ -921,7 +932,7 @@ impl LocalWorkspace {
                     format!("{message}\n{diagnostics}")
                 };
                 CallOutcome {
-                    outcome: "failed".into(),
+                    outcome: HandTerminalOutcome::Failed,
                     value: None,
                     content,
                     is_error: true,
@@ -940,7 +951,7 @@ impl LocalWorkspace {
                         format!(": {stderr}")
                     }
                 ),
-                "failed",
+                HandTerminalOutcome::Failed,
             ),
         }
     }
@@ -1621,15 +1632,17 @@ impl LocalHand {
     }
 
     fn terminal_from_outcome(outcome: CallOutcome) -> HandResult<TerminalResult> {
-        let completed = outcome.outcome == "completed" && !outcome.is_error;
+        let completed = outcome.outcome == HandTerminalOutcome::Completed && !outcome.is_error;
         let terminal_outcome = if completed {
             HandTerminalOutcome::Completed
         } else {
-            match outcome.outcome.as_str() {
-                "cancelled" => HandTerminalOutcome::Cancelled,
-                "deadline_exceeded" => HandTerminalOutcome::DeadlineExceeded,
-                "interrupted" => HandTerminalOutcome::Interrupted,
-                _ => HandTerminalOutcome::Failed,
+            match outcome.outcome {
+                HandTerminalOutcome::Cancelled => HandTerminalOutcome::Cancelled,
+                HandTerminalOutcome::DeadlineExceeded => HandTerminalOutcome::DeadlineExceeded,
+                HandTerminalOutcome::Interrupted => HandTerminalOutcome::Interrupted,
+                HandTerminalOutcome::Completed | HandTerminalOutcome::Failed => {
+                    HandTerminalOutcome::Failed
+                }
             }
         };
         let mut inline = outcome
@@ -1657,7 +1670,7 @@ impl LocalHand {
 
     fn interrupted_terminal() -> HandResult<TerminalResult> {
         Self::terminal_from_outcome(CallOutcome {
-            outcome: "interrupted".into(),
+            outcome: HandTerminalOutcome::Interrupted,
             value: Some(json!({
                 "error": "local Brain restarted after dispatch; the ambiguous effect was not repeated"
             })),
@@ -2080,7 +2093,7 @@ impl HandPort for LocalHand {
 
         if brain::wall_ms() >= request.envelope.deadline_at_ms.get() {
             let terminal = Self::terminal_from_outcome(CallOutcome {
-                outcome: "deadline_exceeded".into(),
+                outcome: HandTerminalOutcome::DeadlineExceeded,
                 value: Some(json!({"error":"managed Tool deadline elapsed before execution"})),
                 content: String::new(),
                 is_error: true,

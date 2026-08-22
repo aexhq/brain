@@ -6,6 +6,7 @@
 
 use crate::config::{HandToolSeal, ToolDecl, ToolRoute};
 use crate::{BrainError, Result};
+use brain_protocol::hand::TerminalOutcome;
 use brain_protocol::session::{ToolConfig, ToolExecutor};
 use serde::Deserialize;
 
@@ -105,7 +106,7 @@ pub fn enforce_output(
     tool: &ToolDecl,
     outcome: crate::adapter::CallOutcome,
 ) -> crate::adapter::CallOutcome {
-    if outcome.is_error || outcome.outcome != "completed" {
+    if outcome.is_error || outcome.outcome != TerminalOutcome::Completed {
         return outcome;
     }
     let Some(value) = outcome.value.as_ref() else {
@@ -138,10 +139,10 @@ pub fn enforce_terminal_bound(
         .is_some_and(|value| !brain_protocol::contract::terminal_inline_fits(value));
     let terminal_too_large = outcome.terminal.as_ref().is_some_and(|terminal| {
         let projection = match terminal {
-            crate::adapter::TerminalOutcome::Complete { value, metadata } => {
+            crate::adapter::TurnTerminal::Complete { value, metadata } => {
                 serde_json::json!({"value": value, "metadata": metadata})
             }
-            crate::adapter::TerminalOutcome::Fail { error } => {
+            crate::adapter::TurnTerminal::Fail { error } => {
                 serde_json::json!({"error": error})
             }
         };
@@ -298,7 +299,7 @@ mod tests {
         assert!(input_error(&tool, &serde_json::json!({"value": 1})).is_none());
 
         let valid = crate::adapter::CallOutcome {
-            outcome: "completed".into(),
+            outcome: TerminalOutcome::Completed,
             value: Some(serde_json::json!({"ok": true})),
             content: "ok".into(),
             is_error: false,
@@ -307,9 +308,12 @@ mod tests {
             truncated: false,
             terminal: None,
         };
-        assert_eq!(enforce_output(&tool, valid).outcome, "completed");
+        assert_eq!(
+            enforce_output(&tool, valid).outcome,
+            TerminalOutcome::Completed
+        );
         let invalid = crate::adapter::CallOutcome {
-            outcome: "completed".into(),
+            outcome: TerminalOutcome::Completed,
             value: Some(serde_json::json!({"ok": "wrong"})),
             content: "bad".into(),
             is_error: false,
@@ -319,7 +323,7 @@ mod tests {
             terminal: None,
         };
         let invalid = enforce_output(&tool, invalid);
-        assert_eq!(invalid.outcome, "failed");
+        assert_eq!(invalid.outcome, TerminalOutcome::Failed);
         assert!(invalid.content.contains("arbitrary_name output"));
 
         let malformed: ToolConfig = serde_json::from_value(serde_json::json!({

@@ -462,7 +462,7 @@ pub(crate) fn resolve_verdict(
             ActivationResultOutcome::Completed if ctx.loop_terminal().is_some() => {
                 // Placeholder only: the kernel maps the declared terminal onto the turn.
                 Ok(LoopVerdict {
-                    stop_reason: "end_turn".into(),
+                    stop_reason: brain::journal::TurnStopReason::EndTurn,
                     terminal_committed: false,
                 })
             }
@@ -489,7 +489,8 @@ pub(crate) fn parse_verdict(verdict_json: &str) -> Result<LoopVerdict, BrainErro
     let stop_reason = verdict["stop_reason"]
         .as_str()
         .ok_or_else(|| BrainError::Agentloop("guest verdict is missing stop_reason".into()))?
-        .to_string();
+        .parse::<brain::journal::TurnStopReason>()
+        .map_err(|_| BrainError::Agentloop("guest verdict stop_reason is unknown".into()))?;
     Ok(LoopVerdict {
         stop_reason,
         terminal_committed: verdict["terminal_committed"].as_bool().unwrap_or(false),

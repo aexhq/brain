@@ -16,15 +16,19 @@
 //! WHERE arbitrary user code runs is not this module's business: managed dispatch goes through
 //! the transport-neutral typed Hand receipt port.
 
-use crate::adapter::{CallOutcome, TerminalOutcome, ToolExecutor};
+use crate::adapter::{CallOutcome, ToolExecutor, TurnTerminal};
 use crate::config::{SealedPrefix, SessionConfig, ToolRoute};
 use crate::events::EventHub;
-use crate::journal::{self, HeadDoc, Journal, Lease, ProviderAttemptState, Record, TurnPhase};
+use crate::journal::{
+    self, HeadDoc, Journal, Lease, ProviderAttemptState, Record, TurnPhase, TurnStopReason,
+};
 use crate::message::{ContentBlock, Message, StopReason};
 use crate::provider::{Accumulator, Provider, ProviderEvent};
 use crate::{BrainError, Result, Shared};
 use base64::Engine as _;
+use brain_protocol::hand::TerminalOutcome;
 use brain_protocol::session::EventStream;
+use brain_protocol::session::ToolOutcome;
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -162,7 +166,7 @@ pub struct TurnRun {
 
 #[derive(Debug, Clone)]
 pub struct TurnReport {
-    pub stop_reason: String,
+    pub stop_reason: TurnStopReason,
     pub rounds: u64,
     pub tool_calls: u64,
     /// True when the tool-result decision also journaled the turn terminal atomically.
@@ -1225,7 +1229,7 @@ impl TurnRun {
                 )))
             }
             Some(crate::agentloop::LoopTerminal::Finished { result }) => Ok(TurnReport {
-                stop_reason: "end_turn".into(),
+                stop_reason: TurnStopReason::EndTurn,
                 rounds,
                 tool_calls,
                 terminal_committed,
@@ -1601,7 +1605,7 @@ impl TurnRun {
                     agent: "root".into(),
                     call: call.clone(),
                     name: name.clone(),
-                    outcome: "failed".into(),
+                    outcome: ToolOutcome::Failed,
                     content: NOT_EXECUTED.into(),
                     is_error: true,
                     exit_code: None,
@@ -1678,7 +1682,7 @@ impl TurnRun {
                         agent: "root".into(),
                         call: calls[i].0.clone(),
                         name: calls[i].1.clone(),
-                        outcome: o.outcome.clone(),
+                        outcome: crate::events::tool_outcome(o.outcome),
                         content,
                         is_error: o.is_error,
                         exit_code: o.exit_code,
@@ -1758,7 +1762,7 @@ impl TurnRun {
                 st.head.active_rounds = 0;
                 st.head.active_tool_calls = 0;
                 match terminal {
-                    TerminalOutcome::Complete { value, metadata } => {
+                    TurnTerminal::Complete { value, metadata } => {
                         let result = brain_protocol::session::TurnResult {
                             call_id: calls[index].0.parse().map_err(|error| {
                                 BrainError::Protocol(format!("external call id: {error}"))
@@ -1771,15 +1775,15 @@ impl TurnRun {
                             st.take_seq(),
                             Record::TurnCompleted {
                                 turn: self.turn_id.clone(),
-                                stop_reason: "end_turn".into(),
+                                stop_reason: TurnStopReason::EndTurn,
                                 rounds,
                                 tool_calls,
                                 result: Some(result),
                             },
                         ));
-                        Some("end_turn")
+                        Some(TurnStopReason::EndTurn)
                     }
-                    TerminalOutcome::Fail { error } => {
+                    TurnTerminal::Fail { error } => {
                         result_records.push((
                             st.take_seq(),
                             Record::TurnFailed {
@@ -1789,7 +1793,7 @@ impl TurnRun {
                                 details: error.details,
                             },
                         ));
-                        Some("error")
+                        Some(TurnStopReason::Error)
                     }
                 }
             } else {
@@ -1915,9 +1919,7 @@ impl TurnRun {
             st.history.push(Message::tool_results(blocks));
 
             let outcome = if let Some(stop_reason) = terminal_report {
-                crate::agentloop::DispatchOutcome::TerminalCommitted {
-                    stop_reason: stop_reason.into(),
-                }
+                crate::agentloop::DispatchOutcome::TerminalCommitted { stop_reason }
             } else {
                 crate::agentloop::DispatchOutcome::Continue
             };
@@ -1942,7 +1944,7 @@ impl TurnRun {
                     seq,
                     Record::TurnCompleted {
                         turn: self.turn_id.clone(),
-                        stop_reason: report.stop_reason.clone(),
+                        stop_reason: report.stop_reason,
                         rounds: report.rounds,
                         tool_calls: report.tool_calls,
                         result: report.result.clone(),
@@ -2959,7 +2961,7 @@ pub(crate) fn managed_unknown_call_outcome(name: &str) -> CallOutcome {
     let mut outcome = CallOutcome::failed(format!(
         "managed Tool {name} may have run, but its terminal receipt is unavailable; Brain will not submit it again"
     ));
-    outcome.outcome = "interrupted".into();
+    outcome.outcome = TerminalOutcome::Interrupted;
     outcome
 }
 
@@ -3001,7 +3003,7 @@ pub(crate) fn managed_terminal_call_outcome(
     let terminal_digest = terminal.terminal_digest.to_string();
     Ok((
         CallOutcome {
-            outcome: terminal.outcome.to_string(),
+            outcome: terminal.outcome,
             value,
             content,
             is_error: terminal.is_error,
@@ -3029,7 +3031,7 @@ fn customer_preparation_failure(error: BrainError) -> CallOutcome {
     );
     let mut outcome = CallOutcome::failed(error.to_string());
     if retryable {
-        outcome.outcome = "interrupted".into();
+        outcome.outcome = TerminalOutcome::Interrupted;
     }
     outcome
 }
@@ -3092,7 +3094,7 @@ pub(crate) async fn execute_external(
         Ok(response) => response,
         Err(BrainError::Cancelled) => {
             return CallOutcome {
-                outcome: "cancelled".into(),
+                outcome: TerminalOutcome::Cancelled,
                 value: None,
                 content: "external tool call cancelled".into(),
                 is_error: true,
@@ -3134,7 +3136,7 @@ pub(crate) async fn execute_external(
                     "external tool {name} returned complete_turn without result"
                 ));
             };
-            Some(TerminalOutcome::Complete {
+            Some(TurnTerminal::Complete {
                 value,
                 metadata: response.result_metadata,
             })
@@ -3150,11 +3152,17 @@ pub(crate) async fn execute_external(
                     "external tool {name} returned fail_turn without error"
                 ));
             };
-            Some(TerminalOutcome::Fail { error })
+            Some(TurnTerminal::Fail { error })
         }
     };
     CallOutcome {
-        outcome: response.outcome.to_string(),
+        outcome: match response.outcome {
+            ToolOutcome::Completed => TerminalOutcome::Completed,
+            ToolOutcome::Failed => TerminalOutcome::Failed,
+            ToolOutcome::Cancelled => TerminalOutcome::Cancelled,
+            ToolOutcome::DeadlineExceeded => TerminalOutcome::DeadlineExceeded,
+            ToolOutcome::Interrupted => TerminalOutcome::Interrupted,
+        },
         value: structured,
         content,
         is_error: response.is_error,

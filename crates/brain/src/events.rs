@@ -52,24 +52,16 @@ fn preview(content: &str) -> (String, bool) {
     }
 }
 
-/// Maps our neutral stop reasons onto the contract's turn-completed vocabulary.
-pub fn stop_reason(s: &str) -> session::StopReason {
-    match s {
-        "end_turn" => session::StopReason::EndTurn,
-        "refusal" => session::StopReason::Refusal,
-        "max_rounds" => session::StopReason::MaxRounds,
-        "cancelled" => session::StopReason::Cancelled,
-        _ => session::StopReason::Error,
-    }
-}
-
-fn tool_outcome(s: &str) -> ToolOutcome {
-    match s {
-        "completed" => ToolOutcome::Completed,
-        "cancelled" => ToolOutcome::Cancelled,
-        "deadline_exceeded" => ToolOutcome::DeadlineExceeded,
-        "interrupted" => ToolOutcome::Interrupted,
-        _ => ToolOutcome::Failed,
+/// The Brain-to-Hand receipt outcome and the public tool outcome share one vocabulary but are
+/// distinct generated types; this is the exhaustive bridge.
+pub fn tool_outcome(o: brain_protocol::hand::TerminalOutcome) -> ToolOutcome {
+    use brain_protocol::hand::TerminalOutcome;
+    match o {
+        TerminalOutcome::Completed => ToolOutcome::Completed,
+        TerminalOutcome::Failed => ToolOutcome::Failed,
+        TerminalOutcome::Cancelled => ToolOutcome::Cancelled,
+        TerminalOutcome::DeadlineExceeded => ToolOutcome::DeadlineExceeded,
+        TerminalOutcome::Interrupted => ToolOutcome::Interrupted,
     }
 }
 
@@ -219,7 +211,7 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
                 error: is_error.then(|| p.clone()),
                 exit_code: *exit_code,
                 name: name.clone(),
-                outcome: tool_outcome(outcome),
+                outcome: *outcome,
                 output_preview: p,
                 seq,
                 session_id: sid,
@@ -239,7 +231,7 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
             rounds: *rounds,
             seq,
             session_id: sid,
-            stop_reason: stop_reason(sr),
+            stop_reason: sr.to_public(),
             tool_calls: *tool_calls,
             turn_id: turn_of(turn)?,
         },
@@ -656,7 +648,7 @@ mod tests {
             agent: "root".into(),
             call: "op_1".into(),
             name: "bash".into(),
-            outcome: "completed".into(),
+            outcome: ToolOutcome::Completed,
             content: "x".repeat(OUTPUT_PREVIEW_BYTES + 100),
             is_error: false,
             exit_code: Some(0),
@@ -712,7 +704,10 @@ mod tests {
 
     #[test]
     fn provider_refusal_remains_distinct_on_the_public_event() {
-        assert_eq!(stop_reason("refusal"), session::StopReason::Refusal);
+        assert_eq!(
+            crate::journal::TurnStopReason::Refusal.to_public(),
+            session::StopReason::Refusal
+        );
     }
 
     #[test]
