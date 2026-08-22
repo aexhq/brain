@@ -12,7 +12,7 @@
   physical target or customer process.
 - Keep the `brain` core independent of cloud SDKs. Put storage, custody, and runtime behaviour behind
   public adapters, and do not weaken production invariants for local development.
-- `crates/brain-standalone/tests/standalone_e2e.rs` covers real HTTP, finite SSE, durable SQLite
+- `crates/brain-server/tests/standalone_e2e.rs` covers real HTTP, finite SSE, durable SQLite
   journal/storage reopen, and real Node managed-tool subprocesses with a scripted model provider.
   Hosted infrastructure and MicroVM gates belong downstream.
 - Fail fast, keep comments self-contained, and use plain English.

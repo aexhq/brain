@@ -3,11 +3,10 @@
 //! interleaved sessions prove workspace, journal, provider-key, and managed-secret isolation.
 
 use base64::Engine as _;
-use brain::adapter::DisabledToolExecutor;
 use brain::config::Dialect;
 use brain::provider::Provider;
 use brain::provider::fake::{FakeProvider, Scripted};
-use brain::session::{Brain, BrainConfig, BrainServices};
+use brain::session::BrainConfig;
 use brain_standalone::durable_local_parts;
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
@@ -314,9 +313,6 @@ fn assert_no_plaintext_secrets(root: &Path) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
     let temp = TempDir::new();
-    let parts = durable_local_parts(&temp.0).expect("open durable local composition");
-    let journal = parts.journal.clone();
-    let local_hand = parts.local_hand.clone();
     let alpha = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     let beta = Arc::new(FakeProvider::new(Dialect::OpenAiChat));
     alpha.script([
@@ -329,36 +325,28 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
     ]);
     let alpha_factory = alpha.clone();
     let beta_factory = beta.clone();
-    let brain = Brain::with_parts_and_services(
-        BrainConfig {
-            idle_discard: Duration::from_secs(300),
-            ..BrainConfig::default()
-        },
-        parts.journal,
-        parts.custody,
-        Arc::new(DisabledToolExecutor),
-        BrainServices {
-            session_storage: Some(parts.session_storage),
-            bundle_storage: Some(parts.bundle_storage),
-            hand: Some(parts.hand),
-            session_preparation: Some(parts.session_preparation),
-            sandbox_files: Some(parts.sandbox_files),
-            sandbox_control: Some(parts.sandbox_control),
-            ..BrainServices::default()
-        },
-        Some(Arc::new(move |dialect| match dialect {
-            Dialect::AnthropicMessages => alpha_factory.clone() as Arc<dyn Provider>,
-            Dialect::OpenAiChat => beta_factory.clone() as Arc<dyn Provider>,
-        })),
-    );
-    local_hand
-        .attach_secret_delivery(brain.clone())
-        .expect("attach one-purpose local secret delivery");
-
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind local HTTP");
-    let base = format!("http://{}", listener.local_addr().unwrap());
+    let address = listener.local_addr().unwrap();
+    let base = format!("http://{address}");
+    // The REAL shipped composition: the same compose_local the brain-server binary runs.
+    let brain = brain_server::compose_local(brain_server::LocalOptions {
+        data_dir: temp.0.clone(),
+        cfg: BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        advertised_address: address.to_string(),
+        transport_urls: None,
+        provider_factory: Some(Arc::new(move |dialect| match dialect {
+            Dialect::AnthropicMessages => alpha_factory.clone() as Arc<dyn Provider>,
+            Dialect::OpenAiChat => beta_factory.clone() as Arc<dyn Provider>,
+        })),
+        loophost: None,
+    })
+    .expect("open the durable local composition");
+    let journal = brain.journal.clone();
     let app = brain::api::router(brain::api::AppState {
         brain: brain.clone(),
         token: OPERATOR_TOKEN.into(),
@@ -499,7 +487,6 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
     let _ = server.await;
     drop(http);
     drop(brain);
-    drop(local_hand);
     assert_no_plaintext_secrets(&temp.0);
 
     // Reopening both durable adapters proves the evidence was not merely resident memory.
