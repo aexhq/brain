@@ -7687,7 +7687,14 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
     }
     let (root_secret_cell, root_secrets) = brain.root_execution_secrets(&head.doc).await?;
     let key = root_secrets.key.clone();
-    let managed_bindings = brain.prepare_managed_session(session_id, &head.doc).await?;
+    // A deleting session is past the subtree END barrier and can never execute another turn.
+    // Re-preparing its managed bindings here recreates Hand definition rows immediately before
+    // `purge_tree` removes them, so every cold deletion retry sees another nonempty purge page.
+    let managed_bindings = if head.doc.state == "deleting" {
+        Arc::new(HashMap::new())
+    } else {
+        brain.prepare_managed_session(session_id, &head.doc).await?
+    };
     let persisted_head = head.doc.clone();
     let mut resident = Resident {
         st: TurnState {
@@ -14548,6 +14555,83 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn deleting_managed_session_hydrates_without_repreparing_hand_definitions() {
+        let journal = Journal::new_memory("brain-deleting-managed-hydrate");
+        let brain = Brain::with_parts(
+            BrainConfig::default(),
+            journal.clone(),
+            Arc::new(crate::keys::PlainCustody),
+            None,
+        );
+        let created = brain
+            .create_session(
+                typed_create(json!({
+                    "model":{"provider":"anthropic","name":"deleting-managed","api_key":"key"}
+                })),
+                Some("deleting-managed-hydrate"),
+            )
+            .await
+            .expect("create deleting managed session");
+        let session_id = created.id.to_string();
+        let mut resident = hydrate(&brain, &session_id)
+            .await
+            .expect("claim deleting managed session");
+        let bundle_digest = "a".repeat(64);
+        resident.st.head.prefix.managed_bundles.push(
+            serde_json::from_value(json!({
+                "bundle_digest":bundle_digest,
+                "bytes":1,
+                "contract_digest":"b".repeat(64),
+                "object":{
+                    "bytes":1,
+                    "media_type":"application/javascript+esm",
+                    "object_id":format!("bundle_{bundle_digest}"),
+                    "sha256":bundle_digest,
+                },
+                "required_env":[],
+                "runtime":"node22",
+                "tool_name":"managed_delete_test",
+            }))
+            .expect("valid managed bundle descriptor"),
+        );
+        resident.st.head.state = "deleting".into();
+        resident.st.head.ended = true;
+        resident.st.head.turn = None;
+        resident.st.head.active_phase = None;
+        let state_seq = resident.st.take_seq();
+        commit(
+            &brain,
+            &session_id,
+            &mut resident.st,
+            vec![(
+                state_seq,
+                Record::State {
+                    state: "deleting".into(),
+                    turn: None,
+                },
+            )],
+        )
+        .await
+        .expect("commit deleting lifecycle with a managed descriptor");
+        journal
+            .release(&session_id, &resident.st.lease)
+            .await
+            .expect("release deleting session before cold hydration");
+        drop(resident);
+
+        let recovered = hydrate(&brain, &session_id)
+            .await
+            .expect("deleting hydration must not require or recreate Hand definitions");
+        assert_eq!(recovered.st.head.state, "deleting");
+        assert!(!recovered.st.head.prefix.managed_bundles.is_empty());
+        assert!(recovered.managed_bindings.is_empty());
+        journal
+            .release(&session_id, &recovered.st.lease)
+            .await
+            .expect("release recovered deleting session");
     }
 
     async fn simulate_provider_only_crash(
