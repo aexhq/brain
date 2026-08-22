@@ -102,12 +102,12 @@ pub(super) async fn stream_events(
         let mut last = after;
 
         while last < through_seq {
-            let page = match brain.journal.read_record_page(&crate::journal::RecordPageQuery {
+            let page = match brain.journal.read_record_page(&brain::journal::RecordPageQuery {
                 session_id: &id,
                 after: last,
                 through_seq,
-                limit: crate::journal::DEFAULT_RECORD_PAGE_ITEMS,
-                max_bytes: crate::journal::DEFAULT_RECORD_PAGE_BYTES,
+                limit: brain::journal::DEFAULT_RECORD_PAGE_ITEMS,
+                max_bytes: brain::journal::DEFAULT_RECORD_PAGE_BYTES,
             }).await {
                 Ok(page) => page,
                 Err(error) => {
@@ -120,7 +120,7 @@ pub(super) async fn stream_events(
             };
             for entry in &page.entries {
                 if let Some(event) =
-                    crate::events::derive(&id, entry.seq, entry.ts_ms, &entry.record)
+                    brain::events::derive(&id, entry.seq, entry.ts_ms, &entry.record)
                 {
                     let Some(frame) = frame(&event, true) else {
                         return;
@@ -219,24 +219,24 @@ pub async fn replay(
     brain: &Arc<Brain>,
     session_id: &str,
     after: u64,
-) -> crate::Result<Vec<session::Event>> {
+) -> brain::Result<Vec<session::Event>> {
     let head = brain.journal.get_head(session_id).await?;
     let mut out = Vec::new();
     let mut cursor = after;
     while cursor < head.last_seq {
         let page = brain
             .journal
-            .read_record_page(&crate::journal::RecordPageQuery {
+            .read_record_page(&brain::journal::RecordPageQuery {
                 session_id,
                 after: cursor,
                 through_seq: head.last_seq,
-                limit: crate::journal::DEFAULT_RECORD_PAGE_ITEMS,
-                max_bytes: crate::journal::DEFAULT_RECORD_PAGE_BYTES,
+                limit: brain::journal::DEFAULT_RECORD_PAGE_ITEMS,
+                max_bytes: brain::journal::DEFAULT_RECORD_PAGE_BYTES,
             })
             .await?;
         for entry in &page.entries {
             if let Some(event) =
-                crate::events::derive(session_id, entry.seq, entry.ts_ms, &entry.record)
+                brain::events::derive(session_id, entry.seq, entry.ts_ms, &entry.record)
             {
                 out.push(event);
             }

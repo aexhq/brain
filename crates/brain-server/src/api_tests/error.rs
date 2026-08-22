@@ -1,6 +1,6 @@
 use super::map_err;
-use crate::BrainError;
 use axum::http::StatusCode;
+use brain::BrainError;
 
 fn serde_error() -> serde_json::Error {
     serde_json::from_str::<serde_json::Value>("{").unwrap_err()

@@ -10,10 +10,6 @@
 //! Create and message admission persist hashes of Idempotency-Key for replay. Raw keys never
 //! enter the journal.
 
-use crate::events::{event_is_ephemeral, event_seq, event_type};
-use crate::journal::{DeletionState, Record, SessionLifecycle};
-use crate::session::{Brain, TrustedPrincipal};
-use crate::{BrainError, mint_id};
 use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
@@ -24,6 +20,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine as _;
+use brain::events::{event_is_ephemeral, event_seq, event_type};
+use brain::journal::{DeletionState, Record, SessionLifecycle};
+use brain::session::{Brain, TrustedPrincipal};
+use brain::{BrainError, mint_id};
 use brain_protocol::session::{
     self, ApiError, ApiErrorCode, ApiErrorResponse, CreateSessionRequest, MessageAccepted,
     MessageRequest, MessageRequestContent, SessionList,
@@ -273,7 +273,7 @@ pub async fn serve(state: AppState, addr: std::net::SocketAddr) -> anyhow::Resul
 
 /// Wait for a shutdown signal, then drain: refuse new work and hold the process open until
 /// every admitted turn finished or the drain timeout passed.
-async fn drain_on_shutdown(brain: Arc<crate::session::Brain>) {
+async fn drain_on_shutdown(brain: Arc<brain::session::Brain>) {
     shutdown_signal().await;
     brain.begin_drain();
     let deadline = std::time::Instant::now() + brain.cfg.drain_timeout;

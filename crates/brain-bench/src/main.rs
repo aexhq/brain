@@ -151,14 +151,14 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base = format!("http://{}", listener.local_addr()?);
-    let app = brain::api::router(brain::api::AppState {
+    let app = brain_server::api::router(brain_server::api::AppState {
         brain,
         token: TOKEN.into(),
-        tenancy: brain::api::Tenancy::Implicit("local".into()),
+        tenancy: brain_server::api::Tenancy::Implicit("local".into()),
     })
     .merge(bench_routes(fake.clone(), executor.clone()));
     tokio::spawn(async move {
-        axum::serve(brain::api::nodelay(listener), app)
+        axum::serve(brain_server::api::nodelay(listener), app)
             .await
             .expect("bench server");
     });

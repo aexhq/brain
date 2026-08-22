@@ -13,6 +13,7 @@ brain-protocol = { path = "crates/brain-protocol" }
 brain = { path = "crates/brain" }
 brain-aws = { path = "crates/brain-aws" }
 brain-providers = { path = "crates/brain-providers" }
+brain-server = { path = "crates/brain-server" }
 brain-standalone = { path = "crates/brain-standalone" }
 brain-loophost = { path = "crates/brain-loophost" }
 

@@ -34,10 +34,10 @@ async fn create_replays_one_session_and_rejects_key_reuse_with_another_body() {
     let token = "create-idempotency-token".to_string();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let app = brain::api::router(brain::api::AppState {
+    let app = brain_server::api::router(brain_server::api::AppState {
         brain,
         token: token.clone(),
-        tenancy: brain::api::Tenancy::Implicit("local".into()),
+        tenancy: brain_server::api::Tenancy::Implicit("local".into()),
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -126,10 +126,10 @@ async fn create_session_accepts_tool_bundle_sized_http_bodies() {
     let token = "create-body-limit-token".to_string();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let app = brain::api::router(brain::api::AppState {
+    let app = brain_server::api::router(brain_server::api::AppState {
         brain,
         token: token.clone(),
-        tenancy: brain::api::Tenancy::Implicit("local".into()),
+        tenancy: brain_server::api::Tenancy::Implicit("local".into()),
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 

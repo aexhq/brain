@@ -12,7 +12,6 @@
 
 pub mod adapter;
 pub mod agentloop;
-pub mod api;
 pub mod compact;
 pub mod config;
 pub mod customer;

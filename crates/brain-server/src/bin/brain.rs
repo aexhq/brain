@@ -1,10 +1,10 @@
 //! Brain's neutral server entry point. Production is the default and fails closed because hosted
 //! adapters are injected by the product composition. `local` is explicit and durable.
 
-use brain::api::{AppState, serve};
 use brain::journal::Journal;
 use brain::keys::{KeyCustody, blob_from_b64};
 use brain::session::BrainConfig;
+use brain_server::api::{AppState, serve};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -89,7 +89,7 @@ async fn run() -> anyhow::Result<()> {
         AppState {
             brain,
             token,
-            tenancy: brain::api::Tenancy::Implicit("local".into()),
+            tenancy: brain_server::api::Tenancy::Implicit("local".into()),
         },
         address,
     )

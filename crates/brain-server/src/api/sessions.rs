@@ -186,14 +186,14 @@ pub(super) async fn send_message(
             format!("message request: {error}"),
         )
     })?;
-    if encoded_bytes.len() > crate::journal::MAX_MESSAGE_REQUEST_BYTES {
+    if encoded_bytes.len() > brain::journal::MAX_MESSAGE_REQUEST_BYTES {
         return Err(Failure(
             StatusCode::PAYLOAD_TOO_LARGE,
             api_code("payload_too_large"),
             format!(
                 "message request is {} bytes; maximum is {}",
                 encoded_bytes.len(),
-                crate::journal::MAX_MESSAGE_REQUEST_BYTES
+                brain::journal::MAX_MESSAGE_REQUEST_BYTES
             ),
         ));
     }

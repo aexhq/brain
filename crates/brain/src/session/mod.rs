@@ -905,7 +905,7 @@ impl Brain {
     /// Acquire create admission without reading or allocating the request body. HTTP
     /// compositions hold this permit across extraction and call `create_session_for_admitted`;
     /// direct callers retain the guard in `create_session_for` above.
-    pub(crate) fn try_admit_create(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
+    pub fn try_admit_create(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
         self.refuse_while_draining()?;
         self.create_permits
             .clone()
@@ -913,7 +913,7 @@ impl Brain {
             .map_err(|_| BrainError::Overloaded)
     }
 
-    pub(crate) async fn create_session_for_admitted(
+    pub async fn create_session_for_admitted(
         self: &Arc<Self>,
         principal: &TrustedPrincipal,
         req: CreateSessionRequest,

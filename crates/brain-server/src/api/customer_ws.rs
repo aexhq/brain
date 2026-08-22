@@ -117,7 +117,7 @@ pub(super) async fn customer_hand_grant(
     Ok(Json(CustomerGrantResponse {
         url: grant.url,
         protocol: grant.protocol,
-        expires_at: crate::events::ts(grant.expires_at_ms),
+        expires_at: brain::events::ts(grant.expires_at_ms),
         grant_id: grant.grant_id,
         observation_url: grant.observation_url,
         observation_token: grant.observation_token,
@@ -138,10 +138,10 @@ pub(super) async fn customer_hand_socket(
     })?;
     let protocol = customer_grant_subprotocol(&headers)?;
     let connection_id = mint_id("conn", 24);
-    crate::customer::CustomerHandIngressPort::receive(
+    brain::customer::CustomerHandIngressPort::receive(
         coordinator.as_ref(),
-        crate::customer::CustomerGatewayInput {
-            route: crate::customer::CustomerGatewayRoute::Connect,
+        brain::customer::CustomerGatewayInput {
+            route: brain::customer::CustomerGatewayRoute::Connect,
             connection_id: connection_id.clone(),
             request_id: mint_id("req", 16),
             route_key: "$connect".into(),
@@ -154,14 +154,14 @@ pub(super) async fn customer_hand_socket(
     .map_err(map_err)?;
     Ok(ws
         .protocols([protocol])
-        .max_message_size(crate::customer::MAX_CUSTOMER_WS_FRAME_BYTES)
-        .max_frame_size(crate::customer::MAX_CUSTOMER_WS_FRAME_BYTES)
+        .max_message_size(brain::customer::MAX_CUSTOMER_WS_FRAME_BYTES)
+        .max_frame_size(brain::customer::MAX_CUSTOMER_WS_FRAME_BYTES)
         .on_upgrade(move |socket| serve_customer_hand_socket(coordinator, connection_id, socket))
         .into_response())
 }
 
 async fn serve_customer_hand_socket(
-    coordinator: Arc<crate::customer::CustomerCoordinator>,
+    coordinator: Arc<brain::customer::CustomerCoordinator>,
     connection_id: String,
     socket: WebSocket,
 ) {
@@ -187,10 +187,10 @@ async fn serve_customer_hand_socket(
                 let Some(Ok(frame)) = frame else { break; };
                 match frame {
                     WsMessage::Text(text) => {
-                        let result = crate::customer::CustomerHandIngressPort::receive(
+                        let result = brain::customer::CustomerHandIngressPort::receive(
                             coordinator.as_ref(),
-                            crate::customer::CustomerGatewayInput {
-                                route: crate::customer::CustomerGatewayRoute::Message,
+                            brain::customer::CustomerGatewayInput {
+                                route: brain::customer::CustomerGatewayRoute::Message,
                                 connection_id: connection_id.clone(),
                                 request_id: mint_id("req", 16),
                                 route_key: "$default".into(),
@@ -210,10 +210,10 @@ async fn serve_customer_hand_socket(
             }
         }
     }
-    let _ = crate::customer::CustomerHandIngressPort::receive(
+    let _ = brain::customer::CustomerHandIngressPort::receive(
         coordinator.as_ref(),
-        crate::customer::CustomerGatewayInput {
-            route: crate::customer::CustomerGatewayRoute::Disconnect,
+        brain::customer::CustomerGatewayInput {
+            route: brain::customer::CustomerGatewayRoute::Disconnect,
             connection_id,
             request_id: mint_id("req", 16),
             route_key: "$disconnect".into(),
@@ -279,9 +279,9 @@ async fn apply_customer_hand_observation(
     observation_token: &str,
     body: &[u8],
 ) -> Result<StatusCode, Failure> {
-    if body.len() > crate::customer::MAX_CUSTOMER_HTTP_OBSERVATION_BYTES {
+    if body.len() > brain::customer::MAX_CUSTOMER_HTTP_OBSERVATION_BYTES {
         return Err(map_err(BrainError::FileTooLarge {
-            limit: crate::customer::MAX_CUSTOMER_HTTP_OBSERVATION_BYTES,
+            limit: brain::customer::MAX_CUSTOMER_HTTP_OBSERVATION_BYTES,
         }));
     }
     let observation = serde_json::from_slice(body).map_err(|error| {
@@ -317,9 +317,9 @@ pub(super) async fn customer_hand_gateway(
     let route_key = trusted_header(&headers, "x-brain-route-key")?;
     let source_ip = trusted_header(&headers, "x-brain-source-ip")?;
     let route = match route_key.as_str() {
-        "$connect" => crate::customer::CustomerGatewayRoute::Connect,
-        "$disconnect" => crate::customer::CustomerGatewayRoute::Disconnect,
-        "$default" => crate::customer::CustomerGatewayRoute::Message,
+        "$connect" => brain::customer::CustomerGatewayRoute::Connect,
+        "$disconnect" => brain::customer::CustomerGatewayRoute::Disconnect,
+        "$default" => brain::customer::CustomerGatewayRoute::Message,
         _ => {
             return Err(Failure(
                 StatusCode::BAD_REQUEST,
@@ -328,19 +328,19 @@ pub(super) async fn customer_hand_gateway(
             ));
         }
     };
-    if route == crate::customer::CustomerGatewayRoute::Message
-        && body.len() > crate::customer::MAX_CUSTOMER_WS_FRAME_BYTES
+    if route == brain::customer::CustomerGatewayRoute::Message
+        && body.len() > brain::customer::MAX_CUSTOMER_WS_FRAME_BYTES
     {
         return Err(map_err(BrainError::FileTooLarge {
-            limit: crate::customer::MAX_CUSTOMER_WS_FRAME_BYTES,
+            limit: brain::customer::MAX_CUSTOMER_WS_FRAME_BYTES,
         }));
     }
-    let subprotocol = if route == crate::customer::CustomerGatewayRoute::Connect {
+    let subprotocol = if route == brain::customer::CustomerGatewayRoute::Connect {
         Some(customer_grant_subprotocol(&headers)?)
     } else {
         None
     };
-    let body = if route == crate::customer::CustomerGatewayRoute::Message {
+    let body = if route == brain::customer::CustomerGatewayRoute::Message {
         Some(String::from_utf8(body.to_vec()).map_err(|_| {
             Failure(
                 StatusCode::BAD_REQUEST,
@@ -356,9 +356,9 @@ pub(super) async fn customer_hand_gateway(
             "customer Hand is unavailable".into(),
         ))
     })?;
-    crate::customer::CustomerHandIngressPort::receive(
+    brain::customer::CustomerHandIngressPort::receive(
         coordinator.as_ref(),
-        crate::customer::CustomerGatewayInput {
+        brain::customer::CustomerGatewayInput {
             route,
             connection_id,
             request_id,
