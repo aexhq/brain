@@ -12,8 +12,8 @@ use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse}
 use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::adapter::ToolExecutor;
-use crate::{BrainError, Result};
+use brain::adapter::ToolExecutor;
+use brain::{BrainError, Result};
 
 #[derive(Clone)]
 pub struct HttpExternalToolExecutor {

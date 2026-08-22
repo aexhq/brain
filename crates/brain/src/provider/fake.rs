@@ -412,19 +412,15 @@ impl Provider for FakeProvider {
         // number would be timing a function the production path does not call.
         match self.dialect {
             Dialect::AnthropicMessages => {
-                super::anthropic::Anthropic.build_request(prefix, history, key, base_url)
+                super::anthropic::Anthropic::build_request(prefix, history, key, base_url)
             }
             Dialect::OpenAiChat => {
-                super::openai::OpenAiChat.build_request(prefix, history, key, base_url)
+                super::openai::OpenAiChat::build_request(prefix, history, key, base_url)
             }
         }
     }
 
-    async fn stream(
-        &self,
-        req: ModelRequest,
-        _outbound: &crate::outbound::Outbound,
-    ) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
+    async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
         let call_no = self.call_count.fetch_add(1, Ordering::SeqCst);
 
         // The fast path: decide the turn from raw bytes and record nothing.
@@ -635,6 +631,12 @@ fn split_tokens(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// A factory of unscripted fakes for compositions that never reach a live round (admission,
+/// journal and API tests). A round against one fails loudly instead of touching the network.
+pub fn unscripted_factory() -> crate::session::ProviderFactory {
+    std::sync::Arc::new(|dialect| std::sync::Arc::new(FakeProvider::new(dialect)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,7 +650,7 @@ mod tests {
             headers: vec![],
             body: b"{\"messages\":[]}".to_vec(),
         };
-        let err = match f.stream(req, &crate::outbound::Outbound::new(true)).await {
+        let err = match f.stream(req).await {
             Ok(_) => panic!("exhaustion must not produce a stream"),
             Err(e) => e,
         };

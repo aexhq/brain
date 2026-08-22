@@ -73,7 +73,7 @@ pub(super) struct SandboxFileListResponse {
 }
 
 fn sandbox_file_page(
-    page: crate::hand::SandboxFileList,
+    page: brain::hand::SandboxFileList,
     generation: String,
 ) -> SandboxFileListResponse {
     SandboxFileListResponse {
@@ -125,7 +125,7 @@ pub(super) async fn sandbox_file_read_inline(
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<SandboxFileReadRequest>,
-) -> Result<Json<crate::hand::SandboxFileContent>, Failure> {
+) -> Result<Json<brain::hand::SandboxFileContent>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain

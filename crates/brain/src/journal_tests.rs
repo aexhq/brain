@@ -60,17 +60,17 @@ async fn create_memory_store(
 ) -> Result<()> {
     let limits = JournalRetentionLimits::default();
     let retention = initial_retention(first, limits.session_bytes)?;
+    let _ = owner;
     store
-        .create(
+        .create(&CreateDecision {
             session_id,
             doc,
             first,
-            owner,
             now_ms,
-            u64::MAX,
+            tenant_storage_limit: u64::MAX,
             retention,
-            limits,
-        )
+            retention_limits: limits,
+        })
         .await
 }
 
@@ -1614,20 +1614,20 @@ async fn child_admission_is_atomic_at_the_direct_limit_and_releases_once() {
     fenced.ended = true;
     fenced.state = SessionLifecycle::Ending;
     store
-        .commit(
-            "ses_quota_root",
-            "owner-a",
-            claimed.fence,
-            &[],
-            &fenced,
-            claimed.last_seq,
-            4,
-            0,
-            u64::MAX,
-            claimed.retention,
-            0,
-            JournalRetentionLimits::default(),
-        )
+        .commit(&CommitDecision {
+            session_id: "ses_quota_root",
+            owner: "owner-a",
+            fence: claimed.fence,
+            records: &[],
+            doc: &fenced,
+            high_water: claimed.last_seq,
+            now_ms: 4,
+            tenant_storage_delta: 0,
+            tenant_storage_limit: u64::MAX,
+            retention: claimed.retention,
+            tenant_retention_delta: 0,
+            retention_limits: JournalRetentionLimits::default(),
+        })
         .await
         .unwrap();
     let mut late = root;

@@ -172,13 +172,12 @@ impl Provider for SandboxProvider {
         key: &ProviderKey,
         base_url: &str,
     ) -> Result<ModelRequest> {
-        brain::provider::anthropic::Anthropic.build_request(prefix, history, key, base_url)
+        brain::provider::anthropic::Anthropic::build_request(prefix, history, key, base_url)
     }
 
     async fn stream(
         &self,
         request: ModelRequest,
-        _outbound: &brain::outbound::Outbound,
     ) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
         let body: Value = serde_json::from_slice(&request.body)?;
         let has_result = body["messages"]
@@ -296,7 +295,7 @@ async fn sandbox_create_reserves_inventory_before_typed_hand_materialization() {
             sandbox_control: Some(control.clone()),
             ..BrainServices::default()
         },
-        Some(Arc::new(move |_| factory.clone() as Arc<dyn Provider>)),
+        Arc::new(move |_| factory.clone() as Arc<dyn Provider>),
     );
     let session = brain
         .create_session(create_request(), Some("sandbox-engine"))

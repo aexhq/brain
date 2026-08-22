@@ -172,18 +172,16 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
         Arc::new(brain::keys::PlainCustody),
         executor.clone(),
         BrainServices::default(),
-        Some(Arc::new(move |_| {
-            provider.clone() as Arc<dyn brain::provider::Provider>
-        })),
+        Arc::new(move |_| provider.clone() as Arc<dyn brain::provider::Provider>),
     );
 
     let token = "external-e2e-token";
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let app = brain::api::router(brain::api::AppState {
+    let app = brain_server::api::router(brain_server::api::AppState {
         brain,
         token: token.into(),
-        tenancy: brain::api::Tenancy::Implicit("local".into()),
+        tenancy: brain_server::api::Tenancy::Implicit("local".into()),
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let client = reqwest::Client::new();

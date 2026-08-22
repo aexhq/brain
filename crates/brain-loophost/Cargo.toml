@@ -25,6 +25,7 @@ wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
 
 [dev-dependencies]
+brain-server = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
 reqwest = { workspace = true }

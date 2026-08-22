@@ -12,12 +12,10 @@
 
 pub mod adapter;
 pub mod agentloop;
-pub mod api;
 pub mod compact;
 pub mod config;
 pub mod customer;
 pub mod events;
-pub mod external;
 
 pub mod hand;
 pub mod journal;

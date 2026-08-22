@@ -854,7 +854,6 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
- "axum",
  "base64",
  "brain-protocol",
  "chrono",
@@ -864,7 +863,6 @@ dependencies = [
  "libc",
  "rand 0.9.5",
  "regex",
- "reqwest",
  "serde",
  "serde_jcs",
  "serde_json",
@@ -872,8 +870,8 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
- "tower",
  "tracing",
+ "url",
  "zeroize",
 ]
 
@@ -890,6 +888,7 @@ dependencies = [
  "base64",
  "brain",
  "brain-protocol",
+ "brain-providers",
  "chrono",
  "hex",
  "serde",
@@ -909,6 +908,7 @@ dependencies = [
  "axum",
  "brain",
  "brain-protocol",
+ "brain-server",
  "bytes",
  "clap",
  "futures-util",
@@ -929,6 +929,7 @@ dependencies = [
  "base64",
  "brain",
  "brain-protocol",
+ "brain-server",
  "hex",
  "rand 0.9.5",
  "reqwest",
@@ -957,21 +958,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-providers"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "brain",
+ "brain-protocol",
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
 name = "brain-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-stream",
+ "async-trait",
  "axum",
  "base64",
  "brain",
  "brain-loophost",
+ "brain-protocol",
+ "brain-providers",
  "brain-standalone",
+ "futures-util",
  "hex",
  "libc",
+ "regex",
  "reqwest",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "tokio-util",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "walkdir",

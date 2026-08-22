@@ -36,15 +36,15 @@ async fn a_message_racing_the_idle_discard_always_lands() {
         Arc::new(brain::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(Arc::new(move |_| f.clone() as Arc<dyn Provider>)),
+        Arc::new(move |_| f.clone() as Arc<dyn Provider>),
     );
     let token = "race-token".to_string();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let app = brain::api::router(brain::api::AppState {
+    let app = brain_server::api::router(brain_server::api::AppState {
         brain,
         token: token.clone(),
-        tenancy: brain::api::Tenancy::Implicit("local".into()),
+        tenancy: brain_server::api::Tenancy::Implicit("local".into()),
     });
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let http = reqwest::Client::new();

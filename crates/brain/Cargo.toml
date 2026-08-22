@@ -13,7 +13,6 @@ brain-protocol = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 async-stream = { workspace = true }
-axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
@@ -21,7 +20,7 @@ hex = { workspace = true }
 jsonschema = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
-reqwest = { workspace = true }
+url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_jcs = { workspace = true }
@@ -36,4 +35,3 @@ zeroize = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
-tower = { workspace = true }

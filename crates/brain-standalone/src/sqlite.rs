@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use brain::journal::{
     ChildListQuery, ChildPage, ConfigDoc, ControlDoc, DeletionStatusDoc, EndFence, Entry, Head,
-    HeadDoc, JournalRetention, JournalRetentionLimits, JournalStore, LEASE_MS, Record, RecordPage,
+    HeadDoc, JournalRetention, JournalRetentionLimits, JournalStore, LEASE_MS, RecordPage,
     RecordPageQuery, RecoveryItem, RecoveryPage, RecoveryQuery, STEAL_GRACE_MS,
     SandboxInventoryDoc, SandboxListQuery, SandboxPage, SandboxReserveRequest,
     SandboxUpdateRequest, SessionListQuery, SessionPage, SessionSummary, child_admission_open,
@@ -151,17 +151,16 @@ impl SqliteStore {
 
 #[async_trait]
 impl JournalStore for SqliteStore {
-    async fn create(
-        &self,
-        session_id: &str,
-        doc: &HeadDoc,
-        first: &Record,
-        _owner: &str,
-        now_ms: u64,
-        tenant_storage_limit: u64,
-        retention: JournalRetention,
-        retention_limits: JournalRetentionLimits,
-    ) -> Result<()> {
+    async fn create(&self, decision: &brain::journal::CreateDecision<'_>) -> Result<()> {
+        let &brain::journal::CreateDecision {
+            session_id,
+            doc,
+            first,
+            now_ms,
+            tenant_storage_limit,
+            retention,
+            retention_limits,
+        } = decision;
         validate_ancestor_path(doc)?;
         validate_config_doc(doc)?;
         if retention != initial_retention(first, retention_limits.session_bytes)? {
@@ -742,21 +741,21 @@ impl JournalStore for SqliteStore {
         })
     }
 
-    async fn commit(
-        &self,
-        session_id: &str,
-        owner: &str,
-        fence: u64,
-        records: &[(u64, Record)],
-        doc: &HeadDoc,
-        high_water: u64,
-        now_ms: u64,
-        tenant_storage_delta: i64,
-        tenant_storage_limit: u64,
-        retention: JournalRetention,
-        tenant_retention_delta: i64,
-        retention_limits: JournalRetentionLimits,
-    ) -> Result<()> {
+    async fn commit(&self, decision: &brain::journal::CommitDecision<'_>) -> Result<()> {
+        let &brain::journal::CommitDecision {
+            session_id,
+            owner,
+            fence,
+            records,
+            doc,
+            high_water,
+            now_ms,
+            tenant_storage_delta,
+            tenant_storage_limit,
+            retention,
+            tenant_retention_delta,
+            retention_limits,
+        } = decision;
         let doc_value = doc;
         let control = doc.control_doc();
         let control = encode(&control, "journal control")?;
@@ -1794,6 +1793,7 @@ fn secure_file(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brain::journal::Record;
     use brain::journal::{
         Journal, Lease, PrefixDoc, SandboxListQuery, SandboxReserveRequest, SandboxUpdateRequest,
     };
@@ -1916,19 +1916,19 @@ mod tests {
         owner: &str,
         now_ms: u64,
     ) -> Result<()> {
+        let _ = owner;
         let limits = JournalRetentionLimits::default();
         let retention = initial_retention(first, limits.session_bytes)?;
         store
-            .create(
+            .create(&brain::journal::CreateDecision {
                 session_id,
                 doc,
                 first,
-                owner,
                 now_ms,
-                u64::MAX,
+                tenant_storage_limit: u64::MAX,
                 retention,
-                limits,
-            )
+                retention_limits: limits,
+            })
             .await
     }
 

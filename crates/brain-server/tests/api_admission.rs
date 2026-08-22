@@ -1,7 +1,7 @@
 use axum::body::{Body, Bytes};
 use axum::http::{Request, StatusCode, header};
-use brain::api::{AppState, router};
 use brain::session::{Brain, BrainConfig};
+use brain_server::api::{AppState, router};
 use futures_util::stream::poll_fn;
 use std::convert::Infallible;
 use std::path::PathBuf;
@@ -45,11 +45,16 @@ fn request(body: Body, token: Option<&str>) -> Request<Body> {
 #[tokio::test]
 async fn unauthenticated_create_never_polls_the_body() {
     let temp = TempDir::new("unauthenticated");
-    let brain = Brain::in_memory_test(temp.0.clone(), BrainConfig::default()).unwrap();
+    let brain = Brain::in_memory_test(
+        temp.0.clone(),
+        BrainConfig::default(),
+        brain::provider::fake::unscripted_factory(),
+    )
+    .unwrap();
     let app = router(AppState {
         brain,
         token: "operator-token".into(),
-        tenancy: brain::api::Tenancy::Implicit("local".into()),
+        tenancy: brain_server::api::Tenancy::Implicit("local".into()),
     });
     let polls = Arc::new(AtomicUsize::new(0));
     let observed = polls.clone();
@@ -66,11 +71,16 @@ async fn unauthenticated_create_never_polls_the_body() {
 #[tokio::test]
 async fn a_tenanted_composition_refuses_requests_without_the_tenant_header() {
     let temp = TempDir::new("require-tenant");
-    let brain = Brain::in_memory_test(temp.0.clone(), BrainConfig::default()).unwrap();
+    let brain = Brain::in_memory_test(
+        temp.0.clone(),
+        BrainConfig::default(),
+        brain::provider::fake::unscripted_factory(),
+    )
+    .unwrap();
     let app = router(AppState {
         brain,
         token: "operator-token".into(),
-        tenancy: brain::api::Tenancy::Required,
+        tenancy: brain_server::api::Tenancy::Required,
     });
     // Authenticated but header-less: booked to no tenant, refused — never tenant "local".
     let response = app
@@ -89,12 +99,13 @@ async fn saturated_create_admission_rejects_before_polling_another_body() {
             max_concurrent_creates: 1,
             ..BrainConfig::default()
         },
+        brain::provider::fake::unscripted_factory(),
     )
     .unwrap();
     let app = router(AppState {
         brain,
         token: "operator-token".into(),
-        tenancy: brain::api::Tenancy::Implicit("local".into()),
+        tenancy: brain_server::api::Tenancy::Implicit("local".into()),
     });
 
     let first_polled = Arc::new(Notify::new());

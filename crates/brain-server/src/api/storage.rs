@@ -92,26 +92,26 @@ pub(super) struct StorageTransferResponse {
     max_bytes: u64,
 }
 
-fn storage_object(object: crate::storage::StorageObject) -> StorageObjectResponse {
+fn storage_object(object: brain::storage::StorageObject) -> StorageObjectResponse {
     StorageObjectResponse {
         key: object.key,
         bytes: object.bytes,
         sha256: object.sha256,
         content_type: object.content_type,
-        created_at: crate::events::ts(object.created_at_ms),
-        updated_at: crate::events::ts(object.updated_at_ms),
+        created_at: brain::events::ts(object.created_at_ms),
+        updated_at: brain::events::ts(object.updated_at_ms),
     }
 }
 
 pub(super) fn storage_ticket(
-    ticket: crate::storage::StorageTransferTicket,
+    ticket: brain::storage::StorageTransferTicket,
 ) -> StorageTransferResponse {
     StorageTransferResponse {
         transfer_id: ticket.transfer_id,
         method: ticket.method,
         url: ticket.url,
         headers: ticket.headers,
-        expires_at: crate::events::ts(ticket.expires_at_ms),
+        expires_at: brain::events::ts(ticket.expires_at_ms),
         max_bytes: ticket.max_bytes,
     }
 }
@@ -224,7 +224,7 @@ pub(super) async fn storage_prepare_upload(
             .brain
             .storage_prepare_upload(
                 &id,
-                crate::storage::StorageUploadIntent {
+                brain::storage::StorageUploadIntent {
                     key: request.key,
                     bytes: request.bytes,
                     sha256: Some(request.sha256),

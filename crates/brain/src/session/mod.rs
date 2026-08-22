@@ -72,7 +72,7 @@ pub struct Brain {
     pub hub: Arc<EventHub>,
     pub model_permits: Arc<Semaphore>,
     /// Guarded transport used for user-controlled provider base URLs.
-    pub outbound: crate::outbound::Outbound,
+    pub outbound: crate::outbound::OutboundPolicy,
     pub external_executor: Arc<dyn ToolExecutor>,
     /// Resolves each session's sealed selector to the loop implementation driving its turns.
     /// The default registry serves only the official `aex` policy.
@@ -578,22 +578,6 @@ enum Command {
     },
 }
 
-/// The host-owned executor for sealed external tools, derived from the composition's config.
-/// Fails fast on a malformed endpoint instead of composing a Brain that cannot dispatch.
-pub fn external_executor_from_cfg(cfg: &BrainConfig) -> Result<Arc<dyn ToolExecutor>> {
-    Ok(match &cfg.external_executor_url {
-        Some(endpoint) => Arc::new(crate::external::HttpExternalToolExecutor::new(
-            endpoint.clone(),
-            cfg.external_executor_token
-                .as_ref()
-                .map(|token| token.expose().to_string()),
-            cfg.external_call_timeout,
-            cfg.external_executor_capabilities.iter().cloned(),
-        )?),
-        None => Arc::new(DisabledToolExecutor),
-    })
-}
-
 impl Brain {
     /// The whole composition surface -- bring your own backends; a custom substrate needs no
     /// core change.
@@ -603,9 +587,9 @@ impl Brain {
         custody: Arc<dyn KeyCustody>,
         external_executor: Arc<dyn ToolExecutor>,
         services: BrainServices,
-        provider_factory: Option<ProviderFactory>,
+        provider_factory: ProviderFactory,
     ) -> Arc<Self> {
-        let outbound = crate::outbound::Outbound::new(cfg.outbound_allow_private);
+        let outbound = crate::outbound::OutboundPolicy::new(cfg.outbound_allow_private);
         let journal = journal
             .with_tenant_storage_limit(cfg.storage_max_tenant_bytes)
             .with_retention_limits(crate::journal::JournalRetentionLimits {
@@ -628,7 +612,7 @@ impl Brain {
             create_permits: Arc::new(Semaphore::new(cfg.max_concurrent_creates)),
             journal,
             custody,
-            provider_factory: provider_factory.unwrap_or_else(default_provider_factory),
+            provider_factory,
             hub: Arc::new(EventHub::with_max_followers(cfg.max_event_followers)),
             sessions: Mutex::new(HashMap::new()),
             draining: AtomicBool::new(false),
@@ -661,7 +645,11 @@ impl Brain {
     /// Unit/integration-test composition. Product and server code must use explicit durable
     /// adapters; this is deliberately not a runtime mode.
     #[doc(hidden)]
-    pub fn in_memory_test(data_dir: impl Into<PathBuf>, cfg: BrainConfig) -> Result<Arc<Self>> {
+    pub fn in_memory_test(
+        data_dir: impl Into<PathBuf>,
+        cfg: BrainConfig,
+        provider_factory: ProviderFactory,
+    ) -> Result<Arc<Self>> {
         let data_dir = data_dir.into();
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| BrainError::Invalid(format!("data dir: {e}")))?;
@@ -673,14 +661,13 @@ impl Brain {
             cfg.outbound_allow_private = true;
         }
         let owner = format!("brain-{}", crate::mint_id("i", 12));
-        let external_executor = external_executor_from_cfg(&cfg)?;
         Ok(Self::with_parts_and_services(
             cfg,
             Journal::new_memory(owner),
             Arc::new(crate::keys::PlainCustody),
-            external_executor,
+            Arc::new(DisabledToolExecutor),
             BrainServices::default(),
-            None,
+            provider_factory,
         ))
     }
 
@@ -918,7 +905,7 @@ impl Brain {
     /// Acquire create admission without reading or allocating the request body. HTTP
     /// compositions hold this permit across extraction and call `create_session_for_admitted`;
     /// direct callers retain the guard in `create_session_for` above.
-    pub(crate) fn try_admit_create(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
+    pub fn try_admit_create(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
         self.refuse_while_draining()?;
         self.create_permits
             .clone()
@@ -926,7 +913,7 @@ impl Brain {
             .map_err(|_| BrainError::Overloaded)
     }
 
-    pub(crate) async fn create_session_for_admitted(
+    pub async fn create_session_for_admitted(
         self: &Arc<Self>,
         principal: &TrustedPrincipal,
         req: CreateSessionRequest,
@@ -979,9 +966,11 @@ impl Brain {
             ));
         }
         validate_custody_plaintext("model.api_key", req.model.api_key.as_ref())?;
-        reqwest::header::HeaderValue::from_str(req.model.api_key.as_ref()).map_err(|_| {
-            BrainError::Invalid("model.api_key is not a valid HTTP header value".into())
-        })?;
+        validate_header_value(req.model.api_key.as_ref())
+            .then_some(())
+            .ok_or_else(|| {
+                BrainError::Invalid("model.api_key is not a valid HTTP header value".into())
+            })?;
         if req.metadata.len() > 16 {
             return Err(BrainError::Invalid("metadata: at most 16 pairs".into()));
         }
@@ -3243,6 +3232,14 @@ fn optional_bounded_string(
     Ok(Some(value.to_owned()))
 }
 
+/// HTTP header-value grammar without pulling an HTTP client into the core: visible ASCII plus
+/// space and tab, no control bytes (RFC 9110 field-value).
+fn validate_header_value(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte == b'\t' || (b' '..=b'~').contains(&byte) || byte >= 0x80)
+}
+
 /// Engine capability page limits share one bound: 1..=100 accepted, per-action default.
 fn engine_page_limit(input: &serde_json::Value, what: &str, default: u64) -> Result<u64> {
     let limit = input
@@ -5360,7 +5357,6 @@ fn turn_run(
         session,
         provider: (brain.provider_factory)(dialect),
         provider_name: r.st.head.prefix.provider.clone(),
-        outbound: brain.outbound.clone(),
         journal: brain.journal.clone(),
         hub: brain.hub.clone(),
         cancel,

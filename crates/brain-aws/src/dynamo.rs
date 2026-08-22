@@ -165,20 +165,18 @@ impl DynamoJournal {
 
 #[async_trait::async_trait]
 impl JournalStore for DynamoJournal {
-    async fn create(
-        &self,
-        session_id: &str,
-        doc: &HeadDoc,
-        first: &Record,
-        _owner: &str,
-        now_ms: u64,
-        tenant_storage_limit: u64,
-        retention: JournalRetention,
-        retention_limits: JournalRetentionLimits,
-    ) -> Result<()> {
+    async fn create(&self, decision: &brain::journal::CreateDecision<'_>) -> Result<()> {
+        let &brain::journal::CreateDecision {
+            session_id,
+            doc,
+            first,
+            now_ms,
+            tenant_storage_limit,
+            retention,
+            retention_limits,
+        } = decision;
         validate_ancestor_path(doc)?;
         validate_config_doc(doc)?;
-        brain::journal::validate_decision(session_id, &[(1, first.clone())], doc)?;
         if retention != initial_retention(first, retention_limits.session_bytes)? {
             return Err(BrainError::Journal(
                 "create journal retention projection does not match the canonical charge".into(),
@@ -916,22 +914,21 @@ impl JournalStore for DynamoJournal {
         })
     }
 
-    async fn commit(
-        &self,
-        session_id: &str,
-        owner: &str,
-        fence: u64,
-        records: &[(u64, Record)],
-        doc: &HeadDoc,
-        high_water: u64,
-        now_ms: u64,
-        tenant_storage_delta: i64,
-        tenant_storage_limit: u64,
-        retention: JournalRetention,
-        tenant_retention_delta: i64,
-        retention_limits: JournalRetentionLimits,
-    ) -> Result<()> {
-        brain::journal::validate_decision(session_id, records, doc)?;
+    async fn commit(&self, decision: &brain::journal::CommitDecision<'_>) -> Result<()> {
+        let &brain::journal::CommitDecision {
+            session_id,
+            owner,
+            fence,
+            records,
+            doc,
+            high_water,
+            now_ms,
+            tenant_storage_delta,
+            tenant_storage_limit,
+            retention,
+            tenant_retention_delta,
+            retention_limits,
+        } = decision;
         if retention.metered_bytes > retention_limits.session_bytes {
             return Err(BrainError::SessionJournalQuotaExceeded {
                 requested: retention.metered_bytes,

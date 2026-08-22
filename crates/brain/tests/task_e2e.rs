@@ -103,13 +103,12 @@ impl Provider for OrdinaryChildProvider {
         key: &ProviderKey,
         base_url: &str,
     ) -> Result<ModelRequest> {
-        brain::provider::anthropic::Anthropic.build_request(prefix, history, key, base_url)
+        brain::provider::anthropic::Anthropic::build_request(prefix, history, key, base_url)
     }
 
     async fn stream(
         &self,
         request: ModelRequest,
-        _outbound: &brain::outbound::Outbound,
     ) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
         let body: Value = serde_json::from_slice(&request.body)?;
         self.requests
@@ -229,9 +228,7 @@ async fn official_spawn_creates_an_ordinary_child_at_a_complete_fork_boundary() 
         Arc::new(brain::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(Arc::new(move |_| {
-            provider_factory.clone() as Arc<dyn Provider>
-        })),
+        Arc::new(move |_| provider_factory.clone() as Arc<dyn Provider>),
     );
 
     let root = brain

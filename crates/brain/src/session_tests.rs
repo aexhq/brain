@@ -316,7 +316,7 @@ async fn resident_actor_admission_is_hard_bounded_and_prunes_dead_root_cells() {
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let first = brain
         .spawn_actor("ses_resident_1", ActorStartup::Lazy)
@@ -384,7 +384,7 @@ async fn resident_pressure_returns_overload_when_every_slot_is_active() {
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     // The resident permit is the authoritative process bound and remains held across every
     // active turn/effect. With no idle actor registered for pressure, admission waits once
@@ -416,7 +416,7 @@ async fn end_returns_the_durable_fence_before_async_teardown_converges() {
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let created = brain
         .create_session(
@@ -477,7 +477,7 @@ async fn end_fences_before_a_cancellation_resistant_effect_and_recovery_never_re
         Arc::new(crate::keys::PlainCustody),
         executor.clone(),
         BrainServices::default(),
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let root = brain
         .create_session(
@@ -641,7 +641,7 @@ async fn end_recovery_terminates_only_owned_child_sandboxes_then_all_root_invent
             sandbox_control: Some(control.clone()),
             ..BrainServices::default()
         },
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     brain.start_recovery_worker();
     let root = brain
@@ -879,7 +879,7 @@ async fn context_capacity_rejects_before_custody_or_hand_effects() {
         custody.clone(),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let error = brain
         .create_session(
@@ -1789,7 +1789,7 @@ fn direct_sandbox_transfer_admission_is_count_and_byte_bounded() {
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let entry = |session_id: &str, id: &str, bytes: u64| DirectSandboxTransfer {
         session_id: session_id.into(),
@@ -1819,7 +1819,7 @@ fn direct_sandbox_transfer_admission_is_count_and_byte_bounded() {
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     bytes_brain
         .reserve_direct_sandbox_transfer(
@@ -1863,7 +1863,7 @@ async fn direct_sandbox_transfers_stage_hidden_bytes_and_replay_only_exact_succe
             sandbox_files: Some(files.clone()),
             ..BrainServices::default()
         },
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let session = brain
         .create_session(
@@ -1974,7 +1974,7 @@ async fn direct_sandbox_transfers_stage_hidden_bytes_and_replay_only_exact_succe
             sandbox_files: Some(files),
             ..BrainServices::default()
         },
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     assert!(matches!(
         restarted
@@ -2102,7 +2102,7 @@ async fn descendants_share_one_root_scoped_custody_decryption_cell() {
         custody.clone(),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let created = brain
         .create_session(
@@ -2172,7 +2172,7 @@ async fn child_create_atomically_admits_prompt_and_rebuilds_exact_parent_fork() 
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(provider_factory),
+        provider_factory,
     );
     let root = brain
         .create_session(
@@ -2650,7 +2650,7 @@ async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() 
         Arc::new(crate::keys::PlainCustody),
         executor.clone(),
         BrainServices::default(),
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let created = brain
         .create_session(
@@ -2859,7 +2859,7 @@ async fn customer_terminal_before_brain_crash_replays_without_reexecuting_the_ef
             customer_transport: Some(transport.clone()),
             ..BrainServices::default()
         },
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let created = crashed
         .create_session(
@@ -3033,7 +3033,7 @@ async fn customer_terminal_before_brain_crash_replays_without_reexecuting_the_ef
             customer_transport: Some(transport),
             ..BrainServices::default()
         },
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let recovering_customer = recovering.customer.as_ref().unwrap().clone();
     let (replay_grant, mut replay_socket, replay_epoch) =
@@ -3134,7 +3134,7 @@ async fn journaled_customer_terminal_is_reacked_after_process_restart() {
             customer_transport: Some(transport.clone()),
             ..BrainServices::default()
         },
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let created = crashed
         .create_session(
@@ -3199,7 +3199,7 @@ async fn journaled_customer_terminal_is_reacked_after_process_restart() {
             customer_transport: Some(transport),
             ..BrainServices::default()
         },
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let customer = recovering.customer.as_ref().unwrap().clone();
     let (_, mut socket, epoch) = connect_customer_process(&customer, "process:stable").await;
@@ -3258,7 +3258,7 @@ async fn managed_submit_unknown_survives_cleanup_crash_without_resubmission() {
             sandbox_files: Some(ports.clone()),
             ..BrainServices::default()
         },
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let created = brain
         .create_session(
@@ -3430,7 +3430,7 @@ async fn managed_submit_unknown_survives_cleanup_crash_without_resubmission() {
             sandbox_files: Some(ports.clone()),
             ..BrainServices::default()
         },
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let recovered = hydrate(&recovering, &session_id)
         .await
@@ -3494,7 +3494,7 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
             sandbox_files: Some(ports.clone()),
             ..BrainServices::default()
         },
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let created = brain
         .create_session(
@@ -3633,7 +3633,7 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
             sandbox_files: Some(ports.clone()),
             ..BrainServices::default()
         },
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let recovered = hydrate(&recovering, &session_id)
         .await
@@ -3691,7 +3691,7 @@ async fn deleting_managed_session_hydrates_without_repreparing_hand_definitions(
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let created = brain
         .create_session(
@@ -3785,7 +3785,7 @@ async fn simulate_provider_only_crash(
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(provider_factory),
+        provider_factory,
     );
     let created = brain
         .create_session(
@@ -3988,7 +3988,7 @@ async fn recovery_worker_resumes_provider_only_crash_without_customer_traffic() 
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     recovering.start_recovery_worker();
 
@@ -4041,7 +4041,7 @@ async fn run_live_provider_case(
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let created = brain
         .create_session(
@@ -4174,7 +4174,7 @@ async fn the_agentloop_selector_seals_and_unavailable_loops_refuse_at_create() {
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let model = json!({"provider":"anthropic", "name":"selector-test", "api_key":"sk-test"});
 
@@ -4281,9 +4281,7 @@ async fn a_composition_registry_resolves_per_session_loops() {
             agentloop_registry: Some(Arc::new(TwoOfficials)),
             ..BrainServices::default()
         },
-        Some(Arc::new(move |_| {
-            provider.clone() as Arc<dyn crate::provider::Provider>
-        })),
+        Arc::new(move |_| provider.clone() as Arc<dyn crate::provider::Provider>),
     );
     let created = brain
         .create_session(
@@ -4340,7 +4338,7 @@ async fn draining_refuses_new_work_while_admitted_turns_finish() {
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let created = brain
         .create_session(
@@ -4560,7 +4558,7 @@ async fn run_compaction_case(
             compactor: Some(compactor.clone()),
             ..BrainServices::default()
         },
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let created = brain
         .create_session(
@@ -4705,7 +4703,7 @@ async fn tenant_storage_quota_rejection_restores_the_live_actor_fold() {
             session_storage: Some(storage.clone()),
             ..BrainServices::default()
         },
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let create = || {
         serde_json::from_value(json!({
@@ -4797,7 +4795,7 @@ async fn deep_ancestor_end_fence_discards_the_mutated_resident_before_retry() {
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(Arc::new(move |_| provider.clone())),
+        Arc::new(move |_| provider.clone()),
     );
     let root = brain
         .create_session(
@@ -4955,7 +4953,7 @@ async fn staged_overwrite_never_adopts_an_older_byte_identical_object() {
             session_storage: Some(storage.clone()),
             ..BrainServices::default()
         },
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let created = brain
         .create_session(
@@ -5080,7 +5078,7 @@ async fn inline_overwrite_retry_reexecutes_after_pre_publication_crash() {
             session_storage: Some(storage.clone()),
             ..BrainServices::default()
         },
-        None,
+        crate::provider::fake::unscripted_factory(),
     );
     let created = brain
         .create_session(
@@ -5196,7 +5194,7 @@ async fn copied_upload_is_adopted_after_crash_and_expiry_without_customer_traffi
                 session_storage: Some(storage.clone()),
                 ..BrainServices::default()
             },
-            None,
+            crate::provider::fake::unscripted_factory(),
         )
     };
     let crashed = compose("brain-storage-copy-owner-a");
@@ -5341,7 +5339,7 @@ async fn storage_upload_reservation_is_durable_bounded_and_retried_after_restart
                 compactor: None,
                 ..BrainServices::default()
             },
-            None,
+            crate::provider::fake::unscripted_factory(),
         )
     };
     let brain = compose(storage.clone());

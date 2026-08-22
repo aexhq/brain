@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-loophost", "crates/brain-standalone", "crates/brain-server"]
+members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-loophost", "crates/brain-providers", "crates/brain-standalone", "crates/brain-server"]
 resolver = "2"
 
 [workspace.package]
@@ -12,6 +12,8 @@ license = "Apache-2.0"
 brain-protocol = { path = "crates/brain-protocol" }
 brain = { path = "crates/brain" }
 brain-aws = { path = "crates/brain-aws" }
+brain-providers = { path = "crates/brain-providers" }
+brain-server = { path = "crates/brain-server" }
 brain-standalone = { path = "crates/brain-standalone" }
 brain-loophost = { path = "crates/brain-loophost" }
 

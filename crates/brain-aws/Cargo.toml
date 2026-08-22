@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 brain = { workspace = true }
+brain-providers = { workspace = true }
 brain-protocol = { workspace = true }
 
 anyhow = { workspace = true }
