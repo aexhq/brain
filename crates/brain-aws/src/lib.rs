@@ -27,6 +27,9 @@ pub struct AwsRuntimePorts {
     /// aex loop plus a registry (e.g. brain-loophost's store). Absent, the built-in loop runs.
     pub agentloop: Option<Arc<dyn brain::agentloop::Agentloop>>,
     pub agentloop_registry: Option<Arc<dyn brain::agentloop::AgentloopRegistry>>,
+    /// Overrides the live providers; the hosted default is the guarded transport with private
+    /// addresses denied.
+    pub provider_factory: Option<brain::session::ProviderFactory>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +119,8 @@ pub async fn compose(
             agentloop: ports.agentloop,
             agentloop_registry: ports.agentloop_registry,
         },
-        None,
+        ports
+            .provider_factory
+            .unwrap_or_else(|| brain_providers::default_factory(false)),
     ))
 }

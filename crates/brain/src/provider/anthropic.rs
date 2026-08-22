@@ -1,18 +1,17 @@
 //! Anthropic Messages API adapter.
 
 use super::sse::SseDecoder;
-use super::{ModelRequest, Provider, ProviderEvent};
-use crate::config::{Dialect, ProviderKey, SealedPrefix};
+use super::{ModelRequest, ProviderEvent};
+use crate::config::{ProviderKey, SealedPrefix};
 use crate::message::{ContentBlock, Message, Role, StopReason, Usage};
 use crate::{BrainError, Result};
-use futures_util::stream::BoxStream;
 use serde_json::{Map, Value, json};
 
 #[derive(Debug, Default)]
 pub struct Anthropic;
 
 impl Anthropic {
-    fn request(body: Value, key: &ProviderKey, base_url: &str) -> Result<ModelRequest> {
+    pub fn request(body: Value, key: &ProviderKey, base_url: &str) -> Result<ModelRequest> {
         Ok(ModelRequest {
             method: "POST",
             url: format!("{}/v1/messages", base_url.trim_end_matches('/')),
@@ -144,28 +143,16 @@ impl Anthropic {
     }
 }
 
-#[async_trait::async_trait]
-impl Provider for Anthropic {
-    fn dialect(&self) -> Dialect {
-        Dialect::AnthropicMessages
-    }
-
-    fn build_request(
-        &self,
+impl Anthropic {
+    /// The full request for one round: the pure dialect codec half of a live provider. The
+    /// HTTP transport half lives in `brain-providers`.
+    pub fn build_request(
         prefix: &SealedPrefix,
         history: &[Message],
         key: &ProviderKey,
         base_url: &str,
     ) -> Result<ModelRequest> {
         Self::request(Self::body(prefix, history)?, key, base_url)
-    }
-
-    async fn stream(
-        &self,
-        req: ModelRequest,
-        outbound: &crate::outbound::Outbound,
-    ) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
-        crate::provider::http_stream(req, outbound, decode).await
     }
 }
 
@@ -298,6 +285,7 @@ pub fn decode_stream(bytes: &[u8]) -> Result<Vec<ProviderEvent>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Dialect;
     use crate::config::{AgentDef, GenOpts, ToolDecl, ToolRoute};
 
     fn prefix() -> std::sync::Arc<SealedPrefix> {
@@ -317,8 +305,7 @@ mod tests {
     fn build_request_is_pure_and_well_formed() {
         let p = prefix();
         let h = vec![Message::user_text("hi")];
-        let r = Anthropic
-            .build_request(&p, &h, &ProviderKey::new("sk-x"), "http://127.0.0.1:1")
+        let r = Anthropic::build_request(&p, &h, &ProviderKey::new("sk-x"), "http://127.0.0.1:1")
             .unwrap();
         assert_eq!(r.url, "http://127.0.0.1:1/v1/messages");
         let v: Value = serde_json::from_slice(&r.body).unwrap();
@@ -337,14 +324,13 @@ mod tests {
     #[test]
     fn the_closing_view_renders_tool_choice_none_with_tools_kept() {
         let p = prefix().closing_view();
-        let r = Anthropic
-            .build_request(
-                &p,
-                &[Message::user_text("hi")],
-                &ProviderKey::new("sk-x"),
-                "http://127.0.0.1:1",
-            )
-            .unwrap();
+        let r = Anthropic::build_request(
+            &p,
+            &[Message::user_text("hi")],
+            &ProviderKey::new("sk-x"),
+            "http://127.0.0.1:1",
+        )
+        .unwrap();
         let v: Value = serde_json::from_slice(&r.body).unwrap();
         // Tools must stay in the request: this wire rejects tool-block histories without them.
         assert_eq!(v["tools"][0]["name"], "read");
@@ -358,14 +344,13 @@ mod tests {
                 reasoning_effort: Some("high".into()),
                 ..GenOpts::default()
             });
-        let error = Anthropic
-            .build_request(
-                &definition.seal(),
-                &[Message::user_text("hi")],
-                &ProviderKey::new("sentinel"),
-                "https://api.anthropic.com",
-            )
-            .unwrap_err();
+        let error = Anthropic::build_request(
+            &definition.seal(),
+            &[Message::user_text("hi")],
+            &ProviderKey::new("sentinel"),
+            "https://api.anthropic.com",
+        )
+        .unwrap_err();
         assert!(matches!(error, BrainError::Invalid(_)));
         assert!(error.to_string().contains("reasoning_effort"));
     }
@@ -393,8 +378,7 @@ mod tests {
             is_error: true,
         }])];
         let v: Value = serde_json::from_slice(
-            &Anthropic
-                .build_request(&p, &h, &ProviderKey::new("k"), "http://x")
+            &Anthropic::build_request(&p, &h, &ProviderKey::new("k"), "http://x")
                 .unwrap()
                 .body,
         )

@@ -155,7 +155,6 @@ pub struct CompactionModel<'a> {
     pub provider: Arc<dyn Provider>,
     pub session: &'a SessionConfig,
     pub provider_name: &'a str,
-    pub outbound: &'a crate::outbound::Outbound,
     pub cancel: &'a tokio_util::sync::CancellationToken,
     pub header_timeout: std::time::Duration,
     pub idle_timeout: std::time::Duration,
@@ -215,7 +214,7 @@ impl CompactionPort for SameProviderCompactor {
         let mut stream = tokio::select! {
             stream = tokio::time::timeout(
                 model.header_timeout,
-                model.provider.stream(wire, model.outbound),
+                model.provider.stream(wire),
             ) => stream
                 .map_err(|_| BrainError::Transport("compactor response header timed out".into()))??,
             () = &mut total => return Err(BrainError::Transport("compactor call exceeded its total deadline".into())),
@@ -843,25 +842,33 @@ mod tests {
             "new_canonical_span": compaction.new_span,
         });
         let compactor_history = [Message::user_text(serde_jcs::to_string(&payload).unwrap())];
-        for provider in [
-            Arc::new(crate::provider::openai::OpenAiChat) as Arc<dyn Provider>,
-            Arc::new(crate::provider::anthropic::Anthropic) as Arc<dyn Provider>,
-        ] {
-            let mut definition = AgentDef::new(
-                COMPACTION_INSTRUCTIONS,
-                "compactor-model",
-                provider.dialect(),
-            );
+        type BuildRequest = fn(
+            &crate::config::SealedPrefix,
+            &[Message],
+            &crate::config::ProviderKey,
+            &str,
+        ) -> crate::Result<crate::provider::ModelRequest>;
+        let codecs: [(crate::config::Dialect, BuildRequest); 2] = [
+            (
+                crate::config::Dialect::OpenAiChat,
+                crate::provider::openai::OpenAiChat::build_request,
+            ),
+            (
+                crate::config::Dialect::AnthropicMessages,
+                crate::provider::anthropic::Anthropic::build_request,
+            ),
+        ];
+        for (dialect, build) in codecs {
+            let mut definition = AgentDef::new(COMPACTION_INSTRUCTIONS, "compactor-model", dialect);
             definition.sampling.max_tokens = 1_024;
             let prefix = definition.seal();
-            let wire = provider
-                .build_request(
-                    &prefix,
-                    &compactor_history,
-                    &crate::config::ProviderKey::new("sentinel"),
-                    "https://provider.example/v1",
-                )
-                .unwrap();
+            let wire = build(
+                &prefix,
+                &compactor_history,
+                &crate::config::ProviderKey::new("sentinel"),
+                "https://provider.example/v1",
+            )
+            .unwrap();
             serde_json::from_slice::<serde_json::Value>(&wire.body).unwrap();
             validate_model_request_budget(wire.body_len(), 1_024, 32 * 1_024, "test").unwrap();
         }

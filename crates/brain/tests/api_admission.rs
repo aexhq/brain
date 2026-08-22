@@ -45,7 +45,12 @@ fn request(body: Body, token: Option<&str>) -> Request<Body> {
 #[tokio::test]
 async fn unauthenticated_create_never_polls_the_body() {
     let temp = TempDir::new("unauthenticated");
-    let brain = Brain::in_memory_test(temp.0.clone(), BrainConfig::default()).unwrap();
+    let brain = Brain::in_memory_test(
+        temp.0.clone(),
+        BrainConfig::default(),
+        brain::provider::fake::unscripted_factory(),
+    )
+    .unwrap();
     let app = router(AppState {
         brain,
         token: "operator-token".into(),
@@ -66,7 +71,12 @@ async fn unauthenticated_create_never_polls_the_body() {
 #[tokio::test]
 async fn a_tenanted_composition_refuses_requests_without_the_tenant_header() {
     let temp = TempDir::new("require-tenant");
-    let brain = Brain::in_memory_test(temp.0.clone(), BrainConfig::default()).unwrap();
+    let brain = Brain::in_memory_test(
+        temp.0.clone(),
+        BrainConfig::default(),
+        brain::provider::fake::unscripted_factory(),
+    )
+    .unwrap();
     let app = router(AppState {
         brain,
         token: "operator-token".into(),
@@ -89,6 +99,7 @@ async fn saturated_create_admission_rejects_before_polling_another_body() {
             max_concurrent_creates: 1,
             ..BrainConfig::default()
         },
+        brain::provider::fake::unscripted_factory(),
     )
     .unwrap();
     let app = router(AppState {

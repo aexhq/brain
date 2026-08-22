@@ -25,54 +25,27 @@
 
 use crate::{BrainError, Result};
 use std::net::IpAddr;
-use std::time::Duration;
 
-/// Policy + the one shared client. Built once per [`crate::session::Brain`]; reqwest clients
-/// are cheap to clone (an `Arc` inside), so per-session and per-call use clones this.
-#[derive(Clone)]
-pub struct Outbound {
-    client: reqwest::Client,
+/// The URL/IP policy half of the outbound seam: pure judgement, no client. The guarded HTTP
+/// client that enforces it during DNS resolution lives in `brain-providers`.
+#[derive(Clone, Copy, Debug)]
+pub struct OutboundPolicy {
     allow_private: bool,
 }
 
-impl std::fmt::Debug for Outbound {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Outbound")
-            .field("allow_private", &self.allow_private)
-            .finish()
-    }
-}
-
-impl Outbound {
+impl OutboundPolicy {
     pub fn new(allow_private: bool) -> Self {
-        let mut b = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
-            .pool_max_idle_per_host(4);
-        if !allow_private {
-            b = b.dns_resolver(GuardingResolver);
-        }
-        Outbound {
-            client: b.build().expect("outbound http client"),
-            allow_private,
-        }
+        OutboundPolicy { allow_private }
     }
 
     pub fn allow_private(&self) -> bool {
         self.allow_private
     }
 
-    /// The guarded client. Callers MUST run [`Outbound::check_url`] on the target first --
-    /// the resolver cannot judge literal-IP hosts or schemes.
-    pub fn client(&self) -> &reqwest::Client {
-        &self.client
-    }
-
     /// Validates a user-supplied outbound URL against the policy. Returns the parsed URL so
     /// callers never re-parse what was checked.
-    pub fn check_url(&self, url: &str) -> Result<reqwest::Url> {
-        let parsed = reqwest::Url::parse(url)
+    pub fn check_url(&self, url: &str) -> Result<url::Url> {
+        let parsed = url::Url::parse(url)
             .map_err(|_| BrainError::Invalid("outbound URL is invalid".into()))?;
         let target = redacted_target(&parsed);
         match parsed.scheme() {
@@ -123,7 +96,7 @@ pub fn deny_reason(ip: &IpAddr) -> Option<&'static str> {
     brain_protocol::network::special_use_reason(ip)
 }
 
-fn redacted_target(url: &reqwest::Url) -> String {
+fn redacted_target(url: &url::Url) -> String {
     let host = url.host_str().unwrap_or("<missing-host>");
     match url.port() {
         Some(port) => format!("{}://{host}:{port}", url.scheme()),
@@ -131,36 +104,43 @@ fn redacted_target(url: &reqwest::Url) -> String {
     }
 }
 
-/// DNS resolution with the deny table applied INSIDE the client. System resolver via
-/// `tokio::net::lookup_host`; any denied address fails the whole lookup.
-struct GuardingResolver;
-
-impl reqwest::dns::Resolve for GuardingResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let host = name.as_str().to_string();
-        Box::pin(async move {
-            // Port 0 is a placeholder; reqwest substitutes the URL's real port.
-            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
-                .await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                    format!("dns {host}: {e}").into()
-                })?
-                .collect();
-            if addrs.is_empty() {
-                return Err(format!("dns {host}: no addresses").into());
-            }
-            for a in &addrs {
-                if let Some(reason) = brain_protocol::network::special_use_reason(&a.ip()) {
-                    return Err(format!(
-                        "dns {host}: resolves to {} which is {reason} (SSRF guard)",
-                        a.ip()
-                    )
-                    .into());
-                }
-            }
-            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
-        })
+/// The external tool executor endpoint grammar: literal-loopback http URL, no credentials,
+/// query, or fragment. Pure so config validation needs no HTTP client; the executor in
+/// `brain-providers` enforces the same rule at construction.
+pub fn validate_external_executor_url(endpoint: &str) -> Result<url::Url> {
+    let endpoint = endpoint.parse::<url::Url>().map_err(|error| {
+        BrainError::Invalid(format!("external tool executor URL is invalid: {error}"))
+    })?;
+    if endpoint.scheme() != "http"
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(BrainError::Invalid(
+            "external tool executor must be an http:// loopback URL without credentials, query, or fragment"
+                .into(),
+        ));
     }
+    let loopback = endpoint
+        .host_str()
+        // `url` retains brackets in `host_str()` for an IPv6 literal. `IpAddr` expects the
+        // bare address, so normalize only that syntactic wrapper before the exact loopback
+        // classification.
+        .and_then(|host| host.trim_matches(['[', ']']).parse::<IpAddr>().ok())
+        .is_some_and(|ip| ip.is_loopback());
+    if !loopback {
+        return Err(BrainError::Invalid(
+            "external tool executor host must be a literal loopback address".into(),
+        ));
+    }
+    Ok(endpoint)
+}
+
+/// A bearer credential must be a valid HTTP header token payload: visible ASCII only —
+/// no control bytes, no line breaks, nothing an intermediary could reinterpret as framing.
+pub fn validate_bearer_token(token: &str) -> bool {
+    !token.is_empty() && token.bytes().all(|byte| (b'!'..=b'~').contains(&byte))
 }
 
 #[cfg(test)]
@@ -190,7 +170,7 @@ mod tests {
 
     #[test]
     fn guarded_url_check_refuses_literal_internal_ips_and_bad_schemes() {
-        let o = Outbound::new(false);
+        let o = OutboundPolicy::new(false);
         for bad in [
             "http://example.com/provider",          // scheme
             "https://user:pw@example.com/provider", // userinfo
@@ -209,7 +189,7 @@ mod tests {
     #[test]
     fn rejected_urls_never_echo_query_credentials() {
         let secret = "query-secret-sentinel";
-        let error = Outbound::new(false)
+        let error = OutboundPolicy::new(false)
             .check_url(&format!("https://127.0.0.1/path?token={secret}#fragment"))
             .unwrap_err()
             .to_string();
@@ -219,31 +199,12 @@ mod tests {
 
     #[test]
     fn permissive_policy_allows_loopback_and_http() {
-        let o = Outbound::new(true);
+        let o = OutboundPolicy::new(true);
         assert!(o.check_url("http://127.0.0.1:3001/v1").is_ok());
         assert!(o.check_url("https://[::1]:8443/v1").is_ok());
         assert!(
             o.check_url("https://user:pw@localhost/v1").is_err(),
             "userinfo stays refused even permissively"
-        );
-    }
-
-    #[tokio::test]
-    async fn guarded_client_refuses_hostnames_resolving_internal() {
-        // `localhost` resolves to loopback everywhere; the guarding resolver must fail the
-        // connection attempt itself (error, not a response).
-        let o = Outbound::new(false);
-        let err = o
-            .client()
-            .get("https://localhost:1/nope")
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .expect_err("localhost must not connect through the guarded client");
-        let text = format!("{err:?}");
-        assert!(
-            text.contains("SSRF guard"),
-            "failure must be attributed to the guard, got: {text}"
         );
     }
 }

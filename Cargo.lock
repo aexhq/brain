@@ -874,6 +874,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "url",
  "zeroize",
 ]
 
@@ -890,6 +891,7 @@ dependencies = [
  "base64",
  "brain",
  "brain-protocol",
+ "brain-providers",
  "chrono",
  "hex",
  "serde",
@@ -957,6 +959,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-providers"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "brain",
+ "brain-protocol",
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
 name = "brain-server"
 version = "0.1.0"
 dependencies = [
@@ -965,6 +983,7 @@ dependencies = [
  "base64",
  "brain",
  "brain-loophost",
+ "brain-providers",
  "brain-standalone",
  "hex",
  "libc",

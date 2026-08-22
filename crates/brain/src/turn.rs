@@ -175,7 +175,6 @@ pub struct TurnRun {
     pub session: SessionConfig,
     pub provider: Arc<dyn Provider>,
     pub provider_name: String,
-    pub outbound: crate::outbound::Outbound,
     pub journal: Journal,
     pub hub: Arc<EventHub>,
     pub cancel: CancellationToken,
@@ -2133,7 +2132,6 @@ impl TurnRun {
                 provider: self.provider.clone(),
                 session: &self.session,
                 provider_name: &self.provider_name,
-                outbound: &self.outbound,
                 cancel: &self.cancel,
                 header_timeout: self.provider_header_timeout,
                 idle_timeout: self.provider_idle_timeout,
@@ -2214,7 +2212,6 @@ impl TurnRun {
                     provider: self.provider.clone(),
                     session: &self.session,
                     provider_name: &self.provider_name,
-                    outbound: &self.outbound,
                     cancel: &self.cancel,
                     header_timeout: self.provider_header_timeout,
                     idle_timeout: self.provider_idle_timeout,
@@ -2371,7 +2368,6 @@ impl TurnRun {
             let result = model_round_request(
                 RoundCtx {
                     provider: &self.provider,
-                    outbound: &self.outbound,
                     header_timeout: self.provider_header_timeout,
                     idle_timeout: self.provider_idle_timeout,
                     total_timeout: self.provider_total_timeout,
@@ -3226,7 +3222,6 @@ pub(crate) async fn execute_external(
 /// Everything one streamed model round needs, borrowed.
 pub(crate) struct RoundCtx<'a> {
     pub provider: &'a Arc<dyn Provider>,
-    pub outbound: &'a crate::outbound::Outbound,
     pub header_timeout: std::time::Duration,
     pub idle_timeout: std::time::Duration,
     pub total_timeout: std::time::Duration,
@@ -3300,7 +3295,7 @@ async fn model_round_request(
 
     let mut total = std::pin::pin!(tokio::time::sleep(ctx.total_timeout));
     let mut stream = tokio::select! {
-        s = tokio::time::timeout(ctx.header_timeout, ctx.provider.stream(req, ctx.outbound)) => {
+        s = tokio::time::timeout(ctx.header_timeout, ctx.provider.stream(req)) => {
             s.map_err(|_| BrainError::Transport("provider response header timed out".into()))??
         },
         () = &mut total => return Err(BrainError::Transport("provider call exceeded its total deadline".into())),

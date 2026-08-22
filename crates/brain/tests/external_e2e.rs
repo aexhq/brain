@@ -172,9 +172,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
         Arc::new(brain::keys::PlainCustody),
         executor.clone(),
         BrainServices::default(),
-        Some(Arc::new(move |_| {
-            provider.clone() as Arc<dyn brain::provider::Provider>
-        })),
+        Arc::new(move |_| provider.clone() as Arc<dyn brain::provider::Provider>),
     );
 
     let token = "external-e2e-token";
