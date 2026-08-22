@@ -4,6 +4,10 @@ on:
     branches: [main]
   pull_request:
 
+# Every job here only reads the repository; none needs a writable GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   sdk:
     strategy:
