@@ -44,6 +44,25 @@ fn codex_component_path() -> PathBuf {
 fn ensure_component() {
     static BUILD: Once = Once::new();
     BUILD.call_once(|| {
+        // The componentize toolchain must be installed even when every prebuilt component is
+        // cache-hit: the customer-upload e2e componentizes server-side at create through this
+        // install. It is a runtime dependency of the tests, not only of the build below.
+        if !guest_dir()
+            .join("node_modules/@bytecodealliance/componentize-js")
+            .exists()
+        {
+            let npm: (&str, &[&str]) = if cfg!(windows) {
+                ("cmd", &["/C", "npm", "i", "--ignore-scripts"])
+            } else {
+                ("npm", &["i", "--ignore-scripts"])
+            };
+            let install = std::process::Command::new(npm.0)
+                .args(npm.1)
+                .current_dir(guest_dir())
+                .status()
+                .expect("npm is required for the loop toolchain");
+            assert!(install.success(), "npm install failed for the guest loop");
+        }
         if component_path().exists()
             && contract_component_path().exists()
             && sdk_component_path().exists()
@@ -52,17 +71,6 @@ fn ensure_component() {
         {
             return;
         }
-        let npm: (&str, &[&str]) = if cfg!(windows) {
-            ("cmd", &["/C", "npm", "i", "--ignore-scripts"])
-        } else {
-            ("npm", &["i", "--ignore-scripts"])
-        };
-        let install = std::process::Command::new(npm.0)
-            .args(npm.1)
-            .current_dir(guest_dir())
-            .status()
-            .expect("npm is required to build the guest loop");
-        assert!(install.success(), "npm install failed for the guest loop");
         let build = std::process::Command::new("node")
             .arg("build.mjs")
             .current_dir(guest_dir())
