@@ -18,6 +18,7 @@ const ls = tool(lsInput, async function ls({ path, limit }, context) {
       truncated: values.length > limit,
     };
   })
+  .named("ls")
   .describe("List entries in a Hand workspace directory.")
   .returns(lsOutput)
   .server(import.meta.url);

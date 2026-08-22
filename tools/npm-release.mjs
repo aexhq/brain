@@ -7,7 +7,15 @@ import process from "node:process";
 
 // Dependency order: the loop packages build against @aexhq/agentloop, so the SDK publishes
 // (and becomes registry-visible) first.
-const workspaces = ["brain", "brain-tools", "agentloop", "loop-pi", "loop-codex"];
+const allWorkspaces = ["brain", "brain-tools", "agentloop", "loop-pi", "loop-codex"];
+const requestedWorkspaces = process.env.RELEASE_WORKSPACES?.split(",").filter(Boolean);
+const workspaces = requestedWorkspaces?.length ? requestedWorkspaces : allWorkspaces;
+if (
+  new Set(workspaces).size !== workspaces.length ||
+  workspaces.some((workspace) => !allWorkspaces.includes(workspace))
+) {
+  throw new Error(`invalid RELEASE_WORKSPACES: ${process.env.RELEASE_WORKSPACES}`);
+}
 const root = path.resolve(import.meta.dirname, "..");
 const npmCli = [
   process.env.npm_execpath,

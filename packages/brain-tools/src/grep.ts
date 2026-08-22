@@ -27,6 +27,7 @@ const grep = tool(grepInput, async function grep({ pattern, path, limit }, conte
       });
     });
   })
+  .named("grep")
   .describe("Search text files in the Hand workspace with ripgrep.")
   .returns(grepOutput)
   .server(import.meta.url);

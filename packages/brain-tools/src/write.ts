@@ -15,6 +15,7 @@ const write = tool(writeInput, async function write({ path, content }, context) 
     await writeFile(target, content, "utf8");
     return { path, bytes: Buffer.byteLength(content) };
   })
+  .named("write")
   .describe("Write UTF-8 text to a file in the Hand workspace, creating parent directories.")
   .returns(writeOutput)
   .server(import.meta.url);

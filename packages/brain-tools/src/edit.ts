@@ -19,6 +19,7 @@ const edit = tool(editInput, async function edit({ path, old_text, new_text }, c
     await writeFile(target, `${content.slice(0, first)}${new_text}${content.slice(first + old_text.length)}`, "utf8");
     return { path, replacements: 1 as const };
   })
+  .named("edit")
   .describe("Replace one exact occurrence of text in a Hand workspace file.")
   .returns(editOutput)
   .server(import.meta.url);
