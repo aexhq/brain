@@ -8,7 +8,6 @@
 <p align="center">
   <a href="https://aex.dev">Aex</a> ·
   <a href="contracts/session/v1/openapi.yaml">Session API</a> ·
-  <a href="STANDALONE.md">Standalone</a> ·
   <a href="https://github.com/aexhq/hands">Hands</a> ·
   <a href="https://discord.gg/Qk2YnHMHVb">Discord</a>
 </p>
