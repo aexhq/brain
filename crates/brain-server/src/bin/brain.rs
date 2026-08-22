@@ -4,8 +4,7 @@
 use brain::api::{AppState, serve};
 use brain::journal::Journal;
 use brain::keys::{KeyCustody, blob_from_b64};
-use brain::session::{Brain, BrainConfig};
-use brain_standalone::durable_local_parts;
+use brain::session::BrainConfig;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -51,46 +50,38 @@ async fn run() -> anyhow::Result<()> {
             "the neutral brain-server has no production adapters; start the hosted composition or set BRAIN_MODE=local explicitly"
         ),
         BrainMode::Local => {
-            let parts = durable_local_parts(&data).map_err(|error| anyhow::anyhow!("{error}"))?;
-            audit_local(&parts.journal, &parts.custody).await?;
             tracing::warn!(data = %data.display(), "LOCAL MODE: durable SQLite/custody with unsandboxed host Tool execution; network policy is not enforced");
-            let websocket_url = std::env::var("BRAIN_CUSTOMER_HAND_WEBSOCKET_URL")
-                .unwrap_or_else(|_| format!("ws://{address}/v1/customer-hand/socket"));
-            let observation_base_url = std::env::var("BRAIN_CUSTOMER_HAND_OBSERVATION_BASE_URL")
-                .unwrap_or_else(|_| format!("http://{address}"));
-            let customer_transport =
-                brain::customer::CustomerTransportConfig::new(websocket_url, observation_base_url)?;
-            let local_hand = parts.local_hand.clone();
             let cfg = BrainConfig::from_env().map_err(|error| anyhow::anyhow!("{error}"))?;
-            // Honor BRAIN_EXTERNAL_TOOL_EXECUTOR_URL: before this, the config was parsed and
-            // validated but the binary hard-coded the disabled executor.
-            let external_executor = brain::session::external_executor_from_cfg(&cfg)
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
-            let brain = Brain::with_parts_and_services(
+            let websocket_url = std::env::var("BRAIN_CUSTOMER_HAND_WEBSOCKET_URL").ok();
+            let observation_base_url =
+                std::env::var("BRAIN_CUSTOMER_HAND_OBSERVATION_BASE_URL").ok();
+            let transport_urls = match (websocket_url, observation_base_url) {
+                (Some(ws), Some(observe)) => Some((ws, observe)),
+                (None, None) => None,
+                _ => anyhow::bail!(
+                    "set both BRAIN_CUSTOMER_HAND_WEBSOCKET_URL and BRAIN_CUSTOMER_HAND_OBSERVATION_BASE_URL or neither"
+                ),
+            };
+            let loophost = match std::env::var("BRAIN_LOOPHOST_AEX_COMPONENT") {
+                Err(_) => None,
+                Ok(component) => Some(brain_server::LoophostOptions {
+                    aex_component: component.into(),
+                    toolchain_dir: std::env::var("BRAIN_LOOPHOST_TOOLCHAIN_DIR")
+                        .map_err(|_| anyhow::anyhow!(
+                            "BRAIN_LOOPHOST_TOOLCHAIN_DIR is required with BRAIN_LOOPHOST_AEX_COMPONENT"
+                        ))?
+                        .into(),
+                }),
+            };
+            let brain = brain_server::compose_local(brain_server::LocalOptions {
+                data_dir: data.clone(),
                 cfg,
-                parts.journal,
-                parts.custody,
-                external_executor,
-                brain::session::BrainServices {
-                    session_storage: Some(parts.session_storage),
-                    bundle_storage: Some(parts.bundle_storage),
-                    hand: Some(parts.hand),
-                    session_preparation: Some(parts.session_preparation),
-                    sandbox_files: Some(parts.sandbox_files),
-                    sandbox_control: Some(parts.sandbox_control),
-                    customer_delivery: None,
-                    customer_transport: Some(customer_transport),
-                    compactor: None,
-                    agentloop: None,
-                    agentloop_registry: None,
-                },
-                None,
-            );
-            local_hand
-                .attach_secret_delivery(brain.clone())
-                .map_err(|error| {
-                    anyhow::anyhow!("local Hand secret delivery: {}", error.message.as_str())
-                })?;
+                advertised_address: address.to_string(),
+                transport_urls,
+                provider_factory: None,
+                loophost,
+            })?;
+            audit_local(&brain.journal, &brain.custody).await?;
             brain
         }
     };
