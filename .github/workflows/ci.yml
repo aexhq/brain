@@ -4,6 +4,12 @@ on:
     branches: [main]
   pull_request:
 
+# Superseded PR pushes stop competing with the live run for runners and cache budget;
+# main pushes always run to completion (image publish keys off their success).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Every job here only reads the repository; none needs a writable GITHUB_TOKEN.
 permissions:
   contents: read
@@ -77,6 +83,8 @@ jobs:
         with:
           toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-debug
       - run: cargo test --workspace --exclude brain-loophost
 
   test-loophost:
@@ -116,6 +124,8 @@ jobs:
         with:
           toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-debug
       - run: cargo test -p brain-loophost
 
   # The branch-protection gate. Splitting the old serial job into the parallel legs above must
