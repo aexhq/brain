@@ -1,16 +1,14 @@
 {
-  "name": "@aexhq/loop-aex-guest",
+  "name": "@aexhq/loophost-guest",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Official agentloop guests (aex engine-op v0, pi wrapping pinned pi-agent-core) plus the loop toolchain.",
+  "description": "The loop host's own guest artifacts: the bootstrap aex engine-op loop, raw-ABI test fixtures, and the pinned componentize toolchain (componentize-one.mjs). Official loops live in packages/loop-*.",
   "scripts": {
     "build": "node build.mjs"
   },
   "devDependencies": {
     "@bytecodealliance/componentize-js": "0.22.0",
-    "esbuild": "0.28.2",
-    "@earendil-works/pi-agent-core": "0.84.2",
-    "@earendil-works/pi-ai": "0.84.2"
+    "esbuild": "0.28.2"
   }
 }

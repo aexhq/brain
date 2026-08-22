@@ -18,6 +18,10 @@ fn guest_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("guest")
 }
 
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
 fn component_path() -> PathBuf {
     guest_dir().join("dist/aex-loop.component.wasm")
 }
@@ -30,44 +34,93 @@ fn sdk_component_path() -> PathBuf {
     guest_dir().join("dist/sdk-loop.component.wasm")
 }
 
-fn pi_component_path() -> PathBuf {
-    guest_dir().join("dist/pi-loop.component.wasm")
+/// The shared content-addressed loop store the official-loop tests seed into: keeping it
+/// under guest/dist means the componentized officials persist across runs (and ride the CI
+/// guest cache) exactly like the prebuilt fixtures.
+fn shared_loop_store() -> PathBuf {
+    guest_dir().join("dist/loop-store")
 }
 
-fn codex_component_path() -> PathBuf {
-    guest_dir().join("dist/codex-loop.component.wasm")
+/// One loop package's published artifact pair: the deterministic source bundle plus its
+/// sealed identity, built by the package's own `build.mjs` through the public
+/// `buildLoopBundle` — the same artifact an external contributor ships.
+fn loop_package_artifact(package: &str) -> (Vec<u8>, Value) {
+    let dist = repo_root().join("packages").join(package).join("dist");
+    let bundle = std::fs::read(dist.join("loop.bundle.mjs"))
+        .unwrap_or_else(|error| panic!("{package} bundle missing: {error}"));
+    let identity: Value = serde_json::from_str(
+        &std::fs::read_to_string(dist.join("identity.json"))
+            .unwrap_or_else(|error| panic!("{package} identity missing: {error}")),
+    )
+    .expect("loop identity is JSON");
+    (bundle, identity)
 }
 
-/// Build the guest components when absent. Requires Node + npm, exactly like the standalone
-/// managed-tool tests; the build is cached under guest/dist. Once-guarded so parallel tests
-/// never race the npm/componentize pipeline.
+fn npm_command(args: &[&str]) -> std::process::Command {
+    let mut command = if cfg!(windows) {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C").arg("npm");
+        c
+    } else {
+        std::process::Command::new("npm")
+    };
+    command.args(args);
+    command
+}
+
+/// Build the guest components and loop-package bundles when absent. Requires Node + npm,
+/// exactly like the standalone managed-tool tests; builds are cached under guest/dist and
+/// packages/*/dist. Once-guarded so parallel tests never race the npm/componentize pipeline.
 fn ensure_component() {
     static BUILD: Once = Once::new();
     BUILD.call_once(|| {
         // The componentize toolchain must be installed even when every prebuilt component is
-        // cache-hit: the customer-upload e2e componentizes server-side at create through this
-        // install. It is a runtime dependency of the tests, not only of the build below.
+        // cache-hit: the upload and official-seeding e2es componentize server-side through
+        // this install. It is a runtime dependency of the tests, not only of the build below.
         if !guest_dir()
             .join("node_modules/@bytecodealliance/componentize-js")
             .exists()
         {
-            let npm: (&str, &[&str]) = if cfg!(windows) {
-                ("cmd", &["/C", "npm", "i", "--ignore-scripts"])
-            } else {
-                ("npm", &["i", "--ignore-scripts"])
-            };
-            let install = std::process::Command::new(npm.0)
-                .args(npm.1)
+            let install = npm_command(&["i", "--ignore-scripts"])
                 .current_dir(guest_dir())
                 .status()
                 .expect("npm is required for the loop toolchain");
             assert!(install.success(), "npm install failed for the guest loop");
         }
+        // The loop packages and the SDK build through the root npm workspaces — the public
+        // toolchain path, shared with any external contributor.
+        let workspace_dists = [
+            repo_root().join("packages/agentloop/dist/build.js"),
+            repo_root().join("packages/loop-pi/dist/identity.json"),
+            repo_root().join("packages/loop-codex/dist/identity.json"),
+        ];
+        if workspace_dists.iter().any(|path| !path.exists()) {
+            if !repo_root().join("node_modules/@aexhq/agentloop").exists() {
+                let install = npm_command(&["ci"])
+                    .current_dir(repo_root())
+                    .status()
+                    .expect("npm is required for the workspace install");
+                assert!(install.success(), "npm ci failed at the workspace root");
+            }
+            let build = npm_command(&[
+                "run",
+                "build",
+                "-w",
+                "packages/agentloop",
+                "-w",
+                "packages/loop-pi",
+                "-w",
+                "packages/loop-codex",
+            ])
+            .current_dir(repo_root())
+            .status()
+            .expect("npm is required to build the loop packages");
+            assert!(build.success(), "loop package builds failed");
+        }
         if component_path().exists()
             && contract_component_path().exists()
             && sdk_component_path().exists()
-            && pi_component_path().exists()
-            && codex_component_path().exists()
+            && guest_dir().join("dist/rogue-loop.source.mjs").exists()
         {
             return;
         }
@@ -80,8 +133,7 @@ fn ensure_component() {
         assert!(component_path().exists());
         assert!(contract_component_path().exists());
         assert!(sdk_component_path().exists());
-        assert!(pi_component_path().exists());
-        assert!(codex_component_path().exists());
+        assert!(guest_dir().join("dist/rogue-loop.source.mjs").exists());
     });
 }
 
@@ -584,25 +636,30 @@ async fn an_sdk_authored_loop_drives_turns_end_to_end() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_official_pi_loop_drives_turns() {
     ensure_component();
-    let store = std::env::temp_dir().join(format!(
-        "brain-pi-loop-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    ));
+    // The official pi loop arrives exactly like a customer bundle: the @aexhq/loop-pi
+    // package's public-toolchain artifact, seeded through the admission path.
+    let (bundle, identity) = loop_package_artifact("loop-pi");
+    let pi_version = identity["version"]
+        .as_str()
+        .expect("pi version")
+        .to_string();
     let aex: Arc<dyn brain::agentloop::Agentloop> = Arc::new(
         brain_loophost::WasmAgentloop::from_component_file(&component_path()).expect("aex loop"),
     );
-    let registry =
-        brain_loophost::registry::LoophostRegistry::new(aex.clone(), &store, guest_dir())
-            .expect("registry")
-            .with_official(
-                "pi",
-                brain_loophost::registry::PI_LOOP_VERSION,
-                pi_component_path(),
-            );
+    let registry = brain_loophost::registry::LoophostRegistry::new(
+        aex.clone(),
+        shared_loop_store(),
+        guest_dir(),
+    )
+    .expect("registry")
+    .seed_official(
+        "pi",
+        &pi_version,
+        identity["toolchain"].as_str().expect("toolchain"),
+        &bundle,
+    )
+    .await
+    .expect("pi seeds through the customer admission path");
     let brain = serve_brain(
         BrainServices {
             agentloop: Some(aex),
@@ -666,7 +723,7 @@ async fn the_official_pi_loop_drives_turns() {
         .unwrap();
     assert_eq!(
         created["agentloop"],
-        json!({"kind": "official", "name": "pi", "version": "0.84.2"}),
+        json!({"kind": "official", "name": "pi", "version": pi_version}),
         "the pinned pi identity seals: {created}"
     );
     let session = created["id"].as_str().expect("session id").to_string();
@@ -703,27 +760,33 @@ async fn the_official_pi_loop_drives_turns() {
             .any(|event| event["type"] == "turn.completed" && event["stop_reason"] == "end_turn"),
         "the resident pi conversation carries into turn 2"
     );
-    let _ = std::fs::remove_dir_all(store);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_codex_style_loop_executes_tools_sequentially() {
     ensure_component();
-    let store = std::env::temp_dir().join(format!(
-        "brain-codex-loop-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis()
-    ));
+    let (bundle, identity) = loop_package_artifact("loop-codex");
+    let codex_version = identity["version"]
+        .as_str()
+        .expect("codex version")
+        .to_string();
     let aex: Arc<dyn brain::agentloop::Agentloop> = Arc::new(
         brain_loophost::WasmAgentloop::from_component_file(&component_path()).expect("aex loop"),
     );
-    let registry =
-        brain_loophost::registry::LoophostRegistry::new(aex.clone(), &store, guest_dir())
-            .expect("registry")
-            .with_official("codex-style", "1", codex_component_path());
+    let registry = brain_loophost::registry::LoophostRegistry::new(
+        aex.clone(),
+        shared_loop_store(),
+        guest_dir(),
+    )
+    .expect("registry")
+    .seed_official(
+        "codex-style",
+        &codex_version,
+        identity["toolchain"].as_str().expect("toolchain"),
+        &bundle,
+    )
+    .await
+    .expect("codex-style seeds through the customer admission path");
     let brain = serve_brain(
         BrainServices {
             agentloop: Some(aex),
@@ -788,7 +851,7 @@ async fn the_codex_style_loop_executes_tools_sequentially() {
         .unwrap();
     assert_eq!(
         created["agentloop"],
-        json!({"kind": "official", "name": "codex-style", "version": "1"}),
+        json!({"kind": "official", "name": "codex-style", "version": codex_version}),
         "{created}"
     );
     let session = created["id"].as_str().expect("session id").to_string();
@@ -817,7 +880,6 @@ async fn the_codex_style_loop_executes_tools_sequentially() {
         vec!["call", "result", "call", "result"],
         "sequential dispatch is visible in the public transcript"
     );
-    let _ = std::fs::remove_dir_all(store);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -900,6 +962,122 @@ async fn a_customer_bundle_uploads_componentizes_and_drives_turns() {
         "the componentized loop is cached at {cached:?}"
     );
     let _ = std::fs::remove_dir_all(store);
+}
+
+/// The wit doc's claim, enforced: a contract-only guest (here a customer upload) gets
+/// `invalid_request` for every `engine.*` round op, while the read-only
+/// `engine.session_start` hydration stays reachable.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_customer_loop_cannot_reach_the_engine_vocabulary() {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    ensure_component();
+    let source =
+        std::fs::read(guest_dir().join("dist/rogue-loop.source.mjs")).expect("the rogue bundle");
+    let digest = hex::encode(sha2::Sha256::digest(&source));
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&source);
+
+    let brain = serve_brain(
+        brain_loophost::registry::services_with_loop_store(
+            &component_path(),
+            &shared_loop_store(),
+            &guest_dir(),
+        )
+        .expect("loop store composition"),
+        vec![Scripted::Text("never reached".into())],
+    )
+    .await;
+
+    let session = brain
+        .create_session_from(json!({
+            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+            "agentloop": {
+                "source_bundle_sha256": digest,
+                "toolchain": brain_loophost::registry::LOOP_TOOLCHAIN,
+                "bundle_base64": encoded,
+            }
+        }))
+        .await;
+    brain.send_message(&session, "probe the engine ops").await;
+    let events = brain.wait_turn(&session).await;
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .expect("the probe turn completes");
+    let result = &completed["result"]["value"];
+    for op in [
+        "engine.model_round",
+        "engine.dispatch_pending",
+        "engine.budget",
+    ] {
+        assert_eq!(
+            result["refusals"][op]["code"], "invalid_request",
+            "{op} must be refused for a contract-only guest: {result}"
+        );
+        assert!(
+            result["refusals"][op]["message"]
+                .as_str()
+                .expect("refusal message")
+                .contains("reserved"),
+            "{op} refusal names the reservation: {result}"
+        );
+    }
+    assert_eq!(
+        result["session_start_served"], true,
+        "the read-only hydration exception stays reachable: {result}"
+    );
+}
+
+/// A sealed official identity means what it says: a composition registered with a different
+/// version of the same named loop refuses to run the session rather than silently
+/// substituting.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_official_version_mismatch_refuses_resolution() {
+    use brain::agentloop::AgentloopRegistry as _;
+    use brain::journal::AgentloopSelectorDoc;
+    ensure_component();
+    let (bundle, identity) = loop_package_artifact("loop-codex");
+    let aex: Arc<dyn brain::agentloop::Agentloop> = Arc::new(
+        brain_loophost::WasmAgentloop::from_component_file(&component_path()).expect("aex loop"),
+    );
+    let registry = brain_loophost::registry::LoophostRegistry::new(
+        aex.clone(),
+        shared_loop_store(),
+        guest_dir(),
+    )
+    .expect("registry")
+    .seed_official(
+        "codex-style",
+        identity["version"].as_str().expect("version"),
+        identity["toolchain"].as_str().expect("toolchain"),
+        &bundle,
+    )
+    .await
+    .expect("codex-style seeds");
+
+    let sealed_elsewhere = AgentloopSelectorDoc::Official {
+        name: "codex-style".into(),
+        version: "0.0.1-not-here".into(),
+    };
+    let error = registry
+        .resolve(&sealed_elsewhere)
+        .err()
+        .expect("a version mismatch must refuse");
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("0.0.1-not-here") && message.contains("this composition runs"),
+        "the refusal names both versions: {message}"
+    );
+
+    // The bootstrap default is version-checked the same way.
+    let wrong_aex = AgentloopSelectorDoc::Official {
+        name: "aex".into(),
+        version: "999".into(),
+    };
+    assert!(
+        registry.resolve(&wrong_aex).is_err(),
+        "a foreign aex version must refuse"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -5,7 +5,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-const workspaces = ["brain", "brain-tools"];
+// Dependency order: the loop packages build against @aexhq/agentloop, so the SDK publishes
+// (and becomes registry-visible) first.
+const workspaces = ["brain", "brain-tools", "agentloop", "loop-pi", "loop-codex"];
 const root = path.resolve(import.meta.dirname, "..");
 const npmCli = [
   process.env.npm_execpath,

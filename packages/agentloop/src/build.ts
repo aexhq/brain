@@ -11,7 +11,17 @@
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
+import { build, type Plugin } from "esbuild";
+
+/**
+ * The loop toolchain compositions run: the pinned guest engine plus componentizer. The other
+ * half of a bundle's sealed identity — pass it as the upload's `toolchain`; a composition
+ * running a different toolchain refuses the bundle rather than guessing.
+ */
+export const LOOP_TOOLCHAIN = "starlingmonkey-componentize-js-0.22.0";
+
+/** The upload bound for a source bundle (contracts/agentloop/v1 `bundle_base64` limit). */
+export const MAX_LOOP_BUNDLE_BYTES = 8 * 1024 * 1024;
 
 export interface LoopBundle {
   /** The complete ESM source bundle, the exact bytes to upload. */
@@ -30,6 +40,15 @@ export interface BuildLoopBundleOptions {
    * when every occurrence is provably inside a plain string.
    */
   allowUnicodePropertyEscapes?: boolean;
+  /**
+   * esbuild plugins applied while bundling — the hook for dependency compatibility rewrites
+   * (e.g. replacing a library's `\p{…}` regex literals with engine-parseable equivalents).
+   * Plugins shape the deterministic source bundle, so they are part of what the sealed
+   * digest covers.
+   */
+  plugins?: Plugin[];
+  /** Modules injected before the bundle's own top-level code (esbuild `inject`) — polyfills. */
+  inject?: string[];
 }
 
 const SDK_ENTRY = fileURLToPath(new URL("../src/index.ts", import.meta.url));
@@ -57,6 +76,8 @@ export async function buildLoopBundle(options: BuildLoopBundleOptions): Promise<
     platform: "neutral",
     external: ["loophost:abi/host"],
     alias: { "@aexhq/agentloop": SDK_ENTRY },
+    plugins: options.plugins ?? [],
+    inject: options.inject ?? [],
     write: false,
     legalComments: "none",
   });
@@ -67,7 +88,7 @@ export async function buildLoopBundle(options: BuildLoopBundleOptions): Promise<
   const source = output.text;
   lintLoopBundle(source, options);
   const bytes = Buffer.byteLength(source, "utf8");
-  if (bytes > 8 * 1024 * 1024) {
+  if (bytes > MAX_LOOP_BUNDLE_BYTES) {
     throw new Error(`the loop bundle is ${bytes} bytes; the upload bound is 8 MiB`);
   }
   const sha256 = createHash("sha256").update(source, "utf8").digest("hex");
