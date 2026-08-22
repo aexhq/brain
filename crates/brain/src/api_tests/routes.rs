@@ -60,3 +60,23 @@ fn root_and_child_end_share_the_async_acceptance_status() {
         assert!(!operation.contains("\n        \"200\":"));
     }
 }
+
+/// Every `api_code("...")` literal in api.rs must satisfy the open ApiErrorCode pattern, so a
+/// typo fails here instead of panicking inside an error path at runtime.
+#[test]
+fn every_api_code_literal_parses() {
+    let source = include_str!("../api.rs");
+    let mut checked = 0;
+    for (index, _) in source.match_indices("api_code(\"") {
+        let rest = &source[index + "api_code(\"".len()..];
+        let literal = &rest[..rest.find('"').expect("terminated literal")];
+        literal
+            .parse::<brain_protocol::session::ApiErrorCode>()
+            .unwrap_or_else(|error| panic!("api_code({literal:?}) is invalid: {error}"));
+        checked += 1;
+    }
+    assert!(
+        checked > 20,
+        "expected the api.rs error table, found {checked} literals"
+    );
+}

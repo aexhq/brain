@@ -20,8 +20,25 @@ fn main() -> anyhow::Result<()> {
     tokio::runtime::Runtime::new()?.block_on(run())
 }
 
+/// The two runtime compositions. Production is the default when omitted and fails closed
+/// because hosted adapters are injected by the product composition, never here.
+#[derive(Debug, Clone, Copy)]
+enum BrainMode {
+    Production,
+    Local,
+}
+
+fn brain_mode() -> anyhow::Result<BrainMode> {
+    match std::env::var("BRAIN_MODE") {
+        Err(_) => Ok(BrainMode::Production),
+        Ok(value) if value == "production" => Ok(BrainMode::Production),
+        Ok(value) if value == "local" => Ok(BrainMode::Local),
+        Ok(other) => anyhow::bail!("unsupported BRAIN_MODE={other}; use production or local"),
+    }
+}
+
 async fn run() -> anyhow::Result<()> {
-    let mode = std::env::var("BRAIN_MODE").unwrap_or_else(|_| "production".into());
+    let mode = brain_mode()?;
     let address: std::net::SocketAddr = std::env::var("BRAIN_LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:3210".into())
         .parse()?;
@@ -29,11 +46,11 @@ async fn run() -> anyhow::Result<()> {
         PathBuf::from(std::env::var("BRAIN_DATA_DIR").unwrap_or_else(|_| "./brain-data".into()));
     std::fs::create_dir_all(&data)?;
     let token = operator_token(&data)?;
-    let brain = match mode.as_str() {
-        "production" => anyhow::bail!(
+    let brain = match mode {
+        BrainMode::Production => anyhow::bail!(
             "the neutral brain-server has no production adapters; start the hosted composition or set BRAIN_MODE=local explicitly"
         ),
-        "local" => {
+        BrainMode::Local => {
             let parts = durable_local_parts(&data).map_err(|error| anyhow::anyhow!("{error}"))?;
             audit_local(&parts.journal, &parts.custody).await?;
             tracing::warn!(data = %data.display(), "LOCAL MODE: durable SQLite/custody with unsandboxed host Tool execution; network policy is not enforced");
@@ -76,13 +93,12 @@ async fn run() -> anyhow::Result<()> {
                 })?;
             brain
         }
-        other => anyhow::bail!("unsupported BRAIN_MODE={other}; use production or local"),
     };
     serve(
         AppState {
             brain,
             token,
-            require_tenant: false,
+            tenancy: brain::api::Tenancy::Implicit("local".into()),
         },
         address,
     )

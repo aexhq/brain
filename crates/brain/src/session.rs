@@ -3209,7 +3209,10 @@ impl Brain {
             })
             .await?;
         Ok((
-            page.sessions.iter().map(session_doc_summary).collect(),
+            page.sessions
+                .iter()
+                .map(session_doc_summary)
+                .collect::<Result<Vec<_>>>()?,
             page.next_cursor,
         ))
     }
@@ -3682,29 +3685,26 @@ impl Brain {
             .await
     }
 
+    /// Every sandbox action requires the caller's observed generation: acting on a replaced
+    /// physical target is a conflict, never a silent redirect.
     async fn additional_sandbox_for_action(
         &self,
         root_id: &str,
         input: &serde_json::Value,
-        require_generation: bool,
-    ) -> Result<(crate::journal::SandboxInventoryDoc, Option<String>)> {
+    ) -> Result<(crate::journal::SandboxInventoryDoc, String)> {
         let sandbox_id = required_identifier(input, "sandbox_id", "sandbox")?;
         let mut item = self.journal.get_sandbox(root_id, &sandbox_id).await?;
         if item.root_id != root_id {
             return Err(BrainError::FileNotFound(format!("sandbox {sandbox_id}")));
         }
-        let generation = if require_generation {
-            Some(required_identifier(input, "generation", "sandbox")?)
-        } else {
-            None
-        };
-        if let Some(expected) = &generation {
+        let generation = required_identifier(input, "generation", "sandbox")?;
+        {
             let observed = item
                 .status
                 .generation
                 .as_ref()
                 .map(|generation| generation.as_str());
-            if observed != Some(expected.as_str()) {
+            if observed != Some(generation.as_str()) {
                 return Err(if sandbox_status_releases_slot(&item.status) {
                     BrainError::SandboxGone
                 } else {
@@ -3867,10 +3867,8 @@ impl Brain {
                     }))
                 }
                 "exec" => {
-                    let (item, generation) = self
-                        .additional_sandbox_for_action(&root_id, &input, true)
-                        .await?;
-                    let generation = generation.expect("required above");
+                    let (item, generation) =
+                        self.additional_sandbox_for_action(&root_id, &input).await?;
                     let expected_target_ref = item
                         .status
                         .target_ref
@@ -3952,10 +3950,8 @@ impl Brain {
                     }))
                 }
                 "write_stdin" => {
-                    let (item, generation) = self
-                        .additional_sandbox_for_action(&root_id, &input, true)
-                        .await?;
-                    let generation = generation.expect("required above");
+                    let (item, generation) =
+                        self.additional_sandbox_for_action(&root_id, &input).await?;
                     let expected_target_ref = item
                         .status
                         .target_ref
@@ -4034,9 +4030,8 @@ impl Brain {
                     }))
                 }
                 "list_files" => {
-                    let (item, generation) = self
-                        .additional_sandbox_for_action(&root_id, &input, true)
-                        .await?;
+                    let (item, generation) =
+                        self.additional_sandbox_for_action(&root_id, &input).await?;
                     let path = required_bounded_string(&input, "path", 4096, "sandbox")?;
                     let cursor = optional_bounded_string(&input, "cursor", 4096)?;
                     let limit = input
@@ -4054,7 +4049,7 @@ impl Brain {
                         .ok_or_else(|| BrainError::Invalid("sandbox files are unavailable".into()))?
                         .list(crate::hand::SandboxFileListRequest {
                             target: item.status.target,
-                            expected_generation: generation.expect("required above"),
+                            expected_generation: generation,
                             path,
                             cursor,
                             limit: limit as u32,
@@ -4064,9 +4059,8 @@ impl Brain {
                     Ok(serde_json::to_value(page)?)
                 }
                 "stat_file" => {
-                    let (item, generation) = self
-                        .additional_sandbox_for_action(&root_id, &input, true)
-                        .await?;
+                    let (item, generation) =
+                        self.additional_sandbox_for_action(&root_id, &input).await?;
                     let path = required_bounded_string(&input, "path", 4096, "sandbox")?;
                     let entry = self
                         .sandbox_files
@@ -4074,7 +4068,7 @@ impl Brain {
                         .ok_or_else(|| BrainError::Invalid("sandbox files are unavailable".into()))?
                         .stat(sandbox_file_request(
                             &item.status.target,
-                            &generation.expect("required above"),
+                            &generation,
                             &path,
                         )?)
                         .await
@@ -4082,9 +4076,8 @@ impl Brain {
                     Ok(serde_json::to_value(entry)?)
                 }
                 "read_file" => {
-                    let (item, generation) = self
-                        .additional_sandbox_for_action(&root_id, &input, true)
-                        .await?;
+                    let (item, generation) =
+                        self.additional_sandbox_for_action(&root_id, &input).await?;
                     let path = required_bounded_string(&input, "path", 4096, "sandbox")?;
                     let content = self
                         .sandbox_files
@@ -4092,7 +4085,7 @@ impl Brain {
                         .ok_or_else(|| BrainError::Invalid("sandbox files are unavailable".into()))?
                         .read(sandbox_file_request(
                             &item.status.target,
-                            &generation.expect("required above"),
+                            &generation,
                             &path,
                         )?)
                         .await
@@ -4114,9 +4107,8 @@ impl Brain {
                     Ok(serde_json::json!({"entry": content.entry, "text": text}))
                 }
                 "write_file" => {
-                    let (item, generation) = self
-                        .additional_sandbox_for_action(&root_id, &input, true)
-                        .await?;
+                    let (item, generation) =
+                        self.additional_sandbox_for_action(&root_id, &input).await?;
                     let path = required_bounded_string(&input, "path", 4096, "sandbox")?;
                     let text = required_bounded_string(
                         &input,
@@ -4131,7 +4123,7 @@ impl Brain {
                     let request = sandbox_file_write_request(
                         operation_id,
                         &item.status.target,
-                        &generation.expect("required above"),
+                        &generation,
                         &path,
                         text.as_bytes(),
                         overwrite,
@@ -4148,9 +4140,8 @@ impl Brain {
                     Ok(serde_json::to_value(result.file)?)
                 }
                 "find_files" | "grep_files" => {
-                    let (item, generation) = self
-                        .additional_sandbox_for_action(&root_id, &input, true)
-                        .await?;
+                    let (item, generation) =
+                        self.additional_sandbox_for_action(&root_id, &input).await?;
                     let path = required_bounded_string(&input, "path", 4096, "sandbox")?;
                     let field = if action == "find_files" {
                         "glob"
@@ -4170,7 +4161,7 @@ impl Brain {
                     }
                     let request = sandbox_search_request(
                         &item.status.target,
-                        &generation.expect("required above"),
+                        &generation,
                         &path,
                         &expression,
                         cursor.as_deref(),
@@ -4188,9 +4179,8 @@ impl Brain {
                     Ok(serde_json::to_value(page)?)
                 }
                 "load" => {
-                    let (item, generation) = self
-                        .additional_sandbox_for_action(&root_id, &input, true)
-                        .await?;
+                    let (item, generation) =
+                        self.additional_sandbox_for_action(&root_id, &input).await?;
                     let key = required_bounded_string(&input, "key", 1024, "sandbox")?;
                     crate::storage::validate_storage_key(&key)?;
                     let path = required_bounded_string(&input, "path", 4096, "sandbox")?;
@@ -4216,7 +4206,7 @@ impl Brain {
                     let copy = sandbox_copy_request(
                         operation_id,
                         &item.status.target,
-                        &generation.expect("required above"),
+                        &generation,
                         &path,
                         Some(reference),
                         &ticket,
@@ -4240,9 +4230,8 @@ impl Brain {
                     Ok(serde_json::to_value(result.file)?)
                 }
                 "save" => {
-                    let (item, generation) = self
-                        .additional_sandbox_for_action(&root_id, &input, true)
-                        .await?;
+                    let (item, generation) =
+                        self.additional_sandbox_for_action(&root_id, &input).await?;
                     let key = required_bounded_string(&input, "key", 1024, "sandbox")?;
                     crate::storage::validate_storage_key(&key)?;
                     let path = required_bounded_string(&input, "path", 4096, "sandbox")?;
@@ -4250,7 +4239,6 @@ impl Brain {
                         .get("overwrite")
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
-                    let generation = generation.expect("required above");
                     let files = self.sandbox_files.as_ref().ok_or_else(|| {
                         BrainError::Invalid("sandbox files are unavailable".into())
                     })?;
@@ -4791,7 +4779,10 @@ impl Brain {
             })
             .await?;
         Ok((
-            page.sessions.iter().map(session_doc_summary).collect(),
+            page.sessions
+                .iter()
+                .map(session_doc_summary)
+                .collect::<Result<Vec<_>>>()?,
             page.next_cursor,
         ))
     }
@@ -10710,8 +10701,10 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
     })
 }
 
-fn session_doc_summary(summary: &crate::journal::SessionSummary) -> session::Session {
-    session::Session {
+fn session_doc_summary(summary: &crate::journal::SessionSummary) -> Result<session::Session> {
+    let corrupt =
+        |what: &str| BrainError::Journal(format!("stored session summary has a corrupt {what}"));
+    Ok(session::Session {
         // The bounded listing summary does not carry the sealed prefix; the full session
         // resource does. Absent here, never a fabricated default.
         agentloop: None,
@@ -10734,12 +10727,13 @@ fn session_doc_summary(summary: &crate::journal::SessionSummary) -> session::Ses
         id: summary
             .session_id
             .parse()
-            .unwrap_or_else(|_| "ses_00000000000000000000".parse().expect("fallback id")),
-        parent_id: summary.parent_id.as_deref().and_then(|id| id.parse().ok()),
-        root_id: summary
-            .root_id
-            .parse()
-            .unwrap_or_else(|_| "ses_00000000000000000000".parse().expect("fallback id")),
+            .map_err(|_| corrupt("session id"))?,
+        parent_id: summary
+            .parent_id
+            .as_deref()
+            .map(|id| id.parse().map_err(|_| corrupt("parent id")))
+            .transpose()?,
+        root_id: summary.root_id.parse().map_err(|_| corrupt("root id"))?,
         depth: i64::from(summary.depth),
         last_seq: summary.last_seq,
         last_message_at: summary.last_message_ms.map(crate::events::ts),
@@ -10791,9 +10785,8 @@ fn session_doc_summary(summary: &crate::journal::SessionSummary) -> session::Ses
         },
         turns: summary.turns,
         updated_at: crate::events::ts(summary.updated_ms),
-    }
+    })
 }
-
 fn public_context_fork(fork: &ContextForkDoc) -> session::ContextFork {
     session::ContextFork {
         last_n: fork
