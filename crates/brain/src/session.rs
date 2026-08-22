@@ -17,6 +17,7 @@ use crate::compact::{
 };
 use crate::config::{AgentDef, Dialect, GenOpts, OutputTokenParameter, ProviderKey, SessionConfig};
 use crate::events::EventHub;
+use crate::hand::{managed_hand_resources, map_hand_port_error, sealed_sandbox_network};
 use crate::journal::{
     ContextForkDoc, DELETION_TOMBSTONE_TTL_MS, DeletionState, DeletionStatusDoc, Entry, FailureDoc,
     Head, HeadDoc, Journal, Lease, PrefixDoc, ProviderAttemptState, Record, SessionLifecycle,
@@ -1008,14 +1009,6 @@ fn bundle_object_matches_descriptor(
     Ok(object == descriptor)
 }
 
-pub(crate) fn managed_hand_resources() -> Result<brain_protocol::hand::ResourceCeiling> {
-    serde_json::from_value(serde_json::json!({
-        "timeout_ms": 600_000,
-        "max_output_bytes": brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES,
-    }))
-    .map_err(BrainError::from)
-}
-
 fn sealed_managed_binding(
     session_id: &str,
     doc: &HeadDoc,
@@ -1082,31 +1075,6 @@ fn default_sandbox_request(
     )
 }
 
-pub(crate) fn sealed_sandbox_network(
-    doc: &HeadDoc,
-) -> Result<brain_protocol::hand::NetworkCeiling> {
-    let network = match doc
-        .prefix
-        .network
-        .get("outbound")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("none")
-    {
-        "none" => serde_json::json!({"kind":"none"}),
-        "public" => serde_json::json!({"kind":"public"}),
-        "allowlist" => serde_json::json!({
-            "kind":"allowlist",
-            "destinations": doc.prefix.network.get("destinations").cloned().unwrap_or_else(|| serde_json::json!([])),
-        }),
-        other => {
-            return Err(BrainError::Invalid(format!(
-                "sealed network policy has unknown outbound mode {other}"
-            )));
-        }
-    };
-    serde_json::from_value(network).map_err(BrainError::from)
-}
-
 fn sandbox_create_request(
     doc: &HeadDoc,
     target: brain_protocol::hand::SandboxTarget,
@@ -1123,17 +1091,6 @@ fn sandbox_create_request(
         },
     }))
     .map_err(BrainError::from)
-}
-
-pub(crate) fn map_hand_port_error(error: brain_protocol::hand::HandError) -> BrainError {
-    use brain_protocol::hand::HandErrorCode;
-    match error.code {
-        HandErrorCode::SandboxNotMaterialized => BrainError::SandboxNotMaterialized,
-        HandErrorCode::SandboxGone => BrainError::SandboxGone,
-        HandErrorCode::GenerationConflict => BrainError::SandboxGenerationConflict,
-        HandErrorCode::ResourceExhausted => BrainError::SandboxResourceExhausted,
-        _ => BrainError::Hand(error.message.to_string()),
-    }
 }
 
 pub(crate) fn idempotent_session_id(tenant_id: &str, key: &str) -> String {
@@ -4804,6 +4761,57 @@ fn secret_delivery_error(
         "retryable": retryable,
     }))
     .expect("static secret-delivery Hand errors satisfy the contract")
+}
+
+#[async_trait::async_trait]
+impl crate::turn::EngineServices for Brain {
+    async fn prepare_managed_session(
+        &self,
+        session_id: &str,
+        doc: &HeadDoc,
+    ) -> Result<Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>> {
+        Brain::prepare_managed_session(self, session_id, doc).await
+    }
+
+    async fn execute_child_capability(
+        self: Arc<Self>,
+        parent_id: &str,
+        operation_id: &str,
+        input: serde_json::Value,
+        cancel: CancellationToken,
+    ) -> CallOutcome {
+        Brain::execute_child_capability(&self, parent_id, operation_id, input, cancel).await
+    }
+
+    async fn execute_storage_capability(
+        self: Arc<Self>,
+        session_id: &str,
+        operation_id: &str,
+        input: serde_json::Value,
+        cancel: CancellationToken,
+        st: &mut crate::turn::TurnState,
+    ) -> Result<CallOutcome> {
+        Brain::execute_storage_capability(&self, session_id, operation_id, input, cancel, st).await
+    }
+
+    async fn execute_sandbox_capability(
+        self: Arc<Self>,
+        session_id: &str,
+        operation_id: &str,
+        input: serde_json::Value,
+        cancel: CancellationToken,
+        st: &mut crate::turn::TurnState,
+    ) -> Result<CallOutcome> {
+        Brain::execute_sandbox_capability(&self, session_id, operation_id, input, cancel, st).await
+    }
+
+    async fn reconcile_managed_unknown_default_sandbox(
+        self: Arc<Self>,
+        session_id: &str,
+        st: &mut crate::turn::TurnState,
+    ) -> Result<()> {
+        reconcile_managed_unknown_default_sandbox(&self, session_id, st).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -8549,7 +8557,10 @@ fn turn_run(
     let base_url = r.st.head.prefix.base_url.clone().unwrap_or_default();
     let session = SessionConfig::new(prefix.clone(), r.key.clone(), base_url);
     Ok(TurnRun {
-        engine: Arc::downgrade(brain),
+        engine: {
+            let services: Arc<dyn crate::turn::EngineServices> = brain.clone();
+            Arc::downgrade(&services)
+        },
         agentloop: {
             let default = crate::journal::AgentloopSelectorDoc::official_aex();
             let selector = r.st.head.prefix.agentloop.as_ref().unwrap_or(&default);

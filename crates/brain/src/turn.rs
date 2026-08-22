@@ -119,11 +119,56 @@ impl TurnState {
     }
 }
 
+/// The closed engine services a running turn calls back into: the three intrinsic
+/// capabilities, managed re-preparation and unknown-outcome reconciliation. The turn holds
+/// this weakly and never names the concrete session engine, so the dependency points from the
+/// engine to this seam and not the other way around.
+#[async_trait::async_trait]
+pub trait EngineServices: Send + Sync {
+    async fn prepare_managed_session(
+        &self,
+        session_id: &str,
+        doc: &HeadDoc,
+    ) -> Result<Arc<std::collections::HashMap<String, brain_protocol::hand::ResolvedBinding>>>;
+
+    async fn execute_child_capability(
+        self: Arc<Self>,
+        parent_id: &str,
+        operation_id: &str,
+        input: serde_json::Value,
+        cancel: CancellationToken,
+    ) -> CallOutcome;
+
+    async fn execute_storage_capability(
+        self: Arc<Self>,
+        session_id: &str,
+        operation_id: &str,
+        input: serde_json::Value,
+        cancel: CancellationToken,
+        st: &mut TurnState,
+    ) -> Result<CallOutcome>;
+
+    async fn execute_sandbox_capability(
+        self: Arc<Self>,
+        session_id: &str,
+        operation_id: &str,
+        input: serde_json::Value,
+        cancel: CancellationToken,
+        st: &mut TurnState,
+    ) -> Result<CallOutcome>;
+
+    async fn reconcile_managed_unknown_default_sandbox(
+        self: Arc<Self>,
+        session_id: &str,
+        st: &mut TurnState,
+    ) -> Result<()>;
+}
+
 /// The immutable turn context.
 pub struct TurnRun {
-    /// Weak back-reference used only by the three closed engine capabilities. It cannot keep a
-    /// Brain process alive and keeps their typed state-machine ports out of provider/Hand adapters.
-    pub engine: Weak<crate::session::Brain>,
+    /// Weak back-reference used only by the closed engine capabilities. It cannot keep the
+    /// engine alive and keeps the typed state-machine ports out of provider/Hand adapters.
+    pub engine: Weak<dyn EngineServices>,
     pub session_id: String,
     pub turn_id: String,
     pub prefix: Shared<SealedPrefix>,
@@ -2434,7 +2479,7 @@ impl TurnRun {
             ))));
         }
 
-        let resources = crate::session::managed_hand_resources()?;
+        let resources = crate::hand::managed_hand_resources()?;
         let deadline_at_ms = crate::wall_ms().saturating_add(resources.timeout_ms.get());
         let current_target =
             st.head
@@ -2467,7 +2512,7 @@ impl TurnRun {
                 "target_ref": current_target.as_ref().map(|(_, target_ref)| target_ref),
                 "deadline_at_ms": deadline_at_ms,
                 "resources": resources,
-                "network": crate::session::sealed_sandbox_network(&st.head)?,
+                "network": crate::hand::sealed_sandbox_network(&st.head)?,
                 "trace": {},
             }))?;
         envelope.request_digest = brain_protocol::contract::operation_request_digest(&envelope);
@@ -2532,7 +2577,7 @@ impl TurnRun {
                         .finish_managed_submit_unknown(st, operation_id, name, &request_digest)
                         .await;
                 }
-                Err(error) => return Err(crate::session::map_hand_port_error(error)),
+                Err(error) => return Err(crate::hand::map_hand_port_error(error)),
             }
         };
         verify_managed_operation(
@@ -2634,7 +2679,7 @@ impl TurnRun {
                             .finish_managed_submit_unknown(st, operation_id, name, &request_digest)
                             .await;
                     }
-                    Err(error) => return Err(crate::session::map_hand_port_error(error)),
+                    Err(error) => return Err(crate::hand::map_hand_port_error(error)),
                 }
                 cancellation_sent = true;
             }
@@ -2664,7 +2709,7 @@ impl TurnRun {
                         .finish_managed_submit_unknown(st, operation_id, name, &request_digest)
                         .await;
                 }
-                Err(error) => return Err(crate::session::map_hand_port_error(error)),
+                Err(error) => return Err(crate::hand::map_hand_port_error(error)),
             };
         }
     }
@@ -2693,7 +2738,8 @@ impl TurnRun {
                 "managed Tool unknown-outcome reconciliation coordinator is unavailable".into(),
             )
         })?;
-        crate::session::reconcile_managed_unknown_default_sandbox(&brain, &self.session_id, st)
+        brain
+            .reconcile_managed_unknown_default_sandbox(&self.session_id, st)
             .await?;
         Ok(DispatchedOutcome::from(managed_unknown_call_outcome(name)))
     }
