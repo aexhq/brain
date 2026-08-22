@@ -555,14 +555,14 @@ pub(super) fn validate_external_executor_config(cfg: &BrainConfig) -> Result<()>
         )));
     }
     if let Some(endpoint) = &cfg.external_executor_url {
-        crate::external::HttpExternalToolExecutor::new(
-            endpoint.clone(),
-            cfg.external_executor_token
-                .as_ref()
-                .map(|token| token.expose().to_owned()),
-            cfg.external_call_timeout,
-            cfg.external_executor_capabilities.iter().cloned(),
-        )?;
+        crate::outbound::validate_external_executor_url(endpoint)?;
+    }
+    if let Some(token) = &cfg.external_executor_token
+        && !crate::outbound::validate_bearer_token(token.expose())
+    {
+        return Err(BrainError::Invalid(
+            "external tool executor token is not a valid HTTP bearer value".into(),
+        ));
     }
     Ok(())
 }
@@ -706,7 +706,3 @@ pub(super) fn reclaim_policy() -> &'static crate::reclaim::ReclaimPolicy {
 
 /// How turns obtain a provider. Overridable so tests can inject the scripted fake.
 pub type ProviderFactory = Arc<dyn Fn(Dialect) -> Arc<dyn Provider> + Send + Sync>;
-
-pub(super) fn default_provider_factory() -> ProviderFactory {
-    Arc::new(|d| Arc::from(crate::provider::for_dialect(d)))
-}

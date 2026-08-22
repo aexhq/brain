@@ -179,9 +179,7 @@ async fn serve_brain_with(
         Arc::new(brain::keys::PlainCustody),
         Arc::new(brain::adapter::DisabledToolExecutor),
         services,
-        Some(Arc::new(move |_| {
-            factory_fake.clone() as Arc<dyn brain::provider::Provider>
-        })),
+        Arc::new(move |_| factory_fake.clone() as Arc<dyn brain::provider::Provider>),
     );
     let token = "loop-e2e-token".to_string();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

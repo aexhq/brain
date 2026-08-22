@@ -107,11 +107,7 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
         base_url: &str,
     ) -> Result<ModelRequest>;
 
-    async fn stream(
-        &self,
-        req: ModelRequest,
-        outbound: &crate::outbound::Outbound,
-    ) -> Result<BoxStream<'static, Result<ProviderEvent>>>;
+    async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>>;
 }
 
 /// Accumulates a dialect-neutral event stream into one complete assistant
@@ -365,13 +361,6 @@ fn block_type_conflict(index: usize) -> BrainError {
     ))
 }
 
-pub fn for_dialect(d: Dialect) -> Box<dyn Provider> {
-    match d {
-        Dialect::AnthropicMessages => Box::new(anthropic::Anthropic),
-        Dialect::OpenAiChat => Box::new(openai::OpenAiChat),
-    }
-}
-
 /// Exact provider-visible immutable request segment stored at session creation. Dynamic messages
 /// are appended to a clone of this object; later deployments do not re-render old session bases.
 pub fn render_base(prefix: &SealedPrefix) -> serde_json::Value {
@@ -381,89 +370,6 @@ pub fn render_base(prefix: &SealedPrefix) -> serde_json::Value {
         }
         Dialect::OpenAiChat => serde_json::Value::Object(openai::OpenAiChat::render_base(prefix)),
     }
-}
-
-/// Shared streaming path for every dialect: send, check status, decode SSE
-/// incrementally, hand each frame to the dialect decoder.
-pub(crate) async fn http_stream(
-    req: ModelRequest,
-    outbound: &crate::outbound::Outbound,
-    decode: fn(Option<&str>, &str) -> Result<Vec<ProviderEvent>>,
-) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
-    use futures_util::StreamExt;
-
-    let url = outbound.check_url(&req.url)?;
-    let mut rb = outbound.client().post(url).body(req.body);
-    for (k, v) in &req.headers {
-        rb = rb.header(k.as_str(), v.as_str());
-    }
-    let resp = rb
-        .send()
-        .await
-        .map_err(|e| crate::BrainError::Transport(e.to_string()))?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        // Delta-seconds form only; the HTTP-date form falls back to the kernel's own backoff.
-        let retry_after_ms = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .map(|seconds| seconds.saturating_mul(1_000));
-        let mut stream = resp.bytes_stream();
-        let mut body = Vec::with_capacity(2048);
-        while body.len() < 2048 {
-            let Some(chunk) = stream.next().await else {
-                break;
-            };
-            let chunk = chunk.map_err(|error| crate::BrainError::Transport(error.to_string()))?;
-            let take = (2048 - body.len()).min(chunk.len());
-            body.extend_from_slice(&chunk[..take]);
-            if take < chunk.len() {
-                break;
-            }
-        }
-        return Err(crate::BrainError::ProviderStatus {
-            status: status.as_u16(),
-            body: String::from_utf8_lossy(&body).into_owned(),
-            retry_after_ms,
-        });
-    }
-
-    let mut dec = sse::SseDecoder::default();
-    let mut bytes = resp.bytes_stream();
-    let s = async_stream::stream! {
-        loop {
-            match bytes.next().await {
-                Some(Ok(chunk)) => match dec.feed(&chunk) {
-                    Ok(frames) => {
-                        for f in frames {
-                            match decode(f.event.as_deref(), &f.data) {
-                                Ok(evs) => { for e in evs { yield Ok(e); } }
-                                Err(e) => { yield Err(e); return; }
-                            }
-                        }
-                    }
-                    Err(e) => { yield Err(e); return; }
-                },
-                Some(Err(e)) => { yield Err(crate::BrainError::Transport(e.to_string())); return; }
-                None => {
-                    if dec.pending() > 0 {
-                        // Early EOF mid-frame. Reported, never swallowed: a
-                        // truncated stream that looks complete is how a partial
-                        // assistant message becomes history.
-                        yield Err(crate::BrainError::Protocol(format!(
-                            "provider stream ended with {} bytes of an incomplete SSE frame",
-                            dec.pending()
-                        )));
-                    }
-                    return;
-                }
-            }
-        }
-    };
-    Ok(Box::pin(s))
 }
 
 // ------------------------------------------------------------------------------------------

@@ -35,9 +35,10 @@ pub struct LocalOptions {
 /// the customer-hand transport served from the same listener. This is the whole wiring — the
 /// binary adds only env parsing, the operator token and the startup audit.
 pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
+    let allow_private = options.cfg.outbound_allow_private;
     let parts =
         durable_local_parts(&options.data_dir).map_err(|error| anyhow::anyhow!("{error}"))?;
-    let external_executor = brain::session::external_executor_from_cfg(&options.cfg)
+    let external_executor = brain_providers::external_executor_from_cfg(&options.cfg)
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     let (websocket_url, observation_base_url) = options.transport_urls.unwrap_or_else(|| {
         (
@@ -76,7 +77,9 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
             agentloop_registry: loop_services.agentloop_registry,
             ..BrainServices::default()
         },
-        options.provider_factory,
+        options
+            .provider_factory
+            .unwrap_or_else(|| brain_providers::default_factory(allow_private)),
     );
     local_hand
         .attach_secret_delivery(brain.clone())

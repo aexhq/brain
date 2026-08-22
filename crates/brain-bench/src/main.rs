@@ -147,7 +147,7 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         Arc::new(brain::keys::PlainCustody),
         executor.clone(),
         BrainServices::default(),
-        Some(Arc::new(move |_| factory_fake.clone() as Arc<dyn Provider>)),
+        Arc::new(move |_| factory_fake.clone() as Arc<dyn Provider>),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base = format!("http://{}", listener.local_addr()?);

@@ -6,18 +6,17 @@
 //! separate measurements.
 
 use super::sse::SseDecoder;
-use super::{ModelRequest, Provider, ProviderEvent};
-use crate::config::{Dialect, OutputTokenParameter, ProviderKey, SealedPrefix};
+use super::{ModelRequest, ProviderEvent};
+use crate::config::{OutputTokenParameter, ProviderKey, SealedPrefix};
 use crate::message::{ContentBlock, Message, Role, StopReason, Usage};
 use crate::{BrainError, Result};
-use futures_util::stream::BoxStream;
 use serde_json::{Map, Value, json};
 
 #[derive(Debug, Default)]
 pub struct OpenAiChat;
 
 impl OpenAiChat {
-    fn request(body: Value, key: &ProviderKey, base_url: &str) -> Result<ModelRequest> {
+    pub fn request(body: Value, key: &ProviderKey, base_url: &str) -> Result<ModelRequest> {
         Ok(ModelRequest {
             method: "POST",
             url: format!("{}/v1/chat/completions", base_url.trim_end_matches('/')),
@@ -310,28 +309,16 @@ fn merge_property_schema(left: &Value, right: &Value) -> Value {
     Value::Object(left_without_const)
 }
 
-#[async_trait::async_trait]
-impl Provider for OpenAiChat {
-    fn dialect(&self) -> Dialect {
-        Dialect::OpenAiChat
-    }
-
-    fn build_request(
-        &self,
+impl OpenAiChat {
+    /// The full request for one round: the pure dialect codec half of a live provider. The
+    /// HTTP transport half lives in `brain-providers`.
+    pub fn build_request(
         prefix: &SealedPrefix,
         history: &[Message],
         key: &ProviderKey,
         base_url: &str,
     ) -> Result<ModelRequest> {
         Self::request(Self::body(prefix, history)?, key, base_url)
-    }
-
-    async fn stream(
-        &self,
-        req: ModelRequest,
-        outbound: &crate::outbound::Outbound,
-    ) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
-        crate::provider::http_stream(req, outbound, decode).await
     }
 }
 
@@ -458,6 +445,7 @@ pub fn decode_stream(bytes: &[u8]) -> Result<Vec<ProviderEvent>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Dialect;
     use crate::config::{AgentDef, GenOpts, OutputTokenParameter, ToolDecl, ToolRoute};
     use crate::provider::Accumulator;
 
@@ -546,8 +534,7 @@ mod tests {
             }]),
         ];
         let v: Value = serde_json::from_slice(
-            &OpenAiChat
-                .build_request(&p, &h, &ProviderKey::new("k"), "http://x")
+            &OpenAiChat::build_request(&p, &h, &ProviderKey::new("k"), "http://x")
                 .unwrap()
                 .body,
         )

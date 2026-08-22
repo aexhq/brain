@@ -17,7 +17,6 @@ pub mod compact;
 pub mod config;
 pub mod customer;
 pub mod events;
-pub mod external;
 
 pub mod hand;
 pub mod journal;

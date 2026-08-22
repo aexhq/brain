@@ -36,7 +36,7 @@ async fn a_message_racing_the_idle_discard_always_lands() {
         Arc::new(brain::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(Arc::new(move |_| f.clone() as Arc<dyn Provider>)),
+        Arc::new(move |_| f.clone() as Arc<dyn Provider>),
     );
     let token = "race-token".to_string();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

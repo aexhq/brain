@@ -21,7 +21,7 @@ hex = { workspace = true }
 jsonschema = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
-reqwest = { workspace = true }
+url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_jcs = { workspace = true }
@@ -36,4 +36,5 @@ zeroize = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+reqwest = { workspace = true }
 tower = { workspace = true }

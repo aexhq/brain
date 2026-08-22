@@ -63,9 +63,7 @@ async fn message_key_replays_while_active_after_completion_and_after_cold_hydrat
         Arc::new(brain::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
         BrainServices::default(),
-        Some(Arc::new(move |_| {
-            factory_fake.clone() as Arc<dyn brain::provider::Provider>
-        })),
+        Arc::new(move |_| factory_fake.clone() as Arc<dyn brain::provider::Provider>),
     );
 
     let token = "message-idempotency-token".to_string();
