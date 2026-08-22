@@ -1050,25 +1050,21 @@ export type components = {
             };
             contract_digest: components["schemas"]["Sha256Hex"];
         };
-        /** @description A digest-sealed executable in the session's default Aex-managed realm. */
-        AexManagedToolExecutor: {
+        ToolExecutor: {
             /** @constant */
             kind: "aex_managed";
             bundle_digest: components["schemas"]["Sha256Hex"];
             /** @description Environment-key names only. Secret values never enter the seal. */
             required_env: string[];
-        };
-        CustomerAppToolExecutor: {
+        } | {
             /** @constant */
             kind: "customer_app";
             registration: string;
-        };
-        EngineToolExecutor: {
+        } | {
             /** @constant */
             kind: "engine";
             capability: string;
         };
-        ToolExecutor: components["schemas"]["AexManagedToolExecutor"] | components["schemas"]["CustomerAppToolExecutor"] | components["schemas"]["EngineToolExecutor"];
         ToolConfig: {
             definition: components["schemas"]["ToolDefinition"];
             executor: components["schemas"]["ToolExecutor"];

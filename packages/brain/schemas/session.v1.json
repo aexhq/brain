@@ -216,81 +216,72 @@
       ],
       "description": "replay_safe promises that repeating the same session_id and call_id returns the same logical result."
     },
-    "AexManagedToolExecutor": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "bundle_digest",
-        "required_env"
-      ],
-      "description": "A digest-sealed executable in the session's default Aex-managed realm.",
-      "properties": {
-        "kind": {
-          "type": "string",
-          "const": "aex_managed"
-        },
-        "bundle_digest": {
-          "$ref": "#/$defs/Sha256Hex"
-        },
-        "required_env": {
-          "type": "array",
-          "maxItems": 64,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-          },
-          "description": "Environment-key names only. Secret values never enter the seal."
-        }
-      }
-    },
-    "CustomerAppToolExecutor": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "registration"
-      ],
-      "properties": {
-        "kind": {
-          "type": "string",
-          "const": "customer_app"
-        },
-        "registration": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
-        }
-      }
-    },
-    "EngineToolExecutor": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "capability"
-      ],
-      "properties": {
-        "kind": {
-          "type": "string",
-          "const": "engine"
-        },
-        "capability": {
-          "type": "string",
-          "pattern": "^(brain|aex)\\.[A-Za-z0-9_.:-]{1,120}$"
-        }
-      }
-    },
     "ToolExecutor": {
       "oneOf": [
         {
-          "$ref": "#/$defs/AexManagedToolExecutor"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "bundle_digest",
+            "required_env"
+          ],
+          "description": "A digest-sealed executable in the session's default Aex-managed realm.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "aex_managed"
+            },
+            "bundle_digest": {
+              "$ref": "#/$defs/Sha256Hex"
+            },
+            "required_env": {
+              "type": "array",
+              "maxItems": 64,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "description": "Environment-key names only. Secret values never enter the seal."
+            }
+          }
         },
         {
-          "$ref": "#/$defs/CustomerAppToolExecutor"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "registration"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "customer_app"
+            },
+            "registration": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            }
+          }
         },
         {
-          "$ref": "#/$defs/EngineToolExecutor"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "capability"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "engine"
+            },
+            "capability": {
+              "type": "string",
+              "pattern": "^(brain|aex)\\.[A-Za-z0-9_.:-]{1,120}$"
+            }
+          }
         }
       ]
     },
@@ -548,21 +539,38 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["outbound"],
-          "properties": { "outbound": { "const": "none" } }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["outbound"],
-          "properties": { "outbound": { "const": "public" } }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["outbound", "destinations"],
+          "required": [
+            "outbound"
+          ],
           "properties": {
-            "outbound": { "const": "allowlist" },
+            "outbound": {
+              "const": "none"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outbound"
+          ],
+          "properties": {
+            "outbound": {
+              "const": "public"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outbound",
+            "destinations"
+          ],
+          "properties": {
+            "outbound": {
+              "const": "allowlist"
+            },
             "destinations": {
               "type": "array",
               "minItems": 1,
@@ -572,27 +580,61 @@
                   {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["host", "ports", "protocol"],
+                    "required": [
+                      "host",
+                      "ports",
+                      "protocol"
+                    ],
                     "properties": {
-                      "host": { "type": "string", "minLength": 1, "maxLength": 253 },
-                      "ports": { "type": "array", "prefixItems": [{ "type": "integer", "const": 443 }], "minItems": 1, "maxItems": 1 },
-                      "protocol": { "const": "tls" }
+                      "host": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 253
+                      },
+                      "ports": {
+                        "type": "array",
+                        "prefixItems": [
+                          {
+                            "type": "integer",
+                            "const": 443
+                          }
+                        ],
+                        "minItems": 1,
+                        "maxItems": 1
+                      },
+                      "protocol": {
+                        "const": "tls"
+                      }
                     }
                   },
                   {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["cidr", "ports", "protocol"],
+                    "required": [
+                      "cidr",
+                      "ports",
+                      "protocol"
+                    ],
                     "properties": {
-                      "cidr": { "type": "string", "minLength": 3, "maxLength": 49 },
+                      "cidr": {
+                        "type": "string",
+                        "minLength": 3,
+                        "maxLength": 49
+                      },
                       "ports": {
                         "type": "array",
                         "minItems": 1,
                         "maxItems": 32,
                         "uniqueItems": true,
-                        "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+                        "items": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65535
+                        }
                       },
-                      "protocol": { "const": "tcp" }
+                      "protocol": {
+                        "const": "tcp"
+                      }
                     }
                   }
                 ]
@@ -606,10 +648,20 @@
     "CustomerClientConfig": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id"],
+      "required": [
+        "id"
+      ],
       "properties": {
-        "id": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,128}$" },
-        "submit_retries": { "type": "integer", "minimum": 0, "maximum": 8, "default": 1 }
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "submit_retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8,
+          "default": 1
+        }
       }
     },
     "AgentloopConfig": {
@@ -625,7 +677,11 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["source_bundle_sha256", "toolchain", "bundle_base64"],
+          "required": [
+            "source_bundle_sha256",
+            "toolchain",
+            "bundle_base64"
+          ],
           "description": "A customer loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.",
           "properties": {
             "source_bundle_sha256": {
@@ -654,9 +710,16 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "name", "version"],
+          "required": [
+            "kind",
+            "name",
+            "version"
+          ],
           "properties": {
-            "kind": { "type": "string", "const": "official" },
+            "kind": {
+              "type": "string",
+              "const": "official"
+            },
             "name": {
               "type": "string",
               "minLength": 1,
@@ -674,10 +737,19 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind", "source_bundle_sha256", "toolchain"],
+          "required": [
+            "kind",
+            "source_bundle_sha256",
+            "toolchain"
+          ],
           "properties": {
-            "kind": { "type": "string", "const": "custom" },
-            "source_bundle_sha256": { "$ref": "#/$defs/Sha256Hex" },
+            "kind": {
+              "type": "string",
+              "const": "custom"
+            },
+            "source_bundle_sha256": {
+              "$ref": "#/$defs/Sha256Hex"
+            },
             "toolchain": {
               "type": "string",
               "minLength": 1,
@@ -692,9 +764,24 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "max_depth": { "type": "integer", "minimum": 0, "maximum": 8, "default": 4 },
-        "max_direct_children": { "type": "integer", "minimum": 0, "maximum": 128, "default": 32 },
-        "max_descendants": { "type": "integer", "minimum": 0, "maximum": 1024, "default": 256 }
+        "max_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8,
+          "default": 4
+        },
+        "max_direct_children": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128,
+          "default": 32
+        },
+        "max_descendants": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024,
+          "default": 256
+        }
       }
     },
     "ContextFork": {
@@ -709,12 +796,34 @@
         "source_projection_digest"
       ],
       "properties": {
-        "source_session_id": { "$ref": "#/$defs/SessionId" },
-        "source_context_generation": { "type": "integer", "minimum": 0 },
-        "source_through_sequence": { "type": "integer", "minimum": 0 },
-        "mode": { "type": "string", "enum": ["all", "none", "last_n"] },
-        "last_n": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
-        "resolved_turns": { "type": "integer", "minimum": 0 },
+        "source_session_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "source_context_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_through_sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "all",
+            "none",
+            "last_n"
+          ]
+        },
+        "last_n": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "resolved_turns": {
+          "type": "integer",
+          "minimum": 0
+        },
         "source_projection_digest": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
@@ -756,7 +865,10 @@
             "type": "string",
             "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
           },
-          "additionalProperties": { "type": "string", "maxLength": 2048 },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 2048
+          },
           "writeOnly": true,
           "description": "Write-only values for required managed Tool environment names; encrypted in custody."
         },
@@ -1177,10 +1289,21 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "session_id", "through_seq"],
+          "required": [
+            "type",
+            "session_id",
+            "through_seq"
+          ],
           "properties": {
-            "type": { "type": "string", "enum": ["replay.complete"] },
-            "session_id": { "$ref": "#/$defs/SessionId" },
+            "type": {
+              "type": "string",
+              "enum": [
+                "replay.complete"
+              ]
+            },
+            "session_id": {
+              "$ref": "#/$defs/SessionId"
+            },
             "through_seq": {
               "type": "integer",
               "minimum": 0,
@@ -1567,11 +1690,25 @@
             "storage"
           ],
           "properties": {
-            "type": { "type": "string", "enum": ["storage.usage"] },
-            "seq": { "type": "integer", "minimum": 1 },
-            "at": { "$ref": "#/$defs/Timestamp" },
-            "session_id": { "$ref": "#/$defs/SessionId" },
-            "storage": { "$ref": "#/$defs/StorageInfo" }
+            "type": {
+              "type": "string",
+              "enum": [
+                "storage.usage"
+              ]
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "at": {
+              "$ref": "#/$defs/Timestamp"
+            },
+            "session_id": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "storage": {
+              "$ref": "#/$defs/StorageInfo"
+            }
           }
         },
         {

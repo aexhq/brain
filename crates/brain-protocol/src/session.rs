@@ -29,122 +29,6 @@ pub mod error {
         }
     }
 }
-#[doc = "A digest-sealed executable in the session's default Aex-managed realm."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"description\": \"A digest-sealed executable in the session's default Aex-managed realm.\","]
-#[doc = "  \"type\": \"object\","]
-#[doc = "  \"required\": ["]
-#[doc = "    \"bundle_digest\","]
-#[doc = "    \"kind\","]
-#[doc = "    \"required_env\""]
-#[doc = "  ],"]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"bundle_digest\": {"]
-#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
-#[doc = "    },"]
-#[doc = "    \"kind\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"const\": \"aex_managed\""]
-#[doc = "    },"]
-#[doc = "    \"required_env\": {"]
-#[doc = "      \"description\": \"Environment-key names only. Secret values never enter the seal.\","]
-#[doc = "      \"type\": \"array\","]
-#[doc = "      \"items\": {"]
-#[doc = "        \"type\": \"string\","]
-#[doc = "        \"pattern\": \"^[A-Za-z_][A-Za-z0-9_]*$\""]
-#[doc = "      },"]
-#[doc = "      \"maxItems\": 64,"]
-#[doc = "      \"uniqueItems\": true"]
-#[doc = "    }"]
-#[doc = "  },"]
-#[doc = "  \"additionalProperties\": false"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct AexManagedToolExecutor {
-    pub bundle_digest: Sha256Hex,
-    pub kind: ::std::string::String,
-    #[doc = "Environment-key names only. Secret values never enter the seal."]
-    pub required_env: Vec<AexManagedToolExecutorRequiredEnvItem>,
-}
-#[doc = "`AexManagedToolExecutorRequiredEnvItem`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"pattern\": \"^[A-Za-z_][A-Za-z0-9_]*$\""]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct AexManagedToolExecutorRequiredEnvItem(::std::string::String);
-impl ::std::ops::Deref for AexManagedToolExecutorRequiredEnvItem {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<AexManagedToolExecutorRequiredEnvItem> for ::std::string::String {
-    fn from(value: AexManagedToolExecutorRequiredEnvItem) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for AexManagedToolExecutorRequiredEnvItem {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
-            ::std::sync::LazyLock::new(|| {
-                ::regress::Regex::new("^[A-Za-z_][A-Za-z0-9_]*$").unwrap()
-            });
-        if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^[A-Za-z_][A-Za-z0-9_]*$\"".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for AexManagedToolExecutorRequiredEnvItem {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for AexManagedToolExecutorRequiredEnvItem {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for AexManagedToolExecutorRequiredEnvItem {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for AexManagedToolExecutorRequiredEnvItem {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
 #[doc = "\"root\" for the session's root agent; subagents get brain-minted ids."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -1865,109 +1749,6 @@ impl<'de> ::serde::Deserialize<'de> for CreateSessionRequestSystemPrompt {
             })
     }
 }
-#[doc = "`CustomerAppToolExecutor`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"object\","]
-#[doc = "  \"required\": ["]
-#[doc = "    \"kind\","]
-#[doc = "    \"registration\""]
-#[doc = "  ],"]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"kind\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"const\": \"customer_app\""]
-#[doc = "    },"]
-#[doc = "    \"registration\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"pattern\": \"^[A-Za-z0-9_.:-]{1,128}$\""]
-#[doc = "    }"]
-#[doc = "  },"]
-#[doc = "  \"additionalProperties\": false"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct CustomerAppToolExecutor {
-    pub kind: ::std::string::String,
-    pub registration: CustomerAppToolExecutorRegistration,
-}
-#[doc = "`CustomerAppToolExecutorRegistration`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"pattern\": \"^[A-Za-z0-9_.:-]{1,128}$\""]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct CustomerAppToolExecutorRegistration(::std::string::String);
-impl ::std::ops::Deref for CustomerAppToolExecutorRegistration {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<CustomerAppToolExecutorRegistration> for ::std::string::String {
-    fn from(value: CustomerAppToolExecutorRegistration) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for CustomerAppToolExecutorRegistration {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
-            ::std::sync::LazyLock::new(|| {
-                ::regress::Regex::new("^[A-Za-z0-9_.:-]{1,128}$").unwrap()
-            });
-        if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^[A-Za-z0-9_.:-]{1,128}$\"".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for CustomerAppToolExecutorRegistration {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for CustomerAppToolExecutorRegistration {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for CustomerAppToolExecutorRegistration {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for CustomerAppToolExecutorRegistration {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
 #[doc = "`CustomerClientConfig`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -2062,109 +1843,6 @@ impl ::std::convert::TryFrom<::std::string::String> for CustomerClientConfigId {
     }
 }
 impl<'de> ::serde::Deserialize<'de> for CustomerClientConfigId {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
-#[doc = "`EngineToolExecutor`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"object\","]
-#[doc = "  \"required\": ["]
-#[doc = "    \"capability\","]
-#[doc = "    \"kind\""]
-#[doc = "  ],"]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"capability\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"pattern\": \"^(brain|aex)\\\\.[A-Za-z0-9_.:-]{1,120}$\""]
-#[doc = "    },"]
-#[doc = "    \"kind\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"const\": \"engine\""]
-#[doc = "    }"]
-#[doc = "  },"]
-#[doc = "  \"additionalProperties\": false"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct EngineToolExecutor {
-    pub capability: EngineToolExecutorCapability,
-    pub kind: ::std::string::String,
-}
-#[doc = "`EngineToolExecutorCapability`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"pattern\": \"^(brain|aex)\\\\.[A-Za-z0-9_.:-]{1,120}$\""]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct EngineToolExecutorCapability(::std::string::String);
-impl ::std::ops::Deref for EngineToolExecutorCapability {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<EngineToolExecutorCapability> for ::std::string::String {
-    fn from(value: EngineToolExecutorCapability) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for EngineToolExecutorCapability {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
-            ::std::sync::LazyLock::new(|| {
-                ::regress::Regex::new("^(brain|aex)\\.[A-Za-z0-9_.:-]{1,120}$").unwrap()
-            });
-        if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^(brain|aex)\\.[A-Za-z0-9_.:-]{1,120}$\"".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for EngineToolExecutorCapability {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for EngineToolExecutorCapability {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for EngineToolExecutorCapability {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for EngineToolExecutorCapability {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -6774,38 +6452,305 @@ impl<'de> ::serde::Deserialize<'de> for ToolDefinitionDescription {
 #[doc = "{"]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
-#[doc = "      \"$ref\": \"#/$defs/AexManagedToolExecutor\""]
+#[doc = "      \"description\": \"A digest-sealed executable in the session's default Aex-managed realm.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"bundle_digest\","]
+#[doc = "        \"kind\","]
+#[doc = "        \"required_env\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"bundle_digest\": {"]
+#[doc = "          \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "        },"]
+#[doc = "        \"kind\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"aex_managed\""]
+#[doc = "        },"]
+#[doc = "        \"required_env\": {"]
+#[doc = "          \"description\": \"Environment-key names only. Secret values never enter the seal.\","]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"pattern\": \"^[A-Za-z_][A-Za-z0-9_]*$\""]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 64,"]
+#[doc = "          \"uniqueItems\": true"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
 #[doc = "    },"]
 #[doc = "    {"]
-#[doc = "      \"$ref\": \"#/$defs/CustomerAppToolExecutor\""]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"kind\","]
+#[doc = "        \"registration\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"kind\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"customer_app\""]
+#[doc = "        },"]
+#[doc = "        \"registration\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^[A-Za-z0-9_.:-]{1,128}$\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
 #[doc = "    },"]
 #[doc = "    {"]
-#[doc = "      \"$ref\": \"#/$defs/EngineToolExecutor\""]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"capability\","]
+#[doc = "        \"kind\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"capability\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"pattern\": \"^(brain|aex)\\\\.[A-Za-z0-9_.:-]{1,120}$\""]
+#[doc = "        },"]
+#[doc = "        \"kind\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"engine\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
 #[doc = "    }"]
 #[doc = "  ]"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(untagged)]
+#[serde(tag = "kind", deny_unknown_fields)]
 pub enum ToolExecutor {
-    AexManagedToolExecutor(AexManagedToolExecutor),
-    CustomerAppToolExecutor(CustomerAppToolExecutor),
-    EngineToolExecutor(EngineToolExecutor),
+    #[doc = "A digest-sealed executable in the session's default Aex-managed realm."]
+    #[serde(rename = "aex_managed")]
+    AexManaged {
+        bundle_digest: Sha256Hex,
+        #[doc = "Environment-key names only. Secret values never enter the seal."]
+        required_env: Vec<ToolExecutorRequiredEnvItem>,
+    },
+    #[serde(rename = "customer_app")]
+    CustomerApp {
+        registration: ToolExecutorRegistration,
+    },
+    #[serde(rename = "engine")]
+    Engine { capability: ToolExecutorCapability },
 }
-impl ::std::convert::From<AexManagedToolExecutor> for ToolExecutor {
-    fn from(value: AexManagedToolExecutor) -> Self {
-        Self::AexManagedToolExecutor(value)
+#[doc = "`ToolExecutorCapability`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^(brain|aex)\\\\.[A-Za-z0-9_.:-]{1,120}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ToolExecutorCapability(::std::string::String);
+impl ::std::ops::Deref for ToolExecutorCapability {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
     }
 }
-impl ::std::convert::From<CustomerAppToolExecutor> for ToolExecutor {
-    fn from(value: CustomerAppToolExecutor) -> Self {
-        Self::CustomerAppToolExecutor(value)
+impl ::std::convert::From<ToolExecutorCapability> for ::std::string::String {
+    fn from(value: ToolExecutorCapability) -> Self {
+        value.0
     }
 }
-impl ::std::convert::From<EngineToolExecutor> for ToolExecutor {
-    fn from(value: EngineToolExecutor) -> Self {
-        Self::EngineToolExecutor(value)
+impl ::std::str::FromStr for ToolExecutorCapability {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^(brain|aex)\\.[A-Za-z0-9_.:-]{1,120}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^(brain|aex)\\.[A-Za-z0-9_.:-]{1,120}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolExecutorCapability {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolExecutorCapability {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolExecutorCapability {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ToolExecutorCapability {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ToolExecutorRegistration`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9_.:-]{1,128}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ToolExecutorRegistration(::std::string::String);
+impl ::std::ops::Deref for ToolExecutorRegistration {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ToolExecutorRegistration> for ::std::string::String {
+    fn from(value: ToolExecutorRegistration) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ToolExecutorRegistration {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z0-9_.:-]{1,128}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z0-9_.:-]{1,128}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolExecutorRegistration {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolExecutorRegistration {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolExecutorRegistration {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ToolExecutorRegistration {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ToolExecutorRequiredEnvItem`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^[A-Za-z_][A-Za-z0-9_]*$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ToolExecutorRequiredEnvItem(::std::string::String);
+impl ::std::ops::Deref for ToolExecutorRequiredEnvItem {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ToolExecutorRequiredEnvItem> for ::std::string::String {
+    fn from(value: ToolExecutorRequiredEnvItem) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ToolExecutorRequiredEnvItem {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z_][A-Za-z0-9_]*$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z_][A-Za-z0-9_]*$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolExecutorRequiredEnvItem {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolExecutorRequiredEnvItem {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolExecutorRequiredEnvItem {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ToolExecutorRequiredEnvItem {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
     }
 }
 #[doc = "`ToolName`"]
