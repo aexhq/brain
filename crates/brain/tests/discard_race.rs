@@ -4,11 +4,12 @@
 //! without answering it). The fix is close-then-drain in the actor plus a one-shot send retry
 //! in the callers; this test forces the collision hundreds of times.
 
+use brain::adapter::DisabledToolExecutor;
 use brain::config::Dialect;
 use brain::journal::Journal;
 use brain::provider::Provider;
 use brain::provider::fake::{FakeMode, FakeProvider};
-use brain::session::{Brain, BrainConfig};
+use brain::session::{Brain, BrainConfig, BrainServices};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +26,7 @@ async fn a_message_racing_the_idle_discard_always_lands() {
         text_bytes: 16,
     });
     let f = fake.clone();
-    let brain = Brain::with_parts(
+    let brain = Brain::with_parts_and_services(
         BrainConfig {
             // Aggressive enough that every inter-message pause crosses it.
             idle_discard: Duration::from_millis(2),
@@ -33,6 +34,8 @@ async fn a_message_racing_the_idle_discard_always_lands() {
         },
         Journal::new_memory("discard-race"),
         Arc::new(brain::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
         Some(Arc::new(move |_| f.clone() as Arc<dyn Provider>)),
     );
     let token = "race-token".to_string();

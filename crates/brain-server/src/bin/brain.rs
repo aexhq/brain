@@ -44,11 +44,16 @@ async fn run() -> anyhow::Result<()> {
             let customer_transport =
                 brain::customer::CustomerTransportConfig::new(websocket_url, observation_base_url)?;
             let local_hand = parts.local_hand.clone();
+            let cfg = BrainConfig::from_env().map_err(|error| anyhow::anyhow!("{error}"))?;
+            // Honor BRAIN_EXTERNAL_TOOL_EXECUTOR_URL: before this, the config was parsed and
+            // validated but the binary hard-coded the disabled executor.
+            let external_executor = brain::session::external_executor_from_cfg(&cfg)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
             let brain = Brain::with_parts_and_services(
-                BrainConfig::from_env().map_err(|error| anyhow::anyhow!("{error}"))?,
+                cfg,
                 parts.journal,
                 parts.custody,
-                Arc::new(brain::adapter::DisabledToolExecutor),
+                external_executor,
                 brain::session::BrainServices {
                     session_storage: Some(parts.session_storage),
                     bundle_storage: Some(parts.bundle_storage),

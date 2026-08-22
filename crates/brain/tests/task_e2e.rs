@@ -5,7 +5,7 @@ use brain::config::{Dialect, ProviderKey, SealedPrefix};
 use brain::journal::{Journal, Record};
 use brain::message::{Message, StopReason, Usage};
 use brain::provider::{ModelRequest, Provider, ProviderEvent};
-use brain::session::{Brain, BrainConfig};
+use brain::session::{Brain, BrainConfig, BrainServices};
 use brain::{BrainError, Result};
 use brain_protocol::session::{CreateSessionRequest, MessageRequestContent};
 use futures_util::stream::BoxStream;
@@ -218,7 +218,7 @@ async fn official_spawn_creates_an_ordinary_child_at_a_complete_fork_boundary() 
     let provider_factory = provider.clone();
     // One turn permit makes the parent finish its spawning round before the child begins,
     // producing deterministic request ordering while still exercising the recovery scheduler.
-    let brain = Brain::with_parts_and_external(
+    let brain = Brain::with_parts_and_services(
         BrainConfig {
             max_concurrent_model_rounds: 1,
             max_concurrent_turns: 1,
@@ -228,6 +228,7 @@ async fn official_spawn_creates_an_ordinary_child_at_a_complete_fork_boundary() 
         journal.clone(),
         Arc::new(brain::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
         Some(Arc::new(move |_| {
             provider_factory.clone() as Arc<dyn Provider>
         })),
