@@ -67,6 +67,11 @@ pub struct ToolDecl {
     /// prefix content.
     #[serde(skip)]
     pub route: ToolRoute,
+    /// The tool's declared outbound needs (contract `ToolConfig.network.destinations`).
+    /// Not digested: the create-time merge seals the effective policy into the prefix
+    /// network; the raw declaration is input, not model-visible content.
+    #[serde(skip)]
+    pub network_needs: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,6 +464,7 @@ mod tests {
 
     fn def() -> AgentDef {
         AgentDef::new("you are a test", "test-model", Dialect::AnthropicMessages).tool(ToolDecl {
+            network_needs: Vec::new(),
             name: "read".into(),
             description: "read a file".into(),
             contract_digest: "a".repeat(64),
@@ -490,6 +496,7 @@ mod tests {
     fn appending_a_tool_changes_the_digest() {
         let base = prefix_digest(&def());
         let more = def().tool(ToolDecl {
+            network_needs: Vec::new(),
             name: "write".into(),
             description: "write a file".into(),
             contract_digest: "b".repeat(64),
@@ -507,6 +514,7 @@ mod tests {
     #[test]
     fn tool_order_is_significant() {
         let mut swapped = def().tool(ToolDecl {
+            network_needs: Vec::new(),
             name: "write".into(),
             description: "write a file".into(),
             contract_digest: "b".repeat(64),

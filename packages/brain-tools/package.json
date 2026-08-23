@@ -1,6 +1,6 @@
 {
   "name": "@aexhq/brain-tools",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Portable, explicit Tool values for Brain",
   "license": "Apache-2.0",
   "repository": {
@@ -10,20 +10,32 @@
   },
   "type": "module",
   "sideEffects": false,
-  "engines": { "node": ">=22.0.0" },
-  "publishConfig": { "access": "public", "provenance": true, "tag": "next" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "tag": "next"
+  },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
     "./package.json": "./package.json"
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "tsc -p tsconfig.json && node --test",
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@aexhq/brain": "0.3.0"
+    "@aexhq/brain": "0.3.1"
   },
   "peerDependencies": {
     "zod": ">=4.4.3 <5"

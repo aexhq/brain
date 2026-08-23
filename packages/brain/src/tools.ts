@@ -20,8 +20,21 @@ export type ToolHandler<Input extends z.ZodType, Output = unknown> = (
   context: ToolContext,
 ) => Output | Promise<Output>;
 
+/** One declared outbound destination (TLS to a host on 443, matching the session contract). */
+export interface NetworkDestination {
+  readonly host: string;
+  readonly ports: readonly [443];
+  readonly protocol: "tls";
+}
+
 export interface ServerToolOptions {
   readonly env?: readonly string[];
+  /**
+   * The tool's declared outbound needs. Merged at session create: effective allowlist =
+   * (union of tool declarations and session allows) minus session denies; Aex infra is
+   * always denied. Declaration and merge only — no per-tool runtime isolation is claimed.
+   */
+  readonly network?: { readonly destinations: readonly NetworkDestination[] };
 }
 
 export interface ClientToolOptions {
@@ -158,6 +171,7 @@ function makeBuilder<Input extends z.ZodType, Output>(draft: Draft<Input, Output
         requiredEnv: normalizeRequiredEnv(options.env),
         executor: { kind: "aex_managed", module },
         handlerKey: "execute",
+        ...(options.network === undefined ? {} : { network: normalizeNetwork(options.network) }),
       });
     },
   });
@@ -168,6 +182,7 @@ interface FreezeOptions<Input extends z.ZodType, Output> {
   contract: ToolContract;
   requiredEnv: readonly string[];
   executor: ToolExecutor;
+  network?: { readonly destinations: readonly NetworkDestination[] };
   handlerKey?: "handler" | "execute";
 }
 
@@ -182,6 +197,7 @@ function freezeTool<Input extends z.ZodType, Output>(options: FreezeOptions<Inpu
     requiredEnv: Object.freeze([...options.requiredEnv]),
     execution: options.executor.kind,
     executor: Object.freeze(options.executor),
+    ...(options.network === undefined ? {} : { network: Object.freeze(options.network) }),
     ...(options.handlerKey === undefined ? {} : { [options.handlerKey]: options.draft.handler }),
   });
 }
@@ -234,6 +250,7 @@ export type WireToolExecutor =
 export interface WireTool {
   definition: WireToolDefinition;
   executor: WireToolExecutor;
+  network?: { destinations: NetworkDestination[] };
 }
 
 export interface WireToolBundle {
@@ -327,7 +344,14 @@ export async function compileTools(selections: readonly Tool[] | undefined): Pro
         executor = { kind: "engine", capability: value.executor.capability };
         break;
     }
-    items.push({ definition, executor });
+    const declared = (value as { network?: { destinations: readonly NetworkDestination[] } }).network;
+    items.push({
+      definition,
+      executor,
+      ...(declared === undefined
+        ? {}
+        : { network: { destinations: declared.destinations.map((destination) => ({ ...destination })) } }),
+    });
   }
   return { items, bundles, clientRegistrations: Object.freeze(clientRegistrations) };
 }
@@ -469,6 +493,29 @@ function assertDescription(description: string): void {
   if (description.trim() === "" || description.length > 4096) {
     throw new TypeError("Tool description must contain 1 through 4096 characters");
   }
+}
+
+function normalizeNetwork(
+  network: NonNullable<ServerToolOptions["network"]>,
+): { readonly destinations: readonly NetworkDestination[] } {
+  const destinations = network.destinations ?? [];
+  if (destinations.length === 0 || destinations.length > 32) {
+    throw new TypeError("Tool network declarations need 1 through 32 destinations");
+  }
+  const seen = new Set<string>();
+  for (const destination of destinations) {
+    const host = destination.host;
+    if (typeof host !== "string" || host.length === 0 || host.length > 253) {
+      throw new TypeError("Tool network destination host must be 1 through 253 bytes");
+    }
+    const lowered = host.toLowerCase();
+    if (lowered === "aex.dev" || lowered.endsWith(".aex.dev")) {
+      throw new TypeError(`Tool network destination ${host} names Aex infrastructure; Aex infra is always denied`);
+    }
+    if (seen.has(lowered)) throw new TypeError(`Tool network destination ${host} was repeated`);
+    seen.add(lowered);
+  }
+  return { destinations: destinations.map((destination) => Object.freeze({ ...destination })) };
 }
 
 function normalizeRequiredEnv(values: readonly string[] | undefined): readonly string[] {

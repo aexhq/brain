@@ -87,6 +87,28 @@ test("custom and official values compile through one ordered Tool path", async (
   await assert.rejects(compileTools([one, one]), /selected more than once/u);
 });
 
+test("declared network needs ride the wire and refuse aex infrastructure", async () => {
+  const module = new URL("../fixtures/fixture-tool.mjs", import.meta.url).href;
+  const fetcher = tool(z.object({ url: z.string() }), async function fetcher({ url }) { return { url }; })
+    .describe("Fetch a thing.")
+    .server(module, {
+      network: { destinations: [{ host: "api.example.com", ports: [443], protocol: "tls" }] },
+    });
+  const compiled = await compileTools([fetcher]);
+  assert.deepEqual(compiled.items[0].network, {
+    destinations: [{ host: "api.example.com", ports: [443], protocol: "tls" }],
+  });
+
+  assert.throws(
+    () =>
+      tool(z.object({}), async function infra() { return {}; })
+        .server(module, {
+          network: { destinations: [{ host: "api.aex.dev", ports: [443], protocol: "tls" }] },
+        }),
+    /always denied/u,
+  );
+});
+
 test("function-first builders infer names and are immutable", async () => {
   const original = tool(async function ping() { return { ok: true }; });
   const described = original.describe("Check liveness.").returns(z.object({ ok: z.boolean() }));

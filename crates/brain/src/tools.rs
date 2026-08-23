@@ -50,8 +50,22 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
         ToolExecutor::Engine { capability } => ToolRoute::Intrinsic(capability.to_string()),
     };
 
+    let network_needs = tool
+        .network
+        .as_ref()
+        .map(|network| {
+            network
+                .destinations
+                .iter()
+                .map(|destination| serde_json::to_value(destination).map_err(BrainError::from))
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
     Ok(ToolDecl {
         name,
+        network_needs,
         description: tool
             .definition
             .description

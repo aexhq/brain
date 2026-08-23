@@ -4439,140 +4439,7 @@ pub struct ModelInfo {
     pub name: ::std::string::String,
     pub provider: Provider,
 }
-#[doc = "Immutable direct outbound ceiling. Omission means none."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"description\": \"Immutable direct outbound ceiling. Omission means none.\","]
-#[doc = "  \"oneOf\": ["]
-#[doc = "    {"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"outbound\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"outbound\": {"]
-#[doc = "          \"const\": \"none\""]
-#[doc = "        }"]
-#[doc = "      },"]
-#[doc = "      \"additionalProperties\": false"]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"outbound\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"outbound\": {"]
-#[doc = "          \"const\": \"public\""]
-#[doc = "        }"]
-#[doc = "      },"]
-#[doc = "      \"additionalProperties\": false"]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"destinations\","]
-#[doc = "        \"outbound\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"destinations\": {"]
-#[doc = "          \"type\": \"array\","]
-#[doc = "          \"items\": {"]
-#[doc = "            \"oneOf\": ["]
-#[doc = "              {"]
-#[doc = "                \"type\": \"object\","]
-#[doc = "                \"required\": ["]
-#[doc = "                  \"host\","]
-#[doc = "                  \"ports\","]
-#[doc = "                  \"protocol\""]
-#[doc = "                ],"]
-#[doc = "                \"properties\": {"]
-#[doc = "                  \"host\": {"]
-#[doc = "                    \"type\": \"string\","]
-#[doc = "                    \"maxLength\": 253,"]
-#[doc = "                    \"minLength\": 1"]
-#[doc = "                  },"]
-#[doc = "                  \"ports\": {"]
-#[doc = "                    \"type\": \"array\","]
-#[doc = "                    \"maxItems\": 1,"]
-#[doc = "                    \"minItems\": 1,"]
-#[doc = "                    \"prefixItems\": ["]
-#[doc = "                      {"]
-#[doc = "                        \"const\": 443,"]
-#[doc = "                        \"type\": \"integer\""]
-#[doc = "                      }"]
-#[doc = "                    ]"]
-#[doc = "                  },"]
-#[doc = "                  \"protocol\": {"]
-#[doc = "                    \"const\": \"tls\""]
-#[doc = "                  }"]
-#[doc = "                },"]
-#[doc = "                \"additionalProperties\": false"]
-#[doc = "              },"]
-#[doc = "              {"]
-#[doc = "                \"type\": \"object\","]
-#[doc = "                \"required\": ["]
-#[doc = "                  \"cidr\","]
-#[doc = "                  \"ports\","]
-#[doc = "                  \"protocol\""]
-#[doc = "                ],"]
-#[doc = "                \"properties\": {"]
-#[doc = "                  \"cidr\": {"]
-#[doc = "                    \"type\": \"string\","]
-#[doc = "                    \"maxLength\": 49,"]
-#[doc = "                    \"minLength\": 3"]
-#[doc = "                  },"]
-#[doc = "                  \"ports\": {"]
-#[doc = "                    \"type\": \"array\","]
-#[doc = "                    \"items\": {"]
-#[doc = "                      \"type\": \"integer\","]
-#[doc = "                      \"maximum\": 65535.0,"]
-#[doc = "                      \"minimum\": 1.0"]
-#[doc = "                    },"]
-#[doc = "                    \"maxItems\": 32,"]
-#[doc = "                    \"minItems\": 1,"]
-#[doc = "                    \"uniqueItems\": true"]
-#[doc = "                  },"]
-#[doc = "                  \"protocol\": {"]
-#[doc = "                    \"const\": \"tcp\""]
-#[doc = "                  }"]
-#[doc = "                },"]
-#[doc = "                \"additionalProperties\": false"]
-#[doc = "              }"]
-#[doc = "            ]"]
-#[doc = "          },"]
-#[doc = "          \"maxItems\": 128,"]
-#[doc = "          \"minItems\": 1"]
-#[doc = "        },"]
-#[doc = "        \"outbound\": {"]
-#[doc = "          \"const\": \"allowlist\""]
-#[doc = "        }"]
-#[doc = "      },"]
-#[doc = "      \"additionalProperties\": false"]
-#[doc = "    }"]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(tag = "outbound", content = "destinations")]
-pub enum NetworkPolicy {
-    #[serde(rename = "none")]
-    None,
-    #[serde(rename = "public")]
-    Public,
-    #[serde(rename = "allowlist")]
-    Allowlist(::std::vec::Vec<NetworkPolicyDestinationsItem>),
-}
-impl ::std::convert::From<::std::vec::Vec<NetworkPolicyDestinationsItem>> for NetworkPolicy {
-    fn from(value: ::std::vec::Vec<NetworkPolicyDestinationsItem>) -> Self {
-        Self::Allowlist(value)
-    }
-}
-#[doc = "`NetworkPolicyDestinationsItem`"]
+#[doc = "`NetworkDestination`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4645,19 +4512,19 @@ impl ::std::convert::From<::std::vec::Vec<NetworkPolicyDestinationsItem>> for Ne
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 #[serde(tag = "protocol", deny_unknown_fields)]
-pub enum NetworkPolicyDestinationsItem {
+pub enum NetworkDestination {
     #[serde(rename = "tls")]
     Tls {
-        host: NetworkPolicyDestinationsItemHost,
+        host: NetworkDestinationHost,
         ports: [::serde_json::Value; 1usize],
     },
     #[serde(rename = "tcp")]
     Tcp {
-        cidr: NetworkPolicyDestinationsItemCidr,
+        cidr: NetworkDestinationCidr,
         ports: Vec<::std::num::NonZeroU64>,
     },
 }
-#[doc = "`NetworkPolicyDestinationsItemCidr`"]
+#[doc = "`NetworkDestinationCidr`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4671,19 +4538,19 @@ pub enum NetworkPolicyDestinationsItem {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct NetworkPolicyDestinationsItemCidr(::std::string::String);
-impl ::std::ops::Deref for NetworkPolicyDestinationsItemCidr {
+pub struct NetworkDestinationCidr(::std::string::String);
+impl ::std::ops::Deref for NetworkDestinationCidr {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<NetworkPolicyDestinationsItemCidr> for ::std::string::String {
-    fn from(value: NetworkPolicyDestinationsItemCidr) -> Self {
+impl ::std::convert::From<NetworkDestinationCidr> for ::std::string::String {
+    fn from(value: NetworkDestinationCidr) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for NetworkPolicyDestinationsItemCidr {
+impl ::std::str::FromStr for NetworkDestinationCidr {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 49usize {
@@ -4695,13 +4562,13 @@ impl ::std::str::FromStr for NetworkPolicyDestinationsItemCidr {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for NetworkPolicyDestinationsItemCidr {
+impl ::std::convert::TryFrom<&str> for NetworkDestinationCidr {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<&::std::string::String> for NetworkPolicyDestinationsItemCidr {
+impl ::std::convert::TryFrom<&::std::string::String> for NetworkDestinationCidr {
     type Error = self::error::ConversionError;
     fn try_from(
         value: &::std::string::String,
@@ -4709,7 +4576,7 @@ impl ::std::convert::TryFrom<&::std::string::String> for NetworkPolicyDestinatio
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<::std::string::String> for NetworkPolicyDestinationsItemCidr {
+impl ::std::convert::TryFrom<::std::string::String> for NetworkDestinationCidr {
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,
@@ -4717,7 +4584,7 @@ impl ::std::convert::TryFrom<::std::string::String> for NetworkPolicyDestination
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for NetworkPolicyDestinationsItemCidr {
+impl<'de> ::serde::Deserialize<'de> for NetworkDestinationCidr {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -4729,7 +4596,7 @@ impl<'de> ::serde::Deserialize<'de> for NetworkPolicyDestinationsItemCidr {
             })
     }
 }
-#[doc = "`NetworkPolicyDestinationsItemHost`"]
+#[doc = "`NetworkDestinationHost`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -4743,19 +4610,19 @@ impl<'de> ::serde::Deserialize<'de> for NetworkPolicyDestinationsItemCidr {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct NetworkPolicyDestinationsItemHost(::std::string::String);
-impl ::std::ops::Deref for NetworkPolicyDestinationsItemHost {
+pub struct NetworkDestinationHost(::std::string::String);
+impl ::std::ops::Deref for NetworkDestinationHost {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<NetworkPolicyDestinationsItemHost> for ::std::string::String {
-    fn from(value: NetworkPolicyDestinationsItemHost) -> Self {
+impl ::std::convert::From<NetworkDestinationHost> for ::std::string::String {
+    fn from(value: NetworkDestinationHost) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for NetworkPolicyDestinationsItemHost {
+impl ::std::str::FromStr for NetworkDestinationHost {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 253usize {
@@ -4767,13 +4634,13 @@ impl ::std::str::FromStr for NetworkPolicyDestinationsItemHost {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for NetworkPolicyDestinationsItemHost {
+impl ::std::convert::TryFrom<&str> for NetworkDestinationHost {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<&::std::string::String> for NetworkPolicyDestinationsItemHost {
+impl ::std::convert::TryFrom<&::std::string::String> for NetworkDestinationHost {
     type Error = self::error::ConversionError;
     fn try_from(
         value: &::std::string::String,
@@ -4781,7 +4648,7 @@ impl ::std::convert::TryFrom<&::std::string::String> for NetworkPolicyDestinatio
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<::std::string::String> for NetworkPolicyDestinationsItemHost {
+impl ::std::convert::TryFrom<::std::string::String> for NetworkDestinationHost {
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,
@@ -4789,7 +4656,189 @@ impl ::std::convert::TryFrom<::std::string::String> for NetworkPolicyDestination
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for NetworkPolicyDestinationsItemHost {
+impl<'de> ::serde::Deserialize<'de> for NetworkDestinationHost {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "Immutable direct outbound ceiling. Omission means none."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"Immutable direct outbound ceiling. Omission means none.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"outbound\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"deny\": {"]
+#[doc = "          \"description\": \"Hosts the session explicitly refuses (exact, or \\\"*.suffix\\\"). Subtracted from the merged allowlist at create; incompatible with outbound \\\"public\\\" (nothing enforces a deny off the gateway path).\","]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"maxLength\": 253,"]
+#[doc = "            \"minLength\": 1"]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 128"]
+#[doc = "        },"]
+#[doc = "        \"outbound\": {"]
+#[doc = "          \"const\": \"none\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"outbound\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"deny\": {"]
+#[doc = "          \"description\": \"Hosts the session explicitly refuses (exact, or \\\"*.suffix\\\"). Subtracted from the merged allowlist at create; incompatible with outbound \\\"public\\\" (nothing enforces a deny off the gateway path).\","]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"maxLength\": 253,"]
+#[doc = "            \"minLength\": 1"]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 128"]
+#[doc = "        },"]
+#[doc = "        \"outbound\": {"]
+#[doc = "          \"const\": \"public\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"destinations\","]
+#[doc = "        \"outbound\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"deny\": {"]
+#[doc = "          \"description\": \"Hosts the session explicitly refuses (exact, or \\\"*.suffix\\\"). Subtracted from the merged allowlist at create; incompatible with outbound \\\"public\\\" (nothing enforces a deny off the gateway path).\","]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"maxLength\": 253,"]
+#[doc = "            \"minLength\": 1"]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 128"]
+#[doc = "        },"]
+#[doc = "        \"destinations\": {"]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"$ref\": \"#/$defs/NetworkDestination\""]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 128,"]
+#[doc = "          \"minItems\": 1"]
+#[doc = "        },"]
+#[doc = "        \"outbound\": {"]
+#[doc = "          \"const\": \"allowlist\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    }"]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(tag = "outbound", deny_unknown_fields)]
+pub enum NetworkPolicy {
+    #[serde(rename = "none")]
+    None {
+        #[doc = "Hosts the session explicitly refuses (exact, or \"*.suffix\"). Subtracted from the merged allowlist at create; incompatible with outbound \"public\" (nothing enforces a deny off the gateway path)."]
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        deny: ::std::vec::Vec<NetworkPolicyDenyItem>,
+    },
+    #[serde(rename = "public")]
+    Public {
+        #[doc = "Hosts the session explicitly refuses (exact, or \"*.suffix\"). Subtracted from the merged allowlist at create; incompatible with outbound \"public\" (nothing enforces a deny off the gateway path)."]
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        deny: ::std::vec::Vec<NetworkPolicyDenyItem>,
+    },
+    #[serde(rename = "allowlist")]
+    Allowlist {
+        #[doc = "Hosts the session explicitly refuses (exact, or \"*.suffix\"). Subtracted from the merged allowlist at create; incompatible with outbound \"public\" (nothing enforces a deny off the gateway path)."]
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        deny: ::std::vec::Vec<NetworkPolicyDenyItem>,
+        destinations: ::std::vec::Vec<NetworkDestination>,
+    },
+}
+#[doc = "`NetworkPolicyDenyItem`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 253,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct NetworkPolicyDenyItem(::std::string::String);
+impl ::std::ops::Deref for NetworkPolicyDenyItem {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<NetworkPolicyDenyItem> for ::std::string::String {
+    fn from(value: NetworkPolicyDenyItem) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for NetworkPolicyDenyItem {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 253usize {
+            return Err("longer than 253 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for NetworkPolicyDenyItem {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for NetworkPolicyDenyItem {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for NetworkPolicyDenyItem {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for NetworkPolicyDenyItem {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -6309,6 +6358,24 @@ impl<'de> ::serde::Deserialize<'de> for ToolBundleContentBase64 {
 #[doc = "    },"]
 #[doc = "    \"executor\": {"]
 #[doc = "      \"$ref\": \"#/$defs/ToolExecutor\""]
+#[doc = "    },"]
+#[doc = "    \"network\": {"]
+#[doc = "      \"description\": \"The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"destinations\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"destinations\": {"]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"$ref\": \"#/$defs/NetworkDestination\""]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 32,"]
+#[doc = "          \"minItems\": 1"]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"additionalProperties\": false"]
@@ -6320,6 +6387,38 @@ impl<'de> ::serde::Deserialize<'de> for ToolBundleContentBase64 {
 pub struct ToolConfig {
     pub definition: ToolDefinition,
     pub executor: ToolExecutor,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub network: ::std::option::Option<ToolConfigNetwork>,
+}
+#[doc = "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"destinations\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"destinations\": {"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"$ref\": \"#/$defs/NetworkDestination\""]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 32,"]
+#[doc = "      \"minItems\": 1"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ToolConfigNetwork {
+    pub destinations: ::std::vec::Vec<NetworkDestination>,
 }
 #[doc = "The model-visible half of one Tool. Array order is preserved exactly in the immutable model prefix."]
 #[doc = r""]
