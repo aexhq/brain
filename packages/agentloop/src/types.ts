@@ -157,6 +157,11 @@ export interface SessionStart {
   resumed: boolean;
   kv: Record<string, unknown>;
   latest_mark?: Mark;
+  /**
+   * Sealed inherited context from a context fork, in order, preceding the tail. Parent
+   * history, not child journal entries: no seqs, never covered by marks.
+   */
+  inherited?: ModelMessage[];
   tail: JournalEntry[];
   truncated_tail?: boolean;
 }

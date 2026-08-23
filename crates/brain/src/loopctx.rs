@@ -176,6 +176,52 @@ pub(crate) fn model_messages_to_history(
     Ok(history)
 }
 
+/// Project provider-history messages (a materialized context fork) into the contract's
+/// ModelMessage shape — what a loop composes. Tool-result blocks recover their tool names
+/// from the preceding tool_call blocks; an unmatched result keeps a neutral name.
+pub(crate) fn history_to_model_messages(history: &[Message]) -> Result<Vec<al::ModelMessage>> {
+    let mut names: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut messages = Vec::with_capacity(history.len());
+    for message in history {
+        for block in &message.content {
+            if let ContentBlock::ToolUse { id, name, .. } = block {
+                names.insert(id.as_str(), name.as_str());
+            }
+        }
+        match message.role {
+            Role::Assistant => messages.push(al::ModelMessage::Assistant {
+                content: blocks_to_content_views(&message.content)?,
+            }),
+            Role::User => {
+                let mut plain = Vec::new();
+                for block in &message.content {
+                    match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } => messages.push(al::ModelMessage::ToolResult {
+                            content: vec![text_view(content)?],
+                            is_error: Some(*is_error),
+                            name: identifier(
+                                names.get(tool_use_id.as_str()).copied().unwrap_or("tool"),
+                            )?,
+                            tool_call_id: identifier(tool_use_id)?,
+                        }),
+                        other => plain.push(other.clone()),
+                    }
+                }
+                if !plain.is_empty() {
+                    messages.push(al::ModelMessage::User {
+                        content: blocks_to_content_views(&plain)?,
+                    });
+                }
+            }
+        }
+    }
+    Ok(messages)
+}
+
 /// Validate a loop's tool presentations against the sealed grant and build the per-call tool
 /// declarations. Presentation (description, schema, subset, order) is loop policy; the
 /// executable route is copied from the seal and can never be widened here.

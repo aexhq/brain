@@ -391,6 +391,10 @@ impl Agentloop for BuiltinAexLoop {
         let start = ctx.session_start_payload().await?;
         let activation = ctx.activation_message()?;
         let mut memory: Vec<serde_json::Value> = Vec::new();
+        // The sealed fork prefix, already in the loop's own message shape, precedes everything.
+        for message in start["inherited"].as_array().into_iter().flatten() {
+            memory.push(message.clone());
+        }
         if let Some(summary) = start["latest_mark"]["data"]["summary"].as_str() {
             memory.push(Self::summary_message(summary));
         }

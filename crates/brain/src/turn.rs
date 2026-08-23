@@ -53,6 +53,10 @@ fn validate_model_tool_call_count(count: usize) -> Result<()> {
 /// gets it back when the turn future resolves, mutated.
 pub struct TurnState {
     pub history: Vec<Message>,
+    /// The materialized context fork this child inherited (empty for roots and for children
+    /// past a kernel checkpoint). Immutable for the resident's life; `session_start` projects
+    /// it as the loop's `inherited` prefix on a fresh hydration.
+    pub fork_context: Vec<Message>,
     pub head: HeadDoc,
     /// Last HEAD returned by a successful journal decision. Mutations are staged in `head`; a
     /// conditional or adapter commit failure restores this local snapshot without depending on
@@ -1079,9 +1083,22 @@ impl LoopTurnCtx<'_> {
             tail_bytes += bytes;
             tail.push(view);
         }
+        // The sealed fork prefix rides only a fresh hydration: once the loop has a mark
+        // floor, its own summary is the accumulated memory and re-delivering the fork
+        // would double-count it.
+        let inherited = if latest.is_none() && !self.st.fork_context.is_empty() {
+            let mut messages = crate::loopctx::history_to_model_messages(&self.st.fork_context)?;
+            if messages.len() > 512 {
+                messages.drain(..messages.len() - 512);
+            }
+            messages
+        } else {
+            Vec::new()
+        };
         let request = al::ActivationRequest::SessionStart {
             activation_id: crate::loopctx::identifier(&crate::mint_id("act", 16))?,
             kv: al::JsonObject(self.kv_overlay()),
+            inherited,
             latest_mark,
             resumed: self.st.head.turns > 1,
             session: self.session_view()?,
@@ -1899,14 +1916,26 @@ impl TurnRun {
         let mut reprepared = false;
         let receipt = loop {
             let remaining = deadline_at_ms.saturating_sub(crate::wall_ms()).max(1);
-            let submit = tokio::time::timeout(
-                std::time::Duration::from_millis(remaining),
-                hand.submit(submit_request.clone()),
-            );
+            // The submit runs as a detached task: dropping a lazy submit mid-flight would
+            // abandon its sandbox materialization attempt and strand the capacity
+            // reservation until the attempt lease expires. Cancellation and the sealed
+            // deadline stop the WAITING; the attempt itself always runs to its own
+            // conclusion, and exact recovery reconciles whatever it produced.
+            let submit_hand = hand.clone();
+            let submit_once = submit_request.clone();
+            let mut submit_task =
+                tokio::spawn(async move { submit_hand.submit(submit_once).await });
             let result = tokio::select! {
-                result = submit => result.map_err(|_| BrainError::HandUnavailable(
-                    "managed Tool submit exceeded its sealed deadline".into()
-                ))?,
+                joined = &mut submit_task => joined.map_err(|join_error| {
+                    BrainError::HandUnavailable(format!(
+                        "managed Tool submit task did not complete: {join_error}"
+                    ))
+                })?,
+                () = tokio::time::sleep(std::time::Duration::from_millis(remaining)) => {
+                    return Err(BrainError::HandUnavailable(
+                        "managed Tool submit exceeded its sealed deadline".into(),
+                    ));
+                }
                 () = self.cancel.cancelled() => {
                     return self
                         .finish_managed_submit_unknown(st, operation_id, name, &request_digest)

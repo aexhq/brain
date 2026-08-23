@@ -51,6 +51,14 @@ pub mod error {
 #[doc = "        \"activation_id\": {"]
 #[doc = "          \"$ref\": \"#/$defs/Identifier\""]
 #[doc = "        },"]
+#[doc = "        \"inherited\": {"]
+#[doc = "          \"description\": \"Sealed inherited context from a context fork, in order, preceding the tail. Delivered only on a child session's fresh hydration (no own context floor); the messages are parent history, not child journal entries, so they carry no seqs and are never covered by marks.\","]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"$ref\": \"#/$defs/ModelMessage\""]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 512"]
+#[doc = "        },"]
 #[doc = "        \"kind\": {"]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"enum\": ["]
@@ -165,6 +173,9 @@ pub enum ActivationRequest {
     #[serde(rename = "session_start")]
     SessionStart {
         activation_id: Identifier,
+        #[doc = "Sealed inherited context from a context fork, in order, preceding the tail. Delivered only on a child session's fresh hydration (no own context floor); the messages are parent history, not child journal entries, so they carry no seqs and are never covered by marks."]
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        inherited: ::std::vec::Vec<ModelMessage>,
         kv: JsonObject,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         latest_mark: ::std::option::Option<MarkView>,

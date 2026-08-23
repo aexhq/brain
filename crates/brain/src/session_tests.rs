@@ -2229,9 +2229,11 @@ async fn child_create_atomically_admits_prompt_and_rebuilds_exact_parent_fork() 
     .expect("child initial turn completes");
     let child_head = journal.get_head(&child_id).await.unwrap();
     let child_entries = journal.read_records(&child_id, 0).await.unwrap();
-    let history = materialize_session_history(&brain, &child_head.doc, &child_entries)
+    let fork_context = materialize_context_fork(&brain, &child_head.doc)
         .await
         .unwrap();
+    let history =
+        materialize_session_history(&child_head.doc, &child_entries, &fork_context).unwrap();
     assert_eq!(history[0], Message::user_text("parent prompt"));
     assert_eq!(
         history[1],

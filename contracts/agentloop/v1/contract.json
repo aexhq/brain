@@ -381,6 +381,12 @@
             "resumed": { "type": "boolean" },
             "kv": { "$ref": "#/$defs/JsonObject" },
             "latest_mark": { "$ref": "#/$defs/MarkView" },
+            "inherited": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ModelMessage" },
+              "maxItems": 512,
+              "description": "Sealed inherited context from a context fork, in order, preceding the tail. Delivered only on a child session's fresh hydration (no own context floor); the messages are parent history, not child journal entries, so they carry no seqs and are never covered by marks."
+            },
             "tail": {
               "type": "array",
               "items": { "$ref": "#/$defs/JournalEntryView" },

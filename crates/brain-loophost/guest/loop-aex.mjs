@@ -111,6 +111,10 @@ async function selfCompact(ctx, current) {
 export const { activate } = defineAgentloop({
   onSessionStart(start) {
     memory = [];
+    // The sealed fork prefix, already in the loop's own message shape, precedes everything.
+    for (const message of start.inherited ?? []) {
+      memory.push(message);
+    }
     if (start.latest_mark && typeof start.latest_mark.data.summary === "string") {
       memory.push(summaryMessage(start.latest_mark.data.summary));
     }
