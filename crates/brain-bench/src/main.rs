@@ -152,7 +152,7 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         ..BrainConfig::default()
     };
     cfg.official_capabilities.insert(
-        "aex.bench_echo".into(),
+        "brain.bench_echo".into(),
         brain::config::ServerToolPolicy {
             capability: "bench.echo".into(),
             scope: brain_protocol::session::ExternalToolScope::All,
@@ -344,7 +344,7 @@ impl Api {
                         "input_schema": {"type": "object", "additionalProperties": true},
                         "output_schema": {"type": "object", "additionalProperties": true}
                     },
-                    "executor": {"kind":"engine","capability":"aex.bench_echo"}
+                    "executor": {"kind":"engine","capability":"brain.bench_echo"}
                 }]}
             }))
             .send()

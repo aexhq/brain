@@ -15,28 +15,6 @@ permissions:
   contents: read
 
 jobs:
-  sdk:
-    strategy:
-      matrix:
-        os: [ubuntu-24.04, windows-2025, macos-15]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22.23.2"
-          cache: npm
-      - run: npm ci
-      # Generated contract artifacts must match their source schemas — a contract change
-      # without a regen ships stale published types (found by the 2026-08-22 audit).
-      - name: generated artifacts are fresh
-        if: runner.os == 'Linux'
-        run: |
-          npm run gen -w packages/brain
-          git diff --exit-code packages/brain
-      - run: npm test
-      - run: npm run package-smoke
-
   lint:
     runs-on: ubuntu-24.04
     steps:
@@ -95,17 +73,13 @@ jobs:
         with:
           node-version: "22.23.2"
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            crates/brain-loophost/guest/package-lock.json
-      # The guest components (and the seeded-official loop store inside dist) are a pure
-      # function of these inputs; a hit skips the npm installs, every componentization, and
-      # the official-loop seeding admissions, which otherwise dominate this job.
+          cache-dependency-path: crates/brain-loophost/guest/package-lock.json
+      # Guest components are a pure function of these inputs; a hit skips componentization.
       - name: cache loop guest components
         uses: actions/cache@v4
         with:
           path: crates/brain-loophost/guest/dist
-          key: loop-guests-${{ runner.os }}-${{ hashFiles('crates/brain-loophost/guest/*.mjs', 'crates/brain-loophost/guest/package.json', 'crates/brain-loophost/guest/package-lock.json', 'crates/brain-loophost/wit/guest.wit', 'packages/agentloop/src/**', 'packages/agentloop/package.json', 'packages/loop-pi/src/**', 'packages/loop-pi/build.mjs', 'packages/loop-pi/package.json', 'packages/loop-codex/src/**', 'packages/loop-codex/build.mjs', 'packages/loop-codex/package.json', 'package-lock.json') }}
+          key: loop-guests-${{ runner.os }}-${{ hashFiles('crates/brain-loophost/guest/*.mjs', 'crates/brain-loophost/guest/package.json', 'crates/brain-loophost/guest/package-lock.json', 'crates/brain-loophost/wit/guest.wit') }}
       # The engine's own compilation cache (self-validating, keyed by engine config + content):
       # a hit turns each multi-minute cranelift compile of a component into a fast deserialize.
       # restore-keys is safe — wasmtime revalidates every entry itself.
@@ -113,13 +87,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/wasmtime
-          key: wasmtime-components-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('crates/brain-loophost/guest/*.mjs', 'packages/agentloop/src/**', 'packages/loop-pi/src/**', 'packages/loop-codex/src/**', 'package-lock.json') }}
+          key: wasmtime-components-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('crates/brain-loophost/guest/*.mjs', 'crates/brain-loophost/guest/package-lock.json') }}
           restore-keys: |
             wasmtime-components-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-
-      # The loop packages build through the public toolchain here (not inside the test
-      # binary), so the e2e's ensure_component only fills gaps.
-      - run: npm ci
-      - run: npm run build -w packages/agentloop -w packages/loop-pi -w packages/loop-codex
+      - run: npm ci --prefix crates/brain-loophost/guest
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.97.1"

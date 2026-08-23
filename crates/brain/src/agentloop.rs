@@ -2,9 +2,8 @@
 //! durable mechanism stays on the kernel side of [`TurnCtx`].
 //!
 //! The public wire form of this seam is `contracts/agentloop/v1` (activations + ctx operations).
-//! [`SequentialAgentloop`] is the in-process reference sequential policy — the engine composition of the
-//! same seam a remote loop host will implement over the contract. Design record:
-//! aex-research `docs/harness-extension-design.md` (HX4/HX5, §6¾ B).
+//! [`SequentialAgentloop`] is the in-process reference sequential policy — the engine composition
+//! of the same seam a remote loop host implements over the contract.
 //!
 //! The kernel never lets a loop widen authority: model rounds run against the sealed
 //! provider/model, dispatch validates against the sealed grant, and round/wall budgets are
@@ -207,11 +206,8 @@ impl AgentloopRegistry for TestAgentloopRegistry {
     }
 }
 
-/// The reference sequential loop policy, contract mode: the in-process twin of the wasm guest
-/// (`crates/brain-loophost/guest/loop-aex.mjs`), driven entirely through
-/// `contracts/agentloop/v1` ctx ops. Stateless per turn: it rebuilds loop memory from the
-/// session_start hydration exactly as a fresh guest instance would, so residency is an
-/// optimization the guest adds, never a semantic.
+/// A reference sequential loop policy driven through the same kernel seam as imported loops.
+/// It is available to explicit compositions and is never selected as a session default.
 pub struct SequentialAgentloop;
 
 type OpOutcome = std::result::Result<

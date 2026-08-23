@@ -14,7 +14,7 @@ use brain_loophost::remote::{RemoteAgentloop, SpawnedLoopHost, WireClient};
 use brain_protocol::agentloop::{AgentloopErrorCode, CtxOp};
 
 fn component_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("guest/dist/aex-loop.component.wasm")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("guest/dist/contract-loop.component.wasm")
 }
 
 /// A ctx that parks the first model round until released, then aborts the turn.

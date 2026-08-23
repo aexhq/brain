@@ -4768,7 +4768,7 @@ async fn gateway_style_model_names_cross_the_loop_contract() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn self_compaction_summarizes_installs_a_mark_and_continues() {
-    // The aex loop owns compaction: tool rounds accumulate past the sealed context
+    // The reference loop owns compaction: tool rounds accumulate past the sealed context
     // window mid-turn, the loop summarizes everything but a recent tail through the
     // sealed model (twice here, the first continuation still over budget), and the
     // turn completes. This drives the policy through the whole kernel.

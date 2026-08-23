@@ -534,6 +534,7 @@ impl LocalWorkspace {
             .replace('\\', "/")
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_operation(
         self: &Arc<Self>,
         tool: &str,

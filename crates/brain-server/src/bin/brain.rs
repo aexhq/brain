@@ -102,7 +102,10 @@ async fn audit_local(journal: &Journal, custody: &Arc<dyn KeyCustody>) -> anyhow
                     head.session_id
                 )
             })?;
-        for (label, encoded) in [("Environment environment", head.doc.environment_secrets_b64.as_str())] {
+        for (label, encoded) in [(
+            "Environment environment",
+            head.doc.environment_secrets_b64.as_str(),
+        )] {
             if encoded.is_empty() {
                 continue;
             }

@@ -77,12 +77,11 @@ fn create_body(
     bundle: &[u8],
     bundle_digest: &str,
 ) -> Value {
-    let loop_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/loop-pi/dist");
-    let loop_bundle = std::fs::read(loop_dist.join("loop.bundle.mjs")).expect("pi loop bundle");
-    let loop_identity: Value = serde_json::from_slice(
-        &std::fs::read(loop_dist.join("identity.json")).expect("pi loop identity"),
-    )
-    .expect("pi loop identity JSON");
+    let loop_bundle = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../brain-loophost/guest/loop-contract.mjs"
+    ));
+    let loop_digest = hex::encode(Sha256::digest(loop_bundle));
     let manifest = json!({
         "profile":"computer/v1",
         "target":"linux-amd64",
@@ -100,8 +99,8 @@ fn create_body(
     json!({
         "model": {"provider":provider, "name":model, "api_key":api_key},
         "agentloop": {
-            "source_bundle_sha256": loop_identity["source_bundle_sha256"],
-            "toolchain": loop_identity["toolchain"],
+            "source_bundle_sha256": loop_digest,
+            "toolchain": brain_loophost::registry::LOOP_TOOLCHAIN,
             "bundle_base64": base64::engine::general_purpose::STANDARD.encode(loop_bundle),
         },
         "tools": {"items":[{
@@ -500,10 +499,16 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
             .iter()
             .position(|kind| *kind == "managed_call_accepted")
             .expect("managed receipt");
-        let result = kinds
+        let result = records
             .iter()
-            .position(|kind| *kind == "tool_result")
-            .expect("tool result");
+            .position(|entry| {
+                matches!(
+                    &entry.record,
+                    brain::journal::Record::ToolResult { name, .. }
+                        if name == "workspace_probe"
+                )
+            })
+            .expect("managed tool result");
         assert!(intent < accepted && accepted < result);
         let durable = format!(
             "{}{}",

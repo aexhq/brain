@@ -2132,6 +2132,7 @@ impl Brain {
         Ok(content)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn sandbox_file_write_inline(
         self: &Arc<Self>,
         session_id: &str,
@@ -2329,6 +2330,7 @@ impl Brain {
 
     /// Prepare a direct upload into hidden quota-metered storage. Completion performs one
     /// generation-fenced exact-pair import and never guesses after process loss or ambiguity.
+    #[allow(clippy::too_many_arguments)]
     pub async fn sandbox_file_prepare_upload(
         self: &Arc<Self>,
         session_id: &str,
@@ -2527,6 +2529,7 @@ impl Brain {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn storage_copy_to_sandbox(
         self: &Arc<Self>,
         session_id: &str,
@@ -2550,6 +2553,7 @@ impl Brain {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn storage_copy_to_sandbox_internal(
         self: &Arc<Self>,
         session_id: &str,
@@ -2573,6 +2577,7 @@ impl Brain {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn storage_copy_to_sandbox_admitted(
         self: &Arc<Self>,
         session_id: &str,
@@ -2602,6 +2607,7 @@ impl Brain {
         .await?
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn storage_copy_from_sandbox(
         self: &Arc<Self>,
         session_id: &str,
@@ -2647,6 +2653,7 @@ impl Brain {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn storage_copy_from_sandbox_admitted(
         self: &Arc<Self>,
         session_id: &str,
@@ -5891,10 +5898,10 @@ pub(crate) fn merge_session_network(
         "none" | "allowlist" => {
             let mut merged: Vec<serde_json::Value> = Vec::new();
             for destination in session_destinations.into_iter().chain(declared) {
-                if let Some(host) = host_of(&destination) {
-                    if denied(host, &deny) {
-                        continue;
-                    }
+                if let Some(host) = host_of(&destination)
+                    && denied(host, &deny)
+                {
+                    continue;
                 }
                 if !merged.contains(&destination) {
                     merged.push(destination);

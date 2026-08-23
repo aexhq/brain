@@ -18,8 +18,7 @@ use crate::WasmAgentloop;
 
 /// The one loop toolchain this build supports: the pinned guest engine plus componentizer.
 /// A different toolchain string is a different sealed identity and is refused, never guessed.
-/// The TS SDK exports the same constant (`LOOP_TOOLCHAIN` in `@aexhq/agentloop/build`); the
-/// upload e2e seals a bundle under the SDK's constant, so a drift between the two fails CI.
+/// External builders must seal source bundles with this exact value.
 pub const LOOP_TOOLCHAIN: &str = "starlingmonkey-componentize-js-0.22.0";
 
 /// Componentization is minutes of CPU at worst; a componentizer that exceeds this wall is
