@@ -1,9 +1,11 @@
 <h1 align="center">Brain</h1>
 
-<p align="center"><strong>Durable sessions for models and tools.</strong></p>
+<p align="center"><strong>A minimal and extensible kernel for AI workloads.</strong></p>
 <p align="center">
-  A product-neutral session engine for model conversations, tool execution, recovery,
-  cancellation, and event streams.
+  Durable sessions for models and tools: a product-neutral session kernel for model
+  conversations, tool execution, recovery, cancellation, and event streams — mechanism,
+  not policy. Agent behavior lives in extensions (agentloops and tools) built on its
+  small frozen contracts.
 </p>
 <p align="center">
   <a href="https://aex.dev">Aex</a> ·

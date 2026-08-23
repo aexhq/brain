@@ -283,6 +283,7 @@ impl SealedPrefix {
         tools: Option<Vec<ToolDecl>>,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
+        tool_choice_none: bool,
     ) -> SealedPrefix {
         let mut sampling = self.sampling.clone();
         if let Some(max_tokens) = max_tokens {
@@ -302,17 +303,17 @@ impl SealedPrefix {
             dialect: self.dialect,
             sampling,
             limits: self.limits,
-            rendered_base: if sealed_presentation {
+            rendered_base: if sealed_presentation && !tool_choice_none {
                 self.rendered_base.clone()
             } else {
                 None
             },
-            prompt_cache_key: if sealed_presentation {
+            prompt_cache_key: if sealed_presentation && !tool_choice_none {
                 self.prompt_cache_key.clone()
             } else {
                 None
             },
-            tool_choice_none: false,
+            tool_choice_none,
         }
     }
     pub fn rendered_base(&self) -> Option<&serde_json::Value> {
@@ -573,7 +574,13 @@ mod tests {
             Some(serde_json::json!({"frozen": "base"})),
             Some("aex:ses_test".into()),
         );
-        let echoed = sealed.loop_call_view(None, Some(sealed.tools.clone()), Some(512), Some(0.25));
+        let echoed = sealed.loop_call_view(
+            None,
+            Some(sealed.tools.clone()),
+            Some(512),
+            Some(0.25),
+            false,
+        );
         assert_eq!(
             echoed.rendered_base(),
             Some(&serde_json::json!({"frozen": "base"})),
@@ -589,12 +596,12 @@ mod tests {
             Some(serde_json::json!({"frozen": "base"})),
             Some("aex:ses_test".into()),
         );
-        let new_system = sealed.loop_call_view(Some("different".into()), None, None, None);
+        let new_system = sealed.loop_call_view(Some("different".into()), None, None, None, false);
         assert!(new_system.rendered_base().is_none());
         assert!(new_system.prompt_cache_key().is_none());
         let mut tools = sealed.tools.clone();
         tools[0].description = "changed".into();
-        let new_tools = sealed.loop_call_view(None, Some(tools), None, None);
+        let new_tools = sealed.loop_call_view(None, Some(tools), None, None, false);
         assert!(new_tools.rendered_base().is_none());
         assert!(new_tools.prompt_cache_key().is_none());
     }

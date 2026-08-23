@@ -366,9 +366,18 @@ impl crate::agentloop::TurnCtx for LoopTurnCtx<'_> {
             } => self.op_journal_read(after_seq, types, limit).await,
             CtxOp::ModelStream { request } => self.op_model_stream(request).await,
             CtxOp::ToolsDispatch { calls } => self.op_tools_dispatch(calls).await,
-            CtxOp::TurnFinish { result } => {
+            CtxOp::TurnFinish {
+                result,
+                stop_reason,
+            } => {
+                use brain_protocol::agentloop::CtxOpStopReason;
                 self.terminal = Some(crate::agentloop::LoopTerminal::Finished {
                     result: result.map(|object| object.0),
+                    stop_reason: match stop_reason {
+                        None | Some(CtxOpStopReason::EndTurn) => TurnStopReason::EndTurn,
+                        Some(CtxOpStopReason::MaxRounds) => TurnStopReason::MaxRounds,
+                        Some(CtxOpStopReason::Refusal) => TurnStopReason::Refusal,
+                    },
                 });
                 Ok(Ok(CtxOpResult::TurnFinish))
             }
@@ -745,6 +754,10 @@ impl LoopTurnCtx<'_> {
             Some(tools),
             max_tokens,
             request.temperature.map(|temperature| temperature as f32),
+            matches!(
+                request.tool_choice,
+                Some(brain_protocol::agentloop::ModelRequestToolChoice::None)
+            ),
         );
         let provider_request = match self.run.provider.build_request(
             &view,
@@ -984,7 +997,10 @@ impl LoopTurnCtx<'_> {
             .loop_dispatch(self.st, batch, self.rounds, &mut self.tool_calls)
             .await?;
         if let crate::agentloop::DispatchOutcome::TerminalCommitted { .. } = &outcome {
-            self.terminal = Some(crate::agentloop::LoopTerminal::Finished { result: None });
+            self.terminal = Some(crate::agentloop::LoopTerminal::Finished {
+                result: None,
+                stop_reason: TurnStopReason::EndTurn,
+            });
             self.terminal_committed = true;
         }
         let views = calls
@@ -1272,8 +1288,11 @@ impl TurnRun {
                     error.message.as_str()
                 )))
             }
-            Some(crate::agentloop::LoopTerminal::Finished { result }) => Ok(TurnReport {
-                stop_reason: TurnStopReason::EndTurn,
+            Some(crate::agentloop::LoopTerminal::Finished {
+                result,
+                stop_reason,
+            }) => Ok(TurnReport {
+                stop_reason,
                 rounds,
                 tool_calls,
                 terminal_committed,

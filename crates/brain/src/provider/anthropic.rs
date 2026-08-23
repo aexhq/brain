@@ -379,7 +379,7 @@ mod tests {
             Some(Value::Object(Anthropic::render_base(&prefix()))),
             Some("aex:ses_parity".into()),
         );
-        let echoed = sealed.loop_call_view(None, Some(sealed.tools.clone()), None, None);
+        let echoed = sealed.loop_call_view(None, Some(sealed.tools.clone()), None, None, false);
         let history = vec![Message::user_text("same turn")];
         let kernel = Anthropic::build_request(
             &sealed,

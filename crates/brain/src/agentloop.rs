@@ -73,6 +73,9 @@ impl LoopVerdict {
 pub enum LoopTerminal {
     Finished {
         result: Option<serde_json::Map<String, serde_json::Value>>,
+        /// The loop's terminal claim; `EndTurn` when unstated. Cancelled/interrupted stay
+        /// kernel-owned outcomes a loop cannot claim.
+        stop_reason: crate::journal::TurnStopReason,
     },
     Failed {
         error: brain_protocol::agentloop::AgentloopError,
