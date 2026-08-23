@@ -9,7 +9,6 @@ pub(super) struct MemSession {
     retention: JournalRetention,
     pub(super) direct_children: u32,
     pub(super) descendants: u32,
-    live_sandboxes: u32,
     fence: u64,
     last_seq: u64,
     owner: Option<String>,
@@ -26,8 +25,6 @@ pub struct MemoryStore {
     pub(super) tenant_retention: std::sync::Mutex<HashMap<String, (u64, u64)>>,
     child_links:
         std::sync::Mutex<HashMap<String, std::collections::BTreeMap<String, SessionSummary>>>,
-    sandboxes:
-        std::sync::Mutex<HashMap<String, std::collections::BTreeMap<String, SandboxInventoryDoc>>>,
     deletions: std::sync::Mutex<HashMap<String, DeletionStatusDoc>>,
 }
 
@@ -173,7 +170,6 @@ impl JournalStore for MemoryStore {
                 retention,
                 direct_children: 0,
                 descendants: 0,
-                live_sandboxes: 0,
                 fence: 0,
                 last_seq: 1,
                 owner: None,
@@ -556,13 +552,7 @@ impl JournalStore for MemoryStore {
         };
         let removed = session.records.len() as u64;
         session.records.clear();
-        let sandboxes = self
-            .sandboxes
-            .lock()
-            .expect("memory sandbox inventory")
-            .remove(session_id)
-            .map_or(0, |items| items.len() as u64);
-        Ok(removed.saturating_add(sandboxes))
+        Ok(removed)
     }
 
     async fn put_deletion_status(&self, status: &DeletionStatusDoc) -> Result<()> {
@@ -748,141 +738,6 @@ impl JournalStore for MemoryStore {
             sessions: rows,
             next_cursor,
         })
-    }
-
-    async fn reserve_sandbox(
-        &self,
-        request: &SandboxReserveRequest,
-    ) -> Result<SandboxInventoryDoc> {
-        let mut sessions = self.sessions.lock().expect("memory journal");
-        let root = sessions
-            .get_mut(&request.root_id)
-            .ok_or_else(|| BrainError::NoSuchSession(request.root_id.clone()))?;
-        if root.doc.root_id != request.root_id || !child_admission_open(&root.doc) {
-            return Err(BrainError::Invalid(
-                "additional sandbox admission is closed for this root".into(),
-            ));
-        }
-        let mut inventories = self.sandboxes.lock().expect("memory sandbox inventory");
-        let inventory = inventories.entry(request.root_id.clone()).or_default();
-        if let Some(existing) = inventory.get(&request.sandbox_id) {
-            if existing.operation_id == request.operation_id
-                && existing.request_digest == request.request_digest
-                && existing.owner_session_id == request.owner_session_id
-            {
-                return Ok(existing.clone());
-            }
-            return Err(BrainError::IdempotencyConflict);
-        }
-        if root.live_sandboxes >= root.doc.prefix.max_additional_sandboxes_per_root {
-            return Err(BrainError::SandboxResourceExhausted);
-        }
-        root.live_sandboxes = root.live_sandboxes.saturating_add(1);
-        let doc = SandboxInventoryDoc {
-            root_id: request.root_id.clone(),
-            owner_session_id: request.owner_session_id.clone(),
-            sandbox_id: request.sandbox_id.clone(),
-            operation_id: request.operation_id.clone(),
-            request_digest: request.request_digest.clone(),
-            generation_intent: request.generation_intent.clone(),
-            status: request.initial_status.clone(),
-            created_at_ms: request.now_ms,
-            updated_at_ms: request.now_ms,
-            version: 1,
-            slot_released: false,
-        };
-        inventory.insert(request.sandbox_id.clone(), doc.clone());
-        Ok(doc)
-    }
-
-    async fn get_sandbox(&self, root_id: &str, sandbox_id: &str) -> Result<SandboxInventoryDoc> {
-        self.sandboxes
-            .lock()
-            .expect("memory sandbox inventory")
-            .get(root_id)
-            .and_then(|inventory| inventory.get(sandbox_id))
-            .cloned()
-            .ok_or_else(|| BrainError::FileNotFound(format!("sandbox {sandbox_id}")))
-    }
-
-    async fn list_sandbox_page(&self, query: &SandboxListQuery<'_>) -> Result<SandboxPage> {
-        let inventories = self.sandboxes.lock().expect("memory sandbox inventory");
-        let Some(inventory) = inventories.get(query.root_id) else {
-            return Ok(SandboxPage {
-                sandboxes: Vec::new(),
-                next_cursor: None,
-            });
-        };
-        let limit = query.limit.clamp(1, 100);
-        let mut rows = inventory
-            .iter()
-            .filter(|(sandbox_id, _)| {
-                query
-                    .cursor
-                    .is_none_or(|cursor| sandbox_id.as_str() > cursor)
-            })
-            .map(|(_, sandbox)| sandbox.clone())
-            .take(limit + 1)
-            .collect::<Vec<_>>();
-        let has_more = rows.len() > limit;
-        rows.truncate(limit);
-        let next_cursor = has_more.then(|| {
-            rows.last()
-                .expect("sandbox page with more rows is non-empty")
-                .sandbox_id
-                .clone()
-        });
-        Ok(SandboxPage {
-            sandboxes: rows,
-            next_cursor,
-        })
-    }
-
-    async fn update_sandbox(&self, request: &SandboxUpdateRequest) -> Result<SandboxInventoryDoc> {
-        let mut sessions = self.sessions.lock().expect("memory journal");
-        let root = sessions
-            .get_mut(&request.root_id)
-            .ok_or_else(|| BrainError::NoSuchSession(request.root_id.clone()))?;
-        let mut inventories = self.sandboxes.lock().expect("memory sandbox inventory");
-        let item = inventories
-            .get_mut(&request.root_id)
-            .and_then(|inventory| inventory.get_mut(&request.sandbox_id))
-            .ok_or_else(|| BrainError::FileNotFound(format!("sandbox {}", request.sandbox_id)))?;
-        if item.version != request.expected_version {
-            if serde_json::to_value(&item.status)? == serde_json::to_value(&request.status)? {
-                return Ok(item.clone());
-            }
-            return Err(BrainError::Fenced);
-        }
-        if serde_json::to_value(&item.status.target)?
-            != serde_json::to_value(&request.status.target)?
-        {
-            return Err(BrainError::Journal(
-                "sandbox lifecycle update changed its sealed target".into(),
-            ));
-        }
-        if item.slot_released && !request.release_slot {
-            return Err(BrainError::SandboxGone);
-        }
-        if request.release_slot
-            && !matches!(
-                request.status.state,
-                brain_protocol::environment::SandboxState::Gone
-                    | brain_protocol::environment::SandboxState::Terminated
-            )
-        {
-            return Err(BrainError::Journal(
-                "sandbox slot may be released only for a confirmed terminal target".into(),
-            ));
-        }
-        if request.release_slot && !item.slot_released {
-            root.live_sandboxes = root.live_sandboxes.saturating_sub(1);
-            item.slot_released = true;
-        }
-        item.status = request.status.clone();
-        item.updated_at_ms = request.now_ms;
-        item.version = item.version.saturating_add(1);
-        Ok(item.clone())
     }
 
     async fn list_recovery_page(&self, query: &RecoveryQuery<'_>) -> Result<RecoveryPage> {

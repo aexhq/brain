@@ -117,15 +117,6 @@ pub trait JournalStore: Send + Sync {
     async fn finalize_deletion(&self, status: &DeletionStatusDoc) -> Result<()>;
     async fn list_session_page(&self, query: &SessionListQuery<'_>) -> Result<SessionPage>;
     async fn list_child_page(&self, query: &ChildListQuery<'_>) -> Result<ChildPage>;
-    /// Atomically reserve one root-scoped live slot and create the logical inventory row. Exact
-    /// operation/digest replay returns the existing row without consuming another slot.
-    async fn reserve_sandbox(&self, request: &SandboxReserveRequest)
-    -> Result<SandboxInventoryDoc>;
-    async fn get_sandbox(&self, root_id: &str, sandbox_id: &str) -> Result<SandboxInventoryDoc>;
-    async fn list_sandbox_page(&self, query: &SandboxListQuery<'_>) -> Result<SandboxPage>;
-    /// Version-fenced lifecycle update. `release_slot` decrements the root live counter exactly
-    /// once, only while transitioning a nonterminal row to confirmed gone/terminated.
-    async fn update_sandbox(&self, request: &SandboxUpdateRequest) -> Result<SandboxInventoryDoc>;
     /// Eventually-consistent discovery only. Every candidate must still win the strongly
     /// consistent base-HEAD claim/fence before executing recovery.
     async fn list_recovery_page(&self, query: &RecoveryQuery<'_>) -> Result<RecoveryPage>;
@@ -383,32 +374,6 @@ impl Journal {
 
     pub async fn list_child_page(&self, query: &ChildListQuery<'_>) -> Result<ChildPage> {
         self.store.list_child_page(query).await
-    }
-
-    pub async fn reserve_sandbox(
-        &self,
-        request: &SandboxReserveRequest,
-    ) -> Result<SandboxInventoryDoc> {
-        self.store.reserve_sandbox(request).await
-    }
-
-    pub async fn get_sandbox(
-        &self,
-        root_id: &str,
-        sandbox_id: &str,
-    ) -> Result<SandboxInventoryDoc> {
-        self.store.get_sandbox(root_id, sandbox_id).await
-    }
-
-    pub async fn list_sandbox_page(&self, query: &SandboxListQuery<'_>) -> Result<SandboxPage> {
-        self.store.list_sandbox_page(query).await
-    }
-
-    pub async fn update_sandbox(
-        &self,
-        request: &SandboxUpdateRequest,
-    ) -> Result<SandboxInventoryDoc> {
-        self.store.update_sandbox(request).await
     }
 
     pub async fn list_recovery_page(&self, query: &RecoveryQuery<'_>) -> Result<RecoveryPage> {

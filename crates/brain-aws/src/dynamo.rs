@@ -20,11 +20,10 @@ use brain::journal::{
     ChildListQuery, ChildPage, ConfigDoc, DeletionStatusDoc, EndFence, Entry, Head, HeadDoc,
     JournalRetention, JournalRetentionLimits, JournalStore, LEASE_MS, MAX_SERIALIZED_CONFIG_BYTES,
     Record, RecordPage, RecordPageQuery, RecoveryItem, RecoveryPage, RecoveryQuery, STEAL_GRACE_MS,
-    SandboxInventoryDoc, SandboxListQuery, SandboxPage, SandboxReserveRequest,
-    SandboxUpdateRequest, SessionListQuery, SessionPage, SessionSummary, child_admission_open,
-    initial_retention, project_end_fence, project_retention, record_sk, recovery_due_key,
-    recovery_shard, requires_ancestor_admission, retention_delta, session_id_from_list_cursor,
-    session_pk, tenant_session_sort_key, validate_ancestor_path, validate_config_doc,
+    SessionListQuery, SessionPage, SessionSummary, child_admission_open, initial_retention,
+    project_end_fence, project_retention, record_sk, recovery_due_key, recovery_shard,
+    requires_ancestor_admission, retention_delta, session_id_from_list_cursor, session_pk,
+    tenant_session_sort_key, validate_ancestor_path, validate_config_doc,
     validate_record_page_query,
 };
 use brain::{BrainError, Result};
@@ -37,7 +36,6 @@ pub const TENANT_STATE_SESSIONS_INDEX: &str = "tenant-state-sessions";
 pub const RECOVERY_DUE_INDEX: &str = "recovery-due";
 const CONFIG_SK: &str = "CONFIG#000000";
 const CHILD_SK_PREFIX: &str = "CHILD#";
-const SANDBOX_SK_PREFIX: &str = "SANDBOX#";
 const TENANT_STORAGE_SK: &str = "STORAGE#METER";
 const TENANT_RETENTION_SK: &str = "JOURNAL#METER";
 
@@ -395,7 +393,6 @@ impl JournalStore for DynamoJournal {
             )
             .item("direct_child_count", AttributeValue::N("0".into()))
             .item("descendant_count", AttributeValue::N("0".into()))
-            .item("additional_sandbox_count", AttributeValue::N("0".into()))
             .item(
                 "journal_metered_bytes",
                 AttributeValue::N(retention.metered_bytes.to_string()),
@@ -415,10 +412,6 @@ impl JournalStore for DynamoJournal {
             .item(
                 "max_descendants",
                 AttributeValue::N(doc.prefix.max_descendants.to_string()),
-            )
-            .item(
-                "max_additional_sandboxes",
-                AttributeValue::N(doc.prefix.max_additional_sandboxes_per_root.to_string()),
             )
             .condition_expression("attribute_not_exists(sk)");
         if let Some(parent_id) = &doc.parent_id {
@@ -1799,254 +1792,6 @@ impl JournalStore for DynamoJournal {
         })
     }
 
-    async fn reserve_sandbox(
-        &self,
-        request: &SandboxReserveRequest,
-    ) -> Result<SandboxInventoryDoc> {
-        let doc = SandboxInventoryDoc {
-            root_id: request.root_id.clone(),
-            owner_session_id: request.owner_session_id.clone(),
-            sandbox_id: request.sandbox_id.clone(),
-            operation_id: request.operation_id.clone(),
-            request_digest: request.request_digest.clone(),
-            generation_intent: request.generation_intent.clone(),
-            status: request.initial_status.clone(),
-            created_at_ms: request.now_ms,
-            updated_at_ms: request.now_ms,
-            version: 1,
-            slot_released: false,
-        };
-        let put = Put::builder()
-            .table_name(&self.table)
-            .item("pk", AttributeValue::S(session_pk(&request.root_id)))
-            .item(
-                "sk",
-                AttributeValue::S(format!("{SANDBOX_SK_PREFIX}{}", request.sandbox_id)),
-            )
-            .item("sandbox_id", AttributeValue::S(request.sandbox_id.clone()))
-            .item("version", AttributeValue::N("1".into()))
-            .item("body", AttributeValue::S(serde_json::to_string(&doc)?))
-            .condition_expression("attribute_not_exists(sk)")
-            .build()
-            .map_err(|error| BrainError::Journal(format!("sandbox inventory put: {error}")))?;
-        let reserve = Update::builder()
-            .table_name(&self.table)
-            .key("pk", AttributeValue::S(session_pk(&request.root_id)))
-            .key("sk", AttributeValue::S("HEAD".into()))
-            .condition_expression(
-                "admission_open = :open AND root_id = :root AND \
-                 additional_sandbox_count < max_additional_sandboxes",
-            )
-            .update_expression("ADD additional_sandbox_count :one")
-            .expression_attribute_values(":open", AttributeValue::Bool(true))
-            .expression_attribute_values(":root", AttributeValue::S(request.root_id.clone()))
-            .expression_attribute_values(":one", AttributeValue::N("1".into()))
-            .build()
-            .map_err(|error| BrainError::Journal(format!("sandbox slot reserve: {error}")))?;
-        match self
-            .db
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().update(reserve).build())
-            .transact_items(TransactWriteItem::builder().put(put).build())
-            .send()
-            .await
-        {
-            Ok(_) => Ok(doc),
-            Err(error) if conditional_failure(&error) => {
-                match self
-                    .get_sandbox(&request.root_id, &request.sandbox_id)
-                    .await
-                {
-                    Ok(existing)
-                        if existing.operation_id == request.operation_id
-                            && existing.request_digest == request.request_digest
-                            && existing.owner_session_id == request.owner_session_id =>
-                    {
-                        return Ok(existing);
-                    }
-                    Ok(_) => return Err(BrainError::IdempotencyConflict),
-                    Err(BrainError::FileNotFound(_)) => {}
-                    Err(read_error) => return Err(read_error),
-                }
-                let root = self.get_head(&request.root_id).await?;
-                if !child_admission_open(&root.doc) {
-                    Err(BrainError::Invalid(
-                        "additional sandbox admission is closed for this root".into(),
-                    ))
-                } else {
-                    Err(BrainError::SandboxResourceExhausted)
-                }
-            }
-            Err(error) => Err(BrainError::Journal(format!(
-                "reserve additional sandbox: {}",
-                describe(&error)
-            ))),
-        }
-    }
-
-    async fn get_sandbox(&self, root_id: &str, sandbox_id: &str) -> Result<SandboxInventoryDoc> {
-        let output = self
-            .db
-            .get_item()
-            .table_name(&self.table)
-            .key("pk", AttributeValue::S(session_pk(root_id)))
-            .key(
-                "sk",
-                AttributeValue::S(format!("{SANDBOX_SK_PREFIX}{sandbox_id}")),
-            )
-            .consistent_read(true)
-            .send()
-            .await
-            .map_err(|error| {
-                BrainError::Journal(format!("get sandbox inventory: {}", describe(&error)))
-            })?;
-        let item = output
-            .item()
-            .ok_or_else(|| BrainError::FileNotFound(format!("sandbox {sandbox_id}")))?;
-        parse_sandbox(item)
-    }
-
-    async fn list_sandbox_page(&self, query: &SandboxListQuery<'_>) -> Result<SandboxPage> {
-        let start_key = query.cursor.map(|sandbox_id| {
-            HashMap::from([
-                (
-                    "pk".to_owned(),
-                    AttributeValue::S(session_pk(query.root_id)),
-                ),
-                (
-                    "sk".to_owned(),
-                    AttributeValue::S(format!("{SANDBOX_SK_PREFIX}{sandbox_id}")),
-                ),
-            ])
-        });
-        let limit = query.limit.clamp(1, 100);
-        let output = self
-            .db
-            .query()
-            .table_name(&self.table)
-            .key_condition_expression("pk = :pk AND begins_with(sk, :prefix)")
-            .expression_attribute_values(":pk", AttributeValue::S(session_pk(query.root_id)))
-            .expression_attribute_values(":prefix", AttributeValue::S(SANDBOX_SK_PREFIX.into()))
-            .consistent_read(true)
-            .limit((limit + 1) as i32)
-            .set_exclusive_start_key(start_key)
-            .send()
-            .await
-            .map_err(|error| {
-                BrainError::Journal(format!("list sandbox inventory: {}", describe(&error)))
-            })?;
-        let mut sandboxes = output
-            .items()
-            .iter()
-            .map(parse_sandbox)
-            .collect::<Result<Vec<_>>>()?;
-        let has_more = sandboxes.len() > limit;
-        sandboxes.truncate(limit);
-        let next_cursor = has_more.then(|| {
-            sandboxes
-                .last()
-                .expect("sandbox page with more rows is non-empty")
-                .sandbox_id
-                .clone()
-        });
-        Ok(SandboxPage {
-            sandboxes,
-            next_cursor,
-        })
-    }
-
-    async fn update_sandbox(&self, request: &SandboxUpdateRequest) -> Result<SandboxInventoryDoc> {
-        let current = self
-            .get_sandbox(&request.root_id, &request.sandbox_id)
-            .await?;
-        if current.version != request.expected_version {
-            if serde_json::to_value(&current.status)? == serde_json::to_value(&request.status)? {
-                return Ok(current);
-            }
-            return Err(BrainError::Fenced);
-        }
-        if serde_json::to_value(&current.status.target)?
-            != serde_json::to_value(&request.status.target)?
-        {
-            return Err(BrainError::Journal(
-                "sandbox lifecycle update changed its sealed target".into(),
-            ));
-        }
-        if current.slot_released && !request.release_slot {
-            return Err(BrainError::SandboxGone);
-        }
-        if request.release_slot
-            && !matches!(
-                request.status.state.to_string().as_str(),
-                "gone" | "terminated"
-            )
-        {
-            return Err(BrainError::Journal(
-                "sandbox slot may be released only for a confirmed terminal target".into(),
-            ));
-        }
-        let mut next = current.clone();
-        next.status = request.status.clone();
-        next.updated_at_ms = request.now_ms;
-        next.version = next.version.saturating_add(1);
-        if request.release_slot {
-            next.slot_released = true;
-        }
-        let update_item = Update::builder()
-            .table_name(&self.table)
-            .key("pk", AttributeValue::S(session_pk(&request.root_id)))
-            .key(
-                "sk",
-                AttributeValue::S(format!("{SANDBOX_SK_PREFIX}{}", request.sandbox_id)),
-            )
-            .condition_expression("version = :expected")
-            .update_expression("SET version = :next, body = :body")
-            .expression_attribute_values(
-                ":expected",
-                AttributeValue::N(request.expected_version.to_string()),
-            )
-            .expression_attribute_values(":next", AttributeValue::N(next.version.to_string()))
-            .expression_attribute_values(":body", AttributeValue::S(serde_json::to_string(&next)?))
-            .build()
-            .map_err(|error| BrainError::Journal(format!("sandbox lifecycle update: {error}")))?;
-        let mut transaction = self
-            .db
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().update(update_item).build());
-        if request.release_slot && !current.slot_released {
-            let release = Update::builder()
-                .table_name(&self.table)
-                .key("pk", AttributeValue::S(session_pk(&request.root_id)))
-                .key("sk", AttributeValue::S("HEAD".into()))
-                .condition_expression("additional_sandbox_count >= :one")
-                .update_expression("ADD additional_sandbox_count :minus_one")
-                .expression_attribute_values(":one", AttributeValue::N("1".into()))
-                .expression_attribute_values(":minus_one", AttributeValue::N("-1".into()))
-                .build()
-                .map_err(|error| BrainError::Journal(format!("sandbox slot release: {error}")))?;
-            transaction =
-                transaction.transact_items(TransactWriteItem::builder().update(release).build());
-        }
-        match transaction.send().await {
-            Ok(_) => Ok(next),
-            Err(error) if conditional_failure(&error) => {
-                let observed = self
-                    .get_sandbox(&request.root_id, &request.sandbox_id)
-                    .await?;
-                if serde_json::to_value(&observed.status)? == serde_json::to_value(&request.status)?
-                {
-                    Ok(observed)
-                } else {
-                    Err(BrainError::Fenced)
-                }
-            }
-            Err(error) => Err(BrainError::Journal(format!(
-                "update additional sandbox: {}",
-                describe(&error)
-            ))),
-        }
-    }
-
     async fn list_recovery_page(&self, query: &RecoveryQuery<'_>) -> Result<RecoveryPage> {
         let start_key = query
             .cursor
@@ -2235,15 +1980,6 @@ fn parse_entry(item: &HashMap<String, AttributeValue>) -> Result<Entry> {
     let record: Record = serde_json::from_str(body)
         .map_err(|e| BrainError::Journal(format!("record {seq} does not parse: {e}")))?;
     Ok(Entry { seq, ts_ms, record })
-}
-
-fn parse_sandbox(item: &HashMap<String, AttributeValue>) -> Result<SandboxInventoryDoc> {
-    let body = item
-        .get("body")
-        .and_then(|value| value.as_s().ok())
-        .ok_or_else(|| BrainError::Journal("sandbox inventory row missing body".into()))?;
-    serde_json::from_str(body)
-        .map_err(|error| BrainError::Journal(format!("sandbox inventory does not parse: {error}")))
 }
 
 fn conditional_failure<E: ProvideErrorMetadata, R>(e: &SdkError<E, R>) -> bool {

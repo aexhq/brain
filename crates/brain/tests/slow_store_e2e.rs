@@ -13,8 +13,7 @@ use brain::config::Dialect;
 use brain::journal::{
     ChildListQuery, ChildPage, CommitDecision, CreateDecision, DeletionStatusDoc, EndFence, Head,
     HeadDoc, Journal, JournalRetentionLimits, JournalStore, MemoryStore, RecordPage,
-    RecordPageQuery, RecoveryPage, RecoveryQuery, SandboxInventoryDoc, SandboxListQuery,
-    SandboxPage, SandboxReserveRequest, SandboxUpdateRequest, SessionListQuery, SessionPage,
+    RecordPageQuery, RecoveryPage, RecoveryQuery, SessionListQuery, SessionPage,
 };
 use brain::provider::Provider;
 use brain::provider::fake::{FakeMode, FakeProvider};
@@ -141,32 +140,6 @@ impl JournalStore for SlowStore {
     async fn list_child_page(&self, query: &ChildListQuery<'_>) -> brain::Result<ChildPage> {
         self.read().await;
         self.inner.list_child_page(query).await
-    }
-    async fn reserve_sandbox(
-        &self,
-        request: &SandboxReserveRequest,
-    ) -> brain::Result<SandboxInventoryDoc> {
-        self.write().await;
-        self.inner.reserve_sandbox(request).await
-    }
-    async fn get_sandbox(
-        &self,
-        root_id: &str,
-        sandbox_id: &str,
-    ) -> brain::Result<SandboxInventoryDoc> {
-        self.read().await;
-        self.inner.get_sandbox(root_id, sandbox_id).await
-    }
-    async fn list_sandbox_page(&self, query: &SandboxListQuery<'_>) -> brain::Result<SandboxPage> {
-        self.read().await;
-        self.inner.list_sandbox_page(query).await
-    }
-    async fn update_sandbox(
-        &self,
-        request: &SandboxUpdateRequest,
-    ) -> brain::Result<SandboxInventoryDoc> {
-        self.write().await;
-        self.inner.update_sandbox(request).await
     }
     async fn list_recovery_page(&self, query: &RecoveryQuery<'_>) -> brain::Result<RecoveryPage> {
         self.read().await;

@@ -20,7 +20,6 @@ pub const STORAGE_MAX_OBJECT_BYTES_ENV: &str = "BRAIN_STORAGE_MAX_OBJECT_BYTES";
 pub const STORAGE_MAX_SESSION_BYTES_ENV: &str = "BRAIN_STORAGE_MAX_SESSION_BYTES";
 pub const STORAGE_MAX_TENANT_BYTES_ENV: &str = "BRAIN_STORAGE_MAX_TENANT_BYTES";
 pub const STORAGE_TRANSFER_TTL_ENV: &str = "BRAIN_STORAGE_TRANSFER_TTL_MS";
-pub const MAX_ADDITIONAL_SANDBOXES_ENV: &str = "BRAIN_MAX_ADDITIONAL_SANDBOXES_PER_ROOT";
 pub const EXTERNAL_EXECUTOR_URL_ENV: &str = "BRAIN_EXTERNAL_TOOL_EXECUTOR_URL";
 pub const EXTERNAL_EXECUTOR_TOKEN_ENV: &str = "BRAIN_EXTERNAL_TOOL_EXECUTOR_TOKEN";
 pub const EXTERNAL_EXECUTOR_CAPABILITIES_ENV: &str = "BRAIN_EXTERNAL_TOOL_CAPABILITIES";
@@ -40,7 +39,6 @@ pub const DEFAULT_MAX_EVENT_FOLLOWERS: usize = 64;
 pub const DEFAULT_MAX_RESIDENT_SESSIONS: usize = 128;
 pub const DEFAULT_IDLE_DISCARD_SECONDS: u64 = 900;
 pub const DEFAULT_STORAGE_MAX_TENANT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-pub const DEFAULT_MAX_ADDITIONAL_SANDBOXES: usize = 2;
 pub const DEFAULT_RECOVERY_POLL_MS: u64 = 1_000;
 pub const DEFAULT_RECOVERY_SHARDS_PER_POLL: usize = 4;
 pub const DEFAULT_RECOVERY_PAGE_SIZE: usize = 32;
@@ -63,7 +61,6 @@ pub const MAX_IDLE_DISCARD_SECONDS: u64 = 24 * 60 * 60;
 pub const MAX_STORAGE_POLICY_BYTES: u64 = i64::MAX as u64;
 pub const MIN_STORAGE_TRANSFER_TTL_MS: u64 = 60_000;
 pub const MAX_STORAGE_TRANSFER_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
-pub const MAX_ADDITIONAL_SANDBOXES: usize = 64;
 pub const MIN_RECOVERY_POLL_MS: u64 = 1;
 pub const MAX_RECOVERY_POLL_MS: u64 = 60_000;
 pub const MAX_RECOVERY_PAGE_SIZE: usize = 100;
@@ -123,9 +120,6 @@ pub struct BrainConfig {
     pub journal_max_tenant_bytes: u64,
     pub journal_max_tenant_sessions: u64,
     pub storage_transfer_ttl: Duration,
-    /// Host-sealed root-tree quota for simultaneously live additional sandboxes. The shared
-    /// default target is excluded; terminated IDs remain tombstoned but release a slot.
-    pub max_additional_sandboxes_per_root: u32,
     /// Optional host executor shared by every external tool declaration. The URL and service
     /// credential are process configuration and never enter the sealed model prefix.
     pub external_executor_url: Option<String>,
@@ -173,7 +167,6 @@ impl Default for BrainConfig {
             storage_transfer_ttl: Duration::from_millis(
                 crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
             ),
-            max_additional_sandboxes_per_root: DEFAULT_MAX_ADDITIONAL_SANDBOXES as u32,
             external_executor_url: None,
             external_executor_token: None,
             external_executor_capabilities: HashSet::new(),
@@ -346,14 +339,6 @@ impl BrainConfig {
             MIN_STORAGE_TRANSFER_TTL_MS,
             MAX_STORAGE_TRANSFER_TTL_MS,
         )?);
-        cfg.max_additional_sandboxes_per_root = u32::try_from(parse_env_usize(
-            MAX_ADDITIONAL_SANDBOXES_ENV,
-            read(MAX_ADDITIONAL_SANDBOXES_ENV)?.as_deref(),
-            DEFAULT_MAX_ADDITIONAL_SANDBOXES,
-            1,
-            MAX_ADDITIONAL_SANDBOXES,
-        )?)
-        .expect("the validated additional-sandbox maximum fits u32");
         cfg.external_executor_url = parse_optional_env_string(
             EXTERNAL_EXECUTOR_URL_ENV,
             read(EXTERNAL_EXECUTOR_URL_ENV)?,
@@ -497,12 +482,6 @@ impl BrainConfig {
             self.storage_transfer_ttl,
             MIN_STORAGE_TRANSFER_TTL_MS,
             MAX_STORAGE_TRANSFER_TTL_MS,
-        )?;
-        validate_usize_range(
-            MAX_ADDITIONAL_SANDBOXES_ENV,
-            self.max_additional_sandboxes_per_root as usize,
-            1,
-            MAX_ADDITIONAL_SANDBOXES,
         )?;
         validate_timeout(
             RECOVERY_POLL_ENV,

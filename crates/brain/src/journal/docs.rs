@@ -895,8 +895,6 @@ pub struct PrefixDoc {
     pub storage_max_object_bytes: u64,
     pub storage_max_session_bytes: u64,
     pub storage_transfer_ttl_ms: u64,
-    #[serde(default = "default_additional_sandbox_limit")]
-    pub max_additional_sandboxes_per_root: u32,
     /// Canonical normalized session outbound ceiling. Omission at the public API is sealed as
     /// deny-all; every Tool/target policy may only narrow this value.
     #[serde(default = "default_network_ceiling")]
@@ -970,10 +968,6 @@ fn default_descendants() -> u32 {
     256
 }
 
-fn default_additional_sandbox_limit() -> u32 {
-    2
-}
-
 fn default_network_ceiling() -> serde_json::Value {
     serde_json::json!({"outbound": "none"})
 }
@@ -1030,59 +1024,6 @@ pub struct ChildListQuery<'a> {
 #[derive(Debug, Clone)]
 pub struct ChildPage {
     pub sessions: Vec<SessionSummary>,
-    pub next_cursor: Option<String>,
-}
-
-/// O(1)-addressable logical additional-sandbox inventory owned by Brain. Physical locator fields
-/// remain opaque inside `status.target`; terminal entries are tombstones until explicit root
-/// purge, so a stale logical id can never materialize a replacement target.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SandboxInventoryDoc {
-    pub root_id: String,
-    pub owner_session_id: String,
-    pub sandbox_id: String,
-    pub operation_id: String,
-    pub request_digest: String,
-    pub generation_intent: String,
-    pub status: brain_protocol::environment::SandboxStatus,
-    pub created_at_ms: u64,
-    pub updated_at_ms: u64,
-    pub version: u64,
-    pub slot_released: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct SandboxReserveRequest {
-    pub root_id: String,
-    pub owner_session_id: String,
-    pub sandbox_id: String,
-    pub operation_id: String,
-    pub request_digest: String,
-    pub generation_intent: String,
-    pub initial_status: brain_protocol::environment::SandboxStatus,
-    pub now_ms: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct SandboxUpdateRequest {
-    pub root_id: String,
-    pub sandbox_id: String,
-    pub expected_version: u64,
-    pub status: brain_protocol::environment::SandboxStatus,
-    pub release_slot: bool,
-    pub now_ms: u64,
-}
-
-pub struct SandboxListQuery<'a> {
-    pub root_id: &'a str,
-    pub limit: usize,
-    pub cursor: Option<&'a str>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SandboxPage {
-    pub sandboxes: Vec<SandboxInventoryDoc>,
     pub next_cursor: Option<String>,
 }
 
