@@ -668,7 +668,7 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/customer-hand/grants": {
+    "/v1/customer-environment/grants": {
         parameters: {
             query?: never;
             header?: never;
@@ -677,21 +677,21 @@ export type paths = {
         };
         get?: never;
         put?: never;
-        post: operations["createCustomerHandGrant"];
+        post: operations["createCustomerEnvironmentGrant"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/customer-hand/socket": {
+    "/v1/customer-environment/socket": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["connectCustomerHand"];
+        get: operations["connectCustomerEnvironment"];
         put?: never;
         post?: never;
         delete?: never;
@@ -700,7 +700,7 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/customer-hand/observations/{grant_id}": {
+    "/v1/customer-environment/observations/{grant_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -709,7 +709,7 @@ export type paths = {
         };
         get?: never;
         put?: never;
-        post: operations["observeCustomerHandOperation"];
+        post: operations["observeCustomerEnvironmentOperation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -957,7 +957,7 @@ export type components = {
         TurnId: string;
         SessionFailure: {
             /** @enum {string} */
-            code: "binding_conflict" | "provider_unusable" | "hand_unavailable" | "internal";
+            code: "binding_conflict" | "provider_unusable" | "environment_unavailable" | "internal";
             message: string;
             at: components["schemas"]["Timestamp"];
         };
@@ -1043,21 +1043,7 @@ export type components = {
             };
             contract_digest: components["schemas"]["Sha256Hex"];
         };
-        ToolExecutor: {
-            /** @constant */
-            kind: "aex_managed";
-            bundle_digest: components["schemas"]["Sha256Hex"];
-            /** @description Environment-key names only. Secret values never enter the seal. */
-            required_env: string[];
-        } | {
-            /** @constant */
-            kind: "customer_app";
-            registration: string;
-        } | {
-            /** @constant */
-            kind: "engine";
-            capability: string;
-        };
+        EnvironmentName: string;
         NetworkDestination: {
             host: string;
             ports: [
@@ -1071,6 +1057,27 @@ export type components = {
             /** @constant */
             protocol: "tcp";
         };
+        ToolRequirements: {
+            env?: string[];
+            workspace?: boolean;
+            processes?: boolean;
+            network?: components["schemas"]["NetworkDestination"][];
+            streaming?: boolean;
+            /** @enum {string} */
+            recovery?: "retained" | "connection" | "replay_safe";
+        };
+        ToolExecutor: {
+            /** @constant */
+            kind: "environment";
+            environment: components["schemas"]["EnvironmentName"];
+            artifact_digest?: components["schemas"]["Sha256Hex"];
+            callback_registration?: string;
+            requirements: components["schemas"]["ToolRequirements"];
+        } | {
+            /** @constant */
+            kind: "engine";
+            capability: string;
+        };
         ToolConfig: {
             definition: components["schemas"]["ToolDefinition"];
             executor: components["schemas"]["ToolExecutor"];
@@ -1083,6 +1090,28 @@ export type components = {
         ToolsConfig: {
             /** @description The exact ordered native Tool grant. Omitted or empty means no native tools. */
             items?: components["schemas"]["ToolConfig"][];
+        };
+        EnvironmentProfile: {
+            /** @enum {string} */
+            kind: "computer" | "callbacks";
+            /** @enum {string} */
+            platform?: "linux-amd64" | "linux-arm64";
+            /** @enum {string} */
+            network: "none" | "allowlist" | "unrestricted";
+            /** @enum {string} */
+            recovery: "retained" | "connection" | "replay_safe";
+        };
+        EnvironmentConfig: {
+            extension: string;
+            /** @constant */
+            protocol: "environment/v1";
+            profile: components["schemas"]["EnvironmentProfile"];
+            configuration: {
+                [key: string]: unknown;
+            };
+        };
+        EnvironmentsConfig: {
+            [key: string]: components["schemas"]["EnvironmentConfig"];
         };
         /** @description Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation. */
         ToolBundle: {
@@ -1135,6 +1164,7 @@ export type components = {
         CreateSessionRequest: {
             model: components["schemas"]["ModelConfig"];
             tools?: components["schemas"]["ToolsConfig"];
+            environments?: components["schemas"]["EnvironmentsConfig"];
             /** @description Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal. */
             tool_bundles?: components["schemas"]["ToolBundle"][];
             /** @description Write-only values for required managed Tool environment names; encrypted in custody. */
@@ -1178,7 +1208,7 @@ export type components = {
         AgentId: string;
         /** @description Brain-minted identity of one provisional provider attempt. */
         ModelAttemptId: string;
-        /** @description Brain-minted id of one durable Tool operation. Managed Hands receive the same operation_id. */
+        /** @description Brain-minted id of one durable Tool operation. Managed Environments receive the same operation_id. */
         CallId: string;
         /** @enum {string} */
         ToolOutcome: "completed" | "failed" | "cancelled" | "deadline_exceeded" | "interrupted";
@@ -1348,7 +1378,7 @@ export type components = {
             turn_phase?: string;
         } | {
             /** @enum {string} */
-            type: "hand.lost";
+            type: "environment.lost";
             seq: number;
             at: components["schemas"]["Timestamp"];
             session_id: components["schemas"]["SessionId"];
@@ -1539,7 +1569,7 @@ export type components = {
                 "application/json": components["schemas"]["StorageTransfer"];
             };
         };
-        /** @description Customer-Hand WebSocket and observation grants */
+        /** @description Customer-Environment WebSocket and observation grants */
         CustomerGrant: {
             headers: {
                 [name: string]: unknown;
@@ -2349,7 +2379,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    createCustomerHandGrant: {
+    createCustomerEnvironmentGrant: {
         parameters: {
             query?: never;
             header?: never;
@@ -2362,7 +2392,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    connectCustomerHand: {
+    connectCustomerEnvironment: {
         parameters: {
             query?: never;
             header: {
@@ -2383,7 +2413,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    observeCustomerHandOperation: {
+    observeCustomerEnvironmentOperation: {
         parameters: {
             query?: never;
             header?: never;

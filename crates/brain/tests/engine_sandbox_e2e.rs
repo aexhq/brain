@@ -1,10 +1,10 @@
-//! The closed `brain.sandbox` capability reserves Brain-owned inventory before Hand materialization.
+//! The closed `brain.sandbox` capability reserves Brain-owned inventory before Environment materialization.
 
 use async_trait::async_trait;
 use brain::adapter::DisabledToolExecutor;
 use brain::config::{Dialect, ProviderKey, SealedPrefix};
-use brain::hand::{
-    HandResult, SandboxControlPort, SandboxFileContent, SandboxFileList, SandboxFileListRequest,
+use brain::environment::{
+    EnvironmentResult, SandboxControlPort, SandboxFileContent, SandboxFileList, SandboxFileListRequest,
     SandboxSearchRequest,
 };
 use brain::journal::{Journal, Record, SandboxListQuery};
@@ -16,7 +16,7 @@ use brain::storage::{
     StorageUploadRequest, StorageWriteRequest,
 };
 use brain::{BrainError, Result};
-use brain_protocol::hand::{
+use brain_protocol::environment::{
     CreateSandboxRequest, FileEntry, SandboxCopyRequest, SandboxCopyResult,
     SandboxExecutionRequest, SandboxFileRequest, SandboxFileWriteRequest, SandboxStatus,
     SandboxTarget, SubmitReceipt, WriteStdinReceipt, WriteStdinRequest,
@@ -39,7 +39,7 @@ struct SandboxControl {
 
 #[async_trait]
 impl SandboxControlPort for SandboxControl {
-    async fn create(&self, request: CreateSandboxRequest) -> HandResult<SandboxStatus> {
+    async fn create(&self, request: CreateSandboxRequest) -> EnvironmentResult<SandboxStatus> {
         self.creates.fetch_add(1, Ordering::Relaxed);
         let status: SandboxStatus = serde_json::from_value(json!({
             "state": "running",
@@ -54,19 +54,19 @@ impl SandboxControlPort for SandboxControl {
         Ok(status)
     }
 
-    async fn inspect(&self, _target: SandboxTarget) -> HandResult<SandboxStatus> {
+    async fn inspect(&self, _target: SandboxTarget) -> EnvironmentResult<SandboxStatus> {
         Ok(self.status.lock().unwrap().clone().expect("created"))
     }
 
-    async fn execute(&self, _request: SandboxExecutionRequest) -> HandResult<SubmitReceipt> {
+    async fn execute(&self, _request: SandboxExecutionRequest) -> EnvironmentResult<SubmitReceipt> {
         panic!("unused")
     }
 
-    async fn write_stdin(&self, _request: WriteStdinRequest) -> HandResult<WriteStdinReceipt> {
+    async fn write_stdin(&self, _request: WriteStdinRequest) -> EnvironmentResult<WriteStdinReceipt> {
         panic!("unused")
     }
 
-    async fn terminate(&self, _target: SandboxTarget) -> HandResult<SandboxStatus> {
+    async fn terminate(&self, _target: SandboxTarget) -> EnvironmentResult<SandboxStatus> {
         panic!("unused")
     }
 }
@@ -74,32 +74,32 @@ impl SandboxControlPort for SandboxControl {
 struct UnusedFiles;
 
 #[async_trait]
-impl brain::hand::SandboxFilesPort for UnusedFiles {
-    async fn status(&self, _target: SandboxTarget) -> HandResult<SandboxStatus> {
+impl brain::environment::SandboxFilesPort for UnusedFiles {
+    async fn status(&self, _target: SandboxTarget) -> EnvironmentResult<SandboxStatus> {
         panic!("unused")
     }
-    async fn list(&self, _request: SandboxFileListRequest) -> HandResult<SandboxFileList> {
+    async fn list(&self, _request: SandboxFileListRequest) -> EnvironmentResult<SandboxFileList> {
         panic!("unused")
     }
-    async fn stat(&self, _request: SandboxFileRequest) -> HandResult<FileEntry> {
+    async fn stat(&self, _request: SandboxFileRequest) -> EnvironmentResult<FileEntry> {
         panic!("unused")
     }
-    async fn read(&self, _request: SandboxFileRequest) -> HandResult<SandboxFileContent> {
+    async fn read(&self, _request: SandboxFileRequest) -> EnvironmentResult<SandboxFileContent> {
         panic!("unused")
     }
     async fn write(
         &self,
         _request: SandboxFileWriteRequest,
-    ) -> HandResult<brain_protocol::hand::SandboxFileWriteResult> {
+    ) -> EnvironmentResult<brain_protocol::environment::SandboxFileWriteResult> {
         panic!("unused")
     }
-    async fn find(&self, _request: SandboxSearchRequest) -> HandResult<SandboxFileList> {
+    async fn find(&self, _request: SandboxSearchRequest) -> EnvironmentResult<SandboxFileList> {
         panic!("unused")
     }
-    async fn grep(&self, _request: SandboxSearchRequest) -> HandResult<SandboxFileList> {
+    async fn grep(&self, _request: SandboxSearchRequest) -> EnvironmentResult<SandboxFileList> {
         panic!("unused")
     }
-    async fn transfer(&self, _request: SandboxCopyRequest) -> HandResult<SandboxCopyResult> {
+    async fn transfer(&self, _request: SandboxCopyRequest) -> EnvironmentResult<SandboxCopyResult> {
         panic!("unused")
     }
 }
@@ -278,7 +278,7 @@ fn create_request() -> CreateSessionRequest {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sandbox_create_reserves_inventory_before_typed_hand_materialization() {
+async fn sandbox_create_reserves_inventory_before_typed_environment_materialization() {
     let _tmp = TempDir::new();
     let journal = Journal::new_memory("sandbox-engine-e2e");
     let control = Arc::new(SandboxControl::default());
@@ -329,7 +329,7 @@ async fn sandbox_create_reserves_inventory_before_typed_hand_materialization() {
     assert_eq!(page.sandboxes.len(), 1);
     assert_eq!(
         page.sandboxes[0].status.state,
-        brain_protocol::hand::SandboxState::Running
+        brain_protocol::environment::SandboxState::Running
     );
     assert_eq!(page.sandboxes[0].owner_session_id, session_id);
     let records = journal.read_records(&session_id, 0).await.unwrap();

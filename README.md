@@ -4,7 +4,7 @@
 <p align="center">
   <a href="https://aex.dev">Aex</a> ·
   <a href="contracts/session/v1/openapi.yaml">Session API</a> ·
-  <a href="https://github.com/aexhq/hands">Hands</a> ·
+  <a href="https://github.com/aexhq/environments">Environments</a> ·
   <a href="https://discord.gg/Qk2YnHMHVb">Discord</a>
 </p>
 
@@ -47,7 +47,7 @@ const session = await brain.sessions.create({
 console.log(await session.send("Echo hello."));
 ```
 
-`.server(import.meta.url)` bundles a function for the session's Hand. Use `.client()` with a stable
+`.server(import.meta.url)` bundles a function for the session's Environment. Use `.client()` with a stable
 `Brain({ client: { id } })` identity when the callback must stay in the application process.
 Omitting `tools` exposes no model tools.
 
@@ -55,15 +55,15 @@ Omitting `tools` exposes no model tools.
 
 | Component | Purpose |
 | --- | --- |
-| [`brain-protocol`](crates/brain-protocol) | Session API and Brain-to-Hand contracts |
+| [`brain-protocol`](crates/brain-protocol) | Session API and Brain-to-Environment contracts |
 | [`brain`](crates/brain) | Session engine, providers, tool router, recovery, and adapter ports |
-| [`brain-standalone`](crates/brain-standalone) | SQLite journal, encrypted local custody/storage, and an explicit local Hand |
+| [`brain-standalone`](crates/brain-standalone) | SQLite journal, encrypted local custody/storage, and an explicit local Environment |
 | [`brain-aws`](crates/brain-aws) | Neutral DynamoDB, KMS, and S3 adapters |
 | [`brain-server`](crates/brain-server) | Standalone server and development composition |
-| [`@aexhq/brain`](packages/brain) | TypeScript client, Tool API, customer Hand, schemas, and builder |
+| [`@aexhq/brain`](packages/brain) | TypeScript client, Tool API, customer Environment, schemas, and builder |
 | [`@aexhq/brain-tools`](packages/brain-tools) | Portable Tool values selected by an application |
 
-Hands implement Brain's public ports. Brain never imports a Hands implementation.
+Environments implement Brain's public ports. Brain never imports a Environments implementation.
 
 ## Run standalone
 
@@ -75,11 +75,11 @@ cargo run --release -p brain-server --bin brain
 
 Brain binds `127.0.0.1:3210` by default. Set `BRAIN_API_TOKEN`, or read the generated mode-0600
 token from `$BRAIN_DATA_DIR/operator.token`. Local mode deliberately executes managed Tool bundles
-as unsandboxed host Node 22 subprocesses; use a hosted Hand for untrusted workloads.
+as unsandboxed host Node 22 subprocesses; use a hosted Environment for untrusted workloads.
 
 ## Embed Brain
 
-Implement the public Hand, journal, custody, storage, or trusted-tool ports your environment needs,
+Implement the public Environment, journal, custody, storage, or trusted-tool ports your environment needs,
 then compose them with `Brain::with_parts_and_services`.
 
 ## Verification

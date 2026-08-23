@@ -22,7 +22,7 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 64,
-      "description": "Brain-minted id of one durable Tool operation. Managed Hands receive the same operation_id."
+      "description": "Brain-minted id of one durable Tool operation. Managed Environments receive the same operation_id."
     },
     "ModelAttemptId": {
       "type": "string",
@@ -223,45 +223,27 @@
           "additionalProperties": false,
           "required": [
             "kind",
-            "bundle_digest",
-            "required_env"
+            "environment",
+            "requirements"
           ],
-          "description": "A digest-sealed executable in the session's default Aex-managed realm.",
+          "description": "An explicitly bound tool executed by one declared logical environment.",
           "properties": {
             "kind": {
               "type": "string",
-              "const": "aex_managed"
+              "const": "environment"
             },
-            "bundle_digest": {
+            "environment": {
+              "$ref": "#/$defs/EnvironmentName"
+            },
+            "artifact_digest": {
               "$ref": "#/$defs/Sha256Hex"
             },
-            "required_env": {
-              "type": "array",
-              "maxItems": 64,
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-              },
-              "description": "Environment-key names only. Secret values never enter the seal."
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "registration"
-          ],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "customer_app"
-            },
-            "registration": {
+            "callback_registration": {
               "type": "string",
               "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "requirements": {
+              "$ref": "#/$defs/ToolRequirements"
             }
           }
         },
@@ -279,11 +261,98 @@
             },
             "capability": {
               "type": "string",
-              "pattern": "^(brain|aex)\\.[A-Za-z0-9_.:-]{1,120}$"
+              "pattern": "^brain\\.[A-Za-z0-9_.:-]{1,120}$"
             }
           }
         }
       ]
+    },
+    "EnvironmentName": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+    },
+    "ToolRequirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
+        "workspace": { "type": "boolean" },
+        "processes": { "type": "boolean" },
+        "network": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/NetworkDestination" }
+        },
+        "streaming": { "type": "boolean" },
+        "recovery": {
+          "type": "string",
+          "enum": ["retained", "connection", "replay_safe"]
+        }
+      }
+    },
+    "EnvironmentProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "network", "recovery"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["computer", "callbacks"]
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["linux-amd64", "linux-arm64"]
+        },
+        "network": {
+          "type": "string",
+          "enum": ["none", "allowlist", "unrestricted"]
+        },
+        "recovery": {
+          "type": "string",
+          "enum": ["retained", "connection", "replay_safe"]
+        }
+      }
+    },
+    "EnvironmentConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extension", "protocol", "profile", "configuration"],
+      "properties": {
+        "extension": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "protocol": {
+          "type": "string",
+          "const": "environment/v1"
+        },
+        "profile": {
+          "$ref": "#/$defs/EnvironmentProfile"
+        },
+        "configuration": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "EnvironmentsConfig": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "#/$defs/EnvironmentName"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/EnvironmentConfig"
+      }
     },
     "ToolConfig": {
       "type": "object",
@@ -398,7 +467,7 @@
           "enum": [
             "binding_conflict",
             "provider_unusable",
-            "hand_unavailable",
+            "environment_unavailable",
             "internal"
           ]
         },
@@ -784,6 +853,9 @@
         },
         "tools": {
           "$ref": "#/$defs/ToolsConfig"
+        },
+        "environments": {
+          "$ref": "#/$defs/EnvironmentsConfig"
         },
         "tool_bundles": {
           "type": "array",
@@ -1703,7 +1775,7 @@
             "type": {
               "type": "string",
               "enum": [
-                "hand.lost"
+                "environment.lost"
               ]
             },
             "seq": {

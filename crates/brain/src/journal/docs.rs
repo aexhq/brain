@@ -313,9 +313,9 @@ pub struct HeadDoc {
     pub prefix: PrefixDoc,
     /// Custody blob of the BYOK key, base64. Never the plaintext.
     pub key_b64: String,
-    /// Custody blob of the session-wide Hand environment map, base64. Never plaintext.
+    /// Custody blob of the session-wide Environment environment map, base64. Never plaintext.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub hand_secrets_b64: String,
+    pub environment_secrets_b64: String,
     #[serde(default)]
     pub session_storage_bytes: u64,
     /// Bytes in an outstanding staged upload. They are not published storage, but are included
@@ -335,13 +335,13 @@ pub struct HeadDoc {
     /// most MAX_TOOL_CALLS_PER_MODEL_ROUND entries; payload bytes are never duplicated here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_customer_acks: Vec<CustomerTerminalAckDoc>,
-    /// Bounded rooted receipts waiting for post-commit managed-Hand terminal ACK.
+    /// Bounded rooted receipts waiting for post-commit managed-Environment terminal ACK.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_managed_acks: Vec<ManagedTerminalAckDoc>,
     /// Brain-owned durable projection of the root tree's shared default target. Descendants
     /// address this same target through `root_id`; they do not get a second default sandbox.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_sandbox: Option<brain_protocol::hand::SandboxStatus>,
+    pub default_sandbox: Option<brain_protocol::environment::SandboxStatus>,
     /// Present iff the session has ever committed a loop record. Its presence gates the
     /// loop-state journal fold at rehydration, so sessions that never used loop state pay no
     /// extra read. The kv map itself lives in records, never here (it can reach 512 KiB).
@@ -395,7 +395,7 @@ pub struct ControlDoc {
     #[serde(default)]
     pub pending_managed_acks: Vec<ManagedTerminalAckDoc>,
     #[serde(default)]
-    pub default_sandbox: Option<brain_protocol::hand::SandboxStatus>,
+    pub default_sandbox: Option<brain_protocol::environment::SandboxStatus>,
     #[serde(default)]
     pub loop_state: Option<LoopStateDoc>,
 }
@@ -413,7 +413,7 @@ pub struct ConfigDoc {
     pub depth: u32,
     pub prefix: PrefixDoc,
     pub key_b64: String,
-    pub hand_secrets_b64: String,
+    pub environment_secrets_b64: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -457,7 +457,7 @@ pub struct CustomerTerminalAckDoc {
 pub struct ManagedTerminalAckDoc {
     pub turn: String,
     pub call: String,
-    pub operation: brain_protocol::hand::OperationRef,
+    pub operation: brain_protocol::environment::OperationRef,
     pub terminal_digest: String,
 }
 
@@ -525,7 +525,7 @@ impl HeadDoc {
             depth: _,
             prefix: _,
             key_b64: _,
-            hand_secrets_b64: _,
+            environment_secrets_b64: _,
         } = self;
         ControlDoc {
             tenant_id: tenant_id.clone(),
@@ -573,7 +573,7 @@ impl HeadDoc {
             depth,
             prefix,
             key_b64,
-            hand_secrets_b64,
+            environment_secrets_b64,
             tenant_id: _,
             last_seq: _,
             state: _,
@@ -614,7 +614,7 @@ impl HeadDoc {
             depth: *depth,
             prefix: prefix.clone(),
             key_b64: key_b64.clone(),
-            hand_secrets_b64: hand_secrets_b64.clone(),
+            environment_secrets_b64: environment_secrets_b64.clone(),
         }
     }
 
@@ -664,7 +664,7 @@ impl HeadDoc {
             depth,
             prefix,
             key_b64,
-            hand_secrets_b64,
+            environment_secrets_b64,
         } = config;
         Self {
             tenant_id,
@@ -705,7 +705,7 @@ impl HeadDoc {
             depth,
             prefix,
             key_b64,
-            hand_secrets_b64,
+            environment_secrets_b64,
         }
     }
 }
@@ -720,7 +720,7 @@ impl HeadDoc {
         let mut projected = self.clone();
         let lease_safe_due = now_ms.saturating_add(LEASE_MS + STEAL_GRACE_MS);
         let sandbox_due = self.default_sandbox.as_ref().and_then(|sandbox| {
-            use brain_protocol::hand::SandboxState;
+            use brain_protocol::environment::SandboxState;
             match sandbox.state {
                 SandboxState::Creating => {
                     Some(self.recovery_due_ms.unwrap_or(0).max(lease_safe_due))
@@ -892,20 +892,23 @@ pub struct PrefixDoc {
     /// Exact native Tool definitions and execution seals, in cache-visible declaration order.
     /// Bundle bytes live in internal root-scoped object custody and never appear here.
     pub tools: Vec<brain_protocol::session::ToolConfig>,
+    /// Logical environment declarations, keyed by the stable names used by every tool binding.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub environments: HashMap<String, brain_protocol::session::EnvironmentConfig>,
     /// Immutable managed implementation descriptors. Children inherit these descriptors but
     /// resolve their own session-scoped binding identity; the referenced bytes remain root-owned.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub managed_bundles: Vec<brain_protocol::hand::BundleDescriptor>,
+    pub managed_bundles: Vec<brain_protocol::environment::BundleDescriptor>,
     /// Trusted host policies sealed for official engine capabilities. SDK callers can name only
     /// the capability; they cannot forge these execution semantics.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub official_capabilities: HashMap<String, crate::config::ServerToolPolicy>,
-    pub hand_enabled: bool,
+    pub environment_enabled: bool,
     pub shape: String,
     pub sync_interval_seconds: u64,
     /// Names only, allowing create-time required-env validation without persisting values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hand_env_keys: Vec<String>,
+    pub environment_env_keys: Vec<String>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
     /// The sealed agent loop identity (`contracts/agentloop/v1` selector semantics).
@@ -1013,7 +1016,7 @@ pub struct SandboxInventoryDoc {
     pub operation_id: String,
     pub request_digest: String,
     pub generation_intent: String,
-    pub status: brain_protocol::hand::SandboxStatus,
+    pub status: brain_protocol::environment::SandboxStatus,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub version: u64,
@@ -1028,7 +1031,7 @@ pub struct SandboxReserveRequest {
     pub operation_id: String,
     pub request_digest: String,
     pub generation_intent: String,
-    pub initial_status: brain_protocol::hand::SandboxStatus,
+    pub initial_status: brain_protocol::environment::SandboxStatus,
     pub now_ms: u64,
 }
 
@@ -1037,7 +1040,7 @@ pub struct SandboxUpdateRequest {
     pub root_id: String,
     pub sandbox_id: String,
     pub expected_version: u64,
-    pub status: brain_protocol::hand::SandboxStatus,
+    pub status: brain_protocol::environment::SandboxStatus,
     pub release_slot: bool,
     pub now_ms: u64,
 }

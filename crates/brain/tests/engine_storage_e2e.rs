@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use brain::adapter::DisabledToolExecutor;
 use brain::config::{Dialect, ProviderKey, SealedPrefix};
-use brain::hand::{
-    HandResult, SandboxFileContent, SandboxFileList, SandboxFileListRequest, SandboxSearchRequest,
+use brain::environment::{
+    EnvironmentResult, SandboxFileContent, SandboxFileList, SandboxFileListRequest, SandboxSearchRequest,
 };
 use brain::journal::{Journal, Record};
 use brain::message::{Message, StopReason, Usage};
@@ -15,7 +15,7 @@ use brain::storage::{
     StorageUploadRequest, StorageWriteRequest,
 };
 use brain::{BrainError, Result};
-use brain_protocol::hand::{
+use brain_protocol::environment::{
     FileEntry, SandboxCopyRequest, SandboxCopyResult, SandboxFileRequest, SandboxFileWriteRequest,
     SandboxStatus,
 };
@@ -158,35 +158,35 @@ impl SessionStoragePort for MemoryStorage {
 struct UnusedSandboxFiles;
 
 #[async_trait]
-impl brain::hand::SandboxFilesPort for UnusedSandboxFiles {
+impl brain::environment::SandboxFilesPort for UnusedSandboxFiles {
     async fn status(
         &self,
-        _target: brain_protocol::hand::SandboxTarget,
-    ) -> HandResult<SandboxStatus> {
+        _target: brain_protocol::environment::SandboxTarget,
+    ) -> EnvironmentResult<SandboxStatus> {
         panic!("unused")
     }
-    async fn list(&self, _request: SandboxFileListRequest) -> HandResult<SandboxFileList> {
+    async fn list(&self, _request: SandboxFileListRequest) -> EnvironmentResult<SandboxFileList> {
         panic!("unused")
     }
-    async fn stat(&self, _request: SandboxFileRequest) -> HandResult<FileEntry> {
+    async fn stat(&self, _request: SandboxFileRequest) -> EnvironmentResult<FileEntry> {
         panic!("unused")
     }
-    async fn read(&self, _request: SandboxFileRequest) -> HandResult<SandboxFileContent> {
+    async fn read(&self, _request: SandboxFileRequest) -> EnvironmentResult<SandboxFileContent> {
         panic!("unused")
     }
     async fn write(
         &self,
         _request: SandboxFileWriteRequest,
-    ) -> HandResult<brain_protocol::hand::SandboxFileWriteResult> {
+    ) -> EnvironmentResult<brain_protocol::environment::SandboxFileWriteResult> {
         panic!("unused")
     }
-    async fn find(&self, _request: SandboxSearchRequest) -> HandResult<SandboxFileList> {
+    async fn find(&self, _request: SandboxSearchRequest) -> EnvironmentResult<SandboxFileList> {
         panic!("unused")
     }
-    async fn grep(&self, _request: SandboxSearchRequest) -> HandResult<SandboxFileList> {
+    async fn grep(&self, _request: SandboxSearchRequest) -> EnvironmentResult<SandboxFileList> {
         panic!("unused")
     }
-    async fn transfer(&self, _request: SandboxCopyRequest) -> HandResult<SandboxCopyResult> {
+    async fn transfer(&self, _request: SandboxCopyRequest) -> EnvironmentResult<SandboxCopyResult> {
         panic!("unused")
     }
 }

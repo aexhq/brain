@@ -1,14 +1,14 @@
 //! Brain-owned public protocols.
 //!
-//! JSON Schemas under `contracts/` are authoritative. [`hand`], [`session`] and [`agentloop`] are
+//! JSON Schemas under `contracts/` are authoritative. [`environment`], [`session`] and [`agentloop`] are
 //! generated from them; [`contract`] contains the exact digests and operation hashing shared by
-//! Brain, Hands and loop hosts.
+//! Brain, Environments and loop hosts.
 
 #[allow(clippy::all, clippy::pedantic)]
 pub mod agentloop;
 pub mod contract;
 #[allow(clippy::all, clippy::pedantic)]
-pub mod hand;
+pub mod environment;
 pub mod network;
 mod redaction;
 #[allow(clippy::all, clippy::pedantic)]
@@ -19,7 +19,7 @@ pub const SESSION_SCHEMA_JSON: &str = include_str!("../../../contracts/session/v
 /// Maximum UTF-8 JSON bytes accepted for `POST /v1/sessions/{id}/messages`.
 pub const MAX_MESSAGE_REQUEST_BYTES: usize = 192 * 1024;
 
-/// Maximum RFC 8785 bytes in one inline managed-Hand Tool argument. Managed execution and Hand
+/// Maximum RFC 8785 bytes in one inline managed-Environment Tool argument. Managed execution and Environment
 /// binding admission use this distinct contract even though it currently equals the message
 /// request ceiling; the 96-KiB external-executor input bound is a separate route.
 pub const MAX_MANAGED_TOOL_INPUT_BYTES: usize = 192 * 1024;
@@ -58,10 +58,10 @@ pub const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 32 * 1024;
 pub const MIN_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 8 * 1024;
 pub const MAX_MODEL_CONTEXT_WINDOW_TOKENS: u32 = 2_000_000;
 
-/// Maximum encoded bytes for one customer-Hand WebSocket command frame.
+/// Maximum encoded bytes for one customer-Environment WebSocket command frame.
 pub const MAX_CUSTOMER_WS_FRAME_BYTES: usize = 24 * 1024;
 
-/// Maximum UTF-8 JSON bytes accepted by the customer-Hand HTTPS observation ingress.
+/// Maximum UTF-8 JSON bytes accepted by the customer-Environment HTTPS observation ingress.
 pub const MAX_CUSTOMER_OBSERVATION_BYTES: usize = 128 * 1024;
 
 /// Maximum UTF-8 JSON bytes in one public Session event. SSE framing (`event`, optional durable
@@ -95,7 +95,7 @@ pub const MAX_EXTERNAL_TOOL_REQUEST_BYTES: usize = 512 * 1024;
 pub const MAX_EXTERNAL_TOOL_RESPONSE_BYTES: usize = 768 * 1024;
 
 /// Maximum UTF-8 bytes in one idempotent stdin append. This matches the canonical minimum
-/// `PIPE_BUF`, allowing a Hand to perform one bounded write without partial-effect ambiguity.
+/// `PIPE_BUF`, allowing a Environment to perform one bounded write without partial-effect ambiguity.
 pub const MAX_WRITE_STDIN_BYTES: usize = 4 * 1024;
 
 /// Agentloop bounds the schema cannot express in bytes; enforced at the execution boundary.

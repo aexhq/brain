@@ -20,7 +20,7 @@ const edit = tool(editInput, async function edit({ path, old_text, new_text }, c
     return { path, replacements: 1 as const };
   })
   .named("edit")
-  .describe("Replace one exact occurrence of text in a Hand workspace file.")
+  .describe("Replace one exact occurrence of text in a Environment workspace file.")
   .returns(editOutput)
   .server(import.meta.url);
 

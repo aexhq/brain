@@ -1,20 +1,20 @@
-//! Canonical identities for the single current Brain-to-Hand contract.
+//! Canonical identities for the single current Brain-to-Environment contract.
 
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::hand::{
+use crate::environment::{
     Digest, OperationEnvelope, SandboxCopyRequest, SandboxExecutionRequest,
     SandboxFileWriteRequest, TerminalResult, WriteStdinRequest,
 };
 use crate::session::{ExternalToolCallRequest, ExternalToolCallResponse, ExternalToolDisposition};
 
-/// Canonical JSON Schema for the only supported Brain-to-Hand contract.
-pub const HAND_CONTRACT_SCHEMA_JSON: &str = include_str!("../../../contracts/hand/contract.json");
+/// Canonical JSON Schema for the only supported Brain-to-Environment contract.
+pub const ENVIRONMENT_CONTRACT_SCHEMA_JSON: &str = include_str!("../../../contracts/environment/contract.json");
 
 /// Pinned SHA-256 of the schema's RFC 8785 canonical JSON representation.
-pub const HAND_CONTRACT_DIGEST: &str = include_str!("../../../contracts/hand/contract.digest");
+pub const ENVIRONMENT_CONTRACT_DIGEST: &str = include_str!("../../../contracts/environment/contract.digest");
 
 /// Hash any serializable value using RFC 8785 canonical JSON.
 pub fn canonical_digest<T: Serialize>(value: &T) -> Result<Digest, serde_json::Error> {
@@ -25,10 +25,10 @@ pub fn canonical_digest<T: Serialize>(value: &T) -> Result<Digest, serde_json::E
 }
 
 /// Compute the compatibility identity of the embedded contract schema.
-pub fn hand_contract_digest() -> Digest {
+pub fn environment_contract_digest() -> Digest {
     let schema: Value =
-        serde_json::from_str(HAND_CONTRACT_SCHEMA_JSON).expect("embedded Hand schema is valid");
-    canonical_digest(&schema).expect("the embedded Hand schema is canonicalizable")
+        serde_json::from_str(ENVIRONMENT_CONTRACT_SCHEMA_JSON).expect("embedded Environment schema is valid");
+    canonical_digest(&schema).expect("the embedded Environment schema is canonicalizable")
 }
 
 /// Canonical JSON Schema for the only supported Brain-to-loop-host agentloop contract.
@@ -125,7 +125,7 @@ pub fn sandbox_copy_request_digest(request: &SandboxCopyRequest) -> Digest {
         // changing that id would change the destination and must conflict.
         remove_ephemeral_authority(
             authority,
-            request.direction == crate::hand::SandboxCopyRequestDirection::Import,
+            request.direction == crate::environment::SandboxCopyRequestDirection::Import,
         );
     }
     canonical_digest(&value).expect("a sandbox copy request is canonicalizable")
@@ -168,7 +168,7 @@ pub fn terminal_result_digest(terminal: &TerminalResult) -> Digest {
     canonical_digest(&value).expect("a terminal result is canonicalizable")
 }
 
-/// Exact bounded representation enforced by both Brain and Hand before retaining a terminal
+/// Exact bounded representation enforced by both Brain and Environment before retaining a terminal
 /// receipt. Large data belongs in an ObjectReference/session-storage key or sandbox path.
 pub fn terminal_inline_bytes(value: &Value) -> Result<usize, serde_json::Error> {
     Ok(serde_jcs::to_vec(value)?.len())
@@ -287,8 +287,8 @@ mod tests {
 
     #[test]
     fn pinned_contract_digest_matches_the_canonical_schema() {
-        assert_eq!(&*hand_contract_digest(), HAND_CONTRACT_DIGEST.trim());
-        assert!(!HAND_CONTRACT_SCHEMA_JSON.contains("protocol_version"));
+        assert_eq!(&*environment_contract_digest(), ENVIRONMENT_CONTRACT_DIGEST.trim());
+        assert!(!ENVIRONMENT_CONTRACT_SCHEMA_JSON.contains("protocol_version"));
     }
 
     #[test]

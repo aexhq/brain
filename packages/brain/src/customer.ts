@@ -41,12 +41,12 @@ export type CustomerObservation =
     };
 
 /** One freshly minted socket grant plus authenticated HTTPS observation ingress. */
-export interface CustomerHandChannel {
+export interface CustomerEnvironmentChannel {
   readonly request: WebSocketRequest;
   observe(observation: CustomerObservation): Promise<void>;
 }
 
-export type CustomerHandConnector = () => Promise<CustomerHandChannel>;
+export type CustomerEnvironmentConnector = () => Promise<CustomerEnvironmentChannel>;
 
 interface OfferFrame {
   type: "offer";
@@ -124,7 +124,7 @@ interface PendingBatch {
   reject(error: Error): void;
 }
 
-export interface CustomerHandOptions {
+export interface CustomerEnvironmentOptions {
   readonly clientId: string;
   readonly processId?: string;
   readonly reconnectDelayMs?: number;
@@ -152,8 +152,8 @@ export interface CustomerHandOptions {
  * runner reconnects with its stable process ID, takes a new epoch, and re-registers all immutable
  * function contracts. Receipts/results use authenticated HTTPS, not WebSocket frames.
  */
-export class CustomerHand {
-  readonly #connector: CustomerHandConnector;
+export class CustomerEnvironment {
+  readonly #connector: CustomerEnvironmentConnector;
   readonly #factory: WebSocketFactory;
   readonly #clientId: string;
   readonly #processId: string;
@@ -172,7 +172,7 @@ export class CustomerHand {
   readonly #pendingBatches = new Map<string, PendingBatch>();
   #registrationBytes = 0;
   #socket: WebSocket | undefined;
-  #channel: CustomerHandChannel | undefined;
+  #channel: CustomerEnvironmentChannel | undefined;
   #epoch: number | undefined;
   #frameProof: string | undefined;
   #closed = false;
@@ -188,10 +188,10 @@ export class CustomerHand {
   readonly ready: Promise<void>;
 
   constructor(
-    connector: CustomerHandConnector,
+    connector: CustomerEnvironmentConnector,
     registrations: readonly ClientRegistration[],
     factory: WebSocketFactory,
-    options: CustomerHandOptions,
+    options: CustomerEnvironmentOptions,
   ) {
     this.#connector = connector;
     this.#factory = factory;
@@ -210,14 +210,14 @@ export class CustomerHand {
       this.#retentionTtlMs <= 0 || this.#maxRetainedOperations <= 0
       || this.#maxRegistrations <= 0 || this.#maxRegistrationDescriptorBytes <= 0
     ) {
-      throw new TypeError("Customer Hand retention bounds must be positive");
+      throw new TypeError("Customer Environment retention bounds must be positive");
     }
     this.#addRegistrations(registrations);
     if (this.#reconnectDelayMs < 0 || this.#maxReconnectDelayMs < this.#reconnectDelayMs) {
-      throw new TypeError("Customer Hand reconnect bounds are invalid");
+      throw new TypeError("Customer Environment reconnect bounds are invalid");
     }
     if (this.#heartbeatIntervalMs < 0 || this.#heartbeatTimeoutMs <= 0) {
-      throw new TypeError("Customer Hand heartbeat bounds are invalid");
+      throw new TypeError("Customer Environment heartbeat bounds are invalid");
     }
     this.#closedPromise = new Promise<void>((resolve) => { this.#resolveClosed = resolve; });
     this.ready = this.#connectUntilReady();
@@ -231,7 +231,7 @@ export class CustomerHand {
     this.#resolveClosed();
     for (const [operationId, running] of this.#controllers) {
       this.#retainUnknown(operationId, running.requestDigest);
-      running.controller.abort(new Error("Customer Hand closed"));
+      running.controller.abort(new Error("Customer Environment closed"));
     }
     this.#controllers.clear();
     this.#socket?.close();
@@ -265,7 +265,7 @@ export class CustomerHand {
           current.handler !== registration.handler
         ) {
           throw new TypeError(
-            `Customer Hand registration ${registration.registration} conflicts with its existing contract or handler`,
+            `Customer Environment registration ${registration.registration} conflicts with its existing contract or handler`,
           );
         }
         continue;
@@ -275,11 +275,11 @@ export class CustomerHand {
       addedBytes += registrationDescriptorBytes(registration);
     }
     if (prospective.size > this.#maxRegistrations) {
-      throw new TypeError(`Customer Hand exceeds its ${this.#maxRegistrations} registration limit`);
+      throw new TypeError(`Customer Environment exceeds its ${this.#maxRegistrations} registration limit`);
     }
     if (this.#registrationBytes + addedBytes > this.#maxRegistrationDescriptorBytes) {
       throw new TypeError(
-        `Customer Hand registration descriptors exceed ${this.#maxRegistrationDescriptorBytes} bytes`,
+        `Customer Environment registration descriptors exceed ${this.#maxRegistrationDescriptorBytes} bytes`,
       );
     }
     for (const registration of added) {
@@ -290,7 +290,7 @@ export class CustomerHand {
   }
 
   #ensureOpen(): Promise<void> {
-    if (this.#closed) return Promise.reject(new Error("Customer Hand is closed"));
+    if (this.#closed) return Promise.reject(new Error("Customer Environment is closed"));
     if (this.#socket !== undefined && this.#epoch !== undefined) return Promise.resolve();
     if (this.#opening !== undefined) return this.#opening;
     this.#opening = this.#open().finally(() => { this.#opening = undefined; });
@@ -306,7 +306,7 @@ export class CustomerHand {
         await this.#waitReconnect(this.#nextReconnectDelay());
       }
     }
-    throw new Error("Customer Hand is closed");
+    throw new Error("Customer Environment is closed");
   }
 
   #nextReconnectDelay(): number {
@@ -320,7 +320,7 @@ export class CustomerHand {
       this.#connector().then((channel) => ({ channel })),
       this.#closedPromise.then(() => ({ channel: undefined })),
     ]);
-    if (connected.channel === undefined || this.#closed) throw new Error("Customer Hand is closed");
+    if (connected.channel === undefined || this.#closed) throw new Error("Customer Environment is closed");
     const channel = connected.channel;
     const socket = this.#factory(channel.request);
     const frameProof = deriveFrameProof(channel.request.protocol);
@@ -348,7 +348,7 @@ export class CustomerHand {
         const text = String(event.data);
         if (new TextEncoder().encode(text).byteLength > MAX_CUSTOMER_WS_FRAME_BYTES) {
           socket.close();
-          fail(new Error("Customer Hand command exceeds 24 KiB"));
+          fail(new Error("Customer Environment command exceeds 24 KiB"));
           return;
         }
         let frame: ServerFrame;
@@ -396,7 +396,7 @@ export class CustomerHand {
             || frame.nonce !== this.#pendingHeartbeatNonce
           ) {
             socket.close();
-            fail(new Error("Customer Hand heartbeat echo is invalid"));
+            fail(new Error("Customer Environment heartbeat echo is invalid"));
             return;
           }
           if (this.#heartbeatDeadlineTimer !== undefined) clearTimeout(this.#heartbeatDeadlineTimer);
@@ -406,7 +406,7 @@ export class CustomerHand {
           return;
         }
         if (frame.type === "error") {
-          const error = new Error(`Customer Hand refused (${frame.code}): ${frame.message}`);
+          const error = new Error(`Customer Environment refused (${frame.code}): ${frame.message}`);
           if (frame.batch_id !== undefined) {
             this.#pendingBatches.get(frame.batch_id)?.reject(error);
             this.#pendingBatches.delete(frame.batch_id);
@@ -431,9 +431,9 @@ export class CustomerHand {
         this.#epoch = undefined;
         this.#clearHeartbeat();
         this.#pruneRetained();
-        for (const batch of this.#pendingBatches.values()) batch.reject(new Error("Customer Hand disconnected"));
+        for (const batch of this.#pendingBatches.values()) batch.reject(new Error("Customer Environment disconnected"));
         this.#pendingBatches.clear();
-        fail(new Error("Customer Hand disconnected during registration"));
+        fail(new Error("Customer Environment disconnected during registration"));
         if (!this.#closed && registered) {
           void (async () => {
             await this.#waitReconnect(this.#nextReconnectDelay());
@@ -458,7 +458,7 @@ export class CustomerHand {
       if (socket === undefined || epoch === undefined) return;
       try {
         const proof = this.#frameProof;
-        if (proof === undefined) throw new Error("Customer Hand frame proof is unavailable");
+        if (proof === undefined) throw new Error("Customer Environment frame proof is unavailable");
         const nonce = randomUUID();
         this.#pendingHeartbeatNonce = nonce;
         this.#sendWs(socket, { type: "heartbeat", epoch, nonce, proof });
@@ -504,7 +504,7 @@ export class CustomerHand {
     const socket = this.#socket;
     const epoch = this.#epoch;
     const proof = this.#frameProof;
-    if (socket === undefined || epoch === undefined || proof === undefined) throw new Error("Customer Hand is not connected");
+    if (socket === undefined || epoch === undefined || proof === undefined) throw new Error("Customer Environment is not connected");
     const descriptors = registrations.map((registration) => ({
       registration: registration.registration,
       name: registration.name,
@@ -664,7 +664,7 @@ export class CustomerHand {
     ok: boolean,
     output?: unknown,
     error?: string,
-    channel: CustomerHandChannel | undefined = this.#channel,
+    channel: CustomerEnvironmentChannel | undefined = this.#channel,
   ): Promise<void> {
     const retained = this.#terminal.get(frame.operation_id);
     if (retained !== undefined) {
@@ -700,7 +700,7 @@ export class CustomerHand {
 
   async #sendConflict(
     frame: OfferFrame,
-    channel: CustomerHandChannel | undefined = this.#channel,
+    channel: CustomerEnvironmentChannel | undefined = this.#channel,
   ): Promise<void> {
     await this.#observe({
       type: "terminal",
@@ -732,9 +732,9 @@ export class CustomerHand {
 
   async #observe(
     observation: CustomerObservation,
-    channel: CustomerHandChannel | undefined = this.#channel,
+    channel: CustomerEnvironmentChannel | undefined = this.#channel,
   ): Promise<void> {
-    if (channel === undefined) throw new Error("Customer Hand observation channel is unavailable");
+    if (channel === undefined) throw new Error("Customer Environment observation channel is unavailable");
     let last: unknown;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
@@ -750,7 +750,7 @@ export class CustomerHand {
   #sendWs(socket: WebSocket, frame: unknown): void {
     const text = JSON.stringify(frame);
     if (new TextEncoder().encode(text).byteLength > MAX_CUSTOMER_WS_FRAME_BYTES) {
-      throw new TypeError("Customer Hand WebSocket frame exceeds 24 KiB");
+      throw new TypeError("Customer Environment WebSocket frame exceeds 24 KiB");
     }
     socket.send(text);
   }
@@ -792,7 +792,7 @@ function registrationDescriptorBytes(registration: ClientRegistration): number {
 /** Domain-separated proof bound to one consumed connect grant. */
 export function deriveFrameProof(protocol: string): string {
   return createHash("sha256")
-    .update("aex.customer-hand.frame-proof\0", "utf8")
+    .update("aex.customer-environment.frame-proof\0", "utf8")
     .update(protocol, "utf8")
     .digest("hex");
 }

@@ -8,7 +8,7 @@ rust-version = "1.97"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-# Brain owns its public session API and the Brain↔Hand wire protocol.
+# Brain owns its public session API and the Brain↔Environment wire protocol.
 brain-protocol = { path = "crates/brain-protocol" }
 brain = { path = "crates/brain" }
 brain-aws = { path = "crates/brain-aws" }

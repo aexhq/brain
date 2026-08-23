@@ -2,7 +2,7 @@
 """Regenerate the Rust protocol views from their authoritative JSON Schemas.
 
 Requires cargo-typify 0.7.0. Generated files are then passed through the repository's
-security postprocessor, and the Hand schema's RFC 8785 identity is refreshed. The schemas use
+security postprocessor, and the Environment schema's RFC 8785 identity is refreshed. The schemas use
 ASCII property names and integer numbers only, which makes Python's compact sorted JSON encoding
 identical to RFC 8785 for this input; assertions below make that assumption fail closed.
 """
@@ -21,9 +21,9 @@ from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCHEMAS = {
-    "hand": (
-        ROOT / "contracts/hand/contract.json",
-        ROOT / "crates/brain-protocol/src/hand.rs",
+    "environment": (
+        ROOT / "contracts/environment/contract.json",
+        ROOT / "crates/brain-protocol/src/environment.rs",
     ),
     "session": (
         ROOT / "contracts/session/v1/schemas.json",
@@ -37,7 +37,7 @@ SCHEMAS = {
 
 # Contracts whose RFC 8785 identity is pinned beside the schema.
 DIGESTS = {
-    "hand": ROOT / "contracts/hand/contract.digest",
+    "environment": ROOT / "contracts/environment/contract.digest",
     "agentloop": ROOT / "contracts/agentloop/v1/contract.digest",
 }
 
@@ -54,7 +54,7 @@ def walk(value: Any) -> Iterator[Any]:
             yield from walk(child)
 
 
-def hand_digest(schema_path: pathlib.Path) -> str:
+def environment_digest(schema_path: pathlib.Path) -> str:
     value = json.loads(schema_path.read_text(encoding="utf-8"))
     if any(isinstance(item, float) for item in walk(value)):
         raise RuntimeError("protocol schema contains a floating-point number; use a full JCS encoder")
@@ -106,7 +106,7 @@ def main() -> int:
     )
     for name, digest_path in DIGESTS.items():
         if name in selected:
-            digest_path.write_text(hand_digest(SCHEMAS[name][0]) + "\n", encoding="ascii")
+            digest_path.write_text(environment_digest(SCHEMAS[name][0]) + "\n", encoding="ascii")
     return 0
 
 

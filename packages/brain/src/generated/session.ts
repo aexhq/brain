@@ -19,7 +19,7 @@ export type TurnId = string;
  */
 export type AgentId = string;
 /**
- * Brain-minted id of one durable Tool operation. Managed Hands receive the same operation_id.
+ * Brain-minted id of one durable Tool operation. Managed Environments receive the same operation_id.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "CallId".
@@ -98,23 +98,21 @@ export type ExternalToolEffect = "opaque" | "replay_safe";
  */
 export type ToolExecutor =
   | {
-      kind: "aex_managed";
-      bundle_digest: Sha256Hex;
-      /**
-       * Environment-key names only. Secret values never enter the seal.
-       *
-       * @maxItems 64
-       */
-      required_env: string[];
-    }
-  | {
-      kind: "customer_app";
-      registration: string;
+      kind: "environment";
+      environment: EnvironmentName;
+      artifact_digest?: Sha256Hex;
+      callback_registration?: string;
+      requirements: ToolRequirements;
     }
   | {
       kind: "engine";
       capability: string;
     };
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "EnvironmentName".
+ */
+export type EnvironmentName = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "NetworkDestination".
@@ -374,7 +372,7 @@ export type Event =
       turn_phase?: string;
     }
   | {
-      type: "hand.lost";
+      type: "environment.lost";
       seq: number;
       at: Timestamp;
       session_id: SessionId;
@@ -493,6 +491,53 @@ export interface ToolDefinition {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ToolRequirements".
+ */
+export interface ToolRequirements {
+  /**
+   * @maxItems 64
+   */
+  env?: string[];
+  workspace?: boolean;
+  processes?: boolean;
+  /**
+   * @maxItems 32
+   */
+  network?: NetworkDestination[];
+  streaming?: boolean;
+  recovery?: "retained" | "connection" | "replay_safe";
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "EnvironmentProfile".
+ */
+export interface EnvironmentProfile {
+  kind: "computer" | "callbacks";
+  platform?: "linux-amd64" | "linux-arm64";
+  network: "none" | "allowlist" | "unrestricted";
+  recovery: "retained" | "connection" | "replay_safe";
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "EnvironmentConfig".
+ */
+export interface EnvironmentConfig {
+  extension: string;
+  protocol: "environment/v1";
+  profile: EnvironmentProfile;
+  configuration: {
+    [k: string]: unknown | undefined;
+  };
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "EnvironmentsConfig".
+ */
+export interface EnvironmentsConfig {
+  [k: string]: EnvironmentConfig;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ToolConfig".
  */
 export interface ToolConfig {
@@ -556,7 +601,7 @@ export interface StorageInfo {
  * via the `definition` "SessionFailure".
  */
 export interface SessionFailure {
-  code: "binding_conflict" | "provider_unusable" | "hand_unavailable" | "internal";
+  code: "binding_conflict" | "provider_unusable" | "environment_unavailable" | "internal";
   message: string;
   at: Timestamp;
 }
@@ -683,6 +728,7 @@ export interface ChildLimits {
 export interface CreateSessionRequest {
   model: ModelConfig;
   tools?: ToolsConfig;
+  environments?: EnvironmentsConfig;
   /**
    * Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal.
    *

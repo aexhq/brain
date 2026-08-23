@@ -188,9 +188,9 @@ pub(super) fn map_err(e: BrainError) -> Failure {
             "the upstream provider request failed",
             false,
         ),
-        BrainError::HandUnavailable(_) | BrainError::Hand(_) => (
+        BrainError::EnvironmentUnavailable(_) | BrainError::Environment(_) => (
             S::SERVICE_UNAVAILABLE,
-            "hand_unavailable",
+            "environment_unavailable",
             "the execution runtime is unavailable",
             false,
         ),

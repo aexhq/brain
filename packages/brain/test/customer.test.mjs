@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { z } from "zod";
 
-import { CustomerHand, compileTools, customerTerminalDigest, tool } from "../dist/index.js";
+import { CustomerEnvironment, compileTools, customerTerminalDigest, tool } from "../dist/index.js";
 
 class FakeSocket {
   listeners = new Map();
@@ -42,9 +42,9 @@ async function readyHand(value) {
   const socket = new FakeSocket();
   let request;
   const observations = [];
-  const hand = new CustomerHand(
+  const environment = new CustomerEnvironment(
     async () => ({
-      request: { url: "wss://hand.invalid", protocol: "aex-grant.short-lived" },
+      request: { url: "wss://environment.invalid", protocol: "aex-grant.short-lived" },
       async observe(observation) { observations.push(observation); },
     }),
     registrations,
@@ -57,23 +57,23 @@ async function readyHand(value) {
   assert.equal(registration.type, "register");
   assert.equal(registration.client_id, "app.primary");
   assert.equal(registration.process_id, "process.one");
-  assert.deepEqual(request, { url: "wss://hand.invalid", protocol: "aex-grant.short-lived" });
+  assert.deepEqual(request, { url: "wss://environment.invalid", protocol: "aex-grant.short-lived" });
   socket.message({ type: "ready", epoch: 7 });
   await turn();
   const batch = JSON.parse(socket.sent.shift());
   assert.equal(batch.type, "register_tools");
   socket.message({ type: "registered", epoch: 7, batch_id: batch.batch_id });
-  await hand.ready;
-  return { socket, hand, registration: registrations[0], observations };
+  await environment.ready;
+  return { socket, environment, registration: registrations[0], observations };
 }
 
-test("customer Hand receipts, validates, executes, and retains one exact operation", async () => {
+test("customer Environment receipts, validates, executes, and retains one exact operation", async () => {
   let executions = 0;
   const echo = tool(z.object({ text: z.string() }), async function echo(input) {
     executions += 1;
     return input;
   }).returns(z.object({ text: z.string() })).client({ registration: "echo.current" });
-  const { socket, hand, registration, observations } = await readyHand(echo);
+  const { socket, environment, registration, observations } = await readyHand(echo);
   const offer = {
     type: "offer",
     epoch: 7,
@@ -102,16 +102,16 @@ test("customer Hand receipts, validates, executes, and retains one exact operati
   await turn();
   assert.deepEqual(observations.at(-1), retained);
   assert.equal(executions, 1);
-  hand.close();
+  environment.close();
 });
 
-test("customer Hand cancellation reaches the exact running operation", async () => {
+test("customer Environment cancellation reaches the exact running operation", async () => {
   const wait = tool(z.object({}), async function wait(_input, context) {
     return await new Promise((_resolve, reject) => {
       context.signal.addEventListener("abort", () => reject(new Error("observed abort")), { once: true });
     });
   }).client({ registration: "wait.current" });
-  const { socket, hand, registration, observations } = await readyHand(wait);
+  const { socket, environment, registration, observations } = await readyHand(wait);
   socket.message({
     type: "offer",
     epoch: 7,
@@ -131,7 +131,7 @@ test("customer Hand cancellation reaches the exact running operation", async () 
   assert.equal(terminal.type, "terminal");
   assert.equal(terminal.ok, false);
   assert.equal(terminal.error, "observed abort");
-  hand.close();
+  environment.close();
 });
 
 test("routine socket loss reconnects without cancelling or redispatching an assigned operation", async () => {
@@ -148,9 +148,9 @@ test("routine socket loss reconnects without cancelling or redispatching an assi
   const sockets = [];
   const observations = [];
   let grants = 0;
-  const hand = new CustomerHand(
+  const environment = new CustomerEnvironment(
     async () => ({
-      request: { url: `wss://hand.invalid/${++grants}`, protocol: `grant.${grants}` },
+      request: { url: `wss://environment.invalid/${++grants}`, protocol: `grant.${grants}` },
       async observe(observation) { observations.push(observation); },
     }),
     [registration],
@@ -169,7 +169,7 @@ test("routine socket loss reconnects without cancelling or redispatching an assi
   await turn();
   const firstBatch = JSON.parse(first.sent.shift());
   first.message({ type: "registered", epoch: 1, batch_id: firstBatch.batch_id });
-  await hand.ready;
+  await environment.ready;
   const offer = {
     type: "offer",
     epoch: 1,
@@ -211,7 +211,7 @@ test("routine socket loss reconnects without cancelling or redispatching an assi
   assert.equal(observations.at(-1).epoch, 2);
   assert.equal(executions, 1);
   assert.equal(grants, 2);
-  hand.close();
+  environment.close();
 });
 
 test("retention capacity applies backpressure and never evicts an unacknowledged terminal", async () => {
@@ -223,9 +223,9 @@ test("retention capacity applies backpressure and never evicts an unacknowledged
   const registration = (await compileTools([value])).clientRegistrations[0];
   const socket = new FakeSocket();
   const observations = [];
-  const hand = new CustomerHand(
+  const environment = new CustomerEnvironment(
     async () => ({
-      request: { url: "wss://hand.invalid", protocol: "grant.capacity" },
+      request: { url: "wss://environment.invalid", protocol: "grant.capacity" },
       async observe(observation) { observations.push(observation); },
     }),
     [registration],
@@ -239,7 +239,7 @@ test("retention capacity applies backpressure and never evicts an unacknowledged
   await turn();
   const batch = JSON.parse(socket.sent.shift());
   socket.message({ type: "registered", epoch: 1, batch_id: batch.batch_id });
-  await hand.ready;
+  await environment.ready;
   const offer = (id, value) => ({
     type: "offer", epoch: 1, operation_id: id, request_digest: value.toString().repeat(64).slice(0, 64),
     session_id: "ses-1", registration: registration.registration, name: registration.name,
@@ -272,14 +272,14 @@ test("retention capacity applies backpressure and never evicts an unacknowledged
   socket.message(offer("op-second", 2));
   await turn();
   assert.equal(executions, 2);
-  hand.close();
+  environment.close();
 });
 
 test("inline result bound counts UTF-8 bytes", async () => {
   const value = tool(z.object({}), async function unicode() {
     return "界".repeat(45_000);
   }).client({ registration: "unicode.current" });
-  const { socket, hand, registration, observations } = await readyHand(value);
+  const { socket, environment, registration, observations } = await readyHand(value);
   socket.message({
     type: "offer", epoch: 7, operation_id: "op-unicode", request_digest: "d".repeat(64),
     session_id: "ses-1", registration: registration.registration, name: registration.name,
@@ -288,7 +288,7 @@ test("inline result bound counts UTF-8 bytes", async () => {
   await turn();
   assert.equal(observations.at(-1).ok, false);
   assert.match(observations.at(-1).error, /94208 inline bytes/);
-  hand.close();
+  environment.close();
 });
 
 test("a running operation rejects a different digest without aliasing its receipt", async () => {
@@ -298,7 +298,7 @@ test("a running operation rejects a different digest without aliasing its receip
     executions += 1;
     return await new Promise((resolve) => { finish = resolve; });
   }).client({ registration: "blocked.digest" });
-  const { socket, hand, registration, observations } = await readyHand(value);
+  const { socket, environment, registration, observations } = await readyHand(value);
   const offer = {
     type: "offer", epoch: 7, operation_id: "op-digest", request_digest: "a".repeat(64),
     session_id: "ses-1", registration: registration.registration, name: registration.name,
@@ -315,7 +315,7 @@ test("a running operation rejects a different digest without aliasing its receip
   await turn();
   assert.equal(observations.at(-1).ok, true);
   assert.equal(observations.at(-1).request_digest, "a".repeat(64));
-  hand.close();
+  environment.close();
 });
 
 test("a failed receipt delivery removes pre-effect admission and retries safely", async () => {
@@ -328,9 +328,9 @@ test("a failed receipt delivery removes pre-effect admission and retries safely"
   const registration = (await compileTools([value])).clientRegistrations[0];
   const socket = new FakeSocket();
   const observations = [];
-  const hand = new CustomerHand(
+  const environment = new CustomerEnvironment(
     async () => ({
-      request: { url: "wss://hand.invalid", protocol: "grant.receipt" },
+      request: { url: "wss://environment.invalid", protocol: "grant.receipt" },
       async observe(observation) {
         observations.push(observation);
         if (observation.type === "receipt" && receiptFailures-- > 0) throw new Error("lost receipt response");
@@ -344,7 +344,7 @@ test("a failed receipt delivery removes pre-effect admission and retries safely"
   socket.open(); socket.sent.shift(); socket.message({ type: "ready", epoch: 1 }); await turn();
   const batch = JSON.parse(socket.sent.shift());
   socket.message({ type: "registered", epoch: 1, batch_id: batch.batch_id });
-  await hand.ready;
+  await environment.ready;
   const offer = {
     type: "offer", epoch: 1, operation_id: "op-receipt", request_digest: "c".repeat(64),
     session_id: "ses-1", registration: registration.registration, name: registration.name,
@@ -357,7 +357,7 @@ test("a failed receipt delivery removes pre-effect admission and retries safely"
   await turn();
   assert.equal(executions, 1);
   assert.equal(observations.at(-1).type, "terminal");
-  hand.close();
+  environment.close();
 });
 
 test("an ambiguous success delivery retains one immutable terminal outcome", async () => {
@@ -376,9 +376,9 @@ test("an ambiguous success delivery retains one immutable terminal outcome", asy
   const registration = (await compileTools([value])).clientRegistrations[0];
   const socket = new FakeSocket();
   const observations = [];
-  const hand = new CustomerHand(
+  const environment = new CustomerEnvironment(
     async () => ({
-      request: { url: "wss://hand.invalid", protocol: "grant.terminal" },
+      request: { url: "wss://environment.invalid", protocol: "grant.terminal" },
       async observe(observation) {
         observations.push(structuredClone(observation));
         if (observation.type === "terminal" && terminalFailures-- > 0) {
@@ -394,7 +394,7 @@ test("an ambiguous success delivery retains one immutable terminal outcome", asy
   socket.open(); socket.sent.shift(); socket.message({ type: "ready", epoch: 1 }); await turn();
   const batch = JSON.parse(socket.sent.shift());
   socket.message({ type: "registered", epoch: 1, batch_id: batch.batch_id });
-  await hand.ready;
+  await environment.ready;
   const offer = {
     type: "offer", epoch: 1, operation_id: "op-terminal", request_digest: "d".repeat(64),
     session_id: "ses-1", registration: registration.registration, name: registration.name,
@@ -409,7 +409,7 @@ test("an ambiguous success delivery retains one immutable terminal outcome", asy
   assert.equal(serializations, 1);
   assert.ok(terminals.length >= 3);
   assert.ok(terminals.every((entry) => entry.ok && entry.output.version === 1));
-  hand.close();
+  environment.close();
 });
 
 test("same registration and contract never aliases a different closure", async () => {
@@ -421,9 +421,9 @@ test("same registration and contract never aliases a different closure", async (
   const [secondRegistration] = (await compileTools([second])).clientRegistrations;
   assert.equal(firstRegistration.contractDigest, secondRegistration.contractDigest);
   assert.throws(
-    () => new CustomerHand(
+    () => new CustomerEnvironment(
       async () => ({
-        request: { url: "wss://hand.invalid", protocol: "grant.conflict" },
+        request: { url: "wss://environment.invalid", protocol: "grant.conflict" },
         async observe() {},
       }),
       [firstRegistration, secondRegistration],
@@ -434,9 +434,9 @@ test("same registration and contract never aliases a different closure", async (
   );
 
   const socket = new FakeSocket();
-  const hand = new CustomerHand(
+  const environment = new CustomerEnvironment(
     async () => ({
-      request: { url: "wss://hand.invalid", protocol: "grant.conflict" },
+      request: { url: "wss://environment.invalid", protocol: "grant.conflict" },
       async observe() {},
     }),
     [firstRegistration],
@@ -444,18 +444,18 @@ test("same registration and contract never aliases a different closure", async (
     { clientId: "app.primary" },
   );
   await assert.rejects(
-    hand.register([secondRegistration]),
+    environment.register([secondRegistration]),
     /conflicts with its existing contract or handler/,
   );
-  hand.close();
+  environment.close();
 });
 
 test("a missing heartbeat echo reconnects and re-registers after server state loss", async () => {
   const sockets = [];
   let grants = 0;
-  const hand = new CustomerHand(
+  const environment = new CustomerEnvironment(
     async () => ({
-      request: { url: "wss://hand.invalid", protocol: `grant.heartbeat.${++grants}` },
+      request: { url: "wss://environment.invalid", protocol: `grant.heartbeat.${++grants}` },
       async observe() {},
     }),
     [],
@@ -477,7 +477,7 @@ test("a missing heartbeat echo reconnects and re-registers after server state lo
   first.open();
   first.sent.shift();
   first.message({ type: "ready", epoch: 1 });
-  await hand.ready;
+  await environment.ready;
   for (let attempt = 0; attempt < 100 && first.sent.length === 0; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
@@ -491,14 +491,14 @@ test("a missing heartbeat echo reconnects and re-registers after server state lo
   assert.equal(first.closed, true);
   assert.equal(sockets.length, 2);
   assert.equal(grants, 2);
-  hand.close();
+  environment.close();
 });
 
 test("a connection-level error after ready closes and reconnects", async () => {
   const sockets = [];
-  const hand = new CustomerHand(
+  const environment = new CustomerEnvironment(
     async () => ({
-      request: { url: "wss://hand.invalid", protocol: `grant.error.${sockets.length}` },
+      request: { url: "wss://environment.invalid", protocol: `grant.error.${sockets.length}` },
       async observe() {},
     }),
     [],
@@ -514,29 +514,29 @@ test("a connection-level error after ready closes and reconnects", async () => {
   first.open();
   first.sent.shift();
   first.message({ type: "ready", epoch: 1 });
-  await hand.ready;
+  await environment.ready;
   first.message({ type: "error", code: "coordinator_state_lost", message: "register again" });
   for (let attempt = 0; attempt < 100 && sockets.length < 2; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   assert.equal(first.closed, true);
   assert.equal(sockets.length, 2);
-  hand.close();
+  environment.close();
 });
 
 test("close interrupts a pending connector without leaving a reconnect timer", async () => {
   let finishConnector;
-  const hand = new CustomerHand(
+  const environment = new CustomerEnvironment(
     () => new Promise((resolve) => { finishConnector = resolve; }),
     [],
     () => new FakeSocket(),
     { clientId: "app.primary", reconnectDelayMs: 30_000 },
   );
   await turn();
-  hand.close();
-  await assert.rejects(hand.ready, /Customer Hand is closed/);
+  environment.close();
+  await assert.rejects(environment.ready, /Customer Environment is closed/);
   finishConnector({
-    request: { url: "wss://hand.invalid", protocol: "grant.too-late" },
+    request: { url: "wss://environment.invalid", protocol: "grant.too-late" },
     async observe() {},
   });
 });

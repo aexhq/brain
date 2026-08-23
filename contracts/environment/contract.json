@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aexhq/brain/contracts/hand/contract.json",
-  "title": "BrainHandContract",
-  "description": "The single current, transport-neutral Brain to Hand receipt contract. The canonical schema digest is the compatibility identity; the wire carries no protocol version.",
+  "$id": "https://github.com/aexhq/brain/contracts/environment/contract.json",
+  "title": "BrainEnvironmentContract",
+  "description": "The single current, transport-neutral Brain to Environment receipt contract. The canonical schema digest is the compatibility identity; the wire carries no protocol version.",
   "type": "object",
   "definitions": {
     "Digest": {
@@ -43,22 +43,25 @@
         "expires_at_ms": { "type": "integer", "minimum": 1 },
         "max_bytes": { "type": "integer", "minimum": 1 }
       },
-      "description": "Short-lived, one-purpose transfer capability minted by Brain-owned storage. transfer_id identifies the reservation/capability; object_id is the immutable source or pending destination identity. GET is valid only for import and PUT only for export; Hands never infer an object-store key. Export returns ObjectReference.object_id exactly equal to this sealed object_id."
+      "description": "Short-lived, one-purpose transfer capability minted by Brain-owned storage. transfer_id identifies the reservation/capability; object_id is the immutable source or pending destination identity. GET is valid only for import and PUT only for export; Environments never infer an object-store key. Export returns ObjectReference.object_id exactly equal to this sealed object_id."
     },
-    "BundleRuntime": {
+    "ArtifactTarget": {
       "type": "string",
-      "enum": ["node22"]
+      "enum": ["linux-amd64", "linux-arm64"]
     },
     "BundleDescriptor": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bundle_digest", "bytes", "runtime", "object", "tool_name", "contract_digest", "required_env"],
+      "required": ["bundle_digest", "bytes", "target", "execute_path", "object", "tool_name", "environment_name", "contract_digest", "required_env"],
       "properties": {
         "bundle_digest": { "$ref": "#/definitions/Digest" },
         "bytes": { "type": "integer", "minimum": 1 },
-        "runtime": { "$ref": "#/definitions/BundleRuntime" },
+        "target": { "$ref": "#/definitions/ArtifactTarget" },
+        "execute_path": { "type": "string", "pattern": "^/[^\\u0000]+$", "maxLength": 4096 },
+        "setup_path": { "type": ["string", "null"], "pattern": "^/[^\\u0000]+$", "maxLength": 4096 },
         "object": { "$ref": "#/definitions/ObjectReference" },
         "tool_name": { "$ref": "#/definitions/Identifier" },
+        "environment_name": { "$ref": "#/definitions/Identifier" },
         "description": { "type": ["string", "null"], "maxLength": 4096 },
         "contract_digest": { "$ref": "#/definitions/Digest" },
         "required_env": {
@@ -113,26 +116,22 @@
           "items": { "$ref": "#/definitions/Identifier" }
         }
       },
-      "description": "Opaque, short-lived, one-redemption authority for one session and one physical target generation. The Hand may keep redeemed values only in supervisor memory and inject each binding's declared subset at child spawn. Brain may mint a replacement capability for the same surviving generation after a Hand control-process crash. Secret values never enter this contract, binding registry, journal, receipt or argv."
+      "description": "Opaque, short-lived, one-redemption authority for one session and one physical target generation. The Environment may keep redeemed values only in supervisor memory and inject each binding's declared subset at child spawn. Brain may mint a replacement capability for the same surviving generation after a Environment control-process crash. Secret values never enter this contract, binding registry, journal, receipt or argv."
     },
     "SecretDeliveryRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["capability_ref", "hand_id", "session_id", "root_id", "target", "generation_intent"],
+      "required": ["capability_ref", "environment_id", "session_id", "root_id", "target", "generation_intent"],
       "properties": {
         "capability_ref": { "$ref": "#/definitions/Identifier" },
-        "hand_id": { "$ref": "#/definitions/Identifier" },
+        "environment_id": { "$ref": "#/definitions/Identifier" },
         "session_id": { "$ref": "#/definitions/Identifier" },
         "root_id": { "$ref": "#/definitions/Identifier" },
         "target": { "$ref": "#/definitions/SandboxTarget" },
         "generation_intent": { "$ref": "#/definitions/Identifier" }
       }
     },
-    "ExecutionRealm": {
-      "type": "string",
-      "enum": ["aex_managed", "customer_app", "engine"]
-    },
-    "HandCapability": {
+    "EnvironmentCapability": {
       "type": "string",
       "enum": ["execution", "session_preparation", "sandbox_files", "sandbox_control"]
     },
@@ -143,16 +142,15 @@
     "ResolvedBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["binding_ref", "hand_id", "realm", "recovery", "capabilities", "limits"],
+      "required": ["binding_ref", "environment_id", "recovery", "capabilities", "limits"],
       "properties": {
         "binding_ref": { "$ref": "#/definitions/Identifier" },
-        "hand_id": { "$ref": "#/definitions/Identifier" },
-        "realm": { "$ref": "#/definitions/ExecutionRealm" },
+        "environment_id": { "$ref": "#/definitions/Identifier" },
         "recovery": { "$ref": "#/definitions/RecoveryClass" },
         "capabilities": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/definitions/HandCapability" }
+          "items": { "$ref": "#/definitions/EnvironmentCapability" }
         },
         "limits": {
           "type": "object",
@@ -169,22 +167,21 @@
     "SealedBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["binding_id", "session_id", "root_id", "contract_digest", "implementation_identity", "realm", "realm_id", "capability", "policy_digest"],
+      "required": ["binding_id", "session_id", "root_id", "contract_digest", "implementation_identity", "environment_name", "capability", "policy_digest"],
       "properties": {
         "binding_id": { "$ref": "#/definitions/Identifier" },
         "session_id": { "$ref": "#/definitions/Identifier" },
         "root_id": { "$ref": "#/definitions/Identifier" },
         "contract_digest": { "$ref": "#/definitions/Digest" },
         "implementation_identity": { "$ref": "#/definitions/Digest" },
-        "realm": { "$ref": "#/definitions/ExecutionRealm" },
-        "realm_id": { "$ref": "#/definitions/Identifier" },
+        "environment_name": { "$ref": "#/definitions/Identifier" },
         "capability": { "$ref": "#/definitions/Identifier" },
         "policy_digest": { "$ref": "#/definitions/Digest" },
         "bundle": { "anyOf": [{ "$ref": "#/definitions/BundleDescriptor" }, { "type": "null" }] },
         "required_capabilities": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/definitions/HandCapability" },
+          "items": { "$ref": "#/definitions/EnvironmentCapability" },
           "default": ["execution"]
         }
       }
@@ -271,7 +268,7 @@
     "OperationEnvelope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["operation_id", "request_digest", "session_id", "root_id", "turn_id", "caller_id", "fence", "binding_ref", "capability", "input", "deadline_at_ms", "resources", "network", "trace"],
+      "required": ["operation_id", "request_digest", "session_id", "root_id", "turn_id", "caller_id", "fence", "binding_ref", "capability", "input", "phase", "deadline_at_ms", "resources", "network", "trace"],
       "properties": {
         "operation_id": { "$ref": "#/definitions/Identifier" },
         "request_digest": { "$ref": "#/definitions/Digest" },
@@ -284,6 +281,7 @@
         "binding_ref": { "$ref": "#/definitions/Identifier" },
         "capability": { "$ref": "#/definitions/Identifier" },
         "input": { "$ref": "#/definitions/OperationInput" },
+        "phase": { "type": "string", "enum": ["setup", "execute"] },
         "target_ref": { "type": ["string", "null"], "maxLength": 256 },
         "deadline_at_ms": { "type": "integer", "minimum": 1 },
         "resources": { "$ref": "#/definitions/ResourceCeiling" },
@@ -304,7 +302,7 @@
         "request_digest": { "$ref": "#/definitions/Digest" },
         "target": {
           "$ref": "#/definitions/SandboxTarget",
-          "description": "Exact rooted logical target accepted for this execution. Control and acknowledgement calls carry it back so Hand can reconcile its root-keyed target registry without a reverse index or scan."
+          "description": "Exact rooted logical target accepted for this execution. Control and acknowledgement calls carry it back so Environment can reconcile its root-keyed target registry without a reverse index or scan."
         },
         "generation": { "$ref": "#/definitions/Identifier" },
         "target_ref": {
@@ -313,7 +311,7 @@
         },
         "receipt_ref": {
           "$ref": "#/definitions/Identifier",
-          "description": "Opaque Hand-issued locator for the accepted physical execution. Brain journals it before observe/cancel/ack; it complements the Hand binding/preparation/target registry and never encodes product routing policy."
+          "description": "Opaque Environment-issued locator for the accepted physical execution. Brain journals it before observe/cancel/ack; it complements the Environment binding/preparation/target registry and never encodes product routing policy."
         }
       },
       "description": "Durable execution locator carrying both the opaque receipt and the exact rooted target authority required to observe, cancel, acknowledge, and reconcile target loss."
@@ -331,7 +329,7 @@
         "generation": { "$ref": "#/definitions/Identifier" },
         "expires_at_ms": { "type": "integer", "minimum": 1 }
       },
-      "description": "Hand-issued continuity locator for a materialized target. Brain journals and projects the newest receipt, then supplies target_ref and generation on later operations."
+      "description": "Environment-issued continuity locator for a materialized target. Brain journals and projects the newest receipt, then supplies target_ref and generation on later operations."
     },
     "TerminalOutcome": {
       "type": "string",
@@ -362,7 +360,7 @@
         "offset": { "type": "integer", "minimum": 0 },
         "text": { "type": "string", "maxLength": 4096 }
       },
-      "description": "One bounded output observation emitted by a Hand. Brain treats it as provisional until the terminal receipt is durably journaled."
+      "description": "One bounded output observation emitted by a Environment. Brain treats it as provisional until the terminal receipt is durably journaled."
     },
     "OperationObservation": {
       "type": "object",
@@ -509,7 +507,7 @@
         "source": { "$ref": "#/definitions/SandboxFileWriteSource" },
         "overwrite": { "type": "boolean" }
       },
-      "description": "Effect identity is exact across ambiguous transport delivery. Hand retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect."
+      "description": "Effect identity is exact across ambiguous transport delivery. Environment retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect."
     },
     "SandboxFileWriteResult": {
       "type": "object",
@@ -561,7 +559,7 @@
         "direction": { "type": "string", "enum": ["import", "export"] },
         "overwrite": { "type": "boolean" }
       },
-      "description": "Effect identity is exact across ambiguous transport delivery. Hand retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect."
+      "description": "Effect identity is exact across ambiguous transport delivery. Environment retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect."
     },
     "SandboxCopyResult": {
       "type": "object",
@@ -656,7 +654,7 @@
         "text": { "type": "string", "maxLength": 4096 },
         "eof": { "type": "boolean" }
       },
-      "description": "One idempotent stdin append/EOF/poll. Empty text with eof=false is a pure poll. UTF-8 payload bytes are additionally capped at 4096 so the Hand can perform one PIPE_BUF-bounded write; larger input must be split into separately identified requests."
+      "description": "One idempotent stdin append/EOF/poll. Empty text with eof=false is a pure poll. UTF-8 payload bytes are additionally capped at 4096 so the Environment can perform one PIPE_BUF-bounded write; larger input must be split into separately identified requests."
     },
     "WriteStdinReceipt": {
       "type": "object",
@@ -671,16 +669,16 @@
       },
       "description": "Exact stdin-effect receipt plus the current bounded observation of the referenced interactive execution. Poll requests return accepted=false and still provide the observation."
     },
-    "HandErrorCode": {
+    "EnvironmentErrorCode": {
       "type": "string",
       "enum": ["binding_conflict", "capability_unavailable", "operation_conflict", "operation_unknown", "sandbox_not_materialized", "sandbox_gone", "file_not_found", "generation_conflict", "invalid_request", "resource_exhausted", "temporarily_unavailable"]
     },
-    "HandError": {
+    "EnvironmentError": {
       "type": "object",
       "additionalProperties": false,
       "required": ["code", "message", "retryable"],
       "properties": {
-        "code": { "$ref": "#/definitions/HandErrorCode" },
+        "code": { "$ref": "#/definitions/EnvironmentErrorCode" },
         "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
         "retryable": { "type": "boolean" },
         "details": { "type": "object", "additionalProperties": true }

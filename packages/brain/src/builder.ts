@@ -11,7 +11,7 @@ export interface PreparedBundle {
 }
 
 /**
- * Bundle a Tool module without importing it. The returned ESM is first evaluated by the Hand's
+ * Bundle a Tool module without importing it. The returned ESM is first evaluated by the Environment's
  * per-call runner, after Brain has durably journaled the call intent.
  */
 export async function buildToolModule(moduleUrl: string): Promise<PreparedBundle> {

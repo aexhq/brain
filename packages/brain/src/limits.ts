@@ -5,10 +5,10 @@ export const MAX_MANAGED_TOOL_INPUT_BYTES = 192 * 1024;
 /** Maximum UTF-8 JSON bytes accepted by the Session create endpoint. */
 export const MAX_CREATE_SESSION_REQUEST_BYTES = 24 * 1024 * 1024;
 
-/** Maximum encoded bytes for one customer-Hand WebSocket command frame. */
+/** Maximum encoded bytes for one customer-Environment WebSocket command frame. */
 export const MAX_CUSTOMER_WS_FRAME_BYTES = 24 * 1024;
 
-/** Maximum UTF-8 JSON bytes accepted by customer-Hand HTTPS observation ingress. */
+/** Maximum UTF-8 JSON bytes accepted by customer-Environment HTTPS observation ingress. */
 export const MAX_CUSTOMER_OBSERVATION_BYTES = 128 * 1024;
 
 /** Maximum UTF-8 JSON payload bytes in one public Session event, excluding SSE framing. */

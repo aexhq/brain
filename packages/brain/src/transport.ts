@@ -57,7 +57,7 @@ export class Transport {
     this.#fetch = fetchImplementation;
   }
 
-  async customerHandGrant(clientId: string, signal?: AbortSignal): Promise<{
+  async customerEnvironmentGrant(clientId: string, signal?: AbortSignal): Promise<{
     url: string;
     protocol: string;
     expiresAt: string;
@@ -72,7 +72,7 @@ export class Transport {
       observation_token: string;
     }>(
       "POST",
-      "/v1/customer-hand/grants",
+      "/v1/customer-environment/grants",
       { body: { client_id: clientId }, signal },
     );
     return {
@@ -84,13 +84,13 @@ export class Transport {
     };
   }
 
-  async customerHandObserve(
+  async customerEnvironmentObserve(
     url: string,
     token: string,
     observation: unknown,
     signal?: AbortSignal,
   ): Promise<void> {
-    const body = encodeJsonOnce(observation, MAX_CUSTOMER_OBSERVATION_BYTES, "Customer Hand observation");
+    const body = encodeJsonOnce(observation, MAX_CUSTOMER_OBSERVATION_BYTES, "Customer Environment observation");
     const response = await this.#fetch(url, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -99,7 +99,7 @@ export class Transport {
     });
     if (!response.ok) {
       const preview = await readResponseText(response, 4096).catch(() => "<response too large or unreadable>");
-      throw new SessionError(`Customer Hand observation ingress returned HTTP ${response.status}: ${preview}`);
+      throw new SessionError(`Customer Environment observation ingress returned HTTP ${response.status}: ${preview}`);
     }
   }
 
@@ -314,7 +314,7 @@ function requestLimit(method: "GET" | "POST" | "DELETE", path: string): number {
   ) {
     return MAX_MESSAGE_REQUEST_BYTES;
   }
-  if (path.includes("/customer-hand/gateway")) return MAX_CUSTOMER_WS_FRAME_BYTES;
+  if (path.includes("/customer-environment/gateway")) return MAX_CUSTOMER_WS_FRAME_BYTES;
   return MAX_ORDINARY_JSON_BYTES;
 }
 

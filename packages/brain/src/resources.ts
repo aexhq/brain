@@ -7,7 +7,7 @@ import type {
 import type {
   FileEntry as CanonicalSandboxFileEntry,
   SandboxStatus as CanonicalSandboxStatus,
-} from "./generated/hand.js";
+} from "./generated/environment.js";
 import type { components as ApiComponents } from "./generated/paths.js";
 import { randomIdempotencyKey } from "./json.js";
 import type { EventOptions, JsonRequestOptions, SessionTransport } from "./transport.js";
@@ -31,10 +31,10 @@ function assertInlineBase64(content: string): void {
   }
 }
 
-/** Exact canonical Hand lifecycle projection returned by the default-sandbox HTTP resource. */
+/** Exact canonical Environment lifecycle projection returned by the default-sandbox HTTP resource. */
 export type SandboxStatus = CanonicalSandboxStatus;
 
-/** Exact canonical Hand file metadata; timestamps are integer Unix milliseconds. */
+/** Exact canonical Environment file metadata; timestamps are integer Unix milliseconds. */
 export type SandboxFileEntry = CanonicalSandboxFileEntry;
 
 export type SandboxFileList = ApiSchemas["SandboxFileList"];

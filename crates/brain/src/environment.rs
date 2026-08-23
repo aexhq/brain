@@ -1,15 +1,15 @@
 //! Brain-owned, transport-neutral execution ports.
 //!
-//! A production Hand implements these traits. Brain commits an operation intent before calling
-//! [`HandPort::submit`], commits a terminal observation before
-//! [`HandPort::acknowledge_terminal`], and never substitutes one Hand for another.
+//! A production Environment implements these traits. Brain commits an operation intent before calling
+//! [`EnvironmentPort::submit`], commits a terminal observation before
+//! [`EnvironmentPort::acknowledge_terminal`], and never substitutes one Environment for another.
 
 use crate::journal::HeadDoc;
 use crate::{BrainError, Result};
 use async_trait::async_trait;
-use brain_protocol::hand::{
+use brain_protocol::environment::{
     AcknowledgeTerminalRequest, Acknowledgement, CancelRequest, CancellationReceipt,
-    CreateSandboxRequest, FileEntry, HandError, ObserveRequest, OperationObservation,
+    CreateSandboxRequest, FileEntry, EnvironmentError, ObserveRequest, OperationObservation,
     PrepareSessionRequest, PreparedSession, ResolvedBinding, SandboxCopyRequest, SandboxCopyResult,
     SandboxExecutionRequest, SandboxFileRequest, SandboxFileWriteRequest, SandboxFileWriteResult,
     SandboxStatus, SandboxTarget, SealedBinding, SecretDeliveryRequest, SubmitReceipt,
@@ -18,31 +18,31 @@ use brain_protocol::hand::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub type HandResult<T> = std::result::Result<T, HandError>;
+pub type EnvironmentResult<T> = std::result::Result<T, EnvironmentError>;
 
-/// The mandatory operation receipt protocol implemented by every Hand.
+/// The mandatory operation receipt protocol implemented by every Environment.
 #[async_trait]
-pub trait HandPort: Send + Sync {
-    async fn resolve_binding(&self, binding: SealedBinding) -> HandResult<ResolvedBinding>;
-    async fn submit(&self, request: SubmitRequest) -> HandResult<SubmitReceipt>;
-    async fn observe(&self, request: ObserveRequest) -> HandResult<OperationObservation>;
-    async fn cancel(&self, request: CancelRequest) -> HandResult<CancellationReceipt>;
+pub trait EnvironmentPort: Send + Sync {
+    async fn resolve_binding(&self, binding: SealedBinding) -> EnvironmentResult<ResolvedBinding>;
+    async fn submit(&self, request: SubmitRequest) -> EnvironmentResult<SubmitReceipt>;
+    async fn observe(&self, request: ObserveRequest) -> EnvironmentResult<OperationObservation>;
+    async fn cancel(&self, request: CancelRequest) -> EnvironmentResult<CancellationReceipt>;
     async fn acknowledge_terminal(
         &self,
         request: AcknowledgeTerminalRequest,
-    ) -> HandResult<Acknowledgement>;
+    ) -> EnvironmentResult<Acknowledgement>;
 }
 
 /// Optional lifecycle capability. Preparation never materializes the default sandbox.
 #[async_trait]
 pub trait SessionPreparationPort: Send + Sync {
-    async fn prepare(&self, request: PrepareSessionRequest) -> HandResult<PreparedSession>;
+    async fn prepare(&self, request: PrepareSessionRequest) -> EnvironmentResult<PreparedSession>;
     /// Idempotently materialize the shared default target. Brain supplies the durable logical
     /// target/binding and sealed root policy; this is distinct from additional-sandbox creation.
     async fn materialize_default(&self, request: CreateSandboxRequest)
-    -> HandResult<SandboxStatus>;
-    async fn dematerialize_default(&self, target: SandboxTarget) -> HandResult<SandboxStatus>;
-    async fn purge_tree(&self, root_id: &str) -> HandResult<()>;
+    -> EnvironmentResult<SandboxStatus>;
+    async fn dematerialize_default(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus>;
+    async fn purge_tree(&self, root_id: &str) -> EnvironmentResult<()>;
 }
 
 /// Plaintext returned only across the one-purpose secret redemption port. It deliberately has no
@@ -61,7 +61,7 @@ impl SecretMaterial {
 
 #[async_trait]
 pub trait SecretDeliveryPort: Send + Sync {
-    async fn redeem(&self, request: SecretDeliveryRequest) -> HandResult<SecretMaterial>;
+    async fn redeem(&self, request: SecretDeliveryRequest) -> EnvironmentResult<SecretMaterial>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,28 +98,28 @@ pub struct SandboxSearchRequest {
 /// Optional live-files capability. Every operation fences on the expected generation.
 #[async_trait]
 pub trait SandboxFilesPort: Send + Sync {
-    async fn status(&self, target: SandboxTarget) -> HandResult<SandboxStatus>;
-    async fn list(&self, request: SandboxFileListRequest) -> HandResult<SandboxFileList>;
-    async fn stat(&self, request: SandboxFileRequest) -> HandResult<FileEntry>;
-    async fn read(&self, request: SandboxFileRequest) -> HandResult<SandboxFileContent>;
-    async fn write(&self, request: SandboxFileWriteRequest) -> HandResult<SandboxFileWriteResult>;
-    async fn find(&self, request: SandboxSearchRequest) -> HandResult<SandboxFileList>;
-    async fn grep(&self, request: SandboxSearchRequest) -> HandResult<SandboxFileList>;
-    async fn transfer(&self, request: SandboxCopyRequest) -> HandResult<SandboxCopyResult>;
+    async fn status(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus>;
+    async fn list(&self, request: SandboxFileListRequest) -> EnvironmentResult<SandboxFileList>;
+    async fn stat(&self, request: SandboxFileRequest) -> EnvironmentResult<FileEntry>;
+    async fn read(&self, request: SandboxFileRequest) -> EnvironmentResult<SandboxFileContent>;
+    async fn write(&self, request: SandboxFileWriteRequest) -> EnvironmentResult<SandboxFileWriteResult>;
+    async fn find(&self, request: SandboxSearchRequest) -> EnvironmentResult<SandboxFileList>;
+    async fn grep(&self, request: SandboxSearchRequest) -> EnvironmentResult<SandboxFileList>;
+    async fn transfer(&self, request: SandboxCopyRequest) -> EnvironmentResult<SandboxCopyResult>;
 }
 
 /// Optional effect capability for the official additional-sandbox Tool. Logical inventory and
-/// pagination are Brain-owned durable state; Hand is addressed only with an exact sealed target.
+/// pagination are Brain-owned durable state; Environment is addressed only with an exact sealed target.
 #[async_trait]
 pub trait SandboxControlPort: Send + Sync {
-    async fn create(&self, request: CreateSandboxRequest) -> HandResult<SandboxStatus>;
-    async fn inspect(&self, target: SandboxTarget) -> HandResult<SandboxStatus>;
-    async fn execute(&self, request: SandboxExecutionRequest) -> HandResult<SubmitReceipt>;
-    async fn write_stdin(&self, request: WriteStdinRequest) -> HandResult<WriteStdinReceipt>;
-    async fn terminate(&self, target: SandboxTarget) -> HandResult<SandboxStatus>;
+    async fn create(&self, request: CreateSandboxRequest) -> EnvironmentResult<SandboxStatus>;
+    async fn inspect(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus>;
+    async fn execute(&self, request: SandboxExecutionRequest) -> EnvironmentResult<SubmitReceipt>;
+    async fn write_stdin(&self, request: WriteStdinRequest) -> EnvironmentResult<WriteStdinReceipt>;
+    async fn terminate(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus>;
 }
 
-pub(crate) fn managed_hand_resources() -> Result<brain_protocol::hand::ResourceCeiling> {
+pub(crate) fn managed_environment_resources() -> Result<brain_protocol::environment::ResourceCeiling> {
     serde_json::from_value(serde_json::json!({
         "timeout_ms": 600_000,
         "max_output_bytes": brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES,
@@ -129,7 +129,7 @@ pub(crate) fn managed_hand_resources() -> Result<brain_protocol::hand::ResourceC
 
 pub(crate) fn sealed_sandbox_network(
     doc: &HeadDoc,
-) -> Result<brain_protocol::hand::NetworkCeiling> {
+) -> Result<brain_protocol::environment::NetworkCeiling> {
     let network = match doc
         .prefix
         .network
@@ -152,13 +152,13 @@ pub(crate) fn sealed_sandbox_network(
     serde_json::from_value(network).map_err(BrainError::from)
 }
 
-pub(crate) fn map_hand_port_error(error: brain_protocol::hand::HandError) -> BrainError {
-    use brain_protocol::hand::HandErrorCode;
+pub(crate) fn map_environment_port_error(error: brain_protocol::environment::EnvironmentError) -> BrainError {
+    use brain_protocol::environment::EnvironmentErrorCode;
     match error.code {
-        HandErrorCode::SandboxNotMaterialized => BrainError::SandboxNotMaterialized,
-        HandErrorCode::SandboxGone => BrainError::SandboxGone,
-        HandErrorCode::GenerationConflict => BrainError::SandboxGenerationConflict,
-        HandErrorCode::ResourceExhausted => BrainError::SandboxResourceExhausted,
-        _ => BrainError::Hand(error.message.to_string()),
+        EnvironmentErrorCode::SandboxNotMaterialized => BrainError::SandboxNotMaterialized,
+        EnvironmentErrorCode::SandboxGone => BrainError::SandboxGone,
+        EnvironmentErrorCode::GenerationConflict => BrainError::SandboxGenerationConflict,
+        EnvironmentErrorCode::ResourceExhausted => BrainError::SandboxResourceExhausted,
+        _ => BrainError::Environment(error.message.to_string()),
     }
 }

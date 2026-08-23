@@ -86,7 +86,7 @@ impl BundleStoragePort for LocalSessionStorage {
         root_id: &str,
         bundle_digest: &str,
         bytes: &[u8],
-    ) -> Result<brain_protocol::hand::ObjectReference> {
+    ) -> Result<brain_protocol::environment::ObjectReference> {
         validate_bundle_digest(bundle_digest)?;
         if bytes.is_empty() || bytes.len() > brain_protocol::MAX_TOOL_BUNDLE_BYTES {
             return Err(BrainError::FileTooLarge {
@@ -120,7 +120,7 @@ impl BundleStoragePort for LocalSessionStorage {
         &self,
         root_id: &str,
         bundle_digest: &str,
-    ) -> Result<brain_protocol::hand::BundleFetch> {
+    ) -> Result<brain_protocol::environment::BundleFetch> {
         let path = self.bundle_path(root_id, bundle_digest)?;
         let bytes = tokio::fs::read(&path)
             .await
@@ -173,7 +173,7 @@ fn validate_bundle_digest(bundle_digest: &str) -> Result<()> {
 fn bundle_object_reference(
     bundle_digest: &str,
     bytes: u64,
-) -> Result<brain_protocol::hand::ObjectReference> {
+) -> Result<brain_protocol::environment::ObjectReference> {
     serde_json::from_value(serde_json::json!({
         "object_id": format!("bundle_{bundle_digest}"),
         "bytes": bytes,

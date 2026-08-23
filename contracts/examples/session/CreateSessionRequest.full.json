@@ -43,11 +43,25 @@
           "contract_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         },
         "executor": {
-          "kind": "customer_app",
-          "registration": "example.result.v1"
+          "kind": "environment",
+          "environment": "app",
+          "callback_registration": "example.result.v1",
+          "requirements": {}
         }
       }
     ]
+  },
+  "environments": {
+    "app": {
+      "extension": "example-app",
+      "protocol": "environment/v1",
+      "profile": {
+        "kind": "callbacks",
+        "network": "none",
+        "recovery": "connection"
+      },
+      "configuration": {}
+    }
   },
   "network": {
     "outbound": "none"

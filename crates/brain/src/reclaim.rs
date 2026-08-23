@@ -35,7 +35,7 @@
 //!
 //! # What this is not
 //!
-//! It is not a substitute for an allocator that can hand a session's memory
+//! It is not a substitute for an allocator that can environment a session's memory
 //! back as one `munmap` (arena-per-session), and it is not free. It is the
 //! cheapest change that turns a resident-set high-water mark back into a
 //! working set, and the threshold makes its cost bounded and predictable

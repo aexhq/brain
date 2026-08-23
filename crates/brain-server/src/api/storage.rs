@@ -319,7 +319,7 @@ pub(super) async fn storage_copy_to_sandbox(
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<StorageSandboxCopyRequest>,
-) -> Result<Json<brain_protocol::hand::FileEntry>, Failure> {
+) -> Result<Json<brain_protocol::environment::FileEntry>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     let idempotency_key = required_effect_idempotency_key(&headers, "sandbox storage copies")?;
     state

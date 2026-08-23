@@ -274,7 +274,7 @@ impl TestBrain {
     }
 
     /// A session with the sealed engine task tool — the one dispatchable tool that needs no
-    /// Hand or customer transport, so a contract loop can drive a real successful dispatch.
+    /// Environment or customer transport, so a contract loop can drive a real successful dispatch.
     async fn create_session_with_task_tool(&self) -> String {
         self.create_session_from(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},

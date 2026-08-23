@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use brain_protocol::{agentloop, contract, hand, session};
+use brain_protocol::{agentloop, contract, environment, session};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -118,7 +118,7 @@ fn validate(schema_json: &str, name: &str, type_name: &str, value: &Value) {
 #[test]
 fn schemas_are_valid_2020_12() {
     for (name, json) in [
-        ("hand", contract::HAND_CONTRACT_SCHEMA_JSON),
+        ("environment", contract::ENVIRONMENT_CONTRACT_SCHEMA_JSON),
         ("session", brain_protocol::SESSION_SCHEMA_JSON),
     ] {
         let schema: Value = serde_json::from_str(json).unwrap();
@@ -130,7 +130,7 @@ fn schemas_are_valid_2020_12() {
 #[test]
 fn remote_mcp_is_absent_from_the_single_current_contract() {
     let session_schema = brain_protocol::SESSION_SCHEMA_JSON;
-    let hand_schema = contract::HAND_CONTRACT_SCHEMA_JSON;
+    let environment_schema = contract::ENVIRONMENT_CONTRACT_SCHEMA_JSON;
     for removed in [
         "McpServerConfig",
         "McpProtocol",
@@ -142,8 +142,8 @@ fn remote_mcp_is_absent_from_the_single_current_contract() {
             "removed remote MCP vocabulary reappeared in the session contract: {removed}"
         );
         assert!(
-            !hand_schema.contains(removed),
-            "removed remote MCP vocabulary reappeared in the Hand contract: {removed}"
+            !environment_schema.contains(removed),
+            "removed remote MCP vocabulary reappeared in the Environment contract: {removed}"
         );
     }
     let legacy = serde_json::json!({
@@ -233,9 +233,9 @@ fn every_ctx_op_has_request_and_result_examples() {
 #[test]
 fn contract_digest_files_stay_pinned_to_the_schemas() {
     assert_eq!(
-        format!("{}", *contract::hand_contract_digest()),
-        contract::HAND_CONTRACT_DIGEST.trim(),
-        "hand contract.digest drifted; run tools/generate-protocol.py hand"
+        format!("{}", *contract::environment_contract_digest()),
+        contract::ENVIRONMENT_CONTRACT_DIGEST.trim(),
+        "environment contract.digest drifted; run tools/generate-protocol.py environment"
     );
     assert_eq!(
         format!("{}", *contract::agentloop_contract_digest()),
@@ -356,7 +356,7 @@ fn credential_debug_is_redacted_without_changing_wire_serialization() {
             "env_names": ["TOKEN"],
         },
     });
-    let prepare: hand::PrepareSessionRequest =
+    let prepare: environment::PrepareSessionRequest =
         serde_json::from_value(prepare_value.clone()).unwrap();
     let prepare_debug = format!("{prepare:?}");
     for secret in [URL_SECRET, HEADER_SECRET, CAPABILITY_SECRET] {
@@ -381,7 +381,7 @@ fn credential_debug_is_redacted_without_changing_wire_serialization() {
             "max_bytes": 12,
         },
     });
-    let transfer: hand::SandboxFileWriteSource =
+    let transfer: environment::SandboxFileWriteSource =
         serde_json::from_value(transfer_value.clone()).unwrap();
     let transfer_debug = format!("{transfer:?}");
     assert!(!transfer_debug.contains(URL_SECRET));
@@ -408,7 +408,7 @@ fn execution_and_stdin_digests_omit_only_the_self_digest() {
         "resources": {"timeout_ms": 1000, "max_output_bytes": 4096},
         "network": {"kind": "none"},
     });
-    let mut execution: hand::SandboxExecutionRequest =
+    let mut execution: environment::SandboxExecutionRequest =
         serde_json::from_value(execution_value).unwrap();
     let first = contract::sandbox_execution_request_digest(&execution);
     execution.request_digest = one.parse().unwrap();
@@ -437,7 +437,7 @@ fn execution_and_stdin_digests_omit_only_the_self_digest() {
         "text": "hello",
         "eof": false,
     });
-    let mut stdin: hand::WriteStdinRequest = serde_json::from_value(stdin_value).unwrap();
+    let mut stdin: environment::WriteStdinRequest = serde_json::from_value(stdin_value).unwrap();
     let first = contract::write_stdin_request_digest(&stdin);
     stdin.request_digest = one.parse().unwrap();
     assert_eq!(first, contract::write_stdin_request_digest(&stdin));
@@ -474,7 +474,7 @@ fn file_effect_digests_refresh_transport_authority_without_changing_effect_ident
         "max_bytes": 5,
     });
 
-    let mut write: hand::SandboxFileWriteRequest = serde_json::from_value(serde_json::json!({
+    let mut write: environment::SandboxFileWriteRequest = serde_json::from_value(serde_json::json!({
         "operation_id": "write-1",
         "request_digest": zero,
         "target": target,
@@ -510,7 +510,7 @@ fn file_effect_digests_refresh_transport_authority_without_changing_effect_ident
         contract::sandbox_file_write_request_digest(&write)
     );
 
-    let mut import: hand::SandboxCopyRequest = serde_json::from_value(serde_json::json!({
+    let mut import: environment::SandboxCopyRequest = serde_json::from_value(serde_json::json!({
         "operation_id": "copy-import-1",
         "request_digest": zero,
         "target": target,
@@ -539,7 +539,7 @@ fn file_effect_digests_refresh_transport_authority_without_changing_effect_ident
         contract::sandbox_copy_request_digest(&import)
     );
 
-    let mut export: hand::SandboxCopyRequest = serde_json::from_value(serde_json::json!({
+    let mut export: environment::SandboxCopyRequest = serde_json::from_value(serde_json::json!({
         "operation_id": "copy-export-1",
         "request_digest": zero,
         "target": target,

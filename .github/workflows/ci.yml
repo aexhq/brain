@@ -50,7 +50,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # The Rust generated views must match their source schemas, exactly like the TypeScript gate
-  # above: a schema change without a regen (or a hand-edit of a generated file) is invisible to
+  # above: a schema change without a regen (or a environment-edit of a generated file) is invisible to
   # every other job because the stale .rs files still compile.
   protocol-gen:
     runs-on: ubuntu-24.04

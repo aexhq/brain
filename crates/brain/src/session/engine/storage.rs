@@ -90,8 +90,8 @@ impl Brain {
                             let entry = files
                                 .stat(file_request)
                                 .await
-                                .map_err(map_hand_port_error)?;
-                            if entry.kind != brain_protocol::hand::FileEntryKind::File {
+                                .map_err(map_environment_port_error)?;
+                            if entry.kind != brain_protocol::environment::FileEntryKind::File {
                                 return Err(BrainError::Invalid(
                                     "storage save source must be a regular file".into(),
                                 ));
@@ -120,17 +120,17 @@ impl Brain {
                                 false,
                             )?;
                             let expected_digest = copy.request_digest.clone();
-                            let result = files.transfer(copy).await.map_err(map_hand_port_error)?;
+                            let result = files.transfer(copy).await.map_err(map_environment_port_error)?;
                             validate_sandbox_copy_result(&result, operation_id, &expected_digest)?;
                             let exported = result.object.as_ref().ok_or_else(|| {
-                                BrainError::Hand(
+                                BrainError::Environment(
                                     "sandbox export omitted its uploaded object identity".into(),
                                 )
                             })?;
                             if exported.object_id.as_str() != ticket.object_id
                                 || exported.bytes != entry.bytes
                             {
-                                return Err(BrainError::Hand(
+                                return Err(BrainError::Environment(
                                     "sandbox export returned a different object identity".into(),
                                 ));
                             }
@@ -201,10 +201,10 @@ impl Brain {
                         .ok_or_else(|| BrainError::Invalid("sandbox files are unavailable".into()))?
                         .transfer(copy)
                         .await
-                        .map_err(map_hand_port_error)?;
+                        .map_err(map_environment_port_error)?;
                     validate_sandbox_copy_result(&result, operation_id, &expected_digest)?;
                     if result.object.is_some() {
-                        return Err(BrainError::Hand(
+                        return Err(BrainError::Environment(
                             "sandbox import returned an unexpected object identity".into(),
                         ));
                     }

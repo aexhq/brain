@@ -19,7 +19,7 @@ import type { EventOptions } from "./transport.js";
 import { Transport } from "./transport.js";
 import { compileTools } from "./tools.js";
 import type { Tool } from "./tools.js";
-import { CustomerHand, type WebSocketFactory } from "./customer.js";
+import { CustomerEnvironment, type WebSocketFactory } from "./customer.js";
 import { SessionChildren, SessionSandbox, SessionStorage } from "./resources.js";
 
 export type SessionInput = string;
@@ -98,7 +98,7 @@ export class Sessions {
   readonly #transport: Transport;
   readonly #webSocketFactory: WebSocketFactory | undefined;
   readonly #clientId: string | undefined;
-  #customerHand: Promise<CustomerHand> | undefined;
+  #customerEnvironment: Promise<CustomerEnvironment> | undefined;
   #closed = false;
 
   constructor(transport: Transport, webSocketFactory?: WebSocketFactory, clientId?: string) {
@@ -110,7 +110,7 @@ export class Sessions {
   async create(options: CreateSessionOptions, request: RequestOptions = {}): Promise<Session> {
     if (this.#closed) throw new SessionError("Brain client is closed");
     const compiledTools = await compileTools(options.tools);
-    await this.#ensureCustomerHand(compiledTools.clientRegistrations, request.signal);
+    await this.#ensureCustomerEnvironment(compiledTools.clientRegistrations, request.signal);
     const body = {
       model: {
         provider: options.model.provider,
@@ -183,12 +183,12 @@ export class Sessions {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    const hand = this.#customerHand;
-    this.#customerHand = undefined;
-    if (hand !== undefined) void hand.then((value) => value.close()).catch(() => undefined);
+    const environment = this.#customerEnvironment;
+    this.#customerEnvironment = undefined;
+    if (environment !== undefined) void environment.then((value) => value.close()).catch(() => undefined);
   }
 
-  async #ensureCustomerHand(
+  async #ensureCustomerEnvironment(
     registrations: readonly import("./tools.js").ClientRegistration[],
     signal?: AbortSignal,
   ): Promise<void> {
@@ -200,18 +200,18 @@ export class Sessions {
     if (this.#webSocketFactory === undefined) {
       throw new TypeError("This runtime does not provide WebSocket; pass a webSocketFactory to Brain");
     }
-    if (this.#customerHand === undefined) {
-      let partial: CustomerHand | undefined;
+    if (this.#customerEnvironment === undefined) {
+      let partial: CustomerEnvironment | undefined;
       const startup = (async () => {
         try {
-          partial = new CustomerHand(
+          partial = new CustomerEnvironment(
             async () => {
               // A request AbortSignal belongs only to that request. The multiplexed customer
               // runner has its own lifetime and must remain reconnectable after the create ends.
-              const grant = await this.#transport.customerHandGrant(this.#clientId!);
+              const grant = await this.#transport.customerEnvironmentGrant(this.#clientId!);
               return {
                 request: { url: grant.url, protocol: grant.protocol },
-                observe: (observation) => this.#transport.customerHandObserve(
+                observe: (observation) => this.#transport.customerEnvironmentObserve(
                   grant.observationUrl,
                   grant.observationToken,
                   observation,
@@ -233,15 +233,15 @@ export class Sessions {
           throw error;
         }
       })();
-      this.#customerHand = startup;
+      this.#customerEnvironment = startup;
       void startup.catch(() => {
-        if (this.#customerHand === startup) this.#customerHand = undefined;
+        if (this.#customerEnvironment === startup) this.#customerEnvironment = undefined;
       });
       await waitWithSignal(startup, signal);
       return;
     }
-    const hand = await waitWithSignal(this.#customerHand, signal);
-    await waitWithSignal(hand.register(registrations), signal);
+    const environment = await waitWithSignal(this.#customerEnvironment, signal);
+    await waitWithSignal(environment.register(registrations), signal);
   }
 }
 

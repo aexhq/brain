@@ -1,6 +1,6 @@
 //! Neutral AWS persistence and custody adapters for Brain.
 //!
-//! Hand implementations intentionally do not live here: the selected Hands substrate implements
+//! Environment implementations intentionally do not live here: the selected Environments substrate implements
 //! Brain's public ports and is supplied by the downstream composition.
 
 pub mod dynamo;
@@ -11,17 +11,17 @@ use std::sync::Arc;
 
 use brain::Result;
 use brain::adapter::ToolExecutor;
-use brain::hand::{HandPort, SandboxControlPort, SandboxFilesPort, SessionPreparationPort};
+use brain::environment::{EnvironmentPort, SandboxControlPort, SandboxFilesPort, SessionPreparationPort};
 use brain::journal::Journal;
 use brain::session::{Brain, BrainConfig};
 
 pub struct AwsRuntimePorts {
-    pub hand: Arc<dyn HandPort>,
+    pub environment: Arc<dyn EnvironmentPort>,
     pub session_preparation: Arc<dyn SessionPreparationPort>,
     pub sandbox_files: Arc<dyn SandboxFilesPort>,
     pub sandbox_control: Arc<dyn SandboxControlPort>,
     pub external_executor: Option<Arc<dyn ToolExecutor>>,
-    pub customer_delivery: Option<Arc<dyn brain::customer::CustomerHandDeliveryPort>>,
+    pub customer_delivery: Option<Arc<dyn brain::customer::CustomerEnvironmentDeliveryPort>>,
     pub customer_transport: Option<brain::customer::CustomerTransportConfig>,
     pub agentloop_registry: Option<Arc<dyn brain::agentloop::AgentloopRegistry>>,
     /// Overrides the live providers; the hosted default is the guarded transport with private
@@ -59,7 +59,7 @@ impl AwsPersistenceConfig {
     }
 }
 
-/// Compose AWS durability with an independently supplied Hand implementation.
+/// Compose AWS durability with an independently supplied Environment implementation.
 pub async fn compose(
     cfg: BrainConfig,
     persistence: AwsPersistenceConfig,
@@ -106,7 +106,7 @@ pub async fn compose(
         brain::session::BrainServices {
             session_storage: Some(storage.clone()),
             bundle_storage: Some(storage),
-            hand: Some(ports.hand),
+            environment: Some(ports.environment),
             session_preparation: Some(ports.session_preparation),
             sandbox_files: Some(ports.sandbox_files),
             sandbox_control: Some(ports.sandbox_control),

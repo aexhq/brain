@@ -4,9 +4,9 @@
 //! the same ordered `ToolConfig` array, and dispatch is derived only from the sealed executor
 //! descriptor. Model-visible names are data, never switches in the core.
 
-use crate::config::{HandToolSeal, ToolDecl, ToolRoute};
+use crate::config::{EnvironmentToolSeal, ToolDecl, ToolRoute};
 use crate::{BrainError, Result};
-use brain_protocol::hand::TerminalOutcome;
+use brain_protocol::environment::TerminalOutcome;
 use brain_protocol::session::{ToolConfig, ToolExecutor};
 use serde::Deserialize;
 
@@ -36,16 +36,33 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
     // The executor union is kind-tagged at the serde layer, so a payload declaring one realm
     // can no longer deserialize as another; no per-arm kind re-checks remain.
     let route = match &tool.executor {
-        ToolExecutor::AexManaged {
-            bundle_digest,
-            required_env,
-        } => ToolRoute::Hand(HandToolSeal {
-            protocol: 1,
-            checksum: bundle_digest.to_string(),
-            required_env: required_env.iter().cloned().map(String::from).collect(),
-        }),
-        ToolExecutor::CustomerApp { registration } => ToolRoute::Customer {
-            registration: registration.to_string(),
+        ToolExecutor::Environment {
+            artifact_digest,
+            callback_registration,
+            environment,
+            requirements,
+        } => match (artifact_digest, callback_registration) {
+            (Some(digest), None) => ToolRoute::Environment(EnvironmentToolSeal {
+                environment: environment.to_string(),
+                protocol: 1,
+                checksum: digest.to_string(),
+                required_env: requirements
+                    .env
+                    .iter()
+                    .flatten()
+                    .cloned()
+                    .map(String::from)
+                    .collect(),
+            }),
+            (None, Some(registration)) => ToolRoute::Customer {
+                environment: environment.to_string(),
+                registration: registration.to_string(),
+            },
+            _ => {
+                return Err(BrainError::Invalid(format!(
+                    "tool {name} environment executor requires exactly one of artifact_digest or callback_registration"
+                )));
+            }
         },
         ToolExecutor::Engine { capability } => ToolRoute::Intrinsic(capability.to_string()),
     };
@@ -227,15 +244,16 @@ mod tests {
             {
                 "definition": {
                     "name": "run_anything",
-                    "description": "A test Hand tool.",
+                    "description": "A test environment tool.",
                     "contract_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "input_schema": {"type":"object"},
                     "output_schema": {"type":"object"}
                 },
                 "executor": {
-                    "kind":"aex_managed",
-                    "bundle_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "required_env":["TOKEN"]
+                    "kind":"environment",
+                    "environment":"workspace",
+                    "artifact_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "requirements":{"env":["TOKEN"]}
                 }
             },
             {
@@ -252,15 +270,16 @@ mod tests {
         .unwrap();
         let decls = resolve(&items).unwrap();
         assert_eq!(names(&decls), ["run_anything", "delegate_anything"]);
-        assert!(matches!(decls[0].route, ToolRoute::Hand(_)));
+        assert!(matches!(decls[0].route, ToolRoute::Environment(_)));
         assert!(matches!(
             &decls[1].route,
             ToolRoute::Intrinsic(capability) if capability == "brain.subagents"
         ));
         assert!(matches!(
             &decls[0].route,
-            ToolRoute::Hand(seal)
+            ToolRoute::Environment(seal)
                 if seal.protocol == 1
+                    && seal.environment == "workspace"
                     && seal.required_env == ["TOKEN"]
                     && seal.checksum == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
@@ -284,7 +303,12 @@ mod tests {
                     "required": ["ok"]
                 }
             },
-            "executor": {"kind": "customer_app", "registration": "schema-gate"}
+            "executor": {
+                "kind": "environment",
+                "environment": "app",
+                "callback_registration": "schema-gate",
+                "requirements": {}
+            }
         }))
         .unwrap();
         let tool = resolve(&[item]).unwrap().remove(0);
@@ -327,7 +351,12 @@ mod tests {
                 "input_schema": {"type": "not-a-json-schema-type"},
                 "output_schema": {"type": "object"}
             },
-            "executor": {"kind": "customer_app", "registration": "malformed"}
+            "executor": {
+                "kind": "environment",
+                "environment": "app",
+                "callback_registration": "malformed",
+                "requirements": {}
+            }
         }))
         .unwrap();
         assert!(resolve(&[malformed]).is_err());

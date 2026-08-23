@@ -36,8 +36,8 @@ pub(super) struct PendingManaged {
     pub(super) turn: String,
     pub(super) call: String,
     pub(super) name: String,
-    pub(super) envelope: brain_protocol::hand::OperationEnvelope,
-    pub(super) operation: Option<brain_protocol::hand::OperationRef>,
+    pub(super) envelope: brain_protocol::environment::OperationEnvelope,
+    pub(super) operation: Option<brain_protocol::environment::OperationRef>,
     pub(super) submit_unknown: bool,
 }
 
@@ -217,7 +217,7 @@ pub(super) fn pending_customer(
         let Some(tool) = tools.get(name) else {
             continue;
         };
-        let crate::config::ToolRoute::Customer { registration } = &tool.route else {
+        let crate::config::ToolRoute::Customer { registration, .. } = &tool.route else {
             continue;
         };
         pending.push(PendingCustomer {
@@ -328,7 +328,7 @@ pub(super) fn pending_managed(entries: &[Entry]) -> Result<Vec<PendingManaged>> 
 }
 
 /// Finds unanswered calls whose executor cannot be recovered unambiguously. A newly claimed
-/// session never reassigns these calls: Hand, customer-app and in-process intrinsic effects may
+/// session never reassigns these calls: Environment, customer-app and in-process intrinsic effects may
 /// already have happened. Replay-safe server capabilities are handled separately.
 pub(super) fn pending_volatile(entries: &[Entry], prefix: &PrefixDoc) -> Vec<PendingVolatile> {
     let customer_intents = entries
@@ -406,7 +406,7 @@ pub(super) async fn recover_customer_calls(
         {
             return Ok(false);
         }
-        return Err(BrainError::HandUnavailable(
+        return Err(BrainError::EnvironmentUnavailable(
             "customer application coordinator is unavailable during recovery".into(),
         ));
     };
@@ -426,7 +426,7 @@ pub(super) async fn recover_customer_calls(
             )
             .await;
         if execution.retryable_without_effect && crate::wall_ms() < call.intent.deadline_at_ms {
-            return Err(BrainError::HandUnavailable(
+            return Err(BrainError::EnvironmentUnavailable(
                 "sealed customer application process has not reconnected".into(),
             ));
         }
@@ -520,7 +520,7 @@ pub(super) async fn recover_managed_calls(
     resident: &mut Resident,
     entries: &[Entry],
 ) -> Result<bool> {
-    use brain_protocol::hand::{HandErrorCode, OperationState};
+    use brain_protocol::environment::{EnvironmentErrorCode, OperationState};
 
     let pending = pending_managed(entries)?;
     if pending.is_empty() {
@@ -582,9 +582,9 @@ pub(super) async fn recover_managed_calls(
         return Ok(true);
     }
 
-    let hand = brain.hand.as_ref().ok_or_else(|| {
-        BrainError::HandUnavailable(
-            "managed Hand is unavailable for durable operation recovery".into(),
+    let environment = brain.environment.as_ref().ok_or_else(|| {
+        BrainError::EnvironmentUnavailable(
+            "managed Environment is unavailable for durable operation recovery".into(),
         )
     })?;
 
@@ -600,7 +600,7 @@ pub(super) async fn recover_managed_calls(
             continue;
         }
         let binding = resident.managed_bindings.get(&call.name).ok_or_else(|| {
-            BrainError::HandUnavailable(format!(
+            BrainError::EnvironmentUnavailable(format!(
                 "managed Tool {} has no recovered immutable binding",
                 call.name
             ))
@@ -620,7 +620,7 @@ pub(super) async fn recover_managed_calls(
                 session_id,
                 &resident.st.head,
             )?;
-            let request: brain_protocol::hand::ObserveRequest =
+            let request: brain_protocol::environment::ObserveRequest =
                 serde_json::from_value(serde_json::json!({
                     "operation": operation,
                     "cursor": "",
@@ -628,15 +628,15 @@ pub(super) async fn recover_managed_calls(
                 }))?;
             let observed = tokio::time::timeout(
                 Duration::from_millis(request.wait_ms.saturating_add(1_000).max(1)),
-                hand.observe(request),
+                environment.observe(request),
             )
             .await
             .map_err(|_| {
-                BrainError::HandUnavailable("managed Tool recovery observation timed out".into())
+                BrainError::EnvironmentUnavailable("managed Tool recovery observation timed out".into())
             })?;
             match observed {
                 Ok(observation) => (operation, observation),
-                Err(error) if error.code == HandErrorCode::SandboxGone => {
+                Err(error) if error.code == EnvironmentErrorCode::SandboxGone => {
                     sandbox_gone = Some(managed_operation_gone_status(&operation)?);
                     recovered.push((
                         call,
@@ -655,10 +655,10 @@ pub(super) async fn recover_managed_calls(
                     ));
                     continue;
                 }
-                Err(error) => return Err(map_hand_port_error(error)),
+                Err(error) => return Err(map_environment_port_error(error)),
             }
         } else {
-            let request = brain_protocol::hand::SubmitRequest {
+            let request = brain_protocol::environment::SubmitRequest {
                 envelope: call.envelope.clone(),
                 wait_up_to_ms: binding.limits.max_wait_ms.min(30_000),
             };
@@ -666,22 +666,22 @@ pub(super) async fn recover_managed_calls(
             let receipt = loop {
                 let submitted = tokio::time::timeout(
                     Duration::from_millis(request.wait_up_to_ms.saturating_add(1_000).max(1)),
-                    hand.submit(request.clone()),
+                    environment.submit(request.clone()),
                 )
                 .await
                 .map_err(|_| {
-                    BrainError::HandUnavailable("managed Tool recovery submit timed out".into())
+                    BrainError::EnvironmentUnavailable("managed Tool recovery submit timed out".into())
                 })?;
                 match submitted {
                     Ok(receipt) => break receipt,
                     Err(error)
-                        if error.code == HandErrorCode::CapabilityUnavailable && !reprepared =>
+                        if error.code == EnvironmentErrorCode::CapabilityUnavailable && !reprepared =>
                     {
                         let refreshed = brain
                             .prepare_managed_session(session_id, &resident.st.head)
                             .await?;
                         let refreshed = refreshed.get(&call.name).ok_or_else(|| {
-                            BrainError::HandUnavailable(
+                            BrainError::EnvironmentUnavailable(
                                 "managed Tool disappeared during exact re-preparation".into(),
                             )
                         })?;
@@ -692,7 +692,7 @@ pub(super) async fn recover_managed_calls(
                         }
                         reprepared = true;
                     }
-                    Err(error) if error.code == HandErrorCode::OperationUnknown => {
+                    Err(error) if error.code == EnvironmentErrorCode::OperationUnknown => {
                         let unknown = vec![(
                             resident.st.take_seq(),
                             Record::ManagedCallUnknown {
@@ -716,7 +716,7 @@ pub(super) async fn recover_managed_calls(
                         ));
                         continue 'managed_calls;
                     }
-                    Err(error) => return Err(map_hand_port_error(error)),
+                    Err(error) => return Err(map_environment_port_error(error)),
                 }
             };
             crate::turn::verify_managed_operation(
@@ -751,14 +751,14 @@ pub(super) async fn recover_managed_calls(
 
         crate::turn::verify_managed_observation(&observation, &operation)?;
         if cancellation_requested && observation.state != OperationState::Terminal {
-            let cancel: brain_protocol::hand::CancelRequest =
+            let cancel: brain_protocol::environment::CancelRequest =
                 serde_json::from_value(serde_json::json!({
                     "operation": operation,
                     "reason": "turn_cancelled",
                 }))?;
-            match hand.cancel(cancel).await {
+            match environment.cancel(cancel).await {
                 Ok(_) => {}
-                Err(error) if error.code == HandErrorCode::OperationUnknown => {
+                Err(error) if error.code == EnvironmentErrorCode::OperationUnknown => {
                     let unknown = vec![(
                         resident.st.take_seq(),
                         Record::ManagedCallUnknown {
@@ -778,7 +778,7 @@ pub(super) async fn recover_managed_calls(
                     ));
                     continue 'managed_calls;
                 }
-                Err(error) if error.code == HandErrorCode::SandboxGone => {
+                Err(error) if error.code == EnvironmentErrorCode::SandboxGone => {
                     sandbox_gone = Some(managed_operation_gone_status(&operation)?);
                     recovered.push((
                         call,
@@ -799,25 +799,25 @@ pub(super) async fn recover_managed_calls(
                     ));
                     continue 'managed_calls;
                 }
-                Err(error) => return Err(map_hand_port_error(error)),
+                Err(error) => return Err(map_environment_port_error(error)),
             }
         }
         if observation.state != OperationState::Terminal {
             if !cancellation_requested && crate::wall_ms() >= call.envelope.deadline_at_ms.get() {
-                let cancel: brain_protocol::hand::CancelRequest =
+                let cancel: brain_protocol::environment::CancelRequest =
                     serde_json::from_value(serde_json::json!({
                         "operation": operation,
                         "reason": "recovery_deadline_elapsed",
                     }))?;
-                match hand.cancel(cancel).await {
+                match environment.cancel(cancel).await {
                     Ok(_) => {}
-                    Err(error) if error.code == HandErrorCode::SandboxGone => {
+                    Err(error) if error.code == EnvironmentErrorCode::SandboxGone => {
                         sandbox_gone = Some(managed_operation_gone_status(&operation)?);
                     }
-                    Err(error) => return Err(map_hand_port_error(error)),
+                    Err(error) => return Err(map_environment_port_error(error)),
                 }
             }
-            let request: brain_protocol::hand::ObserveRequest =
+            let request: brain_protocol::environment::ObserveRequest =
                 serde_json::from_value(serde_json::json!({
                     "operation": operation,
                     "cursor": observation.next_cursor,
@@ -825,14 +825,14 @@ pub(super) async fn recover_managed_calls(
                 }))?;
             match tokio::time::timeout(
                 Duration::from_millis(request.wait_ms.saturating_add(1_000).max(1)),
-                hand.observe(request),
+                environment.observe(request),
             )
             .await
             .map_err(|_| {
-                BrainError::HandUnavailable("managed Tool recovery observation timed out".into())
+                BrainError::EnvironmentUnavailable("managed Tool recovery observation timed out".into())
             })? {
                 Ok(next) => observation = next,
-                Err(error) if error.code == HandErrorCode::SandboxGone => {
+                Err(error) if error.code == EnvironmentErrorCode::SandboxGone => {
                     sandbox_gone = Some(managed_operation_gone_status(&operation)?);
                     recovered.push((
                         call,
@@ -851,18 +851,18 @@ pub(super) async fn recover_managed_calls(
                     ));
                     continue;
                 }
-                Err(error) => return Err(map_hand_port_error(error)),
+                Err(error) => return Err(map_environment_port_error(error)),
             }
             crate::turn::verify_managed_observation(&observation, &operation)?;
         }
         if observation.state != OperationState::Terminal {
-            return Err(BrainError::HandUnavailable(
+            return Err(BrainError::EnvironmentUnavailable(
                 "managed Tool remains in progress during durable recovery".into(),
             ));
         }
         let terminal = observation.terminal.ok_or_else(|| {
             BrainError::Protocol(
-                "managed Hand reported terminal state without a terminal receipt".into(),
+                "managed Environment reported terminal state without a terminal receipt".into(),
             )
         })?;
         let (outcome, terminal_digest) = crate::turn::managed_terminal_call_outcome(terminal)?;
@@ -1014,7 +1014,7 @@ pub(super) async fn recover_managed_calls(
     Ok(true)
 }
 
-/// Reconcile the rooted default target after Hand reports that Submit may have reached the guest
+/// Reconcile the rooted default target after Environment reports that Submit may have reached the guest
 /// but no operation receipt can be recovered. The durable `ManagedCallUnknown` marker is always
 /// committed by the caller first, so this routine may retry status/dematerialization freely but
 /// must never authorize another Submit.
@@ -1023,7 +1023,7 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
     session_id: &str,
     st: &mut TurnState,
 ) -> Result<()> {
-    use brain_protocol::hand::{HandErrorCode, SandboxState};
+    use brain_protocol::environment::{EnvironmentErrorCode, SandboxState};
 
     let target = st
         .head
@@ -1032,7 +1032,7 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
         .map(|status| status.target.clone())
         .unwrap_or(default_sandbox_target(&st.head.root_id)?);
     let files = brain.sandbox_files.as_ref().ok_or_else(|| {
-        BrainError::HandUnavailable(
+        BrainError::EnvironmentUnavailable(
             "managed Tool unknown-outcome status reconciliation is unavailable".into(),
         )
     })?;
@@ -1041,7 +1041,7 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
         Err(error)
             if matches!(
                 error.code,
-                HandErrorCode::SandboxGone | HandErrorCode::SandboxNotMaterialized
+                EnvironmentErrorCode::SandboxGone | EnvironmentErrorCode::SandboxNotMaterialized
             ) =>
         {
             let current = st
@@ -1052,9 +1052,9 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
             sandbox_gone_status(&current, "managed_operation_target_gone")?
         }
         Err(error) if error.retryable => {
-            return Err(BrainError::HandUnavailable(error.message.to_string()));
+            return Err(BrainError::EnvironmentUnavailable(error.message.to_string()));
         }
-        Err(error) => return Err(map_hand_port_error(error)),
+        Err(error) => return Err(map_environment_port_error(error)),
     };
     if !sandbox_status_matches_target(&status, &target)? {
         return Err(BrainError::Protocol(
@@ -1100,7 +1100,7 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
     }
 
     let preparation = brain.session_preparation.as_ref().ok_or_else(|| {
-        BrainError::HandUnavailable(
+        BrainError::EnvironmentUnavailable(
             "managed Tool unknown-outcome dematerialization is unavailable".into(),
         )
     })?;
@@ -1109,15 +1109,15 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
         Err(error)
             if matches!(
                 error.code,
-                HandErrorCode::SandboxGone | HandErrorCode::SandboxNotMaterialized
+                EnvironmentErrorCode::SandboxGone | EnvironmentErrorCode::SandboxNotMaterialized
             ) =>
         {
             sandbox_gone_status(&status, "managed_operation_target_gone")?
         }
         Err(error) if error.retryable => {
-            return Err(BrainError::HandUnavailable(error.message.to_string()));
+            return Err(BrainError::EnvironmentUnavailable(error.message.to_string()));
         }
-        Err(error) => return Err(map_hand_port_error(error)),
+        Err(error) => return Err(map_environment_port_error(error)),
     };
     if !sandbox_status_matches_target(&terminal, &target)? {
         return Err(BrainError::Protocol(
@@ -1125,7 +1125,7 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
         ));
     }
     if !sandbox_status_releases_slot(&terminal) {
-        return Err(BrainError::HandUnavailable(
+        return Err(BrainError::EnvironmentUnavailable(
             "managed Tool unknown-outcome target has not reached a terminal sandbox state".into(),
         ));
     }
@@ -1442,7 +1442,7 @@ pub(super) async fn recover_customer_terminal_acks(
         return if resident.st.head.pending_customer_acks.is_empty() {
             Ok(())
         } else {
-            Err(BrainError::HandUnavailable(
+            Err(BrainError::EnvironmentUnavailable(
                 "customer coordinator is unavailable for a durable terminal acknowledgement".into(),
             ))
         };
@@ -1496,7 +1496,7 @@ pub(super) async fn recover_customer_terminal_acks(
     if resident.st.head.pending_customer_acks.is_empty() {
         Ok(())
     } else {
-        Err(BrainError::HandUnavailable(
+        Err(BrainError::EnvironmentUnavailable(
             "customer terminal acknowledgement remains pending".into(),
         ))
     }
@@ -1507,12 +1507,12 @@ pub(super) async fn recover_managed_terminal_acks(
     session_id: &str,
     resident: &mut Resident,
 ) -> Result<()> {
-    let Some(hand) = &brain.hand else {
+    let Some(environment) = &brain.environment else {
         return if resident.st.head.pending_managed_acks.is_empty() {
             Ok(())
         } else {
-            Err(BrainError::HandUnavailable(
-                "managed Hand is unavailable for a durable terminal acknowledgement".into(),
+            Err(BrainError::EnvironmentUnavailable(
+                "managed Environment is unavailable for a durable terminal acknowledgement".into(),
             ))
         };
     };
@@ -1522,11 +1522,11 @@ pub(super) async fn recover_managed_terminal_acks(
         let terminal_digest = item.terminal_digest.parse().map_err(|error| {
             BrainError::Protocol(format!("persisted managed terminal digest: {error}"))
         })?;
-        let request = brain_protocol::hand::AcknowledgeTerminalRequest {
+        let request = brain_protocol::environment::AcknowledgeTerminalRequest {
             operation: item.operation.clone(),
             terminal_digest,
         };
-        match hand.acknowledge_terminal(request).await {
+        match environment.acknowledge_terminal(request).await {
             Ok(ack) if ack.acknowledged => acknowledged.push(item),
             Ok(_) => tracing::warn!(
                 session = session_id,
@@ -1568,7 +1568,7 @@ pub(super) async fn recover_managed_terminal_acks(
     if resident.st.head.pending_managed_acks.is_empty() {
         Ok(())
     } else {
-        Err(BrainError::HandUnavailable(
+        Err(BrainError::EnvironmentUnavailable(
             "managed terminal acknowledgement remains pending".into(),
         ))
     }

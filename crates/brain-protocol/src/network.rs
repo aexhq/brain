@@ -1,4 +1,4 @@
-//! Canonical special-use address policy shared by Brain, Aex, and Hands.
+//! Canonical special-use address policy shared by Brain, Aex, and Environments.
 //!
 //! Hosted trusted-tier HTTP and sandbox connector policy is fail-closed: only ordinary public
 //! unicast addresses pass. Keep additions data-only and cover them in [`SPECIAL_USE_FIXTURES`].
@@ -7,7 +7,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use crate::hand::{NetworkCeiling, NetworkCeilingDestinationsItem};
+use crate::environment::{NetworkCeiling, NetworkCeilingDestinationsItem};
 
 /// Representative denied addresses and the stable reason returned by [`special_use_reason`].
 pub const SPECIAL_USE_FIXTURES: &[(&str, &str)] = &[
@@ -86,7 +86,7 @@ pub fn is_public_unicast(ip: &IpAddr) -> bool {
 /// leading `*.` label; a wildcard covers subdomains, not the suffix itself. TCP destinations are
 /// IPv4 CIDRs, and both CIDR containment and port-set containment are required. `public` covers
 /// only ordinary public destinations, so an allowlist containing a special-use CIDR is not a
-/// narrowing of it. This helper is the canonical Brain/Hands policy lattice; adapters must not
+/// narrowing of it. This helper is the canonical Brain/Environments policy lattice; adapters must not
 /// compare serialized destination objects for equality.
 pub fn network_ceiling_is_subset(requested: &NetworkCeiling, sealed: &NetworkCeiling) -> bool {
     if !network_ceiling_is_well_formed(requested) || !network_ceiling_is_well_formed(sealed) {

@@ -2,7 +2,7 @@ use super::*;
 
 impl Brain {
     /// The closed official `brain.sandbox` capability. Logical inventory, authorization and
-    /// quota live in Brain; Hand receives only the exact typed target selected from that durable
+    /// quota live in Brain; Environment receives only the exact typed target selected from that durable
     /// inventory. No action can switch on a model-visible Tool name or fabricate a physical id.
     pub(crate) async fn execute_sandbox_capability(
         self: &Arc<Self>,
@@ -26,7 +26,7 @@ impl Brain {
                     let request_digest =
                         sandbox_request_digest(&root_id, session_id, operation_id, &input)?;
                     let now = crate::wall_ms();
-                    let creating: brain_protocol::hand::SandboxStatus =
+                    let creating: brain_protocol::environment::SandboxStatus =
                         serde_json::from_value(serde_json::json!({
                             "state": "creating",
                             "target": target,
@@ -50,8 +50,8 @@ impl Brain {
                     if sandbox_status_releases_slot(&reserved.status)
                         || matches!(
                             reserved.status.state,
-                            brain_protocol::hand::SandboxState::Running
-                                | brain_protocol::hand::SandboxState::Suspended
+                            brain_protocol::environment::SandboxState::Running
+                                | brain_protocol::environment::SandboxState::Suspended
                         )
                     {
                         return Ok(serde_json::json!({
@@ -70,11 +70,11 @@ impl Brain {
                     let status = match control.create(request).await {
                         Ok(status) => status,
                         Err(error)
-                            if error.code == brain_protocol::hand::HandErrorCode::SandboxGone =>
+                            if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone =>
                         {
-                            sandbox_gone_status(&reserved.status, "hand_reported_gone")?
+                            sandbox_gone_status(&reserved.status, "environment_reported_gone")?
                         }
-                        Err(error) => return Err(map_hand_port_error(error)),
+                        Err(error) => return Err(map_environment_port_error(error)),
                     };
                     let persisted = self
                         .persist_additional_sandbox_status(&reserved, status)
@@ -131,7 +131,7 @@ impl Brain {
                         .as_ref()
                         .map(|value| value.as_str().to_owned())
                         .ok_or_else(|| {
-                            BrainError::Hand(
+                            BrainError::Environment(
                                 "live sandbox status is missing its target reference".into(),
                             )
                         })?;
@@ -145,7 +145,7 @@ impl Brain {
                         format!("aex.sandbox-execution\0{root_id}\0{operation_id}").as_bytes(),
                     ));
                     let execution_id = format!("exe_{}", &execution_digest[..24]);
-                    let mut request: brain_protocol::hand::SandboxExecutionRequest =
+                    let mut request: brain_protocol::environment::SandboxExecutionRequest =
                         serde_json::from_value(serde_json::json!({
                             "target": item.status.target,
                             "expected_generation": generation,
@@ -173,7 +173,7 @@ impl Brain {
                         })?
                         .execute(request)
                         .await
-                        .map_err(map_hand_port_error)?;
+                        .map_err(map_environment_port_error)?;
                     if String::from(receipt.operation.operation_id.clone()) != execution_id
                         || String::from(receipt.operation.request_digest.clone()) != expected_digest
                         || serde_json::to_value(&receipt.operation.target)?
@@ -183,7 +183,7 @@ impl Brain {
                         || serde_json::to_value(&receipt.observation.operation)?
                             != serde_json::to_value(&receipt.operation)?
                     {
-                        return Err(BrainError::Hand(
+                        return Err(BrainError::Environment(
                             "sandbox execution receipt identity mismatch".into(),
                         ));
                     }
@@ -194,7 +194,7 @@ impl Brain {
                                 !brain_protocol::contract::terminal_inline_fits(value)
                             }))
                     {
-                        return Err(BrainError::Hand(
+                        return Err(BrainError::Environment(
                             "sandbox execution terminal receipt is invalid or oversized".into(),
                         ));
                     }
@@ -214,7 +214,7 @@ impl Brain {
                         .as_ref()
                         .map(|value| value.as_str().to_owned())
                         .ok_or_else(|| {
-                            BrainError::Hand(
+                            BrainError::Environment(
                                 "live sandbox status is missing its target reference".into(),
                             )
                         })?;
@@ -229,7 +229,7 @@ impl Brain {
                             "sandbox write_stdin text exceeds 4096 UTF-8 bytes".into(),
                         ));
                     }
-                    let mut request: brain_protocol::hand::WriteStdinRequest =
+                    let mut request: brain_protocol::environment::WriteStdinRequest =
                         serde_json::from_value(serde_json::json!({
                             "operation_id": operation_id,
                             "request_digest": "0".repeat(64),
@@ -250,7 +250,7 @@ impl Brain {
                         })?
                         .write_stdin(request)
                         .await
-                        .map_err(map_hand_port_error)?;
+                        .map_err(map_environment_port_error)?;
                     if String::from(receipt.operation_id.clone()) != operation_id
                         || receipt.request_digest != expected_digest
                         || String::from(receipt.observation.operation.operation_id.clone())
@@ -262,7 +262,7 @@ impl Brain {
                         || String::from(receipt.observation.operation.target_ref.clone())
                             != expected_target_ref
                     {
-                        return Err(BrainError::Hand(
+                        return Err(BrainError::Environment(
                             "sandbox stdin receipt identity mismatch".into(),
                         ));
                     }
@@ -273,7 +273,7 @@ impl Brain {
                                 !brain_protocol::contract::terminal_inline_fits(value)
                             }))
                     {
-                        return Err(BrainError::Hand(
+                        return Err(BrainError::Environment(
                             "sandbox stdin terminal receipt is invalid or oversized".into(),
                         ));
                     }
@@ -295,7 +295,7 @@ impl Brain {
                         .sandbox_files
                         .as_ref()
                         .ok_or_else(|| BrainError::Invalid("sandbox files are unavailable".into()))?
-                        .list(crate::hand::SandboxFileListRequest {
+                        .list(crate::environment::SandboxFileListRequest {
                             target: item.status.target,
                             expected_generation: generation,
                             path,
@@ -303,7 +303,7 @@ impl Brain {
                             limit: limit as u32,
                         })
                         .await
-                        .map_err(map_hand_port_error)?;
+                        .map_err(map_environment_port_error)?;
                     Ok(serde_json::to_value(page)?)
                 }
                 "stat_file" => {
@@ -320,7 +320,7 @@ impl Brain {
                             &path,
                         )?)
                         .await
-                        .map_err(map_hand_port_error)?;
+                        .map_err(map_environment_port_error)?;
                     Ok(serde_json::to_value(entry)?)
                 }
                 "read_file" => {
@@ -337,10 +337,10 @@ impl Brain {
                             &path,
                         )?)
                         .await
-                        .map_err(map_hand_port_error)?;
+                        .map_err(map_environment_port_error)?;
                     let bytes = base64::engine::general_purpose::STANDARD
                         .decode(&content.content_base64)
-                        .map_err(|_| BrainError::Hand("sandbox returned invalid base64".into()))?;
+                        .map_err(|_| BrainError::Environment("sandbox returned invalid base64".into()))?;
                     if bytes.len() > brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES {
                         return Err(BrainError::FileTooLarge {
                             limit: brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES,
@@ -383,7 +383,7 @@ impl Brain {
                         .ok_or_else(|| BrainError::Invalid("sandbox files are unavailable".into()))?
                         .write(request)
                         .await
-                        .map_err(map_hand_port_error)?;
+                        .map_err(map_environment_port_error)?;
                     validate_sandbox_file_write_result(&result, operation_id, &expected_digest)?;
                     Ok(serde_json::to_value(result.file)?)
                 }
@@ -415,7 +415,7 @@ impl Brain {
                     } else {
                         files.grep(request).await
                     }
-                    .map_err(map_hand_port_error)?;
+                    .map_err(map_environment_port_error)?;
                     Ok(serde_json::to_value(page)?)
                 }
                 "load" => {
@@ -460,10 +460,10 @@ impl Brain {
                         .ok_or_else(|| BrainError::Invalid("sandbox files are unavailable".into()))?
                         .transfer(copy)
                         .await
-                        .map_err(map_hand_port_error)?;
+                        .map_err(map_environment_port_error)?;
                     validate_sandbox_copy_result(&result, operation_id, &expected_digest)?;
                     if result.object.is_some() {
-                        return Err(BrainError::Hand(
+                        return Err(BrainError::Environment(
                             "sandbox import returned an unexpected object identity".into(),
                         ));
                     }
@@ -489,8 +489,8 @@ impl Brain {
                             &path,
                         )?)
                         .await
-                        .map_err(map_hand_port_error)?;
-                    if entry.kind != brain_protocol::hand::FileEntryKind::File {
+                        .map_err(map_environment_port_error)?;
+                    if entry.kind != brain_protocol::environment::FileEntryKind::File {
                         return Err(BrainError::Invalid(
                             "sandbox save source must be a regular file".into(),
                         ));
@@ -519,15 +519,15 @@ impl Brain {
                         false,
                     )?;
                     let expected_digest = copy.request_digest.clone();
-                    let result = files.transfer(copy).await.map_err(map_hand_port_error)?;
+                    let result = files.transfer(copy).await.map_err(map_environment_port_error)?;
                     validate_sandbox_copy_result(&result, operation_id, &expected_digest)?;
                     let exported = result.object.as_ref().ok_or_else(|| {
-                        BrainError::Hand("sandbox export omitted its object identity".into())
+                        BrainError::Environment("sandbox export omitted its object identity".into())
                     })?;
                     if exported.object_id.as_str() != ticket.object_id
                         || exported.bytes != entry.bytes
                     {
-                        return Err(BrainError::Hand(
+                        return Err(BrainError::Environment(
                             "sandbox export returned a different object identity".into(),
                         ));
                     }
@@ -561,14 +561,14 @@ impl Brain {
                     {
                         Ok(status) => status,
                         Err(error)
-                            if error.code == brain_protocol::hand::HandErrorCode::SandboxGone =>
+                            if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone =>
                         {
-                            sandbox_gone_status(&current.status, "hand_reported_gone")?
+                            sandbox_gone_status(&current.status, "environment_reported_gone")?
                         }
-                        Err(error) => return Err(map_hand_port_error(error)),
+                        Err(error) => return Err(map_environment_port_error(error)),
                     };
                     if !sandbox_status_releases_slot(&status) {
-                        return Err(BrainError::Hand(
+                        return Err(BrainError::Environment(
                             "sandbox termination did not return a confirmed terminal state".into(),
                         ));
                     }
@@ -634,10 +634,10 @@ impl Brain {
         }
         if !matches!(
             item.status.state,
-            brain_protocol::hand::SandboxState::Running
-                | brain_protocol::hand::SandboxState::Suspended
+            brain_protocol::environment::SandboxState::Running
+                | brain_protocol::environment::SandboxState::Suspended
         ) {
-            return Err(BrainError::HandUnavailable(
+            return Err(BrainError::EnvironmentUnavailable(
                 "additional sandbox has not reached a live state".into(),
             ));
         }
@@ -656,10 +656,10 @@ impl Brain {
         })?;
         let status = match control.inspect(current.status.target.clone()).await {
             Ok(status) => status,
-            Err(error) if error.code == brain_protocol::hand::HandErrorCode::SandboxGone => {
-                sandbox_gone_status(&current.status, "hand_reported_gone")?
+            Err(error) if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone => {
+                sandbox_gone_status(&current.status, "environment_reported_gone")?
             }
-            Err(error) => return Err(map_hand_port_error(error)),
+            Err(error) => return Err(map_environment_port_error(error)),
         };
         self.persist_additional_sandbox_status(&current, status)
             .await

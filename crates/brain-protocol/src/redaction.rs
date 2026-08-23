@@ -17,35 +17,35 @@ macro_rules! redacted_debug {
 }
 
 redacted_debug!(
-    crate::hand::BundleFetchHeadersValue,
+    crate::environment::BundleFetchHeadersValue,
     "BundleFetchHeadersValue"
 );
-redacted_debug!(crate::hand::BundleFetchUrl, "BundleFetchUrl");
-redacted_debug!(crate::hand::BundleFetch, "BundleFetch");
+redacted_debug!(crate::environment::BundleFetchUrl, "BundleFetchUrl");
+redacted_debug!(crate::environment::BundleFetch, "BundleFetch");
 redacted_debug!(
-    crate::hand::ObjectTransferAuthorityHeadersValue,
+    crate::environment::ObjectTransferAuthorityHeadersValue,
     "ObjectTransferAuthorityHeadersValue"
 );
 redacted_debug!(
-    crate::hand::ObjectTransferAuthorityUrl,
+    crate::environment::ObjectTransferAuthorityUrl,
     "ObjectTransferAuthorityUrl"
 );
 redacted_debug!(
-    crate::hand::ObjectTransferAuthority,
+    crate::environment::ObjectTransferAuthority,
     "ObjectTransferAuthority"
 );
-redacted_debug!(crate::hand::PrepareSessionRequest, "PrepareSessionRequest");
-redacted_debug!(crate::hand::SandboxCopyRequest, "SandboxCopyRequest");
+redacted_debug!(crate::environment::PrepareSessionRequest, "PrepareSessionRequest");
+redacted_debug!(crate::environment::SandboxCopyRequest, "SandboxCopyRequest");
 redacted_debug!(
-    crate::hand::SandboxFileWriteRequest,
+    crate::environment::SandboxFileWriteRequest,
     "SandboxFileWriteRequest"
 );
 redacted_debug!(
-    crate::hand::SandboxFileWriteSource,
+    crate::environment::SandboxFileWriteSource,
     "SandboxFileWriteSource"
 );
-redacted_debug!(crate::hand::SecretCapability, "SecretCapability");
-redacted_debug!(crate::hand::SecretDeliveryRequest, "SecretDeliveryRequest");
+redacted_debug!(crate::environment::SecretCapability, "SecretCapability");
+redacted_debug!(crate::environment::SecretDeliveryRequest, "SecretDeliveryRequest");
 
 redacted_debug!(crate::session::CreateSessionRequest, "CreateSessionRequest");
 redacted_debug!(crate::session::ModelConfigApiKey, "ModelConfigApiKey");

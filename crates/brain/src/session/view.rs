@@ -11,7 +11,7 @@ pub fn provider_name(p: &ApiProvider) -> &'static str {
     }
 }
 
-/// Canonical public file path. The URL surface is deliberately narrower than hand tool paths:
+/// Canonical public file path. The URL surface is deliberately narrower than environment tool paths:
 /// only absolute POSIX paths beneath `/workspace` are accepted.
 pub fn normalize_workspace_path(path: &str) -> Result<String> {
     if path.len() > 4096 {
@@ -189,7 +189,7 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
             code: match f.code.as_str() {
                 "binding_conflict" => session::SessionFailureCode::BindingConflict,
                 "provider_unusable" => session::SessionFailureCode::ProviderUnusable,
-                "hand_unavailable" => session::SessionFailureCode::HandUnavailable,
+                "environment_unavailable" => session::SessionFailureCode::EnvironmentUnavailable,
                 _ => session::SessionFailureCode::Internal,
             },
             message: f.message.clone(),
@@ -278,7 +278,7 @@ pub(super) fn session_doc_summary(
                 code: match failure.code.as_str() {
                     "binding_conflict" => session::SessionFailureCode::BindingConflict,
                     "provider_unusable" => session::SessionFailureCode::ProviderUnusable,
-                    "hand_unavailable" => session::SessionFailureCode::HandUnavailable,
+                    "environment_unavailable" => session::SessionFailureCode::EnvironmentUnavailable,
                     _ => session::SessionFailureCode::Internal,
                 },
                 message: failure.message.clone(),

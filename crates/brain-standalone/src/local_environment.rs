@@ -1,11 +1,11 @@
-//! Explicit local-development implementation of Brain's typed Hand ports.
+//! Explicit local-development implementation of Brain's typed Environment ports.
 //!
 //! This is the zero-setup default mode. Be clear about what it is NOT: a subprocess is
 //! process-level separation, **not a sandbox** -- `bash` here runs arbitrary commands as the
 //! operator. Fine for developing against your own brain with your own key; untrusted prompts
-//! belong in a sandboxed Hand adapter. The startup banner repeats this.
+//! belong in a sandboxed Environment adapter. The startup banner repeats this.
 //!
-//! Semantics mirror the typed Hand contract where it matters to the model: digest-sealed Node 22
+//! Semantics mirror the typed Environment contract where it matters to the model: digest-sealed Node 22
 //! bundles, durable operation receipts/terminal acknowledgements, bounded output, and
 //! cancellation with process-tree termination. Guest paths map onto the workspace: `/workspace/...` and
 //! `/home/agent/...` both resolve into the session's directory; other absolute paths are
@@ -14,20 +14,20 @@
 use async_trait::async_trait;
 use base64::Engine as _;
 use brain::adapter::CallOutcome;
-use brain::hand::{
-    HandPort, HandResult, SandboxControlPort, SandboxFileContent, SandboxFileList,
+use brain::environment::{
+    EnvironmentPort, EnvironmentResult, SandboxControlPort, SandboxFileContent, SandboxFileList,
     SandboxFileListRequest, SandboxFilesPort, SandboxSearchRequest, SecretDeliveryPort,
     SessionPreparationPort,
 };
 use brain::{BrainError, Result};
-use brain_protocol::hand::{
+use brain_protocol::environment::{
     AcknowledgeTerminalRequest, Acknowledgement, CancelRequest, CancellationReceipt,
-    CreateSandboxRequest, HandError, HandErrorCode, ObserveRequest, OperationObservation,
+    CreateSandboxRequest, EnvironmentError, EnvironmentErrorCode, ObserveRequest, OperationObservation,
     OperationRef, PrepareSessionRequest, PreparedSession, ResolvedBinding, SandboxCopyRequest,
     SandboxCopyRequestDirection, SandboxCopyResult, SandboxExecutionRequest, SandboxFileRequest,
     SandboxFileWriteRequest, SandboxFileWriteResult, SandboxFileWriteSource, SandboxStatus,
     SandboxTarget, SealedBinding, SubmitReceipt, SubmitRequest, TargetReceipt,
-    TerminalOutcome as HandTerminalOutcome, TerminalResult, WriteStdinReceipt, WriteStdinRequest,
+    TerminalOutcome as EnvironmentTerminalOutcome, TerminalResult, WriteStdinReceipt, WriteStdinRequest,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -95,11 +95,11 @@ struct LocalWorkspace {
 #[cfg(test)]
 mod typed_local_tests {
     use super::*;
-    use brain_protocol::hand::{OperationEnvelope, OperationState};
+    use brain_protocol::environment::{OperationEnvelope, OperationState};
 
     fn test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "brain-local-hand-{name}-{}",
+            "brain-local-environment-{name}-{}",
             brain::mint_id("t", 12)
         ))
     }
@@ -126,7 +126,9 @@ mod typed_local_tests {
             "bundle": {
                 "bundle_digest": digest,
                 "bytes": bytes,
-                "runtime": "node22",
+                "target": "linux-amd64",
+                "execute_path": format!("/artifacts/{digest}/execute"),
+                "setup_path": null,
                 "object": {
                     "object_id": format!("bundle_{digest}"),
                     "bytes": bytes,
@@ -134,6 +136,7 @@ mod typed_local_tests {
                     "media_type": "application/javascript+esm",
                 },
                 "tool_name": "echo",
+                "environment_name": "workspace",
                 "description": null,
                 "contract_digest": "1".repeat(64),
                 "required_env": [],
@@ -142,8 +145,7 @@ mod typed_local_tests {
             "root_id": "ses_local",
             "contract_digest": "1".repeat(64),
             "implementation_identity": digest,
-            "realm": "aex_managed",
-            "realm_id": "node22",
+            "environment_name": "workspace",
             "capability": "echo",
             "policy_digest": "2".repeat(64),
             "required_capabilities": ["execution", "session_preparation"],
@@ -151,8 +153,8 @@ mod typed_local_tests {
         .unwrap()
     }
 
-    async fn prepare(hand: &LocalHand, binding: SealedBinding, url: &str) {
-        hand.resolve_binding(binding.clone()).await.unwrap();
+    async fn prepare(environment: &LocalEnvironment, binding: SealedBinding, url: &str) {
+        environment.resolve_binding(binding.clone()).await.unwrap();
         let descriptor = binding.bundle.as_ref().unwrap();
         let request = typed(json!({
             "session_id": "ses_local",
@@ -175,7 +177,7 @@ mod typed_local_tests {
             },
         }))
         .unwrap();
-        hand.prepare(request).await.unwrap();
+        environment.prepare(request).await.unwrap();
     }
 
     fn submit_request(operation_id: &str) -> SubmitRequest {
@@ -190,6 +192,7 @@ mod typed_local_tests {
             "binding_ref": "bnd_echo",
             "capability": "echo",
             "input": {"kind":"inline","value":{"answer":42}},
+            "phase": "execute",
             "deadline_at_ms": brain::wall_ms() + 60_000,
             "resources": {
                 "timeout_ms": 60_000,
@@ -206,7 +209,7 @@ mod typed_local_tests {
         }
     }
 
-    async fn materialize_test_default(hand: &LocalHand) -> (SandboxTarget, String) {
+    async fn materialize_test_default(environment: &LocalEnvironment) -> (SandboxTarget, String) {
         let target: SandboxTarget = typed(json!({
             "kind": "default",
             "session_id": "ses_local",
@@ -227,7 +230,7 @@ mod typed_local_tests {
             },
         }))
         .unwrap();
-        let status = hand.materialize_default(request).await.unwrap();
+        let status = environment.materialize_default(request).await.unwrap();
         (status.target, status.generation.unwrap().to_string())
     }
 
@@ -319,7 +322,7 @@ mod typed_local_tests {
             return;
         }
         let dir = test_dir("additional-control");
-        let hand = LocalHand::open(dir.join("hand")).unwrap();
+        let environment = LocalEnvironment::open(dir.join("environment")).unwrap();
         let target: SandboxTarget = typed(json!({
             "kind": "additional",
             "session_id": "ses_local",
@@ -339,16 +342,16 @@ mod typed_local_tests {
             },
         }))
         .unwrap();
-        let created = SandboxControlPort::create(&*hand, create).await.unwrap();
-        assert_eq!(created.state, brain_protocol::hand::SandboxState::Running);
+        let created = SandboxControlPort::create(&*environment, create).await.unwrap();
+        assert_eq!(created.state, brain_protocol::environment::SandboxState::Running);
         let generation = created.generation.as_ref().unwrap().to_string();
-        let inspected = SandboxControlPort::inspect(&*hand, target.clone())
+        let inspected = SandboxControlPort::inspect(&*environment, target.clone())
             .await
             .unwrap();
         assert_eq!(inspected.target_ref, created.target_ref);
 
         let completed = SandboxControlPort::execute(
-            &*hand,
+            &*environment,
             sandbox_execution_request(
                 &target,
                 &generation,
@@ -362,10 +365,10 @@ mod typed_local_tests {
         assert_eq!(completed.observation.state, OperationState::Terminal);
         assert_eq!(
             completed.observation.terminal.as_ref().unwrap().outcome,
-            HandTerminalOutcome::Completed
+            EnvironmentTerminalOutcome::Completed
         );
         let content = SandboxFilesPort::read(
-            &*hand,
+            &*environment,
             typed(json!({
                 "target": target,
                 "expected_generation": generation,
@@ -383,7 +386,7 @@ mod typed_local_tests {
         );
 
         let interactive = SandboxControlPort::execute(
-            &*hand,
+            &*environment,
             sandbox_execution_request(
                 &target,
                 &generation,
@@ -396,7 +399,7 @@ mod typed_local_tests {
         .unwrap();
         assert_eq!(interactive.observation.state, OperationState::Running);
         let accepted = SandboxControlPort::write_stdin(
-            &*hand,
+            &*environment,
             stdin_request(
                 &target,
                 &generation,
@@ -419,7 +422,7 @@ mod typed_local_tests {
         );
         let terminal = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let receipt = SandboxControlPort::write_stdin(&*hand, poll.clone())
+                let receipt = SandboxControlPort::write_stdin(&*environment, poll.clone())
                     .await
                     .unwrap();
                 if receipt.observation.state == OperationState::Terminal {
@@ -442,19 +445,19 @@ mod typed_local_tests {
                 .any(|chunk| chunk.text.as_str().contains("got:hello"))
         );
 
-        let terminated = SandboxControlPort::terminate(&*hand, target.clone())
+        let terminated = SandboxControlPort::terminate(&*environment, target.clone())
             .await
             .unwrap();
         assert_eq!(
             terminated.state,
-            brain_protocol::hand::SandboxState::Terminated
+            brain_protocol::environment::SandboxState::Terminated
         );
         assert_eq!(
-            SandboxControlPort::inspect(&*hand, target)
+            SandboxControlPort::inspect(&*environment, target)
                 .await
                 .unwrap()
                 .state,
-            brain_protocol::hand::SandboxState::Terminated
+            brain_protocol::environment::SandboxState::Terminated
         );
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -464,16 +467,16 @@ mod typed_local_tests {
         let dir = test_dir("file-write-replay");
         let (bytes, digest, url) = bundle(&dir);
         let sealed = binding(&digest, bytes.len());
-        let hand = LocalHand::open(dir.join("hand")).unwrap();
-        prepare(&hand, sealed.clone(), &url).await;
-        let (target, generation) = materialize_test_default(&hand).await;
+        let environment = LocalEnvironment::open(dir.join("environment")).unwrap();
+        prepare(&environment, sealed.clone(), &url).await;
+        let (target, generation) = materialize_test_default(&environment).await;
         let request = file_write_request("file-op-1", &target, &generation, "first");
 
-        let first = hand.write(request.clone()).await.unwrap();
+        let first = environment.write(request.clone()).await.unwrap();
         assert!(!first.replayed);
-        drop(hand);
+        drop(environment);
 
-        let restarted = LocalHand::open(dir.join("hand")).unwrap();
+        let restarted = LocalEnvironment::open(dir.join("environment")).unwrap();
         prepare(&restarted, sealed, &url).await;
         let replay = restarted.write(request).await.unwrap();
         assert!(replay.replayed);
@@ -491,7 +494,7 @@ mod typed_local_tests {
             ))
             .await
             .unwrap_err();
-        assert_eq!(conflict.code, HandErrorCode::BindingConflict);
+        assert_eq!(conflict.code, EnvironmentErrorCode::BindingConflict);
         let read: SandboxFileRequest = typed(json!({
             "target": target,
             "expected_generation": generation,
@@ -509,15 +512,15 @@ mod typed_local_tests {
     }
 
     #[tokio::test]
-    async fn terminal_replays_across_local_hand_restart_and_ack_is_idempotent() {
+    async fn terminal_replays_across_local_environment_restart_and_ack_is_idempotent() {
         let dir = test_dir("replay");
         let (bytes, digest, url) = bundle(&dir);
         let sealed = binding(&digest, bytes.len());
-        let hand = LocalHand::open(dir.join("hand")).unwrap();
-        prepare(&hand, sealed.clone(), &url).await;
+        let environment = LocalEnvironment::open(dir.join("environment")).unwrap();
+        prepare(&environment, sealed.clone(), &url).await;
 
         let request = submit_request("op_replay");
-        let first = hand.submit(request.clone()).await.unwrap();
+        let first = environment.submit(request.clone()).await.unwrap();
         assert!(!first.replayed);
         assert_eq!(first.observation.state, OperationState::Terminal);
         assert_eq!(
@@ -532,8 +535,8 @@ mod typed_local_tests {
             42
         );
 
-        drop(hand);
-        let restarted = LocalHand::open(dir.join("hand")).unwrap();
+        drop(environment);
+        let restarted = LocalEnvironment::open(dir.join("environment")).unwrap();
         prepare(&restarted, sealed, &url).await;
         let replay = restarted.submit(request).await.unwrap();
         assert!(replay.replayed);
@@ -574,7 +577,7 @@ mod typed_local_tests {
                 .await
                 .unwrap_err()
                 .code,
-            HandErrorCode::OperationUnknown
+            EnvironmentErrorCode::OperationUnknown
         );
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -584,8 +587,8 @@ mod typed_local_tests {
         let dir = test_dir("unknown");
         let (bytes, digest, url) = bundle(&dir);
         let sealed = binding(&digest, bytes.len());
-        let hand = LocalHand::open(dir.join("hand")).unwrap();
-        prepare(&hand, sealed.clone(), &url).await;
+        let environment = LocalEnvironment::open(dir.join("environment")).unwrap();
+        prepare(&environment, sealed.clone(), &url).await;
         let request = submit_request("op_unknown");
         let target: SandboxTarget = typed(json!({
             "kind":"default",
@@ -594,7 +597,7 @@ mod typed_local_tests {
             "binding_ref":"bnd_echo",
         }))
         .unwrap();
-        let (status, _) = hand.ensure_target(target.clone(), None).await.unwrap();
+        let (status, _) = environment.ensure_target(target.clone(), None).await.unwrap();
         let generation = status.generation.as_ref().unwrap();
         let target_ref = status.target_ref.as_ref().unwrap();
         let operation: OperationRef = typed(json!({
@@ -618,21 +621,21 @@ mod typed_local_tests {
             target: target_receipt,
         };
         write_new_json(
-            &hand
+            &environment
                 .operation_dir("ses_local", "op_unknown")
                 .join("request.json"),
             &durable,
             "inject request-only crash",
         )
         .unwrap();
-        drop(hand);
+        drop(environment);
 
-        let restarted = LocalHand::open(dir.join("hand")).unwrap();
+        let restarted = LocalEnvironment::open(dir.join("environment")).unwrap();
         prepare(&restarted, sealed, &url).await;
         let replay = restarted.submit(request).await.unwrap();
         assert!(replay.replayed);
         let terminal = replay.observation.terminal.unwrap();
-        assert_eq!(terminal.outcome, HandTerminalOutcome::Interrupted);
+        assert_eq!(terminal.outcome, EnvironmentTerminalOutcome::Interrupted);
         assert!(terminal.is_error);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -658,9 +661,9 @@ impl LocalWorkspace {
         std::fs::create_dir_all(&root)
             .and_then(|()| std::fs::create_dir_all(&bundles))
             .and_then(|()| std::fs::create_dir_all(&runtime))
-            .map_err(|e| BrainError::HandUnavailable(format!("workspace dir: {e}")))?;
+            .map_err(|e| BrainError::EnvironmentUnavailable(format!("workspace dir: {e}")))?;
         std::fs::write(runtime.join("tool-runner.mjs"), LOCAL_TOOL_RUNNER)
-            .map_err(|e| BrainError::HandUnavailable(format!("local Tool runner: {e}")))?;
+            .map_err(|e| BrainError::EnvironmentUnavailable(format!("local Tool runner: {e}")))?;
         Ok(Arc::new(Self {
             session_id: session_id.to_string(),
             root,
@@ -744,7 +747,7 @@ impl LocalWorkspace {
         emit: impl Fn(&str, u64, String) + Send + Sync + 'static,
         t0: Instant,
     ) -> CallOutcome {
-        let fail = |message: String, outcome: HandTerminalOutcome| CallOutcome {
+        let fail = |message: String, outcome: EnvironmentTerminalOutcome| CallOutcome {
             outcome,
             value: None,
             content: message,
@@ -758,7 +761,7 @@ impl LocalWorkspace {
             if !self.env.contains_key(name) {
                 return fail(
                     format!("required environment variable {name} is unavailable"),
-                    HandTerminalOutcome::Failed,
+                    EnvironmentTerminalOutcome::Failed,
                 );
             }
         }
@@ -789,14 +792,14 @@ impl LocalWorkspace {
             Err(error) => {
                 return fail(
                     format!("encode managed Tool request: {error}"),
-                    HandTerminalOutcome::Failed,
+                    EnvironmentTerminalOutcome::Failed,
                 );
             }
         };
         if let Err(error) = tokio::fs::write(&request_path, request_bytes).await {
             return fail(
                 format!("stage managed Tool request: {error}"),
-                HandTerminalOutcome::Failed,
+                EnvironmentTerminalOutcome::Failed,
             );
         }
 
@@ -824,7 +827,7 @@ impl LocalWorkspace {
                 let _ = tokio::fs::remove_file(&request_path).await;
                 return fail(
                     format!("could not spawn Node 22 managed Tool runner: {error}"),
-                    HandTerminalOutcome::Failed,
+                    EnvironmentTerminalOutcome::Failed,
                 );
             }
         };
@@ -889,13 +892,13 @@ impl LocalWorkspace {
         if cancelled {
             return fail(
                 "managed Tool call was cancelled".into(),
-                HandTerminalOutcome::Cancelled,
+                EnvironmentTerminalOutcome::Cancelled,
             );
         }
         if timed_out {
             return fail(
                 format!("managed Tool exceeded its {timeout_ms} ms remaining deadline"),
-                HandTerminalOutcome::DeadlineExceeded,
+                EnvironmentTerminalOutcome::DeadlineExceeded,
             );
         }
         let exit_code = status.and_then(|status| status.code()).map(i64::from);
@@ -906,7 +909,7 @@ impl LocalWorkspace {
                     format!("managed Tool output encoding failed: {error}")
                 });
                 CallOutcome {
-                    outcome: HandTerminalOutcome::Completed,
+                    outcome: EnvironmentTerminalOutcome::Completed,
                     value: Some(output),
                     content,
                     is_error: exit_code != Some(0),
@@ -932,7 +935,7 @@ impl LocalWorkspace {
                     format!("{message}\n{diagnostics}")
                 };
                 CallOutcome {
-                    outcome: HandTerminalOutcome::Failed,
+                    outcome: EnvironmentTerminalOutcome::Failed,
                     value: None,
                     content,
                     is_error: true,
@@ -951,7 +954,7 @@ impl LocalWorkspace {
                         format!(": {stderr}")
                     }
                 ),
-                HandTerminalOutcome::Failed,
+                EnvironmentTerminalOutcome::Failed,
             ),
         }
     }
@@ -1051,14 +1054,14 @@ async fn collect_stream(
     }
 }
 
-// ---- Canonical typed local Hand -----------------------------------------------------------
+// ---- Canonical typed local Environment -----------------------------------------------------------
 
-/// The durable local-development implementation of Brain's canonical Hand ports.
+/// The durable local-development implementation of Brain's canonical Environment ports.
 ///
 /// This is deliberately unsandboxed. It nevertheless preserves the same operation identity,
-/// target-generation and terminal-acknowledgement ordering as a hosted Hand so restarting the
+/// target-generation and terminal-acknowledgement ordering as a hosted Environment so restarting the
 /// standalone Brain cannot silently execute an ambiguous Tool call twice.
-pub struct LocalHand {
+pub struct LocalEnvironment {
     state_root: PathBuf,
     workspace_root: PathBuf,
     bindings: std::sync::RwLock<HashMap<String, SealedBinding>>,
@@ -1114,7 +1117,7 @@ struct DurableStdinEffect {
 }
 
 impl LocalSandboxExecution {
-    fn observation(&self) -> HandResult<OperationObservation> {
+    fn observation(&self) -> EnvironmentResult<OperationObservation> {
         let stdout = self.stdout.lock().expect("sandbox stdout").render();
         let stderr = self.stderr.lock().expect("sandbox stderr").render();
         let terminal = self.terminal.read().expect("sandbox terminal").clone();
@@ -1130,7 +1133,7 @@ impl LocalSandboxExecution {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DurableOperation {
-    envelope: brain_protocol::hand::OperationEnvelope,
+    envelope: brain_protocol::environment::OperationEnvelope,
     operation: OperationRef,
     target: TargetReceipt,
 }
@@ -1141,14 +1144,14 @@ struct DurableFileEffectIdentity {
     request_digest: String,
 }
 
-impl LocalHand {
+impl LocalEnvironment {
     pub fn open(data_dir: impl Into<PathBuf>) -> Result<Arc<Self>> {
         let root = data_dir.into();
         let state_root = root.join("state");
         let workspace_root = root.join("workspaces");
         std::fs::create_dir_all(&state_root)
             .and_then(|()| std::fs::create_dir_all(&workspace_root))
-            .map_err(|error| BrainError::Journal(format!("create local Hand data: {error}")))?;
+            .map_err(|error| BrainError::Journal(format!("create local Environment data: {error}")))?;
         Ok(Arc::new(Self {
             state_root,
             workspace_root,
@@ -1167,16 +1170,16 @@ impl LocalHand {
 
     /// Complete the deliberate circular local composition after `Brain` has been constructed.
     /// The port is used only for one-purpose secret capabilities during preparation.
-    pub fn attach_secret_delivery(&self, delivery: Arc<dyn SecretDeliveryPort>) -> HandResult<()> {
+    pub fn attach_secret_delivery(&self, delivery: Arc<dyn SecretDeliveryPort>) -> EnvironmentResult<()> {
         let mut slot = self.secret_delivery.write().expect("local secret delivery");
         if let Some(existing) = slot.as_ref() {
             if Arc::ptr_eq(existing, &delivery) {
                 return Ok(());
             }
-            return Err(hand_error(
-                HandErrorCode::BindingConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::BindingConflict,
                 false,
-                "local Hand secret delivery is already attached",
+                "local Environment secret delivery is already attached",
             ));
         }
         *slot = Some(delivery);
@@ -1214,7 +1217,7 @@ impl LocalHand {
         operation_id: &str,
         kind: &str,
         request_digest: &str,
-    ) -> HandResult<(PathBuf, bool)> {
+    ) -> EnvironmentResult<(PathBuf, bool)> {
         let dir = self.file_effect_dir(root_id, operation_id);
         let identity_path = dir.join("identity.json");
         if let Some(existing) = read_json_if_exists::<DurableFileEffectIdentity>(
@@ -1222,8 +1225,8 @@ impl LocalHand {
             "sandbox file effect identity",
         )? {
             if existing.kind != kind || existing.request_digest != request_digest {
-                return Err(hand_error(
-                    HandErrorCode::BindingConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::BindingConflict,
                     false,
                     "sandbox file operation is already sealed to a different request",
                 ));
@@ -1255,29 +1258,29 @@ impl LocalHand {
             .clone()
     }
 
-    fn binding(&self, binding_ref: &str) -> HandResult<SealedBinding> {
+    fn binding(&self, binding_ref: &str) -> EnvironmentResult<SealedBinding> {
         self.bindings
             .read()
             .expect("local bindings")
             .get(binding_ref)
             .cloned()
             .ok_or_else(|| {
-                hand_error(
-                    HandErrorCode::CapabilityUnavailable,
+                environment_error(
+                    EnvironmentErrorCode::CapabilityUnavailable,
                     false,
                     "managed binding must be resolved before preparation",
                 )
             })
     }
 
-    fn validate_target_shape(target: &SandboxTarget) -> HandResult<()> {
+    fn validate_target_shape(target: &SandboxTarget) -> EnvironmentResult<()> {
         let valid = match target.kind {
-            brain_protocol::hand::TargetKind::Default => target.sandbox_id.is_none(),
-            brain_protocol::hand::TargetKind::Additional => target.sandbox_id.is_some(),
+            brain_protocol::environment::TargetKind::Default => target.sandbox_id.is_none(),
+            brain_protocol::environment::TargetKind::Additional => target.sandbox_id.is_some(),
         };
         if !valid {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox target kind and sandbox_id disagree",
             ));
@@ -1296,8 +1299,8 @@ impl LocalHand {
 
     fn target_component(target: &SandboxTarget) -> String {
         match target.kind {
-            brain_protocol::hand::TargetKind::Default => "default".into(),
-            brain_protocol::hand::TargetKind::Additional => format!(
+            brain_protocol::environment::TargetKind::Default => "default".into(),
+            brain_protocol::environment::TargetKind::Additional => format!(
                 "additional-{}",
                 hash_component(
                     target
@@ -1314,8 +1317,8 @@ impl LocalHand {
         let root = self.root_dir(target.root_id.as_str());
         match target.kind {
             // Preserve the durable-local default layout used before additional targets existed.
-            brain_protocol::hand::TargetKind::Default => root.join("target-events"),
-            brain_protocol::hand::TargetKind::Additional => root
+            brain_protocol::environment::TargetKind::Default => root.join("target-events"),
+            brain_protocol::environment::TargetKind::Additional => root
                 .join("additional-targets")
                 .join(Self::target_component(target))
                 .join("target-events"),
@@ -1325,8 +1328,8 @@ impl LocalHand {
     fn target_workspace_id(target: &SandboxTarget) -> String {
         let root = hash_component(target.root_id.as_str());
         match target.kind {
-            brain_protocol::hand::TargetKind::Default => root,
-            brain_protocol::hand::TargetKind::Additional => {
+            brain_protocol::environment::TargetKind::Default => root,
+            brain_protocol::environment::TargetKind::Additional => {
                 format!("{root}/additional/{}", Self::target_component(target))
             }
         }
@@ -1335,7 +1338,7 @@ impl LocalHand {
     fn read_physical_target(
         &self,
         target: &SandboxTarget,
-    ) -> HandResult<Option<PhysicalTargetState>> {
+    ) -> EnvironmentResult<Option<PhysicalTargetState>> {
         Self::validate_target_shape(target)?;
         let dir = self.status_dir(target);
         let mut paths = match std::fs::read_dir(&dir) {
@@ -1355,8 +1358,8 @@ impl LocalHand {
         if state.as_ref().is_some_and(|state: &PhysicalTargetState| {
             state.target_digest != Self::target_digest(target)
         }) {
-            return Err(hand_error(
-                HandErrorCode::BindingConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::BindingConflict,
                 false,
                 "sandbox target is sealed to a different root, owner, or binding",
             ));
@@ -1368,10 +1371,10 @@ impl LocalHand {
         &self,
         target: &SandboxTarget,
         state: &PhysicalTargetState,
-    ) -> HandResult<()> {
+    ) -> EnvironmentResult<()> {
         if state.target_digest != Self::target_digest(target) {
-            return Err(hand_error(
-                HandErrorCode::BindingConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::BindingConflict,
                 false,
                 "sandbox target state digest does not match its logical target",
             ));
@@ -1394,7 +1397,7 @@ impl LocalHand {
         &self,
         target: SandboxTarget,
         physical: &PhysicalTargetState,
-    ) -> HandResult<SandboxStatus> {
+    ) -> EnvironmentResult<SandboxStatus> {
         typed(json!({
             "target": target,
             "state": physical.state,
@@ -1409,13 +1412,13 @@ impl LocalHand {
         &self,
         target: SandboxTarget,
         generation_intent: Option<&str>,
-    ) -> HandResult<(SandboxStatus, bool)> {
+    ) -> EnvironmentResult<(SandboxStatus, bool)> {
         Self::validate_target_shape(&target)?;
         let _guard = self.target_gate.lock().await;
         if let Some(current) = self.read_physical_target(&target)? {
             if matches!(current.state.as_str(), "gone" | "terminated") {
-                return Err(hand_error(
-                    HandErrorCode::SandboxGone,
+                return Err(environment_error(
+                    EnvironmentErrorCode::SandboxGone,
                     false,
                     "the local default target has been terminated",
                 ));
@@ -1427,8 +1430,8 @@ impl LocalHand {
                     ..current
                 };
                 self.append_physical_target(&target, &gone)?;
-                return Err(hand_error(
-                    HandErrorCode::SandboxGone,
+                return Err(environment_error(
+                    EnvironmentErrorCode::SandboxGone,
                     false,
                     "the local default target reached its hard expiry",
                 ));
@@ -1436,8 +1439,8 @@ impl LocalHand {
             if let Some(expected) = generation_intent
                 && current.generation != expected
             {
-                return Err(hand_error(
-                    HandErrorCode::GenerationConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::GenerationConflict,
                     false,
                     "the local default target already has another generation",
                 ));
@@ -1468,21 +1471,21 @@ impl LocalHand {
             expires_at_ms: brain::wall_ms().saturating_add(8 * 60 * 60 * 1_000),
         };
         LocalWorkspace::open(&self.workspace_root, &Self::target_workspace_id(&target))
-            .map_err(brain_error_to_hand)?;
+            .map_err(brain_error_to_environment)?;
         self.append_physical_target(&target, &physical)?;
         self.status_for(target, &physical)
             .map(|status| (status, false))
     }
 
-    fn prepared_runtime(&self, session_id: &str) -> HandResult<PreparedRuntime> {
+    fn prepared_runtime(&self, session_id: &str) -> EnvironmentResult<PreparedRuntime> {
         self.prepared
             .read()
             .expect("local prepared sessions")
             .get(session_id)
             .cloned()
             .ok_or_else(|| {
-                hand_error(
-                    HandErrorCode::CapabilityUnavailable,
+                environment_error(
+                    EnvironmentErrorCode::CapabilityUnavailable,
                     false,
                     "local managed preparation is absent; Brain must prepare again",
                 )
@@ -1493,11 +1496,11 @@ impl LocalHand {
         &self,
         target: &SandboxTarget,
         expected_generation: &str,
-    ) -> HandResult<Arc<LocalWorkspace>> {
+    ) -> EnvironmentResult<Arc<LocalWorkspace>> {
         let _guard = self.target_gate.lock().await;
         let Some(current) = self.read_physical_target(target)? else {
-            return Err(hand_error(
-                HandErrorCode::SandboxNotMaterialized,
+            return Err(environment_error(
+                EnvironmentErrorCode::SandboxNotMaterialized,
                 false,
                 "the local default target was never materialized",
             ));
@@ -1505,32 +1508,32 @@ impl LocalHand {
         if matches!(current.state.as_str(), "gone" | "terminated")
             || current.expires_at_ms <= brain::wall_ms()
         {
-            return Err(hand_error(
-                HandErrorCode::SandboxGone,
+            return Err(environment_error(
+                EnvironmentErrorCode::SandboxGone,
                 false,
                 "the local default target is gone",
             ));
         }
         if current.generation != expected_generation {
-            return Err(hand_error(
-                HandErrorCode::GenerationConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::GenerationConflict,
                 false,
                 "the local file request targets a stale generation",
             ));
         }
         LocalWorkspace::open(&self.workspace_root, &Self::target_workspace_id(target))
-            .map_err(brain_error_to_hand)
+            .map_err(brain_error_to_environment)
     }
 
     fn file_entry(
         workspace: &LocalWorkspace,
         requested: &str,
-    ) -> HandResult<brain_protocol::hand::FileEntry> {
-        let path = workspace.resolve(requested).map_err(brain_error_to_hand)?;
+    ) -> EnvironmentResult<brain_protocol::environment::FileEntry> {
+        let path = workspace.resolve(requested).map_err(brain_error_to_environment)?;
         let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
-                hand_error(
-                    HandErrorCode::FileNotFound,
+                environment_error(
+                    EnvironmentErrorCode::FileNotFound,
                     false,
                     "sandbox file does not exist",
                 )
@@ -1545,8 +1548,8 @@ impl LocalHand {
         } else if metadata.is_file() {
             "file"
         } else {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox path is not a regular file or directory",
             ));
@@ -1566,36 +1569,36 @@ impl LocalHand {
     }
 
     fn transfer_file_path(
-        authority: &brain_protocol::hand::ObjectTransferAuthority,
+        authority: &brain_protocol::environment::ObjectTransferAuthority,
         expected_method: &str,
-    ) -> HandResult<PathBuf> {
+    ) -> EnvironmentResult<PathBuf> {
         if authority.method.to_string() != expected_method
             || authority.expires_at_ms.get() <= brain::wall_ms()
             || !authority.headers.is_empty()
         {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "local object authority has the wrong method, headers, or expiry",
             ));
         }
         let url = url::Url::parse(authority.url.as_str()).map_err(|_| {
-            hand_error(
-                HandErrorCode::InvalidRequest,
+            environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "local object authority is not a valid URL",
             )
         })?;
         if url.scheme() != "file" {
-            return Err(hand_error(
-                HandErrorCode::CapabilityUnavailable,
+            return Err(environment_error(
+                EnvironmentErrorCode::CapabilityUnavailable,
                 false,
-                "the local Hand accepts only file object authorities",
+                "the local Environment accepts only file object authorities",
             ));
         }
         url.to_file_path().map_err(|_| {
-            hand_error(
-                HandErrorCode::InvalidRequest,
+            environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "local object authority is not a filesystem path",
             )
@@ -1606,7 +1609,7 @@ impl LocalHand {
         operation: OperationRef,
         target: TargetReceipt,
         terminal: Option<TerminalResult>,
-    ) -> HandResult<OperationObservation> {
+    ) -> EnvironmentResult<OperationObservation> {
         typed(json!({
             "operation": operation,
             "state": if terminal.is_some() { "terminal" } else { "running" },
@@ -1620,10 +1623,10 @@ impl LocalHand {
     fn validate_operation_ref(
         stored: &DurableOperation,
         supplied: &OperationRef,
-    ) -> HandResult<()> {
+    ) -> EnvironmentResult<()> {
         if serde_jcs::to_vec(&stored.operation).ok() != serde_jcs::to_vec(supplied).ok() {
-            return Err(hand_error(
-                HandErrorCode::OperationConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::OperationConflict,
                 false,
                 "operation receipt does not match its durable local identity",
             ));
@@ -1631,17 +1634,17 @@ impl LocalHand {
         Ok(())
     }
 
-    fn terminal_from_outcome(outcome: CallOutcome) -> HandResult<TerminalResult> {
-        let completed = outcome.outcome == HandTerminalOutcome::Completed && !outcome.is_error;
+    fn terminal_from_outcome(outcome: CallOutcome) -> EnvironmentResult<TerminalResult> {
+        let completed = outcome.outcome == EnvironmentTerminalOutcome::Completed && !outcome.is_error;
         let terminal_outcome = if completed {
-            HandTerminalOutcome::Completed
+            EnvironmentTerminalOutcome::Completed
         } else {
             match outcome.outcome {
-                HandTerminalOutcome::Cancelled => HandTerminalOutcome::Cancelled,
-                HandTerminalOutcome::DeadlineExceeded => HandTerminalOutcome::DeadlineExceeded,
-                HandTerminalOutcome::Interrupted => HandTerminalOutcome::Interrupted,
-                HandTerminalOutcome::Completed | HandTerminalOutcome::Failed => {
-                    HandTerminalOutcome::Failed
+                EnvironmentTerminalOutcome::Cancelled => EnvironmentTerminalOutcome::Cancelled,
+                EnvironmentTerminalOutcome::DeadlineExceeded => EnvironmentTerminalOutcome::DeadlineExceeded,
+                EnvironmentTerminalOutcome::Interrupted => EnvironmentTerminalOutcome::Interrupted,
+                EnvironmentTerminalOutcome::Completed | EnvironmentTerminalOutcome::Failed => {
+                    EnvironmentTerminalOutcome::Failed
                 }
             }
         };
@@ -1668,9 +1671,9 @@ impl LocalHand {
         Ok(terminal)
     }
 
-    fn interrupted_terminal() -> HandResult<TerminalResult> {
+    fn interrupted_terminal() -> EnvironmentResult<TerminalResult> {
         Self::terminal_from_outcome(CallOutcome {
-            outcome: HandTerminalOutcome::Interrupted,
+            outcome: EnvironmentTerminalOutcome::Interrupted,
             value: Some(json!({
                 "error": "local Brain restarted after dispatch; the ambiguous effect was not repeated"
             })),
@@ -1713,7 +1716,7 @@ impl LocalHand {
         operation: OperationRef,
         observation: OperationObservation,
         replayed: bool,
-    ) -> HandResult<SubmitReceipt> {
+    ) -> EnvironmentResult<SubmitReceipt> {
         typed(json!({
             "operation": operation,
             "replayed": replayed,
@@ -1724,7 +1727,7 @@ impl LocalHand {
     fn durable_sandbox_observation(
         execution: &DurableSandboxExecution,
         terminal: TerminalResult,
-    ) -> HandResult<OperationObservation> {
+    ) -> EnvironmentResult<OperationObservation> {
         sandbox_observation(
             execution.operation.clone(),
             execution.target.clone(),
@@ -1737,7 +1740,7 @@ impl LocalHand {
     async fn await_sandbox_terminal(
         execution: &Arc<LocalSandboxExecution>,
         timeout_ms: u64,
-    ) -> HandResult<OperationObservation> {
+    ) -> EnvironmentResult<OperationObservation> {
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_millis(timeout_ms.saturating_add(2_000));
         loop {
@@ -1753,8 +1756,8 @@ impl LocalHand {
             tokio::time::timeout_at(deadline, completed)
                 .await
                 .map_err(|_| {
-                    hand_error(
-                        HandErrorCode::TemporarilyUnavailable,
+                    environment_error(
+                        EnvironmentErrorCode::TemporarilyUnavailable,
                         true,
                         "local sandbox execution terminal was not observed before its deadline",
                     )
@@ -1766,7 +1769,7 @@ impl LocalHand {
         &self,
         key: String,
         execution: Arc<LocalSandboxExecution>,
-    ) -> HandResult<()> {
+    ) -> EnvironmentResult<()> {
         let mut executions = self
             .sandbox_executions
             .lock()
@@ -1779,8 +1782,8 @@ impl LocalHand {
                 .is_none()
         });
         if executions.len() >= MAX_LIVE_SANDBOX_EXECUTIONS {
-            return Err(hand_error(
-                HandErrorCode::ResourceExhausted,
+            return Err(environment_error(
+                EnvironmentErrorCode::ResourceExhausted,
                 true,
                 "local sandbox execution capacity is exhausted",
             ));
@@ -1810,7 +1813,7 @@ fn sandbox_observation(
     stdout: &str,
     stderr: &str,
     terminal: Option<TerminalResult>,
-) -> HandResult<OperationObservation> {
+) -> EnvironmentResult<OperationObservation> {
     let mut output = Vec::new();
     append_output_chunks(&mut output, "stdout", stdout);
     append_output_chunks(&mut output, "stderr", stderr);
@@ -1856,7 +1859,7 @@ fn sandbox_terminal_result(
     stdout: String,
     stderr: String,
     duration_ms: u64,
-) -> HandResult<TerminalResult> {
+) -> EnvironmentResult<TerminalResult> {
     let exit_code = status.and_then(|status| status.code()).map(i64::from);
     let (outcome, is_error) = if cancelled {
         ("cancelled", true)
@@ -1887,26 +1890,25 @@ fn sandbox_terminal_result(
 }
 
 #[async_trait]
-impl HandPort for LocalHand {
-    async fn resolve_binding(&self, binding: SealedBinding) -> HandResult<ResolvedBinding> {
-        if binding.realm != brain_protocol::hand::ExecutionRealm::AexManaged
-            || binding.bundle.is_none()
+impl EnvironmentPort for LocalEnvironment {
+    async fn resolve_binding(&self, binding: SealedBinding) -> EnvironmentResult<ResolvedBinding> {
+        if binding.bundle.is_none()
             || !binding.required_capabilities.iter().all(|capability| {
                 matches!(
                     capability,
-                    brain_protocol::hand::HandCapability::Execution
-                        | brain_protocol::hand::HandCapability::SessionPreparation
+                    brain_protocol::environment::EnvironmentCapability::Execution
+                        | brain_protocol::environment::EnvironmentCapability::SessionPreparation
                 )
             })
         {
-            return Err(hand_error(
-                HandErrorCode::CapabilityUnavailable,
+            return Err(environment_error(
+                EnvironmentErrorCode::CapabilityUnavailable,
                 false,
-                "the local Hand accepts only sealed Node22 managed bindings",
+                "the local Environment accepts only sealed computer-artifact bindings",
             ));
         }
         let descriptor = binding.bundle.as_ref().expect("checked");
-        if descriptor.runtime != brain_protocol::hand::BundleRuntime::Node22
+        if descriptor.target != brain_protocol::environment::ArtifactTarget::LinuxAmd64
             || descriptor.bundle_digest != binding.implementation_identity
             || descriptor.contract_digest != binding.contract_digest
             || descriptor.tool_name != binding.capability
@@ -1914,8 +1916,8 @@ impl HandPort for LocalHand {
             || descriptor.object.bytes != descriptor.bytes.get()
             || descriptor.object.sha256 != descriptor.bundle_digest
         {
-            return Err(hand_error(
-                HandErrorCode::BindingConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::BindingConflict,
                 false,
                 "managed binding and bundle descriptor disagree",
             ));
@@ -1923,8 +1925,8 @@ impl HandPort for LocalHand {
         let path = self.binding_path(&binding);
         if let Some(existing) = read_json_if_exists::<SealedBinding>(&path, "managed binding")? {
             if serde_jcs::to_vec(&existing).ok() != serde_jcs::to_vec(&binding).ok() {
-                return Err(hand_error(
-                    HandErrorCode::BindingConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::BindingConflict,
                     false,
                     "binding_ref is already sealed to different bytes",
                 ));
@@ -1938,8 +1940,7 @@ impl HandPort for LocalHand {
             .insert(binding.binding_id.to_string(), binding.clone());
         typed(json!({
             "binding_ref": binding.binding_id,
-            "hand_id": "hand_local",
-            "realm": "aex_managed",
+            "environment_id": "environment_local",
             "recovery": "retained",
             "capabilities": ["execution", "session_preparation"],
             "limits": {
@@ -1950,12 +1951,12 @@ impl HandPort for LocalHand {
         }))
     }
 
-    async fn submit(&self, request: SubmitRequest) -> HandResult<SubmitReceipt> {
+    async fn submit(&self, request: SubmitRequest) -> EnvironmentResult<SubmitReceipt> {
         if brain_protocol::contract::operation_request_digest(&request.envelope)
             != request.envelope.request_digest
         {
-            return Err(hand_error(
-                HandErrorCode::OperationConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::OperationConflict,
                 false,
                 "managed request digest does not match its canonical envelope",
             ));
@@ -1969,8 +1970,8 @@ impl HandPort for LocalHand {
                 .binding_refs
                 .contains(request.envelope.binding_ref.as_str())
         {
-            return Err(hand_error(
-                HandErrorCode::BindingConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::BindingConflict,
                 false,
                 "managed operation is outside its prepared root or binding",
             ));
@@ -1982,8 +1983,8 @@ impl HandPort for LocalHand {
         let terminal_path = dir.join("terminal.json");
         let ack_path = dir.join("ack.json");
         if ack_path.exists() {
-            return Err(hand_error(
-                HandErrorCode::OperationUnknown,
+            return Err(environment_error(
+                EnvironmentErrorCode::OperationUnknown,
                 false,
                 "the local operation terminal was already acknowledged",
             ));
@@ -1993,8 +1994,8 @@ impl HandPort for LocalHand {
         {
             if serde_jcs::to_vec(&stored.envelope).ok() != serde_jcs::to_vec(&request.envelope).ok()
             {
-                return Err(hand_error(
-                    HandErrorCode::OperationConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::OperationConflict,
                     false,
                     "operation_id is already sealed to a different request",
                 ));
@@ -2034,15 +2035,15 @@ impl HandPort for LocalHand {
         }))?;
         let (status, _) = self.ensure_target(target.clone(), None).await?;
         let generation = status.generation.as_ref().ok_or_else(|| {
-            hand_error(
-                HandErrorCode::SandboxGone,
+            environment_error(
+                EnvironmentErrorCode::SandboxGone,
                 false,
                 "local target lacks a generation",
             )
         })?;
         let target_ref = status.target_ref.as_ref().ok_or_else(|| {
-            hand_error(
-                HandErrorCode::SandboxGone,
+            environment_error(
+                EnvironmentErrorCode::SandboxGone,
                 false,
                 "local target lacks a physical reference",
             )
@@ -2058,8 +2059,8 @@ impl HandPort for LocalHand {
                 .as_ref()
                 .is_some_and(|expected| expected.as_str() != target_ref.as_str())
         {
-            return Err(hand_error(
-                HandErrorCode::GenerationConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::GenerationConflict,
                 false,
                 "managed request targets a stale local generation",
             ));
@@ -2093,7 +2094,7 @@ impl HandPort for LocalHand {
 
         if brain::wall_ms() >= request.envelope.deadline_at_ms.get() {
             let terminal = Self::terminal_from_outcome(CallOutcome {
-                outcome: HandTerminalOutcome::DeadlineExceeded,
+                outcome: EnvironmentTerminalOutcome::DeadlineExceeded,
                 value: Some(json!({"error":"managed Tool deadline elapsed before execution"})),
                 content: String::new(),
                 is_error: true,
@@ -2143,14 +2144,14 @@ impl HandPort for LocalHand {
         }))
     }
 
-    async fn observe(&self, request: ObserveRequest) -> HandResult<OperationObservation> {
+    async fn observe(&self, request: ObserveRequest) -> EnvironmentResult<OperationObservation> {
         let dir = self.operation_dir(
             request.operation.target.root_id.as_str(),
             request.operation.operation_id.as_str(),
         );
         if dir.join("ack.json").exists() {
-            return Err(hand_error(
-                HandErrorCode::OperationUnknown,
+            return Err(environment_error(
+                EnvironmentErrorCode::OperationUnknown,
                 false,
                 "the local operation terminal was already acknowledged",
             ));
@@ -2161,7 +2162,7 @@ impl HandPort for LocalHand {
         Self::operation_observation(stored.operation, stored.target, terminal)
     }
 
-    async fn cancel(&self, request: CancelRequest) -> HandResult<CancellationReceipt> {
+    async fn cancel(&self, request: CancelRequest) -> EnvironmentResult<CancellationReceipt> {
         let dir = self.operation_dir(
             request.operation.target.root_id.as_str(),
             request.operation.operation_id.as_str(),
@@ -2193,7 +2194,7 @@ impl HandPort for LocalHand {
     async fn acknowledge_terminal(
         &self,
         request: AcknowledgeTerminalRequest,
-    ) -> HandResult<Acknowledgement> {
+    ) -> EnvironmentResult<Acknowledgement> {
         let root_id = request.operation.target.root_id.to_string();
         let operation_id = request.operation.operation_id.to_string();
         let gate = self.operation_gate(&root_id, &operation_id);
@@ -2205,8 +2206,8 @@ impl HandPort for LocalHand {
             "managed terminal acknowledgement",
         )? {
             if serde_jcs::to_vec(&existing).ok() != serde_jcs::to_vec(&request).ok() {
-                return Err(hand_error(
-                    HandErrorCode::OperationConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::OperationConflict,
                     false,
                     "terminal acknowledgement conflicts with its durable tombstone",
                 ));
@@ -2217,8 +2218,8 @@ impl HandPort for LocalHand {
         Self::validate_operation_ref(&stored, &request.operation)?;
         let terminal: TerminalResult = read_json(&dir.join("terminal.json"), "managed terminal")?;
         if terminal.terminal_digest != request.terminal_digest {
-            return Err(hand_error(
-                HandErrorCode::OperationConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::OperationConflict,
                 false,
                 "terminal acknowledgement digest does not match the retained terminal",
             ));
@@ -2239,8 +2240,8 @@ impl HandPort for LocalHand {
 }
 
 #[async_trait]
-impl SessionPreparationPort for LocalHand {
-    async fn prepare(&self, request: PrepareSessionRequest) -> HandResult<PreparedSession> {
+impl SessionPreparationPort for LocalEnvironment {
+    async fn prepare(&self, request: PrepareSessionRequest) -> EnvironmentResult<PreparedSession> {
         let session_id = request.session_id.to_string();
         let root_id = request.root_id.to_string();
         let mut specs = Vec::with_capacity(request.bindings.len());
@@ -2254,8 +2255,8 @@ impl SessionPreparationPort for LocalHand {
                     .insert(fetch.bundle_digest.to_string(), fetch)
                     .is_some()
             {
-                return Err(hand_error(
-                    HandErrorCode::BindingConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::BindingConflict,
                     false,
                     "preparation bundle fetch is expired, duplicated, or oversized",
                 ));
@@ -2268,23 +2269,23 @@ impl SessionPreparationPort for LocalHand {
             .map_err(|error| local_io_error("create local bundle cache", error))?;
         for prepared in &request.bindings {
             if !binding_refs.insert(prepared.binding_ref.to_string()) {
-                return Err(hand_error(
-                    HandErrorCode::BindingConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::BindingConflict,
                     false,
                     "preparation contains a duplicate binding_ref",
                 ));
             }
             let binding = self.binding(prepared.binding_ref.as_str())?;
             if binding.root_id.as_str() != root_id || binding.session_id.as_str() != session_id {
-                return Err(hand_error(
-                    HandErrorCode::BindingConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::BindingConflict,
                     false,
                     "preparation binding belongs to another root or session",
                 ));
             }
             let descriptor = binding.bundle.as_ref().ok_or_else(|| {
-                hand_error(
-                    HandErrorCode::BindingConflict,
+                environment_error(
+                    EnvironmentErrorCode::BindingConflict,
                     false,
                     "prepared managed binding has no bundle",
                 )
@@ -2292,8 +2293,8 @@ impl SessionPreparationPort for LocalHand {
             if prepared.bundle_digests.len() != 1
                 || prepared.bundle_digests[0] != descriptor.bundle_digest
             {
-                return Err(hand_error(
-                    HandErrorCode::BindingConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::BindingConflict,
                     false,
                     "prepared binding does not carry its exact sealed bundle digest",
                 ));
@@ -2301,29 +2302,29 @@ impl SessionPreparationPort for LocalHand {
             let fetch = fetches
                 .get(descriptor.bundle_digest.as_str())
                 .ok_or_else(|| {
-                    hand_error(
-                        HandErrorCode::CapabilityUnavailable,
+                    environment_error(
+                        EnvironmentErrorCode::CapabilityUnavailable,
                         false,
                         "preparation omitted a required bundle fetch",
                     )
                 })?;
             let source = url::Url::parse(fetch.url.as_str()).map_err(|_| {
-                hand_error(
-                    HandErrorCode::InvalidRequest,
+                environment_error(
+                    EnvironmentErrorCode::InvalidRequest,
                     false,
                     "local bundle fetch is not a valid URL",
                 )
             })?;
             if source.scheme() != "file" || !fetch.headers.is_empty() {
-                return Err(hand_error(
-                    HandErrorCode::CapabilityUnavailable,
+                return Err(environment_error(
+                    EnvironmentErrorCode::CapabilityUnavailable,
                     false,
-                    "the local Hand accepts only header-free file bundle authorities",
+                    "the local Environment accepts only header-free file bundle authorities",
                 ));
             }
             let source = source.to_file_path().map_err(|_| {
-                hand_error(
-                    HandErrorCode::InvalidRequest,
+                environment_error(
+                    EnvironmentErrorCode::InvalidRequest,
                     false,
                     "local bundle authority is not a filesystem path",
                 )
@@ -2334,8 +2335,8 @@ impl SessionPreparationPort for LocalHand {
                 || metadata.len() > fetch.max_bytes.get()
                 || metadata.len() as usize > brain_protocol::MAX_TOOL_BUNDLE_BYTES
             {
-                return Err(hand_error(
-                    HandErrorCode::BindingConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::BindingConflict,
                     false,
                     "local bundle bytes disagree with their sealed descriptor",
                 ));
@@ -2343,8 +2344,8 @@ impl SessionPreparationPort for LocalHand {
             let bytes = std::fs::read(&source)
                 .map_err(|error| local_io_error("read local bundle", error))?;
             if hex::encode(sha2::Sha256::digest(&bytes)) != descriptor.bundle_digest.as_str() {
-                return Err(hand_error(
-                    HandErrorCode::BindingConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::BindingConflict,
                     false,
                     "local bundle checksum disagrees with its sealed descriptor",
                 ));
@@ -2352,8 +2353,8 @@ impl SessionPreparationPort for LocalHand {
             let destination = bundle_dir.join(format!("{}.mjs", descriptor.bundle_digest.as_str()));
             if let Some(existing) = read_bytes_if_exists(&destination, "local bundle cache")? {
                 if existing != bytes {
-                    return Err(hand_error(
-                        HandErrorCode::BindingConflict,
+                    return Err(environment_error(
+                        EnvironmentErrorCode::BindingConflict,
                         false,
                         "immutable local bundle cache contains different bytes",
                     ));
@@ -2385,8 +2386,8 @@ impl SessionPreparationPort for LocalHand {
                 .map(|spec| spec.bundle_digest.as_str())
                 .collect();
             if fetches.keys().any(|digest| !used.contains(digest.as_str())) {
-                return Err(hand_error(
-                    HandErrorCode::BindingConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::BindingConflict,
                     false,
                     "preparation contains an unreferenced bundle fetch",
                 ));
@@ -2395,8 +2396,8 @@ impl SessionPreparationPort for LocalHand {
         let env = match (&request.secret_capability, expected_env.is_empty()) {
             (None, true) => HashMap::new(),
             (None, false) => {
-                return Err(hand_error(
-                    HandErrorCode::CapabilityUnavailable,
+                return Err(environment_error(
+                    EnvironmentErrorCode::CapabilityUnavailable,
                     false,
                     "preparation omitted required managed secret material",
                 ));
@@ -2408,8 +2409,8 @@ impl SessionPreparationPort for LocalHand {
                     .map(|value| value.as_str().to_owned())
                     .collect();
                 if named != expected_env || capability.expires_at_ms.get() <= brain::wall_ms() {
-                    return Err(hand_error(
-                        HandErrorCode::BindingConflict,
+                    return Err(environment_error(
+                        EnvironmentErrorCode::BindingConflict,
                         false,
                         "secret capability does not match the exact prepared environment",
                     ));
@@ -2420,15 +2421,15 @@ impl SessionPreparationPort for LocalHand {
                     .expect("local secret delivery")
                     .clone()
                     .ok_or_else(|| {
-                        hand_error(
-                            HandErrorCode::TemporarilyUnavailable,
+                        environment_error(
+                            EnvironmentErrorCode::TemporarilyUnavailable,
                             true,
                             "local secret delivery is not attached",
                         )
                     })?;
                 let first_binding = request.bindings.first().ok_or_else(|| {
-                    hand_error(
-                        HandErrorCode::BindingConflict,
+                    environment_error(
+                        EnvironmentErrorCode::BindingConflict,
                         false,
                         "secret capability requires a prepared binding",
                     )
@@ -2437,7 +2438,7 @@ impl SessionPreparationPort for LocalHand {
                 let secret_request = typed(json!({
                     "capability_ref": capability.capability_ref,
                     "generation_intent": generation,
-                    "hand_id": "hand_local",
+                    "environment_id": "environment_local",
                     "root_id": request.root_id,
                     "session_id": request.session_id,
                     "target": {
@@ -2458,8 +2459,8 @@ impl SessionPreparationPort for LocalHand {
                         value.len() > brain_protocol::MAX_SESSION_SECRET_VALUE_UTF8_BYTES
                     })
                 {
-                    return Err(hand_error(
-                        HandErrorCode::BindingConflict,
+                    return Err(environment_error(
+                        EnvironmentErrorCode::BindingConflict,
                         false,
                         "redeemed secret material does not match its bounded capability",
                     ));
@@ -2474,7 +2475,7 @@ impl SessionPreparationPort for LocalHand {
             specs,
             env,
         )
-        .map_err(brain_error_to_hand)?;
+        .map_err(brain_error_to_environment)?;
         self.prepared
             .write()
             .expect("local prepared sessions")
@@ -2495,24 +2496,24 @@ impl SessionPreparationPort for LocalHand {
     async fn materialize_default(
         &self,
         request: CreateSandboxRequest,
-    ) -> HandResult<SandboxStatus> {
+    ) -> EnvironmentResult<SandboxStatus> {
         self.ensure_target(request.target, Some(request.generation_intent.as_str()))
             .await
             .map(|(status, _)| status)
     }
 
-    async fn dematerialize_default(&self, target: SandboxTarget) -> HandResult<SandboxStatus> {
-        if target.kind != brain_protocol::hand::TargetKind::Default || target.sandbox_id.is_some() {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+    async fn dematerialize_default(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus> {
+        if target.kind != brain_protocol::environment::TargetKind::Default || target.sandbox_id.is_some() {
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "default dematerialization requires the shared default target",
             ));
         }
         let _guard = self.target_gate.lock().await;
         let Some(current) = self.read_physical_target(&target)? else {
-            return Err(hand_error(
-                HandErrorCode::SandboxNotMaterialized,
+            return Err(environment_error(
+                EnvironmentErrorCode::SandboxNotMaterialized,
                 false,
                 "the local default target was never materialized",
             ));
@@ -2529,7 +2530,7 @@ impl SessionPreparationPort for LocalHand {
         self.status_for(target, &terminal)
     }
 
-    async fn purge_tree(&self, root_id: &str) -> HandResult<()> {
+    async fn purge_tree(&self, root_id: &str) -> EnvironmentResult<()> {
         let mut executions = self
             .sandbox_executions
             .lock()
@@ -2554,7 +2555,7 @@ impl SessionPreparationPort for LocalHand {
             match std::fs::remove_dir_all(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(local_io_error("purge local Hand tree", error)),
+                Err(error) => return Err(local_io_error("purge local Environment tree", error)),
             }
         }
         Ok(())
@@ -2562,13 +2563,13 @@ impl SessionPreparationPort for LocalHand {
 }
 
 #[async_trait]
-impl SandboxControlPort for LocalHand {
-    async fn create(&self, request: CreateSandboxRequest) -> HandResult<SandboxStatus> {
-        if request.target.kind != brain_protocol::hand::TargetKind::Additional
+impl SandboxControlPort for LocalEnvironment {
+    async fn create(&self, request: CreateSandboxRequest) -> EnvironmentResult<SandboxStatus> {
+        if request.target.kind != brain_protocol::environment::TargetKind::Additional
             || request.target.sandbox_id.is_none()
         {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "additional sandbox creation requires an additional target and sandbox_id",
             ));
@@ -2578,12 +2579,12 @@ impl SandboxControlPort for LocalHand {
             .map(|(status, _)| status)
     }
 
-    async fn inspect(&self, target: SandboxTarget) -> HandResult<SandboxStatus> {
-        if target.kind != brain_protocol::hand::TargetKind::Additional
+    async fn inspect(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus> {
+        if target.kind != brain_protocol::environment::TargetKind::Additional
             || target.sandbox_id.is_none()
         {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "additional sandbox inspection requires an additional target and sandbox_id",
             ));
@@ -2591,21 +2592,21 @@ impl SandboxControlPort for LocalHand {
         <Self as SandboxFilesPort>::status(self, target).await
     }
 
-    async fn execute(&self, request: SandboxExecutionRequest) -> HandResult<SubmitReceipt> {
+    async fn execute(&self, request: SandboxExecutionRequest) -> EnvironmentResult<SubmitReceipt> {
         if brain_protocol::contract::sandbox_execution_request_digest(&request)
             != request.request_digest
         {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox execution request digest is invalid",
             ));
         }
-        if request.target.kind != brain_protocol::hand::TargetKind::Additional
+        if request.target.kind != brain_protocol::environment::TargetKind::Additional
             || request.target.sandbox_id.is_none()
         {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox execution requires an additional target and sandbox_id",
             ));
@@ -2613,8 +2614,8 @@ impl SandboxControlPort for LocalHand {
         if request.resources.max_output_bytes.get() as usize
             > brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES
         {
-            return Err(hand_error(
-                HandErrorCode::ResourceExhausted,
+            return Err(environment_error(
+                EnvironmentErrorCode::ResourceExhausted,
                 false,
                 "sandbox execution output ceiling exceeds the Brain terminal projection",
             ));
@@ -2632,8 +2633,8 @@ impl SandboxControlPort for LocalHand {
             "sandbox execution request",
         )? {
             if serde_jcs::to_vec(&stored.request).ok() != serde_jcs::to_vec(&request).ok() {
-                return Err(hand_error(
-                    HandErrorCode::OperationConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::OperationConflict,
                     false,
                     "sandbox execution_id is already sealed to a different request",
                 ));
@@ -2647,8 +2648,8 @@ impl SandboxControlPort for LocalHand {
                 let observation = Self::durable_sandbox_observation(&stored, terminal)?;
                 return Self::sandbox_receipt(stored.operation, observation, true);
             }
-            return Err(hand_error(
-                HandErrorCode::OperationUnknown,
+            return Err(environment_error(
+                EnvironmentErrorCode::OperationUnknown,
                 false,
                 "local Brain restarted after sandbox dispatch; the effect will not be repeated",
             ));
@@ -2657,27 +2658,27 @@ impl SandboxControlPort for LocalHand {
         let status = self.inspect(target.clone()).await?;
         if !matches!(
             status.state,
-            brain_protocol::hand::SandboxState::Running
-                | brain_protocol::hand::SandboxState::Suspended
+            brain_protocol::environment::SandboxState::Running
+                | brain_protocol::environment::SandboxState::Suspended
         ) || status.generation.as_ref().map(|value| value.as_str())
             != Some(request.expected_generation.as_str())
         {
-            return Err(hand_error(
-                HandErrorCode::GenerationConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::GenerationConflict,
                 false,
                 "sandbox execution targets a stale or non-running generation",
             ));
         }
         let target_ref = status.target_ref.clone().ok_or_else(|| {
-            hand_error(
-                HandErrorCode::SandboxGone,
+            environment_error(
+                EnvironmentErrorCode::SandboxGone,
                 false,
                 "live local sandbox has no target reference",
             )
         })?;
         let expires_at_ms = status.expires_at_ms.ok_or_else(|| {
-            hand_error(
-                HandErrorCode::SandboxGone,
+            environment_error(
+                EnvironmentErrorCode::SandboxGone,
                 false,
                 "live local sandbox has no hard expiry",
             )
@@ -2688,12 +2689,12 @@ impl SandboxControlPort for LocalHand {
         let cwd = match request.input.cwd.as_ref() {
             Some(cwd) if !cwd.is_empty() => workspace
                 .resolve(cwd.as_str())
-                .map_err(brain_error_to_hand)?,
+                .map_err(brain_error_to_environment)?,
             _ => workspace.root.clone(),
         };
         if !cwd.is_dir() {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox execution cwd is not a directory",
             ));
@@ -2703,8 +2704,8 @@ impl SandboxControlPort for LocalHand {
             .clone()
             .try_acquire_owned()
             .map_err(|_| {
-                hand_error(
-                    HandErrorCode::ResourceExhausted,
+                environment_error(
+                    EnvironmentErrorCode::ResourceExhausted,
                     true,
                     "local sandbox execution capacity is exhausted",
                 )
@@ -2755,8 +2756,8 @@ impl SandboxControlPort for LocalHand {
             Ok(child) => child,
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&execution_dir);
-                return Err(hand_error(
-                    HandErrorCode::TemporarilyUnavailable,
+                return Err(environment_error(
+                    EnvironmentErrorCode::TemporarilyUnavailable,
                     true,
                     &format!("could not spawn local sandbox bash: {error}"),
                 ));
@@ -2850,12 +2851,12 @@ impl SandboxControlPort for LocalHand {
         Self::sandbox_receipt(operation, observation, false)
     }
 
-    async fn write_stdin(&self, request: WriteStdinRequest) -> HandResult<WriteStdinReceipt> {
+    async fn write_stdin(&self, request: WriteStdinRequest) -> EnvironmentResult<WriteStdinReceipt> {
         if brain_protocol::contract::write_stdin_request_digest(&request) != request.request_digest
             || request.text.len() > 4_096
         {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox stdin request or digest is invalid",
             ));
@@ -2881,8 +2882,8 @@ impl SandboxControlPort for LocalHand {
             || durable.operation.generation.as_str() != request.expected_generation.as_str()
             || durable.operation.operation_id.as_str() != execution_id
         {
-            return Err(hand_error(
-                HandErrorCode::GenerationConflict,
+            return Err(environment_error(
+                EnvironmentErrorCode::GenerationConflict,
                 false,
                 "sandbox stdin targets a different execution or generation",
             ));
@@ -2899,8 +2900,8 @@ impl SandboxControlPort for LocalHand {
             if identity.kind != "stdin"
                 || identity.request_digest != request.request_digest.as_str()
             {
-                return Err(hand_error(
-                    HandErrorCode::OperationConflict,
+                return Err(environment_error(
+                    EnvironmentErrorCode::OperationConflict,
                     false,
                     "sandbox stdin operation_id is sealed to a different request",
                 ));
@@ -2908,8 +2909,8 @@ impl SandboxControlPort for LocalHand {
             let result =
                 read_json_if_exists::<DurableStdinEffect>(&result_path, "sandbox stdin result")?
                     .ok_or_else(|| {
-                        hand_error(
-                            HandErrorCode::OperationUnknown,
+                        environment_error(
+                            EnvironmentErrorCode::OperationUnknown,
                             false,
                             "sandbox stdin delivery is ambiguous and will not be repeated",
                         )
@@ -2960,8 +2961,8 @@ impl SandboxControlPort for LocalHand {
                     "observation": observation,
                 }));
             }
-            return Err(hand_error(
-                HandErrorCode::OperationUnknown,
+            return Err(environment_error(
+                EnvironmentErrorCode::OperationUnknown,
                 false,
                 "interactive sandbox execution is no longer live",
             ));
@@ -2970,23 +2971,23 @@ impl SandboxControlPort for LocalHand {
         if accepted {
             let mut stdin = live.stdin.lock().await;
             let pipe = stdin.as_mut().ok_or_else(|| {
-                hand_error(
-                    HandErrorCode::OperationUnknown,
+                environment_error(
+                    EnvironmentErrorCode::OperationUnknown,
                     false,
                     "interactive sandbox stdin is already closed",
                 )
             })?;
             if !request.text.is_empty() {
                 pipe.write_all(request.text.as_bytes()).await.map_err(|_| {
-                    hand_error(
-                        HandErrorCode::OperationUnknown,
+                    environment_error(
+                        EnvironmentErrorCode::OperationUnknown,
                         false,
                         "sandbox stdin delivery became ambiguous",
                     )
                 })?;
                 pipe.flush().await.map_err(|_| {
-                    hand_error(
-                        HandErrorCode::OperationUnknown,
+                    environment_error(
+                        EnvironmentErrorCode::OperationUnknown,
                         false,
                         "sandbox stdin delivery became ambiguous",
                     )
@@ -3010,20 +3011,20 @@ impl SandboxControlPort for LocalHand {
         }))
     }
 
-    async fn terminate(&self, target: SandboxTarget) -> HandResult<SandboxStatus> {
-        if target.kind != brain_protocol::hand::TargetKind::Additional
+    async fn terminate(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus> {
+        if target.kind != brain_protocol::environment::TargetKind::Additional
             || target.sandbox_id.is_none()
         {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "additional sandbox termination requires an additional target and sandbox_id",
             ));
         }
         let _guard = self.target_gate.lock().await;
         let Some(current) = self.read_physical_target(&target)? else {
-            return Err(hand_error(
-                HandErrorCode::SandboxNotMaterialized,
+            return Err(environment_error(
+                EnvironmentErrorCode::SandboxNotMaterialized,
                 false,
                 "the local additional sandbox was never materialized",
             ));
@@ -3043,8 +3044,8 @@ impl SandboxControlPort for LocalHand {
 }
 
 #[async_trait]
-impl SandboxFilesPort for LocalHand {
-    async fn status(&self, target: SandboxTarget) -> HandResult<SandboxStatus> {
+impl SandboxFilesPort for LocalEnvironment {
+    async fn status(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus> {
         let _guard = self.target_gate.lock().await;
         let Some(mut current) = self.read_physical_target(&target)? else {
             return typed(json!({
@@ -3063,18 +3064,18 @@ impl SandboxFilesPort for LocalHand {
         self.status_for(target, &current)
     }
 
-    async fn list(&self, request: SandboxFileListRequest) -> HandResult<SandboxFileList> {
+    async fn list(&self, request: SandboxFileListRequest) -> EnvironmentResult<SandboxFileList> {
         let workspace = self
             .live_workspace(&request.target, &request.expected_generation)
             .await?;
         let base = workspace
             .resolve(&request.path)
-            .map_err(brain_error_to_hand)?;
+            .map_err(brain_error_to_environment)?;
         let mut entries = std::fs::read_dir(&base)
             .map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
-                    hand_error(
-                        HandErrorCode::FileNotFound,
+                    environment_error(
+                        EnvironmentErrorCode::FileNotFound,
                         false,
                         "sandbox directory does not exist",
                     )
@@ -3087,7 +3088,7 @@ impl SandboxFilesPort for LocalHand {
                 let relative = workspace.rel_of(&entry.path());
                 Self::file_entry(&workspace, &relative)
             })
-            .collect::<HandResult<Vec<_>>>()?;
+            .collect::<EnvironmentResult<Vec<_>>>()?;
         entries.sort_by(|left, right| left.path.as_str().cmp(right.path.as_str()));
         if let Some(cursor) = request.cursor.as_deref() {
             entries.retain(|entry| entry.path.as_str() > cursor);
@@ -3104,35 +3105,35 @@ impl SandboxFilesPort for LocalHand {
     async fn stat(
         &self,
         request: SandboxFileRequest,
-    ) -> HandResult<brain_protocol::hand::FileEntry> {
+    ) -> EnvironmentResult<brain_protocol::environment::FileEntry> {
         let workspace = self
             .live_workspace(&request.target, request.expected_generation.as_str())
             .await?;
         Self::file_entry(&workspace, request.path.as_str())
     }
 
-    async fn read(&self, request: SandboxFileRequest) -> HandResult<SandboxFileContent> {
+    async fn read(&self, request: SandboxFileRequest) -> EnvironmentResult<SandboxFileContent> {
         let workspace = self
             .live_workspace(&request.target, request.expected_generation.as_str())
             .await?;
         let entry = Self::file_entry(&workspace, request.path.as_str())?;
-        if entry.kind != brain_protocol::hand::FileEntryKind::File {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+        if entry.kind != brain_protocol::environment::FileEntryKind::File {
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox read requires a regular file",
             ));
         }
         if entry.bytes > 1024 * 1024 {
-            return Err(hand_error(
-                HandErrorCode::ResourceExhausted,
+            return Err(environment_error(
+                EnvironmentErrorCode::ResourceExhausted,
                 false,
                 "sandbox inline read exceeds 1 MiB",
             ));
         }
         let path = workspace
             .resolve(request.path.as_str())
-            .map_err(brain_error_to_hand)?;
+            .map_err(brain_error_to_environment)?;
         let bytes =
             std::fs::read(path).map_err(|error| local_io_error("read sandbox file", error))?;
         Ok(SandboxFileContent {
@@ -3141,12 +3142,12 @@ impl SandboxFilesPort for LocalHand {
         })
     }
 
-    async fn write(&self, request: SandboxFileWriteRequest) -> HandResult<SandboxFileWriteResult> {
+    async fn write(&self, request: SandboxFileWriteRequest) -> EnvironmentResult<SandboxFileWriteResult> {
         if brain_protocol::contract::sandbox_file_write_request_digest(&request)
             != request.request_digest
         {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox file write request digest is invalid",
             ));
@@ -3165,8 +3166,8 @@ impl SandboxFilesPort for LocalHand {
                 "sandbox file write result",
             )?
             .ok_or_else(|| {
-                hand_error(
-                    HandErrorCode::OperationUnknown,
+                environment_error(
+                    EnvironmentErrorCode::OperationUnknown,
                     false,
                     "sandbox file write delivery is ambiguous and will not be repeated",
                 )
@@ -3179,10 +3180,10 @@ impl SandboxFilesPort for LocalHand {
             .await?;
         let destination = workspace
             .resolve(request.path.as_str())
-            .map_err(brain_error_to_hand)?;
+            .map_err(brain_error_to_environment)?;
         if destination.exists() && !request.overwrite {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox destination already exists",
             ));
@@ -3192,15 +3193,15 @@ impl SandboxFilesPort for LocalHand {
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(content_base64.as_bytes())
                     .map_err(|_| {
-                        hand_error(
-                            HandErrorCode::InvalidRequest,
+                        environment_error(
+                            EnvironmentErrorCode::InvalidRequest,
                             false,
                             "sandbox inline content is not valid base64",
                         )
                     })?;
                 if bytes.len() > 1024 * 1024 {
-                    return Err(hand_error(
-                        HandErrorCode::ResourceExhausted,
+                    return Err(environment_error(
+                        EnvironmentErrorCode::ResourceExhausted,
                         false,
                         "sandbox inline write exceeds 1 MiB",
                     ));
@@ -3216,8 +3217,8 @@ impl SandboxFilesPort for LocalHand {
                     || hex::encode(sha2::Sha256::digest(&bytes)) != object.sha256.as_str()
                     || object.object_id != fetch.object_id
                 {
-                    return Err(hand_error(
-                        HandErrorCode::BindingConflict,
+                    return Err(environment_error(
+                        EnvironmentErrorCode::BindingConflict,
                         false,
                         "sandbox object bytes disagree with their sealed authority",
                     ));
@@ -3246,19 +3247,19 @@ impl SandboxFilesPort for LocalHand {
         Ok(result)
     }
 
-    async fn find(&self, request: SandboxSearchRequest) -> HandResult<SandboxFileList> {
+    async fn find(&self, request: SandboxSearchRequest) -> EnvironmentResult<SandboxFileList> {
         let workspace = self
             .live_workspace(&request.target, &request.expected_generation)
             .await?;
         let base = workspace
             .resolve(&request.path)
-            .map_err(brain_error_to_hand)?;
+            .map_err(brain_error_to_environment)?;
         let matcher = globset::GlobBuilder::new(&request.expression)
             .literal_separator(false)
             .build()
             .map_err(|_| {
-                hand_error(
-                    HandErrorCode::InvalidRequest,
+                environment_error(
+                    EnvironmentErrorCode::InvalidRequest,
                     false,
                     "sandbox find expression is not a valid glob",
                 )
@@ -3278,16 +3279,16 @@ impl SandboxFilesPort for LocalHand {
         page_file_entries(entries, request.cursor.as_deref(), request.limit)
     }
 
-    async fn grep(&self, request: SandboxSearchRequest) -> HandResult<SandboxFileList> {
+    async fn grep(&self, request: SandboxSearchRequest) -> EnvironmentResult<SandboxFileList> {
         let workspace = self
             .live_workspace(&request.target, &request.expected_generation)
             .await?;
         let base = workspace
             .resolve(&request.path)
-            .map_err(brain_error_to_hand)?;
+            .map_err(brain_error_to_environment)?;
         let expression = regex::Regex::new(&request.expression).map_err(|_| {
-            hand_error(
-                HandErrorCode::InvalidRequest,
+            environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox grep expression is not a valid regular expression",
             )
@@ -3317,11 +3318,11 @@ impl SandboxFilesPort for LocalHand {
         page_file_entries(entries, request.cursor.as_deref(), request.limit)
     }
 
-    async fn transfer(&self, request: SandboxCopyRequest) -> HandResult<SandboxCopyResult> {
+    async fn transfer(&self, request: SandboxCopyRequest) -> EnvironmentResult<SandboxCopyResult> {
         if brain_protocol::contract::sandbox_copy_request_digest(&request) != request.request_digest
         {
-            return Err(hand_error(
-                HandErrorCode::InvalidRequest,
+            return Err(environment_error(
+                EnvironmentErrorCode::InvalidRequest,
                 false,
                 "sandbox copy request digest is invalid",
             ));
@@ -3338,8 +3339,8 @@ impl SandboxFilesPort for LocalHand {
             let mut result =
                 read_json_if_exists::<SandboxCopyResult>(&result_path, "sandbox copy result")?
                     .ok_or_else(|| {
-                        hand_error(
-                            HandErrorCode::OperationUnknown,
+                        environment_error(
+                            EnvironmentErrorCode::OperationUnknown,
                             false,
                             "sandbox copy delivery is ambiguous and will not be repeated",
                         )
@@ -3352,12 +3353,12 @@ impl SandboxFilesPort for LocalHand {
             .await?;
         let sandbox_path = workspace
             .resolve(request.path.as_str())
-            .map_err(brain_error_to_hand)?;
+            .map_err(brain_error_to_environment)?;
         let (file, object) = match request.direction {
             SandboxCopyRequestDirection::Import => {
                 let object = request.object.as_ref().ok_or_else(|| {
-                    hand_error(
-                        HandErrorCode::InvalidRequest,
+                    environment_error(
+                        EnvironmentErrorCode::InvalidRequest,
                         false,
                         "sandbox import requires an object identity",
                     )
@@ -3370,15 +3371,15 @@ impl SandboxFilesPort for LocalHand {
                     || object.object_id != request.transfer.object_id
                     || hex::encode(sha2::Sha256::digest(&bytes)) != object.sha256.as_str()
                 {
-                    return Err(hand_error(
-                        HandErrorCode::BindingConflict,
+                    return Err(environment_error(
+                        EnvironmentErrorCode::BindingConflict,
                         false,
                         "sandbox import bytes disagree with their sealed object",
                     ));
                 }
                 if sandbox_path.exists() && !request.overwrite {
-                    return Err(hand_error(
-                        HandErrorCode::InvalidRequest,
+                    return Err(environment_error(
+                        EnvironmentErrorCode::InvalidRequest,
                         false,
                         "sandbox import destination already exists",
                     ));
@@ -3394,8 +3395,8 @@ impl SandboxFilesPort for LocalHand {
             }
             SandboxCopyRequestDirection::Export => {
                 if request.object.is_some() {
-                    return Err(hand_error(
-                        HandErrorCode::InvalidRequest,
+                    return Err(environment_error(
+                        EnvironmentErrorCode::InvalidRequest,
                         false,
                         "sandbox export must not carry a source object identity",
                     ));
@@ -3403,8 +3404,8 @@ impl SandboxFilesPort for LocalHand {
                 let destination = Self::transfer_file_path(&request.transfer, "PUT")?;
                 let bytes = std::fs::read(&sandbox_path).map_err(|error| {
                     if error.kind() == std::io::ErrorKind::NotFound {
-                        hand_error(
-                            HandErrorCode::FileNotFound,
+                        environment_error(
+                            EnvironmentErrorCode::FileNotFound,
                             false,
                             "sandbox export source does not exist",
                         )
@@ -3413,8 +3414,8 @@ impl SandboxFilesPort for LocalHand {
                     }
                 })?;
                 if bytes.len() as u64 > request.transfer.max_bytes.get() {
-                    return Err(hand_error(
-                        HandErrorCode::ResourceExhausted,
+                    return Err(environment_error(
+                        EnvironmentErrorCode::ResourceExhausted,
                         false,
                         "sandbox export exceeds its sealed byte authority",
                     ));
@@ -3425,7 +3426,7 @@ impl SandboxFilesPort for LocalHand {
                 }
                 std::fs::write(&destination, &bytes)
                     .map_err(|error| local_io_error("upload sandbox export", error))?;
-                let object: brain_protocol::hand::ObjectReference = typed(json!({
+                let object: brain_protocol::environment::ObjectReference = typed(json!({
                     "object_id": request.transfer.object_id,
                     "bytes": bytes.len(),
                     "sha256": hex::encode(sha2::Sha256::digest(&bytes)),
@@ -3449,10 +3450,10 @@ impl SandboxFilesPort for LocalHand {
 }
 
 fn page_file_entries(
-    mut entries: Vec<brain_protocol::hand::FileEntry>,
+    mut entries: Vec<brain_protocol::environment::FileEntry>,
     cursor: Option<&str>,
     limit: u32,
-) -> HandResult<SandboxFileList> {
+) -> EnvironmentResult<SandboxFileList> {
     entries.sort_by(|left, right| left.path.as_str().cmp(right.path.as_str()));
     if let Some(cursor) = cursor {
         entries.retain(|entry| entry.path.as_str() > cursor);
@@ -3466,41 +3467,41 @@ fn page_file_entries(
     })
 }
 
-fn typed<T: DeserializeOwned>(value: Value) -> HandResult<T> {
+fn typed<T: DeserializeOwned>(value: Value) -> EnvironmentResult<T> {
     serde_json::from_value(value).map_err(|_| {
-        hand_error(
-            HandErrorCode::InvalidRequest,
+        environment_error(
+            EnvironmentErrorCode::InvalidRequest,
             false,
-            "local Hand could not construct a valid contract value",
+            "local Environment could not construct a valid contract value",
         )
     })
 }
 
-fn hand_error(code: HandErrorCode, retryable: bool, message: &str) -> HandError {
+fn environment_error(code: EnvironmentErrorCode, retryable: bool, message: &str) -> EnvironmentError {
     serde_json::from_value(json!({
         "code": code,
         "details": {},
         "message": message,
         "retryable": retryable,
     }))
-    .expect("static local Hand errors satisfy the contract")
+    .expect("static local Environment errors satisfy the contract")
 }
 
-fn brain_error_to_hand(error: BrainError) -> HandError {
-    tracing::warn!(error = %error, "local Hand adapter failure");
-    hand_error(
-        HandErrorCode::TemporarilyUnavailable,
+fn brain_error_to_environment(error: BrainError) -> EnvironmentError {
+    tracing::warn!(error = %error, "local Environment adapter failure");
+    environment_error(
+        EnvironmentErrorCode::TemporarilyUnavailable,
         true,
-        "local Hand storage or execution is temporarily unavailable",
+        "local Environment storage or execution is temporarily unavailable",
     )
 }
 
-fn local_io_error(operation: &str, error: std::io::Error) -> HandError {
-    tracing::warn!(operation, error = %error, "local Hand filesystem failure");
-    hand_error(
-        HandErrorCode::TemporarilyUnavailable,
+fn local_io_error(operation: &str, error: std::io::Error) -> EnvironmentError {
+    tracing::warn!(operation, error = %error, "local Environment filesystem failure");
+    environment_error(
+        EnvironmentErrorCode::TemporarilyUnavailable,
         true,
-        "local Hand filesystem is temporarily unavailable",
+        "local Environment filesystem is temporarily unavailable",
     )
 }
 
@@ -3508,11 +3509,11 @@ fn hash_component(value: &str) -> String {
     hex::encode(sha2::Sha256::digest(value.as_bytes()))
 }
 
-fn read_json<T: DeserializeOwned>(path: &Path, label: &str) -> HandResult<T> {
+fn read_json<T: DeserializeOwned>(path: &Path, label: &str) -> EnvironmentResult<T> {
     let bytes = std::fs::read(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            hand_error(
-                HandErrorCode::OperationUnknown,
+            environment_error(
+                EnvironmentErrorCode::OperationUnknown,
                 false,
                 "the local operation is unknown",
             )
@@ -3521,21 +3522,21 @@ fn read_json<T: DeserializeOwned>(path: &Path, label: &str) -> HandResult<T> {
         }
     })?;
     serde_json::from_slice(&bytes).map_err(|_| {
-        hand_error(
-            HandErrorCode::TemporarilyUnavailable,
+        environment_error(
+            EnvironmentErrorCode::TemporarilyUnavailable,
             false,
-            "local Hand durable state is invalid",
+            "local Environment durable state is invalid",
         )
     })
 }
 
-fn read_json_if_exists<T: DeserializeOwned>(path: &Path, label: &str) -> HandResult<Option<T>> {
+fn read_json_if_exists<T: DeserializeOwned>(path: &Path, label: &str) -> EnvironmentResult<Option<T>> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|_| {
-            hand_error(
-                HandErrorCode::TemporarilyUnavailable,
+            environment_error(
+                EnvironmentErrorCode::TemporarilyUnavailable,
                 false,
-                "local Hand durable state is invalid",
+                "local Environment durable state is invalid",
             )
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -3543,7 +3544,7 @@ fn read_json_if_exists<T: DeserializeOwned>(path: &Path, label: &str) -> HandRes
     }
 }
 
-fn read_bytes_if_exists(path: &Path, label: &str) -> HandResult<Option<Vec<u8>>> {
+fn read_bytes_if_exists(path: &Path, label: &str) -> EnvironmentResult<Option<Vec<u8>>> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -3551,18 +3552,18 @@ fn read_bytes_if_exists(path: &Path, label: &str) -> HandResult<Option<Vec<u8>>>
     }
 }
 
-fn write_new_json<T: Serialize>(path: &Path, value: &T, label: &str) -> HandResult<()> {
+fn write_new_json<T: Serialize>(path: &Path, value: &T, label: &str) -> EnvironmentResult<()> {
     let bytes = serde_jcs::to_vec(value).map_err(|_| {
-        hand_error(
-            HandErrorCode::InvalidRequest,
+        environment_error(
+            EnvironmentErrorCode::InvalidRequest,
             false,
-            "local Hand durable value is not canonical JSON",
+            "local Environment durable value is not canonical JSON",
         )
     })?;
     write_new_bytes(path, &bytes, label)
 }
 
-fn write_new_bytes(path: &Path, bytes: &[u8], label: &str) -> HandResult<()> {
+fn write_new_bytes(path: &Path, bytes: &[u8], label: &str) -> EnvironmentResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| local_io_error(label, error))?;
     }

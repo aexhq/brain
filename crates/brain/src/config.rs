@@ -79,12 +79,15 @@ pub enum ToolRoute {
     /// A deliberately selected Brain engine capability. The model-visible name is
     /// unrelated to this stable capability identifier.
     Intrinsic(String),
-    /// Routed through the typed Hand operation/receipt seam using this exact execution seal.
-    Hand(HandToolSeal),
+    /// Routed through the bound environment operation/receipt seam using this exact execution seal.
+    Environment(EnvironmentToolSeal),
     /// A host-owned trusted executor registered under a stable capability.
     Server(ServerToolPolicy),
     /// A customer-app registration routed through the durable CustomerCoordinator seam.
-    Customer { registration: String },
+    Customer {
+        environment: String,
+        registration: String,
+    },
 }
 
 impl Default for ToolRoute {
@@ -94,7 +97,8 @@ impl Default for ToolRoute {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HandToolSeal {
+pub struct EnvironmentToolSeal {
+    pub environment: String,
     pub protocol: i64,
     pub checksum: String,
     pub required_env: Vec<String>,

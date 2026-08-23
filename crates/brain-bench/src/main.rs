@@ -1,5 +1,5 @@
 //! Benchmark gates for Brain. Every number measures the engine, never a model:
-//! the provider is the scripted fake (instant unless paced), the hand is an in-process echo,
+//! the provider is the scripted fake (instant unless paced), the environment is an in-process echo,
 //! the journal is in-memory — and the drive path is the real public HTTP API with SSE, because
 //! that is what production serves.
 //!
@@ -335,7 +335,7 @@ impl Api {
                 },
                 // Brain deliberately has no implicit tools. The benchmark's scripted provider
                 // calls `bash`, so map that model-visible definition to the sealed benchmark
-                // host capability. No legacy Hand adapter participates in this measurement.
+                // host capability. No legacy Environment adapter participates in this measurement.
                 "tools": {"items": [{
                     "definition": {
                         "name": "bash",

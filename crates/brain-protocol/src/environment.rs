@@ -82,15 +82,87 @@ pub struct AcknowledgeTerminalRequest {
 pub struct Acknowledgement {
     pub acknowledged: bool,
 }
-#[doc = "The single current, transport-neutral Brain to Hand receipt contract. The canonical schema digest is the compatibility identity; the wire carries no protocol version."]
+#[doc = "`ArtifactTarget`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"$id\": \"https://github.com/aexhq/brain/contracts/hand/contract.json\","]
-#[doc = "  \"title\": \"BrainHandContract\","]
-#[doc = "  \"description\": \"The single current, transport-neutral Brain to Hand receipt contract. The canonical schema digest is the compatibility identity; the wire carries no protocol version.\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"linux-amd64\","]
+#[doc = "    \"linux-arm64\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ArtifactTarget {
+    #[serde(rename = "linux-amd64")]
+    LinuxAmd64,
+    #[serde(rename = "linux-arm64")]
+    LinuxArm64,
+}
+impl ::std::fmt::Display for ArtifactTarget {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::LinuxAmd64 => f.write_str("linux-amd64"),
+            Self::LinuxArm64 => f.write_str("linux-arm64"),
+        }
+    }
+}
+impl ::std::str::FromStr for ArtifactTarget {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "linux-amd64" => Ok(Self::LinuxAmd64),
+            "linux-arm64" => Ok(Self::LinuxArm64),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ArtifactTarget {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ArtifactTarget {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ArtifactTarget {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "The single current, transport-neutral Brain to Environment receipt contract. The canonical schema digest is the compatibility identity; the wire carries no protocol version."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"$id\": \"https://github.com/aexhq/brain/contracts/environment/contract.json\","]
+#[doc = "  \"title\": \"BrainEnvironmentContract\","]
+#[doc = "  \"description\": \"The single current, transport-neutral Brain to Environment receipt contract. The canonical schema digest is the compatibility identity; the wire carries no protocol version.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"contract\""]
@@ -121,10 +193,10 @@ pub struct Acknowledgement {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct BrainHandContract {
-    pub contract: BrainHandContractContract,
+pub struct BrainEnvironmentContract {
+    pub contract: BrainEnvironmentContractContract,
 }
-#[doc = "`BrainHandContractContract`"]
+#[doc = "`BrainEnvironmentContractContract`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -151,7 +223,7 @@ pub struct BrainHandContract {
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
-pub struct BrainHandContractContract {
+pub struct BrainEnvironmentContractContract {
     pub methods: ::serde_json::Value,
 }
 #[doc = "`BundleDescriptor`"]
@@ -165,9 +237,11 @@ pub struct BrainHandContractContract {
 #[doc = "    \"bundle_digest\","]
 #[doc = "    \"bytes\","]
 #[doc = "    \"contract_digest\","]
+#[doc = "    \"environment_name\","]
+#[doc = "    \"execute_path\","]
 #[doc = "    \"object\","]
 #[doc = "    \"required_env\","]
-#[doc = "    \"runtime\","]
+#[doc = "    \"target\","]
 #[doc = "    \"tool_name\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
@@ -188,6 +262,14 @@ pub struct BrainHandContractContract {
 #[doc = "      ],"]
 #[doc = "      \"maxLength\": 4096"]
 #[doc = "    },"]
+#[doc = "    \"environment_name\": {"]
+#[doc = "      \"$ref\": \"#/definitions/Identifier\""]
+#[doc = "    },"]
+#[doc = "    \"execute_path\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 4096,"]
+#[doc = "      \"pattern\": \"^/[^\\\\u0000]+$\""]
+#[doc = "    },"]
 #[doc = "    \"object\": {"]
 #[doc = "      \"$ref\": \"#/definitions/ObjectReference\""]
 #[doc = "    },"]
@@ -199,8 +281,16 @@ pub struct BrainHandContractContract {
 #[doc = "      \"maxItems\": 128,"]
 #[doc = "      \"uniqueItems\": true"]
 #[doc = "    },"]
-#[doc = "    \"runtime\": {"]
-#[doc = "      \"$ref\": \"#/definitions/BundleRuntime\""]
+#[doc = "    \"setup_path\": {"]
+#[doc = "      \"type\": ["]
+#[doc = "        \"string\","]
+#[doc = "        \"null\""]
+#[doc = "      ],"]
+#[doc = "      \"maxLength\": 4096,"]
+#[doc = "      \"pattern\": \"^/[^\\\\u0000]+$\""]
+#[doc = "    },"]
+#[doc = "    \"target\": {"]
+#[doc = "      \"$ref\": \"#/definitions/ArtifactTarget\""]
 #[doc = "    },"]
 #[doc = "    \"tool_name\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Identifier\""]
@@ -218,9 +308,13 @@ pub struct BundleDescriptor {
     pub contract_digest: Digest,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub description: ::std::option::Option<BundleDescriptorDescription>,
+    pub environment_name: Identifier,
+    pub execute_path: BundleDescriptorExecutePath,
     pub object: ObjectReference,
     pub required_env: Vec<Identifier>,
-    pub runtime: BundleRuntime,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub setup_path: ::std::option::Option<BundleDescriptorSetupPath>,
+    pub target: ArtifactTarget,
     pub tool_name: Identifier,
 }
 #[doc = "`BundleDescriptorDescription`"]
@@ -280,6 +374,154 @@ impl ::std::convert::TryFrom<::std::string::String> for BundleDescriptorDescript
     }
 }
 impl<'de> ::serde::Deserialize<'de> for BundleDescriptorDescription {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`BundleDescriptorExecutePath`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 4096,"]
+#[doc = "  \"pattern\": \"^/[^\\\\u0000]+$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct BundleDescriptorExecutePath(::std::string::String);
+impl ::std::ops::Deref for BundleDescriptorExecutePath {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<BundleDescriptorExecutePath> for ::std::string::String {
+    fn from(value: BundleDescriptorExecutePath) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for BundleDescriptorExecutePath {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 4096usize {
+            return Err("longer than 4096 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^/[^\\u0000]+$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^/[^\\u0000]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for BundleDescriptorExecutePath {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for BundleDescriptorExecutePath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for BundleDescriptorExecutePath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for BundleDescriptorExecutePath {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`BundleDescriptorSetupPath`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 4096,"]
+#[doc = "  \"pattern\": \"^/[^\\\\u0000]+$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct BundleDescriptorSetupPath(::std::string::String);
+impl ::std::ops::Deref for BundleDescriptorSetupPath {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<BundleDescriptorSetupPath> for ::std::string::String {
+    fn from(value: BundleDescriptorSetupPath) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for BundleDescriptorSetupPath {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 4096usize {
+            return Err("longer than 4096 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^/[^\\u0000]+$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^/[^\\u0000]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for BundleDescriptorSetupPath {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for BundleDescriptorSetupPath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for BundleDescriptorSetupPath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for BundleDescriptorSetupPath {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -483,73 +725,6 @@ impl<'de> ::serde::Deserialize<'de> for BundleFetchUrl {
             .map_err(|e: self::error::ConversionError| {
                 <D::Error as ::serde::de::Error>::custom(e.to_string())
             })
-    }
-}
-#[doc = "`BundleRuntime`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"enum\": ["]
-#[doc = "    \"node22\""]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(
-    :: serde :: Deserialize,
-    :: serde :: Serialize,
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-)]
-pub enum BundleRuntime {
-    #[serde(rename = "node22")]
-    Node22,
-}
-impl ::std::fmt::Display for BundleRuntime {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        match *self {
-            Self::Node22 => f.write_str("node22"),
-        }
-    }
-}
-impl ::std::str::FromStr for BundleRuntime {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        match value {
-            "node22" => Ok(Self::Node22),
-            _ => Err("invalid value".into()),
-        }
-    }
-}
-impl ::std::convert::TryFrom<&str> for BundleRuntime {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for BundleRuntime {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for BundleRuntime {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
     }
 }
 #[doc = "`CancelRequest`"]
@@ -803,7 +978,7 @@ impl<'de> ::serde::Deserialize<'de> for Digest {
             })
     }
 }
-#[doc = "`ExecutionRealm`"]
+#[doc = "`EnvironmentCapability`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
@@ -811,9 +986,10 @@ impl<'de> ::serde::Deserialize<'de> for Digest {
 #[doc = "{"]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"enum\": ["]
-#[doc = "    \"aex_managed\","]
-#[doc = "    \"customer_app\","]
-#[doc = "    \"engine\""]
+#[doc = "    \"execution\","]
+#[doc = "    \"session_preparation\","]
+#[doc = "    \"sandbox_files\","]
+#[doc = "    \"sandbox_control\""]
 #[doc = "  ]"]
 #[doc = "}"]
 #[doc = r" ```"]
@@ -830,41 +1006,45 @@ impl<'de> ::serde::Deserialize<'de> for Digest {
     PartialEq,
     PartialOrd,
 )]
-pub enum ExecutionRealm {
-    #[serde(rename = "aex_managed")]
-    AexManaged,
-    #[serde(rename = "customer_app")]
-    CustomerApp,
-    #[serde(rename = "engine")]
-    Engine,
+pub enum EnvironmentCapability {
+    #[serde(rename = "execution")]
+    Execution,
+    #[serde(rename = "session_preparation")]
+    SessionPreparation,
+    #[serde(rename = "sandbox_files")]
+    SandboxFiles,
+    #[serde(rename = "sandbox_control")]
+    SandboxControl,
 }
-impl ::std::fmt::Display for ExecutionRealm {
+impl ::std::fmt::Display for EnvironmentCapability {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         match *self {
-            Self::AexManaged => f.write_str("aex_managed"),
-            Self::CustomerApp => f.write_str("customer_app"),
-            Self::Engine => f.write_str("engine"),
+            Self::Execution => f.write_str("execution"),
+            Self::SessionPreparation => f.write_str("session_preparation"),
+            Self::SandboxFiles => f.write_str("sandbox_files"),
+            Self::SandboxControl => f.write_str("sandbox_control"),
         }
     }
 }
-impl ::std::str::FromStr for ExecutionRealm {
+impl ::std::str::FromStr for EnvironmentCapability {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         match value {
-            "aex_managed" => Ok(Self::AexManaged),
-            "customer_app" => Ok(Self::CustomerApp),
-            "engine" => Ok(Self::Engine),
+            "execution" => Ok(Self::Execution),
+            "session_preparation" => Ok(Self::SessionPreparation),
+            "sandbox_files" => Ok(Self::SandboxFiles),
+            "sandbox_control" => Ok(Self::SandboxControl),
             _ => Err("invalid value".into()),
         }
     }
 }
-impl ::std::convert::TryFrom<&str> for ExecutionRealm {
+impl ::std::convert::TryFrom<&str> for EnvironmentCapability {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<&::std::string::String> for ExecutionRealm {
+impl ::std::convert::TryFrom<&::std::string::String> for EnvironmentCapability {
     type Error = self::error::ConversionError;
     fn try_from(
         value: &::std::string::String,
@@ -872,12 +1052,243 @@ impl ::std::convert::TryFrom<&::std::string::String> for ExecutionRealm {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<::std::string::String> for ExecutionRealm {
+impl ::std::convert::TryFrom<::std::string::String> for EnvironmentCapability {
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,
     ) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
+    }
+}
+#[doc = "`EnvironmentError`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"code\","]
+#[doc = "    \"message\","]
+#[doc = "    \"retryable\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"code\": {"]
+#[doc = "      \"$ref\": \"#/definitions/EnvironmentErrorCode\""]
+#[doc = "    },"]
+#[doc = "    \"details\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
+#[doc = "    },"]
+#[doc = "    \"message\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 4096,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"retryable\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentError {
+    pub code: EnvironmentErrorCode,
+    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    pub details: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    pub message: EnvironmentErrorMessage,
+    pub retryable: bool,
+}
+#[doc = "`EnvironmentErrorCode`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"binding_conflict\","]
+#[doc = "    \"capability_unavailable\","]
+#[doc = "    \"operation_conflict\","]
+#[doc = "    \"operation_unknown\","]
+#[doc = "    \"sandbox_not_materialized\","]
+#[doc = "    \"sandbox_gone\","]
+#[doc = "    \"file_not_found\","]
+#[doc = "    \"generation_conflict\","]
+#[doc = "    \"invalid_request\","]
+#[doc = "    \"resource_exhausted\","]
+#[doc = "    \"temporarily_unavailable\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum EnvironmentErrorCode {
+    #[serde(rename = "binding_conflict")]
+    BindingConflict,
+    #[serde(rename = "capability_unavailable")]
+    CapabilityUnavailable,
+    #[serde(rename = "operation_conflict")]
+    OperationConflict,
+    #[serde(rename = "operation_unknown")]
+    OperationUnknown,
+    #[serde(rename = "sandbox_not_materialized")]
+    SandboxNotMaterialized,
+    #[serde(rename = "sandbox_gone")]
+    SandboxGone,
+    #[serde(rename = "file_not_found")]
+    FileNotFound,
+    #[serde(rename = "generation_conflict")]
+    GenerationConflict,
+    #[serde(rename = "invalid_request")]
+    InvalidRequest,
+    #[serde(rename = "resource_exhausted")]
+    ResourceExhausted,
+    #[serde(rename = "temporarily_unavailable")]
+    TemporarilyUnavailable,
+}
+impl ::std::fmt::Display for EnvironmentErrorCode {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::BindingConflict => f.write_str("binding_conflict"),
+            Self::CapabilityUnavailable => f.write_str("capability_unavailable"),
+            Self::OperationConflict => f.write_str("operation_conflict"),
+            Self::OperationUnknown => f.write_str("operation_unknown"),
+            Self::SandboxNotMaterialized => f.write_str("sandbox_not_materialized"),
+            Self::SandboxGone => f.write_str("sandbox_gone"),
+            Self::FileNotFound => f.write_str("file_not_found"),
+            Self::GenerationConflict => f.write_str("generation_conflict"),
+            Self::InvalidRequest => f.write_str("invalid_request"),
+            Self::ResourceExhausted => f.write_str("resource_exhausted"),
+            Self::TemporarilyUnavailable => f.write_str("temporarily_unavailable"),
+        }
+    }
+}
+impl ::std::str::FromStr for EnvironmentErrorCode {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "binding_conflict" => Ok(Self::BindingConflict),
+            "capability_unavailable" => Ok(Self::CapabilityUnavailable),
+            "operation_conflict" => Ok(Self::OperationConflict),
+            "operation_unknown" => Ok(Self::OperationUnknown),
+            "sandbox_not_materialized" => Ok(Self::SandboxNotMaterialized),
+            "sandbox_gone" => Ok(Self::SandboxGone),
+            "file_not_found" => Ok(Self::FileNotFound),
+            "generation_conflict" => Ok(Self::GenerationConflict),
+            "invalid_request" => Ok(Self::InvalidRequest),
+            "resource_exhausted" => Ok(Self::ResourceExhausted),
+            "temporarily_unavailable" => Ok(Self::TemporarilyUnavailable),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for EnvironmentErrorCode {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for EnvironmentErrorCode {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for EnvironmentErrorCode {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`EnvironmentErrorMessage`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 4096,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct EnvironmentErrorMessage(::std::string::String);
+impl ::std::ops::Deref for EnvironmentErrorMessage {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<EnvironmentErrorMessage> for ::std::string::String {
+    fn from(value: EnvironmentErrorMessage) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for EnvironmentErrorMessage {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 4096usize {
+            return Err("longer than 4096 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for EnvironmentErrorMessage {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for EnvironmentErrorMessage {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for EnvironmentErrorMessage {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for EnvironmentErrorMessage {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
     }
 }
 #[doc = "`FileEntry`"]
@@ -1078,319 +1489,6 @@ impl ::std::convert::TryFrom<::std::string::String> for FileEntryPath {
     }
 }
 impl<'de> ::serde::Deserialize<'de> for FileEntryPath {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
-#[doc = "`HandCapability`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"enum\": ["]
-#[doc = "    \"execution\","]
-#[doc = "    \"session_preparation\","]
-#[doc = "    \"sandbox_files\","]
-#[doc = "    \"sandbox_control\""]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(
-    :: serde :: Deserialize,
-    :: serde :: Serialize,
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-)]
-pub enum HandCapability {
-    #[serde(rename = "execution")]
-    Execution,
-    #[serde(rename = "session_preparation")]
-    SessionPreparation,
-    #[serde(rename = "sandbox_files")]
-    SandboxFiles,
-    #[serde(rename = "sandbox_control")]
-    SandboxControl,
-}
-impl ::std::fmt::Display for HandCapability {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        match *self {
-            Self::Execution => f.write_str("execution"),
-            Self::SessionPreparation => f.write_str("session_preparation"),
-            Self::SandboxFiles => f.write_str("sandbox_files"),
-            Self::SandboxControl => f.write_str("sandbox_control"),
-        }
-    }
-}
-impl ::std::str::FromStr for HandCapability {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        match value {
-            "execution" => Ok(Self::Execution),
-            "session_preparation" => Ok(Self::SessionPreparation),
-            "sandbox_files" => Ok(Self::SandboxFiles),
-            "sandbox_control" => Ok(Self::SandboxControl),
-            _ => Err("invalid value".into()),
-        }
-    }
-}
-impl ::std::convert::TryFrom<&str> for HandCapability {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for HandCapability {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for HandCapability {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-#[doc = "`HandError`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"object\","]
-#[doc = "  \"required\": ["]
-#[doc = "    \"code\","]
-#[doc = "    \"message\","]
-#[doc = "    \"retryable\""]
-#[doc = "  ],"]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"code\": {"]
-#[doc = "      \"$ref\": \"#/definitions/HandErrorCode\""]
-#[doc = "    },"]
-#[doc = "    \"details\": {"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"additionalProperties\": true"]
-#[doc = "    },"]
-#[doc = "    \"message\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"maxLength\": 4096,"]
-#[doc = "      \"minLength\": 1"]
-#[doc = "    },"]
-#[doc = "    \"retryable\": {"]
-#[doc = "      \"type\": \"boolean\""]
-#[doc = "    }"]
-#[doc = "  },"]
-#[doc = "  \"additionalProperties\": false"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct HandError {
-    pub code: HandErrorCode,
-    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
-    pub details: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    pub message: HandErrorMessage,
-    pub retryable: bool,
-}
-#[doc = "`HandErrorCode`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"enum\": ["]
-#[doc = "    \"binding_conflict\","]
-#[doc = "    \"capability_unavailable\","]
-#[doc = "    \"operation_conflict\","]
-#[doc = "    \"operation_unknown\","]
-#[doc = "    \"sandbox_not_materialized\","]
-#[doc = "    \"sandbox_gone\","]
-#[doc = "    \"file_not_found\","]
-#[doc = "    \"generation_conflict\","]
-#[doc = "    \"invalid_request\","]
-#[doc = "    \"resource_exhausted\","]
-#[doc = "    \"temporarily_unavailable\""]
-#[doc = "  ]"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(
-    :: serde :: Deserialize,
-    :: serde :: Serialize,
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-)]
-pub enum HandErrorCode {
-    #[serde(rename = "binding_conflict")]
-    BindingConflict,
-    #[serde(rename = "capability_unavailable")]
-    CapabilityUnavailable,
-    #[serde(rename = "operation_conflict")]
-    OperationConflict,
-    #[serde(rename = "operation_unknown")]
-    OperationUnknown,
-    #[serde(rename = "sandbox_not_materialized")]
-    SandboxNotMaterialized,
-    #[serde(rename = "sandbox_gone")]
-    SandboxGone,
-    #[serde(rename = "file_not_found")]
-    FileNotFound,
-    #[serde(rename = "generation_conflict")]
-    GenerationConflict,
-    #[serde(rename = "invalid_request")]
-    InvalidRequest,
-    #[serde(rename = "resource_exhausted")]
-    ResourceExhausted,
-    #[serde(rename = "temporarily_unavailable")]
-    TemporarilyUnavailable,
-}
-impl ::std::fmt::Display for HandErrorCode {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        match *self {
-            Self::BindingConflict => f.write_str("binding_conflict"),
-            Self::CapabilityUnavailable => f.write_str("capability_unavailable"),
-            Self::OperationConflict => f.write_str("operation_conflict"),
-            Self::OperationUnknown => f.write_str("operation_unknown"),
-            Self::SandboxNotMaterialized => f.write_str("sandbox_not_materialized"),
-            Self::SandboxGone => f.write_str("sandbox_gone"),
-            Self::FileNotFound => f.write_str("file_not_found"),
-            Self::GenerationConflict => f.write_str("generation_conflict"),
-            Self::InvalidRequest => f.write_str("invalid_request"),
-            Self::ResourceExhausted => f.write_str("resource_exhausted"),
-            Self::TemporarilyUnavailable => f.write_str("temporarily_unavailable"),
-        }
-    }
-}
-impl ::std::str::FromStr for HandErrorCode {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        match value {
-            "binding_conflict" => Ok(Self::BindingConflict),
-            "capability_unavailable" => Ok(Self::CapabilityUnavailable),
-            "operation_conflict" => Ok(Self::OperationConflict),
-            "operation_unknown" => Ok(Self::OperationUnknown),
-            "sandbox_not_materialized" => Ok(Self::SandboxNotMaterialized),
-            "sandbox_gone" => Ok(Self::SandboxGone),
-            "file_not_found" => Ok(Self::FileNotFound),
-            "generation_conflict" => Ok(Self::GenerationConflict),
-            "invalid_request" => Ok(Self::InvalidRequest),
-            "resource_exhausted" => Ok(Self::ResourceExhausted),
-            "temporarily_unavailable" => Ok(Self::TemporarilyUnavailable),
-            _ => Err("invalid value".into()),
-        }
-    }
-}
-impl ::std::convert::TryFrom<&str> for HandErrorCode {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for HandErrorCode {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for HandErrorCode {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-#[doc = "`HandErrorMessage`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 4096,"]
-#[doc = "  \"minLength\": 1"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct HandErrorMessage(::std::string::String);
-impl ::std::ops::Deref for HandErrorMessage {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<HandErrorMessage> for ::std::string::String {
-    fn from(value: HandErrorMessage) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for HandErrorMessage {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 4096usize {
-            return Err("longer than 4096 characters".into());
-        }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for HandErrorMessage {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for HandErrorMessage {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for HandErrorMessage {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for HandErrorMessage {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -1956,13 +2054,13 @@ impl<'de> ::serde::Deserialize<'de> for ObjectReferenceMediaType {
             })
     }
 }
-#[doc = "Short-lived, one-purpose transfer capability minted by Brain-owned storage. transfer_id identifies the reservation/capability; object_id is the immutable source or pending destination identity. GET is valid only for import and PUT only for export; Hands never infer an object-store key. Export returns ObjectReference.object_id exactly equal to this sealed object_id."]
+#[doc = "Short-lived, one-purpose transfer capability minted by Brain-owned storage. transfer_id identifies the reservation/capability; object_id is the immutable source or pending destination identity. GET is valid only for import and PUT only for export; Environments never infer an object-store key. Export returns ObjectReference.object_id exactly equal to this sealed object_id."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Short-lived, one-purpose transfer capability minted by Brain-owned storage. transfer_id identifies the reservation/capability; object_id is the immutable source or pending destination identity. GET is valid only for import and PUT only for export; Hands never infer an object-store key. Export returns ObjectReference.object_id exactly equal to this sealed object_id.\","]
+#[doc = "  \"description\": \"Short-lived, one-purpose transfer capability minted by Brain-owned storage. transfer_id identifies the reservation/capability; object_id is the immutable source or pending destination identity. GET is valid only for import and PUT only for export; Environments never infer an object-store key. Export returns ObjectReference.object_id exactly equal to this sealed object_id.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"expires_at_ms\","]
@@ -2357,6 +2455,7 @@ impl<'de> ::serde::Deserialize<'de> for ObserveRequestCursor {
 #[doc = "    \"input\","]
 #[doc = "    \"network\","]
 #[doc = "    \"operation_id\","]
+#[doc = "    \"phase\","]
 #[doc = "    \"request_digest\","]
 #[doc = "    \"resources\","]
 #[doc = "    \"root_id\","]
@@ -2397,6 +2496,13 @@ impl<'de> ::serde::Deserialize<'de> for ObserveRequestCursor {
 #[doc = "    },"]
 #[doc = "    \"operation_id\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Identifier\""]
+#[doc = "    },"]
+#[doc = "    \"phase\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"setup\","]
+#[doc = "        \"execute\""]
+#[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    \"request_digest\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Digest\""]
@@ -2446,6 +2552,7 @@ pub struct OperationEnvelope {
     pub input: OperationInput,
     pub network: NetworkCeiling,
     pub operation_id: Identifier,
+    pub phase: OperationEnvelopePhase,
     pub request_digest: Digest,
     pub resources: ResourceCeiling,
     pub root_id: Identifier,
@@ -2521,6 +2628,78 @@ impl<'de> ::serde::Deserialize<'de> for OperationEnvelopeGeneration {
             .map_err(|e: self::error::ConversionError| {
                 <D::Error as ::serde::de::Error>::custom(e.to_string())
             })
+    }
+}
+#[doc = "`OperationEnvelopePhase`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"setup\","]
+#[doc = "    \"execute\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum OperationEnvelopePhase {
+    #[serde(rename = "setup")]
+    Setup,
+    #[serde(rename = "execute")]
+    Execute,
+}
+impl ::std::fmt::Display for OperationEnvelopePhase {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Setup => f.write_str("setup"),
+            Self::Execute => f.write_str("execute"),
+        }
+    }
+}
+impl ::std::str::FromStr for OperationEnvelopePhase {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "setup" => Ok(Self::Setup),
+            "execute" => Ok(Self::Execute),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for OperationEnvelopePhase {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for OperationEnvelopePhase {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for OperationEnvelopePhase {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
     }
 }
 #[doc = "`OperationEnvelopeTargetRef`"]
@@ -2846,14 +3025,14 @@ impl<'de> ::serde::Deserialize<'de> for OperationObservationNextCursor {
 #[doc = "      \"$ref\": \"#/definitions/Identifier\""]
 #[doc = "    },"]
 #[doc = "    \"receipt_ref\": {"]
-#[doc = "      \"description\": \"Opaque Hand-issued locator for the accepted physical execution. Brain journals it before observe/cancel/ack; it complements the Hand binding/preparation/target registry and never encodes product routing policy.\","]
+#[doc = "      \"description\": \"Opaque Environment-issued locator for the accepted physical execution. Brain journals it before observe/cancel/ack; it complements the Environment binding/preparation/target registry and never encodes product routing policy.\","]
 #[doc = "      \"$ref\": \"#/definitions/Identifier\""]
 #[doc = "    },"]
 #[doc = "    \"request_digest\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Digest\""]
 #[doc = "    },"]
 #[doc = "    \"target\": {"]
-#[doc = "      \"description\": \"Exact rooted logical target accepted for this execution. Control and acknowledgement calls carry it back so Hand can reconcile its root-keyed target registry without a reverse index or scan.\","]
+#[doc = "      \"description\": \"Exact rooted logical target accepted for this execution. Control and acknowledgement calls carry it back so Environment can reconcile its root-keyed target registry without a reverse index or scan.\","]
 #[doc = "      \"$ref\": \"#/definitions/SandboxTarget\""]
 #[doc = "    },"]
 #[doc = "    \"target_ref\": {"]
@@ -2870,10 +3049,10 @@ impl<'de> ::serde::Deserialize<'de> for OperationObservationNextCursor {
 pub struct OperationRef {
     pub generation: Identifier,
     pub operation_id: Identifier,
-    #[doc = "Opaque Hand-issued locator for the accepted physical execution. Brain journals it before observe/cancel/ack; it complements the Hand binding/preparation/target registry and never encodes product routing policy."]
+    #[doc = "Opaque Environment-issued locator for the accepted physical execution. Brain journals it before observe/cancel/ack; it complements the Environment binding/preparation/target registry and never encodes product routing policy."]
     pub receipt_ref: Identifier,
     pub request_digest: Digest,
-    #[doc = "Exact rooted logical target accepted for this execution. Control and acknowledgement calls carry it back so Hand can reconcile its root-keyed target registry without a reverse index or scan."]
+    #[doc = "Exact rooted logical target accepted for this execution. Control and acknowledgement calls carry it back so Environment can reconcile its root-keyed target registry without a reverse index or scan."]
     pub target: SandboxTarget,
     #[doc = "Opaque physical target locator paired with generation. It never replaces the rooted logical target."]
     pub target_ref: Identifier,
@@ -2960,13 +3139,13 @@ impl ::std::convert::TryFrom<::std::string::String> for OperationState {
         value.parse()
     }
 }
-#[doc = "One bounded output observation emitted by a Hand. Brain treats it as provisional until the terminal receipt is durably journaled."]
+#[doc = "One bounded output observation emitted by a Environment. Brain treats it as provisional until the terminal receipt is durably journaled."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"One bounded output observation emitted by a Hand. Brain treats it as provisional until the terminal receipt is durably journaled.\","]
+#[doc = "  \"description\": \"One bounded output observation emitted by a Environment. Brain treats it as provisional until the terminal receipt is durably journaled.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"offset\","]
@@ -3355,9 +3534,8 @@ impl ::std::convert::TryFrom<::std::string::String> for RecoveryClass {
 #[doc = "  \"required\": ["]
 #[doc = "    \"binding_ref\","]
 #[doc = "    \"capabilities\","]
-#[doc = "    \"hand_id\","]
+#[doc = "    \"environment_id\","]
 #[doc = "    \"limits\","]
-#[doc = "    \"realm\","]
 #[doc = "    \"recovery\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
@@ -3367,11 +3545,11 @@ impl ::std::convert::TryFrom<::std::string::String> for RecoveryClass {
 #[doc = "    \"capabilities\": {"]
 #[doc = "      \"type\": \"array\","]
 #[doc = "      \"items\": {"]
-#[doc = "        \"$ref\": \"#/definitions/HandCapability\""]
+#[doc = "        \"$ref\": \"#/definitions/EnvironmentCapability\""]
 #[doc = "      },"]
 #[doc = "      \"uniqueItems\": true"]
 #[doc = "    },"]
-#[doc = "    \"hand_id\": {"]
+#[doc = "    \"environment_id\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Identifier\""]
 #[doc = "    },"]
 #[doc = "    \"limits\": {"]
@@ -3397,9 +3575,6 @@ impl ::std::convert::TryFrom<::std::string::String> for RecoveryClass {
 #[doc = "      },"]
 #[doc = "      \"additionalProperties\": false"]
 #[doc = "    },"]
-#[doc = "    \"realm\": {"]
-#[doc = "      \"$ref\": \"#/definitions/ExecutionRealm\""]
-#[doc = "    },"]
 #[doc = "    \"recovery\": {"]
 #[doc = "      \"$ref\": \"#/definitions/RecoveryClass\""]
 #[doc = "    }"]
@@ -3412,10 +3587,9 @@ impl ::std::convert::TryFrom<::std::string::String> for RecoveryClass {
 #[serde(deny_unknown_fields)]
 pub struct ResolvedBinding {
     pub binding_ref: Identifier,
-    pub capabilities: Vec<HandCapability>,
-    pub hand_id: Identifier,
+    pub capabilities: Vec<EnvironmentCapability>,
+    pub environment_id: Identifier,
     pub limits: ResolvedBindingLimits,
-    pub realm: ExecutionRealm,
     pub recovery: RecoveryClass,
 }
 #[doc = "`ResolvedBindingLimits`"]
@@ -3486,13 +3660,13 @@ pub struct ResourceCeiling {
     pub max_output_bytes: ::std::num::NonZeroU64,
     pub timeout_ms: ::std::num::NonZeroU64,
 }
-#[doc = "Effect identity is exact across ambiguous transport delivery. Hand retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect."]
+#[doc = "Effect identity is exact across ambiguous transport delivery. Environment retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Effect identity is exact across ambiguous transport delivery. Hand retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect.\","]
+#[doc = "  \"description\": \"Effect identity is exact across ambiguous transport delivery. Environment retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"direction\","]
@@ -4103,13 +4277,13 @@ impl<'de> ::serde::Deserialize<'de> for SandboxFileRequestPath {
             })
     }
 }
-#[doc = "Effect identity is exact across ambiguous transport delivery. Hand retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect."]
+#[doc = "Effect identity is exact across ambiguous transport delivery. Environment retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Effect identity is exact across ambiguous transport delivery. Hand retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect.\","]
+#[doc = "  \"description\": \"Effect identity is exact across ambiguous transport delivery. Environment retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"expected_generation\","]
@@ -4768,10 +4942,9 @@ pub struct SandboxTarget {
 #[doc = "    \"binding_id\","]
 #[doc = "    \"capability\","]
 #[doc = "    \"contract_digest\","]
+#[doc = "    \"environment_name\","]
 #[doc = "    \"implementation_identity\","]
 #[doc = "    \"policy_digest\","]
-#[doc = "    \"realm\","]
-#[doc = "    \"realm_id\","]
 #[doc = "    \"root_id\","]
 #[doc = "    \"session_id\""]
 #[doc = "  ],"]
@@ -4795,17 +4968,14 @@ pub struct SandboxTarget {
 #[doc = "    \"contract_digest\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Digest\""]
 #[doc = "    },"]
+#[doc = "    \"environment_name\": {"]
+#[doc = "      \"$ref\": \"#/definitions/Identifier\""]
+#[doc = "    },"]
 #[doc = "    \"implementation_identity\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Digest\""]
 #[doc = "    },"]
 #[doc = "    \"policy_digest\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Digest\""]
-#[doc = "    },"]
-#[doc = "    \"realm\": {"]
-#[doc = "      \"$ref\": \"#/definitions/ExecutionRealm\""]
-#[doc = "    },"]
-#[doc = "    \"realm_id\": {"]
-#[doc = "      \"$ref\": \"#/definitions/Identifier\""]
 #[doc = "    },"]
 #[doc = "    \"required_capabilities\": {"]
 #[doc = "      \"default\": ["]
@@ -4813,7 +4983,7 @@ pub struct SandboxTarget {
 #[doc = "      ],"]
 #[doc = "      \"type\": \"array\","]
 #[doc = "      \"items\": {"]
-#[doc = "        \"$ref\": \"#/definitions/HandCapability\""]
+#[doc = "        \"$ref\": \"#/definitions/EnvironmentCapability\""]
 #[doc = "      },"]
 #[doc = "      \"uniqueItems\": true"]
 #[doc = "    },"]
@@ -4836,22 +5006,21 @@ pub struct SealedBinding {
     pub bundle: ::std::option::Option<BundleDescriptor>,
     pub capability: Identifier,
     pub contract_digest: Digest,
+    pub environment_name: Identifier,
     pub implementation_identity: Digest,
     pub policy_digest: Digest,
-    pub realm: ExecutionRealm,
-    pub realm_id: Identifier,
     #[serde(default = "defaults::sealed_binding_required_capabilities")]
-    pub required_capabilities: Vec<HandCapability>,
+    pub required_capabilities: Vec<EnvironmentCapability>,
     pub root_id: Identifier,
     pub session_id: Identifier,
 }
-#[doc = "Opaque, short-lived, one-redemption authority for one session and one physical target generation. The Hand may keep redeemed values only in supervisor memory and inject each binding's declared subset at child spawn. Brain may mint a replacement capability for the same surviving generation after a Hand control-process crash. Secret values never enter this contract, binding registry, journal, receipt or argv."]
+#[doc = "Opaque, short-lived, one-redemption authority for one session and one physical target generation. The Environment may keep redeemed values only in supervisor memory and inject each binding's declared subset at child spawn. Brain may mint a replacement capability for the same surviving generation after a Environment control-process crash. Secret values never enter this contract, binding registry, journal, receipt or argv."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Opaque, short-lived, one-redemption authority for one session and one physical target generation. The Hand may keep redeemed values only in supervisor memory and inject each binding's declared subset at child spawn. Brain may mint a replacement capability for the same surviving generation after a Hand control-process crash. Secret values never enter this contract, binding registry, journal, receipt or argv.\","]
+#[doc = "  \"description\": \"Opaque, short-lived, one-redemption authority for one session and one physical target generation. The Environment may keep redeemed values only in supervisor memory and inject each binding's declared subset at child spawn. Brain may mint a replacement capability for the same surviving generation after a Environment control-process crash. Secret values never enter this contract, binding registry, journal, receipt or argv.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"capability_ref\","]
@@ -4895,8 +5064,8 @@ pub struct SecretCapability {
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"capability_ref\","]
+#[doc = "    \"environment_id\","]
 #[doc = "    \"generation_intent\","]
-#[doc = "    \"hand_id\","]
 #[doc = "    \"root_id\","]
 #[doc = "    \"session_id\","]
 #[doc = "    \"target\""]
@@ -4905,10 +5074,10 @@ pub struct SecretCapability {
 #[doc = "    \"capability_ref\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Identifier\""]
 #[doc = "    },"]
-#[doc = "    \"generation_intent\": {"]
+#[doc = "    \"environment_id\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Identifier\""]
 #[doc = "    },"]
-#[doc = "    \"hand_id\": {"]
+#[doc = "    \"generation_intent\": {"]
 #[doc = "      \"$ref\": \"#/definitions/Identifier\""]
 #[doc = "    },"]
 #[doc = "    \"root_id\": {"]
@@ -4929,8 +5098,8 @@ pub struct SecretCapability {
 #[serde(deny_unknown_fields)]
 pub struct SecretDeliveryRequest {
     pub capability_ref: Identifier,
+    pub environment_id: Identifier,
     pub generation_intent: Identifier,
-    pub hand_id: Identifier,
     pub root_id: Identifier,
     pub session_id: Identifier,
     pub target: SandboxTarget,
@@ -5071,13 +5240,13 @@ impl ::std::convert::TryFrom<::std::string::String> for TargetKind {
         value.parse()
     }
 }
-#[doc = "Hand-issued continuity locator for a materialized target. Brain journals and projects the newest receipt, then supplies target_ref and generation on later operations."]
+#[doc = "Environment-issued continuity locator for a materialized target. Brain journals and projects the newest receipt, then supplies target_ref and generation on later operations."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Hand-issued continuity locator for a materialized target. Brain journals and projects the newest receipt, then supplies target_ref and generation on later operations.\","]
+#[doc = "  \"description\": \"Environment-issued continuity locator for a materialized target. Brain journals and projects the newest receipt, then supplies target_ref and generation on later operations.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"expires_at_ms\","]
@@ -5305,13 +5474,13 @@ pub struct WriteStdinReceipt {
     pub replayed: bool,
     pub request_digest: Digest,
 }
-#[doc = "One idempotent stdin append/EOF/poll. Empty text with eof=false is a pure poll. UTF-8 payload bytes are additionally capped at 4096 so the Hand can perform one PIPE_BUF-bounded write; larger input must be split into separately identified requests."]
+#[doc = "One idempotent stdin append/EOF/poll. Empty text with eof=false is a pure poll. UTF-8 payload bytes are additionally capped at 4096 so the Environment can perform one PIPE_BUF-bounded write; larger input must be split into separately identified requests."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"One idempotent stdin append/EOF/poll. Empty text with eof=false is a pure poll. UTF-8 payload bytes are additionally capped at 4096 so the Hand can perform one PIPE_BUF-bounded write; larger input must be split into separately identified requests.\","]
+#[doc = "  \"description\": \"One idempotent stdin append/EOF/poll. Empty text with eof=false is a pure poll. UTF-8 payload bytes are additionally capped at 4096 so the Environment can perform one PIPE_BUF-bounded write; larger input must be split into separately identified requests.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"eof\","]
@@ -5431,7 +5600,7 @@ impl<'de> ::serde::Deserialize<'de> for WriteStdinRequestText {
 }
 #[doc = r" Generation of default values for serde."]
 pub mod defaults {
-    pub(super) fn sealed_binding_required_capabilities() -> Vec<super::HandCapability> {
-        vec![super::HandCapability::Execution]
+    pub(super) fn sealed_binding_required_capabilities() -> Vec<super::EnvironmentCapability> {
+        vec![super::EnvironmentCapability::Execution]
     }
 }

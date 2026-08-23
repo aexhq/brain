@@ -65,7 +65,7 @@ pub(super) struct SandboxFileSearchRequest {
 
 #[derive(Serialize)]
 pub(super) struct SandboxFileListResponse {
-    data: Vec<brain_protocol::hand::FileEntry>,
+    data: Vec<brain_protocol::environment::FileEntry>,
     has_more: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<String>,
@@ -73,7 +73,7 @@ pub(super) struct SandboxFileListResponse {
 }
 
 fn sandbox_file_page(
-    page: brain::hand::SandboxFileList,
+    page: brain::environment::SandboxFileList,
     generation: String,
 ) -> SandboxFileListResponse {
     SandboxFileListResponse {
@@ -110,7 +110,7 @@ pub(super) async fn sandbox_file_stat(
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<SandboxFilePathRequest>,
-) -> Result<Json<brain_protocol::hand::FileEntry>, Failure> {
+) -> Result<Json<brain_protocol::environment::FileEntry>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain
@@ -125,7 +125,7 @@ pub(super) async fn sandbox_file_read_inline(
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<SandboxFileReadRequest>,
-) -> Result<Json<brain::hand::SandboxFileContent>, Failure> {
+) -> Result<Json<brain::environment::SandboxFileContent>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain
@@ -140,7 +140,7 @@ pub(super) async fn sandbox_file_write_inline(
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(request): Json<SandboxFileWriteRequest>,
-) -> Result<Json<brain_protocol::hand::FileEntry>, Failure> {
+) -> Result<Json<brain_protocol::environment::FileEntry>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     let idempotency_key = headers
         .get("idempotency-key")
@@ -217,7 +217,7 @@ pub(super) async fn sandbox_file_complete_upload(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((id, transfer_id)): Path<(String, String)>,
-) -> Result<Json<brain_protocol::hand::FileEntry>, Failure> {
+) -> Result<Json<brain_protocol::environment::FileEntry>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain

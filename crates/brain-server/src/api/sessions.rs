@@ -270,7 +270,7 @@ pub(super) async fn get_default_sandbox(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<brain_protocol::hand::SandboxStatus>, Failure> {
+) -> Result<Json<brain_protocol::environment::SandboxStatus>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain
@@ -284,7 +284,7 @@ pub(super) async fn create_default_sandbox(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<brain_protocol::hand::SandboxStatus>, Failure> {
+) -> Result<Json<brain_protocol::environment::SandboxStatus>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain

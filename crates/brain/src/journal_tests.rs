@@ -354,16 +354,17 @@ fn head_doc_round_trips() {
             rendered_base_digest: String::new(),
             prompt_cache_key: String::new(),
             tools: vec![],
+            environments: HashMap::new(),
             managed_bundles: vec![],
             official_capabilities: HashMap::new(),
-            hand_enabled: true,
+            environment_enabled: true,
             shape: "1gb".into(),
             sync_interval_seconds: 600,
-            hand_env_keys: vec![],
+            environment_env_keys: vec![],
             metadata: HashMap::new(),
         },
         key_b64: "AAAA".into(),
-        hand_secrets_b64: String::new(),
+        environment_secrets_b64: String::new(),
         session_storage_bytes: 0,
         storage_reserved_bytes: 0,
         tenant_metered_storage_bytes: 0,
@@ -438,16 +439,17 @@ fn head_doc() -> HeadDoc {
             rendered_base_digest: String::new(),
             prompt_cache_key: String::new(),
             tools: vec![],
+            environments: HashMap::new(),
             managed_bundles: vec![],
             official_capabilities: HashMap::new(),
-            hand_enabled: false,
+            environment_enabled: false,
             shape: "1gb".into(),
             sync_interval_seconds: 600,
-            hand_env_keys: vec![],
+            environment_env_keys: vec![],
             metadata: HashMap::new(),
         },
         key_b64: String::new(),
-        hand_secrets_b64: String::new(),
+        environment_secrets_b64: String::new(),
         session_storage_bytes: 0,
         storage_reserved_bytes: 0,
         tenant_metered_storage_bytes: 0,
@@ -810,9 +812,9 @@ async fn sandbox_inventory_reserves_cap_atomically_and_keeps_terminal_tombstones
     let replay = store.reserve_sandbox(&replay_request).await.unwrap();
     assert_eq!(replay.sandbox_id, created[0].sandbox_id);
 
-    let mut terminal: brain_protocol::hand::SandboxStatus =
+    let mut terminal: brain_protocol::environment::SandboxStatus =
         serde_json::from_value(serde_json::to_value(&created[0].status).unwrap()).unwrap();
-    terminal.state = brain_protocol::hand::SandboxState::Terminated;
+    terminal.state = brain_protocol::environment::SandboxState::Terminated;
     let tombstone = store
         .update_sandbox(&SandboxUpdateRequest {
             root_id: created[0].root_id.clone(),
@@ -832,7 +834,7 @@ async fn sandbox_inventory_reserves_cap_atomically_and_keeps_terminal_tombstones
             .unwrap()
             .status
             .state,
-        brain_protocol::hand::SandboxState::Terminated
+        brain_protocol::environment::SandboxState::Terminated
     );
     store
         .reserve_sandbox(&sandbox_reservation(9))
@@ -1863,7 +1865,7 @@ fn model_intent(turn: &str) -> Record {
     }
 }
 
-fn sandbox_status(state: &str) -> brain_protocol::hand::SandboxStatus {
+fn sandbox_status(state: &str) -> brain_protocol::environment::SandboxStatus {
     serde_json::from_value(serde_json::json!({
         "state": state,
         "target": {

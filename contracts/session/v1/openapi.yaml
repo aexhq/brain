@@ -18,7 +18,7 @@ tags:
   - name: children
   - name: sandbox
   - name: storage
-  - name: customer-hand
+  - name: customer-environment
 
 paths:
   /v1/sessions:
@@ -504,19 +504,19 @@ paths:
         "200": { $ref: "#/components/responses/SandboxFile" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/customer-hand/grants:
+  /v1/customer-environment/grants:
     post:
-      tags: [customer-hand]
-      operationId: createCustomerHandGrant
+      tags: [customer-environment]
+      operationId: createCustomerEnvironmentGrant
       requestBody: { $ref: "#/components/requestBodies/CustomerGrant" }
       responses:
         "200": { $ref: "#/components/responses/CustomerGrant" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/customer-hand/socket:
+  /v1/customer-environment/socket:
     get:
-      tags: [customer-hand]
-      operationId: connectCustomerHand
+      tags: [customer-environment]
+      operationId: connectCustomerEnvironment
       security: []
       parameters:
         - name: Sec-WebSocket-Protocol
@@ -527,10 +527,10 @@ paths:
         "101": { description: WebSocket upgraded }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/customer-hand/observations/{grant_id}:
+  /v1/customer-environment/observations/{grant_id}:
     post:
-      tags: [customer-hand]
-      operationId: observeCustomerHandOperation
+      tags: [customer-environment]
+      operationId: observeCustomerEnvironmentOperation
       security: [{ bearer: [] }]
       parameters: [{ $ref: "#/components/parameters/GrantId" }]
       requestBody: { $ref: "#/components/requestBodies/CustomerObservation" }
@@ -651,10 +651,10 @@ components:
       content: { application/json: { schema: { $ref: "#/components/schemas/DeletionStatus" } } }
     SandboxStatus:
       description: Generation-fenced default sandbox lifecycle
-      content: { application/json: { schema: { $ref: "../../hand/contract.json#/definitions/SandboxStatus" } } }
+      content: { application/json: { schema: { $ref: "../../environment/contract.json#/definitions/SandboxStatus" } } }
     SandboxFile:
       description: Sandbox file metadata
-      content: { application/json: { schema: { $ref: "../../hand/contract.json#/definitions/FileEntry" } } }
+      content: { application/json: { schema: { $ref: "../../environment/contract.json#/definitions/FileEntry" } } }
     SandboxFileContent:
       description: Bounded inline sandbox file
       content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileContent" } } }
@@ -674,7 +674,7 @@ components:
       description: Short-lived one-purpose transfer authority
       content: { application/json: { schema: { $ref: "#/components/schemas/StorageTransfer" } } }
     CustomerGrant:
-      description: Customer-Hand WebSocket and observation grants
+      description: Customer-Environment WebSocket and observation grants
       content: { application/json: { schema: { $ref: "#/components/schemas/CustomerGrant" } } }
   schemas:
     DeletionStatus:
@@ -752,7 +752,7 @@ components:
       additionalProperties: false
       required: [data, has_more, generation]
       properties:
-        data: { type: array, maxItems: 100, items: { $ref: "../../hand/contract.json#/definitions/FileEntry" } }
+        data: { type: array, maxItems: 100, items: { $ref: "../../environment/contract.json#/definitions/FileEntry" } }
         has_more: { type: boolean }
         next_cursor: { type: string }
         generation: { type: string, minLength: 1, maxLength: 128 }
@@ -761,7 +761,7 @@ components:
       additionalProperties: false
       required: [entry, content_base64]
       properties:
-        entry: { $ref: "../../hand/contract.json#/definitions/FileEntry" }
+        entry: { $ref: "../../environment/contract.json#/definitions/FileEntry" }
         content_base64: { type: string, maxLength: 1398108 }
     CreateChildRequest:
       type: object

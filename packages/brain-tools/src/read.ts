@@ -25,7 +25,7 @@ const read = tool(readInput, async function read({ path, offset, limit }, contex
     }
   })
   .named("read")
-  .describe("Read UTF-8 text from a file in the Hand workspace.")
+  .describe("Read UTF-8 text from a file in the Environment workspace.")
   .returns(readOutput)
   .server(import.meta.url);
 

@@ -32,10 +32,10 @@ const session = await brain.sessions.create({
 console.log(await session.send("Echo hello."));
 ```
 
-`.server(import.meta.url)` bundles the function for Node 22 execution in the session Hand. Choose
+`.server(import.meta.url)` bundles the function for Node 22 execution in the session Environment. Choose
 `.client()` with a stable `Brain({ client: { id } })` identity when the callback must remain in the
 application process. Brain exposes no model-visible tools when `tools` is omitted. Call
-`brain.close()` when a long-lived customer Hand is no longer needed.
+`brain.close()` when a long-lived customer Environment is no longer needed.
 
 Large direct sandbox-file tickets are a process-local happy-path convenience. The SDK does not
 automatically retry their prepare or complete calls; restart, expiry, missing state, or an

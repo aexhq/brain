@@ -42,7 +42,7 @@ export type {
   TransferTicket,
 } from "./resources.js";
 export {
-  CustomerHand,
+  CustomerEnvironment,
   customerTerminalDigest,
 } from "./customer.js";
 export {
@@ -60,9 +60,9 @@ export {
   MAX_TOOL_TERMINAL_INLINE_BYTES,
 } from "./limits.js";
 export type {
-  CustomerHandChannel,
-  CustomerHandConnector,
-  CustomerHandOptions,
+  CustomerEnvironmentChannel,
+  CustomerEnvironmentConnector,
+  CustomerEnvironmentOptions,
   CustomerObservation,
   WebSocketFactory,
   WebSocketRequest,

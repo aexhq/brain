@@ -867,8 +867,8 @@ impl JournalStore for MemoryStore {
         if request.release_slot
             && !matches!(
                 request.status.state,
-                brain_protocol::hand::SandboxState::Gone
-                    | brain_protocol::hand::SandboxState::Terminated
+                brain_protocol::environment::SandboxState::Gone
+                    | brain_protocol::environment::SandboxState::Terminated
             )
         {
             return Err(BrainError::Journal(

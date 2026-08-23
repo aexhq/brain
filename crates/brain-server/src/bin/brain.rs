@@ -52,14 +52,14 @@ async fn run() -> anyhow::Result<()> {
         BrainMode::Local => {
             tracing::warn!(data = %data.display(), "LOCAL MODE: durable SQLite/custody with unsandboxed host Tool execution; network policy is not enforced");
             let cfg = BrainConfig::from_env().map_err(|error| anyhow::anyhow!("{error}"))?;
-            let websocket_url = std::env::var("BRAIN_CUSTOMER_HAND_WEBSOCKET_URL").ok();
+            let websocket_url = std::env::var("BRAIN_CUSTOMER_ENVIRONMENT_WEBSOCKET_URL").ok();
             let observation_base_url =
-                std::env::var("BRAIN_CUSTOMER_HAND_OBSERVATION_BASE_URL").ok();
+                std::env::var("BRAIN_CUSTOMER_ENVIRONMENT_OBSERVATION_BASE_URL").ok();
             let transport_urls = match (websocket_url, observation_base_url) {
                 (Some(ws), Some(observe)) => Some((ws, observe)),
                 (None, None) => None,
                 _ => anyhow::bail!(
-                    "set both BRAIN_CUSTOMER_HAND_WEBSOCKET_URL and BRAIN_CUSTOMER_HAND_OBSERVATION_BASE_URL or neither"
+                    "set both BRAIN_CUSTOMER_ENVIRONMENT_WEBSOCKET_URL and BRAIN_CUSTOMER_ENVIRONMENT_OBSERVATION_BASE_URL or neither"
                 ),
             };
             let loophost = Some(brain_server::LoophostOptions {
@@ -102,7 +102,7 @@ async fn audit_local(journal: &Journal, custody: &Arc<dyn KeyCustody>) -> anyhow
                     head.session_id
                 )
             })?;
-        for (label, encoded) in [("Hand environment", head.doc.hand_secrets_b64.as_str())] {
+        for (label, encoded) in [("Environment environment", head.doc.environment_secrets_b64.as_str())] {
             if encoded.is_empty() {
                 continue;
             }

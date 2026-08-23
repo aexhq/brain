@@ -43,8 +43,8 @@ async fn authorize_observation_before_body(
     let grant_id = grant_id.ok_or_else(invalid_observation_grant)?;
     let token = token.ok_or_else(invalid_observation_grant)?;
     let coordinator = state.brain.customer.as_ref().ok_or_else(|| {
-        map_err(BrainError::HandUnavailable(
-            "customer Hand is unavailable".into(),
+        map_err(BrainError::EnvironmentUnavailable(
+            "customer Environment is unavailable".into(),
         ))
     })?;
     coordinator
@@ -97,7 +97,7 @@ pub(super) struct CustomerGrantResponse {
     observation_token: String,
 }
 
-pub(super) async fn customer_hand_grant(
+pub(super) async fn customer_environment_grant(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<CustomerGrantRequest>,
@@ -124,7 +124,7 @@ pub(super) async fn customer_hand_grant(
     }))
 }
 
-pub(super) async fn customer_hand_socket(
+pub(super) async fn customer_environment_socket(
     State(state): State<AppState>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
@@ -138,7 +138,7 @@ pub(super) async fn customer_hand_socket(
     })?;
     let protocol = customer_grant_subprotocol(&headers)?;
     let connection_id = mint_id("conn", 24);
-    brain::customer::CustomerHandIngressPort::receive(
+    brain::customer::CustomerEnvironmentIngressPort::receive(
         coordinator.as_ref(),
         brain::customer::CustomerGatewayInput {
             route: brain::customer::CustomerGatewayRoute::Connect,
@@ -156,11 +156,11 @@ pub(super) async fn customer_hand_socket(
         .protocols([protocol])
         .max_message_size(brain::customer::MAX_CUSTOMER_WS_FRAME_BYTES)
         .max_frame_size(brain::customer::MAX_CUSTOMER_WS_FRAME_BYTES)
-        .on_upgrade(move |socket| serve_customer_hand_socket(coordinator, connection_id, socket))
+        .on_upgrade(move |socket| serve_customer_environment_socket(coordinator, connection_id, socket))
         .into_response())
 }
 
-async fn serve_customer_hand_socket(
+async fn serve_customer_environment_socket(
     coordinator: Arc<brain::customer::CustomerCoordinator>,
     connection_id: String,
     socket: WebSocket,
@@ -187,7 +187,7 @@ async fn serve_customer_hand_socket(
                 let Some(Ok(frame)) = frame else { break; };
                 match frame {
                     WsMessage::Text(text) => {
-                        let result = brain::customer::CustomerHandIngressPort::receive(
+                        let result = brain::customer::CustomerEnvironmentIngressPort::receive(
                             coordinator.as_ref(),
                             brain::customer::CustomerGatewayInput {
                                 route: brain::customer::CustomerGatewayRoute::Message,
@@ -210,7 +210,7 @@ async fn serve_customer_hand_socket(
             }
         }
     }
-    let _ = brain::customer::CustomerHandIngressPort::receive(
+    let _ = brain::customer::CustomerEnvironmentIngressPort::receive(
         coordinator.as_ref(),
         brain::customer::CustomerGatewayInput {
             route: brain::customer::CustomerGatewayRoute::Disconnect,
@@ -225,17 +225,17 @@ async fn serve_customer_hand_socket(
     .await;
 }
 
-pub(super) async fn customer_hand_observation(
+pub(super) async fn customer_environment_observation(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(grant_id): Path<String>,
     body: Bytes,
 ) -> Result<StatusCode, Failure> {
     let observation_token = bearer_token(&headers).ok_or_else(invalid_observation_grant)?;
-    apply_customer_hand_observation(&state, &grant_id, observation_token, &body).await
+    apply_customer_environment_observation(&state, &grant_id, observation_token, &body).await
 }
 
-pub(super) async fn internal_customer_hand_observation(
+pub(super) async fn internal_customer_environment_observation(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(grant_id): Path<String>,
@@ -247,7 +247,7 @@ pub(super) async fn internal_customer_hand_observation(
     auth(&state, &headers)?;
     let observation_token =
         observation_grant_header(&headers).ok_or_else(invalid_observation_grant)?;
-    apply_customer_hand_observation(&state, &grant_id, observation_token, &body).await
+    apply_customer_environment_observation(&state, &grant_id, observation_token, &body).await
 }
 
 pub(super) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -269,11 +269,11 @@ fn invalid_observation_grant() -> Failure {
     Failure(
         StatusCode::UNAUTHORIZED,
         api_code("unauthorized"),
-        "invalid customer Hand observation grant".into(),
+        "invalid customer Environment observation grant".into(),
     )
 }
 
-async fn apply_customer_hand_observation(
+async fn apply_customer_environment_observation(
     state: &AppState,
     grant_id: &str,
     observation_token: &str,
@@ -288,7 +288,7 @@ async fn apply_customer_hand_observation(
         Failure(
             StatusCode::BAD_REQUEST,
             api_code("invalid_request"),
-            format!("customer Hand observation: {error}"),
+            format!("customer Environment observation: {error}"),
         )
     })?;
     state
@@ -296,8 +296,8 @@ async fn apply_customer_hand_observation(
         .customer
         .as_ref()
         .ok_or_else(|| {
-            map_err(BrainError::HandUnavailable(
-                "customer Hand is unavailable".into(),
+            map_err(BrainError::EnvironmentUnavailable(
+                "customer Environment is unavailable".into(),
             ))
         })?
         .observation(grant_id, observation_token, observation)
@@ -306,7 +306,7 @@ async fn apply_customer_hand_observation(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub(super) async fn customer_hand_gateway(
+pub(super) async fn customer_environment_gateway(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
@@ -345,18 +345,18 @@ pub(super) async fn customer_hand_gateway(
             Failure(
                 StatusCode::BAD_REQUEST,
                 api_code("invalid_request"),
-                "customer Hand WebSocket frame must be UTF-8 text".into(),
+                "customer Environment WebSocket frame must be UTF-8 text".into(),
             )
         })?)
     } else {
         None
     };
     let coordinator = state.brain.customer.as_ref().ok_or_else(|| {
-        map_err(BrainError::HandUnavailable(
-            "customer Hand is unavailable".into(),
+        map_err(BrainError::EnvironmentUnavailable(
+            "customer Environment is unavailable".into(),
         ))
     })?;
-    brain::customer::CustomerHandIngressPort::receive(
+    brain::customer::CustomerEnvironmentIngressPort::receive(
         coordinator.as_ref(),
         brain::customer::CustomerGatewayInput {
             route,
@@ -378,7 +378,7 @@ pub(super) async fn customer_hand_gateway(
                 Failure(
                     StatusCode::BAD_REQUEST,
                     api_code("invalid_request"),
-                    "customer Hand grant protocol is invalid".into(),
+                    "customer Environment grant protocol is invalid".into(),
                 )
             })?,
         );
@@ -406,7 +406,7 @@ pub(super) fn customer_grant_subprotocol(headers: &HeaderMap) -> Result<String, 
         Failure(
             StatusCode::UNAUTHORIZED,
             api_code("unauthorized"),
-            "exactly one customer Hand grant subprotocol is required".into(),
+            "exactly one customer Environment grant subprotocol is required".into(),
         )
     };
     let mut protocol = None;

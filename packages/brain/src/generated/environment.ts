@@ -2,43 +2,38 @@
 /** GENERATED from Brain-owned contracts/session/v1. DO NOT EDIT. */
 
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "Digest".
  */
 export type Digest = string;
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "Identifier".
  */
 export type Identifier = string;
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
- * via the `definition` "BundleRuntime".
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
+ * via the `definition` "ArtifactTarget".
  */
-export type BundleRuntime = "node22";
+export type ArtifactTarget = "linux-amd64" | "linux-arm64";
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "TargetKind".
  */
 export type TargetKind = "default" | "additional";
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
- * via the `definition` "ExecutionRealm".
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
+ * via the `definition` "EnvironmentCapability".
  */
-export type ExecutionRealm = "aex_managed" | "customer_app" | "engine";
-/**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
- * via the `definition` "HandCapability".
- */
-export type HandCapability =
+export type EnvironmentCapability =
   "execution" | "session_preparation" | "sandbox_files" | "sandbox_control";
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "RecoveryClass".
  */
 export type RecoveryClass = "retained" | "connection_scoped";
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "NetworkCeiling".
  */
 export type NetworkCeiling =
@@ -98,18 +93,18 @@ export type NetworkCeiling =
       ];
     };
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "OperationState".
  */
 export type OperationState = "accepted" | "running" | "terminal" | "unknown";
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "TerminalOutcome".
  */
 export type TerminalOutcome =
   "completed" | "failed" | "cancelled" | "deadline_exceeded" | "interrupted";
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxState".
  */
 export type SandboxState =
@@ -117,7 +112,7 @@ export type SandboxState =
 /**
  * Inline content is standard padded base64 and capped at 1 MiB decoded. Larger writes carry an opaque object identity plus a one-purpose GET authority.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxFileWriteSource".
  */
 export type SandboxFileWriteSource =
@@ -131,10 +126,10 @@ export type SandboxFileWriteSource =
       fetch: ObjectTransferAuthority;
     };
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
- * via the `definition` "HandErrorCode".
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
+ * via the `definition` "EnvironmentErrorCode".
  */
-export type HandErrorCode =
+export type EnvironmentErrorCode =
   | "binding_conflict"
   | "capability_unavailable"
   | "operation_conflict"
@@ -148,15 +143,15 @@ export type HandErrorCode =
   | "temporarily_unavailable";
 
 /**
- * The single current, transport-neutral Brain to Hand receipt contract. The canonical schema digest is the compatibility identity; the wire carries no protocol version.
+ * The single current, transport-neutral Brain to Environment receipt contract. The canonical schema digest is the compatibility identity; the wire carries no protocol version.
  */
-export interface BrainHandContract {
+export interface BrainEnvironmentContract {
   contract: {
     methods: ["resolve_binding", "submit", "observe", "cancel", "acknowledge_terminal"];
   };
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "ObjectReference".
  */
 export interface ObjectReference {
@@ -166,9 +161,9 @@ export interface ObjectReference {
   media_type?: string | null;
 }
 /**
- * Short-lived, one-purpose transfer capability minted by Brain-owned storage. transfer_id identifies the reservation/capability; object_id is the immutable source or pending destination identity. GET is valid only for import and PUT only for export; Hands never infer an object-store key. Export returns ObjectReference.object_id exactly equal to this sealed object_id.
+ * Short-lived, one-purpose transfer capability minted by Brain-owned storage. transfer_id identifies the reservation/capability; object_id is the immutable source or pending destination identity. GET is valid only for import and PUT only for export; Environments never infer an object-store key. Export returns ObjectReference.object_id exactly equal to this sealed object_id.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "ObjectTransferAuthority".
  */
 export interface ObjectTransferAuthority {
@@ -183,15 +178,18 @@ export interface ObjectTransferAuthority {
   max_bytes: number;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "BundleDescriptor".
  */
 export interface BundleDescriptor {
   bundle_digest: Digest;
   bytes: number;
-  runtime: BundleRuntime;
+  target: ArtifactTarget;
+  execute_path: string;
+  setup_path?: string | null;
   object: ObjectReference;
   tool_name: Identifier;
+  environment_name: Identifier;
   description?: string | null;
   contract_digest: Digest;
   /**
@@ -202,7 +200,7 @@ export interface BundleDescriptor {
 /**
  * Short-lived, one-purpose fetch authority supplied only at preparation time; it is not part of the persisted sealed binding.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "BundleFetch".
  */
 export interface BundleFetch {
@@ -215,7 +213,7 @@ export interface BundleFetch {
   max_bytes: number;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "PreparedBindingBundles".
  */
 export interface PreparedBindingBundles {
@@ -223,9 +221,9 @@ export interface PreparedBindingBundles {
   bundle_digests: Digest[];
 }
 /**
- * Opaque, short-lived, one-redemption authority for one session and one physical target generation. The Hand may keep redeemed values only in supervisor memory and inject each binding's declared subset at child spawn. Brain may mint a replacement capability for the same surviving generation after a Hand control-process crash. Secret values never enter this contract, binding registry, journal, receipt or argv.
+ * Opaque, short-lived, one-redemption authority for one session and one physical target generation. The Environment may keep redeemed values only in supervisor memory and inject each binding's declared subset at child spawn. Brain may mint a replacement capability for the same surviving generation after a Environment control-process crash. Secret values never enter this contract, binding registry, journal, receipt or argv.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SecretCapability".
  */
 export interface SecretCapability {
@@ -237,19 +235,19 @@ export interface SecretCapability {
   env_names: Identifier[];
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SecretDeliveryRequest".
  */
 export interface SecretDeliveryRequest {
   capability_ref: Identifier;
-  hand_id: Identifier;
+  environment_id: Identifier;
   session_id: Identifier;
   root_id: Identifier;
   target: SandboxTarget;
   generation_intent: Identifier;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxTarget".
  */
 export interface SandboxTarget {
@@ -260,15 +258,14 @@ export interface SandboxTarget {
   sandbox_id?: Identifier | null;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "ResolvedBinding".
  */
 export interface ResolvedBinding {
   binding_ref: Identifier;
-  hand_id: Identifier;
-  realm: ExecutionRealm;
+  environment_id: Identifier;
   recovery: RecoveryClass;
-  capabilities: HandCapability[];
+  capabilities: EnvironmentCapability[];
   limits: {
     max_inline_input_bytes: number;
     max_inline_result_bytes: number;
@@ -276,7 +273,7 @@ export interface ResolvedBinding {
   };
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SealedBinding".
  */
 export interface SealedBinding {
@@ -285,15 +282,14 @@ export interface SealedBinding {
   root_id: Identifier;
   contract_digest: Digest;
   implementation_identity: Digest;
-  realm: ExecutionRealm;
-  realm_id: Identifier;
+  environment_name: Identifier;
   capability: Identifier;
   policy_digest: Digest;
   bundle?: BundleDescriptor | null;
-  required_capabilities?: HandCapability[];
+  required_capabilities?: EnvironmentCapability[];
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "ResourceCeiling".
  */
 export interface ResourceCeiling {
@@ -303,7 +299,7 @@ export interface ResourceCeiling {
 /**
  * Canonical JSON Tool arguments only. Brain rejects serialized input above 192 KiB before submit. Large data is referenced by storage key, URL, or sandbox path and transferred through typed streaming authorities, never embedded as a managed Tool argument.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "OperationInput".
  */
 export interface OperationInput {
@@ -311,7 +307,7 @@ export interface OperationInput {
   value: unknown;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "OperationEnvelope".
  */
 export interface OperationEnvelope {
@@ -326,6 +322,7 @@ export interface OperationEnvelope {
   binding_ref: Identifier;
   capability: Identifier;
   input: OperationInput;
+  phase: "setup" | "execute";
   target_ref?: string | null;
   deadline_at_ms: number;
   resources: ResourceCeiling;
@@ -337,7 +334,7 @@ export interface OperationEnvelope {
 /**
  * Durable execution locator carrying both the opaque receipt and the exact rooted target authority required to observe, cancel, acknowledge, and reconcile target loss.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "OperationRef".
  */
 export interface OperationRef {
@@ -350,12 +347,12 @@ export interface OperationRef {
    */
   target_ref: string;
   /**
-   * Opaque Hand-issued locator for the accepted physical execution. Brain journals it before observe/cancel/ack; it complements the Hand binding/preparation/target registry and never encodes product routing policy.
+   * Opaque Environment-issued locator for the accepted physical execution. Brain journals it before observe/cancel/ack; it complements the Environment binding/preparation/target registry and never encodes product routing policy.
    */
   receipt_ref: string;
 }
 /**
- * Exact rooted logical target accepted for this execution. Control and acknowledgement calls carry it back so Hand can reconcile its root-keyed target registry without a reverse index or scan.
+ * Exact rooted logical target accepted for this execution. Control and acknowledgement calls carry it back so Environment can reconcile its root-keyed target registry without a reverse index or scan.
  */
 export interface SandboxTarget1 {
   kind: TargetKind;
@@ -365,9 +362,9 @@ export interface SandboxTarget1 {
   sandbox_id?: Identifier | null;
 }
 /**
- * Hand-issued continuity locator for a materialized target. Brain journals and projects the newest receipt, then supplies target_ref and generation on later operations.
+ * Environment-issued continuity locator for a materialized target. Brain journals and projects the newest receipt, then supplies target_ref and generation on later operations.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "TargetReceipt".
  */
 export interface TargetReceipt {
@@ -376,7 +373,7 @@ export interface TargetReceipt {
   expires_at_ms: number;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "TerminalResult".
  */
 export interface TerminalResult {
@@ -394,9 +391,9 @@ export interface TerminalResult {
   duration_ms?: number;
 }
 /**
- * One bounded output observation emitted by a Hand. Brain treats it as provisional until the terminal receipt is durably journaled.
+ * One bounded output observation emitted by a Environment. Brain treats it as provisional until the terminal receipt is durably journaled.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "OutputChunk".
  */
 export interface OutputChunk {
@@ -405,7 +402,7 @@ export interface OutputChunk {
   text: string;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "OperationObservation".
  */
 export interface OperationObservation {
@@ -417,7 +414,7 @@ export interface OperationObservation {
   terminal?: TerminalResult | null;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SubmitRequest".
  */
 export interface SubmitRequest {
@@ -425,7 +422,7 @@ export interface SubmitRequest {
   wait_up_to_ms: number;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SubmitReceipt".
  */
 export interface SubmitReceipt {
@@ -434,7 +431,7 @@ export interface SubmitReceipt {
   observation: OperationObservation;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "ObserveRequest".
  */
 export interface ObserveRequest {
@@ -443,7 +440,7 @@ export interface ObserveRequest {
   wait_ms: number;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "CancelRequest".
  */
 export interface CancelRequest {
@@ -451,7 +448,7 @@ export interface CancelRequest {
   reason: string;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "CancellationReceipt".
  */
 export interface CancellationReceipt {
@@ -460,7 +457,7 @@ export interface CancellationReceipt {
   observation: OperationObservation;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "AcknowledgeTerminalRequest".
  */
 export interface AcknowledgeTerminalRequest {
@@ -468,14 +465,14 @@ export interface AcknowledgeTerminalRequest {
   terminal_digest: Digest;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "Acknowledgement".
  */
 export interface Acknowledgement {
   acknowledged: boolean;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxStatus".
  */
 export interface SandboxStatus {
@@ -488,7 +485,7 @@ export interface SandboxStatus {
   expires_at_ms: number | null;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "FileEntry".
  */
 export interface FileEntry {
@@ -499,7 +496,7 @@ export interface FileEntry {
   modified_at_ms: number;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxFileRequest".
  */
 export interface SandboxFileRequest {
@@ -508,9 +505,9 @@ export interface SandboxFileRequest {
   path: string;
 }
 /**
- * Effect identity is exact across ambiguous transport delivery. Hand retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect.
+ * Effect identity is exact across ambiguous transport delivery. Environment retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxFileWriteRequest".
  */
 export interface SandboxFileWriteRequest {
@@ -523,7 +520,7 @@ export interface SandboxFileWriteRequest {
   overwrite: boolean;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxFileWriteResult".
  */
 export interface SandboxFileWriteResult {
@@ -533,9 +530,9 @@ export interface SandboxFileWriteResult {
   file: FileEntry;
 }
 /**
- * Effect identity is exact across ambiguous transport delivery. Hand retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect.
+ * Effect identity is exact across ambiguous transport delivery. Environment retains and replays the byte-equivalent result for the same operation_id and request_digest until the target is purged; a different digest conflicts before effect.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxCopyRequest".
  */
 export interface SandboxCopyRequest {
@@ -552,7 +549,7 @@ export interface SandboxCopyRequest {
 /**
  * Import returns object=null. Export returns the uploaded object identity so Brain can verify and durably publish it.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxCopyResult".
  */
 export interface SandboxCopyResult {
@@ -565,7 +562,7 @@ export interface SandboxCopyResult {
 /**
  * Execute with /bin/bash -lc in the selected additional sandbox. Environment secrets are never accepted from model input; declared server-tool env is delivered through SecretCapability.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxExecInput".
  */
 export interface SandboxExecInput {
@@ -574,7 +571,7 @@ export interface SandboxExecInput {
   interactive: boolean;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "SandboxExecutionRequest".
  */
 export interface SandboxExecutionRequest {
@@ -587,7 +584,7 @@ export interface SandboxExecutionRequest {
   network: NetworkCeiling;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "PrepareSessionRequest".
  */
 export interface PrepareSessionRequest {
@@ -600,14 +597,14 @@ export interface PrepareSessionRequest {
   secret_capability?: SecretCapability | null;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "PreparedSession".
  */
 export interface PreparedSession {
   preparation_ref: Identifier;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "CreateSandboxRequest".
  */
 export interface CreateSandboxRequest {
@@ -618,9 +615,9 @@ export interface CreateSandboxRequest {
   network: NetworkCeiling;
 }
 /**
- * One idempotent stdin append/EOF/poll. Empty text with eof=false is a pure poll. UTF-8 payload bytes are additionally capped at 4096 so the Hand can perform one PIPE_BUF-bounded write; larger input must be split into separately identified requests.
+ * One idempotent stdin append/EOF/poll. Empty text with eof=false is a pure poll. UTF-8 payload bytes are additionally capped at 4096 so the Environment can perform one PIPE_BUF-bounded write; larger input must be split into separately identified requests.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "WriteStdinRequest".
  */
 export interface WriteStdinRequest {
@@ -635,7 +632,7 @@ export interface WriteStdinRequest {
 /**
  * Exact stdin-effect receipt plus the current bounded observation of the referenced interactive execution. Poll requests return accepted=false and still provide the observation.
  *
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "WriteStdinReceipt".
  */
 export interface WriteStdinReceipt {
@@ -646,11 +643,11 @@ export interface WriteStdinReceipt {
   observation: OperationObservation;
 }
 /**
- * This interface was referenced by `BrainHandContract`'s JSON-Schema
- * via the `definition` "HandError".
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
+ * via the `definition` "EnvironmentError".
  */
-export interface HandError {
-  code: HandErrorCode;
+export interface EnvironmentError {
+  code: EnvironmentErrorCode;
   message: string;
   retryable: boolean;
   details?: {

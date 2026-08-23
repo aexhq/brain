@@ -482,7 +482,7 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
     beta.assert_drained(2, "standalone beta").unwrap();
 
     // The Node runner, not the test process, created both files in distinct physical workspaces.
-    let workspace_values = walkdir::WalkDir::new(temp.0.join("local-hand/workspaces"))
+    let workspace_values = walkdir::WalkDir::new(temp.0.join("local-environment/workspaces"))
         .into_iter()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name() == "shared.txt")

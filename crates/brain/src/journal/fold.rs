@@ -103,7 +103,7 @@ impl Fold {
             | Record::TurnCompleted { .. }
             | Record::TurnFailed { .. }
             | Record::State { .. }
-            | Record::HandLost { .. }
+            | Record::EnvironmentLost { .. }
             | Record::StorageUploadReserved { .. }
             | Record::StorageUploadPublished { .. }
             | Record::StorageUploadCompleted { .. }

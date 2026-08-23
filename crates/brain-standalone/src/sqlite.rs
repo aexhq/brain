@@ -1875,17 +1875,18 @@ mod tests {
                 rendered_base_digest: String::new(),
                 prompt_cache_key: String::new(),
                 tools: vec![],
+                environments: HashMap::new(),
                 managed_bundles: vec![],
                 official_capabilities: HashMap::new(),
-                hand_enabled: false,
+                environment_enabled: false,
                 shape: "1gb".into(),
                 sync_interval_seconds: 600,
-                hand_env_keys: vec![],
+                environment_env_keys: vec![],
                 network: serde_json::json!({"outbound": "none"}),
                 metadata: HashMap::new(),
             },
             key_b64: String::new(),
-            hand_secrets_b64: String::new(),
+            environment_secrets_b64: String::new(),
             session_storage_bytes: 0,
             storage_reserved_bytes: 0,
             tenant_metered_storage_bytes: 0,
@@ -2220,7 +2221,7 @@ mod tests {
             first.sandbox_id
         );
         let mut terminal = first.status.clone();
-        terminal.state = brain_protocol::hand::SandboxState::Terminated;
+        terminal.state = brain_protocol::environment::SandboxState::Terminated;
         let tombstone = store
             .update_sandbox(&SandboxUpdateRequest {
                 root_id: first.root_id,

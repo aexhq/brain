@@ -202,16 +202,16 @@ pub fn router(state: AppState) -> Router {
             post(storage_copy_to_sandbox).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/customer-hand/grants",
-            post(customer_hand_grant).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
+            "/v1/customer-environment/grants",
+            post(customer_environment_grant).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/internal/v1/customer-hand/grants",
-            post(customer_hand_grant).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
+            "/internal/v1/customer-environment/grants",
+            post(customer_environment_grant).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/internal/v1/customer-hand/gateway",
-            post(customer_hand_gateway).layer(DefaultBodyLimit::max(
+            "/internal/v1/customer-environment/gateway",
+            post(customer_environment_gateway).layer(DefaultBodyLimit::max(
                 brain_protocol::MAX_CUSTOMER_WS_FRAME_BYTES,
             )),
         )
@@ -223,8 +223,8 @@ pub fn router(state: AppState) -> Router {
 
     let public_observation = Router::new()
         .route(
-            "/v1/customer-hand/observations/{grant_id}",
-            post(customer_hand_observation).layer(DefaultBodyLimit::max(
+            "/v1/customer-environment/observations/{grant_id}",
+            post(customer_environment_observation).layer(DefaultBodyLimit::max(
                 brain_protocol::MAX_CUSTOMER_OBSERVATION_BYTES,
             )),
         )
@@ -234,8 +234,8 @@ pub fn router(state: AppState) -> Router {
         ));
     let internal_observation = Router::new()
         .route(
-            "/internal/v1/customer-hand/observations/{grant_id}",
-            post(internal_customer_hand_observation).layer(DefaultBodyLimit::max(
+            "/internal/v1/customer-environment/observations/{grant_id}",
+            post(internal_customer_environment_observation).layer(DefaultBodyLimit::max(
                 brain_protocol::MAX_CUSTOMER_OBSERVATION_BYTES,
             )),
         )
@@ -246,7 +246,7 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/v1/customer-hand/socket", get(customer_hand_socket))
+        .route("/v1/customer-environment/socket", get(customer_environment_socket))
         .merge(operator)
         .merge(public_observation)
         .merge(internal_observation)

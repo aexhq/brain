@@ -7,7 +7,7 @@
 //! durable went through `Journal::commit` first.
 //!
 //! The brain is COMPOSED, not configured into a cloud: [`Brain::with_parts`] takes a journal
-//! store, key custody, typed Hand services and (optionally) a provider factory -- all trait
+//! store, key custody, typed Environment services and (optionally) a provider factory -- all trait
 //! objects (see [`crate::adapter`]). Durable local and cloud implementations live behind the
 //! same public ports.
 
@@ -17,7 +17,7 @@ use crate::compact::{
 };
 use crate::config::{AgentDef, Dialect, GenOpts, OutputTokenParameter, ProviderKey, SessionConfig};
 use crate::events::EventHub;
-use crate::hand::{managed_hand_resources, map_hand_port_error, sealed_sandbox_network};
+use crate::environment::{managed_environment_resources, map_environment_port_error, sealed_sandbox_network};
 use crate::journal::{
     ContextForkDoc, DELETION_TOMBSTONE_TTL_MS, DeletionState, DeletionStatusDoc, Entry, FailureDoc,
     Head, HeadDoc, Journal, Lease, PrefixDoc, ProviderAttemptState, Record, SessionLifecycle,
@@ -30,7 +30,7 @@ use crate::provider::Provider;
 use crate::turn::{TurnRun, TurnState};
 use crate::{BrainError, Result};
 use base64::Engine;
-use brain_protocol::hand::TerminalOutcome;
+use brain_protocol::environment::TerminalOutcome;
 use brain_protocol::session::ToolOutcome;
 use brain_protocol::session::{
     self, CreateSessionRequest, MessageRequestContent, Provider as ApiProvider,
@@ -80,13 +80,13 @@ pub struct Brain {
     /// the storage resource is unavailable, never an in-memory production fallback.
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
     pub bundle_storage: Option<Arc<dyn crate::storage::BundleStoragePort>>,
-    pub hand: Option<Arc<dyn crate::hand::HandPort>>,
-    pub session_preparation: Option<Arc<dyn crate::hand::SessionPreparationPort>>,
-    pub sandbox_files: Option<Arc<dyn crate::hand::SandboxFilesPort>>,
-    pub sandbox_control: Option<Arc<dyn crate::hand::SandboxControlPort>>,
+    pub environment: Option<Arc<dyn crate::environment::EnvironmentPort>>,
+    pub session_preparation: Option<Arc<dyn crate::environment::SessionPreparationPort>>,
+    pub sandbox_files: Option<Arc<dyn crate::environment::SandboxFilesPort>>,
+    pub sandbox_control: Option<Arc<dyn crate::environment::SandboxControlPort>>,
     /// Hosted customer-app delivery (for example API Gateway Management API). Absence means
     /// customer-app Tools are unavailable; Brain never silently routes them elsewhere.
-    pub customer_delivery: Option<Arc<dyn crate::customer::CustomerHandDeliveryPort>>,
+    pub customer_delivery: Option<Arc<dyn crate::customer::CustomerEnvironmentDeliveryPort>>,
     /// Customer-app connection/receipt coordinator. Present only when the composition supplied
     /// absolute socket and observation callback URLs.
     pub customer: Option<Arc<crate::customer::CustomerCoordinator>>,
@@ -119,7 +119,7 @@ pub struct Brain {
 
 struct RootExecutionSecrets {
     key: ProviderKey,
-    hand_env: HashMap<String, String>,
+    environment_env: HashMap<String, String>,
 }
 
 struct RootSecretCell {
@@ -138,7 +138,7 @@ const SANDBOX_TRANSFER_CLEANUP_SKEW_MS: u64 = 60_000;
 struct ManagedSecretGrant {
     root_id: String,
     session_id: String,
-    hand_id: String,
+    environment_id: String,
     binding_refs: HashSet<String>,
     env_names: Vec<String>,
     expires_at_ms: u64,
@@ -169,7 +169,7 @@ enum DirectSandboxTransferState {
     DownloadReady,
     UploadReady,
     Completing,
-    Completed(brain_protocol::hand::FileEntry),
+    Completed(brain_protocol::environment::FileEntry),
     Ambiguous,
 }
 
@@ -177,11 +177,11 @@ enum DirectSandboxTransferState {
 pub struct BrainServices {
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
     pub bundle_storage: Option<Arc<dyn crate::storage::BundleStoragePort>>,
-    pub hand: Option<Arc<dyn crate::hand::HandPort>>,
-    pub session_preparation: Option<Arc<dyn crate::hand::SessionPreparationPort>>,
-    pub sandbox_files: Option<Arc<dyn crate::hand::SandboxFilesPort>>,
-    pub sandbox_control: Option<Arc<dyn crate::hand::SandboxControlPort>>,
-    pub customer_delivery: Option<Arc<dyn crate::customer::CustomerHandDeliveryPort>>,
+    pub environment: Option<Arc<dyn crate::environment::EnvironmentPort>>,
+    pub session_preparation: Option<Arc<dyn crate::environment::SessionPreparationPort>>,
+    pub sandbox_files: Option<Arc<dyn crate::environment::SandboxFilesPort>>,
+    pub sandbox_control: Option<Arc<dyn crate::environment::SandboxControlPort>>,
+    pub customer_delivery: Option<Arc<dyn crate::customer::CustomerEnvironmentDeliveryPort>>,
     pub customer_transport: Option<crate::customer::CustomerTransportConfig>,
     pub compactor: Option<Arc<dyn crate::compact::CompactionPort>>,
     /// Selector-to-loop resolution. Compositions must supply it explicitly.
@@ -278,10 +278,10 @@ fn validate_model_tool_projection<'a>(
 }
 
 fn managed_bundle_descriptors(
-    hand_tools: &[(&crate::config::ToolDecl, &crate::config::HandToolSeal)],
+    environment_tools: &[(&crate::config::ToolDecl, &crate::config::EnvironmentToolSeal)],
     decoded_bundles: &[(String, Vec<u8>, String)],
-) -> Result<Vec<brain_protocol::hand::BundleDescriptor>> {
-    hand_tools
+) -> Result<Vec<brain_protocol::environment::BundleDescriptor>> {
+    environment_tools
         .iter()
         .map(|(decl, seal)| {
             let (_, bytes, media_type) = decoded_bundles
@@ -305,8 +305,11 @@ fn managed_bundle_descriptors(
                     "sha256": seal.checksum,
                 },
                 "required_env": seal.required_env,
-                "runtime": "node22",
+                "target": "linux-amd64",
+                "execute_path": format!("/artifacts/{}/execute", seal.checksum),
+                "setup_path": null,
                 "tool_name": decl.name,
+                "environment_name": seal.environment,
             }))
             .map_err(BrainError::from)
         })
@@ -314,8 +317,8 @@ fn managed_bundle_descriptors(
 }
 
 fn bundle_object_matches_descriptor(
-    object: &brain_protocol::hand::ObjectReference,
-    descriptor: &brain_protocol::hand::BundleDescriptor,
+    object: &brain_protocol::environment::ObjectReference,
+    descriptor: &brain_protocol::environment::BundleDescriptor,
 ) -> Result<bool> {
     // An uncomputable comparison is an error, never a match: `.ok() == .ok()` would report
     // two canonicalization failures as equality.
@@ -330,10 +333,10 @@ fn bundle_object_matches_descriptor(
 fn sealed_managed_binding(
     session_id: &str,
     doc: &HeadDoc,
-    descriptor: &brain_protocol::hand::BundleDescriptor,
-) -> Result<brain_protocol::hand::SealedBinding> {
+    descriptor: &brain_protocol::environment::BundleDescriptor,
+) -> Result<brain_protocol::environment::SealedBinding> {
     let network = sealed_sandbox_network(doc)?;
-    let resources = managed_hand_resources()?;
+    let resources = managed_environment_resources()?;
     let policy_digest = brain_protocol::contract::canonical_digest(&serde_json::json!({
         "network": network,
         "required_env": descriptor.required_env,
@@ -351,8 +354,7 @@ fn sealed_managed_binding(
         "contract_digest": descriptor.contract_digest,
         "implementation_identity": descriptor.bundle_digest,
         "policy_digest": policy_digest,
-        "realm": "aex_managed",
-        "realm_id": "node22",
+        "environment_name": descriptor.environment_name,
         "required_capabilities": ["execution", "session_preparation"],
         "root_id": doc.root_id,
         "session_id": session_id,
@@ -360,7 +362,7 @@ fn sealed_managed_binding(
     .map_err(BrainError::from)
 }
 
-pub(crate) fn default_sandbox_target(root_id: &str) -> Result<brain_protocol::hand::SandboxTarget> {
+pub(crate) fn default_sandbox_target(root_id: &str) -> Result<brain_protocol::environment::SandboxTarget> {
     let digest = hex::encode(Sha256::digest(
         format!("aex.default-target\0{root_id}").as_bytes(),
     ));
@@ -373,7 +375,7 @@ pub(crate) fn default_sandbox_target(root_id: &str) -> Result<brain_protocol::ha
     .map_err(BrainError::from)
 }
 
-fn initial_default_sandbox(root_id: &str) -> Result<brain_protocol::hand::SandboxStatus> {
+fn initial_default_sandbox(root_id: &str) -> Result<brain_protocol::environment::SandboxStatus> {
     serde_json::from_value(serde_json::json!({
         "state": "never_materialized",
         "target": default_sandbox_target(root_id)?,
@@ -385,7 +387,7 @@ fn initial_default_sandbox(root_id: &str) -> Result<brain_protocol::hand::Sandbo
 fn default_sandbox_request(
     doc: &HeadDoc,
     generation_intent: &str,
-) -> Result<brain_protocol::hand::CreateSandboxRequest> {
+) -> Result<brain_protocol::environment::CreateSandboxRequest> {
     sandbox_create_request(
         doc,
         default_sandbox_target(&doc.root_id)?,
@@ -395,9 +397,9 @@ fn default_sandbox_request(
 
 fn sandbox_create_request(
     doc: &HeadDoc,
-    target: brain_protocol::hand::SandboxTarget,
+    target: brain_protocol::environment::SandboxTarget,
     generation_intent: &str,
-) -> Result<brain_protocol::hand::CreateSandboxRequest> {
+) -> Result<brain_protocol::environment::CreateSandboxRequest> {
     serde_json::from_value(serde_json::json!({
         "target": target,
         "generation_intent": generation_intent,
@@ -512,7 +514,7 @@ enum Command {
         reply: oneshot::Sender<Result<HeadDoc>>,
     },
     MaterializeDefaultSandbox {
-        reply: oneshot::Sender<Result<brain_protocol::hand::SandboxStatus>>,
+        reply: oneshot::Sender<Result<brain_protocol::environment::SandboxStatus>>,
     },
     WriteDefaultSandboxFile {
         operation_id: String,
@@ -520,7 +522,7 @@ enum Command {
         path: String,
         content_base64: String,
         overwrite: bool,
-        reply: oneshot::Sender<Result<brain_protocol::hand::FileEntry>>,
+        reply: oneshot::Sender<Result<brain_protocol::environment::FileEntry>>,
     },
     CopyStorageToDefaultSandbox {
         operation_id: String,
@@ -528,7 +530,7 @@ enum Command {
         key: String,
         path: String,
         overwrite: bool,
-        reply: oneshot::Sender<Result<brain_protocol::hand::FileEntry>>,
+        reply: oneshot::Sender<Result<brain_protocol::environment::FileEntry>>,
     },
     CopyDefaultSandboxToStorage {
         operation_id: String,
@@ -624,7 +626,7 @@ impl Brain {
             external_executor,
             session_storage: services.session_storage,
             bundle_storage: services.bundle_storage,
-            hand: services.hand,
+            environment: services.environment,
             session_preparation: services.session_preparation,
             sandbox_files: services.sandbox_files,
             sandbox_control: services.sandbox_control,
@@ -693,18 +695,18 @@ impl Brain {
                     .custody
                     .decrypt(&doc.root_id, &blob_from_b64(&doc.key_b64)?)
                     .await?;
-                let hand_env = if doc.hand_secrets_b64.is_empty() {
+                let environment_env = if doc.environment_secrets_b64.is_empty() {
                     HashMap::new()
                 } else {
                     let plain = self
                         .custody
-                        .decrypt(&doc.root_id, &blob_from_b64(&doc.hand_secrets_b64)?)
+                        .decrypt(&doc.root_id, &blob_from_b64(&doc.environment_secrets_b64)?)
                         .await?;
                     serde_json::from_str(plain.expose()).map_err(|error| {
                         BrainError::Custody(format!("managed Tool secret document: {error}"))
                     })?
                 };
-                Ok::<_, BrainError>(Arc::new(RootExecutionSecrets { key, hand_env }))
+                Ok::<_, BrainError>(Arc::new(RootExecutionSecrets { key, environment_env }))
             })
             .await?
             .clone();
@@ -715,10 +717,10 @@ impl Brain {
         &self,
         session_id: &str,
         doc: &HeadDoc,
-        hand_id: &str,
+        environment_id: &str,
         binding_refs: HashSet<String>,
         mut env_names: Vec<String>,
-    ) -> Result<Option<brain_protocol::hand::SecretCapability>> {
+    ) -> Result<Option<brain_protocol::environment::SecretCapability>> {
         env_names.sort_unstable();
         env_names.dedup();
         if env_names.is_empty() {
@@ -727,7 +729,7 @@ impl Brain {
         if env_names.len() > brain_protocol::MAX_SESSION_SECRET_NAMES
             || env_names
                 .iter()
-                .any(|name| !doc.prefix.hand_env_keys.contains(name))
+                .any(|name| !doc.prefix.environment_env_keys.contains(name))
         {
             return Err(BrainError::Invalid(
                 "managed Tool secret names are outside the immutable session seal".into(),
@@ -750,7 +752,7 @@ impl Brain {
                 ManagedSecretGrant {
                     root_id: doc.root_id.clone(),
                     session_id: session_id.to_owned(),
-                    hand_id: hand_id.to_owned(),
+                    environment_id: environment_id.to_owned(),
                     binding_refs,
                     env_names: env_names.clone(),
                     expires_at_ms,
@@ -770,15 +772,15 @@ impl Brain {
         &self,
         session_id: &str,
         doc: &HeadDoc,
-    ) -> Result<Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>> {
+    ) -> Result<Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>> {
         if doc.prefix.managed_bundles.is_empty() {
             return Ok(Arc::new(HashMap::new()));
         }
-        let hand = self.hand.as_ref().ok_or_else(|| {
-            BrainError::Invalid("managed Tools require the canonical Hand execution port".into())
+        let environment = self.environment.as_ref().ok_or_else(|| {
+            BrainError::Invalid("managed Tools require the canonical Environment execution port".into())
         })?;
         let preparation = self.session_preparation.as_ref().ok_or_else(|| {
-            BrainError::Invalid("managed Tools require the canonical Hand preparation port".into())
+            BrainError::Invalid("managed Tools require the canonical Environment preparation port".into())
         })?;
         let bundle_storage = self.bundle_storage.as_ref().ok_or_else(|| {
             BrainError::Invalid("managed Tools require durable Tool-bundle custody".into())
@@ -786,39 +788,38 @@ impl Brain {
 
         let mut prepared_bindings = Vec::with_capacity(doc.prefix.managed_bundles.len());
         let mut resolved_by_tool = HashMap::with_capacity(doc.prefix.managed_bundles.len());
-        let mut hand_id = None::<String>;
+        let mut environment_id = None::<String>;
         let mut binding_refs = HashSet::new();
         let mut env_names = Vec::new();
         for descriptor in &doc.prefix.managed_bundles {
             let binding = sealed_managed_binding(session_id, doc, descriptor)?;
-            let resolved = hand
+            let resolved = environment
                 .resolve_binding(binding)
                 .await
-                .map_err(map_hand_port_error)?;
-            if resolved.realm != brain_protocol::hand::ExecutionRealm::AexManaged
-                || resolved.recovery != brain_protocol::hand::RecoveryClass::Retained
+                .map_err(map_environment_port_error)?;
+            if resolved.recovery != brain_protocol::environment::RecoveryClass::Retained
                 || !resolved
                     .capabilities
-                    .contains(&brain_protocol::hand::HandCapability::Execution)
+                    .contains(&brain_protocol::environment::EnvironmentCapability::Execution)
                 || !resolved
                     .capabilities
-                    .contains(&brain_protocol::hand::HandCapability::SessionPreparation)
+                    .contains(&brain_protocol::environment::EnvironmentCapability::SessionPreparation)
                 || resolved.limits.max_inline_input_bytes.get()
                     < brain_protocol::MAX_MANAGED_TOOL_INPUT_BYTES as u64
                 || resolved.limits.max_inline_result_bytes.get()
                     < brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES as u64
             {
-                return Err(BrainError::HandUnavailable(
+                return Err(BrainError::EnvironmentUnavailable(
                     "resolved managed binding cannot enforce the immutable execution seal".into(),
                 ));
             }
-            match &hand_id {
-                Some(expected) if expected != resolved.hand_id.as_str() => {
-                    return Err(BrainError::HandUnavailable(
-                        "one session's managed bindings resolved to different Hands".into(),
+            match &environment_id {
+                Some(expected) if expected != resolved.environment_id.as_str() => {
+                    return Err(BrainError::EnvironmentUnavailable(
+                        "one session's managed bindings resolved to different Environments".into(),
                     ));
                 }
-                None => hand_id = Some(resolved.hand_id.to_string()),
+                None => environment_id = Some(resolved.environment_id.to_string()),
                 _ => {}
             }
             env_names.extend(
@@ -857,16 +858,16 @@ impl Brain {
         let secret_capability = self.mint_managed_secret_capability(
             session_id,
             doc,
-            hand_id.as_deref().expect("managed bindings are nonempty"),
+            environment_id.as_deref().expect("managed bindings are nonempty"),
             binding_refs,
             env_names,
         )?;
-        let request: brain_protocol::hand::PrepareSessionRequest =
+        let request: brain_protocol::environment::PrepareSessionRequest =
             serde_json::from_value(serde_json::json!({
                 "bindings": prepared_bindings,
                 "bundles": bundles,
                 "network": sealed_sandbox_network(doc)?,
-                "resources": managed_hand_resources()?,
+                "resources": managed_environment_resources()?,
                 "root_id": doc.root_id,
                 "secret_capability": secret_capability,
                 "session_id": session_id,
@@ -874,7 +875,7 @@ impl Brain {
         preparation
             .prepare(request)
             .await
-            .map_err(map_hand_port_error)?;
+            .map_err(map_environment_port_error)?;
         Ok(Arc::new(resolved_by_tool))
     }
 
@@ -1082,28 +1083,62 @@ impl Brain {
             }
         }
 
-        let hand_env: HashMap<String, String> = req
+        let environment_env: HashMap<String, String> = req
             .secrets
             .iter()
             .map(|(name, value)| (name.as_str().to_owned(), value.as_str().to_owned()))
             .collect();
+        let environments: HashMap<String, brain_protocol::session::EnvironmentConfig> = req
+            .environments
+            .as_ref()
+            .into_iter()
+            .flat_map(|environments| environments.iter())
+            .map(|(name, environment)| (name.as_str().to_owned(), environment.clone()))
+            .collect();
+        for decl in &decls {
+            let (environment_name, expected_profile) = match &decl.route {
+                crate::config::ToolRoute::Environment(seal) => {
+                    (seal.environment.as_str(), "computer")
+                }
+                crate::config::ToolRoute::Customer { environment, .. } => {
+                    (environment.as_str(), "callbacks")
+                }
+                _ => continue,
+            };
+            let environment = environments.get(environment_name).ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "tool {} is bound to undeclared environment {environment_name:?}",
+                    decl.name
+                ))
+            })?;
+            let actual_profile = match environment.profile.kind {
+                brain_protocol::session::EnvironmentProfileKind::Computer => "computer",
+                brain_protocol::session::EnvironmentProfileKind::Callbacks => "callbacks",
+            };
+            if actual_profile != expected_profile {
+                return Err(BrainError::Invalid(format!(
+                    "tool {} requires a {expected_profile} environment, but {environment_name:?} is {actual_profile}",
+                    decl.name
+                )));
+            }
+        }
         let shape = "1gb".to_string();
-        let hand_tools: Vec<_> = decls
+        let environment_tools: Vec<_> = decls
             .iter()
             .filter_map(|decl| match &decl.route {
-                crate::config::ToolRoute::Hand(seal) => Some((decl, seal)),
+                crate::config::ToolRoute::Environment(seal) => Some((decl, seal)),
                 _ => None,
             })
             .collect();
-        for (decl, seal) in &hand_tools {
+        for (decl, seal) in &environment_tools {
             let missing: Vec<_> = seal
                 .required_env
                 .iter()
-                .filter(|key| !hand_env.contains_key(*key))
+                .filter(|key| !environment_env.contains_key(*key))
                 .collect();
             if !missing.is_empty() {
                 return Err(BrainError::Invalid(format!(
-                    "tool {} is missing required Hand environment keys: {}",
+                    "tool {} is missing required Environment environment keys: {}",
                     decl.name,
                     missing
                         .into_iter()
@@ -1157,14 +1192,14 @@ impl Brain {
             }
             decoded_bundles.push((checksum, bytes, bundle.media_type.clone()));
         }
-        let referenced_bundle_checksums: HashSet<_> = hand_tools
+        let referenced_bundle_checksums: HashSet<_> = environment_tools
             .iter()
             .map(|(_, seal)| seal.checksum.as_str())
             .collect();
-        for (_, seal) in &hand_tools {
+        for (_, seal) in &environment_tools {
             if !bundle_checksums.contains(&seal.checksum) {
                 return Err(BrainError::Invalid(format!(
-                    "Hand bundle {} was not supplied",
+                    "Environment bundle {} was not supplied",
                     seal.checksum
                 )));
             }
@@ -1177,10 +1212,10 @@ impl Brain {
                 "unreferenced tool bundle {unused}"
             )));
         }
-        let managed_bundles = managed_bundle_descriptors(&hand_tools, &decoded_bundles)?;
+        let managed_bundles = managed_bundle_descriptors(&environment_tools, &decoded_bundles)?;
 
-        let mut hand_env_keys: Vec<_> = hand_env.keys().cloned().collect();
-        hand_env_keys.sort();
+        let mut environment_env_keys: Vec<_> = environment_env.keys().cloned().collect();
+        environment_env_keys.sort();
 
         // Seal the loop identity before anything else commits, rejecting a loop this
         // composition cannot run while the request is still refusable.
@@ -1265,12 +1300,13 @@ impl Brain {
             rendered_base_digest: String::new(),
             prompt_cache_key: format!("aex:{session_id}"),
             tools: tool_items,
+            environments,
             managed_bundles,
             official_capabilities,
-            hand_enabled: true,
+            environment_enabled: true,
             shape: shape.clone(),
             sync_interval_seconds: 0,
-            hand_env_keys,
+            environment_env_keys,
             metadata: req
                 .metadata
                 .iter()
@@ -1330,10 +1366,10 @@ impl Brain {
         // external effect. The plaintext key and session secrets never reach the journal.
         let key = ProviderKey::new(req.model.api_key.to_string());
         let blob = self.custody.encrypt(&session_id, &key).await?;
-        let hand_secrets_b64 = if hand_env.is_empty() {
+        let environment_secrets_b64 = if environment_env.is_empty() {
             String::new()
         } else {
-            let json = serde_json::to_string(&hand_env)?;
+            let json = serde_json::to_string(&environment_env)?;
             let encrypted = self
                 .custody
                 .encrypt(&session_id, &ProviderKey::new(json))
@@ -1372,7 +1408,7 @@ impl Brain {
             ended: false,
             prefix,
             key_b64: blob_to_b64(&blob),
-            hand_secrets_b64,
+            environment_secrets_b64,
             session_storage_bytes: 0,
             storage_reserved_bytes: 0,
             // Root-hidden managed bundles are not part of the public storage gauges, but they
@@ -1759,7 +1795,7 @@ impl Brain {
     pub async fn default_sandbox_status(
         &self,
         session_id: &str,
-    ) -> Result<brain_protocol::hand::SandboxStatus> {
+    ) -> Result<brain_protocol::environment::SandboxStatus> {
         let head = self.journal.get_head(session_id).await?;
         let root = if head.doc.root_id == session_id {
             head
@@ -1778,7 +1814,7 @@ impl Brain {
     pub async fn materialize_default_sandbox(
         self: &Arc<Self>,
         session_id: &str,
-    ) -> Result<brain_protocol::hand::SandboxStatus> {
+    ) -> Result<brain_protocol::environment::SandboxStatus> {
         let head = self.journal.get_head(session_id).await?;
         let root_id = head.doc.root_id.clone();
         self.deliver(&root_id, |reply| Command::MaterializeDefaultSandbox {
@@ -1791,7 +1827,7 @@ impl Brain {
         &self,
         session_id: &str,
         expected_generation: &str,
-    ) -> Result<brain_protocol::hand::SandboxTarget> {
+    ) -> Result<brain_protocol::environment::SandboxTarget> {
         let session = self.journal.get_head(session_id).await?;
         ensure_storage_readable(&session.doc, session_id)?;
         let root = if session.doc.root_id == session_id {
@@ -1811,8 +1847,8 @@ impl Brain {
             return Err(
                 if matches!(
                     status.state,
-                    brain_protocol::hand::SandboxState::Gone
-                        | brain_protocol::hand::SandboxState::Terminated
+                    brain_protocol::environment::SandboxState::Gone
+                        | brain_protocol::environment::SandboxState::Terminated
                 ) {
                     BrainError::SandboxGone
                 } else {
@@ -1821,18 +1857,18 @@ impl Brain {
             );
         }
         match status.state {
-            brain_protocol::hand::SandboxState::Running
-            | brain_protocol::hand::SandboxState::Suspended => Ok(status.target.clone()),
-            brain_protocol::hand::SandboxState::Gone
-            | brain_protocol::hand::SandboxState::Terminated => Err(BrainError::SandboxGone),
-            brain_protocol::hand::SandboxState::NeverMaterialized
-            | brain_protocol::hand::SandboxState::Creating => {
+            brain_protocol::environment::SandboxState::Running
+            | brain_protocol::environment::SandboxState::Suspended => Ok(status.target.clone()),
+            brain_protocol::environment::SandboxState::Gone
+            | brain_protocol::environment::SandboxState::Terminated => Err(BrainError::SandboxGone),
+            brain_protocol::environment::SandboxState::NeverMaterialized
+            | brain_protocol::environment::SandboxState::Creating => {
                 Err(BrainError::SandboxNotMaterialized)
             }
         }
     }
 
-    fn sandbox_files_port(&self) -> Result<&Arc<dyn crate::hand::SandboxFilesPort>> {
+    fn sandbox_files_port(&self) -> Result<&Arc<dyn crate::environment::SandboxFilesPort>> {
         self.sandbox_files.as_ref().ok_or_else(|| {
             BrainError::Invalid("sandbox files are unavailable in this composition".into())
         })
@@ -1845,13 +1881,13 @@ impl Brain {
         path: &str,
         cursor: Option<&str>,
         limit: u32,
-    ) -> Result<crate::hand::SandboxFileList> {
+    ) -> Result<crate::environment::SandboxFileList> {
         let path = normalize_workspace_path(path)?;
         let target = self
             .default_sandbox_file_target(session_id, generation)
             .await?;
         self.sandbox_files_port()?
-            .list(crate::hand::SandboxFileListRequest {
+            .list(crate::environment::SandboxFileListRequest {
                 target,
                 expected_generation: generation.to_owned(),
                 path,
@@ -1859,7 +1895,7 @@ impl Brain {
                 limit: limit.clamp(1, 100),
             })
             .await
-            .map_err(map_hand_port_error)
+            .map_err(map_environment_port_error)
     }
 
     pub async fn sandbox_file_stat(
@@ -1867,7 +1903,7 @@ impl Brain {
         session_id: &str,
         generation: &str,
         path: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         let path = normalize_workspace_path(path)?;
         let target = self
             .default_sandbox_file_target(session_id, generation)
@@ -1875,7 +1911,7 @@ impl Brain {
         self.sandbox_files_port()?
             .stat(sandbox_file_request(&target, generation, &path)?)
             .await
-            .map_err(map_hand_port_error)
+            .map_err(map_environment_port_error)
     }
 
     pub async fn sandbox_file_read_inline(
@@ -1884,7 +1920,7 @@ impl Brain {
         generation: &str,
         path: &str,
         max_bytes: u64,
-    ) -> Result<crate::hand::SandboxFileContent> {
+    ) -> Result<crate::environment::SandboxFileContent> {
         let path = normalize_workspace_path(path)?;
         let target = self
             .default_sandbox_file_target(session_id, generation)
@@ -1893,10 +1929,10 @@ impl Brain {
             .sandbox_files_port()?
             .read(sandbox_file_request(&target, generation, &path)?)
             .await
-            .map_err(map_hand_port_error)?;
+            .map_err(map_environment_port_error)?;
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&content.content_base64)
-            .map_err(|_| BrainError::Hand("sandbox returned invalid base64".into()))?;
+            .map_err(|_| BrainError::Environment("sandbox returned invalid base64".into()))?;
         let limit = max_bytes.min(1024 * 1024) as usize;
         if decoded.len() > limit || decoded.len() as u64 != content.entry.bytes {
             return Err(BrainError::FileTooLarge { limit });
@@ -1912,7 +1948,7 @@ impl Brain {
         content_base64: String,
         overwrite: bool,
         idempotency_key: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         if idempotency_key.is_empty() || idempotency_key.len() > 128 {
             return Err(BrainError::Invalid(
                 "Idempotency-Key must contain 1 to 128 bytes".into(),
@@ -1957,7 +1993,7 @@ impl Brain {
         cursor: Option<&str>,
         limit: u32,
         grep: bool,
-    ) -> Result<crate::hand::SandboxFileList> {
+    ) -> Result<crate::environment::SandboxFileList> {
         let path = normalize_workspace_path(path)?;
         if expression.is_empty() || expression.len() > 4096 {
             return Err(BrainError::Invalid(
@@ -1981,11 +2017,11 @@ impl Brain {
         } else {
             files.find(request).await
         }
-        .map_err(map_hand_port_error)
+        .map_err(map_environment_port_error)
     }
 
     /// Prepare a short-lived direct download of one generation-fenced sandbox file. Bytes are
-    /// exported through the existing exact-pair Hand copy operation into quota-metered hidden
+    /// exported through the existing exact-pair Environment copy operation into quota-metered hidden
     /// session storage; the public ticket never exposes that storage key.
     pub async fn sandbox_file_prepare_download(
         self: &Arc<Self>,
@@ -1999,7 +2035,7 @@ impl Brain {
         let entry = self
             .sandbox_file_stat(session_id, &generation, &path)
             .await?;
-        if entry.kind != brain_protocol::hand::FileEntryKind::File {
+        if entry.kind != brain_protocol::environment::FileEntryKind::File {
             return Err(BrainError::Invalid(
                 "sandbox download source must be a regular file".into(),
             ));
@@ -2054,7 +2090,7 @@ impl Brain {
         };
         let result = async {
             if object.bytes != entry.bytes {
-                return Err(BrainError::Hand(
+                return Err(BrainError::Environment(
                     "sandbox export changed size while preparing the download".into(),
                 ));
             }
@@ -2176,7 +2212,7 @@ impl Brain {
         self: &Arc<Self>,
         session_id: &str,
         transfer_id: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         if transfer_id.is_empty() || transfer_id.len() > 128 {
             return Err(BrainError::Invalid(
                 "sandbox transfer id must contain 1 to 128 bytes".into(),
@@ -2296,7 +2332,7 @@ impl Brain {
         generation: String,
         overwrite: bool,
         idempotency_key: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         crate::storage::validate_storage_key(&key)?;
         self.storage_copy_to_sandbox_admitted(
             session_id,
@@ -2317,7 +2353,7 @@ impl Brain {
         generation: String,
         overwrite: bool,
         operation_key: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         crate::storage::validate_internal_storage_key(&key)?;
         self.storage_copy_to_sandbox_admitted(
             session_id,
@@ -2338,7 +2374,7 @@ impl Brain {
         generation: String,
         overwrite: bool,
         operation_key: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         let operation_id = sandbox_file_effect_id(session_id, operation_key, "storage-to-sandbox")?;
         let path = normalize_workspace_path(&path)?;
         self.deliver(session_id, |reply| Command::CopyStorageToDefaultSandbox {
@@ -2509,13 +2545,13 @@ impl Brain {
     async fn persist_additional_sandbox_status(
         &self,
         current: &crate::journal::SandboxInventoryDoc,
-        status: brain_protocol::hand::SandboxStatus,
+        status: brain_protocol::environment::SandboxStatus,
     ) -> Result<crate::journal::SandboxInventoryDoc> {
-        use brain_protocol::hand::SandboxState;
+        use brain_protocol::environment::SandboxState;
 
         if !sandbox_status_matches_target(&status, &current.status.target)? {
-            return Err(BrainError::Hand(
-                "Hand returned a lifecycle receipt for a different sandbox target".into(),
+            return Err(BrainError::Environment(
+                "Environment returned a lifecycle receipt for a different sandbox target".into(),
             ));
         }
         if matches!(
@@ -2527,8 +2563,8 @@ impl Brain {
             .map(|generation| generation.as_str())
             != Some(current.generation_intent.as_str())
         {
-            return Err(BrainError::Hand(
-                "Hand returned a different additional-sandbox generation".into(),
+            return Err(BrainError::Environment(
+                "Environment returned a different additional-sandbox generation".into(),
             ));
         }
         if matches!(
@@ -2536,7 +2572,7 @@ impl Brain {
             SandboxState::Running | SandboxState::Suspended
         ) && (status.target_ref.is_none() || status.expires_at_ms.is_none())
         {
-            return Err(BrainError::Hand(
+            return Err(BrainError::Environment(
                 "live sandbox receipt lacks target_ref or hard expiry".into(),
             ));
         }
@@ -2993,17 +3029,17 @@ impl Brain {
 }
 
 fn secret_delivery_error(
-    code: brain_protocol::hand::HandErrorCode,
+    code: brain_protocol::environment::EnvironmentErrorCode,
     retryable: bool,
     message: &str,
-) -> brain_protocol::hand::HandError {
+) -> brain_protocol::environment::EnvironmentError {
     serde_json::from_value(serde_json::json!({
         "code": code,
         "details": {},
         "message": message,
         "retryable": retryable,
     }))
-    .expect("static secret-delivery Hand errors satisfy the contract")
+    .expect("static secret-delivery Environment errors satisfy the contract")
 }
 
 #[async_trait::async_trait]
@@ -3012,7 +3048,7 @@ impl crate::turn::EngineServices for Brain {
         &self,
         session_id: &str,
         doc: &HeadDoc,
-    ) -> Result<Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>> {
+    ) -> Result<Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>> {
         Brain::prepare_managed_session(self, session_id, doc).await
     }
 
@@ -3058,12 +3094,12 @@ impl crate::turn::EngineServices for Brain {
 }
 
 #[async_trait::async_trait]
-impl crate::hand::SecretDeliveryPort for Brain {
+impl crate::environment::SecretDeliveryPort for Brain {
     async fn redeem(
         &self,
-        request: brain_protocol::hand::SecretDeliveryRequest,
-    ) -> crate::hand::HandResult<crate::hand::SecretMaterial> {
-        use brain_protocol::hand::HandErrorCode;
+        request: brain_protocol::environment::SecretDeliveryRequest,
+    ) -> crate::environment::EnvironmentResult<crate::environment::SecretMaterial> {
+        use brain_protocol::environment::EnvironmentErrorCode;
 
         let now = crate::wall_ms();
         let grant = {
@@ -3076,7 +3112,7 @@ impl crate::hand::SecretDeliveryPort for Brain {
         }
         .ok_or_else(|| {
             secret_delivery_error(
-                HandErrorCode::CapabilityUnavailable,
+                EnvironmentErrorCode::CapabilityUnavailable,
                 false,
                 "secret capability is absent, expired, or already redeemed",
             )
@@ -3084,18 +3120,18 @@ impl crate::hand::SecretDeliveryPort for Brain {
 
         if grant.root_id != request.root_id.as_str()
             || grant.session_id != request.session_id.as_str()
-            || grant.hand_id != request.hand_id.as_str()
+            || grant.environment_id != request.environment_id.as_str()
             || request.target.root_id.as_str() != grant.root_id
             || request.target.session_id.as_str() != grant.session_id
             || !grant
                 .binding_refs
                 .contains(request.target.binding_ref.as_str())
-            || request.target.kind != brain_protocol::hand::TargetKind::Default
+            || request.target.kind != brain_protocol::environment::TargetKind::Default
         {
             return Err(secret_delivery_error(
-                HandErrorCode::BindingConflict,
+                EnvironmentErrorCode::BindingConflict,
                 false,
-                "secret capability does not match the exact Hand/session/target scope",
+                "secret capability does not match the exact Environment/session/target scope",
             ));
         }
 
@@ -3105,37 +3141,37 @@ impl crate::hand::SecretDeliveryPort for Brain {
             .await
             .map_err(|_| {
                 secret_delivery_error(
-                    HandErrorCode::TemporarilyUnavailable,
+                    EnvironmentErrorCode::TemporarilyUnavailable,
                     true,
                     "secret custody is temporarily unavailable",
                 )
             })?;
         if head.doc.root_id != grant.root_id || head.doc.state != SessionLifecycle::Open {
             return Err(secret_delivery_error(
-                HandErrorCode::CapabilityUnavailable,
+                EnvironmentErrorCode::CapabilityUnavailable,
                 false,
                 "session no longer permits managed secret delivery",
             ));
         }
         let (_, secrets) = self.root_execution_secrets(&head.doc).await.map_err(|_| {
             secret_delivery_error(
-                HandErrorCode::TemporarilyUnavailable,
+                EnvironmentErrorCode::TemporarilyUnavailable,
                 true,
                 "secret custody is temporarily unavailable",
             )
         })?;
         let mut values = HashMap::with_capacity(grant.env_names.len());
         for name in grant.env_names {
-            let value = secrets.hand_env.get(&name).ok_or_else(|| {
+            let value = secrets.environment_env.get(&name).ok_or_else(|| {
                 secret_delivery_error(
-                    HandErrorCode::CapabilityUnavailable,
+                    EnvironmentErrorCode::CapabilityUnavailable,
                     false,
                     "immutable managed secret material is incomplete",
                 )
             })?;
             values.insert(name, value.clone());
         }
-        Ok(crate::hand::SecretMaterial::new(values))
+        Ok(crate::environment::SecretMaterial::new(values))
     }
 }
 
@@ -3244,7 +3280,7 @@ fn engine_page_limit(input: &serde_json::Value, what: &str, default: u64) -> Res
 fn required_identifier(input: &serde_json::Value, field: &str, scope: &str) -> Result<String> {
     let value = required_bounded_string(input, field, 128, scope)?;
     value
-        .parse::<brain_protocol::hand::Identifier>()
+        .parse::<brain_protocol::environment::Identifier>()
         .map_err(|error| BrainError::Invalid(format!("{scope}.{field}: {error}")))?;
     Ok(value)
 }
@@ -3264,10 +3300,10 @@ fn validate_storage_prefix(prefix: &str) -> Result<()> {
 }
 
 fn sandbox_file_request(
-    target: &brain_protocol::hand::SandboxTarget,
+    target: &brain_protocol::environment::SandboxTarget,
     generation: &str,
     path: &str,
-) -> Result<brain_protocol::hand::SandboxFileRequest> {
+) -> Result<brain_protocol::environment::SandboxFileRequest> {
     serde_json::from_value(serde_json::json!({
         "target": target,
         "expected_generation": generation,
@@ -3281,7 +3317,7 @@ fn storage_object_reference(
     bytes: u64,
     sha256: &str,
     media_type: Option<&str>,
-) -> Result<brain_protocol::hand::ObjectReference> {
+) -> Result<brain_protocol::environment::ObjectReference> {
     serde_json::from_value(serde_json::json!({
         "object_id": object_id,
         "bytes": bytes,
@@ -3294,15 +3330,15 @@ fn storage_object_reference(
 #[allow(clippy::too_many_arguments)]
 fn sandbox_copy_request(
     operation_id: &str,
-    target: &brain_protocol::hand::SandboxTarget,
+    target: &brain_protocol::environment::SandboxTarget,
     generation: &str,
     path: &str,
-    object: Option<brain_protocol::hand::ObjectReference>,
+    object: Option<brain_protocol::environment::ObjectReference>,
     ticket: &crate::storage::StorageTransferTicket,
     direction: &str,
     overwrite: bool,
-) -> Result<brain_protocol::hand::SandboxCopyRequest> {
-    let mut request: brain_protocol::hand::SandboxCopyRequest =
+) -> Result<brain_protocol::environment::SandboxCopyRequest> {
+    let mut request: brain_protocol::environment::SandboxCopyRequest =
         serde_json::from_value(serde_json::json!({
             "operation_id": operation_id,
             "request_digest": "0".repeat(64),
@@ -3327,12 +3363,12 @@ fn sandbox_copy_request(
 }
 
 fn validate_sandbox_copy_result(
-    result: &brain_protocol::hand::SandboxCopyResult,
+    result: &brain_protocol::environment::SandboxCopyResult,
     operation_id: &str,
-    request_digest: &brain_protocol::hand::Digest,
+    request_digest: &brain_protocol::environment::Digest,
 ) -> Result<()> {
     if result.operation_id.as_str() != operation_id || &result.request_digest != request_digest {
-        return Err(BrainError::Hand(
+        return Err(BrainError::Environment(
             "sandbox copy receipt identity mismatch".into(),
         ));
     }
@@ -3343,7 +3379,7 @@ fn additional_sandbox_identity(
     root_id: &str,
     owner_session_id: &str,
     operation_id: &str,
-) -> Result<(String, String, brain_protocol::hand::SandboxTarget)> {
+) -> Result<(String, String, brain_protocol::environment::SandboxTarget)> {
     let identity = |domain: &str| {
         hex::encode(Sha256::digest(
             format!("aex.{domain}\0{root_id}\0{owner_session_id}\0{operation_id}").as_bytes(),
@@ -3382,23 +3418,23 @@ fn sandbox_request_digest(
 }
 
 fn sandbox_status_matches_target(
-    status: &brain_protocol::hand::SandboxStatus,
-    target: &brain_protocol::hand::SandboxTarget,
+    status: &brain_protocol::environment::SandboxStatus,
+    target: &brain_protocol::environment::SandboxTarget,
 ) -> Result<bool> {
     Ok(serde_json::to_value(&status.target)? == serde_json::to_value(target)?)
 }
 
-fn sandbox_status_releases_slot(status: &brain_protocol::hand::SandboxStatus) -> bool {
+fn sandbox_status_releases_slot(status: &brain_protocol::environment::SandboxStatus) -> bool {
     matches!(
         status.state,
-        brain_protocol::hand::SandboxState::Gone | brain_protocol::hand::SandboxState::Terminated
+        brain_protocol::environment::SandboxState::Gone | brain_protocol::environment::SandboxState::Terminated
     )
 }
 
 fn sandbox_gone_status(
-    current: &brain_protocol::hand::SandboxStatus,
+    current: &brain_protocol::environment::SandboxStatus,
     reason: &str,
-) -> Result<brain_protocol::hand::SandboxStatus> {
+) -> Result<brain_protocol::environment::SandboxStatus> {
     serde_json::from_value(serde_json::json!({
         "state": "gone",
         "target": current.target,
@@ -3413,13 +3449,13 @@ fn sandbox_gone_status(
 
 fn sandbox_file_write_request(
     operation_id: &str,
-    target: &brain_protocol::hand::SandboxTarget,
+    target: &brain_protocol::environment::SandboxTarget,
     generation: &str,
     path: &str,
     content: &[u8],
     overwrite: bool,
-) -> Result<brain_protocol::hand::SandboxFileWriteRequest> {
-    let mut request: brain_protocol::hand::SandboxFileWriteRequest =
+) -> Result<brain_protocol::environment::SandboxFileWriteRequest> {
+    let mut request: brain_protocol::environment::SandboxFileWriteRequest =
         serde_json::from_value(serde_json::json!({
             "operation_id": operation_id,
             "request_digest": "0".repeat(64),
@@ -3437,12 +3473,12 @@ fn sandbox_file_write_request(
 }
 
 fn validate_sandbox_file_write_result(
-    result: &brain_protocol::hand::SandboxFileWriteResult,
+    result: &brain_protocol::environment::SandboxFileWriteResult,
     operation_id: &str,
-    request_digest: &brain_protocol::hand::Digest,
+    request_digest: &brain_protocol::environment::Digest,
 ) -> Result<()> {
     if result.operation_id.as_str() != operation_id || &result.request_digest != request_digest {
-        return Err(BrainError::Hand(
+        return Err(BrainError::Environment(
             "sandbox file write receipt identity mismatch".into(),
         ));
     }
@@ -3450,14 +3486,14 @@ fn validate_sandbox_file_write_result(
 }
 
 fn sandbox_search_request(
-    target: &brain_protocol::hand::SandboxTarget,
+    target: &brain_protocol::environment::SandboxTarget,
     generation: &str,
     path: &str,
     expression: &str,
     cursor: Option<&str>,
     limit: u32,
-) -> Result<crate::hand::SandboxSearchRequest> {
-    Ok(crate::hand::SandboxSearchRequest {
+) -> Result<crate::environment::SandboxSearchRequest> {
+    Ok(crate::environment::SandboxSearchRequest {
         target: target.clone(),
         expected_generation: generation.to_owned(),
         path: path.to_owned(),
@@ -3511,7 +3547,7 @@ fn engine_outcome(
 struct Resident {
     st: TurnState,
     key: ProviderKey,
-    managed_bindings: Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>,
+    managed_bindings: Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>,
     /// Keeps the root-scoped OnceCell alive while any root/descendant actor is resident.
     _root_secrets: Arc<RootSecretCell>,
     message_replays: HashMap<String, MessageReplay>,
@@ -3521,13 +3557,13 @@ struct Running {
     handle: tokio::task::JoinHandle<(TurnState, RunningOutcome)>,
     cancel: CancellationToken,
     key: ProviderKey,
-    managed_bindings: Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>,
+    managed_bindings: Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>,
     root_secrets: Arc<RootSecretCell>,
     message_replays: HashMap<String, MessageReplay>,
     _heartbeat: LeaseHeartbeatGuard,
 }
 
-/// A lease renewal is deliberately independent from recovery scheduling. Long provider, Hand,
+/// A lease renewal is deliberately independent from recovery scheduling. Long provider, Environment,
 /// storage, and deletion effects keep ownership alive even while the actor is awaiting them. The
 /// due key is advanced only for immediate recoverable work; scheduled reservations keep their
 /// fixed expiry and quiescent sessions keep no due key at all.
@@ -3672,9 +3708,9 @@ struct RecoveredTurn {
 const MANAGED_UNKNOWN_SANDBOX_REASON: &str = "managed_operation_unknown_cleanup";
 
 fn managed_operation_running_status(
-    operation: &brain_protocol::hand::OperationRef,
+    operation: &brain_protocol::environment::OperationRef,
     expires_at_ms: std::num::NonZeroU64,
-) -> Result<brain_protocol::hand::SandboxStatus> {
+) -> Result<brain_protocol::environment::SandboxStatus> {
     serde_json::from_value(serde_json::json!({
         "state": "running",
         "target": operation.target,
@@ -3687,8 +3723,8 @@ fn managed_operation_running_status(
 }
 
 fn managed_operation_gone_status(
-    operation: &brain_protocol::hand::OperationRef,
-) -> Result<brain_protocol::hand::SandboxStatus> {
+    operation: &brain_protocol::environment::OperationRef,
+) -> Result<brain_protocol::environment::SandboxStatus> {
     serde_json::from_value(serde_json::json!({
         "state": "gone",
         "target": operation.target,
@@ -3974,7 +4010,7 @@ async fn actor(
                         match begin_end_session(&brain, &session_id, &mut resident).await {
                             Ok(doc) => {
                                 // The durable fence supersedes the parked turn's lease before we
-                                // signal cancellation. A cancellation-resistant provider/Hand can
+                                // signal cancellation. A cancellation-resistant provider/Environment can
                                 // finish its external wait, but every late journal decision loses
                                 // the fence and descendants already observe admission closed.
                                 if let Some(task) = running.take() {
@@ -3983,7 +4019,7 @@ async fn actor(
                                 }
                                 let pending = doc.state == SessionLifecycle::Ending;
                                 // The response proves the constant-size durable admission fence;
-                                // descendant traversal and Hand release happen only afterwards.
+                                // descendant traversal and Environment release happen only afterwards.
                                 let _ = reply.send(Ok(doc));
                                 if pending {
                                     match continue_end_session(
@@ -4307,7 +4343,7 @@ async fn settle_running(
     brain: &Arc<Brain>,
     session_id: &str,
     key: ProviderKey,
-    managed_bindings: Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>,
+    managed_bindings: Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>,
     root_secrets: Arc<RootSecretCell>,
     message_replays: HashMap<String, MessageReplay>,
     done: std::result::Result<(TurnState, RunningOutcome), tokio::task::JoinError>,
@@ -4336,10 +4372,10 @@ async fn settle_running(
             Some(TurnPhase::ManagedRunning | TurnPhase::ManagedCancelling)
         ) && matches!(
             error,
-            BrainError::HandUnavailable(_) | BrainError::Cancelled
+            BrainError::EnvironmentUnavailable(_) | BrainError::Cancelled
         ) =>
         {
-            // The managed intent is already durable and the effect may have crossed the Hand
+            // The managed intent is already durable and the effect may have crossed the Environment
             // boundary. Never manufacture a failed turn here. Release the lease with a due
             // anchor; exact submit/observe recovery reconstructs the terminal before the turn
             // can advance.
@@ -4567,7 +4603,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
     let (root_secret_cell, root_secrets) = brain.root_execution_secrets(&head.doc).await?;
     let key = root_secrets.key.clone();
     // A deleting session is past the subtree END barrier and can never execute another turn.
-    // Re-preparing its managed bindings here recreates Hand definition rows immediately before
+    // Re-preparing its managed bindings here recreates Environment definition rows immediately before
     // `purge_tree` removes them, so every cold deletion retry sees another nonempty purge page.
     let managed_bindings = if head.doc.state == SessionLifecycle::Deleting {
         Arc::new(HashMap::new())
@@ -4625,7 +4661,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             .default_sandbox
             .as_ref()
             .map(|status| status.state);
-        if state == Some(brain_protocol::hand::SandboxState::Creating) {
+        if state == Some(brain_protocol::environment::SandboxState::Creating) {
             materialize_default_sandbox_resident(brain, session_id, &mut resident).await?;
         } else {
             reconcile_default_sandbox_expiry(brain, session_id, &mut resident).await?;
@@ -4732,7 +4768,7 @@ async fn do_materialize_default_sandbox(
     brain: &Arc<Brain>,
     session_id: &str,
     resident: &mut Option<Resident>,
-) -> Result<brain_protocol::hand::SandboxStatus> {
+) -> Result<brain_protocol::environment::SandboxStatus> {
     let r = ensure_resident(brain, session_id, resident).await?;
     materialize_default_sandbox_resident(brain, session_id, r).await
 }
@@ -4742,8 +4778,8 @@ async fn default_sandbox_for_effect(
     session_id: &str,
     st: &TurnState,
     generation: &str,
-) -> Result<brain_protocol::hand::SandboxTarget> {
-    use brain_protocol::hand::SandboxState;
+) -> Result<brain_protocol::environment::SandboxTarget> {
+    use brain_protocol::environment::SandboxState;
 
     if st.head.ended || st.head.state != SessionLifecycle::Open {
         return Err(BrainError::SessionDeleted(session_id.to_owned()));
@@ -4796,7 +4832,7 @@ async fn do_write_default_sandbox_file(
     path: String,
     content_base64: String,
     overwrite: bool,
-) -> Result<brain_protocol::hand::FileEntry> {
+) -> Result<brain_protocol::environment::FileEntry> {
     let r = ensure_resident(brain, session_id, resident).await?;
     let target = default_sandbox_for_effect(brain, session_id, &r.st, &generation).await?;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -4832,10 +4868,10 @@ async fn do_write_default_sandbox_file(
         .write(request)
         .await
         .map_err(|error| {
-            if error.code == brain_protocol::hand::HandErrorCode::BindingConflict {
+            if error.code == brain_protocol::environment::EnvironmentErrorCode::BindingConflict {
                 BrainError::IdempotencyConflict
             } else {
-                map_hand_port_error(error)
+                map_environment_port_error(error)
             }
         })?;
     validate_sandbox_file_write_result(&result, &operation_id, &request_digest)?;
@@ -4869,7 +4905,7 @@ async fn do_copy_storage_to_default_sandbox(
     key: String,
     path: String,
     overwrite: bool,
-) -> Result<brain_protocol::hand::FileEntry> {
+) -> Result<brain_protocol::environment::FileEntry> {
     let r = ensure_resident(brain, session_id, resident).await?;
     let target = default_sandbox_for_effect(brain, session_id, &r.st, &generation).await?;
     ensure_storage_readable(&r.st.head, session_id)?;
@@ -4919,15 +4955,15 @@ async fn do_copy_storage_to_default_sandbox(
         .transfer(request)
         .await
         .map_err(|error| {
-            if error.code == brain_protocol::hand::HandErrorCode::BindingConflict {
+            if error.code == brain_protocol::environment::EnvironmentErrorCode::BindingConflict {
                 BrainError::IdempotencyConflict
             } else {
-                map_hand_port_error(error)
+                map_environment_port_error(error)
             }
         })?;
     validate_sandbox_copy_result(&result, &operation_id, &request_digest)?;
     if result.object.is_some() {
-        return Err(BrainError::Hand(
+        return Err(BrainError::Environment(
             "sandbox import returned an unexpected object identity".into(),
         ));
     }
@@ -4968,8 +5004,8 @@ async fn do_copy_default_sandbox_to_storage(
     let entry = files
         .stat(sandbox_file_request(&target, &generation, &path)?)
         .await
-        .map_err(map_hand_port_error)?;
-    if entry.kind != brain_protocol::hand::FileEntryKind::File {
+        .map_err(map_environment_port_error)?;
+    if entry.kind != brain_protocol::environment::FileEntryKind::File {
         return Err(BrainError::Invalid(
             "sandbox copy source must be a regular file".into(),
         ));
@@ -5020,18 +5056,18 @@ async fn do_copy_default_sandbox_to_storage(
     )
     .await?;
     let result = files.transfer(request).await.map_err(|error| {
-        if error.code == brain_protocol::hand::HandErrorCode::BindingConflict {
+        if error.code == brain_protocol::environment::EnvironmentErrorCode::BindingConflict {
             BrainError::IdempotencyConflict
         } else {
-            map_hand_port_error(error)
+            map_environment_port_error(error)
         }
     })?;
     validate_sandbox_copy_result(&result, &operation_id, &request_digest)?;
     let exported = result.object.as_ref().ok_or_else(|| {
-        BrainError::Hand("sandbox export omitted its uploaded object identity".into())
+        BrainError::Environment("sandbox export omitted its uploaded object identity".into())
     })?;
     if exported.object_id.as_str() != ticket.object_id || exported.bytes != entry.bytes {
-        return Err(BrainError::Hand(
+        return Err(BrainError::Environment(
             "sandbox export returned a different object identity".into(),
         ));
     }
@@ -5066,8 +5102,8 @@ async fn materialize_default_sandbox_resident(
     brain: &Arc<Brain>,
     session_id: &str,
     r: &mut Resident,
-) -> Result<brain_protocol::hand::SandboxStatus> {
-    use brain_protocol::hand::SandboxState;
+) -> Result<brain_protocol::environment::SandboxStatus> {
+    use brain_protocol::environment::SandboxState;
 
     if r.st.head.root_id != session_id {
         return Err(BrainError::Invalid(
@@ -5106,7 +5142,7 @@ async fn materialize_default_sandbox_resident(
         crate::mint_id("gen", 20)
     };
     let target = default_sandbox_target(session_id)?;
-    let creating: brain_protocol::hand::SandboxStatus =
+    let creating: brain_protocol::environment::SandboxStatus =
         serde_json::from_value(serde_json::json!({
             "state": "creating",
             "target": target,
@@ -5128,17 +5164,17 @@ async fn materialize_default_sandbox_resident(
 
     let request = default_sandbox_request(&r.st.head, &generation_intent)?;
     let preparation = brain.session_preparation.as_ref().ok_or_else(|| {
-        BrainError::HandUnavailable("default sandbox preparation is unavailable".into())
+        BrainError::EnvironmentUnavailable("default sandbox preparation is unavailable".into())
     })?;
     let status = preparation
         .materialize_default(request)
         .await
-        .map_err(map_hand_port_error)?;
+        .map_err(map_environment_port_error)?;
     if serde_json::to_value(&status.target)?
         != serde_json::to_value(default_sandbox_target(session_id)?)?
     {
-        return Err(BrainError::Hand(
-            "Hand returned a default sandbox for a different logical target".into(),
+        return Err(BrainError::Environment(
+            "Environment returned a default sandbox for a different logical target".into(),
         ));
     }
     if matches!(
@@ -5148,7 +5184,7 @@ async fn materialize_default_sandbox_resident(
         || status.target_ref.is_none()
         || status.expires_at_ms.is_none())
     {
-        return Err(BrainError::Hand(
+        return Err(BrainError::Environment(
             "materialized sandbox receipt lacks generation, target_ref, or expiry".into(),
         ));
     }
@@ -5174,7 +5210,7 @@ async fn reconcile_default_sandbox_expiry(
     session_id: &str,
     resident: &mut Resident,
 ) -> Result<()> {
-    use brain_protocol::hand::SandboxState;
+    use brain_protocol::environment::SandboxState;
 
     let Some(current) = resident.st.head.default_sandbox.clone() else {
         return Ok(());
@@ -5191,7 +5227,7 @@ async fn reconcile_default_sandbox_expiry(
     let status = if let Some(files) = &brain.sandbox_files {
         match files.status(current.target.clone()).await {
             Ok(status) => status,
-            Err(error) if error.code == brain_protocol::hand::HandErrorCode::SandboxGone => {
+            Err(error) if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone => {
                 serde_json::from_value(serde_json::json!({
                     "state": "gone",
                     "target": current.target,
@@ -5202,7 +5238,7 @@ async fn reconcile_default_sandbox_expiry(
                     "reason": "hard_expiry",
                 }))?
             }
-            Err(error) => return Err(map_hand_port_error(error)),
+            Err(error) => return Err(map_environment_port_error(error)),
         }
     } else {
         // Local process-backed targets have no independent status port. Their sealed hard
@@ -5228,7 +5264,7 @@ async fn reconcile_default_sandbox_expiry(
     .await
 }
 
-/// Admits one message: journals the decision, pokes the adapter, hands back the turn
+/// Admits one message: journals the decision, pokes the adapter, environments back the turn
 /// identity. 202 semantics: the reply happens after this commit succeeds.
 async fn admit(
     brain: &Arc<Brain>,
@@ -5368,7 +5404,7 @@ fn turn_run(
         provider_total_timeout: brain.cfg.provider_total_timeout,
         compactor: brain.compactor.clone(),
         external_executor: brain.external_executor.clone(),
-        hand: brain.hand.clone(),
+        environment: brain.environment.clone(),
         managed_bindings: r.managed_bindings.clone(),
         customer: brain.customer.clone(),
         tenant_id: r.st.head.tenant_id.clone(),
@@ -5410,7 +5446,7 @@ async fn fail_turn_now(
         BrainError::ProviderStatus { .. } | BrainError::Transport(_) | BrainError::Protocol(_) => {
             ("provider_error", false)
         }
-        BrainError::HandUnavailable(_) => ("hand_unavailable", false),
+        BrainError::EnvironmentUnavailable(_) => ("environment_unavailable", false),
         BrainError::Agentloop(_) => ("agentloop_error", false),
         BrainError::SessionFailed(_) => ("session_failed", true),
         BrainError::Fenced => return Ok(()), // a newer owner exists; nothing to write
@@ -5521,7 +5557,7 @@ async fn create_child_session(
     // root-scoped and shared by reference: child creation never decrypts or re-encrypts provider
     // or managed-Tool secrets. Cold hydration uses `root_id` as the custody scope.
     let key_b64 = root.doc.key_b64.clone();
-    let hand_secrets_b64 = root.doc.hand_secrets_b64.clone();
+    let environment_secrets_b64 = root.doc.environment_secrets_b64.clone();
     let mut ancestor_ids = parent.doc.ancestor_ids.clone();
     ancestor_ids.push(parent_id.to_owned());
     let child = HeadDoc {
@@ -5555,7 +5591,7 @@ async fn create_child_session(
         ended: false,
         prefix: parent.doc.prefix.clone(),
         key_b64,
-        hand_secrets_b64,
+        environment_secrets_b64,
         session_storage_bytes: 0,
         storage_reserved_bytes: 0,
         tenant_metered_storage_bytes: 0,
@@ -5944,7 +5980,7 @@ fn materialize_session_history(
 }
 
 /// Commit the constant-size subtree admission fence and return it to the caller. No child
-/// traversal or Hand operation is allowed before this decision: a successful response therefore
+/// traversal or Environment operation is allowed before this decision: a successful response therefore
 /// means every later descendant admission observes an ending ancestor, even if this process dies
 /// immediately after replying.
 async fn begin_end_session(
@@ -6057,7 +6093,7 @@ async fn dematerialize_default_sandbox_for_end(
     session_id: &str,
     resident: &mut Resident,
 ) -> Result<()> {
-    use brain_protocol::hand::SandboxState;
+    use brain_protocol::environment::SandboxState;
 
     let current = resident
         .st
@@ -6072,7 +6108,7 @@ async fn dematerialize_default_sandbox_for_end(
         return Ok(());
     }
     let preparation = brain.session_preparation.as_ref().ok_or_else(|| {
-        BrainError::HandUnavailable(
+        BrainError::EnvironmentUnavailable(
             "default sandbox dematerialization is unavailable during session end".into(),
         )
     })?;
@@ -6084,16 +6120,16 @@ async fn dematerialize_default_sandbox_for_end(
         Err(error)
             if matches!(
                 error.code,
-                brain_protocol::hand::HandErrorCode::SandboxGone
-                    | brain_protocol::hand::HandErrorCode::SandboxNotMaterialized
+                brain_protocol::environment::EnvironmentErrorCode::SandboxGone
+                    | brain_protocol::environment::EnvironmentErrorCode::SandboxNotMaterialized
             ) =>
         {
-            sandbox_gone_status(&current, "hand_reported_gone")?
+            sandbox_gone_status(&current, "environment_reported_gone")?
         }
-        Err(error) => return Err(map_hand_port_error(error)),
+        Err(error) => return Err(map_environment_port_error(error)),
     };
     if !matches!(status.state, SandboxState::Gone | SandboxState::Terminated) {
-        return Err(BrainError::Hand(
+        return Err(BrainError::Environment(
             "default sandbox dematerialization did not return a terminal state".into(),
         ));
     }
@@ -6112,7 +6148,7 @@ async fn dematerialize_default_sandbox_for_end(
 ///
 /// A root END owns every inventory item. A child END owns only items whose immutable lifecycle
 /// owner is that child; each descendant reaches ENDED only after cleaning its own items, so the
-/// parent's already-settled child barrier covers the rest of the subtree without scanning Hand or
+/// parent's already-settled child barrier covers the rest of the subtree without scanning Environment or
 /// fabricating ownership. Terminal rows remain tombstoned until root deletion and release their
 /// live slot exactly once through the version-fenced journal update.
 async fn terminate_additional_sandboxes_for_end(
@@ -6138,19 +6174,19 @@ async fn terminate_additional_sandboxes_for_end(
                 continue;
             }
             let control = brain.sandbox_control.as_ref().ok_or_else(|| {
-                BrainError::HandUnavailable(
+                BrainError::EnvironmentUnavailable(
                     "additional sandbox control is unavailable during session end".into(),
                 )
             })?;
             let status = match control.terminate(current.status.target.clone()).await {
                 Ok(status) => status,
-                Err(error) if error.code == brain_protocol::hand::HandErrorCode::SandboxGone => {
-                    sandbox_gone_status(&current.status, "hand_reported_gone")?
+                Err(error) if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone => {
+                    sandbox_gone_status(&current.status, "environment_reported_gone")?
                 }
-                Err(error) => return Err(map_hand_port_error(error)),
+                Err(error) => return Err(map_environment_port_error(error)),
             };
             if !sandbox_status_releases_slot(&status) {
-                return Err(BrainError::Hand(
+                return Err(BrainError::Environment(
                     "sandbox termination did not return a confirmed terminal state".into(),
                 ));
             }
@@ -6193,7 +6229,7 @@ async fn delete_session(
 
 fn deletion_error_code(error: &BrainError) -> &'static str {
     match error {
-        BrainError::Hand(_) | BrainError::HandUnavailable(_) => "sandbox_cleanup_failed",
+        BrainError::Environment(_) | BrainError::EnvironmentUnavailable(_) => "sandbox_cleanup_failed",
         BrainError::FileNotFound(_)
         | BrainError::FileTooLarge { .. }
         | BrainError::StorageObjectTooLarge { .. }
@@ -6222,7 +6258,7 @@ async fn begin_delete_session(
         r.st.head.state == SessionLifecycle::Ending
     };
     if end_pending && !continue_end_session(brain, session_id, resident).await? {
-        return Err(BrainError::HandUnavailable(
+        return Err(BrainError::EnvironmentUnavailable(
             "session subtree end remains pending".into(),
         ));
     }
@@ -6326,16 +6362,16 @@ async fn continue_delete_session(
             preparation
                 .purge_tree(session_id)
                 .await
-                .map_err(map_hand_port_error)?;
+                .map_err(map_environment_port_error)?;
         } else if !r.st.head.prefix.managed_bundles.is_empty() {
-            return Err(BrainError::HandUnavailable(
+            return Err(BrainError::EnvironmentUnavailable(
                 "managed Tool purge is unavailable during root deletion".into(),
             ));
         }
         if let Some(bundle_storage) = &brain.bundle_storage {
             bundle_storage.purge_root_bundles(session_id).await?;
         } else if !r.st.head.prefix.managed_bundles.is_empty() {
-            return Err(BrainError::HandUnavailable(
+            return Err(BrainError::EnvironmentUnavailable(
                 "managed Tool bundle purge is unavailable during root deletion".into(),
             ));
         }
