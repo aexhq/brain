@@ -54,6 +54,7 @@ struct LocalManagedSpec {
     description: Option<String>,
     contract_digest: String,
     bundle_digest: String,
+    code_digest: String,
     required_env: Vec<String>,
 }
 
@@ -105,10 +106,7 @@ mod typed_local_tests {
     }
 
     fn bundle(dir: &Path) -> (Vec<u8>, String, String) {
-        let contract = "1".repeat(64);
-        let source = format!(
-            "export default {{kind:'brain.tool-runtime',name:'echo',description:null,contractDigest:'{contract}',requiredEnv:[],execute:async(input,context)=>({{...input,operation:context.operationId}})}};"
-        );
+        let source = "export default {kind:'tool-runtime/v1',name:'echo',execute:async(input,context)=>({...input,operation:context.operationId})};".to_owned();
         let bytes = source.into_bytes();
         let digest = hex::encode(sha2::Sha256::digest(&bytes));
         let path = dir.join("source.mjs");
@@ -127,14 +125,21 @@ mod typed_local_tests {
                 "bundle_digest": digest,
                 "bytes": bytes,
                 "target": "linux-amd64",
-                "execute_path": format!("/artifacts/{digest}/execute"),
+                "execute_path": "/tool/runtime.mjs",
                 "setup_path": null,
-                "object": {
-                    "object_id": format!("bundle_{digest}"),
+                "layers": [{
+                    "digest": digest,
                     "bytes": bytes,
-                    "sha256": digest,
                     "media_type": "application/javascript+esm",
-                },
+                    "mount_path": "/tool/runtime.mjs",
+                    "unpack": "file",
+                    "object": {
+                        "object_id": format!("bundle_{digest}"),
+                        "bytes": bytes,
+                        "sha256": digest,
+                        "media_type": "application/javascript+esm",
+                    }
+                }],
                 "tool_name": "echo",
                 "environment_name": "workspace",
                 "description": null,
@@ -156,19 +161,20 @@ mod typed_local_tests {
     async fn prepare(environment: &LocalEnvironment, binding: SealedBinding, url: &str) {
         environment.resolve_binding(binding.clone()).await.unwrap();
         let descriptor = binding.bundle.as_ref().unwrap();
+        let layer = &descriptor.layers[0];
         let request = typed(json!({
             "session_id": "ses_local",
             "root_id": "ses_local",
             "bindings": [{
                 "binding_ref": "bnd_echo",
-                "bundle_digests": [descriptor.bundle_digest],
+                "bundle_digests": [layer.digest],
             }],
             "bundles": [{
-                "bundle_digest": descriptor.bundle_digest,
+                "bundle_digest": layer.digest,
                 "url": url,
                 "headers": {},
                 "expires_at_ms": brain::wall_ms() + 60_000,
-                "max_bytes": descriptor.bytes,
+                "max_bytes": layer.bytes,
             }],
             "network": {"kind":"none"},
             "resources": {
@@ -723,6 +729,7 @@ impl LocalWorkspace {
         input: Value,
         operation_id: &str,
         deadline_at_ms: u64,
+        phase: brain_protocol::environment::OperationEnvelopePhase,
         cancel: &CancellationToken,
         emit: impl Fn(&str, u64, String) + Send + Sync + 'static,
     ) -> CallOutcome {
@@ -732,7 +739,16 @@ impl LocalWorkspace {
                 "managed capability {tool} is outside the prepared binding set"
             ));
         };
-        self.managed_tool(seal, input, operation_id, deadline_at_ms, cancel, emit, t0)
+        self.managed_tool(
+            seal,
+            input,
+            operation_id,
+            deadline_at_ms,
+            phase,
+            cancel,
+            emit,
+            t0,
+        )
             .await
     }
 
@@ -743,6 +759,7 @@ impl LocalWorkspace {
         input: Value,
         operation_id: &str,
         deadline_at_ms: u64,
+        phase: brain_protocol::environment::OperationEnvelopePhase,
         cancel: &CancellationToken,
         emit: impl Fn(&str, u64, String) + Send + Sync + 'static,
         t0: Instant,
@@ -769,7 +786,7 @@ impl LocalWorkspace {
         let run_id = brain::mint_id("run", 20);
         let request_path = self.runtime.join(format!("{run_id}.request.json"));
         let result_path = self.runtime.join(format!("{run_id}.result.json"));
-        let bundle_path = self.bundles.join(format!("{}.mjs", seal.bundle_digest));
+        let bundle_path = self.bundles.join(format!("{}.mjs", seal.code_digest));
         let deadline_ms = deadline_at_ms;
         let timeout_ms = deadline_ms.saturating_sub(brain::wall_ms()).max(1);
         let request = json!({
@@ -780,9 +797,11 @@ impl LocalWorkspace {
                 "description": seal.description,
                 "contract_digest": seal.contract_digest,
                 "bundle_digest": seal.bundle_digest,
+                "code_digest": seal.code_digest,
                 "required_env": seal.required_env,
             },
             "input": input,
+            "phase": phase,
             "workspace": self.root.to_string_lossy(),
             "deadline_ms": deadline_ms,
             "max_output_bytes": MAX_MANAGED_OUTPUT_BYTES,
@@ -1908,13 +1927,19 @@ impl EnvironmentPort for LocalEnvironment {
             ));
         }
         let descriptor = binding.bundle.as_ref().expect("checked");
+        let layer_bytes = descriptor
+            .layers
+            .iter()
+            .try_fold(0_u64, |total, layer| total.checked_add(layer.bytes.get()));
         if descriptor.target != brain_protocol::environment::ArtifactTarget::LinuxAmd64
             || descriptor.bundle_digest != binding.implementation_identity
             || descriptor.contract_digest != binding.contract_digest
             || descriptor.tool_name != binding.capability
             || descriptor.bytes.get() as usize > brain_protocol::MAX_TOOL_BUNDLE_BYTES
-            || descriptor.object.bytes != descriptor.bytes.get()
-            || descriptor.object.sha256 != descriptor.bundle_digest
+            || layer_bytes != Some(descriptor.bytes.get())
+            || descriptor.layers.iter().any(|layer| {
+                layer.object.bytes != layer.bytes.get() || layer.object.sha256 != layer.digest
+            })
         {
             return Err(environment_error(
                 EnvironmentErrorCode::BindingConflict,
@@ -2125,6 +2150,7 @@ impl EnvironmentPort for LocalEnvironment {
                 request.envelope.input.value.clone(),
                 &operation_id,
                 request.envelope.deadline_at_ms.get(),
+                request.envelope.phase,
                 &cancel,
                 |_, _, _| {},
             )
@@ -2290,78 +2316,115 @@ impl SessionPreparationPort for LocalEnvironment {
                     "prepared managed binding has no bundle",
                 )
             })?;
-            if prepared.bundle_digests.len() != 1
-                || prepared.bundle_digests[0] != descriptor.bundle_digest
+            let expected_digests = descriptor
+                .layers
+                .iter()
+                .map(|layer| layer.digest.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let prepared_digests = prepared
+                .bundle_digests
+                .iter()
+                .map(|digest| digest.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            if prepared.bundle_digests.len() != expected_digests.len()
+                || prepared_digests != expected_digests
             {
                 return Err(environment_error(
                     EnvironmentErrorCode::BindingConflict,
                     false,
-                    "prepared binding does not carry its exact sealed bundle digest",
+                    "prepared binding does not carry its exact sealed artifact layers",
                 ));
             }
-            let fetch = fetches
-                .get(descriptor.bundle_digest.as_str())
+            for layer in &descriptor.layers {
+                let fetch = fetches.get(layer.digest.as_str()).ok_or_else(|| {
+                    environment_error(
+                        EnvironmentErrorCode::CapabilityUnavailable,
+                        false,
+                        "preparation omitted a required artifact-layer fetch",
+                    )
+                })?;
+                let source = url::Url::parse(fetch.url.as_str()).map_err(|_| {
+                    environment_error(
+                        EnvironmentErrorCode::InvalidRequest,
+                        false,
+                        "local artifact-layer fetch is not a valid URL",
+                    )
+                })?;
+                if source.scheme() != "file" || !fetch.headers.is_empty() {
+                    return Err(environment_error(
+                        EnvironmentErrorCode::CapabilityUnavailable,
+                        false,
+                        "the local Environment accepts only header-free file artifact authorities",
+                    ));
+                }
+                let source = source.to_file_path().map_err(|_| {
+                    environment_error(
+                        EnvironmentErrorCode::InvalidRequest,
+                        false,
+                        "local artifact authority is not a filesystem path",
+                    )
+                })?;
+                let metadata = std::fs::metadata(&source)
+                    .map_err(|error| local_io_error("inspect local artifact layer", error))?;
+                if metadata.len() != layer.bytes.get()
+                    || metadata.len() > fetch.max_bytes.get()
+                    || metadata.len() as usize > brain_protocol::MAX_TOOL_BUNDLE_BYTES
+                {
+                    return Err(environment_error(
+                        EnvironmentErrorCode::BindingConflict,
+                        false,
+                        "local artifact-layer bytes disagree with their sealed descriptor",
+                    ));
+                }
+                let bytes = std::fs::read(&source)
+                    .map_err(|error| local_io_error("read local artifact layer", error))?;
+                if hex::encode(sha2::Sha256::digest(&bytes)) != layer.digest.as_str() {
+                    return Err(environment_error(
+                        EnvironmentErrorCode::BindingConflict,
+                        false,
+                        "local artifact-layer checksum disagrees with its sealed descriptor",
+                    ));
+                }
+                let extension = if layer.unpack
+                    == brain_protocol::environment::ArtifactLayerDescriptorUnpack::File
+                    && layer.media_type
+                        == brain_protocol::environment::ArtifactLayerDescriptorMediaType::ApplicationJavascriptEsm
+                {
+                    "mjs"
+                } else {
+                    "layer"
+                };
+                let destination =
+                    bundle_dir.join(format!("{}.{extension}", layer.digest.as_str()));
+                if let Some(existing) = read_bytes_if_exists(&destination, "local layer cache")? {
+                    if existing != bytes {
+                        return Err(environment_error(
+                            EnvironmentErrorCode::BindingConflict,
+                            false,
+                            "immutable local layer cache contains different bytes",
+                        ));
+                    }
+                } else {
+                    write_new_bytes(&destination, &bytes, "cache local artifact layer")?;
+                }
+            }
+            let code = descriptor
+                .layers
+                .iter()
+                .find(|layer| {
+                    layer.mount_path.as_str() == descriptor.execute_path.as_str()
+                        && layer.unpack
+                            == brain_protocol::environment::ArtifactLayerDescriptorUnpack::File
+                        && layer.media_type
+                            == brain_protocol::environment::ArtifactLayerDescriptorMediaType::ApplicationJavascriptEsm
+                })
                 .ok_or_else(|| {
                     environment_error(
                         EnvironmentErrorCode::CapabilityUnavailable,
                         false,
-                        "preparation omitted a required bundle fetch",
+                        "local execution requires a file-mounted JavaScript entrypoint",
                     )
                 })?;
-            let source = url::Url::parse(fetch.url.as_str()).map_err(|_| {
-                environment_error(
-                    EnvironmentErrorCode::InvalidRequest,
-                    false,
-                    "local bundle fetch is not a valid URL",
-                )
-            })?;
-            if source.scheme() != "file" || !fetch.headers.is_empty() {
-                return Err(environment_error(
-                    EnvironmentErrorCode::CapabilityUnavailable,
-                    false,
-                    "the local Environment accepts only header-free file bundle authorities",
-                ));
-            }
-            let source = source.to_file_path().map_err(|_| {
-                environment_error(
-                    EnvironmentErrorCode::InvalidRequest,
-                    false,
-                    "local bundle authority is not a filesystem path",
-                )
-            })?;
-            let metadata = std::fs::metadata(&source)
-                .map_err(|error| local_io_error("inspect local bundle", error))?;
-            if metadata.len() != descriptor.bytes.get()
-                || metadata.len() > fetch.max_bytes.get()
-                || metadata.len() as usize > brain_protocol::MAX_TOOL_BUNDLE_BYTES
-            {
-                return Err(environment_error(
-                    EnvironmentErrorCode::BindingConflict,
-                    false,
-                    "local bundle bytes disagree with their sealed descriptor",
-                ));
-            }
-            let bytes = std::fs::read(&source)
-                .map_err(|error| local_io_error("read local bundle", error))?;
-            if hex::encode(sha2::Sha256::digest(&bytes)) != descriptor.bundle_digest.as_str() {
-                return Err(environment_error(
-                    EnvironmentErrorCode::BindingConflict,
-                    false,
-                    "local bundle checksum disagrees with its sealed descriptor",
-                ));
-            }
-            let destination = bundle_dir.join(format!("{}.mjs", descriptor.bundle_digest.as_str()));
-            if let Some(existing) = read_bytes_if_exists(&destination, "local bundle cache")? {
-                if existing != bytes {
-                    return Err(environment_error(
-                        EnvironmentErrorCode::BindingConflict,
-                        false,
-                        "immutable local bundle cache contains different bytes",
-                    ));
-                }
-            } else {
-                write_new_bytes(&destination, &bytes, "cache local bundle")?;
-            }
             for name in &descriptor.required_env {
                 expected_env.insert(name.to_string());
             }
@@ -2373,6 +2436,7 @@ impl SessionPreparationPort for LocalEnvironment {
                     .map(|value| value.as_str().to_owned()),
                 contract_digest: descriptor.contract_digest.to_string(),
                 bundle_digest: descriptor.bundle_digest.to_string(),
+                code_digest: code.digest.to_string(),
                 required_env: descriptor
                     .required_env
                     .iter()
@@ -2380,12 +2444,13 @@ impl SessionPreparationPort for LocalEnvironment {
                     .collect(),
             });
         }
-        if fetches.len() != specs.len() {
-            let used: std::collections::HashSet<_> = specs
+        {
+            let referenced = request
+                .bindings
                 .iter()
-                .map(|spec| spec.bundle_digest.as_str())
-                .collect();
-            if fetches.keys().any(|digest| !used.contains(digest.as_str())) {
+                .flat_map(|binding| binding.bundle_digests.iter().map(|digest| digest.as_str()))
+                .collect::<std::collections::HashSet<_>>();
+            if fetches.keys().any(|digest| !referenced.contains(digest.as_str())) {
                 return Err(environment_error(
                     EnvironmentErrorCode::BindingConflict,
                     false,
