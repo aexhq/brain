@@ -281,27 +281,6 @@ impl BuiltinAexLoop {
         ctx.contract_op(op).await
     }
 
-    async fn write_mark(
-        ctx: &mut dyn TurnCtx,
-        covers_through_seq: u64,
-        summary: &str,
-    ) -> Result<()> {
-        let summary: String = summary.chars().take(4000).collect();
-        let _ = Self::op(
-            ctx,
-            serde_json::json!({
-                "op": "journal_append",
-                "entries": [{
-                    "kind": "mark",
-                    "covers_through_seq": covers_through_seq,
-                    "data": { "summary": summary },
-                }],
-            }),
-        )
-        .await?;
-        Ok(())
-    }
-
     async fn finish(ctx: &mut dyn TurnCtx, stop_reason: &str) -> Result<()> {
         let _ = Self::op(
             ctx,
@@ -404,7 +383,6 @@ impl Agentloop for BuiltinAexLoop {
             }
         }
         let admitted = &activation["message"];
-        let covers_through_seq = admitted["seq"].as_u64().unwrap_or(0);
         memory.push(serde_json::json!({"role": "user", "content": admitted["content"]}));
         let max_rounds = activation["session"]["limits"]["max_rounds_per_turn"]
             .as_u64()
@@ -462,14 +440,10 @@ impl Agentloop for BuiltinAexLoop {
                 "role": "assistant", "content": message["content"],
             }));
             if closing {
-                Self::write_mark(ctx, covers_through_seq, &Self::text_of(&message["content"]))
-                    .await?;
                 Self::finish(ctx, "max_rounds").await?;
                 return Ok(LoopVerdict::stop(TurnStopReason::MaxRounds));
             }
             if message["stop_reason"] == "refusal" {
-                Self::write_mark(ctx, covers_through_seq, &Self::text_of(&message["content"]))
-                    .await?;
                 Self::finish(ctx, "refusal").await?;
                 return Ok(LoopVerdict::stop(TurnStopReason::Refusal));
             }
@@ -487,8 +461,6 @@ impl Agentloop for BuiltinAexLoop {
                 })
                 .collect();
             if calls.is_empty() {
-                Self::write_mark(ctx, covers_through_seq, &Self::text_of(&message["content"]))
-                    .await?;
                 Self::finish(ctx, "end_turn").await?;
                 return Ok(LoopVerdict::stop(TurnStopReason::EndTurn));
             }
@@ -746,12 +718,9 @@ mod tests {
         let mut ctx = Scripted::new(vec![tool_message("echo"), text_message("done")]);
         let verdict = drive(&mut ctx);
         assert_eq!(verdict.stop_reason, TurnStopReason::EndTurn);
-        assert_eq!(
-            ctx.calls,
-            vec!["model", "dispatch", "model", "mark", "finish"]
-        );
+        assert_eq!(ctx.calls, vec!["model", "dispatch", "model", "finish"]);
         assert_eq!(ctx.finish.as_ref().unwrap().1, "end_turn");
-        assert_eq!(ctx.marks.len(), 1, "one summary mark per turn");
+        assert!(ctx.marks.is_empty(), "ordinary turns write no marks");
     }
 
     #[test]
@@ -768,10 +737,7 @@ mod tests {
         ctx.max_rounds = 1;
         let verdict = drive(&mut ctx);
         assert_eq!(verdict.stop_reason, TurnStopReason::MaxRounds);
-        assert_eq!(
-            ctx.calls,
-            vec!["model", "dispatch", "model", "mark", "finish"]
-        );
+        assert_eq!(ctx.calls, vec!["model", "dispatch", "model", "finish"]);
         assert_eq!(
             ctx.model_requests[1]["tool_choice"], "none",
             "the closing round constrains tool choice"
@@ -841,7 +807,7 @@ mod tests {
             .collect();
         let verdict = drive(&mut ctx);
         assert_eq!(verdict.stop_reason, TurnStopReason::EndTurn);
-        assert_eq!(ctx.calls, vec!["model", "model", "model", "mark", "finish"]);
+        assert_eq!(ctx.calls, vec!["model", "model", "model", "finish"]);
         assert!(
             ctx.model_requests[1]["system"].as_str().is_some(),
             "the compaction round overrides the system text"

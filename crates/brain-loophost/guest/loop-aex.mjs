@@ -10,7 +10,8 @@
 //   - parallel dispatch of each round's whole tool batch;
 //   - at the sealed round ceiling, one graceful closing round (tool_choice none) and a
 //     max_rounds finish; refusal rounds finish as refusal;
-//   - a summary mark per turn so rehydration never replays from zero;
+//   - no per-turn marks: rehydration replays the kernel's bounded journal tail, so
+//     every prior turn's exact content survives; compaction is re-derived in-turn;
 //   - on budget_exceeded, loop-side compaction: summarize everything but a recent tail
 //     through the sealed model and continue on summary + tail;
 //   - provider failures fail the turn honestly through turn_fail (the kernel maps an
@@ -55,16 +56,6 @@ function messageFromView(view) {
 // Loop-owned conversation memory, cached for this resident instance and rebuilt from the
 // delivered hydration (summary mark first, then the tail) on a fresh one.
 let memory = [];
-
-const writeMark = async (ctx, admitted, summary) => {
-  await ctx.journal.append([
-    {
-      kind: "mark",
-      covers_through_seq: admitted.seq,
-      data: { summary: summary.slice(0, 4000) },
-    },
-  ]);
-};
 
 /** Loop-side compaction; returns the replacement memory or null when the conversation
  * cannot be compacted further. */
@@ -162,18 +153,15 @@ export const { activate } = defineAgentloop({
         rounds += 1;
         memory.push({ role: "assistant", content: round.content });
         if (closing) {
-          await writeMark(ctx, admitted, textOf(round.content));
           await ctx.turn.finish(undefined, { stopReason: "max_rounds" });
           return;
         }
         if (round.stop_reason === "refusal") {
-          await writeMark(ctx, admitted, textOf(round.content));
           await ctx.turn.finish(undefined, { stopReason: "refusal" });
           return;
         }
         const calls = round.content.filter((block) => block.type === "tool_call");
         if (calls.length === 0) {
-          await writeMark(ctx, admitted, textOf(round.content));
           await ctx.turn.finish(undefined, { stopReason: "end_turn" });
           return;
         }
