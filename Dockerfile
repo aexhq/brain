@@ -11,7 +11,10 @@ RUN apt-get update \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get purge -y curl gnupg \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \r
+    # The runtime executes prebuilt tool bundles with node alone; npm (and its vendored
+    # node-tar, the standing Trivy CRITICAL) never belongs in the image.
+    && rm -rf /usr/lib/node_modules/npm /usr/bin/npm /usr/bin/npx
 COPY --from=build /src/target/release/brain /usr/local/bin/brain
 EXPOSE 3210
 ENTRYPOINT ["/usr/local/bin/brain"]
