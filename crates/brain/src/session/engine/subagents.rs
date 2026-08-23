@@ -25,15 +25,19 @@ impl Brain {
                         .get("fork_turns")
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_owned);
-                    let child = self
-                        .create_child(
-                            parent_id,
-                            message,
-                            Some(task_name),
-                            fork_turns,
-                            Some(operation_id),
-                        )
-                        .await?;
+                    // Direct creation, never a command to this session's own actor: the
+                    // spawning turn may itself be the actor's inline hydration turn (a
+                    // child's first turn runs during attach), and a self-delivered
+                    // CreateChild would deadlock the session — the 2026-08-23 dev wedge.
+                    let child = create_child_session(
+                        self,
+                        parent_id,
+                        message,
+                        Some(task_name),
+                        ForkTurns::parse(fork_turns.as_deref())?,
+                        Some(operation_id),
+                    )
+                    .await?;
                     Ok(serde_json::to_value(child)?)
                 }
                 Some("send_message" | "follow_up") => {

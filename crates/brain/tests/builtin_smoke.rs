@@ -110,9 +110,9 @@ async fn builtin_contract_loop_completes_text_and_tool_turns() {
     });
     assert!(failure.is_none(), "turn failed: {}", failure.unwrap());
     assert!(
-        records
+        !records
             .iter()
             .any(|entry| matches!(&entry.record, Record::LoopMark { .. })),
-        "no mark journaled"
+        "ordinary turns journal no marks; rehydration replays the journal tail"
     );
 }
