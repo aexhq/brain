@@ -22,6 +22,14 @@ pub(crate) fn identifier(value: &str) -> Result<al::Identifier> {
         .map_err(|_| BrainError::Agentloop(format!("{value:?} is not a contract identifier")))
 }
 
+/// Sealed provider model names admit gateway-style path separators that plain contract
+/// identifiers never do (e.g. "openai/gpt-4.1-nano").
+pub(crate) fn model_name(value: &str) -> Result<al::ModelName> {
+    value
+        .parse()
+        .map_err(|_| BrainError::Agentloop(format!("{value:?} is not a contract model name")))
+}
+
 pub(crate) fn seq(value: u64) -> Result<al::Seq> {
     Ok(al::Seq(std::num::NonZeroU64::new(value).ok_or_else(
         || BrainError::Agentloop("a journal seq of zero cannot cross the contract".into()),
@@ -299,7 +307,7 @@ pub(crate) fn assistant_view(
 ) -> Result<al::AssistantMessageView> {
     Ok(al::AssistantMessageView {
         content: blocks_to_content_views(&message.content)?,
-        model: identifier(model)?,
+        model: model_name(model)?,
         stop_reason: stop_view(stop),
         usage: Some(usage_view(usage)),
     })
@@ -326,7 +334,7 @@ pub(crate) fn project_entry(
             at,
             message: al::AssistantMessageView {
                 content: blocks_to_content_views(content)?,
-                model: identifier(model)?,
+                model: model_name(model)?,
                 stop_reason: stop_view(*stop),
                 // Usage lives in its own record and is not re-joined into the projection.
                 usage: None,

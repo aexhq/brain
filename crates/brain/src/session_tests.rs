@@ -4610,6 +4610,51 @@ async fn run_one_turn(brain: &Arc<Brain>, journal: &Journal, session_id: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gateway_style_model_names_cross_the_loop_contract() {
+    // Hosted models arrive as gateway paths ("openai/gpt-4.1-nano"); the loop contract's
+    // ModelName admits them where a plain Identifier does not. The 2026-08-23 r3 canaries
+    // failed every turn on exactly this projection.
+    let journal = Journal::new_memory("brain-model-name");
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([Scripted::Text("answered".into())]);
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices::default(),
+        Arc::new(move |_| provider.clone() as Arc<dyn Provider>),
+    );
+    let created = brain
+        .create_session(
+            serde_json::from_value(json!({
+                "model": {"provider":"openai_compatible", "name":"openai/gpt-4.1-nano",
+                          "api_key":"sk-test", "base_url":"https://gateway.example/v1"}
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let session_id = created.id.to_string();
+    run_one_turn(&brain, &journal, &session_id).await;
+    let records = journal.read_records(&session_id, 0).await.unwrap();
+    let failure = records.iter().find_map(|entry| match &entry.record {
+        Record::TurnFailed { code, message, .. } => Some(format!("{code}: {message}")),
+        _ => None,
+    });
+    assert!(failure.is_none(), "turn failed: {}", failure.unwrap());
+    assert!(records.iter().any(|entry| matches!(
+        &entry.record,
+        Record::TurnCompleted { stop_reason, .. } if *stop_reason == TurnStopReason::EndTurn
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn self_compaction_summarizes_installs_a_mark_and_continues() {
     // The aex loop owns compaction: tool rounds accumulate past the sealed context
     // window mid-turn, the loop summarizes everything but a recent tail through the
