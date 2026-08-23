@@ -687,7 +687,7 @@ pub enum AgentloopSelector {
 #[doc = "      \"maxItems\": 64"]
 #[doc = "    },"]
 #[doc = "    \"model\": {"]
-#[doc = "      \"$ref\": \"#/$defs/Identifier\""]
+#[doc = "      \"$ref\": \"#/$defs/ModelName\""]
 #[doc = "    },"]
 #[doc = "    \"stop_reason\": {"]
 #[doc = "      \"$ref\": \"#/$defs/ModelStopReason\""]
@@ -704,7 +704,7 @@ pub enum AgentloopSelector {
 #[serde(deny_unknown_fields)]
 pub struct AssistantMessageView {
     pub content: ::std::vec::Vec<ContentView>,
-    pub model: Identifier,
+    pub model: ModelName,
     pub stop_reason: ModelStopReason,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub usage: ::std::option::Option<UsageView>,
@@ -2265,6 +2265,87 @@ pub enum ModelMessage {
         tool_call_id: Identifier,
     },
 }
+#[doc = "A provider model identifier as the session sealed it. Unlike Identifier this admits gateway-style names with path separators (e.g. \"openai/gpt-4.1-nano\")."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"A provider model identifier as the session sealed it. Unlike Identifier this admits gateway-style names with path separators (e.g. \\\"openai/gpt-4.1-nano\\\").\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 256,"]
+#[doc = "  \"minLength\": 1,"]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ModelName(::std::string::String);
+impl ::std::ops::Deref for ModelName {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ModelName> for ::std::string::String {
+    fn from(value: ModelName) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ModelName {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 256usize {
+            return Err("longer than 256 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ModelName {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ModelName {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ModelName {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ModelName {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
 #[doc = "A composed provider request. Brain executes it against the session's sealed provider and model with custody, live retry and attempt recovery, and journals intent and result. The loop never selects a provider, model or credential."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -2656,7 +2737,7 @@ impl ::std::fmt::Display for Seq {
 #[doc = "      \"$ref\": \"#/$defs/JsonObject\""]
 #[doc = "    },"]
 #[doc = "    \"model\": {"]
-#[doc = "      \"$ref\": \"#/$defs/Identifier\""]
+#[doc = "      \"$ref\": \"#/$defs/ModelName\""]
 #[doc = "    },"]
 #[doc = "    \"session_id\": {"]
 #[doc = "      \"$ref\": \"#/$defs/SessionId\""]
@@ -2672,7 +2753,7 @@ pub struct SessionContextView {
     pub limits: SessionContextViewLimits,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub metadata: ::std::option::Option<JsonObject>,
-    pub model: Identifier,
+    pub model: ModelName,
     pub session_id: SessionId,
 }
 #[doc = "Kernel-enforced authorization, not advisory policy. The kernel rejects work past these regardless of loop behavior."]

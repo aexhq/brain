@@ -1003,7 +1003,7 @@ impl LoopTurnCtx<'_> {
                 turn_wall_ms: nonzero(8 * 60 * 60 * 1000, "turn wall")?,
             },
             metadata,
-            model: crate::loopctx::identifier(&self.run.prefix.model)?,
+            model: crate::loopctx::model_name(&self.run.prefix.model)?,
             session_id: self.run.session_id.parse().map_err(|_| {
                 BrainError::Agentloop("the session id does not satisfy the contract pattern".into())
             })?,

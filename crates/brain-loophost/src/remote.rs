@@ -285,6 +285,11 @@ pub struct SpawnedLoopHost {
 }
 
 impl SpawnedLoopHost {
+    /// The daemon's OS process id, for external observation (memory measurements).
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     pub fn spawn(daemon_exe: &Path, component: &Path) -> anyhow::Result<Self> {
         use rand::Rng;
         use std::io::BufRead;

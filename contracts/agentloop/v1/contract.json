@@ -8,6 +8,13 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "ModelName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "A provider model identifier as the session sealed it. Unlike Identifier this admits gateway-style names with path separators (e.g. \"openai/gpt-4.1-nano\").",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
     "Identifier": {
       "type": "string",
       "minLength": 1,
@@ -123,7 +130,7 @@
           "maxItems": 64
         },
         "stop_reason": { "$ref": "#/$defs/ModelStopReason" },
-        "model": { "$ref": "#/$defs/Identifier" },
+        "model": { "$ref": "#/$defs/ModelName" },
         "usage": { "$ref": "#/$defs/UsageView" }
       },
       "description": "One folded model round. Token deltas stream Brain-to-application directly; the loop receives complete messages only."
@@ -342,7 +349,7 @@
       "required": ["session_id", "model", "limits"],
       "properties": {
         "session_id": { "$ref": "#/$defs/SessionId" },
-        "model": { "$ref": "#/$defs/Identifier" },
+        "model": { "$ref": "#/$defs/ModelName" },
         "limits": {
           "type": "object",
           "additionalProperties": false,
