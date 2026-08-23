@@ -329,6 +329,8 @@ fn credential_debug_is_redacted_without_changing_wire_serialization() {
         "checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "content_base64": BUNDLE_SECRET,
         "media_type": "application/javascript+esm",
+        "target": "linux-arm64",
+        "execute_path": "/artifacts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/execute",
     }))
     .unwrap();
     assert!(!format!("{bundle:?}").contains(BUNDLE_SECRET));
@@ -474,16 +476,17 @@ fn file_effect_digests_refresh_transport_authority_without_changing_effect_ident
         "max_bytes": 5,
     });
 
-    let mut write: environment::SandboxFileWriteRequest = serde_json::from_value(serde_json::json!({
-        "operation_id": "write-1",
-        "request_digest": zero,
-        "target": target,
-        "expected_generation": "generation-1",
-        "path": "/workspace/file.txt",
-        "source": {"kind": "object", "object": object, "fetch": authority},
-        "overwrite": false,
-    }))
-    .unwrap();
+    let mut write: environment::SandboxFileWriteRequest =
+        serde_json::from_value(serde_json::json!({
+            "operation_id": "write-1",
+            "request_digest": zero,
+            "target": target,
+            "expected_generation": "generation-1",
+            "path": "/workspace/file.txt",
+            "source": {"kind": "object", "object": object, "fetch": authority},
+            "overwrite": false,
+        }))
+        .unwrap();
     let write_digest = contract::sandbox_file_write_request_digest(&write);
     let write_value = serde_json::to_value(&write).unwrap();
     let mut refreshed_write = write_value.clone();

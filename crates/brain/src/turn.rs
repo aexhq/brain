@@ -131,7 +131,7 @@ pub trait EngineServices: Send + Sync {
         &self,
         session_id: &str,
         doc: &HeadDoc,
-    ) -> Result<Arc<std::collections::HashMap<String, brain_protocol::environment::ResolvedBinding>>>;
+    ) -> Result<Arc<std::collections::HashMap<String, crate::environment::ManagedBinding>>>;
 
     async fn execute_child_capability(
         self: Arc<Self>,
@@ -192,8 +192,7 @@ pub struct TurnRun {
     pub provider_total_timeout: std::time::Duration,
     pub compactor: Arc<dyn crate::compact::CompactionPort>,
     pub external_executor: Arc<dyn ToolExecutor>,
-    pub environment: Option<Arc<dyn crate::environment::EnvironmentPort>>,
-    pub managed_bindings: Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>,
+    pub managed_bindings: Arc<HashMap<String, crate::environment::ManagedBinding>>,
     pub customer: Option<Arc<crate::customer::CustomerCoordinator>>,
     pub tenant_id: String,
     pub customer_client_id: Option<String>,
@@ -202,7 +201,7 @@ pub struct TurnRun {
     /// Trusted metadata journaled with this message and forwarded only to host executors.
     pub context: std::collections::HashMap<String, String>,
     /// The loop implementation driving this turn's policy. The engine composition installs
-    /// [`crate::agentloop::BuiltinAexLoop`]; remote loop hosts implement the same trait over
+    /// [`crate::agentloop::SequentialAgentloop`]; remote loop hosts implement the same trait over
     /// `contracts/agentloop/v1`.
     pub agentloop: Arc<dyn crate::agentloop::Agentloop>,
     /// The admitted message this turn answers. `None` only for a recovered turn whose admission
@@ -238,6 +237,7 @@ struct DispatchedOutcome {
 
 #[derive(Clone)]
 struct ManagedTerminalReceipt {
+    environment: Arc<dyn crate::environment::EnvironmentPort>,
     operation: brain_protocol::environment::OperationRef,
     terminal_digest: String,
 }
@@ -1520,7 +1520,7 @@ impl TurnRun {
             }
             self.commit(st, result_records).await?;
 
-            if let Some(environment) = &self.environment {
+            {
                 let previous_pending = st.head.pending_managed_acks.clone();
                 let mut acknowledged = Vec::new();
                 for receipt in outcomes
@@ -1533,7 +1533,7 @@ impl TurnRun {
                             BrainError::Protocol(format!("terminal digest: {error}"))
                         })?,
                     };
-                    match environment.acknowledge_terminal(request).await {
+                    match receipt.environment.acknowledge_terminal(request).await {
                         Ok(ack) if ack.acknowledged => acknowledged.push(receipt.clone()),
                         Ok(_) => tracing::warn!(
                             session = %self.session_id,
@@ -1834,18 +1834,17 @@ impl TurnRun {
         name: &str,
         input: serde_json::Value,
     ) -> Result<DispatchedOutcome> {
-        use brain_protocol::environment::{EnvironmentErrorCode, OperationState, OutputChunkStream};
+        use brain_protocol::environment::{
+            EnvironmentErrorCode, OperationState, OutputChunkStream,
+        };
 
-        let environment = self.environment.as_ref().ok_or_else(|| {
-            BrainError::EnvironmentUnavailable(
-                "managed Tools require the canonical Environment receipt port".into(),
-            )
-        })?;
         let binding = self.managed_bindings.get(name).ok_or_else(|| {
             BrainError::EnvironmentUnavailable(format!(
                 "managed Tool {name} has no prepared immutable binding"
             ))
         })?;
+        let environment = &binding.environment;
+        let binding = &binding.resolved;
         let input_bytes = serde_jcs::to_vec(&input)?.len();
         if input_bytes > brain_protocol::MAX_MANAGED_TOOL_INPUT_BYTES
             || input_bytes > binding.limits.max_inline_input_bytes.get() as usize
@@ -1946,7 +1945,9 @@ impl TurnRun {
             };
             match result {
                 Ok(receipt) => break receipt,
-                Err(error) if error.code == EnvironmentErrorCode::CapabilityUnavailable && !reprepared => {
+                Err(error)
+                    if error.code == EnvironmentErrorCode::CapabilityUnavailable && !reprepared =>
+                {
                     let brain = self.engine.upgrade().ok_or_else(|| {
                         BrainError::EnvironmentUnavailable(
                             "managed Tool preparation coordinator is unavailable".into(),
@@ -1960,7 +1961,7 @@ impl TurnRun {
                             "managed Tool {name} disappeared during re-preparation"
                         ))
                     })?;
-                    if refreshed.binding_ref != binding.binding_ref {
+                    if refreshed.resolved.binding_ref != binding.binding_ref {
                         return Err(BrainError::EnvironmentUnavailable(
                             "managed Tool binding changed during exact re-preparation".into(),
                         ));
@@ -2045,10 +2046,11 @@ impl TurnRun {
             if observation.state == OperationState::Terminal {
                 let terminal = observation.terminal.ok_or_else(|| {
                     BrainError::Protocol(
-                        "managed Environment reported terminal state without a terminal receipt".into(),
+                        "managed Environment reported terminal state without a terminal receipt"
+                            .into(),
                     )
                 })?;
-                return managed_terminal_outcome(receipt.operation, terminal);
+                return managed_terminal_outcome(environment.clone(), receipt.operation, terminal);
             }
             if observation.terminal.is_some() {
                 return Err(BrainError::Protocol(
@@ -2076,7 +2078,9 @@ impl TurnRun {
                             .finish_managed_submit_unknown(st, operation_id, name, &request_digest)
                             .await;
                     }
-                    Err(error) => return Err(crate::environment::map_environment_port_error(error)),
+                    Err(error) => {
+                        return Err(crate::environment::map_environment_port_error(error));
+                    }
                 }
                 cancellation_sent = true;
             }
@@ -2384,7 +2388,8 @@ pub(crate) fn verify_managed_operation(
         || operation.target.sandbox_id.is_some()
     {
         return Err(BrainError::Protocol(
-            "managed Environment returned an operation outside the committed session/root request".into(),
+            "managed Environment returned an operation outside the committed session/root request"
+                .into(),
         ));
     }
     Ok(())
@@ -2403,13 +2408,15 @@ pub(crate) fn verify_managed_observation(
         && (target.generation != operation.generation || target.target_ref != operation.target_ref)
     {
         return Err(BrainError::Protocol(
-            "managed Environment observation target conflicts with its rooted operation receipt".into(),
+            "managed Environment observation target conflicts with its rooted operation receipt"
+                .into(),
         ));
     }
     Ok(())
 }
 
 fn managed_terminal_outcome(
+    environment: Arc<dyn crate::environment::EnvironmentPort>,
     operation: brain_protocol::environment::OperationRef,
     terminal: brain_protocol::environment::TerminalResult,
 ) -> Result<DispatchedOutcome> {
@@ -2418,6 +2425,7 @@ fn managed_terminal_outcome(
         outcome,
         customer_terminal: None,
         managed_terminal: Some(ManagedTerminalReceipt {
+            environment,
             operation,
             terminal_digest,
         }),
@@ -2685,7 +2693,7 @@ pub(crate) fn model_request_digest(request: &crate::provider::ModelRequest) -> S
     }
 
     let mut digest = Sha256::new();
-    field(&mut digest, b"aex.model-request.v1");
+    field(&mut digest, b"brain.model-request.v1");
     field(&mut digest, request.method.as_bytes());
     field(&mut digest, request.url.as_bytes());
     let mut headers: Vec<_> = request

@@ -384,7 +384,7 @@
               }
             }
           },
-          "description": "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed."
+          "description": "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed."
         }
       }
     },
@@ -395,7 +395,9 @@
         "checksum",
         "content_base64",
         "bytes",
-        "media_type"
+        "media_type",
+        "target",
+        "execute_path"
       ],
       "description": "Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation.",
       "properties": {
@@ -416,6 +418,20 @@
         "media_type": {
           "type": "string",
           "const": "application/javascript+esm"
+        },
+        "target": {
+          "type": "string",
+          "enum": ["linux-amd64", "linux-arm64"]
+        },
+        "execute_path": {
+          "type": "string",
+          "pattern": "^/[^\\u0000]+$",
+          "maxLength": 4096
+        },
+        "setup_path": {
+          "type": ["string", "null"],
+          "pattern": "^/[^\\u0000]+$",
+          "maxLength": 4096
         }
       }
     },

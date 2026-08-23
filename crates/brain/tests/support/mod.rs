@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use brain::agentloop::{Agentloop, AgentloopRegistry, BuiltinAexLoop};
+use brain::agentloop::{Agentloop, AgentloopRegistry, SequentialAgentloop};
 use brain::journal::AgentloopSelectorDoc;
 use brain::session::BrainServices;
 use serde_json::{Value, json};
@@ -10,7 +10,7 @@ struct TestRegistry;
 
 impl AgentloopRegistry for TestRegistry {
     fn resolve(&self, _selector: &AgentloopSelectorDoc) -> brain::Result<Arc<dyn Agentloop>> {
-        Ok(Arc::new(BuiltinAexLoop))
+        Ok(Arc::new(SequentialAgentloop))
     }
 
     fn admit_custom(

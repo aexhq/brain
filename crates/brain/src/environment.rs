@@ -9,7 +9,7 @@ use crate::{BrainError, Result};
 use async_trait::async_trait;
 use brain_protocol::environment::{
     AcknowledgeTerminalRequest, Acknowledgement, CancelRequest, CancellationReceipt,
-    CreateSandboxRequest, FileEntry, EnvironmentError, ObserveRequest, OperationObservation,
+    CreateSandboxRequest, EnvironmentError, FileEntry, ObserveRequest, OperationObservation,
     PrepareSessionRequest, PreparedSession, ResolvedBinding, SandboxCopyRequest, SandboxCopyResult,
     SandboxExecutionRequest, SandboxFileRequest, SandboxFileWriteRequest, SandboxFileWriteResult,
     SandboxStatus, SandboxTarget, SealedBinding, SecretDeliveryRequest, SubmitReceipt,
@@ -17,6 +17,7 @@ use brain_protocol::environment::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub type EnvironmentResult<T> = std::result::Result<T, EnvironmentError>;
 
@@ -33,15 +34,79 @@ pub trait EnvironmentPort: Send + Sync {
     ) -> EnvironmentResult<Acknowledgement>;
 }
 
+#[derive(Clone)]
+pub struct EnvironmentAdapter {
+    pub execution: Arc<dyn EnvironmentPort>,
+    pub preparation: Arc<dyn SessionPreparationPort>,
+    pub files: Option<Arc<dyn SandboxFilesPort>>,
+    pub control: Option<Arc<dyn SandboxControlPort>>,
+}
+
+#[derive(Clone, Default)]
+pub struct EnvironmentRegistry {
+    adapters: HashMap<String, EnvironmentAdapter>,
+    fallback: Option<EnvironmentAdapter>,
+}
+
+impl EnvironmentRegistry {
+    pub fn new(adapters: impl IntoIterator<Item = (String, EnvironmentAdapter)>) -> Result<Self> {
+        let mut by_extension = HashMap::new();
+        for (extension, adapter) in adapters {
+            if extension.trim().is_empty() {
+                return Err(BrainError::Invalid(
+                    "environment extension identity is empty".into(),
+                ));
+            }
+            if by_extension.insert(extension.clone(), adapter).is_some() {
+                return Err(BrainError::Invalid(format!(
+                    "environment extension {extension} is registered more than once"
+                )));
+            }
+        }
+        Ok(Self {
+            adapters: by_extension,
+            fallback: None,
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn with_fallback(mut self, adapter: EnvironmentAdapter) -> Self {
+        self.fallback = Some(adapter);
+        self
+    }
+
+    pub fn resolve(&self, extension: &str) -> Result<&EnvironmentAdapter> {
+        self.adapters
+            .get(extension)
+            .or(self.fallback.as_ref())
+            .ok_or_else(|| {
+                BrainError::EnvironmentUnavailable(format!(
+                    "environment extension {extension} is not registered by this composition"
+                ))
+            })
+    }
+}
+
+#[derive(Clone)]
+pub struct ManagedBinding {
+    pub resolved: ResolvedBinding,
+    pub environment: Arc<dyn EnvironmentPort>,
+}
+
 /// Optional lifecycle capability. Preparation never materializes the default sandbox.
 #[async_trait]
 pub trait SessionPreparationPort: Send + Sync {
     async fn prepare(&self, request: PrepareSessionRequest) -> EnvironmentResult<PreparedSession>;
     /// Idempotently materialize the shared default target. Brain supplies the durable logical
     /// target/binding and sealed root policy; this is distinct from additional-sandbox creation.
-    async fn materialize_default(&self, request: CreateSandboxRequest)
-    -> EnvironmentResult<SandboxStatus>;
-    async fn dematerialize_default(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus>;
+    async fn materialize_default(
+        &self,
+        request: CreateSandboxRequest,
+    ) -> EnvironmentResult<SandboxStatus>;
+    async fn dematerialize_default(
+        &self,
+        target: SandboxTarget,
+    ) -> EnvironmentResult<SandboxStatus>;
     async fn purge_tree(&self, root_id: &str) -> EnvironmentResult<()>;
 }
 
@@ -102,7 +167,10 @@ pub trait SandboxFilesPort: Send + Sync {
     async fn list(&self, request: SandboxFileListRequest) -> EnvironmentResult<SandboxFileList>;
     async fn stat(&self, request: SandboxFileRequest) -> EnvironmentResult<FileEntry>;
     async fn read(&self, request: SandboxFileRequest) -> EnvironmentResult<SandboxFileContent>;
-    async fn write(&self, request: SandboxFileWriteRequest) -> EnvironmentResult<SandboxFileWriteResult>;
+    async fn write(
+        &self,
+        request: SandboxFileWriteRequest,
+    ) -> EnvironmentResult<SandboxFileWriteResult>;
     async fn find(&self, request: SandboxSearchRequest) -> EnvironmentResult<SandboxFileList>;
     async fn grep(&self, request: SandboxSearchRequest) -> EnvironmentResult<SandboxFileList>;
     async fn transfer(&self, request: SandboxCopyRequest) -> EnvironmentResult<SandboxCopyResult>;
@@ -115,11 +183,13 @@ pub trait SandboxControlPort: Send + Sync {
     async fn create(&self, request: CreateSandboxRequest) -> EnvironmentResult<SandboxStatus>;
     async fn inspect(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus>;
     async fn execute(&self, request: SandboxExecutionRequest) -> EnvironmentResult<SubmitReceipt>;
-    async fn write_stdin(&self, request: WriteStdinRequest) -> EnvironmentResult<WriteStdinReceipt>;
+    async fn write_stdin(&self, request: WriteStdinRequest)
+    -> EnvironmentResult<WriteStdinReceipt>;
     async fn terminate(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus>;
 }
 
-pub(crate) fn managed_environment_resources() -> Result<brain_protocol::environment::ResourceCeiling> {
+pub(crate) fn managed_environment_resources() -> Result<brain_protocol::environment::ResourceCeiling>
+{
     serde_json::from_value(serde_json::json!({
         "timeout_ms": 600_000,
         "max_output_bytes": brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES,
@@ -152,7 +222,9 @@ pub(crate) fn sealed_sandbox_network(
     serde_json::from_value(network).map_err(BrainError::from)
 }
 
-pub(crate) fn map_environment_port_error(error: brain_protocol::environment::EnvironmentError) -> BrainError {
+pub(crate) fn map_environment_port_error(
+    error: brain_protocol::environment::EnvironmentError,
+) -> BrainError {
     use brain_protocol::environment::EnvironmentErrorCode;
     match error.code {
         EnvironmentErrorCode::SandboxNotMaterialized => BrainError::SandboxNotMaterialized,

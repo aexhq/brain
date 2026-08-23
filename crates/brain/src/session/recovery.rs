@@ -582,13 +582,22 @@ pub(super) async fn recover_managed_calls(
         return Ok(true);
     }
 
-    let environment = brain.environment.as_ref().ok_or_else(|| {
-        BrainError::EnvironmentUnavailable(
-            "managed Environment is unavailable for durable operation recovery".into(),
-        )
-    })?;
-
     'managed_calls: for call in pending {
+        let recovered_binding = resident.managed_bindings.get(&call.name);
+        let environment = recovered_binding
+            .map(|binding| &binding.environment)
+            .or(brain.environment.as_ref())
+            .ok_or_else(|| {
+                BrainError::EnvironmentUnavailable(format!(
+                    "managed Tool {} has no recovered immutable binding",
+                    call.name
+                ))
+            })?;
+        let binding = recovered_binding.map(|binding| &binding.resolved);
+        let max_wait_ms = binding
+            .map(|binding| binding.limits.max_wait_ms)
+            .unwrap_or(30_000)
+            .min(30_000);
         if call.submit_unknown {
             reconcile_managed_unknown_default_sandbox(brain, session_id, &mut resident.st).await?;
             recovered.push((
@@ -599,13 +608,7 @@ pub(super) async fn recover_managed_calls(
             ));
             continue;
         }
-        let binding = resident.managed_bindings.get(&call.name).ok_or_else(|| {
-            BrainError::EnvironmentUnavailable(format!(
-                "managed Tool {} has no recovered immutable binding",
-                call.name
-            ))
-        })?;
-        if binding.binding_ref != call.envelope.binding_ref {
+        if binding.is_some_and(|binding| binding.binding_ref != call.envelope.binding_ref) {
             return Err(BrainError::Protocol(
                 "managed Tool binding changed across durable recovery".into(),
             ));
@@ -624,7 +627,7 @@ pub(super) async fn recover_managed_calls(
                 serde_json::from_value(serde_json::json!({
                     "operation": operation,
                     "cursor": "",
-                    "wait_ms": binding.limits.max_wait_ms.min(30_000),
+                    "wait_ms": max_wait_ms,
                 }))?;
             let observed = tokio::time::timeout(
                 Duration::from_millis(request.wait_ms.saturating_add(1_000).max(1)),
@@ -632,7 +635,9 @@ pub(super) async fn recover_managed_calls(
             )
             .await
             .map_err(|_| {
-                BrainError::EnvironmentUnavailable("managed Tool recovery observation timed out".into())
+                BrainError::EnvironmentUnavailable(
+                    "managed Tool recovery observation timed out".into(),
+                )
             })?;
             match observed {
                 Ok(observation) => (operation, observation),
@@ -660,7 +665,7 @@ pub(super) async fn recover_managed_calls(
         } else {
             let request = brain_protocol::environment::SubmitRequest {
                 envelope: call.envelope.clone(),
-                wait_up_to_ms: binding.limits.max_wait_ms.min(30_000),
+                wait_up_to_ms: max_wait_ms,
             };
             let mut reprepared = false;
             let receipt = loop {
@@ -670,12 +675,15 @@ pub(super) async fn recover_managed_calls(
                 )
                 .await
                 .map_err(|_| {
-                    BrainError::EnvironmentUnavailable("managed Tool recovery submit timed out".into())
+                    BrainError::EnvironmentUnavailable(
+                        "managed Tool recovery submit timed out".into(),
+                    )
                 })?;
                 match submitted {
                     Ok(receipt) => break receipt,
                     Err(error)
-                        if error.code == EnvironmentErrorCode::CapabilityUnavailable && !reprepared =>
+                        if error.code == EnvironmentErrorCode::CapabilityUnavailable
+                            && !reprepared =>
                     {
                         let refreshed = brain
                             .prepare_managed_session(session_id, &resident.st.head)
@@ -685,7 +693,9 @@ pub(super) async fn recover_managed_calls(
                                 "managed Tool disappeared during exact re-preparation".into(),
                             )
                         })?;
-                        if refreshed.binding_ref != binding.binding_ref {
+                        if binding.is_some_and(|binding| {
+                            refreshed.resolved.binding_ref != binding.binding_ref
+                        }) {
                             return Err(BrainError::Protocol(
                                 "managed Tool binding changed during exact re-preparation".into(),
                             ));
@@ -821,7 +831,7 @@ pub(super) async fn recover_managed_calls(
                 serde_json::from_value(serde_json::json!({
                     "operation": operation,
                     "cursor": observation.next_cursor,
-                    "wait_ms": binding.limits.max_wait_ms.min(30_000),
+                    "wait_ms": max_wait_ms,
                 }))?;
             match tokio::time::timeout(
                 Duration::from_millis(request.wait_ms.saturating_add(1_000).max(1)),
@@ -829,7 +839,9 @@ pub(super) async fn recover_managed_calls(
             )
             .await
             .map_err(|_| {
-                BrainError::EnvironmentUnavailable("managed Tool recovery observation timed out".into())
+                BrainError::EnvironmentUnavailable(
+                    "managed Tool recovery observation timed out".into(),
+                )
             })? {
                 Ok(next) => observation = next,
                 Err(error) if error.code == EnvironmentErrorCode::SandboxGone => {
@@ -1052,7 +1064,9 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
             sandbox_gone_status(&current, "managed_operation_target_gone")?
         }
         Err(error) if error.retryable => {
-            return Err(BrainError::EnvironmentUnavailable(error.message.to_string()));
+            return Err(BrainError::EnvironmentUnavailable(
+                error.message.to_string(),
+            ));
         }
         Err(error) => return Err(map_environment_port_error(error)),
     };
@@ -1115,7 +1129,9 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
             sandbox_gone_status(&status, "managed_operation_target_gone")?
         }
         Err(error) if error.retryable => {
-            return Err(BrainError::EnvironmentUnavailable(error.message.to_string()));
+            return Err(BrainError::EnvironmentUnavailable(
+                error.message.to_string(),
+            ));
         }
         Err(error) => return Err(map_environment_port_error(error)),
     };
@@ -1507,18 +1523,17 @@ pub(super) async fn recover_managed_terminal_acks(
     session_id: &str,
     resident: &mut Resident,
 ) -> Result<()> {
-    let Some(environment) = &brain.environment else {
-        return if resident.st.head.pending_managed_acks.is_empty() {
-            Ok(())
-        } else {
-            Err(BrainError::EnvironmentUnavailable(
-                "managed Environment is unavailable for a durable terminal acknowledgement".into(),
-            ))
-        };
-    };
     let pending = resident.st.head.pending_managed_acks.clone();
     let mut acknowledged = Vec::new();
     for item in pending {
+        let environment = resident
+            .managed_bindings
+            .values()
+            .find(|binding| binding.resolved.binding_ref == item.operation.target.binding_ref)
+            .map(|binding| &binding.environment)
+            .ok_or_else(|| BrainError::EnvironmentUnavailable(
+                "managed Environment binding is unavailable for a durable terminal acknowledgement".into(),
+            ))?;
         let terminal_digest = item.terminal_digest.parse().map_err(|error| {
             BrainError::Protocol(format!("persisted managed terminal digest: {error}"))
         })?;

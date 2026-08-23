@@ -1,5 +1,5 @@
 //! End-to-end contract for both loop-host compositions: the same scripted session driven by
-//! the in-process BuiltinAexLoop, the in-process wasm guest, and the wasm guest running in a
+//! the in-process SequentialAgentloop, the in-process wasm guest, and the wasm guest running in a
 //! separate loop-host daemon must produce identical public transcripts — and loop-host failures
 //! must fail turns honestly, never hang them.
 
@@ -100,7 +100,7 @@ fn fixed_services(agentloop: Arc<dyn brain::agentloop::Agentloop>) -> BrainServi
 }
 
 fn builtin_services() -> BrainServices {
-    fixed_services(Arc::new(brain::agentloop::BuiltinAexLoop))
+    fixed_services(Arc::new(brain::agentloop::SequentialAgentloop))
 }
 
 fn wasm_services(component: &Path) -> BrainServices {

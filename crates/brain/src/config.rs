@@ -572,7 +572,7 @@ mod tests {
         // them silently forfeits prompt caching on every ctx-composed round.
         let sealed = def().seal().with_provider_base(
             Some(serde_json::json!({"frozen": "base"})),
-            Some("aex:ses_test".into()),
+            Some("brain:ses_test".into()),
         );
         let echoed = sealed.loop_call_view(
             None,
@@ -587,7 +587,7 @@ mod tests {
             Some(&serde_json::json!({"frozen": "base"})),
             "sampling overrides ride outside the cached segment and must not invalidate it"
         );
-        assert_eq!(echoed.prompt_cache_key(), Some("aex:ses_test"));
+        assert_eq!(echoed.prompt_cache_key(), Some("brain:ses_test"));
         assert_eq!(echoed.sampling.max_tokens, 512);
         assert_eq!(echoed.sampling.reasoning_effort.as_deref(), Some("high"));
     }
@@ -596,9 +596,10 @@ mod tests {
     fn loop_view_with_changed_presentation_drops_the_frozen_base() {
         let sealed = def().seal().with_provider_base(
             Some(serde_json::json!({"frozen": "base"})),
-            Some("aex:ses_test".into()),
+            Some("brain:ses_test".into()),
         );
-        let new_system = sealed.loop_call_view(Some("different".into()), None, None, None, None, false);
+        let new_system =
+            sealed.loop_call_view(Some("different".into()), None, None, None, None, false);
         assert!(new_system.rendered_base().is_none());
         assert!(new_system.prompt_cache_key().is_none());
         let mut tools = sealed.tools.clone();

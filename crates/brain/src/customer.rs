@@ -21,10 +21,12 @@ pub use brain_protocol::{MAX_CUSTOMER_REGISTRATION_DESCRIPTOR_BYTES, MAX_CUSTOME
 
 pub const CUSTOMER_MAX_GRANTS_ENV: &str = "BRAIN_CUSTOMER_ENVIRONMENT_MAX_GRANTS";
 pub const CUSTOMER_MAX_CONNECTIONS_ENV: &str = "BRAIN_CUSTOMER_ENVIRONMENT_MAX_CONNECTIONS";
-pub const CUSTOMER_MAX_PENDING_OPERATIONS_ENV: &str = "BRAIN_CUSTOMER_ENVIRONMENT_MAX_PENDING_OPERATIONS";
+pub const CUSTOMER_MAX_PENDING_OPERATIONS_ENV: &str =
+    "BRAIN_CUSTOMER_ENVIRONMENT_MAX_PENDING_OPERATIONS";
 pub const CUSTOMER_MAX_PENDING_TERMINAL_BYTES_ENV: &str =
     "BRAIN_CUSTOMER_ENVIRONMENT_MAX_PENDING_TERMINAL_BYTES";
-pub const CUSTOMER_MAX_REGISTRATION_BYTES_ENV: &str = "BRAIN_CUSTOMER_ENVIRONMENT_MAX_REGISTRATION_BYTES";
+pub const CUSTOMER_MAX_REGISTRATION_BYTES_ENV: &str =
+    "BRAIN_CUSTOMER_ENVIRONMENT_MAX_REGISTRATION_BYTES";
 
 pub const DEFAULT_MAX_CUSTOMER_GRANTS: usize = 4_096;
 pub const DEFAULT_MAX_CUSTOMER_CONNECTIONS: usize = 1_024;
@@ -485,7 +487,7 @@ impl CustomerCoordinator {
         let expires_at_ms = now.saturating_add(self.config.grant_ttl.as_millis() as u64);
         let observation_expires =
             now.saturating_add(self.config.observation_ttl.as_millis() as u64);
-        let protocol = format!("aex-grant.{}", crate::mint_id("g", 32));
+        let protocol = format!("environment-grant.{}", crate::mint_id("g", 32));
         let grant_id = crate::mint_id("grant", 24);
         let observation_token = crate::mint_id("obs", 40);
         let claims = GrantClaims {
@@ -776,7 +778,9 @@ impl CustomerCoordinator {
             .await
         {
             Ok(intent) => self.execute_prepared(intent, submit_retries, cancel).await,
-            Err(BrainError::EnvironmentUnavailable(message)) => customer_execution(interrupted(message)),
+            Err(BrainError::EnvironmentUnavailable(message)) => {
+                customer_execution(interrupted(message))
+            }
             Err(BrainError::Overloaded) => customer_execution(interrupted(
                 "customer Tool coordinator is at capacity; retry with backoff",
             )),
@@ -1307,7 +1311,8 @@ impl CustomerEnvironmentIngressPort for CustomerCoordinator {
                             let claims = pending.claims;
                             if claims.client_id != client_id || claims.expires_at_ms < now {
                                 return Err(BrainError::Invalid(
-                                    "customer Environment registration does not match its grant".into(),
+                                    "customer Environment registration does not match its grant"
+                                        .into(),
                                 ));
                             }
                             let key = (claims.tenant_id.clone(), claims.client_id.clone());
@@ -1532,7 +1537,8 @@ impl CustomerEnvironmentIngressPort for CustomerCoordinator {
                             .await?;
                         if delivery != CustomerDelivery::Delivered {
                             return Err(BrainError::EnvironmentUnavailable(
-                                "customer Environment heartbeat acknowledgement was not delivered".into(),
+                                "customer Environment heartbeat acknowledgement was not delivered"
+                                    .into(),
                             ));
                         }
                     }
@@ -1662,7 +1668,7 @@ fn secret_hash(value: &str) -> String {
 /// grant is consumed at `$connect`.
 pub fn frame_proof(protocol: &str) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"aex.customer-environment.frame-proof\0");
+    digest.update(b"brain.customer-environment.frame-proof\0");
     digest.update(protocol.as_bytes());
     hex::encode(digest.finalize())
 }

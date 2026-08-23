@@ -142,7 +142,7 @@ impl Brain {
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
                     let execution_digest = hex::encode(Sha256::digest(
-                        format!("aex.sandbox-execution\0{root_id}\0{operation_id}").as_bytes(),
+                        format!("brain.sandbox-execution\0{root_id}\0{operation_id}").as_bytes(),
                     ));
                     let execution_id = format!("exe_{}", &execution_digest[..24]);
                     let mut request: brain_protocol::environment::SandboxExecutionRequest =
@@ -340,7 +340,9 @@ impl Brain {
                         .map_err(map_environment_port_error)?;
                     let bytes = base64::engine::general_purpose::STANDARD
                         .decode(&content.content_base64)
-                        .map_err(|_| BrainError::Environment("sandbox returned invalid base64".into()))?;
+                        .map_err(|_| {
+                            BrainError::Environment("sandbox returned invalid base64".into())
+                        })?;
                     if bytes.len() > brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES {
                         return Err(BrainError::FileTooLarge {
                             limit: brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES,
@@ -519,7 +521,10 @@ impl Brain {
                         false,
                     )?;
                     let expected_digest = copy.request_digest.clone();
-                    let result = files.transfer(copy).await.map_err(map_environment_port_error)?;
+                    let result = files
+                        .transfer(copy)
+                        .await
+                        .map_err(map_environment_port_error)?;
                     validate_sandbox_copy_result(&result, operation_id, &expected_digest)?;
                     let exported = result.object.as_ref().ok_or_else(|| {
                         BrainError::Environment("sandbox export omitted its object identity".into())
@@ -656,7 +661,9 @@ impl Brain {
         })?;
         let status = match control.inspect(current.status.target.clone()).await {
             Ok(status) => status,
-            Err(error) if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone => {
+            Err(error)
+                if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone =>
+            {
                 sandbox_gone_status(&current.status, "environment_reported_gone")?
             }
             Err(error) => return Err(map_environment_port_error(error)),

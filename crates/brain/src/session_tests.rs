@@ -266,7 +266,10 @@ fn process_environment_policy_rejects_cross_field_and_string_drift() {
     assert!(
         load(&[
             (EXTERNAL_EXECUTOR_URL_ENV, "http://127.0.0.1:1234/tools"),
-            (EXTERNAL_EXECUTOR_CAPABILITIES_ENV, "brain.output,brain.output"),
+            (
+                EXTERNAL_EXECUTOR_CAPABILITIES_ENV,
+                "brain.output,brain.output"
+            ),
         ])
         .is_err()
     );
@@ -1332,14 +1335,16 @@ impl crate::environment::EnvironmentPort for UnknownManagedPorts {
     async fn observe(
         &self,
         _request: brain_protocol::environment::ObserveRequest,
-    ) -> crate::environment::EnvironmentResult<brain_protocol::environment::OperationObservation> {
+    ) -> crate::environment::EnvironmentResult<brain_protocol::environment::OperationObservation>
+    {
         panic!("an unknown submit has no operation receipt to observe")
     }
 
     async fn cancel(
         &self,
         _request: brain_protocol::environment::CancelRequest,
-    ) -> crate::environment::EnvironmentResult<brain_protocol::environment::CancellationReceipt> {
+    ) -> crate::environment::EnvironmentResult<brain_protocol::environment::CancellationReceipt>
+    {
         panic!("an unknown submit has no operation receipt to cancel")
     }
 
@@ -1448,7 +1453,8 @@ impl crate::environment::SandboxFilesPort for UnknownManagedPorts {
     async fn write(
         &self,
         _request: brain_protocol::environment::SandboxFileWriteRequest,
-    ) -> crate::environment::EnvironmentResult<brain_protocol::environment::SandboxFileWriteResult> {
+    ) -> crate::environment::EnvironmentResult<brain_protocol::environment::SandboxFileWriteResult>
+    {
         unreachable!("unused")
     }
 
@@ -1526,7 +1532,8 @@ impl crate::environment::SandboxFilesPort for DirectTransferFiles {
     async fn write(
         &self,
         _request: brain_protocol::environment::SandboxFileWriteRequest,
-    ) -> crate::environment::EnvironmentResult<brain_protocol::environment::SandboxFileWriteResult> {
+    ) -> crate::environment::EnvironmentResult<brain_protocol::environment::SandboxFileWriteResult>
+    {
         unreachable!("write is not used by the direct transfer test")
     }
 
@@ -3312,26 +3319,27 @@ async fn assert_managed_submit_unknown_recovery(cancellation_requested: bool) {
     let name = "managed_unknown_test".to_owned();
     let binding_ref = "bnd_managedunknown0000";
     let input = json!({"effect":"already_may_have_run"});
-    let mut envelope: brain_protocol::environment::OperationEnvelope = serde_json::from_value(json!({
-        "operation_id":call,
-        "request_digest":"0".repeat(64),
-        "session_id":session_id,
-        "root_id":resident.st.head.root_id,
-        "turn_id":turn,
-        "caller_id":"agent_root",
-        "fence":resident.st.lease.fence,
-        "generation":null,
-        "binding_ref":binding_ref,
-        "capability":name,
-        "input":{"kind":"inline","value":input},
-        "phase":"execute",
-        "target_ref":null,
-        "deadline_at_ms":crate::wall_ms() + 60_000,
-        "resources":managed_environment_resources().unwrap(),
-        "network":sealed_sandbox_network(&resident.st.head).unwrap(),
-        "trace":{}
-    }))
-    .expect("valid managed operation envelope");
+    let mut envelope: brain_protocol::environment::OperationEnvelope =
+        serde_json::from_value(json!({
+            "operation_id":call,
+            "request_digest":"0".repeat(64),
+            "session_id":session_id,
+            "root_id":resident.st.head.root_id,
+            "turn_id":turn,
+            "caller_id":"agent_root",
+            "fence":resident.st.lease.fence,
+            "generation":null,
+            "binding_ref":binding_ref,
+            "capability":name,
+            "input":{"kind":"inline","value":input},
+            "phase":"execute",
+            "target_ref":null,
+            "deadline_at_ms":crate::wall_ms() + 60_000,
+            "resources":managed_environment_resources().unwrap(),
+            "network":sealed_sandbox_network(&resident.st.head).unwrap(),
+            "trace":{}
+        }))
+        .expect("valid managed operation envelope");
     envelope.request_digest = brain_protocol::contract::operation_request_digest(&envelope);
     let binding: brain_protocol::environment::ResolvedBinding = serde_json::from_value(json!({
         "binding_ref":binding_ref,
@@ -3345,7 +3353,13 @@ async fn assert_managed_submit_unknown_recovery(cancellation_requested: bool) {
         "recovery":"retained"
     }))
     .expect("valid resolved binding");
-    resident.managed_bindings = Arc::new(HashMap::from([(name.clone(), binding)]));
+    resident.managed_bindings = Arc::new(HashMap::from([(
+        name.clone(),
+        crate::environment::ManagedBinding {
+            resolved: binding,
+            environment: brain.environment.clone().expect("managed Environment"),
+        },
+    )]));
     resident.st.head.state = SessionLifecycle::Open;
     resident.st.head.turn = Some(turn.clone());
     resident.st.head.active_phase = Some(if cancellation_requested {
@@ -3426,7 +3440,10 @@ async fn assert_managed_submit_unknown_recovery(cancellation_requested: bool) {
     let error = recover_managed_calls(&brain, &session_id, &mut resident, &crash_entries)
         .await
         .expect_err("inject a crash boundary after the unknown marker and status commit");
-    assert!(matches!(error, BrainError::EnvironmentUnavailable(_)), "{error:?}");
+    assert!(
+        matches!(error, BrainError::EnvironmentUnavailable(_)),
+        "{error:?}"
+    );
     assert_eq!(ports.submits.load(Ordering::Acquire), 1);
     let after_unknown = journal.read_records(&session_id, 0).await.unwrap();
     assert_eq!(
@@ -3568,26 +3585,27 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
     let turn = "trn_stalemanaged0000000".to_owned();
     let call = "op_stalemanaged000000".to_owned();
     let name = "managed_stale_test".to_owned();
-    let mut envelope: brain_protocol::environment::OperationEnvelope = serde_json::from_value(json!({
-        "operation_id":call,
-        "request_digest":"0".repeat(64),
-        "session_id":session_id,
-        "root_id":resident.st.head.root_id,
-        "turn_id":turn,
-        "caller_id":"agent_root",
-        "fence":resident.st.lease.fence,
-        "generation":null,
-        "binding_ref":"bnd_stalemanaged0000",
-        "capability":name,
-        "input":{"kind":"inline","value":{"effect":"may_have_started"}},
-        "phase":"execute",
-        "target_ref":null,
-        "deadline_at_ms":crate::wall_ms() + 60_000,
-        "resources":managed_environment_resources().unwrap(),
-        "network":sealed_sandbox_network(&resident.st.head).unwrap(),
-        "trace":{}
-    }))
-    .expect("valid stale managed envelope");
+    let mut envelope: brain_protocol::environment::OperationEnvelope =
+        serde_json::from_value(json!({
+            "operation_id":call,
+            "request_digest":"0".repeat(64),
+            "session_id":session_id,
+            "root_id":resident.st.head.root_id,
+            "turn_id":turn,
+            "caller_id":"agent_root",
+            "fence":resident.st.lease.fence,
+            "generation":null,
+            "binding_ref":"bnd_stalemanaged0000",
+            "capability":name,
+            "input":{"kind":"inline","value":{"effect":"may_have_started"}},
+            "phase":"execute",
+            "target_ref":null,
+            "deadline_at_ms":crate::wall_ms() + 60_000,
+            "resources":managed_environment_resources().unwrap(),
+            "network":sealed_sandbox_network(&resident.st.head).unwrap(),
+            "trace":{}
+        }))
+        .expect("valid stale managed envelope");
     envelope.request_digest = brain_protocol::contract::operation_request_digest(&envelope);
 
     resident.st.head.turn = Some(turn.clone());
@@ -3666,7 +3684,10 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
     let error = recover_managed_calls(&brain, &session_id, &mut resident, &crash_entries)
         .await
         .expect_err("inject cleanup loss after submit replay is revoked");
-    assert!(matches!(error, BrainError::EnvironmentUnavailable(_)), "{error:?}");
+    assert!(
+        matches!(error, BrainError::EnvironmentUnavailable(_)),
+        "{error:?}"
+    );
     assert_eq!(ports.submits.load(Ordering::Acquire), 0);
     journal
         .release(&session_id, &resident.st.lease)
@@ -4296,7 +4317,7 @@ async fn a_composition_registry_resolves_a_sealed_loop() {
             &self,
             _selector: &crate::journal::AgentloopSelectorDoc,
         ) -> Result<Arc<dyn crate::agentloop::Agentloop>> {
-            Ok(Arc::new(crate::agentloop::BuiltinAexLoop))
+            Ok(Arc::new(crate::agentloop::SequentialAgentloop))
         }
         fn admit_custom(
             &self,
@@ -4968,10 +4989,10 @@ fn a_session_deny_beats_a_tool_declaration() {
 }
 
 #[test]
-fn aex_infrastructure_hosts_are_always_denied_at_create() {
-    let error = merge_session_network(None, &[declared_tool("api.aex.dev")])
-        .expect_err("aex infra refused");
-    assert!(error.to_string().contains("always denied"), "{error}");
+fn the_kernel_does_not_embed_product_specific_network_denials() {
+    let sealed = merge_session_network(None, &[declared_tool("control.product.invalid")])
+        .expect("composition-specific policy belongs outside the kernel");
+    assert_eq!(sealed["outbound"], "allowlist");
 }
 
 #[test]
@@ -5860,7 +5881,13 @@ async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
         "recovery":"retained"
     }))
     .expect("valid managed binding");
-    resident.managed_bindings = Arc::new(HashMap::from([(name, binding)]));
+    resident.managed_bindings = Arc::new(HashMap::from([(
+        name,
+        crate::environment::ManagedBinding {
+            resolved: binding,
+            environment: brain.environment.clone().expect("managed Environment"),
+        },
+    )]));
 
     let content = vec![ContentBlock::text("run the managed effect")];
     let (turn, user_seq, cancel) = admit(
@@ -6002,7 +6029,13 @@ async fn a_cancelled_submit_concludes_before_sandbox_reconciliation() {
         "recovery":"retained"
     }))
     .expect("valid managed binding");
-    resident.managed_bindings = Arc::new(HashMap::from([(name, binding)]));
+    resident.managed_bindings = Arc::new(HashMap::from([(
+        name,
+        crate::environment::ManagedBinding {
+            resolved: binding,
+            environment: brain.environment.clone().expect("managed Environment"),
+        },
+    )]));
 
     let content = vec![ContentBlock::text("run the managed effect")];
     let (turn, user_seq, cancel) = admit(

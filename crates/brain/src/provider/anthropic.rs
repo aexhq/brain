@@ -378,9 +378,10 @@ mod tests {
         // included — otherwise loop-driven sessions silently forfeit prompt caching.
         let sealed = prefix().with_provider_base(
             Some(Value::Object(Anthropic::render_base(&prefix()))),
-            Some("aex:ses_parity".into()),
+            Some("brain:ses_parity".into()),
         );
-        let echoed = sealed.loop_call_view(None, Some(sealed.tools.clone()), None, None, None, false);
+        let echoed =
+            sealed.loop_call_view(None, Some(sealed.tools.clone()), None, None, None, false);
         let history = vec![Message::user_text("same turn")];
         let kernel = Anthropic::build_request(
             &sealed,

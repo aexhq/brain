@@ -156,7 +156,9 @@ pub(super) async fn customer_environment_socket(
         .protocols([protocol])
         .max_message_size(brain::customer::MAX_CUSTOMER_WS_FRAME_BYTES)
         .max_frame_size(brain::customer::MAX_CUSTOMER_WS_FRAME_BYTES)
-        .on_upgrade(move |socket| serve_customer_environment_socket(coordinator, connection_id, socket))
+        .on_upgrade(move |socket| {
+            serve_customer_environment_socket(coordinator, connection_id, socket)
+        })
         .into_response())
 }
 
@@ -413,8 +415,8 @@ pub(super) fn customer_grant_subprotocol(headers: &HeaderMap) -> Result<String, 
     for value in headers.get_all(header::SEC_WEBSOCKET_PROTOCOL) {
         let value = value.to_str().map_err(|_| invalid())?;
         for candidate in value.split(',').map(str::trim) {
-            if candidate.len() <= "aex-grant.".len()
-                || !candidate.starts_with("aex-grant.")
+            if candidate.len() <= "environment-grant.".len()
+                || !candidate.starts_with("environment-grant.")
                 || protocol.is_some()
             {
                 return Err(invalid());

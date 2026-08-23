@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use brain::Result;
 use brain::adapter::ToolExecutor;
-use brain::agentloop::{Agentloop, AgentloopRegistry, BuiltinAexLoop};
+use brain::agentloop::{Agentloop, AgentloopRegistry, SequentialAgentloop};
 use brain::config::{Dialect, ServerToolPolicy};
 use brain::journal::Journal;
 use brain::provider::fake::{FakeProvider, Scripted};
@@ -24,7 +24,7 @@ impl AgentloopRegistry for TestRegistry {
         &self,
         _selector: &brain::journal::AgentloopSelectorDoc,
     ) -> Result<Arc<dyn Agentloop>> {
-        Ok(Arc::new(BuiltinAexLoop))
+        Ok(Arc::new(SequentialAgentloop))
     }
 
     fn admit_custom(

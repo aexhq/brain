@@ -16,8 +16,10 @@ use crate::compact::{
     DEFAULT_CONTEXT_HARD_TOKENS, DEFAULT_CONTEXT_SOFT_TOKENS, DEFAULT_CONTEXT_TAIL_TOKENS,
 };
 use crate::config::{AgentDef, Dialect, GenOpts, OutputTokenParameter, ProviderKey, SessionConfig};
+use crate::environment::{
+    managed_environment_resources, map_environment_port_error, sealed_sandbox_network,
+};
 use crate::events::EventHub;
-use crate::environment::{managed_environment_resources, map_environment_port_error, sealed_sandbox_network};
 use crate::journal::{
     ContextForkDoc, DELETION_TOMBSTONE_TTL_MS, DeletionState, DeletionStatusDoc, Entry, FailureDoc,
     Head, HeadDoc, Journal, Lease, PrefixDoc, ProviderAttemptState, Record, SessionLifecycle,
@@ -80,7 +82,10 @@ pub struct Brain {
     /// the storage resource is unavailable, never an in-memory production fallback.
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
     pub bundle_storage: Option<Arc<dyn crate::storage::BundleStoragePort>>,
+    pub environments: crate::environment::EnvironmentRegistry,
+    #[doc(hidden)]
     pub environment: Option<Arc<dyn crate::environment::EnvironmentPort>>,
+    #[doc(hidden)]
     pub session_preparation: Option<Arc<dyn crate::environment::SessionPreparationPort>>,
     pub sandbox_files: Option<Arc<dyn crate::environment::SandboxFilesPort>>,
     pub sandbox_control: Option<Arc<dyn crate::environment::SandboxControlPort>>,
@@ -177,7 +182,10 @@ enum DirectSandboxTransferState {
 pub struct BrainServices {
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
     pub bundle_storage: Option<Arc<dyn crate::storage::BundleStoragePort>>,
+    pub environments: crate::environment::EnvironmentRegistry,
+    #[doc(hidden)]
     pub environment: Option<Arc<dyn crate::environment::EnvironmentPort>>,
+    #[doc(hidden)]
     pub session_preparation: Option<Arc<dyn crate::environment::SessionPreparationPort>>,
     pub sandbox_files: Option<Arc<dyn crate::environment::SandboxFilesPort>>,
     pub sandbox_control: Option<Arc<dyn crate::environment::SandboxControlPort>>,
@@ -277,16 +285,28 @@ fn validate_model_tool_projection<'a>(
     Ok(())
 }
 
+struct DecodedToolBundle {
+    checksum: String,
+    bytes: Vec<u8>,
+    media_type: String,
+    target: brain_protocol::session::ToolBundleTarget,
+    execute_path: String,
+    setup_path: Option<String>,
+}
+
 fn managed_bundle_descriptors(
-    environment_tools: &[(&crate::config::ToolDecl, &crate::config::EnvironmentToolSeal)],
-    decoded_bundles: &[(String, Vec<u8>, String)],
+    environment_tools: &[(
+        &crate::config::ToolDecl,
+        &crate::config::EnvironmentToolSeal,
+    )],
+    decoded_bundles: &[DecodedToolBundle],
 ) -> Result<Vec<brain_protocol::environment::BundleDescriptor>> {
     environment_tools
         .iter()
         .map(|(decl, seal)| {
-            let (_, bytes, media_type) = decoded_bundles
+            let bundle = decoded_bundles
                 .iter()
-                .find(|(digest, _, _)| digest == &seal.checksum)
+                .find(|bundle| bundle.checksum == seal.checksum)
                 .ok_or_else(|| {
                     BrainError::Invalid(format!(
                         "missing verified bundle for managed Tool {}",
@@ -295,19 +315,19 @@ fn managed_bundle_descriptors(
                 })?;
             serde_json::from_value(serde_json::json!({
                 "bundle_digest": seal.checksum,
-                "bytes": bytes.len(),
+                "bytes": bundle.bytes.len(),
                 "contract_digest": decl.contract_digest,
                 "description": (!decl.description.is_empty()).then_some(decl.description.as_str()),
                 "object": {
-                    "bytes": bytes.len(),
-                    "media_type": media_type,
+                    "bytes": bundle.bytes.len(),
+                    "media_type": bundle.media_type,
                     "object_id": format!("bundle_{}", seal.checksum),
                     "sha256": seal.checksum,
                 },
                 "required_env": seal.required_env,
-                "target": "linux-amd64",
-                "execute_path": format!("/artifacts/{}/execute", seal.checksum),
-                "setup_path": null,
+                "target": bundle.target,
+                "execute_path": bundle.execute_path,
+                "setup_path": bundle.setup_path,
                 "tool_name": decl.name,
                 "environment_name": seal.environment,
             }))
@@ -362,9 +382,11 @@ fn sealed_managed_binding(
     .map_err(BrainError::from)
 }
 
-pub(crate) fn default_sandbox_target(root_id: &str) -> Result<brain_protocol::environment::SandboxTarget> {
+pub(crate) fn default_sandbox_target(
+    root_id: &str,
+) -> Result<brain_protocol::environment::SandboxTarget> {
     let digest = hex::encode(Sha256::digest(
-        format!("aex.default-target\0{root_id}").as_bytes(),
+        format!("brain.default-target\0{root_id}").as_bytes(),
     ));
     serde_json::from_value(serde_json::json!({
         "kind": "default",
@@ -601,6 +623,17 @@ impl Brain {
         #[cfg(test)]
         let agentloop_registry =
             agentloop_registry.or_else(|| Some(Arc::new(crate::agentloop::TestAgentloopRegistry)));
+        let environments = match (&services.environment, &services.session_preparation) {
+            (Some(execution), Some(preparation)) => services.environments.clone().with_fallback(
+                crate::environment::EnvironmentAdapter {
+                    execution: execution.clone(),
+                    preparation: preparation.clone(),
+                    files: services.sandbox_files.clone(),
+                    control: services.sandbox_control.clone(),
+                },
+            ),
+            _ => services.environments.clone(),
+        };
         Arc::new(Self {
             agentloop_registry: agentloop_registry
                 .expect("BrainServices.agentloop_registry is required"),
@@ -626,6 +659,7 @@ impl Brain {
             external_executor,
             session_storage: services.session_storage,
             bundle_storage: services.bundle_storage,
+            environments,
             environment: services.environment,
             session_preparation: services.session_preparation,
             sandbox_files: services.sandbox_files,
@@ -706,7 +740,10 @@ impl Brain {
                         BrainError::Custody(format!("managed Tool secret document: {error}"))
                     })?
                 };
-                Ok::<_, BrainError>(Arc::new(RootExecutionSecrets { key, environment_env }))
+                Ok::<_, BrainError>(Arc::new(RootExecutionSecrets {
+                    key,
+                    environment_env,
+                }))
             })
             .await?
             .clone();
@@ -772,28 +809,39 @@ impl Brain {
         &self,
         session_id: &str,
         doc: &HeadDoc,
-    ) -> Result<Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>> {
+    ) -> Result<Arc<HashMap<String, crate::environment::ManagedBinding>>> {
         if doc.prefix.managed_bundles.is_empty() {
             return Ok(Arc::new(HashMap::new()));
         }
-        let environment = self.environment.as_ref().ok_or_else(|| {
-            BrainError::Invalid("managed Tools require the canonical Environment execution port".into())
-        })?;
-        let preparation = self.session_preparation.as_ref().ok_or_else(|| {
-            BrainError::Invalid("managed Tools require the canonical Environment preparation port".into())
-        })?;
         let bundle_storage = self.bundle_storage.as_ref().ok_or_else(|| {
             BrainError::Invalid("managed Tools require durable Tool-bundle custody".into())
         })?;
 
-        let mut prepared_bindings = Vec::with_capacity(doc.prefix.managed_bundles.len());
         let mut resolved_by_tool = HashMap::with_capacity(doc.prefix.managed_bundles.len());
-        let mut environment_id = None::<String>;
-        let mut binding_refs = HashSet::new();
-        let mut env_names = Vec::new();
+        struct Preparation {
+            adapter: crate::environment::EnvironmentAdapter,
+            environment_id: String,
+            bindings: Vec<serde_json::Value>,
+            binding_refs: HashSet<String>,
+            env_names: Vec<String>,
+            bundle_digests: Vec<String>,
+        }
+        let mut preparations = HashMap::<String, Preparation>::new();
         for descriptor in &doc.prefix.managed_bundles {
+            let logical_name = descriptor.environment_name.as_str();
+            let declaration = doc.prefix.environments.get(logical_name).ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "managed Tool {} names undeclared environment {logical_name}",
+                    descriptor.tool_name.as_str()
+                ))
+            })?;
+            let adapter = self
+                .environments
+                .resolve(declaration.extension.as_str())?
+                .clone();
             let binding = sealed_managed_binding(session_id, doc, descriptor)?;
-            let resolved = environment
+            let resolved = adapter
+                .execution
                 .resolve_binding(binding)
                 .await
                 .map_err(map_environment_port_error)?;
@@ -801,9 +849,9 @@ impl Brain {
                 || !resolved
                     .capabilities
                     .contains(&brain_protocol::environment::EnvironmentCapability::Execution)
-                || !resolved
-                    .capabilities
-                    .contains(&brain_protocol::environment::EnvironmentCapability::SessionPreparation)
+                || !resolved.capabilities.contains(
+                    &brain_protocol::environment::EnvironmentCapability::SessionPreparation,
+                )
                 || resolved.limits.max_inline_input_bytes.get()
                     < brain_protocol::MAX_MANAGED_TOOL_INPUT_BYTES as u64
                 || resolved.limits.max_inline_result_bytes.get()
@@ -813,24 +861,38 @@ impl Brain {
                     "resolved managed binding cannot enforce the immutable execution seal".into(),
                 ));
             }
-            match &environment_id {
-                Some(expected) if expected != resolved.environment_id.as_str() => {
-                    return Err(BrainError::EnvironmentUnavailable(
-                        "one session's managed bindings resolved to different Environments".into(),
-                    ));
-                }
-                None => environment_id = Some(resolved.environment_id.to_string()),
-                _ => {}
+            let preparation = preparations
+                .entry(logical_name.to_owned())
+                .or_insert_with(|| Preparation {
+                    adapter: adapter.clone(),
+                    environment_id: resolved.environment_id.to_string(),
+                    bindings: Vec::new(),
+                    binding_refs: HashSet::new(),
+                    env_names: Vec::new(),
+                    bundle_digests: Vec::new(),
+                });
+            if preparation.environment_id != resolved.environment_id.as_str() {
+                return Err(BrainError::EnvironmentUnavailable(format!(
+                    "logical environment {logical_name} resolved to more than one physical environment"
+                )));
             }
-            env_names.extend(
+            preparation.env_names.extend(
                 descriptor
                     .required_env
                     .iter()
                     .map(|name| name.as_str().to_owned()),
             );
-            binding_refs.insert(resolved.binding_ref.to_string());
+            preparation
+                .binding_refs
+                .insert(resolved.binding_ref.to_string());
             if resolved_by_tool
-                .insert(descriptor.tool_name.to_string(), resolved.clone())
+                .insert(
+                    descriptor.tool_name.to_string(),
+                    crate::environment::ManagedBinding {
+                        resolved: resolved.clone(),
+                        environment: adapter.execution.clone(),
+                    },
+                )
                 .is_some()
             {
                 return Err(BrainError::Invalid(format!(
@@ -838,44 +900,51 @@ impl Brain {
                     descriptor.tool_name.as_str()
                 )));
             }
-            prepared_bindings.push(serde_json::json!({
+            preparation.bindings.push(serde_json::json!({
                 "binding_ref": resolved.binding_ref.clone(),
                 "bundle_digests": [descriptor.bundle_digest],
             }));
+            preparation
+                .bundle_digests
+                .push(descriptor.bundle_digest.to_string());
         }
 
-        let mut seen = HashSet::new();
-        let mut bundles = Vec::new();
-        for descriptor in &doc.prefix.managed_bundles {
-            if seen.insert(descriptor.bundle_digest.to_string()) {
-                bundles.push(
-                    bundle_storage
-                        .prepare_bundle_fetch(&doc.root_id, descriptor.bundle_digest.as_str())
-                        .await?,
-                );
+        for (_, preparation) in preparations {
+            let mut seen = HashSet::new();
+            let mut bundles = Vec::new();
+            for digest in preparation.bundle_digests {
+                if seen.insert(digest.clone()) {
+                    bundles.push(
+                        bundle_storage
+                            .prepare_bundle_fetch(&doc.root_id, &digest)
+                            .await?,
+                    );
+                }
             }
+            let secret_capability = self.mint_managed_secret_capability(
+                session_id,
+                doc,
+                &preparation.environment_id,
+                preparation.binding_refs,
+                preparation.env_names,
+            )?;
+            let request: brain_protocol::environment::PrepareSessionRequest =
+                serde_json::from_value(serde_json::json!({
+                    "bindings": preparation.bindings,
+                    "bundles": bundles,
+                    "network": sealed_sandbox_network(doc)?,
+                    "resources": managed_environment_resources()?,
+                    "root_id": doc.root_id,
+                    "secret_capability": secret_capability,
+                    "session_id": session_id,
+                }))?;
+            preparation
+                .adapter
+                .preparation
+                .prepare(request)
+                .await
+                .map_err(map_environment_port_error)?;
         }
-        let secret_capability = self.mint_managed_secret_capability(
-            session_id,
-            doc,
-            environment_id.as_deref().expect("managed bindings are nonempty"),
-            binding_refs,
-            env_names,
-        )?;
-        let request: brain_protocol::environment::PrepareSessionRequest =
-            serde_json::from_value(serde_json::json!({
-                "bindings": prepared_bindings,
-                "bundles": bundles,
-                "network": sealed_sandbox_network(doc)?,
-                "resources": managed_environment_resources()?,
-                "root_id": doc.root_id,
-                "secret_capability": secret_capability,
-                "session_id": session_id,
-            }))?;
-        preparation
-            .prepare(request)
-            .await
-            .map_err(map_environment_port_error)?;
         Ok(Arc::new(resolved_by_tool))
     }
 
@@ -1190,7 +1259,17 @@ impl Brain {
                     "tool_bundles[{index}] checksum mismatch"
                 )));
             }
-            decoded_bundles.push((checksum, bytes, bundle.media_type.clone()));
+            decoded_bundles.push(DecodedToolBundle {
+                checksum,
+                bytes,
+                media_type: bundle.media_type.clone(),
+                target: bundle.target,
+                execute_path: bundle.execute_path.to_string(),
+                setup_path: bundle
+                    .setup_path
+                    .as_ref()
+                    .map(|path| path.as_str().to_owned()),
+            });
         }
         let referenced_bundle_checksums: HashSet<_> = environment_tools
             .iter()
@@ -1298,7 +1377,7 @@ impl Brain {
             }),
             rendered_base: serde_json::Value::Null,
             rendered_base_digest: String::new(),
-            prompt_cache_key: format!("aex:{session_id}"),
+            prompt_cache_key: format!("brain:{session_id}"),
             tools: tool_items,
             environments,
             managed_bundles,
@@ -1342,14 +1421,14 @@ impl Brain {
                     "managed Tools require durable internal Tool-bundle custody".into(),
                 )
             })?;
-            for (digest, bytes, _) in &decoded_bundles {
+            for bundle in &decoded_bundles {
                 let object = bundle_storage
-                    .store_bundle(&session_id, digest, bytes)
+                    .store_bundle(&session_id, &bundle.checksum, &bundle.bytes)
                     .await?;
                 let descriptor = prefix
                     .managed_bundles
                     .iter()
-                    .find(|descriptor| descriptor.bundle_digest.as_str() == digest)
+                    .find(|descriptor| descriptor.bundle_digest.as_str() == bundle.checksum)
                     .ok_or_else(|| {
                         BrainError::Journal("stored Tool bundle has no immutable descriptor".into())
                     })?;
@@ -1969,7 +2048,7 @@ impl Brain {
             ));
         }
         let identity = hash_create_key(&format!(
-            "aex.sandbox-file-write.v1\0{session_id}\0{idempotency_key}"
+            "brain.sandbox-file-write.v1\0{session_id}\0{idempotency_key}"
         ));
         let operation_id = format!("file_{}", &identity[..24]);
         self.deliver(session_id, |reply| Command::WriteDefaultSandboxFile {
@@ -3048,7 +3127,7 @@ impl crate::turn::EngineServices for Brain {
         &self,
         session_id: &str,
         doc: &HeadDoc,
-    ) -> Result<Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>> {
+    ) -> Result<Arc<HashMap<String, crate::environment::ManagedBinding>>> {
         Brain::prepare_managed_session(self, session_id, doc).await
     }
 
@@ -3191,7 +3270,7 @@ fn sandbox_file_effect_id(session_id: &str, key: &str, action: &str) -> Result<S
         ));
     }
     let identity = hash_create_key(&format!(
-        "aex.sandbox-file-effect.v1\0{action}\0{session_id}\0{key}"
+        "brain.sandbox-file-effect.v1\0{action}\0{session_id}\0{key}"
     ));
     Ok(format!("file_{}", &identity[..24]))
 }
@@ -3382,7 +3461,7 @@ fn additional_sandbox_identity(
 ) -> Result<(String, String, brain_protocol::environment::SandboxTarget)> {
     let identity = |domain: &str| {
         hex::encode(Sha256::digest(
-            format!("aex.{domain}\0{root_id}\0{owner_session_id}\0{operation_id}").as_bytes(),
+            format!("brain.{domain}\0{root_id}\0{owner_session_id}\0{operation_id}").as_bytes(),
         ))
     };
     let sandbox_digest = identity("additional-sandbox");
@@ -3408,7 +3487,7 @@ fn sandbox_request_digest(
 ) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_jcs::to_vec(
         &serde_json::json!({
-            "domain": "aex.brain.sandbox.v1",
+            "domain": "brain.sandbox.v1",
             "root_id": root_id,
             "owner_session_id": owner_session_id,
             "operation_id": operation_id,
@@ -3427,7 +3506,8 @@ fn sandbox_status_matches_target(
 fn sandbox_status_releases_slot(status: &brain_protocol::environment::SandboxStatus) -> bool {
     matches!(
         status.state,
-        brain_protocol::environment::SandboxState::Gone | brain_protocol::environment::SandboxState::Terminated
+        brain_protocol::environment::SandboxState::Gone
+            | brain_protocol::environment::SandboxState::Terminated
     )
 }
 
@@ -3547,7 +3627,7 @@ fn engine_outcome(
 struct Resident {
     st: TurnState,
     key: ProviderKey,
-    managed_bindings: Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>,
+    managed_bindings: Arc<HashMap<String, crate::environment::ManagedBinding>>,
     /// Keeps the root-scoped OnceCell alive while any root/descendant actor is resident.
     _root_secrets: Arc<RootSecretCell>,
     message_replays: HashMap<String, MessageReplay>,
@@ -3557,7 +3637,7 @@ struct Running {
     handle: tokio::task::JoinHandle<(TurnState, RunningOutcome)>,
     cancel: CancellationToken,
     key: ProviderKey,
-    managed_bindings: Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>,
+    managed_bindings: Arc<HashMap<String, crate::environment::ManagedBinding>>,
     root_secrets: Arc<RootSecretCell>,
     message_replays: HashMap<String, MessageReplay>,
     _heartbeat: LeaseHeartbeatGuard,
@@ -4343,7 +4423,7 @@ async fn settle_running(
     brain: &Arc<Brain>,
     session_id: &str,
     key: ProviderKey,
-    managed_bindings: Arc<HashMap<String, brain_protocol::environment::ResolvedBinding>>,
+    managed_bindings: Arc<HashMap<String, crate::environment::ManagedBinding>>,
     root_secrets: Arc<RootSecretCell>,
     message_replays: HashMap<String, MessageReplay>,
     done: std::result::Result<(TurnState, RunningOutcome), tokio::task::JoinError>,
@@ -5011,7 +5091,7 @@ async fn do_copy_default_sandbox_to_storage(
         ));
     }
     let transfer_digest = hash_create_key(&format!(
-        "aex.sandbox-storage-transfer.v1\0{session_id}\0{operation_id}"
+        "brain.sandbox-storage-transfer.v1\0{session_id}\0{operation_id}"
     ));
     let transfer_id = format!("xfer_{}", &transfer_digest[..24]);
     let ticket = prepare_storage_upload_state_for_transfer(
@@ -5227,7 +5307,9 @@ async fn reconcile_default_sandbox_expiry(
     let status = if let Some(files) = &brain.sandbox_files {
         match files.status(current.target.clone()).await {
             Ok(status) => status,
-            Err(error) if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone => {
+            Err(error)
+                if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone =>
+            {
                 serde_json::from_value(serde_json::json!({
                     "state": "gone",
                     "target": current.target,
@@ -5404,7 +5486,6 @@ fn turn_run(
         provider_total_timeout: brain.cfg.provider_total_timeout,
         compactor: brain.compactor.clone(),
         external_executor: brain.external_executor.clone(),
-        environment: brain.environment.clone(),
         managed_bindings: r.managed_bindings.clone(),
         customer: brain.customer.clone(),
         tenant_id: r.st.head.tenant_id.clone(),
@@ -5723,8 +5804,8 @@ fn fork_mode_doc(fork_turns: &ForkTurns) -> (&'static str, Option<u32>) {
 
 /// W6.1: the sealed session network is the create-time merge of the session's requested
 /// policy with every granted tool's declared needs. Effective allowlist =
-/// (union of tool declarations and session allows) minus session denies; Aex infra is
-/// always refused at declaration time (the egress gateway enforces it again at runtime).
+/// (union of tool declarations and session allows) minus session denies. Product-specific
+/// infrastructure denials are supplied by the hosting composition and enforced by its environment.
 /// Declaration and merge only — no per-tool runtime isolation is claimed.
 pub(crate) fn merge_session_network(
     requested: Option<&brain_protocol::session::NetworkPolicy>,
@@ -5732,9 +5813,6 @@ pub(crate) fn merge_session_network(
 ) -> Result<serde_json::Value> {
     fn host_of(destination: &serde_json::Value) -> Option<&str> {
         destination.get("host").and_then(serde_json::Value::as_str)
-    }
-    fn is_aex_infra(host: &str) -> bool {
-        host.eq_ignore_ascii_case("aex.dev") || host.to_ascii_lowercase().ends_with(".aex.dev")
     }
     fn denied(host: &str, deny: &[String]) -> bool {
         deny.iter().any(|rule| {
@@ -5754,14 +5832,6 @@ pub(crate) fn merge_session_network(
     let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
     for decl in decls {
         for destination in &decl.network_needs {
-            if let Some(host) = host_of(destination)
-                && is_aex_infra(host)
-            {
-                return Err(BrainError::Invalid(format!(
-                    "tool {} declares Aex infrastructure host {host:?}; Aex infra is always denied",
-                    decl.name
-                )));
-            }
             if seen.insert(serde_jcs::to_vec(destination)?) {
                 declared.push(destination.clone());
             }
@@ -5813,11 +5883,6 @@ pub(crate) fn merge_session_network(
             let mut merged: Vec<serde_json::Value> = Vec::new();
             for destination in session_destinations.into_iter().chain(declared) {
                 if let Some(host) = host_of(&destination) {
-                    if is_aex_infra(host) {
-                        return Err(BrainError::Invalid(format!(
-                            "network allowlist names Aex infrastructure host {host:?}; Aex infra is always denied"
-                        )));
-                    }
                     if denied(host, &deny) {
                         continue;
                     }
@@ -6180,7 +6245,10 @@ async fn terminate_additional_sandboxes_for_end(
             })?;
             let status = match control.terminate(current.status.target.clone()).await {
                 Ok(status) => status,
-                Err(error) if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone => {
+                Err(error)
+                    if error.code
+                        == brain_protocol::environment::EnvironmentErrorCode::SandboxGone =>
+                {
                     sandbox_gone_status(&current.status, "environment_reported_gone")?
                 }
                 Err(error) => return Err(map_environment_port_error(error)),
@@ -6229,7 +6297,9 @@ async fn delete_session(
 
 fn deletion_error_code(error: &BrainError) -> &'static str {
     match error {
-        BrainError::Environment(_) | BrainError::EnvironmentUnavailable(_) => "sandbox_cleanup_failed",
+        BrainError::Environment(_) | BrainError::EnvironmentUnavailable(_) => {
+            "sandbox_cleanup_failed"
+        }
         BrainError::FileNotFound(_)
         | BrainError::FileTooLarge { .. }
         | BrainError::StorageObjectTooLarge { .. }

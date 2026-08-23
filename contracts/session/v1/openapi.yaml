@@ -522,7 +522,7 @@ paths:
         - name: Sec-WebSocket-Protocol
           in: header
           required: true
-          schema: { type: string, pattern: '^aex-grant\\.' }
+          schema: { type: string, pattern: '^environment-grant\\.' }
       responses:
         "101": { description: WebSocket upgraded }
         default: { $ref: "#/components/responses/Error" }
