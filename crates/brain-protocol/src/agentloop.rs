@@ -2295,6 +2295,7 @@ pub enum ModelMessage {
 #[doc = "      ]"]
 #[doc = "    },"]
 #[doc = "    \"tools\": {"]
+#[doc = "      \"description\": \"Absent or empty means the sealed presentation verbatim, which also keeps the provider's frozen base segment and prompt-cache key. A non-empty list re-presents sealed tools by name and pays its own cache economics.\","]
 #[doc = "      \"type\": \"array\","]
 #[doc = "      \"items\": {"]
 #[doc = "        \"$ref\": \"#/$defs/ToolPresentationView\""]
@@ -2324,6 +2325,7 @@ pub struct ModelRequest {
     #[doc = "Only the closing-round constraint: presented tools stay on the wire (tool-block histories require them) while the model is asked to answer in text. Absent means the provider default."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub tool_choice: ::std::option::Option<ModelRequestToolChoice>,
+    #[doc = "Absent or empty means the sealed presentation verbatim, which also keeps the provider's frozen base segment and prompt-cache key. A non-empty list re-presents sealed tools by name and pays its own cache economics."]
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub tools: ::std::vec::Vec<ToolPresentationView>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]

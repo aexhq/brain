@@ -112,8 +112,12 @@ export interface AgentloopCtx {
     set(entries: Record<string, unknown>): Promise<void>;
   };
   readonly turn: {
-    /** Declare the turn finished, optionally with a structured result. */
-    finish(result?: Record<string, unknown>): Promise<void>;
+    /** Declare the turn finished, optionally with a structured result and a stop-reason
+     * claim (`end_turn` when unstated; cancelled/interrupted stay kernel-owned). */
+    finish(
+      result?: Record<string, unknown>,
+      options?: { stopReason?: "end_turn" | "max_rounds" | "refusal" },
+    ): Promise<void>;
     fail(error: {
       message: string;
       code?: AgentloopErrorCode;
@@ -194,8 +198,15 @@ function makeCtx(
       },
     },
     turn: {
-      async finish(result?: Record<string, unknown>): Promise<void> {
-        ctxOp(id, { op: "turn_finish", ...(result === undefined ? {} : { result }) });
+      async finish(
+        result?: Record<string, unknown>,
+        options?: { stopReason?: "end_turn" | "max_rounds" | "refusal" },
+      ): Promise<void> {
+        ctxOp(id, {
+          op: "turn_finish",
+          ...(result === undefined ? {} : { result }),
+          ...(options?.stopReason === undefined ? {} : { stop_reason: options.stopReason }),
+        });
         concluded = true;
       },
       async fail(error: {

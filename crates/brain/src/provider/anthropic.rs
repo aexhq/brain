@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn the_closing_view_renders_tool_choice_none_with_tools_kept() {
-        let p = prefix().closing_view();
+        let p = prefix().loop_call_view(None, None, None, None, true);
         let r = Anthropic::build_request(
             &p,
             &[Message::user_text("hi")],

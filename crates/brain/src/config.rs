@@ -250,22 +250,6 @@ impl SealedPrefix {
     pub fn tool(&self, name: &str) -> Option<&ToolDecl> {
         self.tools.iter().find(|t| t.name == name)
     }
-    /// A per-call view for the graceful at-cap closing round: the same sealed presentation with
-    /// `tool_choice: none`, so the model wraps up in text instead of requesting more work.
-    pub(crate) fn closing_view(&self) -> SealedPrefix {
-        SealedPrefix {
-            digest: self.digest.clone(),
-            system_prompt: self.system_prompt.clone(),
-            tools: self.tools.clone(),
-            model: self.model.clone(),
-            dialect: self.dialect,
-            sampling: self.sampling.clone(),
-            limits: self.limits,
-            rendered_base: None,
-            prompt_cache_key: None,
-            tool_choice_none: true,
-        }
-    }
     /// A per-call view of this sealed prefix for a loop-composed `model_stream` request.
     ///
     /// Presentation (system text, which sealed tools are shown and how, output/temperature

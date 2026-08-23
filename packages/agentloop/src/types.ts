@@ -75,9 +75,13 @@ export interface ToolPresentation {
 export interface ModelRequest {
   system?: string;
   messages: ModelMessage[];
+  /** Absent or empty means the sealed presentation verbatim (keeps the provider's frozen
+   * base and prompt-cache key); a non-empty list re-presents sealed tools by name. */
   tools?: ToolPresentation[];
   max_tokens?: number;
   temperature?: number;
+  /** Only the closing-round constraint: tools stay on the wire, the model answers in text. */
+  tool_choice?: "none";
 }
 
 export interface ToolCallRequest {

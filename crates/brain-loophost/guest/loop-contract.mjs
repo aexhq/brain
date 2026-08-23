@@ -74,11 +74,17 @@ export function activate(kind, payload) {
   const turns = (kv.entries.turns || 0) + 1;
   op(id, { op: "kv_set", entries: { turns } });
 
-  // Typed op errors are guest-visible and never kill the turn.
+  // Typed op errors are guest-visible and never kill the turn. An undeclared tool is not
+  // an op error: dispatch answers it with a journaled failed result (never a route).
   let unsealed = null;
   let kvLimit = null;
   try {
-    op(id, { op: "tools_dispatch", calls: [{ tool_call_id: "c1", name: "not_sealed", input: {} }] });
+    const dispatched = op(id, {
+      op: "tools_dispatch",
+      calls: [{ tool_call_id: "c1", name: "not_sealed", input: {} }],
+    });
+    const result = dispatched.results?.[0];
+    unsealed = result && result.is_error ? "failed_result" : "executed";
   } catch (error) {
     unsealed = error.code;
   }

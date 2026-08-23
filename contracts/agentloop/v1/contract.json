@@ -192,7 +192,8 @@
         "tools": {
           "type": "array",
           "items": { "$ref": "#/$defs/ToolPresentationView" },
-          "maxItems": 128
+          "maxItems": 128,
+          "description": "Absent or empty means the sealed presentation verbatim, which also keeps the provider's frozen base segment and prompt-cache key. A non-empty list re-presents sealed tools by name and pays its own cache economics."
         },
         "max_tokens": { "type": "integer", "minimum": 1 },
         "temperature": { "type": "number", "minimum": 0, "maximum": 2 },

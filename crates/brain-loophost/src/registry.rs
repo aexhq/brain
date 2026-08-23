@@ -114,7 +114,7 @@ impl LoophostRegistry {
             return Ok(engine.clone());
         }
         let engine = Arc::new(
-            WasmAgentloop::contract_only_from_component_file(component).map_err(|error| {
+            WasmAgentloop::from_component_file(component).map_err(|error| {
                 BrainError::Agentloop(format!("{what} failed to load: {error}"))
             })?,
         );

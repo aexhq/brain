@@ -33,7 +33,17 @@ const bundleRaw = async (entry) => {
 };
 
 // Raw-ABI guests: the bootstrap aex loop and the contract-vocabulary probe fixture.
-await componentizeSource(await bundleRaw("loop-aex.mjs"), "dist/aex-loop.component.wasm");
+// The official aex loop builds through the PUBLIC builder like every other loop — it is an
+// ordinary extension; only its default-selection status is special.
+{
+  const { buildLoopBundle } = await import(
+    new URL("../../../packages/agentloop/dist/build.js", import.meta.url)
+  );
+  const aex = await buildLoopBundle({
+    entry: fileURLToPath(new URL("./loop-aex.mjs", import.meta.url)),
+  });
+  await componentizeSource(aex.source, "dist/aex-loop.component.wasm");
+}
 await componentizeSource(
   await bundleRaw("loop-contract.mjs"),
   "dist/contract-loop.component.wasm",

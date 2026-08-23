@@ -1119,11 +1119,6 @@ struct UnknownManagedPorts {
     release_submit: tokio::sync::Notify,
 }
 
-struct ScriptedCompactor {
-    failures_remaining: AtomicUsize,
-    calls: AtomicUsize,
-}
-
 #[derive(Default)]
 struct CountingCustody {
     encrypts: AtomicUsize,
@@ -1225,41 +1220,6 @@ async fn connect_customer_process(
         Some(crate::customer::CustomerCommand::Registered { .. })
     ));
     (grant, receiver, epoch)
-}
-
-#[async_trait::async_trait]
-impl crate::compact::CompactionPort for ScriptedCompactor {
-    async fn compact(
-        &self,
-        request: crate::compact::CompactionRequest,
-        model: crate::compact::CompactionModel<'_>,
-    ) -> Result<crate::compact::CompactionResult> {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        if self
-            .failures_remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
-            return Err(BrainError::Transport("compactor reset".into()));
-        }
-        Ok(crate::compact::CompactionResult {
-            summary: format!(
-                "{}\nsemantic early fact preserved",
-                request.previous_summary.unwrap_or_default()
-            ),
-            provider: model.provider_name.into(),
-            model: model.session.prefix.model.clone(),
-            usage: crate::message::Usage {
-                input_tokens: Some(7),
-                output_tokens: Some(3),
-                cache_read_input_tokens: None,
-                cache_creation_input_tokens: None,
-                reasoning_tokens: None,
-            },
-        })
-    }
 }
 
 impl ReservationStorage {
@@ -4556,61 +4516,72 @@ async fn deterministic_provider_4xx_is_not_unknown_or_retried() {
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
-async fn run_compaction_case(
-    retries: u32,
-    compactor_failures: usize,
-) -> (
-    Journal,
-    Arc<FakeProvider>,
-    Arc<ScriptedCompactor>,
-    String,
-    PathBuf,
-) {
-    let data_dir = std::env::temp_dir().join(format!(
-        "brain-compaction-journal-{}-{}-{retries}-{compactor_failures}",
-        std::process::id(),
-        crate::wall_ms()
-    ));
-    std::fs::create_dir_all(&data_dir).unwrap();
-    let journal = Journal::new_memory(format!("brain-compaction-{retries}"));
-    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
-    fake.script([
-        Scripted::Text(format!(
-            "early exact fact /workspace/file.rs id=alpha {}",
-            "x".repeat(2_000)
-        )),
-        Scripted::Text("provider ran after compaction".into()),
-    ]);
-    let provider = fake.clone();
-    let compactor = Arc::new(ScriptedCompactor {
-        failures_remaining: AtomicUsize::new(compactor_failures),
-        calls: AtomicUsize::new(0),
-    });
-    let brain = Brain::with_parts_and_services(
-        BrainConfig {
-            idle_discard: Duration::from_secs(300),
-            context_soft_tokens: 100,
-            context_hard_tokens: 5_000,
-            context_tail_tokens: 1,
-            ..BrainConfig::default()
+/// Echo executor answering every engine tool call with a payload big enough that a few
+/// tool rounds exceed a minimum-size context window.
+struct BigEcho;
+
+#[async_trait::async_trait]
+impl ToolExecutor for BigEcho {
+    fn supports(&self, capability: &str) -> bool {
+        capability == "bench.echo"
+    }
+
+    async fn call(
+        &self,
+        _capability: &str,
+        _request: ExternalToolCallRequest,
+        _cancel: CancellationToken,
+    ) -> Result<ExternalToolCallResponse> {
+        Ok(serde_json::from_value(json!({
+            "outcome": "completed",
+            "content": "x".repeat(3200),
+            "is_error": false,
+            "disposition": "continue",
+            "result": {"data": "x".repeat(3200)},
+        }))
+        .expect("echo response"))
+    }
+}
+
+async fn compaction_session(journal: &Journal, fake: Arc<FakeProvider>) -> (Arc<Brain>, String) {
+    let mut cfg = BrainConfig {
+        idle_discard: Duration::from_secs(300),
+        ..BrainConfig::default()
+    };
+    cfg.official_capabilities.insert(
+        "aex.bench_echo".into(),
+        crate::config::ServerToolPolicy {
+            capability: "bench.echo".into(),
+            scope: brain_protocol::session::ExternalToolScope::All,
+            completion: brain_protocol::session::ExternalToolCompletion::Continue,
+            effect: brain_protocol::session::ExternalToolEffect::ReplaySafe,
+            max_input_bytes: brain_protocol::MAX_EXTERNAL_TOOL_INPUT_BYTES,
         },
+    );
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        cfg,
         journal.clone(),
         Arc::new(crate::keys::PlainCustody),
-        Arc::new(crate::adapter::DisabledToolExecutor),
-        BrainServices {
-            session_storage: None,
-            customer_delivery: None,
-            customer_transport: None,
-            compactor: Some(compactor.clone()),
-            ..BrainServices::default()
-        },
-        Arc::new(move |_| provider.clone()),
+        Arc::new(BigEcho),
+        BrainServices::default(),
+        Arc::new(move |_| provider.clone() as Arc<dyn Provider>),
     );
     let created = brain
         .create_session(
             serde_json::from_value(json!({
-                "model": {"provider":"anthropic", "name":"compact", "api_key":"sk-test"},
-                "provider_recovery_retries": retries
+                "model": {"provider":"anthropic", "name":"compact", "api_key":"sk-test",
+                          "context_window_tokens": 8192, "max_output_tokens": 64},
+                "tools": {"items": [{
+                    "definition": {
+                        "name": "bash",
+                        "description": "echo tool",
+                        "contract_digest": "a".repeat(64),
+                        "input_schema": {"type":"object","additionalProperties":true},
+                        "output_schema": {"type":"object","additionalProperties":true}
+                    },
+                    "executor": {"kind":"engine","capability":"aex.bench_echo"}
+                }]}
             }))
             .unwrap(),
             None,
@@ -4618,109 +4589,92 @@ async fn run_compaction_case(
         .await
         .unwrap();
     let session_id = created.id.to_string();
-    for message in ["first", "second"] {
-        let (_, admitted) = brain
-            .message(&session_id, serde_json::from_value(json!(message)).unwrap())
-            .await
-            .unwrap();
-        for _ in 0..500 {
-            let head = journal.get_head(&session_id).await.unwrap();
-            if head.doc.turn.is_none() && head.last_seq > admitted {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
+    (brain, session_id)
+}
+
+async fn run_one_turn(brain: &Arc<Brain>, journal: &Journal, session_id: &str) {
+    let (_, admitted) = brain
+        .message(session_id, serde_json::from_value(json!("go")).unwrap())
+        .await
+        .unwrap();
+    for _ in 0..1000 {
+        let head = journal.get_head(session_id).await.unwrap();
+        if head.doc.turn.is_none() && head.last_seq > admitted {
+            return;
         }
-        assert!(
-            journal
-                .get_head(&session_id)
-                .await
-                .unwrap()
-                .doc
-                .turn
-                .is_none()
-        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    (journal, fake, compactor, session_id, data_dir)
+    panic!("the turn never reached a terminal");
 }
 
-#[tokio::test]
-async fn compaction_unknown_retries_with_one_canonical_usage_and_atomic_checkpoint() {
-    let (journal, fake, compactor, session_id, data_dir) = run_compaction_case(1, 1).await;
-    assert_eq!(compactor.calls.load(Ordering::Relaxed), 2);
-    assert_eq!(fake.call_count.load(Ordering::Relaxed), 2);
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn self_compaction_summarizes_installs_a_mark_and_continues() {
+    // The aex loop owns compaction: tool rounds accumulate past the sealed context
+    // window mid-turn, the loop summarizes everything but a recent tail through the
+    // sealed model (twice here, the first continuation still over budget), and the
+    // turn completes. This drives the policy through the whole kernel.
+    let journal = Journal::new_memory("brain-self-compaction");
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([
+        Scripted::tool("bash", json!({})),
+        Scripted::tool("bash", json!({})),
+        Scripted::Text("summary one keeps id=alpha".into()),
+        Scripted::Text("summary two keeps id=alpha".into()),
+        Scripted::Text("completed after compaction".into()),
+    ]);
+    let (brain, session_id) = compaction_session(&journal, fake.clone()).await;
+    run_one_turn(&brain, &journal, &session_id).await;
     let records = journal.read_records(&session_id, 0).await.unwrap();
-    let intents = records
-        .iter()
-        .filter_map(|entry| match &entry.record {
-            Record::CompactionIntent {
-                logical_operation_id,
-                request_digest,
-                replacement,
-                ..
-            } => Some((logical_operation_id, request_digest, replacement)),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(intents.len(), 2);
-    assert_eq!(intents[0].0, intents[1].0);
-    assert_eq!(intents[0].1, intents[1].1);
-    assert_eq!(*intents[1].2, 1);
+    let failure = records.iter().find_map(|entry| match &entry.record {
+        Record::TurnFailed { code, message, .. } => Some(format!("{code}: {message}")),
+        _ => None,
+    });
+    assert!(failure.is_none(), "turn failed: {}", failure.unwrap());
     assert_eq!(
-        records
-            .iter()
-            .filter(|entry| matches!(entry.record, Record::CompactionUnknown { .. }))
-            .count(),
-        1
-    );
-    assert_eq!(
-        records
-            .iter()
-            .filter(|entry| matches!(
-                &entry.record,
-                Record::Usage { agent, usage, .. }
-                    if agent == "compactor" && usage.input_tokens == Some(7)
-            ))
-            .count(),
-        1,
-        "only the installed compaction usage is canonical"
+        fake.call_count.load(Ordering::Relaxed),
+        5,
+        "two tool rounds, two summarization rounds, one continuation"
     );
     assert!(
         records
             .iter()
-            .any(|entry| matches!(entry.record, Record::CompactionCompleted { .. }))
+            .any(|entry| matches!(&entry.record, Record::LoopMark { .. })),
+        "the compacting turn still installs its mark"
     );
     assert!(
-        records
-            .iter()
-            .any(|entry| matches!(entry.record, Record::ContextInstalled { .. }))
+        records.iter().any(|entry| matches!(
+            &entry.record,
+            Record::TurnCompleted { stop_reason, .. } if *stop_reason == TurnStopReason::EndTurn
+        )),
+        "the turn completes normally after compaction"
     );
-    let _ = std::fs::remove_dir_all(data_dir);
 }
 
-#[tokio::test]
-async fn failed_strict_compaction_installs_no_partial_checkpoint_or_usage() {
-    let (journal, fake, compactor, session_id, data_dir) = run_compaction_case(0, 1).await;
-    assert_eq!(compactor.calls.load(Ordering::Relaxed), 1);
-    assert_eq!(fake.call_count.load(Ordering::Relaxed), 1);
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_clean_summarization_failure_fails_the_turn_honestly() {
+    // Same over-budget turn, but the summarization round dies on a clean provider
+    // rejection: the loop declares turn_fail and the honest provider error is journaled.
+    let journal = Journal::new_memory("brain-self-compaction-fail");
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([
+        Scripted::tool("bash", json!({})),
+        Scripted::tool("bash", json!({})),
+        Scripted::ProviderStatus {
+            status: 400,
+            body: "bad compaction request".into(),
+            retry_after_ms: None,
+        },
+    ]);
+    let (brain, session_id) = compaction_session(&journal, fake.clone()).await;
+    run_one_turn(&brain, &journal, &session_id).await;
     let records = journal.read_records(&session_id, 0).await.unwrap();
     assert!(
-        records
-            .iter()
-            .any(|entry| matches!(entry.record, Record::CompactionUnknown { .. }))
+        records.iter().any(|entry| matches!(
+            &entry.record,
+            Record::TurnFailed { code, .. } if code == "provider_error"
+        )),
+        "the failed summarization surfaces as an honest provider error"
     );
-    assert!(!records.iter().any(|entry| matches!(
-        entry.record,
-        Record::ContextInstalled { .. } | Record::ContextChunk { .. }
-    )));
-    assert!(!records.iter().any(|entry| matches!(
-        &entry.record,
-        Record::Usage { agent, .. } if agent == "compactor"
-    )));
-    assert!(records.iter().any(|entry| matches!(
-        &entry.record,
-        Record::TurnCompleted { stop_reason, .. } if *stop_reason == TurnStopReason::Interrupted
-    )));
-    let _ = std::fs::remove_dir_all(data_dir);
 }
 
 #[tokio::test]
