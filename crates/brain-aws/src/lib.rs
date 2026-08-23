@@ -23,9 +23,6 @@ pub struct AwsRuntimePorts {
     pub external_executor: Option<Arc<dyn ToolExecutor>>,
     pub customer_delivery: Option<Arc<dyn brain::customer::CustomerHandDeliveryPort>>,
     pub customer_transport: Option<brain::customer::CustomerTransportConfig>,
-    /// Custom-agentloop wiring, identical in shape to the local composition's: the official
-    /// aex loop plus a registry (e.g. brain-loophost's store). Absent, the built-in loop runs.
-    pub agentloop: Option<Arc<dyn brain::agentloop::Agentloop>>,
     pub agentloop_registry: Option<Arc<dyn brain::agentloop::AgentloopRegistry>>,
     /// Overrides the live providers; the hosted default is the guarded transport with private
     /// addresses denied.
@@ -116,7 +113,6 @@ pub async fn compose(
             customer_delivery: ports.customer_delivery,
             customer_transport: ports.customer_transport,
             compactor: None,
-            agentloop: ports.agentloop,
             agentloop_registry: ports.agentloop_registry,
         },
         ports

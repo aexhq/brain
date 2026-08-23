@@ -10,7 +10,7 @@ use brain::hand::{
 use brain::journal::{Journal, Record, SandboxListQuery};
 use brain::message::{Message, StopReason, Usage};
 use brain::provider::{ModelRequest, Provider, ProviderEvent};
-use brain::session::{Brain, BrainConfig, BrainServices};
+use brain::session::{Brain, BrainConfig};
 use brain::storage::{
     SessionStoragePort, StorageObject, StoragePage, StoragePurgePage, StorageTransferTicket,
     StorageUploadRequest, StorageWriteRequest,
@@ -23,6 +23,8 @@ use brain_protocol::hand::{
 };
 use brain_protocol::session::{CreateSessionRequest, MessageRequestContent};
 use futures_util::stream::BoxStream;
+
+mod support;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -256,6 +258,7 @@ impl Drop for TempDir {
 fn create_request() -> CreateSessionRequest {
     serde_json::from_value(json!({
         "model": {"provider":"anthropic", "name":"scripted", "api_key":"sk-fake"},
+        "agentloop": support::loop_config(),
         "tools": {"items": [{
             "definition": {
                 "name":"sandbox",
@@ -281,6 +284,10 @@ async fn sandbox_create_reserves_inventory_before_typed_hand_materialization() {
     let control = Arc::new(SandboxControl::default());
     let provider = Arc::new(SandboxProvider);
     let factory = provider.clone();
+    let mut services = support::services();
+    services.session_storage = Some(Arc::new(UnusedStorage));
+    services.sandbox_files = Some(Arc::new(UnusedFiles));
+    services.sandbox_control = Some(control.clone());
     let brain = Brain::with_parts_and_services(
         BrainConfig {
             idle_discard: Duration::from_secs(60),
@@ -289,12 +296,7 @@ async fn sandbox_create_reserves_inventory_before_typed_hand_materialization() {
         journal.clone(),
         Arc::new(brain::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
-        BrainServices {
-            session_storage: Some(Arc::new(UnusedStorage)),
-            sandbox_files: Some(Arc::new(UnusedFiles)),
-            sandbox_control: Some(control.clone()),
-            ..BrainServices::default()
-        },
+        services,
         Arc::new(move |_| factory.clone() as Arc<dyn Provider>),
     );
     let session = brain

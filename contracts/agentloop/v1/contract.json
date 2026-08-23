@@ -41,39 +41,21 @@
       "description": "An opaque bounded JSON object. Byte bounds are enforced at the execution boundary, not expressible in schema."
     },
     "AgentloopSelector": {
-      "description": "Which agentloop a session runs. Sealed at session creation; children default to the parent's selector and may override at spawn. The sealed identity of a custom loop is (source_bundle_sha256, toolchain): componentization is non-deterministic, so the deterministic esbuild source bundle is the identity and Brain-side tooling componentizes it, cached by this pair.",
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "name", "version"],
-          "properties": {
-            "kind": { "type": "string", "enum": ["official"] },
-            "name": {
-              "$ref": "#/$defs/Identifier",
-              "description": "An official loop name, e.g. \"aex\", \"pi\", \"codex-style\". Officials are prebuilt and stored by the composition; no bytes travel at create."
-            },
-            "version": { "$ref": "#/$defs/Identifier" }
-          }
+      "description": "Which agent loop a session runs. Sealed at session creation; children inherit the parent's selector unless spawn supplies another loop. The sealed identity is (source_bundle_sha256, toolchain): componentization is non-deterministic, so the deterministic source bundle is the identity and composition tooling componentizes it, cached by this pair.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_bundle_sha256", "source_bundle_bytes", "toolchain"],
+      "properties": {
+        "source_bundle_sha256": {
+          "$ref": "#/$defs/Digest",
+          "description": "SHA-256 of the deterministic source bundle."
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "source_bundle_sha256", "source_bundle_bytes", "toolchain"],
-          "properties": {
-            "kind": { "type": "string", "enum": ["custom"] },
-            "source_bundle_sha256": {
-              "$ref": "#/$defs/Digest",
-              "description": "SHA-256 of the customer's deterministic esbuild source bundle."
-            },
-            "source_bundle_bytes": { "type": "integer", "minimum": 1, "maximum": 8388608 },
-            "toolchain": {
-              "$ref": "#/$defs/Identifier",
-              "description": "The pinned loop-toolchain identity (engine + componentizer + wasmtime config family) the composition builds and runs this bundle with."
-            }
-          }
+        "source_bundle_bytes": { "type": "integer", "minimum": 1, "maximum": 8388608 },
+        "toolchain": {
+          "$ref": "#/$defs/Identifier",
+          "description": "The pinned loop-toolchain identity (engine + componentizer + wasmtime config family) the composition builds and runs this bundle with."
         }
-      ]
+      }
     },
     "UsageView": {
       "type": "object",

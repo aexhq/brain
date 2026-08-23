@@ -75,7 +75,6 @@ pub struct Brain {
     pub outbound: crate::outbound::OutboundPolicy,
     pub external_executor: Arc<dyn ToolExecutor>,
     /// Resolves each session's sealed selector to the loop implementation driving its turns.
-    /// The default registry serves only the official `aex` policy.
     pub agentloop_registry: Arc<dyn crate::agentloop::AgentloopRegistry>,
     /// Durable per-session object storage. Hosted composition supplies this adapter; `None` means
     /// the storage resource is unavailable, never an in-memory production fallback.
@@ -185,11 +184,7 @@ pub struct BrainServices {
     pub customer_delivery: Option<Arc<dyn crate::customer::CustomerHandDeliveryPort>>,
     pub customer_transport: Option<crate::customer::CustomerTransportConfig>,
     pub compactor: Option<Arc<dyn crate::compact::CompactionPort>>,
-    /// The implementation of the official `aex` loop. `None` installs the in-process builtin;
-    /// loop-host compositions install the wasm guest or the remote adapter here.
-    pub agentloop: Option<Arc<dyn crate::agentloop::Agentloop>>,
-    /// Selector→loop resolution. `None` installs [`crate::agentloop::OfficialAexRegistry`]
-    /// over the `agentloop` slot: official `aex` only, everything else refused at create.
+    /// Selector-to-loop resolution. Compositions must supply it explicitly.
     pub agentloop_registry: Option<Arc<dyn crate::agentloop::AgentloopRegistry>>,
 }
 
@@ -600,13 +595,13 @@ impl Brain {
         let customer = services.customer_transport.map(|config| {
             crate::customer::CustomerCoordinator::new(config, services.customer_delivery.clone())
         });
-        let aex_loop = services
-            .agentloop
-            .unwrap_or_else(|| Arc::new(crate::agentloop::BuiltinAexLoop));
+        let agentloop_registry = services.agentloop_registry;
+        #[cfg(test)]
+        let agentloop_registry =
+            agentloop_registry.or_else(|| Some(Arc::new(crate::agentloop::TestAgentloopRegistry)));
         Arc::new(Self {
-            agentloop_registry: services.agentloop_registry.unwrap_or_else(|| {
-                Arc::new(crate::agentloop::OfficialAexRegistry { aex: aex_loop })
-            }),
+            agentloop_registry: agentloop_registry
+                .expect("BrainServices.agentloop_registry is required"),
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
             create_permits: Arc::new(Semaphore::new(cfg.max_concurrent_creates)),
@@ -666,7 +661,10 @@ impl Brain {
             Journal::new_memory(owner),
             Arc::new(crate::keys::PlainCustody),
             Arc::new(DisabledToolExecutor),
-            BrainServices::default(),
+            BrainServices {
+                agentloop_registry: Some(Arc::new(crate::agentloop::TestAgentloopRegistry)),
+                ..BrainServices::default()
+            },
             provider_factory,
         ))
     }
@@ -1186,44 +1184,38 @@ impl Brain {
 
         // Seal the loop identity before anything else commits, rejecting a loop this
         // composition cannot run while the request is still refusable.
-        let agentloop_selector = match &req.agentloop {
-            None => self.agentloop_registry.pin_official("aex")?,
-            Some(brain_protocol::session::AgentloopConfig::String(name)) => {
-                self.agentloop_registry.pin_official(name.as_str())?
-            }
-            Some(brain_protocol::session::AgentloopConfig::Object {
-                source_bundle_sha256,
-                toolchain,
-                bundle_base64,
-            }) => {
-                use base64::Engine as _;
-                let bundle = base64::engine::general_purpose::STANDARD
-                    .decode(bundle_base64.as_str())
-                    .map_err(|_| {
-                        BrainError::Invalid("agentloop.bundle_base64 is not valid base64".into())
-                    })?;
-                if bundle.is_empty() || bundle.len() > brain_protocol::MAX_LOOP_BUNDLE_BYTES {
-                    return Err(BrainError::Invalid(
-                        "agentloop bundle must be between 1 byte and 8 MiB".into(),
-                    ));
-                }
-                let digest = hex::encode(Sha256::digest(&bundle));
-                if digest != source_bundle_sha256.as_str() {
-                    return Err(BrainError::Invalid(format!(
-                        "agentloop bundle digest is {digest}, not the declared {}",
-                        source_bundle_sha256.as_str()
-                    )));
-                }
-                self.agentloop_registry
-                    .admit_custom(&digest, toolchain.as_str(), &bundle)?
-            }
-        };
+        let brain_protocol::session::AgentloopConfig {
+            source_bundle_sha256,
+            toolchain,
+            bundle_base64,
+        } = &req.agentloop;
+        use base64::Engine as _;
+        let bundle = base64::engine::general_purpose::STANDARD
+            .decode(bundle_base64.as_str())
+            .map_err(|_| {
+                BrainError::Invalid("agentloop.bundle_base64 is not valid base64".into())
+            })?;
+        if bundle.is_empty() || bundle.len() > brain_protocol::MAX_LOOP_BUNDLE_BYTES {
+            return Err(BrainError::Invalid(
+                "agentloop bundle must be between 1 byte and 8 MiB".into(),
+            ));
+        }
+        let digest = hex::encode(Sha256::digest(&bundle));
+        if digest != source_bundle_sha256.as_str() {
+            return Err(BrainError::Invalid(format!(
+                "agentloop bundle digest is {digest}, not the declared {}",
+                source_bundle_sha256.as_str()
+            )));
+        }
+        let agentloop_selector =
+            self.agentloop_registry
+                .admit_custom(&digest, toolchain.as_str(), &bundle)?;
         self.agentloop_registry.resolve(&agentloop_selector)?;
 
         let now = crate::wall_ms();
         let mut prefix = PrefixDoc {
             agentloop: Some(agentloop_selector),
-            system_prompt: req.system_prompt.clone().map(String::from),
+            system_prompt: None,
             provider: provider.to_string(),
             model: req.model.name.to_string(),
             base_url: Some(base_url),
@@ -5348,11 +5340,13 @@ fn turn_run(
             let services: Arc<dyn crate::turn::EngineServices> = brain.clone();
             Arc::downgrade(&services)
         },
-        agentloop: {
-            let default = crate::journal::AgentloopSelectorDoc::official_aex();
-            let selector = r.st.head.prefix.agentloop.as_ref().unwrap_or(&default);
-            brain.agentloop_registry.resolve(selector)?
-        },
+        agentloop: brain.agentloop_registry.resolve(
+            r.st.head
+                .prefix
+                .agentloop
+                .as_ref()
+                .ok_or_else(|| BrainError::Journal("session has no sealed agent loop".into()))?,
+        )?,
         message,
         session_id: session_id.to_string(),
         turn_id: turn_id.to_string(),

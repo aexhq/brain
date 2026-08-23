@@ -9,13 +9,9 @@ pub mod api;
 use brain::session::{Brain, BrainConfig, BrainServices, ProviderFactory};
 use brain_standalone::durable_local_parts;
 
-/// Optional custom-agentloop wiring: the official aex loop as a wasm component plus a
-/// content-addressed store for customer loops. Absent, the in-process built-in loop runs —
-/// identical policy, no wasm isolation boundary.
+/// Agent-loop compilation and content-addressed storage wiring.
 #[cfg(feature = "loophost")]
 pub struct LoophostOptions {
-    /// Path to the componentized official aex loop.
-    pub aex_component: PathBuf,
     /// Directory holding `componentize-one.mjs` with the pinned componentizer installed.
     pub toolchain_dir: PathBuf,
 }
@@ -56,16 +52,19 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
     let customer_transport =
         brain::customer::CustomerTransportConfig::new(websocket_url, observation_base_url)?;
     #[cfg(feature = "loophost")]
-    let loop_services = match &options.loophost {
-        Some(loophost) => brain_loophost::registry::services_with_loop_store(
-            &loophost.aex_component,
-            &options.data_dir.join("loops"),
-            &loophost.toolchain_dir,
-        )?,
-        None => BrainServices::default(),
-    };
+    let loophost = options
+        .loophost
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("loophost configuration is required"))?;
+    #[cfg(feature = "loophost")]
+    let loop_services = brain_loophost::registry::services_with_loop_store(
+        &options.data_dir.join("loops"),
+        &loophost.toolchain_dir,
+    )?;
     #[cfg(not(feature = "loophost"))]
-    let loop_services = BrainServices::default();
+    return Err(anyhow::anyhow!(
+        "brain-server requires the loophost feature"
+    ));
     let local_hand = parts.local_hand.clone();
     let brain = Brain::with_parts_and_services(
         options.cfg,
@@ -80,7 +79,6 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
             sandbox_files: Some(parts.sandbox_files),
             sandbox_control: Some(parts.sandbox_control),
             customer_transport: Some(customer_transport),
-            agentloop: loop_services.agentloop,
             agentloop_registry: loop_services.agentloop_registry,
             ..BrainServices::default()
         },

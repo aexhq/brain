@@ -309,6 +309,11 @@ fn credential_debug_is_redacted_without_changing_wire_serialization() {
     let create_value = serde_json::json!({
         "model": {"provider": "openai", "name": "test-model", "api_key": API_SECRET},
         "secrets": {"TOKEN": ENV_SECRET},
+        "agentloop": {
+            "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+            "toolchain": "loop-toolchain-1",
+            "bundle_base64": "eA==",
+        },
     });
     let create: session::CreateSessionRequest =
         serde_json::from_value(create_value.clone()).unwrap();

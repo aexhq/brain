@@ -908,35 +908,18 @@ pub struct PrefixDoc {
     pub hand_env_keys: Vec<String>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
-    /// The sealed agentloop identity (`contracts/agentloop/v1` selector semantics). Absent on
-    /// sessions created before selectors existed, which sealed the official `aex` policy.
+    /// The sealed agent loop identity (`contracts/agentloop/v1` selector semantics).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agentloop: Option<AgentloopSelectorDoc>,
 }
 
-/// Which agentloop a session sealed at create. Children inherit the parent's selector.
+/// Which agent loop a session sealed at create. Children inherit the parent's selector.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AgentloopSelectorDoc {
-    Official {
-        name: String,
-        version: String,
-    },
-    Custom {
-        source_bundle_sha256: String,
-        source_bundle_bytes: u64,
-        toolchain: String,
-    },
-}
-
-impl AgentloopSelectorDoc {
-    /// The identity every pre-selector session sealed implicitly.
-    pub fn official_aex() -> Self {
-        Self::Official {
-            name: "aex".into(),
-            version: "1".into(),
-        }
-    }
+#[serde(deny_unknown_fields)]
+pub struct AgentloopSelectorDoc {
+    pub source_bundle_sha256: String,
+    pub source_bundle_bytes: u64,
+    pub toolchain: String,
 }
 
 fn default_customer_submit_retries() -> u32 {

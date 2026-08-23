@@ -566,16 +566,3 @@ impl Agentloop for WasmAgentloop {
         }
     }
 }
-
-/// Convenience for compositions: install the in-process wasm loop into
-/// [`brain::session::BrainServices`].
-pub fn services_with_wasm_loop(
-    component_path: &Path,
-) -> anyhow::Result<brain::session::BrainServices> {
-    let agentloop: Arc<dyn Agentloop> =
-        Arc::new(WasmAgentloop::from_component_file(component_path)?);
-    Ok(brain::session::BrainServices {
-        agentloop: Some(agentloop),
-        ..brain::session::BrainServices::default()
-    })
-}

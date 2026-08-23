@@ -73,14 +73,23 @@ fn create_body(
     provider: &str,
     model: &str,
     api_key: &str,
-    system_prompt: &str,
     managed_secret: &str,
     bundle: &[u8],
     bundle_digest: &str,
 ) -> Value {
+    let loop_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/loop-pi/dist");
+    let loop_bundle = std::fs::read(loop_dist.join("loop.bundle.mjs")).expect("pi loop bundle");
+    let loop_identity: Value = serde_json::from_slice(
+        &std::fs::read(loop_dist.join("identity.json")).expect("pi loop identity"),
+    )
+    .expect("pi loop identity JSON");
     json!({
         "model": {"provider":provider, "name":model, "api_key":api_key},
-        "system_prompt":system_prompt,
+        "agentloop": {
+            "source_bundle_sha256": loop_identity["source_bundle_sha256"],
+            "toolchain": loop_identity["toolchain"],
+            "bundle_base64": base64::engine::general_purpose::STANDARD.encode(loop_bundle),
+        },
         "tools": {"items":[{
             "definition": {
                 "name":"workspace_probe",
@@ -343,7 +352,10 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
             Dialect::AnthropicMessages => alpha_factory.clone() as Arc<dyn Provider>,
             Dialect::OpenAiChat => beta_factory.clone() as Arc<dyn Provider>,
         })),
-        loophost: None,
+        loophost: Some(brain_server::LoophostOptions {
+            toolchain_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../brain-loophost/guest"),
+        }),
     })
     .expect("open the durable local composition");
     let journal = brain.journal.clone();
@@ -371,7 +383,6 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
                 "anthropic",
                 "standalone-alpha",
                 ALPHA_KEY,
-                "ALPHA_SYSTEM_SENTINEL",
                 ALPHA_SECRET,
                 &bundle,
                 &digest,
@@ -385,7 +396,6 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
                 "openai",
                 "standalone-beta",
                 BETA_KEY,
-                "BETA_SYSTEM_SENTINEL",
                 BETA_SECRET,
                 &bundle,
                 &digest,

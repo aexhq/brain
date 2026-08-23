@@ -7,7 +7,6 @@
     "context_window_tokens": 128000,
     "reasoning_effort": "medium"
   },
-  "system_prompt": "You are a careful engineer.",
   "tools": {
     "items": [
       {
@@ -66,5 +65,9 @@
   "metadata": {
     "customer_ref": "job-77"
   },
-  "agentloop": "aex"
+  "agentloop": {
+    "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+    "toolchain": "loop-toolchain-1",
+    "bundle_base64": "eA=="
+  }
 }

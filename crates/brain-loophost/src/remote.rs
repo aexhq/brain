@@ -265,15 +265,6 @@ impl Agentloop for RemoteAgentloop {
     }
 }
 
-/// Convenience for compositions: install a remote loop reached through `client` into
-/// [`brain::session::BrainServices`].
-pub fn services_with_remote_loop(client: Arc<WireClient>) -> brain::session::BrainServices {
-    brain::session::BrainServices {
-        agentloop: Some(Arc::new(RemoteAgentloop::new(client))),
-        ..brain::session::BrainServices::default()
-    }
-}
-
 /// A loop-host daemon process this composition spawned and owns. Killed on drop.
 ///
 /// Startup blocks the calling thread until the daemon reports its bound address (which includes

@@ -964,13 +964,6 @@ export type components = {
         Sha256Hex: string;
         /** @description The sealed agentloop identity of a session. */
         AgentloopInfo: {
-            /** @constant */
-            kind: "official";
-            name: string;
-            version: string;
-        } | {
-            /** @constant */
-            kind: "custom";
             source_bundle_sha256: components["schemas"]["Sha256Hex"];
             toolchain: string;
         };
@@ -1122,12 +1115,12 @@ export type components = {
             /** @default 1 */
             submit_retries?: number;
         };
-        /** @description Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop. */
-        AgentloopConfig: string | {
+        /** @description The agent loop that drives this session's turns. It is sealed at create for the life of the session; children inherit it unless spawn supplies another loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair. */
+        AgentloopConfig: {
             source_bundle_sha256: components["schemas"]["Sha256Hex"];
             /** @description The pinned loop-toolchain identity the bundle was built for. */
             toolchain: string;
-            /** @description The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix. */
+            /** @description The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix. */
             bundle_base64: string;
         };
         ChildLimits: {
@@ -1141,7 +1134,6 @@ export type components = {
         /** @description Everything here except metadata is part of the immutable prefix: it cannot change for the life of the session. */
         CreateSessionRequest: {
             model: components["schemas"]["ModelConfig"];
-            system_prompt?: string;
             tools?: components["schemas"]["ToolsConfig"];
             /** @description Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal. */
             tool_bundles?: components["schemas"]["ToolBundle"][];
@@ -1153,7 +1145,7 @@ export type components = {
             /** @default 1 */
             provider_recovery_retries?: number;
             client?: components["schemas"]["CustomerClientConfig"];
-            agentloop?: components["schemas"]["AgentloopConfig"];
+            agentloop: components["schemas"]["AgentloopConfig"];
             children?: components["schemas"]["ChildLimits"];
             metadata?: {
                 [key: string]: string;

@@ -652,100 +652,52 @@
       }
     },
     "AgentloopConfig": {
-      "description": "Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop.",
-      "oneOf": [
-        {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_bundle_sha256",
+        "toolchain",
+        "bundle_base64"
+      ],
+      "description": "The agent loop that drives this session's turns. It is sealed at create for the life of the session; children inherit it unless spawn supplies another loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.",
+      "properties": {
+        "source_bundle_sha256": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "toolchain": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-          "description": "An official loop by name (e.g. \"aex\", \"pi\"), resolved to the composition's pinned version and sealed as (name, version)."
+          "description": "The pinned loop-toolchain identity the bundle was built for."
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "source_bundle_sha256",
-            "toolchain",
-            "bundle_base64"
-          ],
-          "description": "A customer loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.",
-          "properties": {
-            "source_bundle_sha256": {
-              "$ref": "#/$defs/Sha256Hex"
-            },
-            "toolchain": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-              "description": "The pinned loop-toolchain identity the bundle was built for."
-            },
-            "bundle_base64": {
-              "type": "string",
-              "maxLength": 11184812,
-              "writeOnly": true,
-              "description": "The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."
-            }
-          }
+        "bundle_base64": {
+          "type": "string",
+          "maxLength": 11184812,
+          "writeOnly": true,
+          "description": "The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."
         }
-      ]
+      }
     },
     "AgentloopInfo": {
       "description": "The sealed agentloop identity of a session.",
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "name",
-            "version"
-          ],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "official"
-            },
-            "name": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-            },
-            "version": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-            }
-          }
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_bundle_sha256",
+        "toolchain"
+      ],
+      "properties": {
+        "source_bundle_sha256": {
+          "$ref": "#/$defs/Sha256Hex"
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "source_bundle_sha256",
-            "toolchain"
-          ],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "custom"
-            },
-            "source_bundle_sha256": {
-              "$ref": "#/$defs/Sha256Hex"
-            },
-            "toolchain": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-            }
-          }
+        "toolchain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
         }
-      ]
+      }
     },
     "ChildLimits": {
       "type": "object",
@@ -822,16 +774,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "model"
+        "model",
+        "agentloop"
       ],
       "description": "Everything here except metadata is part of the immutable prefix: it cannot change for the life of the session.",
       "properties": {
         "model": {
           "$ref": "#/$defs/ModelConfig"
-        },
-        "system_prompt": {
-          "type": "string",
-          "maxLength": 131072
         },
         "tools": {
           "$ref": "#/$defs/ToolsConfig"

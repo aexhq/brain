@@ -7,7 +7,23 @@ use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn typed_create(value: serde_json::Value) -> CreateSessionRequest {
-    serde_json::from_value(value).expect("test CreateSessionRequest deserializes")
+    typed_create_result(value).expect("test CreateSessionRequest deserializes")
+}
+
+fn typed_create_result(mut value: serde_json::Value) -> serde_json::Result<CreateSessionRequest> {
+    let object = value
+        .as_object_mut()
+        .expect("test create request is an object");
+    object.remove("system_prompt");
+    object.entry("agentloop").or_insert_with(|| {
+        let bundle = b"test loop";
+        json!({
+            "source_bundle_sha256": hex::encode(Sha256::digest(bundle)),
+            "toolchain": "test-loop",
+            "bundle_base64": base64::engine::general_purpose::STANDARD.encode(bundle)
+        })
+    });
+    serde_json::from_value(value)
 }
 
 #[test]
@@ -2635,7 +2651,7 @@ async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() 
     );
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {
                     "provider": "anthropic",
                     "name": "unused-during-terminal-recovery",
@@ -3809,7 +3825,7 @@ async fn simulate_provider_only_crash(
     );
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {
                     "provider": "anthropic",
                     "name": "provider-recovery-test",
@@ -4065,7 +4081,7 @@ async fn run_live_provider_case(
     );
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {"provider":"anthropic", "name":"live-recovery", "api_key":"sk-test"},
                 "provider_recovery_retries": retries
             }))
@@ -4184,7 +4200,16 @@ async fn live_unknown_zero_or_exhausted_budget_interrupts_honestly() {
 }
 
 #[tokio::test]
-async fn the_agentloop_selector_seals_and_unavailable_loops_refuse_at_create() {
+async fn loop_bundles_are_verified_before_registry_admission() {
+    struct RejectRegistry;
+    impl crate::agentloop::AgentloopRegistry for RejectRegistry {
+        fn resolve(
+            &self,
+            _selector: &crate::journal::AgentloopSelectorDoc,
+        ) -> Result<Arc<dyn crate::agentloop::Agentloop>> {
+            Err(BrainError::Invalid("loop not enabled".into()))
+        }
+    }
     let journal = Journal::new_memory("agentloop-selector");
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     let provider = fake.clone();
@@ -4193,34 +4218,13 @@ async fn the_agentloop_selector_seals_and_unavailable_loops_refuse_at_create() {
         journal.clone(),
         Arc::new(crate::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
-        BrainServices::default(),
+        BrainServices {
+            agentloop_registry: Some(Arc::new(RejectRegistry)),
+            ..BrainServices::default()
+        },
         Arc::new(move |_| provider.clone()),
     );
     let model = json!({"provider":"anthropic", "name":"selector-test", "api_key":"sk-test"});
-
-    let created = brain
-        .create_session(
-            serde_json::from_value(json!({"model": model, "agentloop": "aex"})).unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        serde_json::to_value(&created).unwrap()["agentloop"],
-        json!({"kind": "official", "name": "aex", "version": "1"}),
-        "the sealed loop identity is echoed on the session resource"
-    );
-
-    let refused = brain
-        .create_session(
-            serde_json::from_value(json!({"model": model, "agentloop": "pi"})).unwrap(),
-            None,
-        )
-        .await;
-    assert!(
-        matches!(&refused, Err(BrainError::Invalid(message)) if message.contains("not available")),
-        "an official this composition lacks refuses at create: {refused:?}"
-    );
 
     let bundle = b"export function activate() { return \"{}\" }";
     let encoded = {
@@ -4256,36 +4260,31 @@ async fn the_agentloop_selector_seals_and_unavailable_loops_refuse_at_create() {
         .await;
     assert!(
         matches!(&custom, Err(BrainError::Invalid(message)) if message.contains("not enabled")),
-        "the default registry refuses customs honestly: {custom:?}"
+        "a composition that cannot admit the loop refuses create: {custom:?}"
     );
 }
 
 #[tokio::test]
-async fn a_composition_registry_resolves_per_session_loops() {
-    struct TwoOfficials;
-    impl crate::agentloop::AgentloopRegistry for TwoOfficials {
+async fn a_composition_registry_resolves_a_sealed_loop() {
+    struct TestRegistry;
+    impl crate::agentloop::AgentloopRegistry for TestRegistry {
         fn resolve(
             &self,
-            selector: &crate::journal::AgentloopSelectorDoc,
+            _selector: &crate::journal::AgentloopSelectorDoc,
         ) -> Result<Arc<dyn crate::agentloop::Agentloop>> {
-            match selector {
-                crate::journal::AgentloopSelectorDoc::Official { name, .. }
-                    if name == "aex" || name == "echo-loop" =>
-                {
-                    Ok(Arc::new(crate::agentloop::BuiltinAexLoop))
-                }
-                _ => Err(BrainError::Invalid("unknown loop".into())),
-            }
+            Ok(Arc::new(crate::agentloop::BuiltinAexLoop))
         }
-        fn pin_official(&self, name: &str) -> Result<crate::journal::AgentloopSelectorDoc> {
-            match name {
-                "aex" => Ok(crate::journal::AgentloopSelectorDoc::official_aex()),
-                "echo-loop" => Ok(crate::journal::AgentloopSelectorDoc::Official {
-                    name: "echo-loop".into(),
-                    version: "9".into(),
-                }),
-                _ => Err(BrainError::Invalid("unknown loop".into())),
-            }
+        fn admit_custom(
+            &self,
+            source_bundle_sha256: &str,
+            toolchain: &str,
+            bundle: &[u8],
+        ) -> Result<crate::journal::AgentloopSelectorDoc> {
+            Ok(crate::journal::AgentloopSelectorDoc {
+                source_bundle_sha256: source_bundle_sha256.into(),
+                source_bundle_bytes: bundle.len() as u64,
+                toolchain: toolchain.into(),
+            })
         }
     }
     let journal = Journal::new_memory("agentloop-registry");
@@ -4298,16 +4297,21 @@ async fn a_composition_registry_resolves_per_session_loops() {
         Arc::new(crate::keys::PlainCustody),
         Arc::new(crate::adapter::DisabledToolExecutor),
         BrainServices {
-            agentloop_registry: Some(Arc::new(TwoOfficials)),
+            agentloop_registry: Some(Arc::new(TestRegistry)),
             ..BrainServices::default()
         },
         Arc::new(move |_| provider.clone() as Arc<dyn crate::provider::Provider>),
     );
+    let bundle = b"test loop";
     let created = brain
         .create_session(
             serde_json::from_value(json!({
                 "model": {"provider":"anthropic", "name":"registry-test", "api_key":"sk-test"},
-                "agentloop": "echo-loop"
+                "agentloop": {
+                    "source_bundle_sha256": hex::encode(Sha256::digest(bundle)),
+                    "toolchain": "test-loop",
+                    "bundle_base64": base64::engine::general_purpose::STANDARD.encode(bundle)
+                }
             }))
             .unwrap(),
             None,
@@ -4315,9 +4319,9 @@ async fn a_composition_registry_resolves_per_session_loops() {
         .await
         .unwrap();
     assert_eq!(
-        serde_json::to_value(&created).unwrap()["agentloop"]["version"],
-        "9",
-        "the registry's pinned version seals"
+        serde_json::to_value(&created).unwrap()["agentloop"]["toolchain"],
+        "test-loop",
+        "the registry's admitted identity seals"
     );
     let session_id = created.id.to_string();
     let (_, admitted_seq) = brain
@@ -4362,7 +4366,7 @@ async fn draining_refuses_new_work_while_admitted_turns_finish() {
     );
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {"provider":"anthropic", "name":"drain-test", "api_key":"sk-test"}
             }))
             .unwrap(),
@@ -4390,7 +4394,7 @@ async fn draining_refuses_new_work_while_admitted_turns_finish() {
     assert!(matches!(refused, Err(BrainError::Draining)));
     let refused_create = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {"provider":"anthropic", "name":"drain-test", "api_key":"sk-test"}
             }))
             .unwrap(),
@@ -4583,7 +4587,7 @@ async fn compaction_session(journal: &Journal, fake: Arc<FakeProvider>) -> (Arc<
     );
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {"provider":"anthropic", "name":"compact", "api_key":"sk-test",
                           "context_window_tokens": 8192, "max_output_tokens": 64},
                 "tools": {"items": [{
@@ -4657,7 +4661,7 @@ async fn a_spawned_child_whose_first_turn_spawns_again_never_deadlocks() {
     );
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {"provider":"anthropic","name":"m","api_key":"sk-test"},
                 "tools": {"items": [{
                     "definition": {
@@ -4733,7 +4737,7 @@ async fn a_later_turn_still_sees_earlier_turns_verbatim() {
     );
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {"provider":"anthropic","name":"m","api_key":"sk-test"}
             }))
             .unwrap(),
@@ -4785,7 +4789,7 @@ async fn gateway_style_model_names_cross_the_loop_contract() {
     );
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {"provider":"openai_compatible", "name":"openai/gpt-4.1-nano",
                           "api_key":"sk-test", "base_url":"https://gateway.example/v1"}
             }))
@@ -4981,7 +4985,7 @@ async fn tenant_storage_quota_rejection_restores_the_live_actor_fold() {
         crate::provider::fake::unscripted_factory(),
     );
     let create = || {
-        serde_json::from_value(json!({
+        typed_create_result(json!({
             "model": {
                 "provider": "anthropic",
                 "name": "storage-quota-test",
@@ -5475,7 +5479,7 @@ async fn copied_upload_is_adopted_after_crash_and_expiry_without_customer_traffi
     let crashed = compose("brain-storage-copy-owner-a");
     let created = crashed
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {
                     "provider": "anthropic",
                     "name": "storage-copy-crash-test",
@@ -5620,7 +5624,7 @@ async fn storage_upload_reservation_is_durable_bounded_and_retried_after_restart
     let brain = compose(storage.clone());
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create_result(json!({
                 "model": {
                     "provider": "anthropic",
                     "name": "storage-test",

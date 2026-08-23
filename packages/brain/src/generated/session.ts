@@ -139,23 +139,6 @@ export type NetworkDestination =
       protocol: "tcp";
     };
 /**
- * The sealed agentloop identity of a session.
- *
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "AgentloopInfo".
- */
-export type AgentloopInfo =
-  | {
-      kind: "official";
-      name: string;
-      version: string;
-    }
-  | {
-      kind: "custom";
-      source_bundle_sha256: Sha256Hex;
-      toolchain: string;
-    };
-/**
  * Immutable direct outbound ceiling. Omission means none.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
@@ -193,25 +176,6 @@ export type NetworkPolicy =
        * @maxItems 128
        */
       deny?: string[];
-    };
-/**
- * Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop.
- *
- * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "AgentloopConfig".
- */
-export type AgentloopConfig =
-  | string
-  | {
-      source_bundle_sha256: Sha256Hex;
-      /**
-       * The pinned loop-toolchain identity the bundle was built for.
-       */
-      toolchain: string;
-      /**
-       * The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix.
-       */
-      bundle_base64: string;
     };
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
@@ -657,6 +621,16 @@ export interface ContextFork {
   source_projection_digest: string;
 }
 /**
+ * The sealed agentloop identity of a session.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "AgentloopInfo".
+ */
+export interface AgentloopInfo {
+  source_bundle_sha256: Sha256Hex;
+  toolchain: string;
+}
+/**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "SessionList".
  */
@@ -675,6 +649,23 @@ export interface CustomerClientConfig {
   submit_retries?: number;
 }
 /**
+ * The agent loop that drives this session's turns. It is sealed at create for the life of the session; children inherit it unless spawn supplies another loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "AgentloopConfig".
+ */
+export interface AgentloopConfig {
+  source_bundle_sha256: Sha256Hex;
+  /**
+   * The pinned loop-toolchain identity the bundle was built for.
+   */
+  toolchain: string;
+  /**
+   * The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix.
+   */
+  bundle_base64: string;
+}
+/**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ChildLimits".
  */
@@ -691,7 +682,6 @@ export interface ChildLimits {
  */
 export interface CreateSessionRequest {
   model: ModelConfig;
-  system_prompt?: string;
   tools?: ToolsConfig;
   /**
    * Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal.
@@ -708,7 +698,7 @@ export interface CreateSessionRequest {
   network?: NetworkPolicy;
   provider_recovery_retries?: number;
   client?: CustomerClientConfig;
-  agentloop?: AgentloopConfig;
+  agentloop: AgentloopConfig;
   children?: ChildLimits;
   metadata?: {
     [k: string]: string | undefined;

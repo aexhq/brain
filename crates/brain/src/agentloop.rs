@@ -168,9 +168,6 @@ pub trait AgentloopRegistry: Send + Sync {
         selector: &crate::journal::AgentloopSelectorDoc,
     ) -> Result<std::sync::Arc<dyn Agentloop>>;
 
-    /// Resolve an official loop name to the pinned identity this composition seals for it.
-    fn pin_official(&self, name: &str) -> Result<crate::journal::AgentloopSelectorDoc>;
-
     /// Admit a customer source bundle (already digest-verified by the caller) and return the
     /// identity to seal. Compositions with a loop store override this; the default refuses.
     fn admit_custom(
@@ -186,40 +183,27 @@ pub trait AgentloopRegistry: Send + Sync {
     }
 }
 
-/// The default registry: exactly one official loop, `aex`, backed by whatever implementation
-/// the composition installed (in-process builtin, wasm guest, or remote loop host).
-pub struct OfficialAexRegistry {
-    pub aex: std::sync::Arc<dyn Agentloop>,
-}
+pub(crate) struct TestAgentloopRegistry;
 
-impl AgentloopRegistry for OfficialAexRegistry {
+impl AgentloopRegistry for TestAgentloopRegistry {
     fn resolve(
         &self,
-        selector: &crate::journal::AgentloopSelectorDoc,
+        _selector: &crate::journal::AgentloopSelectorDoc,
     ) -> Result<std::sync::Arc<dyn Agentloop>> {
-        match selector {
-            crate::journal::AgentloopSelectorDoc::Official { name, .. } if name == "aex" => {
-                Ok(self.aex.clone())
-            }
-            crate::journal::AgentloopSelectorDoc::Official { name, version } => {
-                Err(BrainError::Invalid(format!(
-                    "official agentloop {name}@{version} is not available in this composition"
-                )))
-            }
-            crate::journal::AgentloopSelectorDoc::Custom { .. } => Err(BrainError::Invalid(
-                "custom agentloops are not enabled in this composition".into(),
-            )),
-        }
+        Ok(std::sync::Arc::new(BuiltinAexLoop))
     }
 
-    fn pin_official(&self, name: &str) -> Result<crate::journal::AgentloopSelectorDoc> {
-        if name == "aex" {
-            Ok(crate::journal::AgentloopSelectorDoc::official_aex())
-        } else {
-            Err(BrainError::Invalid(format!(
-                "official agentloop {name:?} is not available in this composition"
-            )))
-        }
+    fn admit_custom(
+        &self,
+        source_bundle_sha256: &str,
+        toolchain: &str,
+        bundle: &[u8],
+    ) -> Result<crate::journal::AgentloopSelectorDoc> {
+        Ok(crate::journal::AgentloopSelectorDoc {
+            source_bundle_sha256: source_bundle_sha256.into(),
+            source_bundle_bytes: bundle.len() as u64,
+            toolchain: toolchain.into(),
+        })
     }
 }
 

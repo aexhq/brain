@@ -62,17 +62,11 @@ async fn run() -> anyhow::Result<()> {
                     "set both BRAIN_CUSTOMER_HAND_WEBSOCKET_URL and BRAIN_CUSTOMER_HAND_OBSERVATION_BASE_URL or neither"
                 ),
             };
-            let loophost = match std::env::var("BRAIN_LOOPHOST_AEX_COMPONENT") {
-                Err(_) => None,
-                Ok(component) => Some(brain_server::LoophostOptions {
-                    aex_component: component.into(),
-                    toolchain_dir: std::env::var("BRAIN_LOOPHOST_TOOLCHAIN_DIR")
-                        .map_err(|_| anyhow::anyhow!(
-                            "BRAIN_LOOPHOST_TOOLCHAIN_DIR is required with BRAIN_LOOPHOST_AEX_COMPONENT"
-                        ))?
-                        .into(),
-                }),
-            };
+            let loophost = Some(brain_server::LoophostOptions {
+                toolchain_dir: std::env::var("BRAIN_LOOPHOST_TOOLCHAIN_DIR")
+                    .map_err(|_| anyhow::anyhow!("BRAIN_LOOPHOST_TOOLCHAIN_DIR is required"))?
+                    .into(),
+            });
             let brain = brain_server::compose_local(brain_server::LocalOptions {
                 data_dir: data.clone(),
                 cfg,

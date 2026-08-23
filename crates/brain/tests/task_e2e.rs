@@ -5,7 +5,7 @@ use brain::config::{Dialect, ProviderKey, SealedPrefix};
 use brain::journal::{Journal, Record};
 use brain::message::{Message, StopReason, Usage};
 use brain::provider::{ModelRequest, Provider, ProviderEvent};
-use brain::session::{Brain, BrainConfig, BrainServices};
+use brain::session::{Brain, BrainConfig};
 use brain::{BrainError, Result};
 use brain_protocol::session::{CreateSessionRequest, MessageRequestContent};
 use futures_util::stream::BoxStream;
@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
+
+mod support;
 
 #[derive(Debug, Default)]
 struct OrdinaryChildProvider {
@@ -195,7 +197,7 @@ fn create_request() -> CreateSessionRequest {
             "name": "scripted",
             "api_key": "sk-fake"
         },
-        "system_prompt": "ordinary child e2e",
+        "agentloop": support::loop_config(),
         "tools": {
             "items": [{
                 "definition": {
@@ -264,7 +266,7 @@ async fn official_spawn_creates_an_ordinary_child_at_a_complete_fork_boundary() 
         journal.clone(),
         Arc::new(brain::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
-        BrainServices::default(),
+        support::services(),
         Arc::new(move |_| provider_factory.clone() as Arc<dyn Provider>),
     );
 
@@ -375,7 +377,7 @@ async fn end_fences_a_root_while_its_post_spawn_provider_call_is_stalled() {
         journal.clone(),
         Arc::new(brain::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
-        BrainServices::default(),
+        support::services(),
         Arc::new(move |_| provider_factory.clone() as Arc<dyn Provider>),
     );
 

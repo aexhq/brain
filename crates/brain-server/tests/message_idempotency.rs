@@ -1,8 +1,6 @@
-use brain::adapter::DisabledToolExecutor;
 use brain::config::Dialect;
-use brain::journal::Journal;
 use brain::provider::fake::{FakeProvider, Scripted};
-use brain::session::{Brain, BrainConfig, BrainServices};
+use brain::session::{Brain, BrainConfig};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -49,22 +47,20 @@ async fn events(http: &reqwest::Client, base: &str, token: &str, session_id: &st
 
 #[tokio::test]
 async fn message_key_replays_while_active_after_completion_and_after_cold_hydration() {
-    let _temp = TempDir::new();
+    let temp = TempDir::new();
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     fake.script([Scripted::Text("one durable response".into())]);
     fake.tokens_per_second.store(5, Ordering::Relaxed);
     let factory_fake = fake.clone();
-    let brain = Brain::with_parts_and_services(
+    let brain = Brain::in_memory_test(
+        temp.0.clone(),
         BrainConfig {
             idle_discard: Duration::from_millis(40),
             ..BrainConfig::default()
         },
-        Journal::new_memory("message-idempotency-test"),
-        Arc::new(brain::keys::PlainCustody),
-        Arc::new(DisabledToolExecutor),
-        BrainServices::default(),
         Arc::new(move |_| factory_fake.clone() as Arc<dyn brain::provider::Provider>),
-    );
+    )
+    .unwrap();
 
     let token = "message-idempotency-token".to_string();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -81,7 +77,12 @@ async fn message_key_replays_while_active_after_completion_and_after_cold_hydrat
         .post(format!("{base}/v1/sessions"))
         .bearer_auth(&token)
         .json(&json!({
-            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"}
+            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+            "agentloop": {
+                "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                "toolchain": "test-loop",
+                "bundle_base64": "eA=="
+            }
         }))
         .send()
         .await

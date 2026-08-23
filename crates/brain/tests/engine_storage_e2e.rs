@@ -9,7 +9,7 @@ use brain::hand::{
 use brain::journal::{Journal, Record};
 use brain::message::{Message, StopReason, Usage};
 use brain::provider::{ModelRequest, Provider, ProviderEvent};
-use brain::session::{Brain, BrainConfig, BrainServices};
+use brain::session::{Brain, BrainConfig};
 use brain::storage::{
     SessionStoragePort, StorageObject, StoragePage, StoragePurgePage, StorageTransferTicket,
     StorageUploadRequest, StorageWriteRequest,
@@ -23,6 +23,8 @@ use brain_protocol::session::{CreateSessionRequest, MessageRequestContent};
 use futures_util::stream::BoxStream;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+
+mod support;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -294,6 +296,7 @@ impl Drop for TempDir {
 fn create_request() -> CreateSessionRequest {
     serde_json::from_value(json!({
         "model": {"provider":"anthropic", "name":"scripted", "api_key":"sk-fake"},
+        "agentloop": support::loop_config(),
         "tools": {"items": [{
             "definition": {
                 "name":"storage",
@@ -326,6 +329,9 @@ async fn official_storage_commits_reservation_and_result_without_external_execut
     let storage = Arc::new(MemoryStorage::default());
     let provider = Arc::new(StorageProvider);
     let factory = provider.clone();
+    let mut services = support::services();
+    services.session_storage = Some(storage.clone());
+    services.sandbox_files = Some(Arc::new(UnusedSandboxFiles));
     let brain = Brain::with_parts_and_services(
         BrainConfig {
             idle_discard: Duration::from_secs(60),
@@ -334,11 +340,7 @@ async fn official_storage_commits_reservation_and_result_without_external_execut
         journal.clone(),
         Arc::new(brain::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
-        BrainServices {
-            session_storage: Some(storage.clone()),
-            sandbox_files: Some(Arc::new(UnusedSandboxFiles)),
-            ..BrainServices::default()
-        },
+        services,
         Arc::new(move |_| factory.clone() as Arc<dyn Provider>),
     );
     let session = brain
