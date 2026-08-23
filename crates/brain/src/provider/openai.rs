@@ -478,6 +478,22 @@ mod tests {
     }
 
     #[test]
+    fn a_loop_echo_of_the_sealed_presentation_keeps_the_prompt_cache_key() {
+        // The W2/D3 gate for this dialect: prompt_cache_key must survive a ctx-composed
+        // round whose presentation matches the seal; dropping it forfeits server-side
+        // prompt caching on every loop-driven request.
+        let sealed = AgentDef::new("sys", "gpt-5.4", Dialect::OpenAiChat)
+            .seal()
+            .with_provider_base(None, Some("aex:ses_parity".into()));
+        let echoed = sealed.loop_call_view(None, Some(sealed.tools.clone()), None, None);
+        let body = OpenAiChat::render_base(&std::sync::Arc::new(echoed));
+        assert_eq!(body["prompt_cache_key"], "aex:ses_parity");
+        let changed = sealed.loop_call_view(Some("different".into()), None, None, None);
+        let body = OpenAiChat::render_base(&std::sync::Arc::new(changed));
+        assert!(!body.contains_key("prompt_cache_key"));
+    }
+
+    #[test]
     fn named_legacy_compatibility_profile_is_explicit() {
         let definition =
             AgentDef::new("sys", "deepseek-chat", Dialect::OpenAiChat).sampling(GenOpts {

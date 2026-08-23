@@ -287,6 +287,7 @@ mod tests {
     use super::*;
     use crate::config::Dialect;
     use crate::config::{AgentDef, GenOpts, ToolDecl, ToolRoute};
+    use std::sync::Arc;
 
     fn prefix() -> std::sync::Arc<SealedPrefix> {
         AgentDef::new("sys", "claude-test", Dialect::AnthropicMessages)
@@ -367,6 +368,37 @@ mod tests {
             without_messages.remove("messages");
             assert_eq!(Value::Object(without_messages), base);
         }
+    }
+
+    #[test]
+    fn a_loop_echo_of_the_sealed_presentation_renders_byte_identical_requests() {
+        // The W2/D3 byte-parity gate: a ctx-composed round whose presentation matches the
+        // seal must produce the exact bytes the kernel-managed round produces, base reuse
+        // included — otherwise loop-driven sessions silently forfeit prompt caching.
+        let sealed = prefix().with_provider_base(
+            Some(Value::Object(Anthropic::render_base(&prefix()))),
+            Some("aex:ses_parity".into()),
+        );
+        let echoed = sealed.loop_call_view(None, Some(sealed.tools.clone()), None, None);
+        let history = vec![Message::user_text("same turn")];
+        let kernel = Anthropic::build_request(
+            &sealed,
+            &history,
+            &ProviderKey::new("sk-x"),
+            "http://127.0.0.1:1",
+        )
+        .unwrap();
+        let via_loop = Anthropic::build_request(
+            &Arc::new(echoed),
+            &history,
+            &ProviderKey::new("sk-x"),
+            "http://127.0.0.1:1",
+        )
+        .unwrap();
+        assert_eq!(
+            kernel.body, via_loop.body,
+            "loop-echoed presentation must render the kernel's exact request bytes"
+        );
     }
 
     #[test]
