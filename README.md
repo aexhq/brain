@@ -2,20 +2,15 @@
 
 <p align="center"><strong>A minimal and extensible kernel for AI workloads.</strong></p>
 <p align="center">
-  Durable sessions for models and tools: a product-neutral session kernel for model
-  conversations, tool execution, recovery, cancellation, and event streams — mechanism,
-  not policy. Agent behavior lives in extensions (agentloops and tools) built on its
-  small frozen contracts.
-</p>
-<p align="center">
   <a href="https://aex.dev">Aex</a> ·
   <a href="contracts/session/v1/openapi.yaml">Session API</a> ·
   <a href="https://github.com/aexhq/hands">Hands</a> ·
   <a href="https://discord.gg/Qk2YnHMHVb">Discord</a>
 </p>
 
-Brain runs without an Aex account or control plane. One server owns many durable sessions while
-applications decide which tools each session can use. Aex is a downstream product built on Brain.
+## What it is
+Brain is minimal server that manages a set of primitives and environments for running agent sessions.
+The term _Brain_ is originated from Anthropic engineering blog [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents) and minimalistic concept is inspired by [Pi Agent Harness](https://github.com/earendil-works/pi).
 
 ## TypeScript client
 
