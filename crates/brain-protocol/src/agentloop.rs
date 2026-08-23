@@ -51,6 +51,14 @@ pub mod error {
 #[doc = "        \"activation_id\": {"]
 #[doc = "          \"$ref\": \"#/$defs/Identifier\""]
 #[doc = "        },"]
+#[doc = "        \"inherited\": {"]
+#[doc = "          \"description\": \"Sealed inherited context from a context fork, in order, preceding the tail. Delivered only on a child session's fresh hydration (no own context floor); the messages are parent history, not child journal entries, so they carry no seqs and are never covered by marks.\","]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"$ref\": \"#/$defs/ModelMessage\""]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 512"]
+#[doc = "        },"]
 #[doc = "        \"kind\": {"]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"enum\": ["]
@@ -165,6 +173,9 @@ pub enum ActivationRequest {
     #[serde(rename = "session_start")]
     SessionStart {
         activation_id: Identifier,
+        #[doc = "Sealed inherited context from a context fork, in order, preceding the tail. Delivered only on a child session's fresh hydration (no own context floor); the messages are parent history, not child journal entries, so they carry no seqs and are never covered by marks."]
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        inherited: ::std::vec::Vec<ModelMessage>,
         kv: JsonObject,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         latest_mark: ::std::option::Option<MarkView>,
@@ -999,6 +1010,15 @@ impl ::std::convert::From<ToolCallContentView> for ContentView {
 #[doc = "        },"]
 #[doc = "        \"result\": {"]
 #[doc = "          \"$ref\": \"#/$defs/JsonObject\""]
+#[doc = "        },"]
+#[doc = "        \"stop_reason\": {"]
+#[doc = "          \"description\": \"The loop's terminal claim for this turn; absent means end_turn. Cancelled and interrupted stay kernel-owned outcomes a loop cannot claim.\","]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"enum\": ["]
+#[doc = "            \"end_turn\","]
+#[doc = "            \"max_rounds\","]
+#[doc = "            \"refusal\""]
+#[doc = "          ]"]
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"additionalProperties\": false"]
@@ -1059,6 +1079,9 @@ pub enum CtxOp {
     TurnFinish {
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         result: ::std::option::Option<JsonObject>,
+        #[doc = "The loop's terminal claim for this turn; absent means end_turn. Cancelled and interrupted stay kernel-owned outcomes a loop cannot claim."]
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        stop_reason: ::std::option::Option<CtxOpStopReason>,
     },
     #[serde(rename = "turn_fail")]
     TurnFail { error: AgentloopError },
@@ -1418,6 +1441,84 @@ pub enum CtxOpResult {
     TurnFinish,
     #[serde(rename = "turn_fail")]
     TurnFail,
+}
+#[doc = "The loop's terminal claim for this turn; absent means end_turn. Cancelled and interrupted stay kernel-owned outcomes a loop cannot claim."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"The loop's terminal claim for this turn; absent means end_turn. Cancelled and interrupted stay kernel-owned outcomes a loop cannot claim.\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"end_turn\","]
+#[doc = "    \"max_rounds\","]
+#[doc = "    \"refusal\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum CtxOpStopReason {
+    #[serde(rename = "end_turn")]
+    EndTurn,
+    #[serde(rename = "max_rounds")]
+    MaxRounds,
+    #[serde(rename = "refusal")]
+    Refusal,
+}
+impl ::std::fmt::Display for CtxOpStopReason {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::EndTurn => f.write_str("end_turn"),
+            Self::MaxRounds => f.write_str("max_rounds"),
+            Self::Refusal => f.write_str("refusal"),
+        }
+    }
+}
+impl ::std::str::FromStr for CtxOpStopReason {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "end_turn" => Ok(Self::EndTurn),
+            "max_rounds" => Ok(Self::MaxRounds),
+            "refusal" => Ok(Self::Refusal),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for CtxOpStopReason {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for CtxOpStopReason {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for CtxOpStopReason {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
 }
 #[doc = "`CtxOpTypesItem`"]
 #[doc = r""]
@@ -2197,7 +2298,15 @@ pub enum ModelMessage {
 #[doc = "      \"maximum\": 2.0,"]
 #[doc = "      \"minimum\": 0.0"]
 #[doc = "    },"]
+#[doc = "    \"tool_choice\": {"]
+#[doc = "      \"description\": \"Only the closing-round constraint: presented tools stay on the wire (tool-block histories require them) while the model is asked to answer in text. Absent means the provider default.\","]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"none\""]
+#[doc = "      ]"]
+#[doc = "    },"]
 #[doc = "    \"tools\": {"]
+#[doc = "      \"description\": \"Absent or empty means the sealed presentation verbatim, which also keeps the provider's frozen base segment and prompt-cache key. A non-empty list re-presents sealed tools by name and pays its own cache economics.\","]
 #[doc = "      \"type\": \"array\","]
 #[doc = "      \"items\": {"]
 #[doc = "        \"$ref\": \"#/$defs/ToolPresentationView\""]
@@ -2224,6 +2333,10 @@ pub struct ModelRequest {
     pub system: ::std::option::Option<ModelRequestSystem>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub temperature: ::std::option::Option<f64>,
+    #[doc = "Only the closing-round constraint: presented tools stay on the wire (tool-block histories require them) while the model is asked to answer in text. Absent means the provider default."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub tool_choice: ::std::option::Option<ModelRequestToolChoice>,
+    #[doc = "Absent or empty means the sealed presentation verbatim, which also keeps the provider's frozen base segment and prompt-cache key. A non-empty list re-presents sealed tools by name and pays its own cache economics."]
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub tools: ::std::vec::Vec<ToolPresentationView>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -2295,6 +2408,74 @@ impl<'de> ::serde::Deserialize<'de> for ModelRequestSystem {
             .map_err(|e: self::error::ConversionError| {
                 <D::Error as ::serde::de::Error>::custom(e.to_string())
             })
+    }
+}
+#[doc = "Only the closing-round constraint: presented tools stay on the wire (tool-block histories require them) while the model is asked to answer in text. Absent means the provider default."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"Only the closing-round constraint: presented tools stay on the wire (tool-block histories require them) while the model is asked to answer in text. Absent means the provider default.\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"none\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ModelRequestToolChoice {
+    #[serde(rename = "none")]
+    None,
+}
+impl ::std::fmt::Display for ModelRequestToolChoice {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::None => f.write_str("none"),
+        }
+    }
+}
+impl ::std::str::FromStr for ModelRequestToolChoice {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "none" => Ok(Self::None),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ModelRequestToolChoice {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ModelRequestToolChoice {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ModelRequestToolChoice {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
     }
 }
 #[doc = "Why one model round stopped."]

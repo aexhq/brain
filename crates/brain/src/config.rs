@@ -250,34 +250,24 @@ impl SealedPrefix {
     pub fn tool(&self, name: &str) -> Option<&ToolDecl> {
         self.tools.iter().find(|t| t.name == name)
     }
-    /// A per-call view for the graceful at-cap closing round: the same sealed presentation with
-    /// `tool_choice: none`, so the model wraps up in text instead of requesting more work.
-    pub(crate) fn closing_view(&self) -> SealedPrefix {
-        SealedPrefix {
-            digest: self.digest.clone(),
-            system_prompt: self.system_prompt.clone(),
-            tools: self.tools.clone(),
-            model: self.model.clone(),
-            dialect: self.dialect,
-            sampling: self.sampling.clone(),
-            limits: self.limits,
-            rendered_base: None,
-            prompt_cache_key: None,
-            tool_choice_none: true,
-        }
-    }
     /// A per-call view of this sealed prefix for a loop-composed `model_stream` request.
     ///
     /// Presentation (system text, which sealed tools are shown and how, output/temperature
     /// sampling) is loop policy; authority is not — the provider, model, dialect and every
-    /// executable tool binding stay exactly as sealed. The provider base-segment cache is
-    /// cleared because it renders the sealed presentation, not this call's.
+    /// executable tool binding stay exactly as sealed.
+    ///
+    /// The frozen provider base segment and prompt-cache key survive whenever the call's
+    /// presentation is byte-identical to the seal — the common case for every official loop,
+    /// which re-presents the sealed system/tools verbatim. Sampling scalars ride outside the
+    /// cached segment, so overriding them never invalidates it. Only a genuinely changed
+    /// presentation re-renders (and pays its own cache economics — that is the loop's call).
     pub(crate) fn loop_call_view(
         &self,
         system_prompt: Option<String>,
         tools: Option<Vec<ToolDecl>>,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
+        tool_choice_none: bool,
     ) -> SealedPrefix {
         let mut sampling = self.sampling.clone();
         if let Some(max_tokens) = max_tokens {
@@ -286,17 +276,28 @@ impl SealedPrefix {
         if let Some(temperature) = temperature {
             sampling.temperature = Some(temperature);
         }
+        let system_prompt = system_prompt.unwrap_or_else(|| self.system_prompt.clone());
+        let tools = tools.unwrap_or_else(|| self.tools.clone());
+        let sealed_presentation = system_prompt == self.system_prompt && tools == self.tools;
         SealedPrefix {
             digest: self.digest.clone(),
-            system_prompt: system_prompt.unwrap_or_else(|| self.system_prompt.clone()),
-            tools: tools.unwrap_or_else(|| self.tools.clone()),
+            system_prompt,
+            tools,
             model: self.model.clone(),
             dialect: self.dialect,
             sampling,
             limits: self.limits,
-            rendered_base: None,
-            prompt_cache_key: None,
-            tool_choice_none: false,
+            rendered_base: if sealed_presentation && !tool_choice_none {
+                self.rendered_base.clone()
+            } else {
+                None
+            },
+            prompt_cache_key: if sealed_presentation && !tool_choice_none {
+                self.prompt_cache_key.clone()
+            } else {
+                None
+            },
+            tool_choice_none,
         }
     }
     pub fn rendered_base(&self) -> Option<&serde_json::Value> {
@@ -546,6 +547,47 @@ mod tests {
             cfg.try_set_system_prompt("other"),
             Err(BrainError::PrefixSealed { .. })
         ));
+    }
+
+    #[test]
+    fn loop_view_with_sealed_presentation_keeps_the_frozen_base_and_cache_key() {
+        // The D3 gate: a loop that re-presents the sealed system/tools verbatim (every
+        // official loop) must reuse the byte-frozen provider base and cache key — dropping
+        // them silently forfeits prompt caching on every ctx-composed round.
+        let sealed = def().seal().with_provider_base(
+            Some(serde_json::json!({"frozen": "base"})),
+            Some("aex:ses_test".into()),
+        );
+        let echoed = sealed.loop_call_view(
+            None,
+            Some(sealed.tools.clone()),
+            Some(512),
+            Some(0.25),
+            false,
+        );
+        assert_eq!(
+            echoed.rendered_base(),
+            Some(&serde_json::json!({"frozen": "base"})),
+            "sampling overrides ride outside the cached segment and must not invalidate it"
+        );
+        assert_eq!(echoed.prompt_cache_key(), Some("aex:ses_test"));
+        assert_eq!(echoed.sampling.max_tokens, 512);
+    }
+
+    #[test]
+    fn loop_view_with_changed_presentation_drops_the_frozen_base() {
+        let sealed = def().seal().with_provider_base(
+            Some(serde_json::json!({"frozen": "base"})),
+            Some("aex:ses_test".into()),
+        );
+        let new_system = sealed.loop_call_view(Some("different".into()), None, None, None, false);
+        assert!(new_system.rendered_base().is_none());
+        assert!(new_system.prompt_cache_key().is_none());
+        let mut tools = sealed.tools.clone();
+        tools[0].description = "changed".into();
+        let new_tools = sealed.loop_call_view(None, Some(tools), None, None, false);
+        assert!(new_tools.rendered_base().is_none());
+        assert!(new_tools.prompt_cache_key().is_none());
     }
 
     #[test]

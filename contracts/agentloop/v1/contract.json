@@ -192,11 +192,17 @@
         "tools": {
           "type": "array",
           "items": { "$ref": "#/$defs/ToolPresentationView" },
-          "maxItems": 128
+          "maxItems": 128,
+          "description": "Absent or empty means the sealed presentation verbatim, which also keeps the provider's frozen base segment and prompt-cache key. A non-empty list re-presents sealed tools by name and pays its own cache economics."
         },
         "max_tokens": { "type": "integer", "minimum": 1 },
         "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
-        "top_p": { "type": "number", "minimum": 0, "maximum": 1 }
+        "top_p": { "type": "number", "minimum": 0, "maximum": 1 },
+        "tool_choice": {
+          "type": "string",
+          "enum": ["none"],
+          "description": "Only the closing-round constraint: presented tools stay on the wire (tool-block histories require them) while the model is asked to answer in text. Absent means the provider default."
+        }
       },
       "description": "A composed provider request. Brain executes it against the session's sealed provider and model with custody, live retry and attempt recovery, and journals intent and result. The loop never selects a provider, model or credential."
     },
@@ -375,6 +381,12 @@
             "resumed": { "type": "boolean" },
             "kv": { "$ref": "#/$defs/JsonObject" },
             "latest_mark": { "$ref": "#/$defs/MarkView" },
+            "inherited": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ModelMessage" },
+              "maxItems": 512,
+              "description": "Sealed inherited context from a context fork, in order, preceding the tail. Delivered only on a child session's fresh hydration (no own context floor); the messages are parent history, not child journal entries, so they carry no seqs and are never covered by marks."
+            },
             "tail": {
               "type": "array",
               "items": { "$ref": "#/$defs/JournalEntryView" },
@@ -529,7 +541,12 @@
           "required": ["op"],
           "properties": {
             "op": { "type": "string", "enum": ["turn_finish"] },
-            "result": { "$ref": "#/$defs/JsonObject" }
+            "result": { "$ref": "#/$defs/JsonObject" },
+            "stop_reason": {
+              "type": "string",
+              "enum": ["end_turn", "max_rounds", "refusal"],
+              "description": "The loop's terminal claim for this turn; absent means end_turn. Cancelled and interrupted stay kernel-owned outcomes a loop cannot claim."
+            }
           }
         },
         {

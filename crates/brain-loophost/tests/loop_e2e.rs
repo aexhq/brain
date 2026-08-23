@@ -497,8 +497,8 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
 
     let checks = loop_event_data(&first, "loop.checks");
     assert_eq!(
-        checks[0]["unsealed"], "unsealed_tool",
-        "an undeclared tool fails the op with a typed code: {}",
+        checks[0]["unsealed"], "failed_result",
+        "an undeclared tool is answered with a journaled failed result, never a route: {}",
         checks[0]
     );
     assert_eq!(checks[0]["kv_limit"], "kv_limit");
@@ -519,11 +519,15 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
         2,
         "the loop drove two composed model rounds on the parent"
     );
+    let undeclared = first
+        .iter()
+        .find(|event| event["type"] == "tool.result" && event["name"] == "not_sealed")
+        .expect("the undeclared call is journaled as a failed result");
+    assert_eq!(undeclared["outcome"], "failed");
     let tool_result = first
         .iter()
-        .find(|event| event["type"] == "tool.result")
+        .find(|event| event["type"] == "tool.result" && event["name"] == "subagents")
         .expect("the dispatched call is journaled");
-    assert_eq!(tool_result["name"], "subagents");
     assert_eq!(tool_result["outcome"], "completed");
 
     // ---- turn 2: kv, the mark and the tail all survive the turn boundary ----
@@ -963,9 +967,9 @@ async fn a_customer_bundle_uploads_componentizes_and_drives_turns() {
     let _ = std::fs::remove_dir_all(store);
 }
 
-/// The wit doc's claim, enforced: a contract-only guest (here a customer upload) gets
-/// `invalid_request` for every `engine.*` round op, while the read-only
-/// `engine.session_start` hydration stays reachable.
+/// The wit doc's claim, enforced: the `engine.*` round vocabulary no longer exists for any
+/// guest (here a customer upload) — every round op answers `invalid_request` as an unknown
+/// op — while the read-only `engine.session_start` hydration stays reachable.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_customer_loop_cannot_reach_the_engine_vocabulary() {
     use base64::Engine as _;
@@ -1017,8 +1021,8 @@ async fn a_customer_loop_cannot_reach_the_engine_vocabulary() {
             result["refusals"][op]["message"]
                 .as_str()
                 .expect("refusal message")
-                .contains("reserved"),
-            "{op} refusal names the reservation: {result}"
+                .contains("unknown ctx op"),
+            "{op} is an unknown op for every guest: {result}"
         );
     }
     assert_eq!(

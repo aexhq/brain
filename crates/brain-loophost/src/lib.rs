@@ -27,9 +27,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use brain::BrainError;
-use brain::agentloop::{
-    Agentloop, DispatchOutcome, LoopVerdict, PrepareOutcome, RoundOutcome, TurnCtx,
-};
+use brain::agentloop::{Agentloop, LoopVerdict, TurnCtx};
 use tokio::sync::{mpsc, oneshot};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
@@ -101,21 +99,6 @@ fn wt<T>(result: Result<T, wasmtime::Error>) -> anyhow::Result<T> {
 fn error_json(code: &str, message: &str) -> String {
     serde_json::json!({ "error": { "code": code, "message": message, "retryable": false } })
         .to_string()
-}
-
-/// Whether a guest may drive the kernel-managed `engine.*` round vocabulary.
-///
-/// Only the composition's official aex loop is engine-mode; every other guest — customer
-/// uploads and seeded officials alike — speaks `contracts/agentloop/v1` only, and the round
-/// drivers are refused rather than left reachable with unspecified mixed-vocabulary
-/// semantics. `engine.session_start` stays open to every guest: it is the read-only residency
-/// hydration the host itself fetches for cold instances.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EngineOps {
-    /// The composition's trusted engine-vocabulary loop (the official aex component).
-    Trusted,
-    /// Contract-only guests: `engine.*` round ops answer `invalid_request`.
-    ContractOnly,
 }
 
 /// The compiled guest component plus its engine, shared by the in-process host and the daemon.
@@ -326,7 +309,6 @@ impl SessionInstances {
 pub(crate) async fn service_ctx_op(
     ctx: &mut dyn TurnCtx,
     payload: &str,
-    engine_ops: EngineOps,
     first_error: &mut Option<BrainError>,
 ) -> String {
     if let Ok(request) = serde_json::from_str::<brain_protocol::agentloop::CtxOpRequest>(payload) {
@@ -348,55 +330,7 @@ pub(crate) async fn service_ctx_op(
             },
         );
     };
-    if engine_ops == EngineOps::ContractOnly
-        && op.starts_with("engine.")
-        && op != "engine.session_start"
-    {
-        return error_json(
-            "invalid_request",
-            &format!(
-                "{op:?} is reserved for the composition's official aex loop; \
-                 this loop speaks contracts/agentloop/v1 only"
-            ),
-        );
-    }
     let served: Result<serde_json::Value, BrainError> = match op {
-        "engine.prepare_round" => ctx.prepare_round().await.map(|outcome| match outcome {
-            PrepareOutcome::Ready => serde_json::json!({ "outcome": "ready" }),
-            PrepareOutcome::Interrupted => serde_json::json!({ "outcome": "interrupted" }),
-        }),
-        "engine.model_round" => ctx.model_round().await.map(|outcome| match outcome {
-            RoundOutcome::ToolCalls { count } => {
-                serde_json::json!({ "outcome": "tool_calls", "count": count })
-            }
-            RoundOutcome::Final { refusal } => {
-                serde_json::json!({ "outcome": "final", "refusal": refusal })
-            }
-            RoundOutcome::Cancelled => serde_json::json!({ "outcome": "cancelled" }),
-            RoundOutcome::Interrupted => serde_json::json!({ "outcome": "interrupted" }),
-        }),
-        "engine.dispatch_pending" => ctx.dispatch_pending().await.map(|outcome| match outcome {
-            DispatchOutcome::Continue => serde_json::json!({ "outcome": "continue" }),
-            DispatchOutcome::TerminalCommitted { stop_reason } => {
-                serde_json::json!({ "outcome": "terminal", "stop_reason": stop_reason })
-            }
-        }),
-        // The graceful at-cap round: tool_choice none, so the model closes the turn in text.
-        "engine.closing_round" => ctx.closing_round().await.map(|outcome| match outcome {
-            RoundOutcome::Cancelled => serde_json::json!({ "outcome": "cancelled" }),
-            RoundOutcome::Interrupted => serde_json::json!({ "outcome": "interrupted" }),
-            RoundOutcome::Final { refusal } => {
-                serde_json::json!({ "outcome": "final", "refusal": refusal })
-            }
-            RoundOutcome::ToolCalls { count } => {
-                serde_json::json!({ "outcome": "tool_calls", "count": count })
-            }
-        }),
-        "engine.budget" => Ok(serde_json::json!({
-            "rounds": ctx.rounds(),
-            "max_rounds": ctx.max_rounds(),
-            "cancelled": ctx.cancelled(),
-        })),
         // The session_start hydration payload, fetched lazily: the host (or a loop that wants
         // it) asks instead of the kernel assembling a tail for every activation.
         "engine.session_start" => ctx.session_start_payload().await,
@@ -504,7 +438,6 @@ async fn serve_local_activation(
     kind: &str,
     payload: &str,
     ctx: &mut dyn TurnCtx,
-    engine_ops: EngineOps,
     first_error: &mut Option<BrainError>,
 ) -> Result<String, String> {
     let mut rx = instance.arm();
@@ -513,7 +446,7 @@ async fn serve_local_activation(
         tokio::select! {
             biased;
             Some((payload, reply)) = rx.recv() => {
-                let response = service_ctx_op(ctx, &payload, engine_ops, first_error).await;
+                let response = service_ctx_op(ctx, &payload, first_error).await;
                 let _ = reply.send(response);
             }
             result = &mut activation => break result,
@@ -553,25 +486,15 @@ pub(crate) fn payload_session_id(payload: &serde_json::Value) -> Result<String, 
 /// The remote counterpart is [`remote::RemoteAgentloop`].
 pub struct WasmAgentloop {
     instances: SessionInstances,
-    engine_ops: EngineOps,
 }
 
 impl WasmAgentloop {
-    /// The composition's trusted engine-vocabulary loop (the official aex component).
+    /// Every guest — the official aex component, seeded officials and customer uploads
+    /// alike — speaks `contracts/agentloop/v1` plus the read-only `engine.session_start`
+    /// hydration.
     pub fn from_component_file(path: &Path) -> anyhow::Result<Self> {
-        Self::with_engine_ops(path, EngineOps::Trusted)
-    }
-
-    /// A contract-only guest — customer uploads and seeded officials. The `engine.*` round
-    /// vocabulary is refused; the guest speaks `contracts/agentloop/v1`.
-    pub fn contract_only_from_component_file(path: &Path) -> anyhow::Result<Self> {
-        Self::with_engine_ops(path, EngineOps::ContractOnly)
-    }
-
-    fn with_engine_ops(path: &Path, engine_ops: EngineOps) -> anyhow::Result<Self> {
         Ok(Self {
             instances: SessionInstances::new(WasmLoopEngine::from_component_file(path)?),
-            engine_ops,
         })
     }
 }
@@ -595,7 +518,6 @@ impl Agentloop for WasmAgentloop {
                 "session_start",
                 &hydration,
                 ctx,
-                self.engine_ops,
                 &mut first_error,
             )
             .await;
@@ -625,7 +547,6 @@ impl Agentloop for WasmAgentloop {
             "message",
             &message_payload.to_string(),
             ctx,
-            self.engine_ops,
             &mut first_error,
         )
         .await;

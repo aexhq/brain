@@ -25,10 +25,8 @@ use crate::journal::{
 use crate::message::{ContentBlock, Message, StopReason};
 use crate::provider::{Accumulator, Provider, ProviderEvent};
 use crate::{BrainError, Result, Shared};
-use base64::Engine as _;
 use brain_protocol::hand::TerminalOutcome;
 use brain_protocol::session::EventStream;
-use brain_protocol::session::ToolOutcome;
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -55,6 +53,10 @@ fn validate_model_tool_call_count(count: usize) -> Result<()> {
 /// gets it back when the turn future resolves, mutated.
 pub struct TurnState {
     pub history: Vec<Message>,
+    /// The materialized context fork this child inherited (empty for roots and for children
+    /// past a kernel checkpoint). Immutable for the resident's life; `session_start` projects
+    /// it as the loop's `inherited` prefix on a fresh hydration.
+    pub fork_context: Vec<Message>,
     pub head: HeadDoc,
     /// Last HEAD returned by a successful journal decision. Mutations are staged in `head`; a
     /// conditional or adapter commit failure restores this local snapshot without depending on
@@ -228,13 +230,6 @@ struct RootRound {
     request_digest: String,
 }
 
-struct CompletedCompaction {
-    result: crate::compact::CompactionResult,
-    logical_operation_id: String,
-    attempt_id: String,
-    request_digest: String,
-}
-
 struct DispatchedOutcome {
     outcome: CallOutcome,
     customer_terminal: Option<crate::customer::CustomerTerminalReceipt>,
@@ -259,14 +254,6 @@ struct PendingBatch {
     prepared_customer: HashMap<String, PreparedCustomerDispatch>,
 }
 
-/// The model round's disposition toward the driving loop.
-enum ModelRoundGate {
-    Cancelled,
-    Interrupted,
-    Final { refusal: bool },
-    Calls(PendingBatch),
-}
-
 /// The kernel side of the agentloop seam for one turn. Policy lives in the loop; every method
 /// here is mechanism that journals before its effect.
 struct LoopTurnCtx<'a> {
@@ -274,12 +261,15 @@ struct LoopTurnCtx<'a> {
     st: &'a mut TurnState,
     rounds: u64,
     tool_calls: u64,
-    pending: Option<PendingBatch>,
     /// A terminal declared through the contract's `turn_finish`/`turn_fail` ops. Once set,
     /// every further ctx op fails `turn_already_terminal`.
     terminal: Option<crate::agentloop::LoopTerminal>,
     /// True when dispatch committed the turn terminal atomically (`return_direct`).
     terminal_committed: bool,
+    /// Kernel-owned interruption: an unknown provider outcome exhausted its replacement
+    /// budget. The loop cannot claim interrupted; the kernel records it here and it wins
+    /// over whatever the loop declares afterwards.
+    interrupted: bool,
     /// Kernel call ids minted for tool_call blocks returned by `model_stream`. A dispatch that
     /// echoes one of these reuses it as the journal call id, keeping the assistant message and
     /// its tool results internally linked for cold replay.
@@ -288,57 +278,6 @@ struct LoopTurnCtx<'a> {
 
 #[async_trait::async_trait]
 impl crate::agentloop::TurnCtx for LoopTurnCtx<'_> {
-    async fn prepare_round(&mut self) -> Result<crate::agentloop::PrepareOutcome> {
-        self.run.loop_prepare(self.st).await
-    }
-
-    async fn model_round(&mut self) -> Result<crate::agentloop::RoundOutcome> {
-        match self.run.loop_model_round(self.st, &mut self.rounds).await? {
-            ModelRoundGate::Cancelled => Ok(crate::agentloop::RoundOutcome::Cancelled),
-            ModelRoundGate::Interrupted => Ok(crate::agentloop::RoundOutcome::Interrupted),
-            ModelRoundGate::Final { refusal } => {
-                Ok(crate::agentloop::RoundOutcome::Final { refusal })
-            }
-            ModelRoundGate::Calls(batch) => {
-                let count = batch.calls.len();
-                self.pending = Some(batch);
-                Ok(crate::agentloop::RoundOutcome::ToolCalls { count })
-            }
-        }
-    }
-
-    async fn dispatch_pending(&mut self) -> Result<crate::agentloop::DispatchOutcome> {
-        let batch = self.pending.take().ok_or_else(|| {
-            BrainError::Protocol("dispatch_pending called with no journaled batch".into())
-        })?;
-        let (outcome, _) = self
-            .run
-            .loop_dispatch(self.st, batch, self.rounds, &mut self.tool_calls)
-            .await?;
-        if let crate::agentloop::DispatchOutcome::TerminalCommitted { .. } = &outcome {
-            // Tracked kernel-side so a loop cannot mislead the completion path into writing a
-            // second turn terminal.
-            self.terminal_committed = true;
-        }
-        Ok(outcome)
-    }
-
-    async fn closing_round(&mut self) -> Result<crate::agentloop::RoundOutcome> {
-        self.run.loop_closing_round(self.st, &mut self.rounds).await
-    }
-
-    fn rounds(&self) -> u64 {
-        self.rounds
-    }
-
-    fn max_rounds(&self) -> u64 {
-        self.run.prefix.limits.max_rounds as u64
-    }
-
-    fn cancelled(&self) -> bool {
-        self.run.cancel.is_cancelled()
-    }
-
     async fn contract_op(
         &mut self,
         op: brain_protocol::agentloop::CtxOp,
@@ -366,9 +305,18 @@ impl crate::agentloop::TurnCtx for LoopTurnCtx<'_> {
             } => self.op_journal_read(after_seq, types, limit).await,
             CtxOp::ModelStream { request } => self.op_model_stream(request).await,
             CtxOp::ToolsDispatch { calls } => self.op_tools_dispatch(calls).await,
-            CtxOp::TurnFinish { result } => {
+            CtxOp::TurnFinish {
+                result,
+                stop_reason,
+            } => {
+                use brain_protocol::agentloop::CtxOpStopReason;
                 self.terminal = Some(crate::agentloop::LoopTerminal::Finished {
                     result: result.map(|object| object.0),
+                    stop_reason: match stop_reason {
+                        None | Some(CtxOpStopReason::EndTurn) => TurnStopReason::EndTurn,
+                        Some(CtxOpStopReason::MaxRounds) => TurnStopReason::MaxRounds,
+                        Some(CtxOpStopReason::Refusal) => TurnStopReason::Refusal,
+                    },
                 });
                 Ok(Ok(CtxOpResult::TurnFinish))
             }
@@ -704,8 +652,21 @@ impl LoopTurnCtx<'_> {
         request: brain_protocol::agentloop::ModelRequest,
     ) -> Result<crate::agentloop::ContractOpOutcome> {
         use brain_protocol::agentloop as al;
+        // An already-cancelled turn never reaches the provider again: the check here makes
+        // the post-dispatch race (cancel lands while tool results return) deterministic.
+        if self.run.cancel.is_cancelled() {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::Aborted,
+                "the turn was cancelled",
+                false,
+            )));
+        }
         let max_rounds = self.run.prefix.limits.max_rounds as u64;
-        if self.rounds >= max_rounds {
+        let closing_grace = matches!(request.tool_choice, Some(al::ModelRequestToolChoice::None))
+            && self.rounds == max_rounds;
+        // The ceiling admits exactly one grace round past it when the loop constrains tool
+        // choice to none: the graceful closing answer, mirroring the engine-mode semantics.
+        if self.rounds >= max_rounds && !closing_grace {
             return Ok(Err(crate::agentloop::op_error(
                 al::AgentloopErrorCode::BudgetExceeded,
                 format!("the sealed ceiling of {max_rounds} model rounds per turn is reached"),
@@ -719,9 +680,15 @@ impl LoopTurnCtx<'_> {
                 false,
             )));
         }
-        let tools = match crate::loopctx::presented_tools(&self.run.prefix, &request.tools) {
-            Ok(tools) => tools,
-            Err(error) => return Ok(Err(error)),
+        // Absent/empty tools mean the sealed presentation verbatim (and D3 base reuse);
+        // a non-empty list re-presents sealed tools by name.
+        let tools = if request.tools.is_empty() {
+            None
+        } else {
+            match crate::loopctx::presented_tools(&self.run.prefix, &request.tools) {
+                Ok(tools) => Some(tools),
+                Err(error) => return Ok(Err(error)),
+            }
         };
         let history = match crate::loopctx::model_messages_to_history(&request.messages) {
             Ok(history) => history,
@@ -742,9 +709,13 @@ impl LoopTurnCtx<'_> {
         };
         let view = self.run.prefix.loop_call_view(
             request.system.map(String::from),
-            Some(tools),
+            tools,
             max_tokens,
             request.temperature.map(|temperature| temperature as f32),
+            matches!(
+                request.tool_choice,
+                Some(brain_protocol::agentloop::ModelRequestToolChoice::None)
+            ),
         );
         let provider_request = match self.run.provider.build_request(
             &view,
@@ -799,6 +770,7 @@ impl LoopTurnCtx<'_> {
                 {
                     let attempt = self.st.head.provider_attempt.as_mut().expect("checked");
                     if attempt.replacements_used >= self.st.head.prefix.provider_recovery_retries {
+                        self.interrupted = true;
                         return Ok(Err(crate::agentloop::op_error(
                             al::AgentloopErrorCode::ProviderError,
                             format!(
@@ -906,16 +878,9 @@ impl LoopTurnCtx<'_> {
         }
         let mut seen = std::collections::HashSet::new();
         for call in &calls {
-            if self.run.prefix.tool(call.name.as_str()).is_none() {
-                return Ok(Err(crate::agentloop::op_error(
-                    al::AgentloopErrorCode::UnsealedTool,
-                    format!(
-                        "tool {:?} is not in this session's sealed grant",
-                        call.name.as_str()
-                    ),
-                    false,
-                )));
-            }
+            // A name outside the sealed grant is not an op error: the model (not the loop)
+            // originates names, and dispatch answers undeclared calls with a journaled
+            // failed result — never a route — so the transcript keeps the honest record.
             if !seen.insert(call.tool_call_id.as_str()) {
                 return Ok(Err(crate::agentloop::op_error(
                     al::AgentloopErrorCode::InvalidRequest,
@@ -984,7 +949,10 @@ impl LoopTurnCtx<'_> {
             .loop_dispatch(self.st, batch, self.rounds, &mut self.tool_calls)
             .await?;
         if let crate::agentloop::DispatchOutcome::TerminalCommitted { .. } = &outcome {
-            self.terminal = Some(crate::agentloop::LoopTerminal::Finished { result: None });
+            self.terminal = Some(crate::agentloop::LoopTerminal::Finished {
+                result: None,
+                stop_reason: TurnStopReason::EndTurn,
+            });
             self.terminal_committed = true;
         }
         let views = calls
@@ -1115,9 +1083,22 @@ impl LoopTurnCtx<'_> {
             tail_bytes += bytes;
             tail.push(view);
         }
+        // The sealed fork prefix rides only a fresh hydration: once the loop has a mark
+        // floor, its own summary is the accumulated memory and re-delivering the fork
+        // would double-count it.
+        let inherited = if latest.is_none() && !self.st.fork_context.is_empty() {
+            let mut messages = crate::loopctx::history_to_model_messages(&self.st.fork_context)?;
+            if messages.len() > 512 {
+                messages.drain(..messages.len() - 512);
+            }
+            messages
+        } else {
+            Vec::new()
+        };
         let request = al::ActivationRequest::SessionStart {
             activation_id: crate::loopctx::identifier(&crate::mint_id("act", 16))?,
             kv: al::JsonObject(self.kv_overlay()),
+            inherited,
             latest_mark,
             resumed: self.st.head.turns > 1,
             session: self.session_view()?,
@@ -1249,9 +1230,9 @@ impl TurnRun {
             st,
             rounds,
             tool_calls,
-            pending: None,
             terminal: None,
             terminal_committed: false,
+            interrupted: false,
             minted_calls: std::collections::HashSet::new(),
         };
         let verdict = agentloop.drive_turn(&mut ctx).await?;
@@ -1260,11 +1241,27 @@ impl TurnRun {
             tool_calls,
             terminal,
             terminal_committed,
+            interrupted,
             ..
         } = ctx;
         // A terminal the loop declared through the contract ops is authoritative over the
         // activation's return value; without one, the returned verdict stands (engine mode).
         match terminal {
+            _ if interrupted => Ok(TurnReport {
+                stop_reason: TurnStopReason::Interrupted,
+                rounds,
+                tool_calls,
+                terminal_committed,
+                result: None,
+            }),
+            Some(crate::agentloop::LoopTerminal::Failed { error })
+                if error.code == brain_protocol::agentloop::AgentloopErrorCode::ProviderError =>
+            {
+                Err(BrainError::Protocol(format!(
+                    "the loop failed the turn: {}",
+                    error.message.as_str()
+                )))
+            }
             Some(crate::agentloop::LoopTerminal::Failed { error }) => {
                 Err(BrainError::Agentloop(format!(
                     "the loop failed the turn: {}: {}",
@@ -1272,8 +1269,11 @@ impl TurnRun {
                     error.message.as_str()
                 )))
             }
-            Some(crate::agentloop::LoopTerminal::Finished { result }) => Ok(TurnReport {
-                stop_reason: TurnStopReason::EndTurn,
+            Some(crate::agentloop::LoopTerminal::Finished {
+                result,
+                stop_reason,
+            }) => Ok(TurnReport {
+                stop_reason,
                 rounds,
                 tool_calls,
                 terminal_committed,
@@ -1288,200 +1288,6 @@ impl TurnRun {
                 terminal_committed: verdict.terminal_committed || terminal_committed,
                 result: None,
             }),
-        }
-    }
-
-    /// Compact until the next round fits the sealed context budget.
-    async fn loop_prepare(&self, st: &mut TurnState) -> Result<crate::agentloop::PrepareOutcome> {
-        loop {
-            let preflight_request = self.provider.build_request(
-                &self.prefix,
-                &st.history,
-                &self.session.key,
-                &self.session.base_url,
-            )?;
-            let preflight = crate::compact::validate_model_request_budget(
-                preflight_request.body_len(),
-                self.prefix.sampling.max_tokens as usize,
-                self.context_window_tokens,
-                "model",
-            );
-            let force_compaction = preflight.is_err();
-            if let Some(plan) = crate::compact::plan(
-                &st.history,
-                st.head.context.is_some(),
-                self.context_soft_tokens,
-                self.context_tail_tokens,
-                (self.context_hard_tokens / 4).max(1_024),
-                force_compaction,
-            ) {
-                let request = crate::compact::CompactionRequest {
-                    previous_summary: plan.previous_summary.clone(),
-                    new_span: plan.new_span.clone(),
-                    max_output_tokens: u32::try_from(self.context_summary_tokens).map_err(
-                        |_| BrainError::Journal("sealed context summary limit exceeds u32".into()),
-                    )?,
-                };
-                let Some(completed) = self.run_compaction(st, request).await? else {
-                    return Ok(crate::agentloop::PrepareOutcome::Interrupted);
-                };
-                let semantic = crate::compact::finish_plan(
-                    plan,
-                    completed.result.clone(),
-                    self.context_summary_tokens,
-                )?;
-                self.install_context_checkpoint(st, semantic, completed)
-                    .await?;
-                // A large single turn may need several bounded compactions. Re-evaluate both
-                // the semantic threshold and the exact provider wire after every installation.
-                continue;
-            }
-            preflight?;
-            let projected = crate::compact::estimate_tokens(&st.history);
-            if projected > self.context_hard_tokens {
-                return Err(BrainError::Protocol(format!(
-                    "model conversation history is estimated at {projected} tokens after compaction and exceeds the sealed hard limit {}",
-                    self.context_hard_tokens
-                )));
-            }
-            return Ok(crate::agentloop::PrepareOutcome::Ready);
-        }
-    }
-
-    /// One model round against the kernel-managed context: the provider call with replacement
-    /// recovery, then one durable decision journaling the assistant message and every tool
-    /// intent before anything dispatches.
-    async fn loop_model_round(
-        &self,
-        st: &mut TurnState,
-        rounds: &mut u64,
-    ) -> Result<ModelRoundGate> {
-        {
-            // One model round.
-            let round = loop {
-                match self.root_round(st).await {
-                    Ok(value) => break value,
-                    Err(BrainError::Cancelled) => {
-                        return Ok(ModelRoundGate::Cancelled);
-                    }
-                    Err(error)
-                        if st.head.provider_attempt.as_ref().is_some_and(|attempt| {
-                            attempt.state == ProviderAttemptState::Unknown
-                        }) =>
-                    {
-                        let attempt = st.head.provider_attempt.as_mut().expect("checked");
-                        if attempt.replacements_used >= st.head.prefix.provider_recovery_retries {
-                            return Ok(ModelRoundGate::Interrupted);
-                        }
-                        tracing::warn!(
-                            session = %self.session_id,
-                            logical_operation_id = %attempt.logical_operation_id,
-                            error = %error,
-                            "provider outcome unknown; authorizing digest-identical replacement"
-                        );
-                        attempt.replacements_used += 1;
-                        attempt.state = ProviderAttemptState::ReplacementReady;
-                        st.head.active_phase = Some(TurnPhase::ReadyToBuildModelRequest);
-                        // Persist the consumed recovery budget before the replacement send. A
-                        // crash here resumes this ready attempt without consuming it twice.
-                        self.commit(st, vec![]).await?;
-                    }
-                    Err(error) => return Err(error),
-                }
-            };
-            let RootRound {
-                mut message,
-                stop,
-                usage,
-                logical_operation_id,
-                attempt_id,
-                request_digest,
-            } = round;
-            *rounds += 1;
-            st.head.active_rounds = *rounds;
-
-            // Journal the decision: the complete assistant message and every tool intent --
-            // one durable write, BEFORE dispatch.
-            let calls = mint_tool_calls(&mut message);
-            validate_model_tool_call_count(calls.len())?;
-            let prepared_customer = self.prepare_customer_dispatches(&calls).await;
-
-            let mut records = Vec::new();
-            records.push((
-                st.take_seq(),
-                Record::ModelCallCompleted {
-                    turn: self.turn_id.clone(),
-                    logical_operation_id,
-                    attempt_id: attempt_id.clone(),
-                    request_digest,
-                },
-            ));
-            records.push((
-                st.take_seq(),
-                Record::Usage {
-                    turn: self.turn_id.clone(),
-                    agent: "root".into(),
-                    provider: self.provider_name.clone(),
-                    model: self.prefix.model.clone(),
-                    usage,
-                },
-            ));
-            let assistant_seq = st.take_seq();
-            records.push((
-                assistant_seq,
-                Record::Assistant {
-                    turn: self.turn_id.clone(),
-                    agent: "root".into(),
-                    attempt_id,
-                    content: message.content.clone(),
-                    stop,
-                },
-            ));
-            for (op_id, name, input) in &calls {
-                if let Some(PreparedCustomerDispatch::Intent(intent)) = prepared_customer.get(op_id)
-                {
-                    records.push((
-                        st.take_seq(),
-                        Record::CustomerCallIntent {
-                            turn: self.turn_id.clone(),
-                            call: op_id.clone(),
-                            client_id: intent.client_id.clone(),
-                            process_id: intent.process_id.clone(),
-                            request_digest: intent.request_digest.clone(),
-                            deadline_at_ms: intent.deadline_at_ms,
-                        },
-                    ));
-                }
-                records.push((
-                    st.take_seq(),
-                    Record::ToolCall {
-                        turn: self.turn_id.clone(),
-                        agent: "root".into(),
-                        call: op_id.clone(),
-                        name: name.clone(),
-                        input: input.clone(),
-                        detach: false,
-                    },
-                ));
-            }
-            st.head.provider_attempt = None;
-            st.head.active_phase = Some(if calls.is_empty() {
-                TurnPhase::ReadyToFinish
-            } else {
-                TurnPhase::ReadyToDispatchTools
-            });
-            self.commit(st, records).await?;
-            st.history.push(message.clone());
-
-            if calls.is_empty() {
-                return Ok(ModelRoundGate::Final {
-                    refusal: stop == StopReason::Refusal,
-                });
-            }
-            Ok(ModelRoundGate::Calls(PendingBatch {
-                calls,
-                prepared_customer,
-            }))
         }
     }
 
@@ -1531,148 +1337,6 @@ impl TurnRun {
             prepared_customer.insert(operation_id.clone(), prepared);
         }
         prepared_customer
-    }
-
-    /// The graceful at-cap round: one more kernel-managed round with `tool_choice: none` so
-    /// the model closes the turn in text. Tool calls a defective provider still returns are
-    /// journaled with immediate not-executed failed results in the same decision and never
-    /// dispatched, so replayed history stays provider-valid (every tool_use is answered).
-    async fn loop_closing_round(
-        &self,
-        st: &mut TurnState,
-        rounds: &mut u64,
-    ) -> Result<crate::agentloop::RoundOutcome> {
-        let closing = self.prefix.closing_view();
-        let request = self.provider.build_request(
-            &closing,
-            &st.history,
-            &self.session.key,
-            &self.session.base_url,
-        )?;
-        crate::compact::validate_model_request_budget(
-            request.body_len(),
-            closing.sampling.max_tokens as usize,
-            self.context_window_tokens,
-            "model",
-        )?;
-        let round = loop {
-            match self.round_with_request(st, request.clone()).await {
-                Ok(round) => break round,
-                Err(BrainError::Cancelled) => {
-                    return Ok(crate::agentloop::RoundOutcome::Cancelled);
-                }
-                Err(error)
-                    if st
-                        .head
-                        .provider_attempt
-                        .as_ref()
-                        .is_some_and(|attempt| attempt.state == ProviderAttemptState::Unknown) =>
-                {
-                    let attempt = st.head.provider_attempt.as_mut().expect("checked");
-                    if attempt.replacements_used >= st.head.prefix.provider_recovery_retries {
-                        return Ok(crate::agentloop::RoundOutcome::Interrupted);
-                    }
-                    tracing::warn!(
-                        session = %self.session_id,
-                        logical_operation_id = %attempt.logical_operation_id,
-                        error = %error,
-                        "closing-round outcome unknown; authorizing digest-identical replacement"
-                    );
-                    attempt.replacements_used += 1;
-                    attempt.state = ProviderAttemptState::ReplacementReady;
-                    self.commit(st, vec![]).await?;
-                }
-                Err(error) => return Err(error),
-            }
-        };
-        let RootRound {
-            mut message,
-            stop,
-            usage,
-            logical_operation_id,
-            attempt_id,
-            request_digest,
-        } = round;
-        *rounds += 1;
-        st.head.active_rounds = *rounds;
-        let calls = mint_tool_calls(&mut message);
-        validate_model_tool_call_count(calls.len())?;
-        let mut records = vec![
-            (
-                st.take_seq(),
-                Record::ModelCallCompleted {
-                    turn: self.turn_id.clone(),
-                    logical_operation_id,
-                    attempt_id: attempt_id.clone(),
-                    request_digest,
-                },
-            ),
-            (
-                st.take_seq(),
-                Record::Usage {
-                    turn: self.turn_id.clone(),
-                    agent: "root".into(),
-                    provider: self.provider_name.clone(),
-                    model: self.prefix.model.clone(),
-                    usage,
-                },
-            ),
-            (
-                st.take_seq(),
-                Record::Assistant {
-                    turn: self.turn_id.clone(),
-                    agent: "root".into(),
-                    attempt_id,
-                    content: message.content.clone(),
-                    stop,
-                },
-            ),
-        ];
-        const NOT_EXECUTED: &str = "[not executed: the turn reached its sealed round limit]";
-        let mut result_blocks = Vec::with_capacity(calls.len());
-        for (call, name, input) in &calls {
-            records.push((
-                st.take_seq(),
-                Record::ToolCall {
-                    turn: self.turn_id.clone(),
-                    agent: "root".into(),
-                    call: call.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                    detach: false,
-                },
-            ));
-            records.push((
-                st.take_seq(),
-                Record::ToolResult {
-                    turn: self.turn_id.clone(),
-                    agent: "root".into(),
-                    call: call.clone(),
-                    name: name.clone(),
-                    outcome: ToolOutcome::Failed,
-                    content: NOT_EXECUTED.into(),
-                    is_error: true,
-                    exit_code: None,
-                    duration_ms: 0,
-                    truncated: false,
-                },
-            ));
-            result_blocks.push(ContentBlock::ToolResult {
-                tool_use_id: call.clone(),
-                content: NOT_EXECUTED.into(),
-                is_error: true,
-            });
-        }
-        st.head.provider_attempt = None;
-        st.head.active_phase = Some(TurnPhase::ReadyToFinish);
-        self.commit(st, records).await?;
-        st.history.push(message);
-        if !result_blocks.is_empty() {
-            st.history.push(Message::tool_results(result_blocks));
-        }
-        Ok(crate::agentloop::RoundOutcome::Final {
-            refusal: stop == StopReason::Refusal,
-        })
     }
 
     /// Dispatch one journaled batch and journal its results — and, for a `return_direct` tool,
@@ -2010,289 +1674,6 @@ impl TurnRun {
         })
     }
 
-    async fn install_context_checkpoint(
-        &self,
-        st: &mut TurnState,
-        plan: crate::compact::SemanticPlan,
-        completed: CompletedCompaction,
-    ) -> Result<()> {
-        let encoded = crate::compact::encode_payload(&plan)?;
-        let checkpoint_id = format!("ctx_{}", &encoded.digest[..24]);
-        let covers_through_sequence = st.seq.load(Ordering::Relaxed).saturating_sub(1);
-        let chunk_start_sequence = st.seq.load(Ordering::Relaxed);
-        let total = u32::try_from(encoded.chunks_base64.len())
-            .map_err(|_| BrainError::Journal("too many context chunks".into()))?;
-        let mut records = Vec::with_capacity(encoded.chunks_base64.len() + 3);
-        records.push((
-            st.take_seq(),
-            Record::CompactionCompleted {
-                turn: self.turn_id.clone(),
-                logical_operation_id: completed.logical_operation_id,
-                attempt_id: completed.attempt_id,
-                request_digest: completed.request_digest,
-            },
-        ));
-        records.push((
-            st.take_seq(),
-            Record::Usage {
-                turn: self.turn_id.clone(),
-                agent: "compactor".into(),
-                provider: completed.result.provider,
-                model: completed.result.model,
-                usage: completed.result.usage,
-            },
-        ));
-        for (index, content_base64) in encoded.chunks_base64.into_iter().enumerate() {
-            let content = base64::engine::general_purpose::STANDARD
-                .decode(&content_base64)
-                .map_err(|_| BrainError::Journal("generated context chunk is invalid".into()))?;
-            records.push((
-                st.take_seq(),
-                Record::ContextChunk {
-                    checkpoint_id: checkpoint_id.clone(),
-                    index: index as u32,
-                    total,
-                    sha256: hex::encode(Sha256::digest(content)),
-                    content_base64,
-                },
-            ));
-        }
-        let chunk_end_sequence = st.seq.load(Ordering::Relaxed).saturating_sub(1);
-        let base_checkpoint_id = st
-            .head
-            .context
-            .as_ref()
-            .map(|context| context.checkpoint_id.clone());
-        let context_generation = st
-            .head
-            .context
-            .as_ref()
-            .map_or(1, |context| context.context_generation + 1);
-        let retained_from_sequence = st
-            .head
-            .context
-            .as_ref()
-            .map_or(1, |context| context.retained_from_sequence);
-        let created_at_ms = crate::wall_ms();
-        let pointer = crate::journal::ContextPointerDoc {
-            checkpoint_id: checkpoint_id.clone(),
-            base_checkpoint_id: base_checkpoint_id.clone(),
-            covers_through_sequence,
-            chunk_start_sequence,
-            chunk_end_sequence,
-            retained_messages: plan.retained_messages,
-            payload_digest: encoded.digest.clone(),
-            base_prefix_digest: st.head.prefix.rendered_base_digest.clone(),
-            source_context_digest: plan.source_context_digest.clone(),
-            token_estimate: plan.token_estimate,
-            context_generation,
-            summary_kind: plan.summary_kind.clone(),
-            compactor_provider: plan.compactor_provider.clone(),
-            compactor_model: plan.compactor_model.clone(),
-            retained_from_sequence,
-            created_at_ms,
-        };
-        records.push((
-            st.take_seq(),
-            Record::ContextInstalled {
-                checkpoint_id,
-                base_checkpoint_id,
-                covers_through_sequence,
-                retained_messages: plan.retained_messages,
-                payload_digest: encoded.digest,
-                base_prefix_digest: pointer.base_prefix_digest.clone(),
-                source_context_digest: plan.source_context_digest,
-                token_estimate: plan.token_estimate,
-                context_generation,
-                summary_kind: plan.summary_kind,
-                compactor_provider: plan.compactor_provider,
-                compactor_model: plan.compactor_model,
-                retained_from_sequence,
-                created_at_ms,
-            },
-        ));
-        st.head.context = Some(pointer);
-        st.head.provider_attempt = None;
-        st.head.active_phase = Some(TurnPhase::ReadyToBuildModelRequest);
-        self.commit(st, records).await?;
-        st.history = Vec::with_capacity(plan.tail.len() + 1);
-        st.history.push(Message::user_text(plan.summary));
-        st.history.extend(plan.tail);
-        Ok(())
-    }
-
-    async fn run_compaction(
-        &self,
-        st: &mut TurnState,
-        request: crate::compact::CompactionRequest,
-    ) -> Result<Option<CompletedCompaction>> {
-        self.compactor.preflight(
-            &request,
-            &crate::compact::CompactionModel {
-                provider: self.provider.clone(),
-                session: &self.session,
-                provider_name: &self.provider_name,
-                cancel: &self.cancel,
-                header_timeout: self.provider_header_timeout,
-                idle_timeout: self.provider_idle_timeout,
-                total_timeout: self.provider_total_timeout,
-                context_window_tokens: self.context_window_tokens,
-            },
-        )?;
-        let request_digest = hex::encode(Sha256::digest(serde_jcs::to_vec(&request)?));
-        let (logical_operation_id, mut replacements_used) = match st.head.provider_attempt.as_ref()
-        {
-            Some(attempt) if attempt.logical_operation_id.starts_with("cmp_") => {
-                if !matches!(
-                    attempt.state,
-                    journal::ProviderAttemptState::Unknown
-                        | journal::ProviderAttemptState::ReplacementReady
-                ) {
-                    return Err(BrainError::Journal(format!(
-                        "compaction attempt cannot resume from state {}",
-                        attempt.state.as_str()
-                    )));
-                }
-                if attempt.request_digest != request_digest {
-                    return Err(BrainError::Journal(
-                        "replacement compaction request does not match committed digest".into(),
-                    ));
-                }
-                (
-                    attempt.logical_operation_id.clone(),
-                    attempt.replacements_used,
-                )
-            }
-            Some(attempt) => {
-                return Err(BrainError::Journal(format!(
-                    "model attempt {} is active while compaction is required",
-                    attempt.logical_operation_id
-                )));
-            }
-            None => (crate::mint_id("cmp", 20), 0),
-        };
-
-        loop {
-            let attempt_id = crate::mint_id("att", 20);
-            st.head.active_phase = Some(TurnPhase::CompactionIntentCommitted);
-            st.head.provider_attempt = Some(crate::journal::ProviderAttemptDoc {
-                logical_operation_id: logical_operation_id.clone(),
-                attempt_id: attempt_id.clone(),
-                request_digest: request_digest.clone(),
-                state: ProviderAttemptState::Intent,
-                replacements_used,
-            });
-            self.commit(
-                st,
-                vec![(
-                    st.take_seq(),
-                    Record::CompactionIntent {
-                        turn: self.turn_id.clone(),
-                        logical_operation_id: logical_operation_id.clone(),
-                        attempt_id: attempt_id.clone(),
-                        request_digest: request_digest.clone(),
-                        replacement: replacements_used,
-                    },
-                )],
-            )
-            .await?;
-            st.head.active_phase = Some(TurnPhase::CompactionRunning);
-            if let Some(attempt) = &mut st.head.provider_attempt {
-                attempt.state = ProviderAttemptState::Running;
-            }
-            let permit = tokio::select! {
-                permit = self.model_permits.clone().acquire_owned() => {
-                    permit.map_err(|_| BrainError::Overloaded)?
-                }
-                () = self.cancel.cancelled() => return Err(BrainError::Cancelled),
-            };
-            let compact = self.compactor.compact(
-                request.clone(),
-                crate::compact::CompactionModel {
-                    provider: self.provider.clone(),
-                    session: &self.session,
-                    provider_name: &self.provider_name,
-                    cancel: &self.cancel,
-                    header_timeout: self.provider_header_timeout,
-                    idle_timeout: self.provider_idle_timeout,
-                    total_timeout: self.provider_total_timeout,
-                    context_window_tokens: self.context_window_tokens,
-                },
-            );
-            let result = tokio::select! {
-                result = tokio::time::timeout(self.provider_total_timeout, compact) => {
-                    result.unwrap_or_else(|_| Err(BrainError::Transport(
-                        "compactor call exceeded its total deadline".into(),
-                    )))
-                }
-                () = self.cancel.cancelled() => Err(BrainError::Cancelled),
-            };
-            drop(permit);
-            match result {
-                Ok(result) => {
-                    return Ok(Some(CompletedCompaction {
-                        result,
-                        logical_operation_id,
-                        attempt_id,
-                        request_digest,
-                    }));
-                }
-                Err(error) if provider_failure_is_unknown(&error) => {
-                    st.head.active_phase = Some(TurnPhase::CompactionUnknown);
-                    if let Some(attempt) = &mut st.head.provider_attempt {
-                        attempt.state = ProviderAttemptState::Unknown;
-                    }
-                    self.commit(
-                        st,
-                        vec![(
-                            st.take_seq(),
-                            Record::CompactionUnknown {
-                                turn: self.turn_id.clone(),
-                                logical_operation_id: logical_operation_id.clone(),
-                                attempt_id,
-                                request_digest: request_digest.clone(),
-                                possibly_duplicated: true,
-                            },
-                        )],
-                    )
-                    .await?;
-                    if replacements_used >= st.head.prefix.provider_recovery_retries {
-                        return Ok(None);
-                    }
-                    replacements_used += 1;
-                    let attempt = st
-                        .head
-                        .provider_attempt
-                        .as_mut()
-                        .expect("compaction attempt");
-                    attempt.replacements_used = replacements_used;
-                    attempt.state = ProviderAttemptState::ReplacementReady;
-                    st.head.active_phase = Some(TurnPhase::ReadyToCompact);
-                    self.commit(st, vec![]).await?;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
-    /// One streamed model round for this ordinary session. The wrapper journals Usage and
-    /// provider-attempt recovery evidence around the streamed transport.
-    async fn root_round(&self, st: &mut TurnState) -> Result<RootRound> {
-        let request = self.provider.build_request(
-            &self.prefix,
-            &st.history,
-            &self.session.key,
-            &self.session.base_url,
-        )?;
-        crate::compact::validate_model_request_budget(
-            request.body_len(),
-            self.prefix.sampling.max_tokens as usize,
-            self.context_window_tokens,
-            "model",
-        )?;
-        self.round_with_request(st, request).await
-    }
-
     /// One streamed provider round for an already-built request: durable intent, the streamed
     /// transport, and the unknown-outcome marker on ambiguous loss. Kernel-managed rounds and
     /// loop-composed `model_stream` rounds share this path exactly.
@@ -2535,14 +1916,26 @@ impl TurnRun {
         let mut reprepared = false;
         let receipt = loop {
             let remaining = deadline_at_ms.saturating_sub(crate::wall_ms()).max(1);
-            let submit = tokio::time::timeout(
-                std::time::Duration::from_millis(remaining),
-                hand.submit(submit_request.clone()),
-            );
+            // The submit runs as a detached task: dropping a lazy submit mid-flight would
+            // abandon its sandbox materialization attempt and strand the capacity
+            // reservation until the attempt lease expires. Cancellation and the sealed
+            // deadline stop the WAITING; the attempt itself always runs to its own
+            // conclusion, and exact recovery reconciles whatever it produced.
+            let submit_hand = hand.clone();
+            let submit_once = submit_request.clone();
+            let mut submit_task =
+                tokio::spawn(async move { submit_hand.submit(submit_once).await });
             let result = tokio::select! {
-                result = submit => result.map_err(|_| BrainError::HandUnavailable(
-                    "managed Tool submit exceeded its sealed deadline".into()
-                ))?,
+                joined = &mut submit_task => joined.map_err(|join_error| {
+                    BrainError::HandUnavailable(format!(
+                        "managed Tool submit task did not complete: {join_error}"
+                    ))
+                })?,
+                () = tokio::time::sleep(std::time::Duration::from_millis(remaining)) => {
+                    return Err(BrainError::HandUnavailable(
+                        "managed Tool submit exceeded its sealed deadline".into(),
+                    ));
+                }
                 () = self.cancel.cancelled() => {
                     return self
                         .finish_managed_submit_unknown(st, operation_id, name, &request_digest)

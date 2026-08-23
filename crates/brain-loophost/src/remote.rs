@@ -235,11 +235,7 @@ impl Agentloop for RemoteAgentloop {
             tokio::select! {
                 biased;
                 Some((id, payload)) = ctx_rx.recv() => {
-                    // The daemon hosts the composition's official aex component only (its one
-                    // BRAIN_LOOPHOST_COMPONENT), so the wire serves the engine vocabulary.
-                    let response =
-                        service_ctx_op(ctx, &payload, crate::EngineOps::Trusted, &mut first_error)
-                            .await;
+                    let response = service_ctx_op(ctx, &payload, &mut first_error).await;
                     if self
                         .client
                         .out

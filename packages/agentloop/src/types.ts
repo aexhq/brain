@@ -75,9 +75,13 @@ export interface ToolPresentation {
 export interface ModelRequest {
   system?: string;
   messages: ModelMessage[];
+  /** Absent or empty means the sealed presentation verbatim (keeps the provider's frozen
+   * base and prompt-cache key); a non-empty list re-presents sealed tools by name. */
   tools?: ToolPresentation[];
   max_tokens?: number;
   temperature?: number;
+  /** Only the closing-round constraint: tools stay on the wire, the model answers in text. */
+  tool_choice?: "none";
 }
 
 export interface ToolCallRequest {
@@ -153,6 +157,11 @@ export interface SessionStart {
   resumed: boolean;
   kv: Record<string, unknown>;
   latest_mark?: Mark;
+  /**
+   * Sealed inherited context from a context fork, in order, preceding the tail. Parent
+   * history, not child journal entries: no seqs, never covered by marks.
+   */
+  inherited?: ModelMessage[];
   tail: JournalEntry[];
   truncated_tail?: boolean;
 }

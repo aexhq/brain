@@ -4556,7 +4556,12 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
     }
 
     let message_replays = collect_message_replays(&head.doc, &entries)?;
-    let history = materialize_session_history(brain, &head.doc, &entries).await?;
+    let fork_context = if head.doc.context.is_none() {
+        materialize_context_fork(brain, &head.doc).await?
+    } else {
+        Vec::new()
+    };
+    let history = materialize_session_history(&head.doc, &entries, &fork_context)?;
     // Loop kv/mark state folds from the full journal, independent of the model-context floor
     // (a kv write from a long-compacted turn must survive). Sessions that never committed a
     // loop record skip the read entirely — the HEAD marker gates it.
@@ -4586,6 +4591,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
     let mut resident = Resident {
         st: TurnState {
             history,
+            fork_context,
             head: head.doc,
             persisted_head,
             lease: Lease {
@@ -4615,7 +4621,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             .read_records_through(session_id, context_after, resident.st.head.last_seq)
             .await?;
         resident.st.history =
-            materialize_session_history(brain, &resident.st.head, &entries).await?;
+            materialize_session_history(&resident.st.head, &entries, &resident.st.fork_context)?;
     }
     if recover_managed_calls(brain, session_id, &mut resident, &entries).await? {
         entries = brain
@@ -4623,7 +4629,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             .read_records_through(session_id, context_after, resident.st.head.last_seq)
             .await?;
         resident.st.history =
-            materialize_session_history(brain, &resident.st.head, &entries).await?;
+            materialize_session_history(&resident.st.head, &entries, &resident.st.fork_context)?;
     }
     if resident.st.head.root_id == session_id {
         let state = resident
@@ -5800,14 +5806,14 @@ async fn materialize_context_fork(brain: &Arc<Brain>, child: &HeadDoc) -> Result
     Ok(selected)
 }
 
-async fn materialize_session_history(
-    brain: &Arc<Brain>,
+fn materialize_session_history(
     head: &HeadDoc,
     entries: &[Entry],
+    fork_context: &[Message],
 ) -> Result<Vec<Message>> {
     let own_history = crate::compact::materialize_history(entries, head.context.as_ref())?;
     let mut history = if head.context.is_none() {
-        materialize_context_fork(brain, head).await?
+        fork_context.to_vec()
     } else {
         // A child checkpoint summarizes the already-materialized inherited prefix together with
         // the child's own turns. Prepending the immutable fork again would duplicate history.
