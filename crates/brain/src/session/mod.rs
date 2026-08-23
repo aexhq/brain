@@ -287,11 +287,19 @@ fn validate_model_tool_projection<'a>(
 
 struct DecodedToolBundle {
     checksum: String,
-    bytes: Vec<u8>,
-    media_type: String,
+    bytes: usize,
     target: brain_protocol::session::ToolBundleTarget,
     execute_path: String,
     setup_path: Option<String>,
+    layers: Vec<DecodedToolLayer>,
+}
+
+struct DecodedToolLayer {
+    checksum: String,
+    bytes: Vec<u8>,
+    media_type: brain_protocol::session::ToolArtifactLayerRefMediaType,
+    mount_path: String,
+    unpack: brain_protocol::session::ToolArtifactLayerRefUnpack,
 }
 
 fn managed_bundle_descriptors(
@@ -315,15 +323,22 @@ fn managed_bundle_descriptors(
                 })?;
             serde_json::from_value(serde_json::json!({
                 "bundle_digest": seal.checksum,
-                "bytes": bundle.bytes.len(),
+                "bytes": bundle.bytes,
                 "contract_digest": decl.contract_digest,
                 "description": (!decl.description.is_empty()).then_some(decl.description.as_str()),
-                "object": {
-                    "bytes": bundle.bytes.len(),
-                    "media_type": bundle.media_type,
-                    "object_id": format!("bundle_{}", seal.checksum),
-                    "sha256": seal.checksum,
-                },
+                "layers": bundle.layers.iter().map(|layer| serde_json::json!({
+                    "digest": layer.checksum,
+                    "bytes": layer.bytes.len(),
+                    "media_type": layer.media_type,
+                    "mount_path": layer.mount_path,
+                    "unpack": layer.unpack,
+                    "object": {
+                        "bytes": layer.bytes.len(),
+                        "media_type": layer.media_type.to_string(),
+                        "object_id": format!("bundle_{}", layer.checksum),
+                        "sha256": layer.checksum,
+                    },
+                })).collect::<Vec<_>>(),
                 "required_env": seal.required_env,
                 "target": bundle.target,
                 "execute_path": bundle.execute_path,
@@ -338,7 +353,7 @@ fn managed_bundle_descriptors(
 
 fn bundle_object_matches_descriptor(
     object: &brain_protocol::environment::ObjectReference,
-    descriptor: &brain_protocol::environment::BundleDescriptor,
+    descriptor: &brain_protocol::environment::ArtifactLayerDescriptor,
 ) -> Result<bool> {
     // An uncomputable comparison is an error, never a match: `.ok() == .ok()` would report
     // two canonicalization failures as equality.
@@ -889,6 +904,7 @@ impl Brain {
                 .insert(
                     descriptor.tool_name.to_string(),
                     crate::environment::ManagedBinding {
+                        environment_name: logical_name.to_owned(),
                         resolved: resolved.clone(),
                         environment: adapter.execution.clone(),
                     },
@@ -902,11 +918,14 @@ impl Brain {
             }
             preparation.bindings.push(serde_json::json!({
                 "binding_ref": resolved.binding_ref.clone(),
-                "bundle_digests": [descriptor.bundle_digest],
+                "bundle_digests": descriptor.layers.iter().map(|layer| layer.digest.as_str()).collect::<Vec<_>>(),
             }));
-            preparation
-                .bundle_digests
-                .push(descriptor.bundle_digest.to_string());
+            preparation.bundle_digests.extend(
+                descriptor
+                    .layers
+                    .iter()
+                    .map(|layer| layer.digest.to_string()),
+            );
         }
 
         for (_, preparation) in preparations {
@@ -1223,6 +1242,36 @@ impl Brain {
         let mut decoded_bundles = Vec::with_capacity(req.tool_bundles.len());
         let mut total_bundle_bytes = 0usize;
         let mut bundle_checksums = HashSet::new();
+        let mut layer_checksums = HashSet::new();
+        let mut layer_payloads = HashMap::with_capacity(req.tool_artifact_layers.len());
+        for (index, layer) in req.tool_artifact_layers.iter().enumerate() {
+            let checksum = layer.checksum.to_string();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(layer.content_base64.as_bytes())
+                .map_err(|error| {
+                    BrainError::Invalid(format!(
+                        "tool_artifact_layers[{index}].content_base64: {error}"
+                    ))
+                })?;
+            if bytes.len() != layer.bytes.get() as usize {
+                return Err(BrainError::Invalid(format!(
+                    "tool_artifact_layers[{index}].bytes does not match decoded content"
+                )));
+            }
+            if hex::encode(Sha256::digest(&bytes)) != checksum {
+                return Err(BrainError::Invalid(format!(
+                    "tool_artifact_layers[{index}] checksum mismatch"
+                )));
+            }
+            if layer_payloads
+                .insert(checksum, (bytes, layer.media_type))
+                .is_some()
+            {
+                return Err(BrainError::Invalid(format!(
+                    "tool_artifact_layers[{index}] repeats a checksum"
+                )));
+            }
+        }
         for (index, bundle) in req.tool_bundles.iter().enumerate() {
             let checksum = bundle.checksum.to_string();
             if !bundle_checksums.insert(checksum.clone()) {
@@ -1230,46 +1279,91 @@ impl Brain {
                     "tool_bundles[{index}]: duplicate checksum"
                 )));
             }
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(bundle.content_base64.as_bytes())
-                .map_err(|error| {
-                    BrainError::Invalid(format!("tool_bundles[{index}].content_base64: {error}"))
-                })?;
-            if bytes.len() != bundle.bytes.get() as usize {
+            let manifest = serde_json::json!({
+                "profile": "computer/v1",
+                "target": bundle.target,
+                "execute_path": bundle.execute_path,
+                "setup_path": bundle.setup_path,
+                "layers": bundle.layers.iter().map(|layer| serde_json::json!({
+                    "checksum": layer.checksum,
+                    "bytes": layer.bytes,
+                    "media_type": layer.media_type,
+                    "mount_path": layer.mount_path,
+                    "unpack": layer.unpack,
+                })).collect::<Vec<_>>(),
+            });
+            let actual_manifest = brain_protocol::contract::canonical_digest(&manifest)?;
+            if actual_manifest.as_str() != checksum {
                 return Err(BrainError::Invalid(format!(
-                    "tool_bundles[{index}].bytes does not match decoded content"
+                    "tool_bundles[{index}] manifest checksum mismatch"
                 )));
             }
-            if bytes.len() > brain_protocol::MAX_TOOL_BUNDLE_BYTES {
+            let mut decoded_layers = Vec::with_capacity(bundle.layers.len());
+            let mut bundle_bytes = 0usize;
+            for (layer_index, layer) in bundle.layers.iter().enumerate() {
+                let (bytes, media_type) = layer_payloads
+                    .get(layer.checksum.as_str())
+                    .ok_or_else(|| BrainError::Invalid(format!(
+                        "tool_bundles[{index}].layers[{layer_index}] has no supplied artifact layer"
+                    )))?;
+                if bytes.len() != layer.bytes.get() as usize {
+                    return Err(BrainError::Invalid(format!(
+                        "tool_bundles[{index}].layers[{layer_index}].bytes does not match decoded content"
+                    )));
+                }
+                if media_type.to_string() != layer.media_type.to_string() {
+                    return Err(BrainError::Invalid(format!(
+                        "tool_bundles[{index}].layers[{layer_index}] media type conflicts with its payload"
+                    )));
+                }
+                bundle_bytes = bundle_bytes.saturating_add(bytes.len());
+                if layer_checksums.insert(layer.checksum.to_string()) {
+                    total_bundle_bytes = total_bundle_bytes.saturating_add(bytes.len());
+                }
+                decoded_layers.push(DecodedToolLayer {
+                    checksum: layer.checksum.to_string(),
+                    bytes: bytes.clone(),
+                    media_type: layer.media_type,
+                    mount_path: layer.mount_path.to_string(),
+                    unpack: layer.unpack,
+                });
+            }
+            if bundle_bytes != bundle.bytes.get() as usize {
+                return Err(BrainError::Invalid(format!(
+                    "tool_bundles[{index}].bytes does not match its artifact layers"
+                )));
+            }
+            if bundle_bytes > brain_protocol::MAX_SESSION_BUNDLE_BYTES {
                 return Err(BrainError::Invalid(format!(
                     "tool_bundles[{index}] exceeds {} bytes",
-                    brain_protocol::MAX_TOOL_BUNDLE_BYTES,
+                    brain_protocol::MAX_SESSION_BUNDLE_BYTES,
                 )));
             }
-            total_bundle_bytes = total_bundle_bytes.saturating_add(bytes.len());
             if total_bundle_bytes > brain_protocol::MAX_SESSION_BUNDLE_BYTES {
                 return Err(BrainError::Invalid(format!(
                     "tool_bundles exceed the {}-byte session limit",
                     brain_protocol::MAX_SESSION_BUNDLE_BYTES,
                 )));
             }
-            let actual = hex::encode(Sha256::digest(&bytes));
-            if actual != checksum {
-                return Err(BrainError::Invalid(format!(
-                    "tool_bundles[{index}] checksum mismatch"
-                )));
-            }
             decoded_bundles.push(DecodedToolBundle {
                 checksum,
-                bytes,
-                media_type: bundle.media_type.clone(),
+                bytes: bundle_bytes,
                 target: bundle.target,
                 execute_path: bundle.execute_path.to_string(),
                 setup_path: bundle
                     .setup_path
                     .as_ref()
                     .map(|path| path.as_str().to_owned()),
+                layers: decoded_layers,
             });
+        }
+        if let Some(unused) = layer_payloads
+            .keys()
+            .find(|checksum| !layer_checksums.contains(*checksum))
+        {
+            return Err(BrainError::Invalid(format!(
+                "unreferenced tool artifact layer {unused}"
+            )));
         }
         let referenced_bundle_checksums: HashSet<_> = environment_tools
             .iter()
@@ -1421,10 +1515,8 @@ impl Brain {
                     "managed Tools require durable internal Tool-bundle custody".into(),
                 )
             })?;
+            let mut stored_layers = HashSet::new();
             for bundle in &decoded_bundles {
-                let object = bundle_storage
-                    .store_bundle(&session_id, &bundle.checksum, &bundle.bytes)
-                    .await?;
                 let descriptor = prefix
                     .managed_bundles
                     .iter()
@@ -1432,11 +1524,28 @@ impl Brain {
                     .ok_or_else(|| {
                         BrainError::Journal("stored Tool bundle has no immutable descriptor".into())
                     })?;
-                if !bundle_object_matches_descriptor(&object, descriptor)? {
-                    return Err(BrainError::Journal(
-                        "Tool-bundle storage returned an object outside the immutable descriptor"
-                            .into(),
-                    ));
+                for layer in &bundle.layers {
+                    if !stored_layers.insert(layer.checksum.clone()) {
+                        continue;
+                    }
+                    let object = bundle_storage
+                        .store_bundle(&session_id, &layer.checksum, &layer.bytes)
+                        .await?;
+                    let layer_descriptor = descriptor
+                        .layers
+                        .iter()
+                        .find(|candidate| candidate.digest.as_str() == layer.checksum)
+                        .ok_or_else(|| {
+                            BrainError::Journal(
+                                "stored Tool artifact layer has no immutable descriptor".into(),
+                            )
+                        })?;
+                    if !bundle_object_matches_descriptor(&object, layer_descriptor)? {
+                        return Err(BrainError::Journal(
+                            "Tool artifact storage returned an object outside the immutable descriptor"
+                                .into(),
+                        ));
+                    }
                 }
             }
         }
@@ -1499,6 +1608,8 @@ impl Brain {
             pending_customer_acks: Vec::new(),
             pending_managed_acks: Vec::new(),
             default_sandbox: Some(initial_default_sandbox(&session_id)?),
+            environment_targets: HashMap::new(),
+            tool_setups: HashMap::new(),
         };
         if let Err(error) = self
             .journal
@@ -5681,6 +5792,8 @@ async fn create_child_session(
         pending_customer_acks: Vec::new(),
         pending_managed_acks: Vec::new(),
         default_sandbox: None,
+        environment_targets: HashMap::new(),
+        tool_setups: HashMap::new(),
     };
     brain
         .journal

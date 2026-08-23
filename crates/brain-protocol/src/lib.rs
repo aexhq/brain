@@ -24,14 +24,14 @@ pub const MAX_MESSAGE_REQUEST_BYTES: usize = 192 * 1024;
 /// request ceiling; the 96-KiB external-executor input bound is a separate route.
 pub const MAX_MANAGED_TOOL_INPUT_BYTES: usize = 192 * 1024;
 
-/// Maximum UTF-8 JSON bytes accepted for `POST /v1/sessions`. This accommodates the sealed
-/// 16-MiB raw bundle aggregate after base64 expansion while retaining a hard allocation bound.
-pub const MAX_CREATE_SESSION_REQUEST_BYTES: usize = 24 * 1024 * 1024;
+/// Maximum UTF-8 JSON bytes accepted for `POST /v1/sessions`. This accommodates one shared
+/// runtime layer plus code layers after base64 expansion while retaining a hard allocation bound.
+pub const MAX_CREATE_SESSION_REQUEST_BYTES: usize = 144 * 1024 * 1024;
 
 /// Maximum decoded bytes in one immutable managed Tool bundle and across every bundle in one
 /// Session create. The request ceiling separately includes base64/JSON framing.
-pub const MAX_TOOL_BUNDLE_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_SESSION_BUNDLE_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_TOOL_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_SESSION_BUNDLE_BYTES: usize = 96 * 1024 * 1024;
 
 /// Managed-Tool session secret bounds. Names are restricted to the ASCII environment grammar,
 /// while the schema's 2,048-Unicode-scalar value bound needs 8 KiB of UTF-8 headroom. The whole

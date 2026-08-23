@@ -138,6 +138,16 @@ pub enum Record {
         call: String,
         request_digest: String,
     },
+    /// Closes a setup-phase managed operation without creating a model-visible result for the
+    /// synthetic setup operation id. `setup` is present only for ready or unknown setup state;
+    /// a known failure remains retryable and is represented by `None`.
+    ManagedSetupCompleted {
+        turn: String,
+        call: String,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        setup: Option<ToolSetupDoc>,
+    },
     /// Journaled BEFORE dispatch: an ambiguous outcome is recorded as possibly-run.
     ToolCall {
         turn: String,
@@ -360,6 +370,7 @@ impl Record {
             Record::ManagedCallIntent { .. } => "managed_call_intent",
             Record::ManagedCallAccepted { .. } => "managed_call_accepted",
             Record::ManagedCallUnknown { .. } => "managed_call_unknown",
+            Record::ManagedSetupCompleted { .. } => "managed_setup_completed",
             Record::ToolCall { .. } => "tool_call",
             Record::ToolResult { .. } => "tool_result",
             Record::CustomerTerminalReceived { .. } => "customer_terminal_received",

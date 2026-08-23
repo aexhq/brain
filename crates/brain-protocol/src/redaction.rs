@@ -51,7 +51,8 @@ redacted_debug!(crate::session::CreateSessionRequest, "CreateSessionRequest");
 redacted_debug!(crate::session::ModelConfigApiKey, "ModelConfigApiKey");
 redacted_debug!(crate::session::ModelConfig, "ModelConfig");
 redacted_debug!(
-    crate::session::ToolBundleContentBase64,
-    "ToolBundleContentBase64"
+    crate::session::ToolArtifactLayerContentBase64,
+    "ToolArtifactLayerContentBase64"
 );
+redacted_debug!(crate::session::ToolArtifactLayer, "ToolArtifactLayer");
 redacted_debug!(crate::session::ToolBundle, "ToolBundle");

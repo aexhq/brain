@@ -1834,6 +1834,154 @@ impl TurnRun {
         name: &str,
         input: serde_json::Value,
     ) -> Result<DispatchedOutcome> {
+        use brain_protocol::environment::{OperationEnvelopePhase, TerminalOutcome};
+
+        let binding = self.managed_bindings.get(name).ok_or_else(|| {
+            BrainError::EnvironmentUnavailable(format!(
+                "managed Tool {name} has no prepared immutable binding"
+            ))
+        })?;
+        let descriptor = st
+            .head
+            .prefix
+            .managed_bundles
+            .iter()
+            .find(|descriptor| descriptor.tool_name.as_str() == name);
+        let environment_name = binding.environment_name.clone();
+
+        if let Some(descriptor) = descriptor.filter(|descriptor| descriptor.setup_path.is_some()) {
+            let artifact_digest = descriptor.bundle_digest.to_string();
+            let current_generation = st
+                .head
+                .environment_targets
+                .get(&environment_name)
+                .and_then(running_environment_target)
+                .map(|(generation, _)| generation);
+            if let Some(setup) = st.head.tool_setups.get(name)
+                && setup.artifact_digest == artifact_digest
+                && setup.environment == environment_name
+                && (setup.generation.is_empty()
+                    || current_generation.as_deref() == Some(setup.generation.as_str()))
+            {
+                match setup.state {
+                    journal::ToolSetupState::Ready => {
+                        if current_generation.as_deref() == Some(setup.generation.as_str()) {
+                            return self
+                                .execute_managed_phase(
+                                    st,
+                                    operation_id,
+                                    name,
+                                    input,
+                                    OperationEnvelopePhase::Execute,
+                                )
+                                .await;
+                        }
+                    }
+                    journal::ToolSetupState::Unknown => {
+                        return Ok(DispatchedOutcome::from(CallOutcome::failed(format!(
+                            "managed Tool {name} setup may have run, but its terminal receipt is unavailable; it will not be replayed in this environment generation"
+                        ))));
+                    }
+                }
+            }
+
+            let setup_operation_id = format!("{operation_id}:setup");
+            let setup = self
+                .execute_managed_phase(
+                    st,
+                    &setup_operation_id,
+                    name,
+                    serde_json::json!({}),
+                    OperationEnvelopePhase::Setup,
+                )
+                .await?;
+            let generation = setup
+                .managed_terminal
+                .as_ref()
+                .map(|receipt| receipt.operation.generation.to_string())
+                .or_else(|| {
+                    st.head
+                        .environment_targets
+                        .get(&environment_name)
+                        .and_then(running_environment_target)
+                        .map(|(generation, _)| generation)
+                })
+                .unwrap_or_default();
+            if setup.outcome.outcome == TerminalOutcome::Interrupted {
+                let setup_doc = journal::ToolSetupDoc {
+                    artifact_digest,
+                    environment: environment_name,
+                    generation,
+                    state: journal::ToolSetupState::Unknown,
+                };
+                st.head
+                    .tool_setups
+                    .insert(name.to_owned(), setup_doc.clone());
+                self.commit(
+                    st,
+                    vec![(
+                        st.take_seq(),
+                        Record::ManagedSetupCompleted {
+                            turn: self.turn_id.clone(),
+                            call: setup_operation_id,
+                            name: name.to_owned(),
+                            setup: Some(setup_doc),
+                        },
+                    )],
+                )
+                .await?;
+                return Ok(setup);
+            }
+            if setup.outcome.outcome != TerminalOutcome::Completed || setup.outcome.is_error {
+                self.commit(
+                    st,
+                    vec![(
+                        st.take_seq(),
+                        Record::ManagedSetupCompleted {
+                            turn: self.turn_id.clone(),
+                            call: setup_operation_id,
+                            name: name.to_owned(),
+                            setup: None,
+                        },
+                    )],
+                )
+                .await?;
+                return Ok(setup);
+            }
+            let receipt = setup.managed_terminal.ok_or_else(|| {
+                BrainError::Protocol("successful managed Tool setup has no terminal receipt".into())
+            })?;
+            let setup_doc = journal::ToolSetupDoc {
+                artifact_digest,
+                environment: environment_name,
+                generation,
+                state: journal::ToolSetupState::Ready,
+            };
+            st.head
+                .tool_setups
+                .insert(name.to_owned(), setup_doc.clone());
+            self.persist_and_ack_setup_terminal(st, name, setup_operation_id, setup_doc, receipt)
+                .await?;
+        }
+
+        self.execute_managed_phase(
+            st,
+            operation_id,
+            name,
+            input,
+            OperationEnvelopePhase::Execute,
+        )
+        .await
+    }
+
+    async fn execute_managed_phase(
+        &self,
+        st: &mut TurnState,
+        operation_id: &str,
+        name: &str,
+        input: serde_json::Value,
+        phase: brain_protocol::environment::OperationEnvelopePhase,
+    ) -> Result<DispatchedOutcome> {
         use brain_protocol::environment::{
             EnvironmentErrorCode, OperationState, OutputChunkStream,
         };
@@ -1843,6 +1991,7 @@ impl TurnRun {
                 "managed Tool {name} has no prepared immutable binding"
             ))
         })?;
+        let environment_name = binding.environment_name.clone();
         let environment = &binding.environment;
         let binding = &binding.resolved;
         let input_bytes = serde_jcs::to_vec(&input)?.len();
@@ -1858,21 +2007,11 @@ impl TurnRun {
 
         let resources = crate::environment::managed_environment_resources()?;
         let deadline_at_ms = crate::wall_ms().saturating_add(resources.timeout_ms.get());
-        let current_target =
-            st.head
-                .default_sandbox
-                .as_ref()
-                .and_then(|status| match status.state {
-                    brain_protocol::environment::SandboxState::Running
-                    | brain_protocol::environment::SandboxState::Suspended => status
-                        .generation
-                        .as_ref()
-                        .zip(status.target_ref.as_ref())
-                        .map(|(generation, target_ref)| {
-                            (generation.to_string(), target_ref.to_string())
-                        }),
-                    _ => None,
-                });
+        let current_target = st
+            .head
+            .environment_targets
+            .get(&environment_name)
+            .and_then(running_environment_target);
         let mut envelope: brain_protocol::environment::OperationEnvelope =
             serde_json::from_value(serde_json::json!({
                 "operation_id": operation_id,
@@ -1886,7 +2025,7 @@ impl TurnRun {
                 "binding_ref": binding.binding_ref,
                 "capability": name,
                 "input": {"kind": "inline", "value": input},
-                "phase": "execute",
+                "phase": phase,
                 "target_ref": current_target.as_ref().map(|(_, target_ref)| target_ref),
                 "deadline_at_ms": deadline_at_ms,
                 "resources": resources,
@@ -1995,7 +2134,9 @@ impl TurnRun {
                     "changed_at_ms": crate::wall_ms(),
                     "expires_at_ms": target.expires_at_ms,
                 }))?;
-            st.head.default_sandbox = Some(status);
+            st.head
+                .environment_targets
+                .insert(environment_name.clone(), status);
         }
         self.commit(
             st,
@@ -2113,6 +2254,89 @@ impl TurnRun {
                 Err(error) => return Err(crate::environment::map_environment_port_error(error)),
             };
         }
+    }
+
+    async fn persist_and_ack_setup_terminal(
+        &self,
+        st: &mut TurnState,
+        name: &str,
+        call: String,
+        setup: journal::ToolSetupDoc,
+        receipt: ManagedTerminalReceipt,
+    ) -> Result<()> {
+        let pending = journal::ManagedTerminalAckDoc {
+            turn: self.turn_id.clone(),
+            call: receipt.operation.operation_id.to_string(),
+            operation: receipt.operation.clone(),
+            terminal_digest: receipt.terminal_digest.clone(),
+        };
+        st.head.pending_managed_acks.push(pending);
+        self.commit(
+            st,
+            vec![
+                (
+                    st.take_seq(),
+                    Record::ManagedSetupCompleted {
+                        turn: self.turn_id.clone(),
+                        call,
+                        name: name.to_owned(),
+                        setup: Some(setup),
+                    },
+                ),
+                (
+                    st.take_seq(),
+                    Record::ManagedTerminalReceived {
+                        turn: self.turn_id.clone(),
+                        call: receipt.operation.operation_id.to_string(),
+                        operation: receipt.operation.clone(),
+                        terminal_digest: receipt.terminal_digest.clone(),
+                    },
+                ),
+            ],
+        )
+        .await?;
+
+        let request = brain_protocol::environment::AcknowledgeTerminalRequest {
+            operation: receipt.operation.clone(),
+            terminal_digest: receipt
+                .terminal_digest
+                .parse()
+                .map_err(|error| BrainError::Protocol(format!("terminal digest: {error}")))?,
+        };
+        match receipt.environment.acknowledge_terminal(request).await {
+            Ok(ack) if ack.acknowledged => {
+                st.head.pending_managed_acks.retain(|pending| {
+                    pending.operation.operation_id != receipt.operation.operation_id
+                        || pending.operation.request_digest != receipt.operation.request_digest
+                        || pending.terminal_digest != receipt.terminal_digest
+                });
+                self.commit(
+                    st,
+                    vec![(
+                        st.take_seq(),
+                        Record::ManagedTerminalAcknowledged {
+                            turn: self.turn_id.clone(),
+                            call: receipt.operation.operation_id.to_string(),
+                            request_digest: receipt.operation.request_digest.to_string(),
+                            terminal_digest: receipt.terminal_digest,
+                        },
+                    )],
+                )
+                .await?;
+            }
+            Ok(_) => tracing::warn!(
+                session = %self.session_id,
+                operation = receipt.operation.operation_id.as_str(),
+                "managed setup terminal acknowledgement was not accepted"
+            ),
+            Err(error) => tracing::warn!(
+                session = %self.session_id,
+                operation = receipt.operation.operation_id.as_str(),
+                error = error.message.as_str(),
+                "managed setup terminal acknowledgement remains pending after durable commit"
+            ),
+        }
+        Ok(())
     }
 
     async fn finish_managed_submit_unknown(
@@ -2370,6 +2594,20 @@ impl TurnRun {
                 }
             })
             .collect())
+    }
+}
+
+fn running_environment_target(
+    status: &brain_protocol::environment::SandboxStatus,
+) -> Option<(String, String)> {
+    match status.state {
+        brain_protocol::environment::SandboxState::Running
+        | brain_protocol::environment::SandboxState::Suspended => status
+            .generation
+            .as_ref()
+            .zip(status.target_ref.as_ref())
+            .map(|(generation, target_ref)| (generation.to_string(), target_ref.to_string())),
+        _ => None,
     }
 }
 

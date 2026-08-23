@@ -1040,6 +1040,14 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[doc = "        \"pattern\": \"^[A-Za-z_][A-Za-z0-9_]{0,127}$\""]
 #[doc = "      }"]
 #[doc = "    },"]
+#[doc = "    \"tool_artifact_layers\": {"]
+#[doc = "      \"description\": \"Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles.\","]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"$ref\": \"#/$defs/ToolArtifactLayer\""]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 256"]
+#[doc = "    },"]
 #[doc = "    \"tool_bundles\": {"]
 #[doc = "      \"description\": \"Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal.\","]
 #[doc = "      \"writeOnly\": true,"]
@@ -1089,6 +1097,9 @@ pub struct CreateSessionRequest {
         CreateSessionRequestSecretsKey,
         CreateSessionRequestSecretsValue,
     >,
+    #[doc = "Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles."]
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub tool_artifact_layers: ::std::vec::Vec<ToolArtifactLayer>,
     #[doc = "Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal."]
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub tool_bundles: ::std::vec::Vec<ToolBundle>,
@@ -6433,26 +6444,24 @@ impl ::std::fmt::Display for Timestamp {
         self.0.fmt(f)
     }
 }
-#[doc = "Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation."]
+#[doc = "Create-time-only immutable artifact-layer bytes. Brain stages these outside the journal, then discards this representation."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation.\","]
+#[doc = "  \"description\": \"Create-time-only immutable artifact-layer bytes. Brain stages these outside the journal, then discards this representation.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"bytes\","]
 #[doc = "    \"checksum\","]
 #[doc = "    \"content_base64\","]
-#[doc = "    \"execute_path\","]
-#[doc = "    \"media_type\","]
-#[doc = "    \"target\""]
+#[doc = "    \"media_type\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"bytes\": {"]
 #[doc = "      \"type\": \"integer\","]
-#[doc = "      \"maximum\": 4194304.0,"]
+#[doc = "      \"maximum\": 67108864.0,"]
 #[doc = "      \"minimum\": 1.0"]
 #[doc = "    },"]
 #[doc = "    \"checksum\": {"]
@@ -6461,17 +6470,481 @@ impl ::std::fmt::Display for Timestamp {
 #[doc = "    \"content_base64\": {"]
 #[doc = "      \"writeOnly\": true,"]
 #[doc = "      \"type\": \"string\","]
-#[doc = "      \"maxLength\": 5592408,"]
+#[doc = "      \"maxLength\": 89478488,"]
 #[doc = "      \"contentEncoding\": \"base64\""]
+#[doc = "    },"]
+#[doc = "    \"media_type\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"application/javascript+esm\","]
+#[doc = "        \"application/x-xz\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ToolArtifactLayer {
+    pub bytes: ::std::num::NonZeroU64,
+    pub checksum: Sha256Hex,
+    pub content_base64: ToolArtifactLayerContentBase64,
+    pub media_type: ToolArtifactLayerMediaType,
+}
+#[doc = "`ToolArtifactLayerContentBase64`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"writeOnly\": true,"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 89478488,"]
+#[doc = "  \"contentEncoding\": \"base64\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ToolArtifactLayerContentBase64(::std::string::String);
+impl ::std::ops::Deref for ToolArtifactLayerContentBase64 {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ToolArtifactLayerContentBase64> for ::std::string::String {
+    fn from(value: ToolArtifactLayerContentBase64) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ToolArtifactLayerContentBase64 {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 89478488usize {
+            return Err("longer than 89478488 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolArtifactLayerContentBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolArtifactLayerContentBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolArtifactLayerContentBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ToolArtifactLayerContentBase64 {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ToolArtifactLayerMediaType`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"application/javascript+esm\","]
+#[doc = "    \"application/x-xz\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ToolArtifactLayerMediaType {
+    #[serde(rename = "application/javascript+esm")]
+    ApplicationJavascriptEsm,
+    #[serde(rename = "application/x-xz")]
+    ApplicationXXz,
+}
+impl ::std::fmt::Display for ToolArtifactLayerMediaType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ApplicationJavascriptEsm => f.write_str("application/javascript+esm"),
+            Self::ApplicationXXz => f.write_str("application/x-xz"),
+        }
+    }
+}
+impl ::std::str::FromStr for ToolArtifactLayerMediaType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "application/javascript+esm" => Ok(Self::ApplicationJavascriptEsm),
+            "application/x-xz" => Ok(Self::ApplicationXXz),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolArtifactLayerMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolArtifactLayerMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolArtifactLayerMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ToolArtifactLayerRef`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"bytes\","]
+#[doc = "    \"checksum\","]
+#[doc = "    \"media_type\","]
+#[doc = "    \"mount_path\","]
+#[doc = "    \"unpack\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"bytes\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 67108864.0,"]
+#[doc = "      \"minimum\": 1.0"]
+#[doc = "    },"]
+#[doc = "    \"checksum\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "    },"]
+#[doc = "    \"media_type\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"application/javascript+esm\","]
+#[doc = "        \"application/x-xz\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"mount_path\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 4096,"]
+#[doc = "      \"pattern\": \"^/[A-Za-z0-9._/-]+$\""]
+#[doc = "    },"]
+#[doc = "    \"unpack\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"file\","]
+#[doc = "        \"tar.xz\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ToolArtifactLayerRef {
+    pub bytes: ::std::num::NonZeroU64,
+    pub checksum: Sha256Hex,
+    pub media_type: ToolArtifactLayerRefMediaType,
+    pub mount_path: ToolArtifactLayerRefMountPath,
+    pub unpack: ToolArtifactLayerRefUnpack,
+}
+#[doc = "`ToolArtifactLayerRefMediaType`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"application/javascript+esm\","]
+#[doc = "    \"application/x-xz\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ToolArtifactLayerRefMediaType {
+    #[serde(rename = "application/javascript+esm")]
+    ApplicationJavascriptEsm,
+    #[serde(rename = "application/x-xz")]
+    ApplicationXXz,
+}
+impl ::std::fmt::Display for ToolArtifactLayerRefMediaType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ApplicationJavascriptEsm => f.write_str("application/javascript+esm"),
+            Self::ApplicationXXz => f.write_str("application/x-xz"),
+        }
+    }
+}
+impl ::std::str::FromStr for ToolArtifactLayerRefMediaType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "application/javascript+esm" => Ok(Self::ApplicationJavascriptEsm),
+            "application/x-xz" => Ok(Self::ApplicationXXz),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolArtifactLayerRefMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolArtifactLayerRefMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolArtifactLayerRefMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ToolArtifactLayerRefMountPath`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 4096,"]
+#[doc = "  \"pattern\": \"^/[A-Za-z0-9._/-]+$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ToolArtifactLayerRefMountPath(::std::string::String);
+impl ::std::ops::Deref for ToolArtifactLayerRefMountPath {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ToolArtifactLayerRefMountPath> for ::std::string::String {
+    fn from(value: ToolArtifactLayerRefMountPath) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ToolArtifactLayerRefMountPath {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 4096usize {
+            return Err("longer than 4096 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^/[A-Za-z0-9._/-]+$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^/[A-Za-z0-9._/-]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolArtifactLayerRefMountPath {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolArtifactLayerRefMountPath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolArtifactLayerRefMountPath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ToolArtifactLayerRefMountPath {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ToolArtifactLayerRefUnpack`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"file\","]
+#[doc = "    \"tar.xz\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ToolArtifactLayerRefUnpack {
+    #[serde(rename = "file")]
+    File,
+    #[serde(rename = "tar.xz")]
+    TarXz,
+}
+impl ::std::fmt::Display for ToolArtifactLayerRefUnpack {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::File => f.write_str("file"),
+            Self::TarXz => f.write_str("tar.xz"),
+        }
+    }
+}
+impl ::std::str::FromStr for ToolArtifactLayerRefUnpack {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "file" => Ok(Self::File),
+            "tar.xz" => Ok(Self::TarXz),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolArtifactLayerRefUnpack {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolArtifactLayerRefUnpack {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolArtifactLayerRefUnpack {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "A canonical computer-profile manifest plus create-time-only immutable runtime and code layers."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"A canonical computer-profile manifest plus create-time-only immutable runtime and code layers.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"bytes\","]
+#[doc = "    \"checksum\","]
+#[doc = "    \"execute_path\","]
+#[doc = "    \"layers\","]
+#[doc = "    \"target\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"bytes\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 100663296.0,"]
+#[doc = "      \"minimum\": 1.0"]
+#[doc = "    },"]
+#[doc = "    \"checksum\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
 #[doc = "    },"]
 #[doc = "    \"execute_path\": {"]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"maxLength\": 4096,"]
 #[doc = "      \"pattern\": \"^/[^\\\\u0000]+$\""]
 #[doc = "    },"]
-#[doc = "    \"media_type\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"const\": \"application/javascript+esm\""]
+#[doc = "    \"layers\": {"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"$ref\": \"#/$defs/ToolArtifactLayerRef\""]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 16,"]
+#[doc = "      \"minItems\": 1"]
 #[doc = "    },"]
 #[doc = "    \"setup_path\": {"]
 #[doc = "      \"type\": ["]
@@ -6498,82 +6971,11 @@ impl ::std::fmt::Display for Timestamp {
 pub struct ToolBundle {
     pub bytes: ::std::num::NonZeroU64,
     pub checksum: Sha256Hex,
-    pub content_base64: ToolBundleContentBase64,
     pub execute_path: ToolBundleExecutePath,
-    pub media_type: ::std::string::String,
+    pub layers: ::std::vec::Vec<ToolArtifactLayerRef>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub setup_path: ::std::option::Option<ToolBundleSetupPath>,
     pub target: ToolBundleTarget,
-}
-#[doc = "`ToolBundleContentBase64`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"writeOnly\": true,"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 5592408,"]
-#[doc = "  \"contentEncoding\": \"base64\""]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct ToolBundleContentBase64(::std::string::String);
-impl ::std::ops::Deref for ToolBundleContentBase64 {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<ToolBundleContentBase64> for ::std::string::String {
-    fn from(value: ToolBundleContentBase64) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for ToolBundleContentBase64 {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 5592408usize {
-            return Err("longer than 5592408 characters".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for ToolBundleContentBase64 {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for ToolBundleContentBase64 {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for ToolBundleContentBase64 {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for ToolBundleContentBase64 {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
 }
 #[doc = "`ToolBundleExecutePath`"]
 #[doc = r""]

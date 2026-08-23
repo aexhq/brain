@@ -89,6 +89,7 @@ impl EnvironmentRegistry {
 
 #[derive(Clone)]
 pub struct ManagedBinding {
+    pub environment_name: String,
     pub resolved: ResolvedBinding,
     pub environment: Arc<dyn EnvironmentPort>,
 }

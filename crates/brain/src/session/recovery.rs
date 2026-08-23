@@ -316,6 +316,9 @@ pub(super) fn pending_managed(entries: &[Entry]) -> Result<Vec<PendingManaged>> 
                 }
                 item.submit_unknown = true;
             }
+            Record::ManagedSetupCompleted { call, .. } => {
+                pending.remove(call);
+            }
             Record::ToolResult { call, .. } => {
                 pending.remove(call);
             }
@@ -582,7 +585,8 @@ pub(super) async fn recover_managed_calls(
         return Ok(true);
     }
 
-    'managed_calls: for call in pending {
+    let mut pending = std::collections::VecDeque::from(pending);
+    'managed_calls: while let Some(mut call) = pending.pop_front() {
         let recovered_binding = resident.managed_bindings.get(&call.name);
         let environment = recovered_binding
             .map(|binding| &binding.environment)
@@ -718,6 +722,18 @@ pub(super) async fn recover_managed_calls(
                             &mut resident.st,
                         )
                         .await?;
+                        if call.envelope.phase
+                            == brain_protocol::environment::OperationEnvelopePhase::Setup
+                        {
+                            close_unknown_setup(
+                                brain,
+                                session_id,
+                                &mut resident.st,
+                                recovered_binding,
+                                &mut call,
+                            )
+                            .await?;
+                        }
                         recovered.push((
                             call.clone(),
                             None,
@@ -743,10 +759,13 @@ pub(super) async fn recover_managed_calls(
 
         if accepted_now {
             if let Some(target) = &observation.target {
-                resident.st.head.default_sandbox = Some(managed_operation_running_status(
-                    &operation,
-                    target.expires_at_ms,
-                )?);
+                let environment_name = recovered_binding
+                    .map(|binding| binding.environment_name.clone())
+                    .unwrap_or_else(|| "default".into());
+                resident.st.head.environment_targets.insert(
+                    environment_name,
+                    managed_operation_running_status(&operation, target.expires_at_ms)?,
+                );
             }
             let accepted = vec![(
                 resident.st.take_seq(),
@@ -780,6 +799,18 @@ pub(super) async fn recover_managed_calls(
                     commit(brain, session_id, &mut resident.st, unknown).await?;
                     reconcile_managed_unknown_default_sandbox(brain, session_id, &mut resident.st)
                         .await?;
+                    if call.envelope.phase
+                        == brain_protocol::environment::OperationEnvelopePhase::Setup
+                    {
+                        close_unknown_setup(
+                            brain,
+                            session_id,
+                            &mut resident.st,
+                            recovered_binding,
+                            &mut call,
+                        )
+                        .await?;
+                    }
                     recovered.push((
                         call.clone(),
                         Some(operation),
@@ -878,6 +909,136 @@ pub(super) async fn recover_managed_calls(
             )
         })?;
         let (outcome, terminal_digest) = crate::turn::managed_terminal_call_outcome(terminal)?;
+        if call.envelope.phase == brain_protocol::environment::OperationEnvelopePhase::Setup {
+            let original_call = call.call.strip_suffix(":setup").ok_or_else(|| {
+                BrainError::Journal("setup operation id has no :setup suffix".into())
+            })?;
+            let descriptor = resident
+                .st
+                .head
+                .prefix
+                .managed_bundles
+                .iter()
+                .find(|descriptor| descriptor.tool_name.as_str() == call.name)
+                .ok_or_else(|| {
+                    BrainError::Journal("setup operation has no artifact descriptor".into())
+                })?;
+            let mut setup = None;
+            if outcome.outcome == TerminalOutcome::Completed && !outcome.is_error {
+                let environment_name = recovered_binding
+                    .map(|binding| binding.environment_name.clone())
+                    .ok_or_else(|| {
+                        BrainError::Journal("setup operation has no logical environment".into())
+                    })?;
+                let ready = crate::journal::ToolSetupDoc {
+                    artifact_digest: descriptor.bundle_digest.to_string(),
+                    environment: environment_name,
+                    generation: operation.generation.to_string(),
+                    state: crate::journal::ToolSetupState::Ready,
+                };
+                resident
+                    .st
+                    .head
+                    .tool_setups
+                    .insert(call.name.clone(), ready.clone());
+                setup = Some(ready);
+            }
+            let ack = crate::journal::ManagedTerminalAckDoc {
+                turn: call.turn.clone(),
+                call: call.call.clone(),
+                operation: operation.clone(),
+                terminal_digest: terminal_digest.clone(),
+            };
+            resident.st.head.pending_managed_acks.push(ack);
+            let mut setup_records = vec![
+                (
+                    resident.st.take_seq(),
+                    Record::ManagedSetupCompleted {
+                        turn: call.turn.clone(),
+                        call: call.call.clone(),
+                        name: call.name.clone(),
+                        setup,
+                    },
+                ),
+                (
+                    resident.st.take_seq(),
+                    Record::ManagedTerminalReceived {
+                        turn: call.turn.clone(),
+                        call: call.call.clone(),
+                        operation: operation.clone(),
+                        terminal_digest: terminal_digest.clone(),
+                    },
+                ),
+            ];
+            if outcome.outcome == TerminalOutcome::Completed && !outcome.is_error {
+                let input = entries
+                    .iter()
+                    .find_map(|entry| match &entry.record {
+                        Record::ToolCall {
+                            turn,
+                            call: tool_call,
+                            name,
+                            input,
+                            ..
+                        } if turn == &call.turn
+                            && tool_call.as_str() == original_call
+                            && name == &call.name =>
+                        {
+                            Some(input.clone())
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        BrainError::Journal("setup operation has no original ToolCall".into())
+                    })?;
+                let mut envelope = call.envelope.clone();
+                envelope.operation_id = original_call.parse().map_err(|error| {
+                    BrainError::Journal(format!("original managed operation id: {error}"))
+                })?;
+                envelope.input = serde_json::from_value(serde_json::json!({
+                    "kind":"inline",
+                    "value":input,
+                }))?;
+                envelope.phase = brain_protocol::environment::OperationEnvelopePhase::Execute;
+                envelope.generation =
+                    Some(operation.generation.to_string().parse().map_err(|error| {
+                        BrainError::Journal(format!("managed generation: {error}"))
+                    })?);
+                envelope.target_ref =
+                    Some(operation.target_ref.to_string().parse().map_err(|error| {
+                        BrainError::Journal(format!("managed target ref: {error}"))
+                    })?);
+                envelope.request_digest = "0".repeat(64).parse().map_err(|error| {
+                    BrainError::Journal(format!("managed request digest: {error}"))
+                })?;
+                envelope.request_digest =
+                    brain_protocol::contract::operation_request_digest(&envelope);
+                setup_records.push((
+                    resident.st.take_seq(),
+                    Record::ManagedCallIntent {
+                        turn: call.turn.clone(),
+                        call: original_call.to_owned(),
+                        name: call.name.clone(),
+                        envelope: envelope.clone(),
+                    },
+                ));
+                commit(brain, session_id, &mut resident.st, setup_records).await?;
+                pending.push_front(PendingManaged {
+                    seq: resident.st.head.last_seq,
+                    turn: call.turn,
+                    call: original_call.to_owned(),
+                    name: call.name,
+                    envelope,
+                    operation: None,
+                    submit_unknown: false,
+                });
+                continue 'managed_calls;
+            }
+            commit(brain, session_id, &mut resident.st, setup_records).await?;
+            call.call = original_call.to_owned();
+            recovered.push((call, Some(operation), outcome, None));
+            continue 'managed_calls;
+        }
         recovered.push((call, Some(operation), outcome, Some(terminal_digest)));
     }
 
@@ -933,7 +1094,7 @@ pub(super) async fn recover_managed_calls(
                     turn: call.turn.clone(),
                     call: call.call.clone(),
                     operation,
-                    terminal_digest,
+                    terminal_digest: terminal_digest.clone(),
                 },
             ));
         }
@@ -1024,6 +1185,56 @@ pub(super) async fn recover_managed_calls(
     commit(brain, session_id, &mut resident.st, records).await?;
     let _ = recover_managed_terminal_acks(brain, session_id, resident).await;
     Ok(true)
+}
+
+async fn close_unknown_setup(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    st: &mut TurnState,
+    binding: Option<&crate::environment::ManagedBinding>,
+    call: &mut PendingManaged,
+) -> Result<()> {
+    let original_call = call
+        .call
+        .strip_suffix(":setup")
+        .ok_or_else(|| BrainError::Journal("setup operation id has no :setup suffix".into()))?
+        .to_owned();
+    let descriptor = st
+        .head
+        .prefix
+        .managed_bundles
+        .iter()
+        .find(|descriptor| descriptor.tool_name.as_str() == call.name)
+        .ok_or_else(|| BrainError::Journal("setup operation has no artifact descriptor".into()))?;
+    let environment = binding
+        .map(|binding| binding.environment_name.clone())
+        .ok_or_else(|| BrainError::Journal("setup operation has no logical environment".into()))?;
+    let generation = st
+        .head
+        .environment_targets
+        .get(&environment)
+        .and_then(|status| status.generation.as_ref())
+        .map(|generation| generation.to_string())
+        .unwrap_or_default();
+    let setup = crate::journal::ToolSetupDoc {
+        artifact_digest: descriptor.bundle_digest.to_string(),
+        environment,
+        generation,
+        state: crate::journal::ToolSetupState::Unknown,
+    };
+    st.head.tool_setups.insert(call.name.clone(), setup.clone());
+    let record = vec![(
+        st.take_seq(),
+        Record::ManagedSetupCompleted {
+            turn: call.turn.clone(),
+            call: call.call.clone(),
+            name: call.name.clone(),
+            setup: Some(setup),
+        },
+    )];
+    commit(brain, session_id, st, record).await?;
+    call.call = original_call;
+    Ok(())
 }
 
 /// Reconcile the rooted default target after Environment reports that Submit may have reached the guest

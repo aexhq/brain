@@ -373,6 +373,8 @@ fn head_doc_round_trips() {
         pending_customer_acks: vec![],
         pending_managed_acks: vec![],
         default_sandbox: None,
+        environment_targets: HashMap::new(),
+        tool_setups: HashMap::new(),
     };
     let s = serde_json::to_string(&doc).unwrap();
     let back: HeadDoc = serde_json::from_str(&s).unwrap();
@@ -458,6 +460,8 @@ fn head_doc() -> HeadDoc {
         pending_customer_acks: vec![],
         pending_managed_acks: vec![],
         default_sandbox: None,
+        environment_targets: HashMap::new(),
+        tool_setups: HashMap::new(),
     }
 }
 

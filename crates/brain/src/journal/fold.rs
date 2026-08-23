@@ -95,6 +95,7 @@ impl Fold {
             | Record::ManagedCallIntent { .. }
             | Record::ManagedCallAccepted { .. }
             | Record::ManagedCallUnknown { .. }
+            | Record::ManagedSetupCompleted { .. }
             | Record::CustomerTerminalReceived { .. }
             | Record::CustomerTerminalAcknowledged { .. }
             | Record::ManagedTerminalReceived { .. }

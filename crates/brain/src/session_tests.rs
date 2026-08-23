@@ -3356,6 +3356,7 @@ async fn assert_managed_submit_unknown_recovery(cancellation_requested: bool) {
     resident.managed_bindings = Arc::new(HashMap::from([(
         name.clone(),
         crate::environment::ManagedBinding {
+            environment_name: "default".into(),
             resolved: binding,
             environment: brain.environment.clone().expect("managed Environment"),
         },
@@ -3790,15 +3791,22 @@ async fn deleting_managed_session_hydrates_without_repreparing_environment_defin
             "bundle_digest":bundle_digest,
             "bytes":1,
             "contract_digest":"b".repeat(64),
-            "object":{
+            "layers":[{
+                "digest":bundle_digest,
                 "bytes":1,
                 "media_type":"application/javascript+esm",
-                "object_id":format!("bundle_{bundle_digest}"),
-                "sha256":bundle_digest,
-            },
+                "mount_path":"/tool/runtime.mjs",
+                "unpack":"file",
+                "object":{
+                    "bytes":1,
+                    "media_type":"application/javascript+esm",
+                    "object_id":format!("bundle_{bundle_digest}"),
+                    "sha256":bundle_digest,
+                },
+            }],
             "required_env":[],
             "target":"linux-amd64",
-            "execute_path":format!("/artifacts/{bundle_digest}/execute"),
+            "execute_path":"/tool/runtime.mjs",
             "setup_path":null,
             "environment_name":"workspace",
             "tool_name":"managed_delete_test",
@@ -5884,6 +5892,7 @@ async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
     resident.managed_bindings = Arc::new(HashMap::from([(
         name,
         crate::environment::ManagedBinding {
+            environment_name: "default".into(),
             resolved: binding,
             environment: brain.environment.clone().expect("managed Environment"),
         },
@@ -6032,6 +6041,7 @@ async fn a_cancelled_submit_concludes_before_sandbox_reconciliation() {
     resident.managed_bindings = Arc::new(HashMap::from([(
         name,
         crate::environment::ManagedBinding {
+            environment_name: "default".into(),
             resolved: binding,
             environment: brain.environment.clone().expect("managed Environment"),
         },

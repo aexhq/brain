@@ -342,6 +342,12 @@ pub struct HeadDoc {
     /// address this same target through `root_id`; they do not get a second default sandbox.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_sandbox: Option<brain_protocol::environment::SandboxStatus>,
+    /// Last rooted target observed for each logical environment binding.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub environment_targets: HashMap<String, brain_protocol::environment::SandboxStatus>,
+    /// Durable first-load setup result for each managed Tool artifact.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tool_setups: HashMap<String, ToolSetupDoc>,
     /// Present iff the session has ever committed a loop record. Its presence gates the
     /// loop-state journal fold at rehydration, so sessions that never used loop state pay no
     /// extra read. The kv map itself lives in records, never here (it can reach 512 KiB).
@@ -397,7 +403,27 @@ pub struct ControlDoc {
     #[serde(default)]
     pub default_sandbox: Option<brain_protocol::environment::SandboxStatus>,
     #[serde(default)]
+    pub environment_targets: HashMap<String, brain_protocol::environment::SandboxStatus>,
+    #[serde(default)]
+    pub tool_setups: HashMap<String, ToolSetupDoc>,
+    #[serde(default)]
     pub loop_state: Option<LoopStateDoc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolSetupDoc {
+    pub artifact_digest: String,
+    pub environment: String,
+    pub generation: String,
+    pub state: ToolSetupState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSetupState {
+    Ready,
+    Unknown,
 }
 
 /// Immutable create-time material, stored once as `CONFIG` and content-addressed by its digest.
@@ -516,6 +542,8 @@ impl HeadDoc {
             pending_customer_acks,
             pending_managed_acks,
             default_sandbox,
+            environment_targets,
+            tool_setups,
             loop_state,
             root_id: _,
             parent_id: _,
@@ -557,6 +585,8 @@ impl HeadDoc {
             pending_customer_acks: pending_customer_acks.clone(),
             pending_managed_acks: pending_managed_acks.clone(),
             default_sandbox: default_sandbox.clone(),
+            environment_targets: environment_targets.clone(),
+            tool_setups: tool_setups.clone(),
             loop_state: *loop_state,
         }
     }
@@ -603,6 +633,8 @@ impl HeadDoc {
             pending_customer_acks: _,
             pending_managed_acks: _,
             default_sandbox: _,
+            environment_targets: _,
+            tool_setups: _,
             loop_state: _,
         } = self;
         ConfigDoc {
@@ -653,6 +685,8 @@ impl HeadDoc {
             pending_customer_acks,
             pending_managed_acks,
             default_sandbox,
+            environment_targets,
+            tool_setups,
             loop_state,
         } = control;
         let ConfigDoc {
@@ -696,6 +730,8 @@ impl HeadDoc {
             pending_customer_acks,
             pending_managed_acks,
             default_sandbox,
+            environment_targets,
+            tool_setups,
             loop_state,
             root_id,
             parent_id,

@@ -324,18 +324,16 @@ fn credential_debug_is_redacted_without_changing_wire_serialization() {
     assert_eq!(serialized["model"]["api_key"], API_SECRET);
     assert_eq!(serialized["secrets"]["TOKEN"], ENV_SECRET);
 
-    let bundle: session::ToolBundle = serde_json::from_value(serde_json::json!({
+    let layer: session::ToolArtifactLayer = serde_json::from_value(serde_json::json!({
         "bytes": 21,
         "checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "content_base64": BUNDLE_SECRET,
         "media_type": "application/javascript+esm",
-        "target": "linux-arm64",
-        "execute_path": "/artifacts/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/execute",
     }))
     .unwrap();
-    assert!(!format!("{bundle:?}").contains(BUNDLE_SECRET));
+    assert!(!format!("{layer:?}").contains(BUNDLE_SECRET));
     assert_eq!(
-        serde_json::to_value(&bundle).unwrap()["content_base64"],
+        serde_json::to_value(&layer).unwrap()["content_base64"],
         BUNDLE_SECRET
     );
 

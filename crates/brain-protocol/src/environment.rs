@@ -82,6 +82,285 @@ pub struct AcknowledgeTerminalRequest {
 pub struct Acknowledgement {
     pub acknowledged: bool,
 }
+#[doc = "`ArtifactLayerDescriptor`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"bytes\","]
+#[doc = "    \"digest\","]
+#[doc = "    \"media_type\","]
+#[doc = "    \"mount_path\","]
+#[doc = "    \"object\","]
+#[doc = "    \"unpack\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"bytes\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 67108864.0,"]
+#[doc = "      \"minimum\": 1.0"]
+#[doc = "    },"]
+#[doc = "    \"digest\": {"]
+#[doc = "      \"$ref\": \"#/definitions/Digest\""]
+#[doc = "    },"]
+#[doc = "    \"media_type\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"application/javascript+esm\","]
+#[doc = "        \"application/x-xz\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"mount_path\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 4096,"]
+#[doc = "      \"pattern\": \"^/[A-Za-z0-9._/-]+$\""]
+#[doc = "    },"]
+#[doc = "    \"object\": {"]
+#[doc = "      \"$ref\": \"#/definitions/ObjectReference\""]
+#[doc = "    },"]
+#[doc = "    \"unpack\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"file\","]
+#[doc = "        \"tar.xz\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactLayerDescriptor {
+    pub bytes: ::std::num::NonZeroU64,
+    pub digest: Digest,
+    pub media_type: ArtifactLayerDescriptorMediaType,
+    pub mount_path: ArtifactLayerDescriptorMountPath,
+    pub object: ObjectReference,
+    pub unpack: ArtifactLayerDescriptorUnpack,
+}
+#[doc = "`ArtifactLayerDescriptorMediaType`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"application/javascript+esm\","]
+#[doc = "    \"application/x-xz\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ArtifactLayerDescriptorMediaType {
+    #[serde(rename = "application/javascript+esm")]
+    ApplicationJavascriptEsm,
+    #[serde(rename = "application/x-xz")]
+    ApplicationXXz,
+}
+impl ::std::fmt::Display for ArtifactLayerDescriptorMediaType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ApplicationJavascriptEsm => f.write_str("application/javascript+esm"),
+            Self::ApplicationXXz => f.write_str("application/x-xz"),
+        }
+    }
+}
+impl ::std::str::FromStr for ArtifactLayerDescriptorMediaType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "application/javascript+esm" => Ok(Self::ApplicationJavascriptEsm),
+            "application/x-xz" => Ok(Self::ApplicationXXz),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ArtifactLayerDescriptorMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ArtifactLayerDescriptorMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ArtifactLayerDescriptorMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ArtifactLayerDescriptorMountPath`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 4096,"]
+#[doc = "  \"pattern\": \"^/[A-Za-z0-9._/-]+$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ArtifactLayerDescriptorMountPath(::std::string::String);
+impl ::std::ops::Deref for ArtifactLayerDescriptorMountPath {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ArtifactLayerDescriptorMountPath> for ::std::string::String {
+    fn from(value: ArtifactLayerDescriptorMountPath) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ArtifactLayerDescriptorMountPath {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 4096usize {
+            return Err("longer than 4096 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^/[A-Za-z0-9._/-]+$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^/[A-Za-z0-9._/-]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ArtifactLayerDescriptorMountPath {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ArtifactLayerDescriptorMountPath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ArtifactLayerDescriptorMountPath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ArtifactLayerDescriptorMountPath {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ArtifactLayerDescriptorUnpack`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"file\","]
+#[doc = "    \"tar.xz\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ArtifactLayerDescriptorUnpack {
+    #[serde(rename = "file")]
+    File,
+    #[serde(rename = "tar.xz")]
+    TarXz,
+}
+impl ::std::fmt::Display for ArtifactLayerDescriptorUnpack {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::File => f.write_str("file"),
+            Self::TarXz => f.write_str("tar.xz"),
+        }
+    }
+}
+impl ::std::str::FromStr for ArtifactLayerDescriptorUnpack {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "file" => Ok(Self::File),
+            "tar.xz" => Ok(Self::TarXz),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ArtifactLayerDescriptorUnpack {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ArtifactLayerDescriptorUnpack {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ArtifactLayerDescriptorUnpack {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
 #[doc = "`ArtifactTarget`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -239,7 +518,7 @@ pub struct BrainEnvironmentContractContract {
 #[doc = "    \"contract_digest\","]
 #[doc = "    \"environment_name\","]
 #[doc = "    \"execute_path\","]
-#[doc = "    \"object\","]
+#[doc = "    \"layers\","]
 #[doc = "    \"required_env\","]
 #[doc = "    \"target\","]
 #[doc = "    \"tool_name\""]
@@ -270,8 +549,13 @@ pub struct BrainEnvironmentContractContract {
 #[doc = "      \"maxLength\": 4096,"]
 #[doc = "      \"pattern\": \"^/[^\\\\u0000]+$\""]
 #[doc = "    },"]
-#[doc = "    \"object\": {"]
-#[doc = "      \"$ref\": \"#/definitions/ObjectReference\""]
+#[doc = "    \"layers\": {"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"$ref\": \"#/definitions/ArtifactLayerDescriptor\""]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 16,"]
+#[doc = "      \"minItems\": 1"]
 #[doc = "    },"]
 #[doc = "    \"required_env\": {"]
 #[doc = "      \"type\": \"array\","]
@@ -310,7 +594,7 @@ pub struct BundleDescriptor {
     pub description: ::std::option::Option<BundleDescriptorDescription>,
     pub environment_name: Identifier,
     pub execute_path: BundleDescriptorExecutePath,
-    pub object: ObjectReference,
+    pub layers: ::std::vec::Vec<ArtifactLayerDescriptor>,
     pub required_env: Vec<Identifier>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub setup_path: ::std::option::Option<BundleDescriptorSetupPath>,

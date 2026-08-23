@@ -332,6 +332,7 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
         | Record::ManagedCallIntent { .. }
         | Record::ManagedCallAccepted { .. }
         | Record::ManagedCallUnknown { .. }
+        | Record::ManagedSetupCompleted { .. }
         | Record::CustomerTerminalReceived { .. }
         | Record::CustomerTerminalAcknowledged { .. }
         | Record::ManagedTerminalReceived { .. }

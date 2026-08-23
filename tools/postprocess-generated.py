@@ -38,7 +38,8 @@ TARGETS = {
         "ModelConfig": 1,
         "ModelConfigApiKey": 1,
         "ToolBundle": 1,
-        "ToolBundleContentBase64": 1,
+        "ToolArtifactLayer": 1,
+        "ToolArtifactLayerContentBase64": 1,
     },
 }
 
