@@ -2242,12 +2242,21 @@ fn prefix_rebuild_is_deterministic() {
                     "input_schema":{"type":"object"},
                     "output_schema":{"type":"string"}
                 },
-                "executor":{"kind":"engine", "capability":"brain.subagents"}
+                "executor":{"kind":"engine", "capability":"brain.test.delegate"}
             }
         ])).unwrap(),
         environments: HashMap::new(),
         managed_bundles: vec![],
-        official_capabilities: HashMap::new(),
+        official_capabilities: HashMap::from([(
+            "brain.test.delegate".into(),
+            crate::config::ServerToolPolicy {
+                capability: "brain.test.delegate".into(),
+                scope: brain_protocol::session::ExternalToolScope::All,
+                completion: brain_protocol::session::ExternalToolCompletion::Continue,
+                effect: brain_protocol::session::ExternalToolEffect::ReplaySafe,
+                max_input_bytes: 1024,
+            },
+        )]),
         environment_enabled: true,
         shape: "1gb".into(),
         sync_interval_seconds: 600,
@@ -2377,7 +2386,7 @@ fn pending_volatile_scan_routes_by_the_seal() {
                     "contract_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "input_schema":{"type":"object"}, "output_schema":{"type":"string"}
                 },
-                "executor":{"kind":"engine", "capability":"brain.subagents"}
+                "executor":{"kind":"engine", "capability":"brain.test.delegate"}
             },
             {
                 "definition": {
@@ -4577,92 +4586,6 @@ async fn run_one_turn(brain: &Arc<Brain>, journal: &Journal, session_id: &str) {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     panic!("the turn never reached a terminal");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_spawned_child_whose_first_turn_spawns_again_never_deadlocks() {
-    // The r4 dev wedge: a child session starts with its first turn already active, and
-    // that turn is driven during actor hydration. When the child's model answered with a
-    // subagents spawn, the intrinsic delivered a command to the child's own actor — which
-    // was busy driving the turn — and the tree deadlocked; END then queued forever behind
-    // it. The spawn intrinsic now creates the grandchild directly, no self-delivery.
-    let journal = Journal::new_memory("brain-child-self-spawn");
-    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
-    fake.script([
-        // Only the child's turn consumes scripts: round one spawns a grandchild with a
-        // mid-turn fork of the child itself, round two answers.
-        Scripted::tool(
-            "subagents",
-            json!({
-                "action": "spawn_agent", "task_name": "grandchild", "message": "grand prompt",
-                "fork_turns": "1"
-            }),
-        ),
-        Scripted::Text("child done".into()),
-        Scripted::Text("grandchild done".into()),
-    ]);
-    let provider = fake.clone();
-    let brain = Brain::with_parts_and_services(
-        BrainConfig {
-            idle_discard: Duration::from_secs(300),
-            ..BrainConfig::default()
-        },
-        journal.clone(),
-        Arc::new(crate::keys::PlainCustody),
-        Arc::new(crate::adapter::DisabledToolExecutor),
-        BrainServices::default(),
-        Arc::new(move |_| provider.clone() as Arc<dyn Provider>),
-    );
-    let created = brain
-        .create_session(
-            typed_create_result(json!({
-                "model": {"provider":"anthropic","name":"m","api_key":"sk-test"},
-                "tools": {"items": [{
-                    "definition": {
-                        "name":"subagents", "description":"children",
-                        "contract_digest": "d".repeat(64),
-                        "input_schema": {"type":"object","additionalProperties":true},
-                        "output_schema": {"type":"object","additionalProperties":true}
-                    },
-                    "executor": {"kind":"engine", "capability":"brain.subagents"}
-                }]}
-            }))
-            .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    let root_id = created.id.to_string();
-    let child = brain
-        .create_child(&root_id, "run".into(), Some("child".into()), None, None)
-        .await
-        .unwrap();
-    let child_id = serde_json::to_value(&child).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let settled = tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let head = journal.get_head(&child_id).await.unwrap();
-            if head.doc.turn.is_none() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await;
-    assert!(
-        settled.is_ok(),
-        "the child's first turn deadlocked on its own spawn delivery"
-    );
-    let (grandchildren, _) = brain.list_children(&child_id, None, 10).await.unwrap();
-    assert_eq!(grandchildren.len(), 1, "the grandchild exists");
-    let records = journal.read_records(&child_id, 0).await.unwrap();
-    let failure = records.iter().find_map(|entry| match &entry.record {
-        Record::TurnFailed { code, message, .. } => Some(format!("{code}: {message}")),
-        _ => None,
-    });
-    assert!(failure.is_none(), "child turn failed: {}", failure.unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

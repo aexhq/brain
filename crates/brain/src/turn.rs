@@ -133,14 +133,6 @@ pub trait EngineServices: Send + Sync {
         doc: &HeadDoc,
     ) -> Result<Arc<std::collections::HashMap<String, crate::environment::ManagedBinding>>>;
 
-    async fn execute_child_capability(
-        self: Arc<Self>,
-        parent_id: &str,
-        operation_id: &str,
-        input: serde_json::Value,
-        cancel: CancellationToken,
-    ) -> CallOutcome;
-
     async fn reconcile_managed_unknown_environment(
         self: Arc<Self>,
         session_id: &str,
@@ -2414,25 +2406,6 @@ impl TurnRun {
                                 &name,
                             ))),
                         )
-                    });
-                }
-                Some(ToolRoute::Intrinsic(capability)) if capability == "brain.subagents" => {
-                    let brain = self.engine.clone();
-                    let parent_id = self.session_id.clone();
-                    let cancel = self.cancel.clone();
-                    join.spawn(async move {
-                        let _permit = permit.acquire_owned().await;
-                        let outcome = match brain.upgrade() {
-                            Some(brain) => {
-                                brain
-                                    .execute_child_capability(&parent_id, &op_id, input, cancel)
-                                    .await
-                            }
-                            None => CallOutcome::failed(
-                                "ordinary child-session coordinator is unavailable",
-                            ),
-                        };
-                        (idx, DispatchedOutcome::from(outcome))
                     });
                 }
                 Some(ToolRoute::Intrinsic(capability)) => {

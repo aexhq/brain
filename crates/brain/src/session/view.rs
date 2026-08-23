@@ -93,9 +93,7 @@ pub fn build_prefix(
     }
     let mut decls = crate::tools::resolve(&p.tools)?;
     for decl in &mut decls {
-        if let crate::config::ToolRoute::Intrinsic(capability) = &decl.route
-            && !crate::tools::is_direct_engine_capability(capability)
-        {
+        if let crate::config::ToolRoute::Intrinsic(capability) = &decl.route {
             let policy = p
                 .official_capabilities
                 .get(capability)

@@ -9,6 +9,7 @@ use brain::journal::Journal;
 use brain::provider::fake::{FakeProvider, Scripted};
 use brain::session::{Brain, BrainConfig, BrainServices};
 use brain_loophost::remote::{RemoteAgentloop, SpawnedLoopHost, WireClient};
+use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
 use serde_json::{Value, json};
 
 fn guest_dir() -> PathBuf {
@@ -151,23 +152,58 @@ struct TestBrain {
     http: reqwest::Client,
 }
 
+struct EchoExecutor;
+
+#[async_trait::async_trait]
+impl brain::adapter::ToolExecutor for EchoExecutor {
+    fn supports(&self, capability: &str) -> bool {
+        capability == "brain.test.echo"
+    }
+
+    async fn call(
+        &self,
+        capability: &str,
+        request: ExternalToolCallRequest,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> brain::Result<ExternalToolCallResponse> {
+        assert_eq!(capability, "brain.test.echo");
+        Ok(serde_json::from_value(json!({
+            "outcome": "completed",
+            "content": request.input.to_string(),
+            "is_error": false,
+            "disposition": "continue",
+            "result": request.input,
+        }))?)
+    }
+}
+
 async fn serve_brain(services: BrainServices, script: Vec<Scripted>) -> TestBrain {
     serve_brain_with(BrainConfig::default(), services, script).await
 }
 
 async fn serve_brain_with(
-    config: BrainConfig,
+    mut config: BrainConfig,
     services: BrainServices,
     script: Vec<Scripted>,
 ) -> TestBrain {
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     fake.script(script);
     let factory_fake = fake.clone();
+    config.official_capabilities.insert(
+        "brain.test.echo".into(),
+        brain::config::ServerToolPolicy {
+            capability: "brain.test.echo".into(),
+            scope: brain_protocol::session::ExternalToolScope::All,
+            completion: brain_protocol::session::ExternalToolCompletion::Continue,
+            effect: brain_protocol::session::ExternalToolEffect::ReplaySafe,
+            max_input_bytes: 1024,
+        },
+    );
     let brain = Brain::with_parts_and_services(
         config,
         Journal::new_memory("loop-e2e"),
         Arc::new(brain::keys::PlainCustody),
-        Arc::new(brain::adapter::DisabledToolExecutor),
+        Arc::new(EchoExecutor),
         services,
         Arc::new(move |_| factory_fake.clone() as Arc<dyn brain::provider::Provider>),
     );
@@ -195,30 +231,26 @@ impl TestBrain {
         .await
     }
 
-    /// A session with the sealed engine task tool — the one dispatchable tool that needs no
-    /// Environment or customer transport, so a contract loop can drive a real successful dispatch.
-    async fn create_session_with_task_tool(&self) -> String {
+    /// A session with one sealed host capability so the contract loop can drive a real dispatch.
+    async fn create_session_with_echo_tool(&self) -> String {
         self.create_session_from(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
             "tools": {"items": [{
                 "definition": {
-                    "name": "subagents",
-                    "description": "spawn a child session",
+                    "name": "echo",
+                    "description": "echo structured input",
                     "input_schema": {
                         "type": "object",
                         "properties": {
-                            "action": {"type": "string"},
-                            "task_name": {"type": "string"},
-                            "message": {"type": "string"},
-                            "fork_turns": {"type": "string"}
+                            "value": {"type": "string"}
                         },
-                        "required": ["action", "task_name", "message"],
-                        "additionalProperties": true
+                        "required": ["value"],
+                        "additionalProperties": false
                     },
                     "output_schema": {"type": "object", "additionalProperties": true},
                     "contract_digest": "a".repeat(64),
                 },
-                "executor": {"kind": "engine", "capability": "brain.subagents"},
+                "executor": {"kind": "engine", "capability": "brain.test.echo"},
             }]}
         }))
         .await
@@ -417,29 +449,22 @@ fn max_seq(events: &[Value]) -> u64 {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_contract_loop_drives_turns_through_ctx_ops() {
     ensure_component();
-    // Queue order is the execution order: the parent's first composed round asks for the task
-    // tool, the spawned child's single round pops next while the parent dispatch awaits it,
-    // then the parent's follow-up round, then turn 2.
+    // Queue order is the execution order: the first round asks for echo, followed by the
+    // parent's follow-up round and then turn 2.
     let brain = serve_brain(
         wasm_services(&component_path()),
         vec![
             Scripted::ToolCalls(vec![(
-                "call_task".into(),
-                "subagents".into(),
-                json!({
-                    "action": "spawn_agent",
-                    "task_name": "worker",
-                    "message": "child prompt",
-                    "fork_turns": "all"
-                }),
+                "call_echo".into(),
+                "echo".into(),
+                json!({"value": "ping"}),
             )]),
-            Scripted::Text("child answer".into()),
-            Scripted::Text("done after task".into()),
+            Scripted::Text("done after echo".into()),
             Scripted::Text("second answer".into()),
         ],
     )
     .await;
-    let session = brain.create_session_with_task_tool().await;
+    let session = brain.create_session_with_echo_tool().await;
 
     // ---- turn 1: a fresh session with no loop state ----
     brain.send_message(&session, "run the probe").await;
@@ -479,10 +504,10 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
     assert_eq!(checks[0]["kv_limit"], "kv_limit");
 
     let dispatched = loop_event_data(&first, "loop.dispatched");
-    assert_eq!(dispatched[0]["results"][0]["name"], "subagents");
+    assert_eq!(dispatched[0]["results"][0]["name"], "echo");
     assert_eq!(
         dispatched[0]["results"][0]["is_error"], false,
-        "the sealed engine task tool dispatches successfully: {}",
+        "the sealed host tool dispatches successfully: {}",
         dispatched[0]
     );
 
@@ -501,7 +526,7 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
     assert_eq!(undeclared["outcome"], "failed");
     let tool_result = first
         .iter()
-        .find(|event| event["type"] == "tool.result" && event["name"] == "subagents")
+        .find(|event| event["type"] == "tool.result" && event["name"] == "echo")
         .expect("the dispatched call is journaled");
     assert_eq!(tool_result["outcome"], "completed");
 

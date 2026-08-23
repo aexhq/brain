@@ -10,13 +10,6 @@ use brain_protocol::environment::TerminalOutcome;
 use brain_protocol::session::{ToolConfig, ToolExecutor};
 use serde::Deserialize;
 
-/// Closed engine capabilities implemented by Brain's state machine over typed ports. These are
-/// not host-side extension points: an SDK caller may select only these exact identifiers, and
-/// model-visible Tool names never participate in dispatch.
-pub fn is_direct_engine_capability(capability: &str) -> bool {
-    capability == "brain.subagents"
-}
-
 /// Resolve native tools in exact declaration order. Kind discriminator strings and protocol
 /// constants are checked here because generated Rust structs intentionally preserve JSON `const`
 /// fields as strings/integers.
@@ -261,7 +254,7 @@ mod tests {
                     "input_schema": {"type":"object"},
                     "output_schema": {"type":"string"}
                 },
-                "executor": {"kind":"engine", "capability":"brain.subagents"}
+                "executor": {"kind":"engine", "capability":"brain.test.delegate"}
             }
         ]))
         .unwrap();
@@ -270,7 +263,7 @@ mod tests {
         assert!(matches!(decls[0].route, ToolRoute::Environment(_)));
         assert!(matches!(
             &decls[1].route,
-            ToolRoute::Intrinsic(capability) if capability == "brain.subagents"
+            ToolRoute::Intrinsic(capability) if capability == "brain.test.delegate"
         ));
         assert!(matches!(
             &decls[0].route,

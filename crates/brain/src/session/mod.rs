@@ -52,9 +52,6 @@ pub use view::*;
 mod storage_state;
 use storage_state::*;
 
-#[path = "engine/subagents.rs"]
-mod engine_subagents;
-
 mod config;
 pub use config::*;
 mod recovery;
@@ -1066,9 +1063,6 @@ impl Brain {
             let crate::config::ToolRoute::Intrinsic(capability) = &decl.route else {
                 continue;
             };
-            if crate::tools::is_direct_engine_capability(capability) {
-                continue;
-            }
             let policy = self
                 .cfg
                 .official_capabilities
@@ -1105,9 +1099,7 @@ impl Brain {
                         decl.name, policy.capability
                     )));
                 }
-                crate::config::ToolRoute::Intrinsic(capability)
-                    if !crate::tools::is_direct_engine_capability(capability) =>
-                {
+                crate::config::ToolRoute::Intrinsic(capability) => {
                     return Err(BrainError::Invalid(format!(
                         "tool {} requires unavailable intrinsic capability {}",
                         decl.name, capability
@@ -3238,16 +3230,6 @@ impl crate::turn::EngineServices for Brain {
         Brain::prepare_managed_session(self, session_id, doc).await
     }
 
-    async fn execute_child_capability(
-        self: Arc<Self>,
-        parent_id: &str,
-        operation_id: &str,
-        input: serde_json::Value,
-        cancel: CancellationToken,
-    ) -> CallOutcome {
-        Brain::execute_child_capability(&self, parent_id, operation_id, input, cancel).await
-    }
-
     async fn reconcile_managed_unknown_environment(
         self: Arc<Self>,
         session_id: &str,
@@ -3338,15 +3320,6 @@ impl crate::environment::SecretDeliveryPort for Brain {
         }
         Ok(crate::environment::SecretMaterial::new(values))
     }
-}
-
-fn required_child_string(input: &serde_json::Value, field: &str) -> Result<String> {
-    input
-        .get(field)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| BrainError::Invalid(format!("subagents.{field} is required")))
 }
 
 fn sandbox_file_effect_id(session_id: &str, key: &str, action: &str) -> Result<String> {
