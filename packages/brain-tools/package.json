@@ -23,7 +23,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@aexhq/brain": "^0.3.0"
+    "@aexhq/brain": "0.3.0"
   },
   "peerDependencies": {
     "zod": ">=4.4.3 <5"
