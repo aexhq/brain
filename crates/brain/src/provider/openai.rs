@@ -452,6 +452,7 @@ mod tests {
     fn prefix() -> std::sync::Arc<SealedPrefix> {
         AgentDef::new("sys", "fake-1", Dialect::OpenAiChat)
             .tool(ToolDecl {
+                network_needs: Vec::new(),
                 name: "read".into(),
                 description: "read".into(),
                 contract_digest: "a".repeat(64),
@@ -592,6 +593,7 @@ mod tests {
         });
         let prefix = AgentDef::new("sys", "fake-1", Dialect::OpenAiChat)
             .tool(ToolDecl {
+                network_needs: Vec::new(),
                 name: "todo".into(),
                 description: "todo".into(),
                 contract_digest: "a".repeat(64),

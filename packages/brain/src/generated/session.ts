@@ -116,6 +116,29 @@ export type ToolExecutor =
       capability: string;
     };
 /**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "NetworkDestination".
+ */
+export type NetworkDestination =
+  | {
+      host: string;
+      /**
+       * @minItems 1
+       * @maxItems 1
+       */
+      ports: [unknown];
+      protocol: "tls";
+    }
+  | {
+      cidr: string;
+      /**
+       * @minItems 1
+       * @maxItems 32
+       */
+      ports: [number, ...number[]];
+      protocol: "tcp";
+    };
+/**
  * The sealed agentloop identity of a session.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
@@ -141,9 +164,21 @@ export type AgentloopInfo =
 export type NetworkPolicy =
   | {
       outbound: "none";
+      /**
+       * Hosts the session explicitly refuses (exact, or "*.suffix"). Subtracted from the merged allowlist at create; incompatible with outbound "public" (nothing enforces a deny off the gateway path).
+       *
+       * @maxItems 128
+       */
+      deny?: string[];
     }
   | {
       outbound: "public";
+      /**
+       * Hosts the session explicitly refuses (exact, or "*.suffix"). Subtracted from the merged allowlist at create; incompatible with outbound "public" (nothing enforces a deny off the gateway path).
+       *
+       * @maxItems 128
+       */
+      deny?: string[];
     }
   | {
       outbound: "allowlist";
@@ -151,48 +186,13 @@ export type NetworkPolicy =
        * @minItems 1
        * @maxItems 128
        */
-      destinations: [
-        (
-          | {
-              host: string;
-              /**
-               * @minItems 1
-               * @maxItems 1
-               */
-              ports: [unknown];
-              protocol: "tls";
-            }
-          | {
-              cidr: string;
-              /**
-               * @minItems 1
-               * @maxItems 32
-               */
-              ports: [number, ...number[]];
-              protocol: "tcp";
-            }
-        ),
-        ...(
-          | {
-              host: string;
-              /**
-               * @minItems 1
-               * @maxItems 1
-               */
-              ports: [unknown];
-              protocol: "tls";
-            }
-          | {
-              cidr: string;
-              /**
-               * @minItems 1
-               * @maxItems 32
-               */
-              ports: [number, ...number[]];
-              protocol: "tcp";
-            }
-        )[]
-      ];
+      destinations: [NetworkDestination, ...NetworkDestination[]];
+      /**
+       * Hosts the session explicitly refuses (exact, or "*.suffix"). Subtracted from the merged allowlist at create; incompatible with outbound "public" (nothing enforces a deny off the gateway path).
+       *
+       * @maxItems 128
+       */
+      deny?: string[];
     };
 /**
  * Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop.
@@ -534,6 +534,16 @@ export interface ToolDefinition {
 export interface ToolConfig {
   definition: ToolDefinition;
   executor: ToolExecutor;
+  /**
+   * The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed.
+   */
+  network?: {
+    /**
+     * @minItems 1
+     * @maxItems 32
+     */
+    destinations: [NetworkDestination, ...NetworkDestination[]];
+  };
 }
 /**
  * Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation.

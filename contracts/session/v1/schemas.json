@@ -298,6 +298,24 @@
         },
         "executor": {
           "$ref": "#/$defs/ToolExecutor"
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "destinations"
+          ],
+          "properties": {
+            "destinations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "items": {
+                "$ref": "#/$defs/NetworkDestination"
+              }
+            }
+          },
+          "description": "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed."
         }
       }
     },
@@ -545,6 +563,16 @@
           "properties": {
             "outbound": {
               "const": "none"
+            },
+            "deny": {
+              "type": "array",
+              "maxItems": 128,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253
+              },
+              "description": "Hosts the session explicitly refuses (exact, or \"*.suffix\"). Subtracted from the merged allowlist at create; incompatible with outbound \"public\" (nothing enforces a deny off the gateway path)."
             }
           }
         },
@@ -557,6 +585,16 @@
           "properties": {
             "outbound": {
               "const": "public"
+            },
+            "deny": {
+              "type": "array",
+              "maxItems": 128,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253
+              },
+              "description": "Hosts the session explicitly refuses (exact, or \"*.suffix\"). Subtracted from the merged allowlist at create; incompatible with outbound \"public\" (nothing enforces a deny off the gateway path)."
             }
           }
         },
@@ -576,69 +614,18 @@
               "minItems": 1,
               "maxItems": 128,
               "items": {
-                "oneOf": [
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "host",
-                      "ports",
-                      "protocol"
-                    ],
-                    "properties": {
-                      "host": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 253
-                      },
-                      "ports": {
-                        "type": "array",
-                        "prefixItems": [
-                          {
-                            "type": "integer",
-                            "const": 443
-                          }
-                        ],
-                        "minItems": 1,
-                        "maxItems": 1
-                      },
-                      "protocol": {
-                        "const": "tls"
-                      }
-                    }
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "cidr",
-                      "ports",
-                      "protocol"
-                    ],
-                    "properties": {
-                      "cidr": {
-                        "type": "string",
-                        "minLength": 3,
-                        "maxLength": 49
-                      },
-                      "ports": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 32,
-                        "uniqueItems": true,
-                        "items": {
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 65535
-                        }
-                      },
-                      "protocol": {
-                        "const": "tcp"
-                      }
-                    }
-                  }
-                ]
+                "$ref": "#/$defs/NetworkDestination"
               }
+            },
+            "deny": {
+              "type": "array",
+              "maxItems": 128,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253
+              },
+              "description": "Hosts the session explicitly refuses (exact, or \"*.suffix\"). Subtracted from the merged allowlist at create; incompatible with outbound \"public\" (nothing enforces a deny off the gateway path)."
             }
           }
         }
@@ -1115,7 +1102,7 @@
     },
     "ProviderUsage": {
       "type": "object",
-      "description": "Raw provider counters for one model call. A counter the provider did not send is absent here — never reported as 0.",
+      "description": "Raw provider counters for one model call. A counter the provider did not send is absent here \u2014 never reported as 0.",
       "properties": {
         "input_tokens": {
           "type": "integer",
@@ -1964,6 +1951,70 @@
           "$ref": "#/$defs/ApiError"
         }
       }
+    },
+    "NetworkDestination": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "host",
+            "ports",
+            "protocol"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 253
+            },
+            "ports": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "integer",
+                  "const": 443
+                }
+              ],
+              "minItems": 1,
+              "maxItems": 1
+            },
+            "protocol": {
+              "const": "tls"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cidr",
+            "ports",
+            "protocol"
+          ],
+          "properties": {
+            "cidr": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 49
+            },
+            "ports": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              }
+            },
+            "protocol": {
+              "const": "tcp"
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -1248,12 +1248,7 @@ impl Brain {
             storage_max_session_bytes: self.cfg.storage_max_session_bytes,
             storage_transfer_ttl_ms: self.cfg.storage_transfer_ttl.as_millis() as u64,
             max_additional_sandboxes_per_root: self.cfg.max_additional_sandboxes_per_root,
-            network: req
-                .network
-                .as_ref()
-                .map(serde_json::to_value)
-                .transpose()?
-                .unwrap_or_else(|| serde_json::json!({"outbound": "none"})),
+            network: merge_session_network(req.network.as_ref(), &decls)?,
             max_child_depth: req.children.as_ref().map_or(4, |limits| {
                 u32::try_from(limits.max_depth)
                     .expect("CreateSessionRequest schema validated children.max_depth")
@@ -5693,6 +5688,128 @@ fn fork_mode_doc(fork_turns: &ForkTurns) -> (&'static str, Option<u32>) {
         ForkTurns::All => ("all", None),
         ForkTurns::None => ("none", None),
         ForkTurns::Last(turns) => ("last_n", Some(*turns)),
+    }
+}
+
+/// W6.1: the sealed session network is the create-time merge of the session's requested
+/// policy with every granted tool's declared needs. Effective allowlist =
+/// (union of tool declarations and session allows) minus session denies; Aex infra is
+/// always refused at declaration time (the egress gateway enforces it again at runtime).
+/// Declaration and merge only — no per-tool runtime isolation is claimed.
+pub(crate) fn merge_session_network(
+    requested: Option<&brain_protocol::session::NetworkPolicy>,
+    decls: &[crate::config::ToolDecl],
+) -> Result<serde_json::Value> {
+    fn host_of(destination: &serde_json::Value) -> Option<&str> {
+        destination.get("host").and_then(serde_json::Value::as_str)
+    }
+    fn is_aex_infra(host: &str) -> bool {
+        host.eq_ignore_ascii_case("aex.dev") || host.to_ascii_lowercase().ends_with(".aex.dev")
+    }
+    fn denied(host: &str, deny: &[String]) -> bool {
+        deny.iter().any(|rule| {
+            if let Some(suffix) = rule.strip_prefix("*.") {
+                host.len() > suffix.len() + 1
+                    && host
+                        .to_ascii_lowercase()
+                        .ends_with(&suffix.to_ascii_lowercase())
+                    && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
+            } else {
+                host.eq_ignore_ascii_case(rule)
+            }
+        })
+    }
+
+    let mut declared: Vec<serde_json::Value> = Vec::new();
+    let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    for decl in decls {
+        for destination in &decl.network_needs {
+            if let Some(host) = host_of(destination)
+                && is_aex_infra(host)
+            {
+                return Err(BrainError::Invalid(format!(
+                    "tool {} declares Aex infrastructure host {host:?}; Aex infra is always denied",
+                    decl.name
+                )));
+            }
+            if seen.insert(serde_jcs::to_vec(destination)?) {
+                declared.push(destination.clone());
+            }
+        }
+    }
+
+    let requested = requested.map(serde_json::to_value).transpose()?;
+    let (outbound, session_destinations, deny): (&str, Vec<serde_json::Value>, Vec<String>) =
+        match &requested {
+            None => ("none", Vec::new(), Vec::new()),
+            Some(value) => {
+                let outbound = value
+                    .get("outbound")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        BrainError::Invalid("network policy needs an outbound mode".into())
+                    })?;
+                let destinations = value
+                    .get("destinations")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let deny = value
+                    .get("deny")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|rules| {
+                        rules
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (outbound, destinations, deny)
+            }
+        };
+
+    match outbound {
+        "public" => {
+            if !deny.is_empty() {
+                return Err(BrainError::Invalid(
+                    "network deny rules require outbound \"none\" or \"allowlist\": nothing enforces a deny off the gateway path".into(),
+                ));
+            }
+            // Public already covers every declared need.
+            Ok(serde_json::json!({"outbound": "public"}))
+        }
+        "none" | "allowlist" => {
+            let mut merged: Vec<serde_json::Value> = Vec::new();
+            for destination in session_destinations.into_iter().chain(declared) {
+                if let Some(host) = host_of(&destination) {
+                    if is_aex_infra(host) {
+                        return Err(BrainError::Invalid(format!(
+                            "network allowlist names Aex infrastructure host {host:?}; Aex infra is always denied"
+                        )));
+                    }
+                    if denied(host, &deny) {
+                        continue;
+                    }
+                }
+                if !merged.contains(&destination) {
+                    merged.push(destination);
+                }
+            }
+            if merged.is_empty() {
+                if outbound == "allowlist" {
+                    return Err(BrainError::Invalid(
+                        "the merged network allowlist is empty after session denies".into(),
+                    ));
+                }
+                Ok(serde_json::json!({"outbound": "none"}))
+            } else {
+                Ok(serde_json::json!({"outbound": "allowlist", "destinations": merged}))
+            }
+        }
+        other => Err(BrainError::Invalid(format!(
+            "unknown network outbound mode {other:?}"
+        ))),
     }
 }
 

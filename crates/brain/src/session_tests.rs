@@ -4724,6 +4724,80 @@ async fn a_clean_summarization_failure_fails_the_turn_honestly() {
     );
 }
 
+fn declared_tool(host: &str) -> crate::config::ToolDecl {
+    crate::config::ToolDecl {
+        name: "fetcher".into(),
+        description: "fetches".into(),
+        contract_digest: "b".repeat(64),
+        input_schema: json!({"type":"object"}),
+        output_schema: json!({"type":"object"}),
+        route: crate::config::ToolRoute::Customer {
+            registration: "reg".into(),
+        },
+        network_needs: vec![json!({"host": host, "ports": [443], "protocol": "tls"})],
+    }
+}
+
+fn network_policy(value: serde_json::Value) -> brain_protocol::session::NetworkPolicy {
+    serde_json::from_value(value).expect("network policy parses the public contract")
+}
+
+#[test]
+fn tool_network_declarations_merge_into_the_sealed_allowlist() {
+    let sealed = merge_session_network(None, &[declared_tool("api.example.com")]).expect("merged");
+    assert_eq!(sealed["outbound"], "allowlist");
+    assert_eq!(sealed["destinations"][0]["host"], "api.example.com");
+
+    // Session allows union with declarations, deduplicated.
+    let policy = network_policy(json!({
+        "outbound": "allowlist",
+        "destinations": [
+            {"host": "api.example.com", "ports": [443], "protocol": "tls"},
+            {"host": "cdn.example.com", "ports": [443], "protocol": "tls"}
+        ]
+    }));
+    let sealed =
+        merge_session_network(Some(&policy), &[declared_tool("api.example.com")]).expect("merged");
+    let hosts: Vec<&str> = sealed["destinations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|destination| destination["host"].as_str().unwrap())
+        .collect();
+    assert_eq!(hosts, ["api.example.com", "cdn.example.com"]);
+}
+
+#[test]
+fn a_session_deny_beats_a_tool_declaration() {
+    let policy = network_policy(json!({"outbound": "none", "deny": ["api.example.com"]}));
+    let sealed =
+        merge_session_network(Some(&policy), &[declared_tool("api.example.com")]).expect("merged");
+    assert_eq!(sealed, json!({"outbound": "none"}));
+
+    // A wildcard deny removes the whole subtree; an empty allowlist result is refused.
+    let policy = network_policy(json!({
+        "outbound": "allowlist",
+        "destinations": [{"host": "a.svc.example.com", "ports": [443], "protocol": "tls"}],
+        "deny": ["*.example.com"]
+    }));
+    let error = merge_session_network(Some(&policy), &[]).expect_err("empty after denies");
+    assert!(error.to_string().contains("empty after"), "{error}");
+}
+
+#[test]
+fn aex_infrastructure_hosts_are_always_denied_at_create() {
+    let error = merge_session_network(None, &[declared_tool("api.aex.dev")])
+        .expect_err("aex infra refused");
+    assert!(error.to_string().contains("always denied"), "{error}");
+}
+
+#[test]
+fn deny_rules_are_incompatible_with_public_outbound() {
+    let policy = network_policy(json!({"outbound": "public", "deny": ["evil.example.com"]}));
+    let error = merge_session_network(Some(&policy), &[]).expect_err("unenforceable");
+    assert!(error.to_string().contains("gateway path"), "{error}");
+}
+
 #[tokio::test]
 async fn tenant_storage_quota_rejection_restores_the_live_actor_fold() {
     let data_dir = std::env::temp_dir().join(format!(

@@ -292,6 +292,7 @@ mod tests {
     fn prefix() -> std::sync::Arc<SealedPrefix> {
         AgentDef::new("sys", "claude-test", Dialect::AnthropicMessages)
             .tool(ToolDecl {
+                network_needs: Vec::new(),
                 name: "read".into(),
                 description: "read".into(),
                 contract_digest: "a".repeat(64),
