@@ -12,7 +12,7 @@
       {
         "definition": {
           "name": "sandbox",
-          "description": "Work in the session's generation-fenced default sandbox.",
+          "description": "Work in the session's bound environment.",
           "input_schema": {
             "type": "object",
             "additionalProperties": true

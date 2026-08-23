@@ -47,7 +47,7 @@ fn runtime_bundle() -> (Vec<u8>, String) {
     let source = format!(
         r#"import {{ writeFile, readFile }} from "node:fs/promises";
 export default {{
-  kind: "brain.tool-runtime",
+  kind: "tool-runtime/v1",
   name: "workspace_probe",
   description: "Write and read one session-local file.",
   contractDigest: "{CONTRACT_DIGEST}",
@@ -83,6 +83,20 @@ fn create_body(
         &std::fs::read(loop_dist.join("identity.json")).expect("pi loop identity"),
     )
     .expect("pi loop identity JSON");
+    let manifest = json!({
+        "profile":"computer/v1",
+        "target":"linux-amd64",
+        "execute_path":"/tool/runtime.mjs",
+        "setup_path":null,
+        "layers":[{
+            "checksum":bundle_digest,
+            "bytes":bundle.len(),
+            "media_type":"application/javascript+esm",
+            "mount_path":"/tool/runtime.mjs",
+            "unpack":"file"
+        }]
+    });
+    let manifest_digest = brain_protocol::contract::canonical_digest(&manifest).unwrap();
     json!({
         "model": {"provider":provider, "name":model, "api_key":api_key},
         "agentloop": {
@@ -113,17 +127,39 @@ fn create_body(
                 }
             },
             "executor":{
-                "kind":"aex_managed",
-                "bundle_digest":bundle_digest,
-                "required_env":["TENANT_SECRET"]
+                "kind":"environment",
+                "environment":"workspace",
+                "artifact_digest":manifest_digest,
+                "requirements":{"env":["TENANT_SECRET"],"workspace":true}
             }
         }]},
         "tool_bundles":[{
+            "checksum":manifest_digest,
+            "bytes":bundle.len(),
+            "target":manifest["target"],
+            "execute_path":manifest["execute_path"],
+            "setup_path":manifest["setup_path"],
+            "layers":manifest["layers"]
+        }],
+        "tool_artifact_layers":[{
             "checksum":bundle_digest,
             "content_base64":base64::engine::general_purpose::STANDARD.encode(bundle),
             "bytes":bundle.len(),
             "media_type":"application/javascript+esm"
         }],
+        "environments":{
+            "workspace":{
+                "extension":"brain.local",
+                "protocol":"environment/v1",
+                "profile":{
+                    "kind":"computer",
+                    "platform":"linux-amd64",
+                    "network":"none",
+                    "recovery":"retained"
+                },
+                "configuration":{}
+            }
+        },
         "secrets":{"TENANT_SECRET":managed_secret}
     })
 }
@@ -165,7 +201,9 @@ async fn start_turn(http: &Client, base: &str, session_id: &str, value: &str) {
         .send()
         .await
         .expect("message request");
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let status = response.status();
+    let body = response.text().await.expect("message response");
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
 }
 
 async fn finite_replay(http: &Client, base: &str, session_id: &str) -> String {
@@ -209,34 +247,36 @@ fn assert_replay_identity(replay: &str, expected_session: &str) {
     }
 }
 
-async fn sandbox_generation(http: &Client, base: &str, session_id: &str) -> String {
+async fn environment_generation(http: &Client, base: &str, session_id: &str) -> String {
     let value: Value = http
-        .get(format!("{base}/v1/sessions/{session_id}/sandbox"))
+        .get(format!(
+            "{base}/v1/sessions/{session_id}/environments/workspace"
+        ))
         .bearer_auth(OPERATOR_TOKEN)
         .send()
         .await
-        .expect("sandbox status")
+        .expect("environment status")
         .error_for_status()
-        .expect("sandbox status success")
+        .expect("environment status success")
         .json()
         .await
-        .expect("sandbox status JSON");
+        .expect("environment status JSON");
     assert_eq!(value["state"], "running");
     value["generation"]
         .as_str()
-        .expect("sandbox generation")
+        .expect("environment generation")
         .to_owned()
 }
 
-async fn read_sandbox_file(
+async fn read_environment_file(
     http: &Client,
     base: &str,
     session_id: &str,
     generation: &str,
 ) -> Vec<u8> {
-    let value: Value = http
+    let response = http
         .post(format!(
-            "{base}/v1/sessions/{session_id}/sandbox/files/read-inline"
+            "{base}/v1/sessions/{session_id}/environments/workspace/files/read-inline"
         ))
         .bearer_auth(OPERATOR_TOKEN)
         .json(&json!({
@@ -246,15 +286,18 @@ async fn read_sandbox_file(
         }))
         .send()
         .await
-        .expect("sandbox read")
-        .error_for_status()
-        .expect("sandbox read success")
-        .json()
-        .await
-        .expect("sandbox read JSON");
+        .expect("environment read");
+    let status = response.status();
+    let body = response.text().await.expect("environment read body");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let value: Value = serde_json::from_str(&body).expect("environment read JSON");
     base64::engine::general_purpose::STANDARD
-        .decode(value["content_base64"].as_str().expect("sandbox content"))
-        .expect("sandbox content base64")
+        .decode(
+            value["content_base64"]
+                .as_str()
+                .expect("environment content"),
+        )
+        .expect("environment content base64")
 }
 
 async fn write_and_read_storage(http: &Client, base: &str, session_id: &str, value: &str) {
@@ -411,7 +454,6 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
         wait_for_turn(&http, &base, &alpha_id),
         wait_for_turn(&http, &base, &beta_id),
     );
-
     assert_replay_identity(&alpha_replay, &alpha_id);
     assert_replay_identity(&beta_replay, &beta_id);
     assert!(alpha_replay.contains(ALPHA_VALUE));
@@ -429,12 +471,12 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
     }
 
     let (alpha_generation, beta_generation) = tokio::join!(
-        sandbox_generation(&http, &base, &alpha_id),
-        sandbox_generation(&http, &base, &beta_id),
+        environment_generation(&http, &base, &alpha_id),
+        environment_generation(&http, &base, &beta_id),
     );
     let (alpha_file, beta_file) = tokio::join!(
-        read_sandbox_file(&http, &base, &alpha_id, &alpha_generation),
-        read_sandbox_file(&http, &base, &beta_id, &beta_generation),
+        read_environment_file(&http, &base, &alpha_id, &alpha_generation),
+        read_environment_file(&http, &base, &beta_id, &beta_generation),
     );
     assert_eq!(alpha_file, ALPHA_VALUE.as_bytes());
     assert_eq!(beta_file, BETA_VALUE.as_bytes());

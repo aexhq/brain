@@ -145,31 +145,33 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/sandbox": {
+    "/v1/sessions/{session_id}/environments/{environment}": {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
-        get: operations["getDefaultSandbox"];
+        get: operations["getEnvironment"];
         put?: never;
-        /** Idempotently materialize the root default sandbox */
-        post: operations["createDefaultSandbox"];
+        /** Idempotently materialize a declared environment */
+        post: operations["createEnvironment"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/sandbox/files/list": {
+    "/v1/sessions/{session_id}/environments/{environment}/files/list": {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -182,12 +184,13 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/sandbox/files/stat": {
+    "/v1/sessions/{session_id}/environments/{environment}/files/stat": {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -200,12 +203,13 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/sandbox/files/read-inline": {
+    "/v1/sessions/{session_id}/environments/{environment}/files/read-inline": {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -218,7 +222,7 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/sandbox/files/write-inline": {
+    "/v1/sessions/{session_id}/environments/{environment}/files/write-inline": {
         parameters: {
             query?: never;
             header: {
@@ -227,6 +231,7 @@ export type paths = {
             };
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -239,12 +244,13 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/sandbox/files/downloads": {
+    "/v1/sessions/{session_id}/environments/{environment}/files/downloads": {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -261,12 +267,13 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/sandbox/files/uploads": {
+    "/v1/sessions/{session_id}/environments/{environment}/files/uploads": {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -283,12 +290,13 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/sandbox/files/uploads/{transfer_id}/complete": {
+    "/v1/sessions/{session_id}/environments/{environment}/files/uploads/{transfer_id}/complete": {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
                 transfer_id: components["parameters"]["TransferId"];
             };
             cookie?: never;
@@ -306,12 +314,13 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/sandbox/files/find": {
+    "/v1/sessions/{session_id}/environments/{environment}/files/find": {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -324,12 +333,13 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/sandbox/files/grep": {
+    "/v1/sessions/{session_id}/environments/{environment}/files/grep": {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -626,7 +636,7 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/storage/copy-from-sandbox": {
+    "/v1/sessions/{session_id}/storage/copy-from-environment/{environment}": {
         parameters: {
             query?: never;
             header: {
@@ -635,19 +645,20 @@ export type paths = {
             };
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
         get?: never;
         put?: never;
-        post: operations["copyFromSandbox"];
+        post: operations["copyFromEnvironment"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/storage/copy-to-sandbox": {
+    "/v1/sessions/{session_id}/storage/copy-to-environment/{environment}": {
         parameters: {
             query?: never;
             header: {
@@ -656,12 +667,13 @@ export type paths = {
             };
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
         get?: never;
         put?: never;
-        post: operations["copyToSandbox"];
+        post: operations["copyToEnvironment"];
         delete?: never;
         options?: never;
         head?: never;
@@ -825,10 +837,10 @@ export type components = {
             /** @default false */
             overwrite?: boolean;
         };
-        StorageSandboxCopyRequest: {
+        StorageEnvironmentCopyRequest: {
             key: string;
             path: string;
-            sandbox_generation: string;
+            environment_generation: string;
             /** @default false */
             overwrite?: boolean;
         };
@@ -1081,7 +1093,7 @@ export type components = {
         ToolConfig: {
             definition: components["schemas"]["ToolDefinition"];
             executor: components["schemas"]["ToolExecutor"];
-            /** @description The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed. */
+            /** @description The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed. */
             network?: {
                 destinations: components["schemas"]["NetworkDestination"][];
             };
@@ -1113,13 +1125,32 @@ export type components = {
         EnvironmentsConfig: {
             [key: string]: components["schemas"]["EnvironmentConfig"];
         };
-        /** @description Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation. */
+        ToolArtifactLayerRef: {
+            checksum: components["schemas"]["Sha256Hex"];
+            bytes: number;
+            /** @enum {string} */
+            media_type: "application/javascript+esm" | "application/x-xz";
+            mount_path: string;
+            /** @enum {string} */
+            unpack: "file" | "tar.xz";
+        };
+        /** @description A canonical computer-profile manifest plus create-time-only immutable runtime and code layers. */
         ToolBundle: {
+            checksum: components["schemas"]["Sha256Hex"];
+            bytes: number;
+            /** @enum {string} */
+            target: "linux-amd64" | "linux-arm64";
+            execute_path: string;
+            setup_path?: string | null;
+            layers: components["schemas"]["ToolArtifactLayerRef"][];
+        };
+        /** @description Create-time-only immutable artifact-layer bytes. Brain stages these outside the journal, then discards this representation. */
+        ToolArtifactLayer: {
             checksum: components["schemas"]["Sha256Hex"];
             content_base64: string;
             bytes: number;
-            /** @constant */
-            media_type: "application/javascript+esm";
+            /** @enum {string} */
+            media_type: "application/javascript+esm" | "application/x-xz";
         };
         /** @description Immutable direct outbound ceiling. Omission means none. */
         NetworkPolicy: {
@@ -1167,6 +1198,8 @@ export type components = {
             environments?: components["schemas"]["EnvironmentsConfig"];
             /** @description Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal. */
             tool_bundles?: components["schemas"]["ToolBundle"][];
+            /** @description Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles. */
+            tool_artifact_layers?: components["schemas"]["ToolArtifactLayer"][];
             /** @description Write-only values for required managed Tool environment names; encrypted in custody. */
             secrets?: {
                 [key: string]: string;
@@ -1421,7 +1454,7 @@ export type components = {
             };
         };
         /** @enum {string} */
-        TargetKind: "default" | "additional";
+        TargetKind: "environment" | "additional";
         Identifier: string;
         SandboxTarget: {
             kind: components["schemas"]["TargetKind"];
@@ -1497,7 +1530,7 @@ export type components = {
                 "application/json": components["schemas"]["DeletionStatus"];
             };
         };
-        /** @description Generation-fenced default sandbox lifecycle */
+        /** @description Generation-fenced environment lifecycle */
         SandboxStatus: {
             headers: {
                 [name: string]: unknown;
@@ -1586,6 +1619,7 @@ export type components = {
         /** @description Required exact-replay identity for an effectful operation. */
         RequiredIdempotencyKey: string;
         ChildId: components["schemas"]["SessionId"];
+        EnvironmentName: string;
         TransferId: string;
         GrantId: string;
     };
@@ -1665,9 +1699,9 @@ export type components = {
                 "application/json": components["schemas"]["StorageUploadRequest"];
             };
         };
-        StorageSandboxCopy: {
+        StorageEnvironmentCopy: {
             content: {
-                "application/json": components["schemas"]["StorageSandboxCopyRequest"];
+                "application/json": components["schemas"]["StorageEnvironmentCopyRequest"];
             };
         };
         CustomerGrant: {
@@ -1909,12 +1943,13 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    getDefaultSandbox: {
+    getEnvironment: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -1924,12 +1959,13 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    createDefaultSandbox: {
+    createEnvironment: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -1945,6 +1981,7 @@ export interface operations {
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -1960,6 +1997,7 @@ export interface operations {
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -1975,6 +2013,7 @@ export interface operations {
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -1993,6 +2032,7 @@ export interface operations {
             };
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -2008,6 +2048,7 @@ export interface operations {
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -2023,6 +2064,7 @@ export interface operations {
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -2038,6 +2080,7 @@ export interface operations {
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
                 transfer_id: components["parameters"]["TransferId"];
             };
             cookie?: never;
@@ -2054,6 +2097,7 @@ export interface operations {
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -2069,6 +2113,7 @@ export interface operations {
             header?: never;
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
@@ -2343,7 +2388,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    copyFromSandbox: {
+    copyFromEnvironment: {
         parameters: {
             query?: never;
             header: {
@@ -2352,16 +2397,17 @@ export interface operations {
             };
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
-        requestBody: components["requestBodies"]["StorageSandboxCopy"];
+        requestBody: components["requestBodies"]["StorageEnvironmentCopy"];
         responses: {
             200: components["responses"]["StorageObject"];
             default: components["responses"]["Error"];
         };
     };
-    copyToSandbox: {
+    copyToEnvironment: {
         parameters: {
             query?: never;
             header: {
@@ -2370,10 +2416,11 @@ export interface operations {
             };
             path: {
                 session_id: components["parameters"]["SessionId"];
+                environment: components["parameters"]["EnvironmentName"];
             };
             cookie?: never;
         };
-        requestBody: components["requestBodies"]["StorageSandboxCopy"];
+        requestBody: components["requestBodies"]["StorageEnvironmentCopy"];
         responses: {
             200: components["responses"]["SandboxFile"];
             default: components["responses"]["Error"];

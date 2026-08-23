@@ -321,7 +321,7 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
         },
         Record::ContextChunk { .. }
         | Record::ContextInstalled { .. }
-        | Record::DefaultSandboxChanged { .. }
+        | Record::EnvironmentChanged { .. }
         | Record::ModelCallIntent { .. }
         | Record::ModelCallUnknown { .. }
         | Record::ModelCallCompleted { .. }

@@ -338,10 +338,6 @@ pub struct HeadDoc {
     /// Bounded rooted receipts waiting for post-commit managed-Environment terminal ACK.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_managed_acks: Vec<ManagedTerminalAckDoc>,
-    /// Brain-owned durable projection of the root tree's shared default target. Descendants
-    /// address this same target through `root_id`; they do not get a second default sandbox.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_sandbox: Option<brain_protocol::environment::SandboxStatus>,
     /// Last rooted target observed for each logical environment binding.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub environment_targets: HashMap<String, brain_protocol::environment::SandboxStatus>,
@@ -400,8 +396,6 @@ pub struct ControlDoc {
     pub pending_customer_acks: Vec<CustomerTerminalAckDoc>,
     #[serde(default)]
     pub pending_managed_acks: Vec<ManagedTerminalAckDoc>,
-    #[serde(default)]
-    pub default_sandbox: Option<brain_protocol::environment::SandboxStatus>,
     #[serde(default)]
     pub environment_targets: HashMap<String, brain_protocol::environment::SandboxStatus>,
     #[serde(default)]
@@ -541,7 +535,6 @@ impl HeadDoc {
             storage_delete,
             pending_customer_acks,
             pending_managed_acks,
-            default_sandbox,
             environment_targets,
             tool_setups,
             loop_state,
@@ -584,7 +577,6 @@ impl HeadDoc {
             storage_delete: storage_delete.clone(),
             pending_customer_acks: pending_customer_acks.clone(),
             pending_managed_acks: pending_managed_acks.clone(),
-            default_sandbox: default_sandbox.clone(),
             environment_targets: environment_targets.clone(),
             tool_setups: tool_setups.clone(),
             loop_state: *loop_state,
@@ -632,7 +624,6 @@ impl HeadDoc {
             storage_delete: _,
             pending_customer_acks: _,
             pending_managed_acks: _,
-            default_sandbox: _,
             environment_targets: _,
             tool_setups: _,
             loop_state: _,
@@ -684,7 +675,6 @@ impl HeadDoc {
             storage_delete,
             pending_customer_acks,
             pending_managed_acks,
-            default_sandbox,
             environment_targets,
             tool_setups,
             loop_state,
@@ -729,7 +719,6 @@ impl HeadDoc {
             storage_delete,
             pending_customer_acks,
             pending_managed_acks,
-            default_sandbox,
             environment_targets,
             tool_setups,
             loop_state,
@@ -755,18 +744,22 @@ impl HeadDoc {
     pub fn with_recovery_projection(&self, now_ms: u64) -> Self {
         let mut projected = self.clone();
         let lease_safe_due = now_ms.saturating_add(LEASE_MS + STEAL_GRACE_MS);
-        let sandbox_due = self.default_sandbox.as_ref().and_then(|sandbox| {
-            use brain_protocol::environment::SandboxState;
-            match sandbox.state {
-                SandboxState::Creating => {
-                    Some(self.recovery_due_ms.unwrap_or(0).max(lease_safe_due))
+        let environment_due = self
+            .environment_targets
+            .values()
+            .filter_map(|environment| {
+                use brain_protocol::environment::SandboxState;
+                match environment.state {
+                    SandboxState::Creating => {
+                        Some(self.recovery_due_ms.unwrap_or(0).max(lease_safe_due))
+                    }
+                    SandboxState::Running | SandboxState::Suspended => {
+                        environment.expires_at_ms.map(|expires| expires.get())
+                    }
+                    _ => None,
                 }
-                SandboxState::Running | SandboxState::Suspended => {
-                    sandbox.expires_at_ms.map(|expires| expires.get())
-                }
-                _ => None,
-            }
-        });
+            })
+            .min();
         let upload_due = self.storage_upload.as_ref().and_then(|upload| {
             match upload.state.as_str() {
                 // A reservation is scheduled work, not an active effect. Lease heartbeats must
@@ -792,7 +785,7 @@ impl HeadDoc {
         {
             Some(self.recovery_due_ms.unwrap_or(0).max(lease_safe_due))
         } else {
-            match (sandbox_due, upload_due) {
+            match (environment_due, upload_due) {
                 (Some(left), Some(right)) => Some(left.min(right)),
                 (left, right) => left.or(right),
             }

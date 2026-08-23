@@ -372,7 +372,6 @@ fn head_doc_round_trips() {
         storage_delete: None,
         pending_customer_acks: vec![],
         pending_managed_acks: vec![],
-        default_sandbox: None,
         environment_targets: HashMap::new(),
         tool_setups: HashMap::new(),
     };
@@ -459,7 +458,6 @@ fn head_doc() -> HeadDoc {
         storage_delete: None,
         pending_customer_acks: vec![],
         pending_managed_acks: vec![],
-        default_sandbox: None,
         environment_targets: HashMap::new(),
         tool_setups: HashMap::new(),
     }
@@ -738,125 +736,6 @@ async fn memory_journal_fences_out_a_stale_owner() {
     b.commit("ses_f", &mut lease_b, std::slice::from_ref(&rec), &doc, 2)
         .await
         .unwrap();
-}
-
-fn sandbox_reservation(index: usize) -> SandboxReserveRequest {
-    let root_id = "ses_sandbox_root".to_string();
-    let sandbox_id = format!("sbx_{index:02}");
-    SandboxReserveRequest {
-        root_id: root_id.clone(),
-        owner_session_id: root_id.clone(),
-        sandbox_id: sandbox_id.clone(),
-        operation_id: format!("op_{index:02}"),
-        request_digest: format!("{index:064x}"),
-        generation_intent: format!("gen_{index:02}"),
-        initial_status: serde_json::from_value(serde_json::json!({
-            "target": {
-                "kind": "additional",
-                "session_id": root_id,
-                "root_id": "ses_sandbox_root",
-                "binding_ref": format!("bnd_{index:02}"),
-                "sandbox_id": sandbox_id,
-            },
-            "state": "creating",
-            "expires_at_ms": null,
-        }))
-        .unwrap(),
-        now_ms: index as u64 + 1,
-    }
-}
-
-#[tokio::test]
-async fn sandbox_inventory_reserves_cap_atomically_and_keeps_terminal_tombstones() {
-    let store = Arc::new(MemoryStore::default());
-    let mut root = head_doc();
-    root.root_id = "ses_sandbox_root".into();
-    root.prefix.max_additional_sandboxes_per_root = 2;
-    create_memory_store(
-        &store,
-        "ses_sandbox_root",
-        &root,
-        &Record::State {
-            state: SessionLifecycle::Open,
-            turn: None,
-        },
-        "owner",
-        0,
-    )
-    .await
-    .unwrap();
-
-    let mut tasks = Vec::new();
-    for index in 0..8 {
-        let store = store.clone();
-        tasks.push(tokio::spawn(async move {
-            store.reserve_sandbox(&sandbox_reservation(index)).await
-        }));
-    }
-    let mut created = Vec::new();
-    let mut exhausted = 0;
-    for task in tasks {
-        match task.await.unwrap() {
-            Ok(item) => created.push(item),
-            Err(BrainError::SandboxResourceExhausted) => exhausted += 1,
-            Err(error) => panic!("unexpected reservation result: {error}"),
-        }
-    }
-    assert_eq!(created.len(), 2);
-    assert_eq!(exhausted, 6);
-
-    let replay_request = sandbox_reservation(
-        created[0]
-            .sandbox_id
-            .strip_prefix("sbx_")
-            .unwrap()
-            .parse()
-            .unwrap(),
-    );
-    let replay = store.reserve_sandbox(&replay_request).await.unwrap();
-    assert_eq!(replay.sandbox_id, created[0].sandbox_id);
-
-    let mut terminal: brain_protocol::environment::SandboxStatus =
-        serde_json::from_value(serde_json::to_value(&created[0].status).unwrap()).unwrap();
-    terminal.state = brain_protocol::environment::SandboxState::Terminated;
-    let tombstone = store
-        .update_sandbox(&SandboxUpdateRequest {
-            root_id: created[0].root_id.clone(),
-            sandbox_id: created[0].sandbox_id.clone(),
-            expected_version: created[0].version,
-            status: terminal,
-            release_slot: true,
-            now_ms: 100,
-        })
-        .await
-        .unwrap();
-    assert!(tombstone.slot_released);
-    assert_eq!(
-        store
-            .get_sandbox(&tombstone.root_id, &tombstone.sandbox_id)
-            .await
-            .unwrap()
-            .status
-            .state,
-        brain_protocol::environment::SandboxState::Terminated
-    );
-    store
-        .reserve_sandbox(&sandbox_reservation(9))
-        .await
-        .expect("confirmed termination releases exactly one slot");
-    assert!(matches!(
-        store
-            .update_sandbox(&SandboxUpdateRequest {
-                root_id: tombstone.root_id.clone(),
-                sandbox_id: tombstone.sandbox_id.clone(),
-                expected_version: tombstone.version,
-                status: sandbox_reservation(0).initial_status,
-                release_slot: false,
-                now_ms: 101,
-            })
-            .await,
-        Err(BrainError::SandboxGone)
-    ));
 }
 
 #[tokio::test]
@@ -1874,7 +1753,7 @@ fn sandbox_status(state: &str) -> brain_protocol::environment::SandboxStatus {
         "state": state,
         "target": {
             "binding_ref": "binding_default",
-            "kind": "default",
+            "kind": "environment",
             "root_id": "ses_retention",
             "session_id": "ses_retention"
         },
@@ -1976,7 +1855,8 @@ fn every_effect_class_reserves_before_dispatch_and_recovery_does_not_duplicate_i
             published_bytes: 1,
             reserved_bytes: 0,
         },
-        Record::DefaultSandboxChanged {
+        Record::EnvironmentChanged {
+            environment: "workspace".into(),
             status: sandbox_status("creating"),
         },
     ];

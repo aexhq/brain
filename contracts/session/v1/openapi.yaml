@@ -184,68 +184,79 @@ paths:
         "200": { $ref: "#/components/responses/DeletionStatus" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/sandbox:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+  /v1/sessions/{session_id}/environments/{environment}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
     get:
-      tags: [sandbox]
-      operationId: getDefaultSandbox
+      tags: [environments]
+      operationId: getEnvironment
       responses:
         "200": { $ref: "#/components/responses/SandboxStatus" }
         default: { $ref: "#/components/responses/Error" }
     post:
-      tags: [sandbox]
-      operationId: createDefaultSandbox
-      summary: Idempotently materialize the root default sandbox
+      tags: [environments]
+      operationId: createEnvironment
+      summary: Idempotently materialize a declared environment
       responses:
         "200": { $ref: "#/components/responses/SandboxStatus" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/sandbox/files/list:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+  /v1/sessions/{session_id}/environments/{environment}/files/list:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
     post:
-      tags: [sandbox]
+      tags: [environments]
       operationId: listSandboxFiles
       requestBody: { $ref: "#/components/requestBodies/SandboxFileList" }
       responses:
         "200": { $ref: "#/components/responses/SandboxFileList" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/sandbox/files/stat:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+  /v1/sessions/{session_id}/environments/{environment}/files/stat:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
     post:
-      tags: [sandbox]
+      tags: [environments]
       operationId: statSandboxFile
       requestBody: { $ref: "#/components/requestBodies/SandboxFilePath" }
       responses:
         "200": { $ref: "#/components/responses/SandboxFile" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/sandbox/files/read-inline:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+  /v1/sessions/{session_id}/environments/{environment}/files/read-inline:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
     post:
-      tags: [sandbox]
+      tags: [environments]
       operationId: readSandboxFileInline
       requestBody: { $ref: "#/components/requestBodies/SandboxFileRead" }
       responses:
         "200": { $ref: "#/components/responses/SandboxFileContent" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/sandbox/files/write-inline:
+  /v1/sessions/{session_id}/environments/{environment}/files/write-inline:
     parameters:
       - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
       - $ref: "#/components/parameters/RequiredIdempotencyKey"
     post:
-      tags: [sandbox]
+      tags: [environments]
       operationId: writeSandboxFileInline
       requestBody: { $ref: "#/components/requestBodies/SandboxFileWrite" }
       responses:
         "200": { $ref: "#/components/responses/SandboxFile" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/sandbox/files/downloads:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+  /v1/sessions/{session_id}/environments/{environment}/files/downloads:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
     post:
-      tags: [sandbox]
+      tags: [environments]
       operationId: prepareSandboxFileDownload
       summary: Prepare a short-lived generation-fenced direct download
       description: >-
@@ -257,10 +268,12 @@ paths:
         "200": { $ref: "#/components/responses/StorageTransfer" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/sandbox/files/uploads:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+  /v1/sessions/{session_id}/environments/{environment}/files/uploads:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
     post:
-      tags: [sandbox]
+      tags: [environments]
       operationId: prepareSandboxFileUpload
       summary: Prepare a short-lived generation-fenced direct upload
       description: >-
@@ -272,12 +285,13 @@ paths:
         "200": { $ref: "#/components/responses/StorageTransfer" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/sandbox/files/uploads/{transfer_id}/complete:
+  /v1/sessions/{session_id}/environments/{environment}/files/uploads/{transfer_id}/complete:
     parameters:
       - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
       - $ref: "#/components/parameters/TransferId"
     post:
-      tags: [sandbox]
+      tags: [environments]
       operationId: completeSandboxFileUpload
       summary: Import one prepared upload into its originally fenced generation and path
       description: >-
@@ -287,20 +301,24 @@ paths:
         "200": { $ref: "#/components/responses/SandboxFile" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/sandbox/files/find:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+  /v1/sessions/{session_id}/environments/{environment}/files/find:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
     post:
-      tags: [sandbox]
+      tags: [environments]
       operationId: findSandboxFiles
       requestBody: { $ref: "#/components/requestBodies/SandboxFileFind" }
       responses:
         "200": { $ref: "#/components/responses/SandboxFileList" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/sandbox/files/grep:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+  /v1/sessions/{session_id}/environments/{environment}/files/grep:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
     post:
-      tags: [sandbox]
+      tags: [environments]
       operationId: grepSandboxFiles
       requestBody: { $ref: "#/components/requestBodies/SandboxFileGrep" }
       responses:
@@ -480,26 +498,28 @@ paths:
         "204": { description: Deleted }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/storage/copy-from-sandbox:
+  /v1/sessions/{session_id}/storage/copy-from-environment/{environment}:
     parameters:
       - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
       - $ref: "#/components/parameters/RequiredIdempotencyKey"
     post:
-      tags: [storage, sandbox]
-      operationId: copyFromSandbox
-      requestBody: { $ref: "#/components/requestBodies/StorageSandboxCopy" }
+      tags: [storage, environments]
+      operationId: copyFromEnvironment
+      requestBody: { $ref: "#/components/requestBodies/StorageEnvironmentCopy" }
       responses:
         "200": { $ref: "#/components/responses/StorageObject" }
         default: { $ref: "#/components/responses/Error" }
 
-  /v1/sessions/{session_id}/storage/copy-to-sandbox:
+  /v1/sessions/{session_id}/storage/copy-to-environment/{environment}:
     parameters:
       - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/EnvironmentName"
       - $ref: "#/components/parameters/RequiredIdempotencyKey"
     post:
-      tags: [storage, sandbox]
-      operationId: copyToSandbox
-      requestBody: { $ref: "#/components/requestBodies/StorageSandboxCopy" }
+      tags: [storage, environments]
+      operationId: copyToEnvironment
+      requestBody: { $ref: "#/components/requestBodies/StorageEnvironmentCopy" }
       responses:
         "200": { $ref: "#/components/responses/SandboxFile" }
         default: { $ref: "#/components/responses/Error" }
@@ -566,6 +586,11 @@ components:
       in: path
       required: true
       schema: { $ref: "schemas.json#/$defs/SessionId" }
+    EnvironmentName:
+      name: environment
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[A-Za-z][A-Za-z0-9_-]{0,63}$" }
     TransferId:
       name: transfer_id
       in: path
@@ -622,9 +647,9 @@ components:
     StorageUpload:
       required: true
       content: { application/json: { schema: { $ref: "#/components/schemas/StorageUploadRequest" } } }
-    StorageSandboxCopy:
+    StorageEnvironmentCopy:
       required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageSandboxCopyRequest" } } }
+      content: { application/json: { schema: { $ref: "#/components/schemas/StorageEnvironmentCopyRequest" } } }
     CustomerGrant:
       required: true
       content: { application/json: { schema: { $ref: "#/components/schemas/CustomerGrantRequest" } } }
@@ -650,7 +675,7 @@ components:
       description: Durable deletion status
       content: { application/json: { schema: { $ref: "#/components/schemas/DeletionStatus" } } }
     SandboxStatus:
-      description: Generation-fenced default sandbox lifecycle
+      description: Generation-fenced environment lifecycle
       content: { application/json: { schema: { $ref: "../../environment/contract.json#/definitions/SandboxStatus" } } }
     SandboxFile:
       description: Sandbox file metadata
@@ -824,14 +849,14 @@ components:
         sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
         content_type: { type: string, minLength: 1, maxLength: 255 }
         overwrite: { type: boolean, default: false }
-    StorageSandboxCopyRequest:
+    StorageEnvironmentCopyRequest:
       type: object
       additionalProperties: false
-      required: [key, path, sandbox_generation]
+      required: [key, path, environment_generation]
       properties:
         key: { type: string, minLength: 1, maxLength: 1024 }
         path: { type: string, minLength: 1, maxLength: 4096 }
-        sandbox_generation: { type: string, minLength: 1, maxLength: 128 }
+        environment_generation: { type: string, minLength: 1, maxLength: 128 }
         overwrite: { type: boolean, default: false }
     StorageObject:
       type: object

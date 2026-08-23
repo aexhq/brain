@@ -74,10 +74,14 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
         BrainServices {
             session_storage: Some(parts.session_storage),
             bundle_storage: Some(parts.bundle_storage),
-            environment: Some(parts.environment),
-            session_preparation: Some(parts.session_preparation),
-            sandbox_files: Some(parts.sandbox_files),
-            sandbox_control: Some(parts.sandbox_control),
+            environments: brain::environment::EnvironmentRegistry::new([(
+                "brain.local".into(),
+                brain::environment::EnvironmentAdapter {
+                    execution: parts.environment,
+                    preparation: parts.session_preparation,
+                    files: Some(parts.sandbox_files),
+                },
+            )])?,
             customer_transport: Some(customer_transport),
             agentloop_registry: loop_services.agentloop_registry,
             ..BrainServices::default()
@@ -89,7 +93,10 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
     local_environment
         .attach_secret_delivery(brain.clone())
         .map_err(|error| {
-            anyhow::anyhow!("local Environment secret delivery: {}", error.message.as_str())
+            anyhow::anyhow!(
+                "local Environment secret delivery: {}",
+                error.message.as_str()
+            )
         })?;
     Ok(brain)
 }

@@ -39,13 +39,11 @@ pub struct EnvironmentAdapter {
     pub execution: Arc<dyn EnvironmentPort>,
     pub preparation: Arc<dyn SessionPreparationPort>,
     pub files: Option<Arc<dyn SandboxFilesPort>>,
-    pub control: Option<Arc<dyn SandboxControlPort>>,
 }
 
 #[derive(Clone, Default)]
 pub struct EnvironmentRegistry {
     adapters: HashMap<String, EnvironmentAdapter>,
-    fallback: Option<EnvironmentAdapter>,
 }
 
 impl EnvironmentRegistry {
@@ -65,25 +63,15 @@ impl EnvironmentRegistry {
         }
         Ok(Self {
             adapters: by_extension,
-            fallback: None,
         })
     }
 
-    #[doc(hidden)]
-    pub fn with_fallback(mut self, adapter: EnvironmentAdapter) -> Self {
-        self.fallback = Some(adapter);
-        self
-    }
-
     pub fn resolve(&self, extension: &str) -> Result<&EnvironmentAdapter> {
-        self.adapters
-            .get(extension)
-            .or(self.fallback.as_ref())
-            .ok_or_else(|| {
-                BrainError::EnvironmentUnavailable(format!(
-                    "environment extension {extension} is not registered by this composition"
-                ))
-            })
+        self.adapters.get(extension).ok_or_else(|| {
+            BrainError::EnvironmentUnavailable(format!(
+                "environment extension {extension} is not registered by this composition"
+            ))
+        })
     }
 }
 
@@ -94,20 +82,12 @@ pub struct ManagedBinding {
     pub environment: Arc<dyn EnvironmentPort>,
 }
 
-/// Optional lifecycle capability. Preparation never materializes the default sandbox.
+/// Environment lifecycle and artifact preparation capability.
 #[async_trait]
 pub trait SessionPreparationPort: Send + Sync {
     async fn prepare(&self, request: PrepareSessionRequest) -> EnvironmentResult<PreparedSession>;
-    /// Idempotently materialize the shared default target. Brain supplies the durable logical
-    /// target/binding and sealed root policy; this is distinct from additional-sandbox creation.
-    async fn materialize_default(
-        &self,
-        request: CreateSandboxRequest,
-    ) -> EnvironmentResult<SandboxStatus>;
-    async fn dematerialize_default(
-        &self,
-        target: SandboxTarget,
-    ) -> EnvironmentResult<SandboxStatus>;
+    async fn materialize(&self, request: CreateSandboxRequest) -> EnvironmentResult<SandboxStatus>;
+    async fn dematerialize(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus>;
     async fn purge_tree(&self, root_id: &str) -> EnvironmentResult<()>;
 }
 
@@ -177,8 +157,8 @@ pub trait SandboxFilesPort: Send + Sync {
     async fn transfer(&self, request: SandboxCopyRequest) -> EnvironmentResult<SandboxCopyResult>;
 }
 
-/// Optional effect capability for the official additional-sandbox Tool. Logical inventory and
-/// pagination are Brain-owned durable state; Environment is addressed only with an exact sealed target.
+/// Optional provider-facing computer control surface. Brain does not register, schedule, or
+/// inventory these targets; an environment extension may use it behind its own Tool implementation.
 #[async_trait]
 pub trait SandboxControlPort: Send + Sync {
     async fn create(&self, request: CreateSandboxRequest) -> EnvironmentResult<SandboxStatus>;
@@ -232,6 +212,7 @@ pub(crate) fn map_environment_port_error(
         EnvironmentErrorCode::SandboxGone => BrainError::SandboxGone,
         EnvironmentErrorCode::GenerationConflict => BrainError::SandboxGenerationConflict,
         EnvironmentErrorCode::ResourceExhausted => BrainError::SandboxResourceExhausted,
+        EnvironmentErrorCode::FileNotFound => BrainError::FileNotFound(error.message.to_string()),
         _ => BrainError::Environment(error.message.to_string()),
     }
 }

@@ -121,8 +121,8 @@ impl TurnState {
     }
 }
 
-/// The closed engine services a running turn calls back into: the three intrinsic
-/// capabilities, managed re-preparation and unknown-outcome reconciliation. The turn holds
+/// The closed engine services a running turn calls back into: child sessions,
+/// environment re-preparation and unknown-outcome reconciliation. The turn holds
 /// this weakly and never names the concrete session engine, so the dependency points from the
 /// engine to this seam and not the other way around.
 #[async_trait::async_trait]
@@ -141,27 +141,10 @@ pub trait EngineServices: Send + Sync {
         cancel: CancellationToken,
     ) -> CallOutcome;
 
-    async fn execute_storage_capability(
+    async fn reconcile_managed_unknown_environment(
         self: Arc<Self>,
         session_id: &str,
-        operation_id: &str,
-        input: serde_json::Value,
-        cancel: CancellationToken,
-        st: &mut TurnState,
-    ) -> Result<CallOutcome>;
-
-    async fn execute_sandbox_capability(
-        self: Arc<Self>,
-        session_id: &str,
-        operation_id: &str,
-        input: serde_json::Value,
-        cancel: CancellationToken,
-        st: &mut TurnState,
-    ) -> Result<CallOutcome>;
-
-    async fn reconcile_managed_unknown_default_sandbox(
-        self: Arc<Self>,
-        session_id: &str,
+        tool_name: &str,
         st: &mut TurnState,
     ) -> Result<()>;
 }
@@ -2367,7 +2350,7 @@ impl TurnRun {
             )
         })?;
         match brain
-            .reconcile_managed_unknown_default_sandbox(&self.session_id, st)
+            .reconcile_managed_unknown_environment(&self.session_id, name, st)
             .await
         {
             Ok(()) => {}
@@ -2451,44 +2434,6 @@ impl TurnRun {
                         };
                         (idx, DispatchedOutcome::from(outcome))
                     });
-                }
-                Some(ToolRoute::Intrinsic(capability)) if capability == "brain.storage" => {
-                    let _permit = permit
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| BrainError::Overloaded)?;
-                    let brain = self.engine.upgrade().ok_or_else(|| {
-                        BrainError::Journal("engine capability coordinator is unavailable".into())
-                    })?;
-                    let outcome = brain
-                        .execute_storage_capability(
-                            &self.session_id,
-                            &op_id,
-                            input,
-                            self.cancel.clone(),
-                            st,
-                        )
-                        .await?;
-                    done[idx] = Some(DispatchedOutcome::from(outcome));
-                }
-                Some(ToolRoute::Intrinsic(capability)) if capability == "brain.sandbox" => {
-                    let _permit = permit
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| BrainError::Overloaded)?;
-                    let brain = self.engine.upgrade().ok_or_else(|| {
-                        BrainError::Journal("engine capability coordinator is unavailable".into())
-                    })?;
-                    let outcome = brain
-                        .execute_sandbox_capability(
-                            &self.session_id,
-                            &op_id,
-                            input,
-                            self.cancel.clone(),
-                            st,
-                        )
-                        .await?;
-                    done[idx] = Some(DispatchedOutcome::from(outcome));
                 }
                 Some(ToolRoute::Intrinsic(capability)) => {
                     join.spawn(async move {
@@ -2622,7 +2567,7 @@ pub(crate) fn verify_managed_operation(
         || operation.request_digest.as_str() != request_digest
         || operation.target.session_id.as_str() != session_id
         || operation.target.root_id.as_str() != head.root_id
-        || operation.target.kind != brain_protocol::environment::TargetKind::Default
+        || operation.target.kind != brain_protocol::environment::TargetKind::Environment
         || operation.target.sandbox_id.is_some()
     {
         return Err(BrainError::Protocol(

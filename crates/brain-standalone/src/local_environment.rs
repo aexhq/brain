@@ -22,12 +22,13 @@ use brain::environment::{
 use brain::{BrainError, Result};
 use brain_protocol::environment::{
     AcknowledgeTerminalRequest, Acknowledgement, CancelRequest, CancellationReceipt,
-    CreateSandboxRequest, EnvironmentError, EnvironmentErrorCode, ObserveRequest, OperationObservation,
-    OperationRef, PrepareSessionRequest, PreparedSession, ResolvedBinding, SandboxCopyRequest,
-    SandboxCopyRequestDirection, SandboxCopyResult, SandboxExecutionRequest, SandboxFileRequest,
-    SandboxFileWriteRequest, SandboxFileWriteResult, SandboxFileWriteSource, SandboxStatus,
-    SandboxTarget, SealedBinding, SubmitReceipt, SubmitRequest, TargetReceipt,
-    TerminalOutcome as EnvironmentTerminalOutcome, TerminalResult, WriteStdinReceipt, WriteStdinRequest,
+    CreateSandboxRequest, EnvironmentError, EnvironmentErrorCode, ObserveRequest,
+    OperationObservation, OperationRef, PrepareSessionRequest, PreparedSession, ResolvedBinding,
+    SandboxCopyRequest, SandboxCopyRequestDirection, SandboxCopyResult, SandboxExecutionRequest,
+    SandboxFileRequest, SandboxFileWriteRequest, SandboxFileWriteResult, SandboxFileWriteSource,
+    SandboxStatus, SandboxTarget, SealedBinding, SubmitReceipt, SubmitRequest, TargetReceipt,
+    TerminalOutcome as EnvironmentTerminalOutcome, TerminalResult, WriteStdinReceipt,
+    WriteStdinRequest,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -150,6 +151,15 @@ mod typed_local_tests {
             "root_id": "ses_local",
             "contract_digest": "1".repeat(64),
             "implementation_identity": digest,
+            "extension": "brain.local",
+            "protocol": "environment/v1",
+            "profile": {
+                "kind": "computer",
+                "platform": "linux-amd64",
+                "network": "none",
+                "recovery": "retained",
+            },
+            "configuration": {},
             "environment_name": "workspace",
             "capability": "echo",
             "policy_digest": "2".repeat(64),
@@ -215,9 +225,11 @@ mod typed_local_tests {
         }
     }
 
-    async fn materialize_test_default(environment: &LocalEnvironment) -> (SandboxTarget, String) {
+    async fn materialize_test_environment(
+        environment: &LocalEnvironment,
+    ) -> (SandboxTarget, String) {
         let target: SandboxTarget = typed(json!({
-            "kind": "default",
+            "kind": "environment",
             "session_id": "ses_local",
             "root_id": "ses_local",
             "binding_ref": "bnd_default",
@@ -236,7 +248,7 @@ mod typed_local_tests {
             },
         }))
         .unwrap();
-        let status = environment.materialize_default(request).await.unwrap();
+        let status = environment.materialize(request).await.unwrap();
         (status.target, status.generation.unwrap().to_string())
     }
 
@@ -264,210 +276,6 @@ mod typed_local_tests {
         request
     }
 
-    fn bash_available() -> bool {
-        std::process::Command::new("bash")
-            .arg("--version")
-            .output()
-            .is_ok()
-    }
-
-    fn sandbox_execution_request(
-        target: &SandboxTarget,
-        generation: &str,
-        execution_id: &str,
-        command: &str,
-        interactive: bool,
-    ) -> SandboxExecutionRequest {
-        let mut request: SandboxExecutionRequest = typed(json!({
-            "target": target,
-            "expected_generation": generation,
-            "execution_id": execution_id,
-            "request_digest": "0".repeat(64),
-            "input": {
-                "command": command,
-                "cwd": "/workspace",
-                "interactive": interactive,
-            },
-            "resources": {
-                "timeout_ms": 60_000,
-                "max_output_bytes": brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES,
-            },
-            "network": {"kind":"none"},
-        }))
-        .unwrap();
-        request.request_digest =
-            brain_protocol::contract::sandbox_execution_request_digest(&request);
-        request
-    }
-
-    fn stdin_request(
-        target: &SandboxTarget,
-        generation: &str,
-        execution_id: &str,
-        operation_id: &str,
-        text: &str,
-        eof: bool,
-    ) -> WriteStdinRequest {
-        let mut request: WriteStdinRequest = typed(json!({
-            "operation_id": operation_id,
-            "request_digest": "0".repeat(64),
-            "target": target,
-            "expected_generation": generation,
-            "execution_id": execution_id,
-            "text": text,
-            "eof": eof,
-        }))
-        .unwrap();
-        request.request_digest = brain_protocol::contract::write_stdin_request_digest(&request);
-        request
-    }
-
-    #[tokio::test]
-    async fn additional_sandbox_control_round_trips_create_exec_stdin_and_terminate() {
-        if !bash_available() {
-            return;
-        }
-        let dir = test_dir("additional-control");
-        let environment = LocalEnvironment::open(dir.join("environment")).unwrap();
-        let target: SandboxTarget = typed(json!({
-            "kind": "additional",
-            "session_id": "ses_local",
-            "root_id": "ses_local",
-            "binding_ref": "binding_sandbox",
-            "sandbox_id": "sandbox_local",
-        }))
-        .unwrap();
-        let create: CreateSandboxRequest = typed(json!({
-            "target": target,
-            "generation_intent": "generation_local",
-            "network": {"kind":"none"},
-            "resource_class": "microvm-1gb",
-            "resources": {
-                "timeout_ms": 60_000,
-                "max_output_bytes": brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES,
-            },
-        }))
-        .unwrap();
-        let created = SandboxControlPort::create(&*environment, create).await.unwrap();
-        assert_eq!(created.state, brain_protocol::environment::SandboxState::Running);
-        let generation = created.generation.as_ref().unwrap().to_string();
-        let inspected = SandboxControlPort::inspect(&*environment, target.clone())
-            .await
-            .unwrap();
-        assert_eq!(inspected.target_ref, created.target_ref);
-
-        let completed = SandboxControlPort::execute(
-            &*environment,
-            sandbox_execution_request(
-                &target,
-                &generation,
-                "execution_file",
-                "printf local-control > control.txt; printf completed",
-                false,
-            ),
-        )
-        .await
-        .unwrap();
-        assert_eq!(completed.observation.state, OperationState::Terminal);
-        assert_eq!(
-            completed.observation.terminal.as_ref().unwrap().outcome,
-            EnvironmentTerminalOutcome::Completed
-        );
-        let content = SandboxFilesPort::read(
-            &*environment,
-            typed(json!({
-                "target": target,
-                "expected_generation": generation,
-                "path": "/workspace/control.txt",
-            }))
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(content.content_base64)
-                .unwrap(),
-            b"local-control"
-        );
-
-        let interactive = SandboxControlPort::execute(
-            &*environment,
-            sandbox_execution_request(
-                &target,
-                &generation,
-                "execution_stdin",
-                "IFS= read -r line; printf 'got:%s' \"$line\"",
-                true,
-            ),
-        )
-        .await
-        .unwrap();
-        assert_eq!(interactive.observation.state, OperationState::Running);
-        let accepted = SandboxControlPort::write_stdin(
-            &*environment,
-            stdin_request(
-                &target,
-                &generation,
-                "execution_stdin",
-                "stdin_append",
-                "hello\n",
-                true,
-            ),
-        )
-        .await
-        .unwrap();
-        assert!(accepted.accepted);
-        let poll = stdin_request(
-            &target,
-            &generation,
-            "execution_stdin",
-            "stdin_poll",
-            "",
-            false,
-        );
-        let terminal = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let receipt = SandboxControlPort::write_stdin(&*environment, poll.clone())
-                    .await
-                    .unwrap();
-                if receipt.observation.state == OperationState::Terminal {
-                    break receipt;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("interactive local sandbox reaches a terminal");
-        assert!(
-            terminal.replayed,
-            "the exact poll refreshes its observation"
-        );
-        assert!(
-            terminal
-                .observation
-                .output
-                .iter()
-                .any(|chunk| chunk.text.as_str().contains("got:hello"))
-        );
-
-        let terminated = SandboxControlPort::terminate(&*environment, target.clone())
-            .await
-            .unwrap();
-        assert_eq!(
-            terminated.state,
-            brain_protocol::environment::SandboxState::Terminated
-        );
-        assert_eq!(
-            SandboxControlPort::inspect(&*environment, target)
-                .await
-                .unwrap()
-                .state,
-            brain_protocol::environment::SandboxState::Terminated
-        );
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
     #[tokio::test]
     async fn sandbox_file_write_lost_response_replays_without_repeating_effect() {
         let dir = test_dir("file-write-replay");
@@ -475,7 +283,7 @@ mod typed_local_tests {
         let sealed = binding(&digest, bytes.len());
         let environment = LocalEnvironment::open(dir.join("environment")).unwrap();
         prepare(&environment, sealed.clone(), &url).await;
-        let (target, generation) = materialize_test_default(&environment).await;
+        let (target, generation) = materialize_test_environment(&environment).await;
         let request = file_write_request("file-op-1", &target, &generation, "first");
 
         let first = environment.write(request.clone()).await.unwrap();
@@ -597,13 +405,16 @@ mod typed_local_tests {
         prepare(&environment, sealed.clone(), &url).await;
         let request = submit_request("op_unknown");
         let target: SandboxTarget = typed(json!({
-            "kind":"default",
+            "kind":"environment",
             "session_id":"ses_local",
             "root_id":"ses_local",
             "binding_ref":"bnd_echo",
         }))
         .unwrap();
-        let (status, _) = environment.ensure_target(target.clone(), None).await.unwrap();
+        let (status, _) = environment
+            .ensure_target(target.clone(), None)
+            .await
+            .unwrap();
         let generation = status.generation.as_ref().unwrap();
         let target_ref = status.target_ref.as_ref().unwrap();
         let operation: OperationRef = typed(json!({
@@ -749,7 +560,7 @@ impl LocalWorkspace {
             emit,
             t0,
         )
-            .await
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1084,7 +895,7 @@ pub struct LocalEnvironment {
     state_root: PathBuf,
     workspace_root: PathBuf,
     bindings: std::sync::RwLock<HashMap<String, SealedBinding>>,
-    prepared: std::sync::RwLock<HashMap<String, PreparedRuntime>>,
+    prepared: std::sync::RwLock<HashMap<(String, String), PreparedRuntime>>,
     secret_delivery: std::sync::RwLock<Option<Arc<dyn SecretDeliveryPort>>>,
     operation_gates: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     running: std::sync::Mutex<HashMap<String, CancellationToken>>,
@@ -1170,7 +981,9 @@ impl LocalEnvironment {
         let workspace_root = root.join("workspaces");
         std::fs::create_dir_all(&state_root)
             .and_then(|()| std::fs::create_dir_all(&workspace_root))
-            .map_err(|error| BrainError::Journal(format!("create local Environment data: {error}")))?;
+            .map_err(|error| {
+                BrainError::Journal(format!("create local Environment data: {error}"))
+            })?;
         Ok(Arc::new(Self {
             state_root,
             workspace_root,
@@ -1189,7 +1002,10 @@ impl LocalEnvironment {
 
     /// Complete the deliberate circular local composition after `Brain` has been constructed.
     /// The port is used only for one-purpose secret capabilities during preparation.
-    pub fn attach_secret_delivery(&self, delivery: Arc<dyn SecretDeliveryPort>) -> EnvironmentResult<()> {
+    pub fn attach_secret_delivery(
+        &self,
+        delivery: Arc<dyn SecretDeliveryPort>,
+    ) -> EnvironmentResult<()> {
         let mut slot = self.secret_delivery.write().expect("local secret delivery");
         if let Some(existing) = slot.as_ref() {
             if Arc::ptr_eq(existing, &delivery) {
@@ -1294,64 +1110,49 @@ impl LocalEnvironment {
 
     fn validate_target_shape(target: &SandboxTarget) -> EnvironmentResult<()> {
         let valid = match target.kind {
-            brain_protocol::environment::TargetKind::Default => target.sandbox_id.is_none(),
+            brain_protocol::environment::TargetKind::Environment => target.sandbox_id.is_none(),
             brain_protocol::environment::TargetKind::Additional => target.sandbox_id.is_some(),
         };
         if !valid {
             return Err(environment_error(
                 EnvironmentErrorCode::InvalidRequest,
                 false,
-                "sandbox target kind and sandbox_id disagree",
+                "target kind and sandbox_id disagree",
             ));
         }
         Ok(())
     }
 
     fn target_digest(target: &SandboxTarget) -> String {
-        hash_component(
-            &String::from_utf8(
-                serde_jcs::to_vec(target).expect("a generated sandbox target canonicalizes"),
-            )
-            .expect("canonical sandbox target JSON is UTF-8"),
-        )
-    }
-
-    fn target_component(target: &SandboxTarget) -> String {
         match target.kind {
-            brain_protocol::environment::TargetKind::Default => "default".into(),
-            brain_protocol::environment::TargetKind::Additional => format!(
-                "additional-{}",
-                hash_component(
-                    target
-                        .sandbox_id
-                        .as_ref()
-                        .expect("validated additional target has a sandbox_id")
-                        .as_str()
+            brain_protocol::environment::TargetKind::Environment => hash_component(&format!(
+                "environment\0{}\0{}",
+                target.root_id.as_str(),
+                target.binding_ref.as_str()
+            )),
+            brain_protocol::environment::TargetKind::Additional => hash_component(
+                &String::from_utf8(
+                    serde_jcs::to_vec(target).expect("a generated sandbox target canonicalizes"),
                 )
+                .expect("canonical sandbox target JSON is UTF-8"),
             ),
         }
     }
 
+    fn target_component(target: &SandboxTarget) -> String {
+        hash_component(target.binding_ref.as_str())
+    }
+
     fn status_dir(&self, target: &SandboxTarget) -> PathBuf {
-        let root = self.root_dir(target.root_id.as_str());
-        match target.kind {
-            // Preserve the durable-local default layout used before additional targets existed.
-            brain_protocol::environment::TargetKind::Default => root.join("target-events"),
-            brain_protocol::environment::TargetKind::Additional => root
-                .join("additional-targets")
-                .join(Self::target_component(target))
-                .join("target-events"),
-        }
+        self.root_dir(target.root_id.as_str())
+            .join("environments")
+            .join(Self::target_component(target))
+            .join("target-events")
     }
 
     fn target_workspace_id(target: &SandboxTarget) -> String {
         let root = hash_component(target.root_id.as_str());
-        match target.kind {
-            brain_protocol::environment::TargetKind::Default => root,
-            brain_protocol::environment::TargetKind::Additional => {
-                format!("{root}/additional/{}", Self::target_component(target))
-            }
-        }
+        format!("{root}/environments/{}", Self::target_component(target))
     }
 
     fn read_physical_target(
@@ -1439,7 +1240,7 @@ impl LocalEnvironment {
                 return Err(environment_error(
                     EnvironmentErrorCode::SandboxGone,
                     false,
-                    "the local default target has been terminated",
+                    "the local environment target has been terminated",
                 ));
             }
             if current.expires_at_ms <= brain::wall_ms() {
@@ -1452,7 +1253,7 @@ impl LocalEnvironment {
                 return Err(environment_error(
                     EnvironmentErrorCode::SandboxGone,
                     false,
-                    "the local default target reached its hard expiry",
+                    "the local environment target reached its hard expiry",
                 ));
             }
             if let Some(expected) = generation_intent
@@ -1461,7 +1262,7 @@ impl LocalEnvironment {
                 return Err(environment_error(
                     EnvironmentErrorCode::GenerationConflict,
                     false,
-                    "the local default target already has another generation",
+                    "the local environment target already has another generation",
                 ));
             }
             return self
@@ -1496,11 +1297,15 @@ impl LocalEnvironment {
             .map(|status| (status, false))
     }
 
-    fn prepared_runtime(&self, session_id: &str) -> EnvironmentResult<PreparedRuntime> {
+    fn prepared_runtime(
+        &self,
+        session_id: &str,
+        environment_name: &str,
+    ) -> EnvironmentResult<PreparedRuntime> {
         self.prepared
             .read()
             .expect("local prepared sessions")
-            .get(session_id)
+            .get(&(session_id.to_owned(), environment_name.to_owned()))
             .cloned()
             .ok_or_else(|| {
                 environment_error(
@@ -1521,7 +1326,7 @@ impl LocalEnvironment {
             return Err(environment_error(
                 EnvironmentErrorCode::SandboxNotMaterialized,
                 false,
-                "the local default target was never materialized",
+                "the local environment target was never materialized",
             ));
         };
         if matches!(current.state.as_str(), "gone" | "terminated")
@@ -1530,7 +1335,7 @@ impl LocalEnvironment {
             return Err(environment_error(
                 EnvironmentErrorCode::SandboxGone,
                 false,
-                "the local default target is gone",
+                "the local environment target is gone",
             ));
         }
         if current.generation != expected_generation {
@@ -1548,7 +1353,9 @@ impl LocalEnvironment {
         workspace: &LocalWorkspace,
         requested: &str,
     ) -> EnvironmentResult<brain_protocol::environment::FileEntry> {
-        let path = workspace.resolve(requested).map_err(brain_error_to_environment)?;
+        let path = workspace
+            .resolve(requested)
+            .map_err(brain_error_to_environment)?;
         let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 environment_error(
@@ -1654,13 +1461,16 @@ impl LocalEnvironment {
     }
 
     fn terminal_from_outcome(outcome: CallOutcome) -> EnvironmentResult<TerminalResult> {
-        let completed = outcome.outcome == EnvironmentTerminalOutcome::Completed && !outcome.is_error;
+        let completed =
+            outcome.outcome == EnvironmentTerminalOutcome::Completed && !outcome.is_error;
         let terminal_outcome = if completed {
             EnvironmentTerminalOutcome::Completed
         } else {
             match outcome.outcome {
                 EnvironmentTerminalOutcome::Cancelled => EnvironmentTerminalOutcome::Cancelled,
-                EnvironmentTerminalOutcome::DeadlineExceeded => EnvironmentTerminalOutcome::DeadlineExceeded,
+                EnvironmentTerminalOutcome::DeadlineExceeded => {
+                    EnvironmentTerminalOutcome::DeadlineExceeded
+                }
                 EnvironmentTerminalOutcome::Interrupted => EnvironmentTerminalOutcome::Interrupted,
                 EnvironmentTerminalOutcome::Completed | EnvironmentTerminalOutcome::Failed => {
                     EnvironmentTerminalOutcome::Failed
@@ -1932,7 +1742,16 @@ impl EnvironmentPort for LocalEnvironment {
             .iter()
             .try_fold(0_u64, |total, layer| total.checked_add(layer.bytes.get()));
         if descriptor.target != brain_protocol::environment::ArtifactTarget::LinuxAmd64
-            || descriptor.bundle_digest != binding.implementation_identity
+            || binding.extension.as_str() != "brain.local"
+            || binding.protocol != "environment/v1"
+            || binding.profile.kind != brain_protocol::environment::EnvironmentProfileKind::Computer
+            || binding.profile.platform
+                != Some(brain_protocol::environment::EnvironmentProfilePlatform::LinuxAmd64)
+            || binding.profile.network
+                != brain_protocol::environment::EnvironmentProfileNetwork::None
+            || binding.profile.recovery
+                != brain_protocol::environment::EnvironmentProfileRecovery::Retained
+            || !binding.configuration.is_empty()
             || descriptor.contract_digest != binding.contract_digest
             || descriptor.tool_name != binding.capability
             || descriptor.bytes.get() as usize > brain_protocol::MAX_TOOL_BUNDLE_BYTES
@@ -1989,7 +1808,8 @@ impl EnvironmentPort for LocalEnvironment {
         let session_id = request.envelope.session_id.to_string();
         let root_id = request.envelope.root_id.to_string();
         let operation_id = request.envelope.operation_id.to_string();
-        let runtime = self.prepared_runtime(&session_id)?;
+        let binding = self.binding(request.envelope.binding_ref.as_str())?;
+        let runtime = self.prepared_runtime(&session_id, binding.environment_name.as_str())?;
         if runtime.root_id != root_id
             || !runtime
                 .binding_refs
@@ -2053,10 +1873,13 @@ impl EnvironmentPort for LocalEnvironment {
         }
 
         let target: SandboxTarget = typed(json!({
-            "kind": "default",
+            "kind": "environment",
             "session_id": request.envelope.session_id,
             "root_id": request.envelope.root_id,
-            "binding_ref": request.envelope.binding_ref,
+            "binding_ref": brain_protocol::contract::environment_binding_ref(
+                request.envelope.root_id.as_str(),
+                binding.environment_name.as_str(),
+            ),
         }))?;
         let (status, _) = self.ensure_target(target.clone(), None).await?;
         let generation = status.generation.as_ref().ok_or_else(|| {
@@ -2288,7 +2111,24 @@ impl SessionPreparationPort for LocalEnvironment {
                 ));
             }
         }
-        let physical_id = hash_component(&root_id);
+        let root_physical_id = hash_component(&root_id);
+        let first_binding = request.bindings.first().ok_or_else(|| {
+            environment_error(
+                EnvironmentErrorCode::BindingConflict,
+                false,
+                "preparation contains no environment bindings",
+            )
+        })?;
+        let environment_name = self
+            .binding(first_binding.binding_ref.as_str())?
+            .environment_name
+            .to_string();
+        let environment_binding_ref =
+            brain_protocol::contract::environment_binding_ref(&root_id, &environment_name);
+        let physical_id = format!(
+            "{root_physical_id}/environments/{}",
+            hash_component(environment_binding_ref.as_str())
+        );
         let workspace_base = self.workspace_root.join(&physical_id);
         let bundle_dir = workspace_base.join("bundles");
         std::fs::create_dir_all(&bundle_dir)
@@ -2307,6 +2147,13 @@ impl SessionPreparationPort for LocalEnvironment {
                     EnvironmentErrorCode::BindingConflict,
                     false,
                     "preparation binding belongs to another root or session",
+                ));
+            }
+            if binding.environment_name.as_str() != environment_name {
+                return Err(environment_error(
+                    EnvironmentErrorCode::BindingConflict,
+                    false,
+                    "one preparation cannot span logical environments",
                 ));
             }
             let descriptor = binding.bundle.as_ref().ok_or_else(|| {
@@ -2394,8 +2241,7 @@ impl SessionPreparationPort for LocalEnvironment {
                 } else {
                     "layer"
                 };
-                let destination =
-                    bundle_dir.join(format!("{}.{extension}", layer.digest.as_str()));
+                let destination = bundle_dir.join(format!("{}.{extension}", layer.digest.as_str()));
                 if let Some(existing) = read_bytes_if_exists(&destination, "local layer cache")? {
                     if existing != bytes {
                         return Err(environment_error(
@@ -2450,7 +2296,10 @@ impl SessionPreparationPort for LocalEnvironment {
                 .iter()
                 .flat_map(|binding| binding.bundle_digests.iter().map(|digest| digest.as_str()))
                 .collect::<std::collections::HashSet<_>>();
-            if fetches.keys().any(|digest| !referenced.contains(digest.as_str())) {
+            if fetches
+                .keys()
+                .any(|digest| !referenced.contains(digest.as_str()))
+            {
                 return Err(environment_error(
                     EnvironmentErrorCode::BindingConflict,
                     false,
@@ -2507,7 +2356,7 @@ impl SessionPreparationPort for LocalEnvironment {
                     "root_id": request.root_id,
                     "session_id": request.session_id,
                     "target": {
-                        "kind": "default",
+                        "kind": "environment",
                         "session_id": request.session_id,
                         "root_id": request.root_id,
                         "binding_ref": first_binding.binding_ref,
@@ -2545,7 +2394,7 @@ impl SessionPreparationPort for LocalEnvironment {
             .write()
             .expect("local prepared sessions")
             .insert(
-                session_id.clone(),
+                (session_id.clone(), environment_name),
                 PreparedRuntime {
                     root_id: root_id.clone(),
                     binding_refs,
@@ -2558,21 +2407,20 @@ impl SessionPreparationPort for LocalEnvironment {
         }))
     }
 
-    async fn materialize_default(
-        &self,
-        request: CreateSandboxRequest,
-    ) -> EnvironmentResult<SandboxStatus> {
+    async fn materialize(&self, request: CreateSandboxRequest) -> EnvironmentResult<SandboxStatus> {
         self.ensure_target(request.target, Some(request.generation_intent.as_str()))
             .await
             .map(|(status, _)| status)
     }
 
-    async fn dematerialize_default(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus> {
-        if target.kind != brain_protocol::environment::TargetKind::Default || target.sandbox_id.is_some() {
+    async fn dematerialize(&self, target: SandboxTarget) -> EnvironmentResult<SandboxStatus> {
+        if target.kind != brain_protocol::environment::TargetKind::Environment
+            || target.sandbox_id.is_some()
+        {
             return Err(environment_error(
                 EnvironmentErrorCode::InvalidRequest,
                 false,
-                "default dematerialization requires the shared default target",
+                "dematerialization requires a named environment target",
             ));
         }
         let _guard = self.target_gate.lock().await;
@@ -2580,7 +2428,7 @@ impl SessionPreparationPort for LocalEnvironment {
             return Err(environment_error(
                 EnvironmentErrorCode::SandboxNotMaterialized,
                 false,
-                "the local default target was never materialized",
+                "the local environment was never materialized",
             ));
         };
         if matches!(current.state.as_str(), "gone" | "terminated") {
@@ -2916,7 +2764,10 @@ impl SandboxControlPort for LocalEnvironment {
         Self::sandbox_receipt(operation, observation, false)
     }
 
-    async fn write_stdin(&self, request: WriteStdinRequest) -> EnvironmentResult<WriteStdinReceipt> {
+    async fn write_stdin(
+        &self,
+        request: WriteStdinRequest,
+    ) -> EnvironmentResult<WriteStdinReceipt> {
         if brain_protocol::contract::write_stdin_request_digest(&request) != request.request_digest
             || request.text.len() > 4_096
         {
@@ -3207,7 +3058,10 @@ impl SandboxFilesPort for LocalEnvironment {
         })
     }
 
-    async fn write(&self, request: SandboxFileWriteRequest) -> EnvironmentResult<SandboxFileWriteResult> {
+    async fn write(
+        &self,
+        request: SandboxFileWriteRequest,
+    ) -> EnvironmentResult<SandboxFileWriteResult> {
         if brain_protocol::contract::sandbox_file_write_request_digest(&request)
             != request.request_digest
         {
@@ -3542,7 +3396,11 @@ fn typed<T: DeserializeOwned>(value: Value) -> EnvironmentResult<T> {
     })
 }
 
-fn environment_error(code: EnvironmentErrorCode, retryable: bool, message: &str) -> EnvironmentError {
+fn environment_error(
+    code: EnvironmentErrorCode,
+    retryable: bool,
+    message: &str,
+) -> EnvironmentError {
     serde_json::from_value(json!({
         "code": code,
         "details": {},
@@ -3595,7 +3453,10 @@ fn read_json<T: DeserializeOwned>(path: &Path, label: &str) -> EnvironmentResult
     })
 }
 
-fn read_json_if_exists<T: DeserializeOwned>(path: &Path, label: &str) -> EnvironmentResult<Option<T>> {
+fn read_json_if_exists<T: DeserializeOwned>(
+    path: &Path,
+    label: &str,
+) -> EnvironmentResult<Option<T>> {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|_| {
             environment_error(

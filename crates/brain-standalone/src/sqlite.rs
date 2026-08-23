@@ -1894,7 +1894,6 @@ mod tests {
             storage_delete: None,
             pending_customer_acks: vec![],
             pending_managed_acks: vec![],
-            default_sandbox: None,
             environment_targets: HashMap::new(),
             tool_setups: HashMap::new(),
         }

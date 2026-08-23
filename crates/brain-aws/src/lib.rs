@@ -11,19 +11,12 @@ use std::sync::Arc;
 
 use brain::Result;
 use brain::adapter::ToolExecutor;
-use brain::environment::{
-    EnvironmentPort, EnvironmentRegistry, SandboxControlPort, SandboxFilesPort,
-    SessionPreparationPort,
-};
+use brain::environment::EnvironmentRegistry;
 use brain::journal::Journal;
 use brain::session::{Brain, BrainConfig};
 
 pub struct AwsRuntimePorts {
     pub environments: EnvironmentRegistry,
-    pub environment: Arc<dyn EnvironmentPort>,
-    pub session_preparation: Arc<dyn SessionPreparationPort>,
-    pub sandbox_files: Arc<dyn SandboxFilesPort>,
-    pub sandbox_control: Arc<dyn SandboxControlPort>,
     pub external_executor: Option<Arc<dyn ToolExecutor>>,
     pub customer_delivery: Option<Arc<dyn brain::customer::CustomerEnvironmentDeliveryPort>>,
     pub customer_transport: Option<brain::customer::CustomerTransportConfig>,
@@ -111,10 +104,6 @@ pub async fn compose(
             session_storage: Some(storage.clone()),
             bundle_storage: Some(storage),
             environments: ports.environments,
-            environment: Some(ports.environment),
-            session_preparation: Some(ports.session_preparation),
-            sandbox_files: Some(ports.sandbox_files),
-            sandbox_control: Some(ports.sandbox_control),
             customer_delivery: ports.customer_delivery,
             customer_transport: ports.customer_transport,
             compactor: None,

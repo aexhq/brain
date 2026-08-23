@@ -5,16 +5,18 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use crate::environment::{
-    Digest, OperationEnvelope, SandboxCopyRequest, SandboxExecutionRequest,
+    Digest, Identifier, OperationEnvelope, SandboxCopyRequest, SandboxExecutionRequest,
     SandboxFileWriteRequest, TerminalResult, WriteStdinRequest,
 };
 use crate::session::{ExternalToolCallRequest, ExternalToolCallResponse, ExternalToolDisposition};
 
 /// Canonical JSON Schema for the only supported Brain-to-Environment contract.
-pub const ENVIRONMENT_CONTRACT_SCHEMA_JSON: &str = include_str!("../../../contracts/environment/contract.json");
+pub const ENVIRONMENT_CONTRACT_SCHEMA_JSON: &str =
+    include_str!("../../../contracts/environment/contract.json");
 
 /// Pinned SHA-256 of the schema's RFC 8785 canonical JSON representation.
-pub const ENVIRONMENT_CONTRACT_DIGEST: &str = include_str!("../../../contracts/environment/contract.digest");
+pub const ENVIRONMENT_CONTRACT_DIGEST: &str =
+    include_str!("../../../contracts/environment/contract.digest");
 
 /// Hash any serializable value using RFC 8785 canonical JSON.
 pub fn canonical_digest<T: Serialize>(value: &T) -> Result<Digest, serde_json::Error> {
@@ -24,10 +26,19 @@ pub fn canonical_digest<T: Serialize>(value: &T) -> Result<Digest, serde_json::E
         .expect("SHA-256 hex satisfies the contract Digest schema"))
 }
 
+pub fn environment_binding_ref(root_id: &str, environment_name: &str) -> Identifier {
+    let digest = hex::encode(Sha256::digest(
+        format!("brain.environment-target\0{root_id}\0{environment_name}").as_bytes(),
+    ));
+    format!("bnd_{}", &digest[..24])
+        .parse()
+        .expect("derived environment binding ref satisfies Identifier")
+}
+
 /// Compute the compatibility identity of the embedded contract schema.
 pub fn environment_contract_digest() -> Digest {
-    let schema: Value =
-        serde_json::from_str(ENVIRONMENT_CONTRACT_SCHEMA_JSON).expect("embedded Environment schema is valid");
+    let schema: Value = serde_json::from_str(ENVIRONMENT_CONTRACT_SCHEMA_JSON)
+        .expect("embedded Environment schema is valid");
     canonical_digest(&schema).expect("the embedded Environment schema is canonicalizable")
 }
 
@@ -287,7 +298,10 @@ mod tests {
 
     #[test]
     fn pinned_contract_digest_matches_the_canonical_schema() {
-        assert_eq!(&*environment_contract_digest(), ENVIRONMENT_CONTRACT_DIGEST.trim());
+        assert_eq!(
+            &*environment_contract_digest(),
+            ENVIRONMENT_CONTRACT_DIGEST.trim()
+        );
         assert!(!ENVIRONMENT_CONTRACT_SCHEMA_JSON.contains("protocol_version"));
     }
 

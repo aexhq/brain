@@ -14,10 +14,7 @@ use serde::Deserialize;
 /// not host-side extension points: an SDK caller may select only these exact identifiers, and
 /// model-visible Tool names never participate in dispatch.
 pub fn is_direct_engine_capability(capability: &str) -> bool {
-    matches!(
-        capability,
-        "brain.subagents" | "brain.storage" | "brain.sandbox"
-    )
+    capability == "brain.subagents"
 }
 
 /// Resolve native tools in exact declaration order. Kind discriminator strings and protocol

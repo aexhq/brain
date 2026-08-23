@@ -87,7 +87,7 @@ fn sandbox_file_page(
 pub(super) async fn sandbox_file_list(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path((id, environment)): Path<(String, String)>,
     Json(request): Json<SandboxFileListRequest>,
 ) -> Result<Json<SandboxFileListResponse>, Failure> {
     authorize_session(&state, &headers, &id).await?;
@@ -95,6 +95,7 @@ pub(super) async fn sandbox_file_list(
         .brain
         .sandbox_file_list(
             &id,
+            &environment,
             &request.generation,
             &request.path,
             request.cursor.as_deref(),
@@ -108,13 +109,13 @@ pub(super) async fn sandbox_file_list(
 pub(super) async fn sandbox_file_stat(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path((id, environment)): Path<(String, String)>,
     Json(request): Json<SandboxFilePathRequest>,
 ) -> Result<Json<brain_protocol::environment::FileEntry>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain
-        .sandbox_file_stat(&id, &request.generation, &request.path)
+        .sandbox_file_stat(&id, &environment, &request.generation, &request.path)
         .await
         .map(Json)
         .map_err(map_err)
@@ -123,13 +124,19 @@ pub(super) async fn sandbox_file_stat(
 pub(super) async fn sandbox_file_read_inline(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path((id, environment)): Path<(String, String)>,
     Json(request): Json<SandboxFileReadRequest>,
 ) -> Result<Json<brain::environment::SandboxFileContent>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain
-        .sandbox_file_read_inline(&id, &request.generation, &request.path, request.max_bytes)
+        .sandbox_file_read_inline(
+            &id,
+            &environment,
+            &request.generation,
+            &request.path,
+            request.max_bytes,
+        )
         .await
         .map(Json)
         .map_err(map_err)
@@ -138,7 +145,7 @@ pub(super) async fn sandbox_file_read_inline(
 pub(super) async fn sandbox_file_write_inline(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path((id, environment)): Path<(String, String)>,
     Json(request): Json<SandboxFileWriteRequest>,
 ) -> Result<Json<brain_protocol::environment::FileEntry>, Failure> {
     authorize_session(&state, &headers, &id).await?;
@@ -163,6 +170,7 @@ pub(super) async fn sandbox_file_write_inline(
         .brain
         .sandbox_file_write_inline(
             &id,
+            &environment,
             request.generation,
             request.path,
             request.content_base64,
@@ -177,13 +185,13 @@ pub(super) async fn sandbox_file_write_inline(
 pub(super) async fn sandbox_file_prepare_download(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path((id, environment)): Path<(String, String)>,
     Json(request): Json<SandboxFilePathRequest>,
 ) -> Result<Json<StorageTransferResponse>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain
-        .sandbox_file_prepare_download(&id, request.generation, request.path)
+        .sandbox_file_prepare_download(&id, &environment, request.generation, request.path)
         .await
         .map(storage_ticket)
         .map(Json)
@@ -193,7 +201,7 @@ pub(super) async fn sandbox_file_prepare_download(
 pub(super) async fn sandbox_file_prepare_upload(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path((id, environment)): Path<(String, String)>,
     Json(request): Json<SandboxFileUploadRequest>,
 ) -> Result<Json<StorageTransferResponse>, Failure> {
     authorize_session(&state, &headers, &id).await?;
@@ -201,6 +209,7 @@ pub(super) async fn sandbox_file_prepare_upload(
         .brain
         .sandbox_file_prepare_upload(
             &id,
+            &environment,
             request.generation,
             request.path,
             request.bytes,
@@ -216,7 +225,7 @@ pub(super) async fn sandbox_file_prepare_upload(
 pub(super) async fn sandbox_file_complete_upload(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((id, transfer_id)): Path<(String, String)>,
+    Path((id, _environment, transfer_id)): Path<(String, String, String)>,
 ) -> Result<Json<brain_protocol::environment::FileEntry>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
@@ -231,6 +240,7 @@ async fn sandbox_file_search(
     state: AppState,
     headers: HeaderMap,
     id: String,
+    environment: String,
     request: SandboxFileSearchRequest,
     grep: bool,
 ) -> Result<Json<SandboxFileListResponse>, Failure> {
@@ -263,6 +273,7 @@ async fn sandbox_file_search(
         .brain
         .sandbox_file_search(
             &id,
+            &environment,
             &request.generation,
             &request.path,
             expression,
@@ -278,17 +289,17 @@ async fn sandbox_file_search(
 pub(super) async fn sandbox_file_find(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path((id, environment)): Path<(String, String)>,
     Json(request): Json<SandboxFileSearchRequest>,
 ) -> Result<Json<SandboxFileListResponse>, Failure> {
-    sandbox_file_search(state, headers, id, request, false).await
+    sandbox_file_search(state, headers, id, environment, request, false).await
 }
 
 pub(super) async fn sandbox_file_grep(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
+    Path((id, environment)): Path<(String, String)>,
     Json(request): Json<SandboxFileSearchRequest>,
 ) -> Result<Json<SandboxFileListResponse>, Failure> {
-    sandbox_file_search(state, headers, id, request, true).await
+    sandbox_file_search(state, headers, id, environment, request, true).await
 }

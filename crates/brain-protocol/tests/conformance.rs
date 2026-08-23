@@ -453,7 +453,7 @@ fn file_effect_digests_refresh_transport_authority_without_changing_effect_ident
     let zero = "0000000000000000000000000000000000000000000000000000000000000000";
     let sha = "1111111111111111111111111111111111111111111111111111111111111111";
     let target = serde_json::json!({
-        "kind": "default",
+        "kind": "environment",
         "session_id": "session-1",
         "root_id": "root-1",
         "binding_ref": "binding-1",

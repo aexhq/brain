@@ -6,7 +6,7 @@
 
 use crate::{LocalEnvironment, LocalKeyCustody, LocalSessionStorage, SqliteStore};
 use brain::Result;
-use brain::environment::{EnvironmentPort, SandboxControlPort, SandboxFilesPort, SessionPreparationPort};
+use brain::environment::{EnvironmentPort, SandboxFilesPort, SessionPreparationPort};
 use brain::journal::Journal;
 use brain::keys::KeyCustody;
 use brain::storage::{BundleStoragePort, SessionStoragePort};
@@ -24,7 +24,6 @@ pub struct DurableLocalParts {
     pub environment: Arc<dyn EnvironmentPort>,
     pub session_preparation: Arc<dyn SessionPreparationPort>,
     pub sandbox_files: Arc<dyn SandboxFilesPort>,
-    pub sandbox_control: Arc<dyn SandboxControlPort>,
 }
 
 pub fn durable_local_parts(data_dir: impl Into<PathBuf>) -> Result<DurableLocalParts> {
@@ -41,7 +40,6 @@ pub fn durable_local_parts(data_dir: impl Into<PathBuf>) -> Result<DurableLocalP
     let environment: Arc<dyn EnvironmentPort> = local_environment.clone();
     let session_preparation: Arc<dyn SessionPreparationPort> = local_environment.clone();
     let sandbox_files: Arc<dyn SandboxFilesPort> = local_environment.clone();
-    let sandbox_control: Arc<dyn SandboxControlPort> = local_environment.clone();
     Ok(DurableLocalParts {
         journal: Journal::new(store, format!("brain-{}", brain::mint_id("node", 16))),
         custody,
@@ -51,6 +49,5 @@ pub fn durable_local_parts(data_dir: impl Into<PathBuf>) -> Result<DurableLocalP
         environment,
         session_preparation,
         sandbox_files,
-        sandbox_control,
     })
 }

@@ -81,7 +81,7 @@ pub enum BrainError {
     #[error("session storage object exceeds the sealed limit of {limit} bytes")]
     StorageObjectTooLarge { limit: u64 },
 
-    #[error("the default sandbox has never been materialized")]
+    #[error("the environment has never been materialized")]
     SandboxNotMaterialized,
 
     #[error("the requested sandbox generation is gone")]

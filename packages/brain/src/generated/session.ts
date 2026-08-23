@@ -544,7 +544,7 @@ export interface ToolConfig {
   definition: ToolDefinition;
   executor: ToolExecutor;
   /**
-   * The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed.
+   * The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed.
    */
   network?: {
     /**
@@ -555,16 +555,199 @@ export interface ToolConfig {
   };
 }
 /**
- * Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation.
+ * Create-time-only immutable artifact-layer bytes. Brain stages these outside the journal, then discards this representation.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ToolArtifactLayer".
+ */
+export interface ToolArtifactLayer {
+  checksum: Sha256Hex;
+  content_base64: string;
+  bytes: number;
+  media_type: "application/javascript+esm" | "application/x-xz";
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ToolArtifactLayerRef".
+ */
+export interface ToolArtifactLayerRef {
+  checksum: Sha256Hex;
+  bytes: number;
+  media_type: "application/javascript+esm" | "application/x-xz";
+  mount_path: string;
+  unpack: "file" | "tar.xz";
+}
+/**
+ * A canonical computer-profile manifest plus create-time-only immutable runtime and code layers.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ToolBundle".
  */
 export interface ToolBundle {
   checksum: Sha256Hex;
-  content_base64: string;
   bytes: number;
-  media_type: "application/javascript+esm";
+  target: "linux-amd64" | "linux-arm64";
+  execute_path: string;
+  setup_path?: string | null;
+  /**
+   * @minItems 1
+   * @maxItems 16
+   */
+  layers:
+    | [ToolArtifactLayerRef]
+    | [ToolArtifactLayerRef, ToolArtifactLayerRef]
+    | [ToolArtifactLayerRef, ToolArtifactLayerRef, ToolArtifactLayerRef]
+    | [ToolArtifactLayerRef, ToolArtifactLayerRef, ToolArtifactLayerRef, ToolArtifactLayerRef]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ]
+    | [
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef,
+        ToolArtifactLayerRef
+      ];
 }
 /**
  * Sealed at create with the rest of the prefix. Omitted tools default to an empty set.
@@ -735,6 +918,12 @@ export interface CreateSessionRequest {
    * @maxItems 128
    */
   tool_bundles?: ToolBundle[];
+  /**
+   * Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles.
+   *
+   * @maxItems 256
+   */
+  tool_artifact_layers?: ToolArtifactLayer[];
   /**
    * Write-only values for required managed Tool environment names; encrypted in custody.
    */

@@ -278,7 +278,9 @@ pub(super) fn session_doc_summary(
                 code: match failure.code.as_str() {
                     "binding_conflict" => session::SessionFailureCode::BindingConflict,
                     "provider_unusable" => session::SessionFailureCode::ProviderUnusable,
-                    "environment_unavailable" => session::SessionFailureCode::EnvironmentUnavailable,
+                    "environment_unavailable" => {
+                        session::SessionFailureCode::EnvironmentUnavailable
+                    }
                     _ => session::SessionFailureCode::Internal,
                 },
                 message: failure.message.clone(),

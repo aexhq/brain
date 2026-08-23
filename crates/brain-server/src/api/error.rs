@@ -96,7 +96,7 @@ pub(super) fn map_err(e: BrainError) -> Failure {
         BrainError::SandboxNotMaterialized => (
             S::CONFLICT,
             "sandbox_not_materialized",
-            "the default sandbox has not been materialized",
+            "the environment has not been materialized",
             false,
         ),
         BrainError::SandboxGone => (

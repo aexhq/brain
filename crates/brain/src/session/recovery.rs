@@ -553,7 +553,8 @@ pub(super) async fn recover_managed_calls(
             )];
             commit(brain, session_id, &mut resident.st, unknown).await?;
         }
-        reconcile_managed_unknown_default_sandbox(brain, session_id, &mut resident.st).await?;
+        reconcile_managed_unknown_environment(brain, session_id, &call.name, &mut resident.st)
+            .await?;
         let outcome = crate::tools::enforce_outcome(
             tools.iter().find(|tool| tool.name == call.name),
             &call.name,
@@ -587,23 +588,18 @@ pub(super) async fn recover_managed_calls(
 
     let mut pending = std::collections::VecDeque::from(pending);
     'managed_calls: while let Some(mut call) = pending.pop_front() {
-        let recovered_binding = resident.managed_bindings.get(&call.name);
-        let environment = recovered_binding
-            .map(|binding| &binding.environment)
-            .or(brain.environment.as_ref())
-            .ok_or_else(|| {
-                BrainError::EnvironmentUnavailable(format!(
-                    "managed Tool {} has no recovered immutable binding",
-                    call.name
-                ))
-            })?;
-        let binding = recovered_binding.map(|binding| &binding.resolved);
-        let max_wait_ms = binding
-            .map(|binding| binding.limits.max_wait_ms)
-            .unwrap_or(30_000)
-            .min(30_000);
+        let recovered_binding = resident.managed_bindings.get(&call.name).ok_or_else(|| {
+            BrainError::EnvironmentUnavailable(format!(
+                "managed Tool {} has no recovered immutable binding",
+                call.name
+            ))
+        })?;
+        let environment = &recovered_binding.environment;
+        let binding = &recovered_binding.resolved;
+        let max_wait_ms = binding.limits.max_wait_ms.min(30_000);
         if call.submit_unknown {
-            reconcile_managed_unknown_default_sandbox(brain, session_id, &mut resident.st).await?;
+            reconcile_managed_unknown_environment(brain, session_id, &call.name, &mut resident.st)
+                .await?;
             recovered.push((
                 call.clone(),
                 call.operation.clone(),
@@ -612,7 +608,7 @@ pub(super) async fn recover_managed_calls(
             ));
             continue;
         }
-        if binding.is_some_and(|binding| binding.binding_ref != call.envelope.binding_ref) {
+        if binding.binding_ref != call.envelope.binding_ref {
             return Err(BrainError::Protocol(
                 "managed Tool binding changed across durable recovery".into(),
             ));
@@ -646,7 +642,10 @@ pub(super) async fn recover_managed_calls(
             match observed {
                 Ok(observation) => (operation, observation),
                 Err(error) if error.code == EnvironmentErrorCode::SandboxGone => {
-                    sandbox_gone = Some(managed_operation_gone_status(&operation)?);
+                    sandbox_gone = Some((
+                        recovered_binding.environment_name.clone(),
+                        managed_operation_gone_status(&operation)?,
+                    ));
                     recovered.push((
                         call,
                         Some(operation),
@@ -697,9 +696,7 @@ pub(super) async fn recover_managed_calls(
                                 "managed Tool disappeared during exact re-preparation".into(),
                             )
                         })?;
-                        if binding.is_some_and(|binding| {
-                            refreshed.resolved.binding_ref != binding.binding_ref
-                        }) {
+                        if refreshed.resolved.binding_ref != binding.binding_ref {
                             return Err(BrainError::Protocol(
                                 "managed Tool binding changed during exact re-preparation".into(),
                             ));
@@ -716,9 +713,10 @@ pub(super) async fn recover_managed_calls(
                             },
                         )];
                         commit(brain, session_id, &mut resident.st, unknown).await?;
-                        reconcile_managed_unknown_default_sandbox(
+                        reconcile_managed_unknown_environment(
                             brain,
                             session_id,
+                            &call.name,
                             &mut resident.st,
                         )
                         .await?;
@@ -729,7 +727,7 @@ pub(super) async fn recover_managed_calls(
                                 brain,
                                 session_id,
                                 &mut resident.st,
-                                recovered_binding,
+                                Some(recovered_binding),
                                 &mut call,
                             )
                             .await?;
@@ -759,9 +757,7 @@ pub(super) async fn recover_managed_calls(
 
         if accepted_now {
             if let Some(target) = &observation.target {
-                let environment_name = recovered_binding
-                    .map(|binding| binding.environment_name.clone())
-                    .unwrap_or_else(|| "default".into());
+                let environment_name = recovered_binding.environment_name.clone();
                 resident.st.head.environment_targets.insert(
                     environment_name,
                     managed_operation_running_status(&operation, target.expires_at_ms)?,
@@ -797,8 +793,13 @@ pub(super) async fn recover_managed_calls(
                         },
                     )];
                     commit(brain, session_id, &mut resident.st, unknown).await?;
-                    reconcile_managed_unknown_default_sandbox(brain, session_id, &mut resident.st)
-                        .await?;
+                    reconcile_managed_unknown_environment(
+                        brain,
+                        session_id,
+                        &call.name,
+                        &mut resident.st,
+                    )
+                    .await?;
                     if call.envelope.phase
                         == brain_protocol::environment::OperationEnvelopePhase::Setup
                     {
@@ -806,7 +807,7 @@ pub(super) async fn recover_managed_calls(
                             brain,
                             session_id,
                             &mut resident.st,
-                            recovered_binding,
+                            Some(recovered_binding),
                             &mut call,
                         )
                         .await?;
@@ -820,7 +821,10 @@ pub(super) async fn recover_managed_calls(
                     continue 'managed_calls;
                 }
                 Err(error) if error.code == EnvironmentErrorCode::SandboxGone => {
-                    sandbox_gone = Some(managed_operation_gone_status(&operation)?);
+                    sandbox_gone = Some((
+                        recovered_binding.environment_name.clone(),
+                        managed_operation_gone_status(&operation)?,
+                    ));
                     recovered.push((
                         call,
                         Some(operation),
@@ -853,7 +857,10 @@ pub(super) async fn recover_managed_calls(
                 match environment.cancel(cancel).await {
                     Ok(_) => {}
                     Err(error) if error.code == EnvironmentErrorCode::SandboxGone => {
-                        sandbox_gone = Some(managed_operation_gone_status(&operation)?);
+                        sandbox_gone = Some((
+                            recovered_binding.environment_name.clone(),
+                            managed_operation_gone_status(&operation)?,
+                        ));
                     }
                     Err(error) => return Err(map_environment_port_error(error)),
                 }
@@ -876,7 +883,10 @@ pub(super) async fn recover_managed_calls(
             })? {
                 Ok(next) => observation = next,
                 Err(error) if error.code == EnvironmentErrorCode::SandboxGone => {
-                    sandbox_gone = Some(managed_operation_gone_status(&operation)?);
+                    sandbox_gone = Some((
+                        recovered_binding.environment_name.clone(),
+                        managed_operation_gone_status(&operation)?,
+                    ));
                     recovered.push((
                         call,
                         Some(operation),
@@ -925,11 +935,7 @@ pub(super) async fn recover_managed_calls(
                 })?;
             let mut setup = None;
             if outcome.outcome == TerminalOutcome::Completed && !outcome.is_error {
-                let environment_name = recovered_binding
-                    .map(|binding| binding.environment_name.clone())
-                    .ok_or_else(|| {
-                        BrainError::Journal("setup operation has no logical environment".into())
-                    })?;
+                let environment_name = recovered_binding.environment_name.clone();
                 let ready = crate::journal::ToolSetupDoc {
                     artifact_digest: descriptor.bundle_digest.to_string(),
                     environment: environment_name,
@@ -1102,11 +1108,18 @@ pub(super) async fn recover_managed_calls(
             terminal = outcome.terminal.map(|value| (call.call, call.name, value));
         }
     }
-    if let Some(status) = sandbox_gone {
-        resident.st.head.default_sandbox = Some(status.clone());
+    if let Some((environment, status)) = sandbox_gone {
+        resident
+            .st
+            .head
+            .environment_targets
+            .insert(environment.clone(), status.clone());
         records.push((
             resident.st.take_seq(),
-            Record::DefaultSandboxChanged { status },
+            Record::EnvironmentChanged {
+                environment,
+                status,
+            },
         ));
     }
     if cancellation_requested {
@@ -1237,27 +1250,40 @@ async fn close_unknown_setup(
     Ok(())
 }
 
-/// Reconcile the rooted default target after Environment reports that Submit may have reached the guest
+/// Reconcile the bound environment after it reports that Submit may have reached the guest
 /// but no operation receipt can be recovered. The durable `ManagedCallUnknown` marker is always
 /// committed by the caller first, so this routine may retry status/dematerialization freely but
 /// must never authorize another Submit.
-pub(crate) async fn reconcile_managed_unknown_default_sandbox(
+pub(crate) async fn reconcile_managed_unknown_environment(
     brain: &Arc<Brain>,
     session_id: &str,
+    tool_name: &str,
     st: &mut TurnState,
 ) -> Result<()> {
     use brain_protocol::environment::{EnvironmentErrorCode, SandboxState};
 
-    let target = st
+    let descriptor = st
         .head
-        .default_sandbox
-        .as_ref()
-        .map(|status| status.target.clone())
-        .unwrap_or(default_sandbox_target(&st.head.root_id)?);
-    let files = brain.sandbox_files.as_ref().ok_or_else(|| {
-        BrainError::EnvironmentUnavailable(
-            "managed Tool unknown-outcome status reconciliation is unavailable".into(),
-        )
+        .prefix
+        .managed_bundles
+        .iter()
+        .find(|descriptor| descriptor.tool_name.as_str() == tool_name)
+        .ok_or_else(|| {
+            BrainError::Journal(format!("tool {tool_name} has no environment binding"))
+        })?;
+    let environment_name = descriptor.environment_name.to_string();
+    let current = st
+        .head
+        .environment_targets
+        .get(&environment_name)
+        .cloned()
+        .unwrap_or(initial_environment(&st.head.root_id, &environment_name)?);
+    let target = current.target.clone();
+    let adapter = brain.environment_adapter(&st.head, &environment_name)?;
+    let files = adapter.files.ok_or_else(|| {
+        BrainError::EnvironmentUnavailable(format!(
+            "environment {environment_name:?} cannot reconcile target status"
+        ))
     })?;
     let mut status = match files.status(target.clone()).await {
         Ok(status) => status,
@@ -1267,11 +1293,6 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
                 EnvironmentErrorCode::SandboxGone | EnvironmentErrorCode::SandboxNotMaterialized
             ) =>
         {
-            let current = st
-                .head
-                .default_sandbox
-                .clone()
-                .unwrap_or(initial_default_sandbox(&st.head.root_id)?);
             sandbox_gone_status(&current, "managed_operation_target_gone")?
         }
         Err(error) if error.retryable => {
@@ -1283,7 +1304,7 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
     };
     if !sandbox_status_matches_target(&status, &target)? {
         return Err(BrainError::Protocol(
-            "managed Tool unknown-outcome status references a different default target".into(),
+            "managed Tool unknown-outcome status references a different environment target".into(),
         ));
     }
     if matches!(status.state, SandboxState::NeverMaterialized) {
@@ -1306,7 +1327,9 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
         value["changed_at_ms"] = serde_json::Value::from(crate::wall_ms());
         status = serde_json::from_value(value)?;
     }
-    st.head.default_sandbox = Some(status.clone());
+    st.head
+        .environment_targets
+        .insert(environment_name.clone(), status.clone());
     let seq = st.take_seq();
     commit(
         brain,
@@ -1314,7 +1337,8 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
         st,
         vec![(
             seq,
-            Record::DefaultSandboxChanged {
+            Record::EnvironmentChanged {
+                environment: environment_name.clone(),
                 status: status.clone(),
             },
         )],
@@ -1324,12 +1348,7 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
         return Ok(());
     }
 
-    let preparation = brain.session_preparation.as_ref().ok_or_else(|| {
-        BrainError::EnvironmentUnavailable(
-            "managed Tool unknown-outcome dematerialization is unavailable".into(),
-        )
-    })?;
-    let terminal = match preparation.dematerialize_default(target.clone()).await {
+    let terminal = match adapter.preparation.dematerialize(target.clone()).await {
         Ok(status) => status,
         Err(error)
             if matches!(
@@ -1356,13 +1375,21 @@ pub(crate) async fn reconcile_managed_unknown_default_sandbox(
             "managed Tool unknown-outcome target has not reached a terminal sandbox state".into(),
         ));
     }
-    st.head.default_sandbox = Some(terminal.clone());
+    st.head
+        .environment_targets
+        .insert(environment_name.clone(), terminal.clone());
     let seq = st.take_seq();
     commit(
         brain,
         session_id,
         st,
-        vec![(seq, Record::DefaultSandboxChanged { status: terminal })],
+        vec![(
+            seq,
+            Record::EnvironmentChanged {
+                environment: environment_name,
+                status: terminal,
+            },
+        )],
     )
     .await
 }

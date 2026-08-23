@@ -31,7 +31,7 @@ function assertInlineBase64(content: string): void {
   }
 }
 
-/** Exact canonical Environment lifecycle projection returned by the default-sandbox HTTP resource. */
+/** Exact canonical lifecycle projection returned by an environment HTTP resource. */
 export type SandboxStatus = CanonicalSandboxStatus;
 
 /** Exact canonical Environment file metadata; timestamps are integer Unix milliseconds. */
@@ -138,12 +138,12 @@ export class SessionStorage {
     return this.transport.json("POST", `/v1/sessions/${sid(this.sessionId)}/storage/delete`, { ...options, body: { key } });
   }
 
-  copyFromSandbox(input: ApiSchemas["StorageSandboxCopyRequest"], options: JsonRequestOptions = {}): Promise<StorageObject> {
-    return this.transport.json("POST", `/v1/sessions/${sid(this.sessionId)}/storage/copy-from-sandbox`, { ...idempotent(options), body: input });
+  copyFromEnvironment(environment: string, input: ApiSchemas["StorageEnvironmentCopyRequest"], options: JsonRequestOptions = {}): Promise<StorageObject> {
+    return this.transport.json("POST", `/v1/sessions/${sid(this.sessionId)}/storage/copy-from-environment/${encodeURIComponent(environment)}`, { ...idempotent(options), body: input });
   }
 
-  copyToSandbox(input: ApiSchemas["StorageSandboxCopyRequest"], options: JsonRequestOptions = {}): Promise<SandboxFileEntry> {
-    return this.transport.json("POST", `/v1/sessions/${sid(this.sessionId)}/storage/copy-to-sandbox`, { ...idempotent(options), body: input });
+  copyToEnvironment(environment: string, input: ApiSchemas["StorageEnvironmentCopyRequest"], options: JsonRequestOptions = {}): Promise<SandboxFileEntry> {
+    return this.transport.json("POST", `/v1/sessions/${sid(this.sessionId)}/storage/copy-to-environment/${encodeURIComponent(environment)}`, { ...idempotent(options), body: input });
   }
 }
 

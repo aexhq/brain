@@ -157,6 +157,17 @@
       "type": "string",
       "enum": ["retained", "connection_scoped"]
     },
+    "EnvironmentProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "network", "recovery"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["computer", "callbacks"] },
+        "platform": { "type": "string", "enum": ["linux-amd64", "linux-arm64"] },
+        "network": { "type": "string", "enum": ["none", "allowlist", "unrestricted"] },
+        "recovery": { "type": "string", "enum": ["retained", "connection", "replay_safe"] }
+      }
+    },
     "ResolvedBinding": {
       "type": "object",
       "additionalProperties": false,
@@ -185,13 +196,17 @@
     "SealedBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["binding_id", "session_id", "root_id", "contract_digest", "implementation_identity", "environment_name", "capability", "policy_digest"],
+      "required": ["binding_id", "session_id", "root_id", "contract_digest", "implementation_identity", "extension", "protocol", "profile", "configuration", "environment_name", "capability", "policy_digest"],
       "properties": {
         "binding_id": { "$ref": "#/definitions/Identifier" },
         "session_id": { "$ref": "#/definitions/Identifier" },
         "root_id": { "$ref": "#/definitions/Identifier" },
         "contract_digest": { "$ref": "#/definitions/Digest" },
         "implementation_identity": { "$ref": "#/definitions/Digest" },
+        "extension": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "protocol": { "type": "string", "const": "environment/v1" },
+        "profile": { "$ref": "#/definitions/EnvironmentProfile" },
+        "configuration": { "type": "object", "additionalProperties": true },
         "environment_name": { "$ref": "#/definitions/Identifier" },
         "capability": { "$ref": "#/definitions/Identifier" },
         "policy_digest": { "$ref": "#/definitions/Digest" },
@@ -458,7 +473,7 @@
     },
     "TargetKind": {
       "type": "string",
-      "enum": ["default", "additional"]
+      "enum": ["environment", "additional"]
     },
     "SandboxTarget": {
       "type": "object",

@@ -170,7 +170,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
             idle_discard: Duration::from_secs(300),
             official_capabilities: [
                 (
-                    "aex.test_lookup".into(),
+                    "brain.test_lookup".into(),
                     ServerToolPolicy {
                         capability: "test.lookup".into(),
                         scope: ExternalToolScope::All,
@@ -180,7 +180,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
                     },
                 ),
                 (
-                    "aex.test_submit_result".into(),
+                    "brain.test_submit_result".into(),
                     ServerToolPolicy {
                         capability: "test.submit_result".into(),
                         scope: ExternalToolScope::Root,
@@ -235,7 +235,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
                     },
                     "executor": {
                         "kind": "engine",
-                        "capability": "aex.test_lookup"
+                        "capability": "brain.test_lookup"
                     }
                 },
                 {
@@ -248,7 +248,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
                     },
                     "executor": {
                         "kind": "engine",
-                        "capability": "aex.test_submit_result"
+                        "capability": "brain.test_submit_result"
                     }
                 }
             ]}

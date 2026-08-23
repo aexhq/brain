@@ -49,10 +49,10 @@ pub(super) struct StorageUploadIntentRequest {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct StorageSandboxCopyRequest {
+pub(super) struct StorageEnvironmentCopyRequest {
     key: String,
     path: String,
-    sandbox_generation: String,
+    environment_generation: String,
     #[serde(default)]
     overwrite: bool,
 }
@@ -290,21 +290,22 @@ fn required_effect_idempotency_key<'a>(
         })
 }
 
-pub(super) async fn storage_copy_from_sandbox(
+pub(super) async fn storage_copy_from_environment(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(request): Json<StorageSandboxCopyRequest>,
+    Path((id, environment)): Path<(String, String)>,
+    Json(request): Json<StorageEnvironmentCopyRequest>,
 ) -> Result<Json<StorageObjectResponse>, Failure> {
     authorize_session(&state, &headers, &id).await?;
-    let idempotency_key = required_effect_idempotency_key(&headers, "sandbox storage copies")?;
+    let idempotency_key = required_effect_idempotency_key(&headers, "environment storage copies")?;
     state
         .brain
         .storage_copy_from_sandbox(
             &id,
+            &environment,
             request.key,
             request.path,
-            request.sandbox_generation,
+            request.environment_generation,
             request.overwrite,
             idempotency_key,
         )
@@ -314,21 +315,22 @@ pub(super) async fn storage_copy_from_sandbox(
         .map_err(map_err)
 }
 
-pub(super) async fn storage_copy_to_sandbox(
+pub(super) async fn storage_copy_to_environment(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(request): Json<StorageSandboxCopyRequest>,
+    Path((id, environment)): Path<(String, String)>,
+    Json(request): Json<StorageEnvironmentCopyRequest>,
 ) -> Result<Json<brain_protocol::environment::FileEntry>, Failure> {
     authorize_session(&state, &headers, &id).await?;
-    let idempotency_key = required_effect_idempotency_key(&headers, "sandbox storage copies")?;
+    let idempotency_key = required_effect_idempotency_key(&headers, "environment storage copies")?;
     state
         .brain
         .storage_copy_to_sandbox(
             &id,
+            &environment,
             request.key,
             request.path,
-            request.sandbox_generation,
+            request.environment_generation,
             request.overwrite,
             idempotency_key,
         )

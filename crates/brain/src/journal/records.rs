@@ -132,7 +132,7 @@ pub enum Record {
     },
     /// `EnvironmentPort::submit` may have reached the guest, but no rooted operation receipt can be
     /// recovered. This marker permanently revokes Brain's right to submit the intent again; the
-    /// exact fenced default target is reconciled separately through `DefaultSandboxChanged`.
+    /// exact fenced environment target is reconciled separately through `EnvironmentChanged`.
     ManagedCallUnknown {
         turn: String,
         call: String,
@@ -293,9 +293,8 @@ pub enum Record {
         path: String,
         replayed: bool,
     },
-    /// Durable logical state of the root tree's shared default sandbox. Brain owns this
-    /// projection; Environment returns the opaque physical locator and generation.
-    DefaultSandboxChanged {
+    EnvironmentChanged {
+        environment: String,
         status: brain_protocol::environment::SandboxStatus,
     },
     /// Immutable content-addressed checkpoint payload chunk. Installation is a separate record in
@@ -389,7 +388,7 @@ impl Record {
             Record::StorageDeleteCompleted { .. } => "storage_delete_completed",
             Record::SandboxFileEffectIntent { .. } => "sandbox_file_effect_intent",
             Record::SandboxFileEffectCompleted { .. } => "sandbox_file_effect_completed",
-            Record::DefaultSandboxChanged { .. } => "default_sandbox_changed",
+            Record::EnvironmentChanged { .. } => "environment_changed",
             Record::ContextChunk { .. } => "context_chunk",
             Record::ContextInstalled { .. } => "context_installed",
             Record::LoopCustom { .. } => "loop_custom",
@@ -532,13 +531,13 @@ fn retention_class(records: &[(u64, Record)]) -> RetentionClass {
                     .ensure_effect_reserve_bytes
                     .max(JOURNAL_TERMINAL_RESERVE_BYTES);
             }
-            Record::DefaultSandboxChanged { status } if status.state == SandboxState::Creating => {
+            Record::EnvironmentChanged { status, .. } if status.state == SandboxState::Creating => {
                 class.consume_effect_reserve = true;
                 class.ensure_effect_reserve_bytes = class
                     .ensure_effect_reserve_bytes
                     .max(JOURNAL_TERMINAL_RESERVE_BYTES);
             }
-            Record::DefaultSandboxChanged { .. } => {
+            Record::EnvironmentChanged { .. } => {
                 class.consume_effect_reserve = true;
                 class.close_effect_reserve = true;
             }

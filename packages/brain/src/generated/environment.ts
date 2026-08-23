@@ -20,7 +20,7 @@ export type ArtifactTarget = "linux-amd64" | "linux-arm64";
  * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "TargetKind".
  */
-export type TargetKind = "default" | "additional";
+export type TargetKind = "environment" | "additional";
 /**
  * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "EnvironmentCapability".
@@ -179,6 +179,18 @@ export interface ObjectTransferAuthority {
 }
 /**
  * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
+ * via the `definition` "ArtifactLayerDescriptor".
+ */
+export interface ArtifactLayerDescriptor {
+  digest: Digest;
+  bytes: number;
+  media_type: "application/javascript+esm" | "application/x-xz";
+  mount_path: string;
+  unpack: "file" | "tar.xz";
+  object: ObjectReference;
+}
+/**
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "BundleDescriptor".
  */
 export interface BundleDescriptor {
@@ -187,7 +199,170 @@ export interface BundleDescriptor {
   target: ArtifactTarget;
   execute_path: string;
   setup_path?: string | null;
-  object: ObjectReference;
+  /**
+   * @minItems 1
+   * @maxItems 16
+   */
+  layers:
+    | [ArtifactLayerDescriptor]
+    | [ArtifactLayerDescriptor, ArtifactLayerDescriptor]
+    | [ArtifactLayerDescriptor, ArtifactLayerDescriptor, ArtifactLayerDescriptor]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ]
+    | [
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor,
+        ArtifactLayerDescriptor
+      ];
   tool_name: Identifier;
   environment_name: Identifier;
   description?: string | null;
@@ -259,6 +434,16 @@ export interface SandboxTarget {
 }
 /**
  * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
+ * via the `definition` "EnvironmentProfile".
+ */
+export interface EnvironmentProfile {
+  kind: "computer" | "callbacks";
+  platform?: "linux-amd64" | "linux-arm64";
+  network: "none" | "allowlist" | "unrestricted";
+  recovery: "retained" | "connection" | "replay_safe";
+}
+/**
+ * This interface was referenced by `BrainEnvironmentContract`'s JSON-Schema
  * via the `definition` "ResolvedBinding".
  */
 export interface ResolvedBinding {
@@ -282,6 +467,12 @@ export interface SealedBinding {
   root_id: Identifier;
   contract_digest: Digest;
   implementation_identity: Digest;
+  extension: string;
+  protocol: "environment/v1";
+  profile: EnvironmentProfile;
+  configuration: {
+    [k: string]: unknown | undefined;
+  };
   environment_name: Identifier;
   capability: Identifier;
   policy_digest: Digest;

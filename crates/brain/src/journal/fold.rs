@@ -113,7 +113,7 @@ impl Fold {
             | Record::StorageDeleteCompleted { .. }
             | Record::SandboxFileEffectIntent { .. }
             | Record::SandboxFileEffectCompleted { .. }
-            | Record::DefaultSandboxChanged { .. }
+            | Record::EnvironmentChanged { .. }
             | Record::ContextChunk { .. }
             | Record::ContextInstalled { .. }
             // Loop-land state is never kernel model input; contract loops compose their own

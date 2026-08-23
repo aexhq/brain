@@ -384,11 +384,11 @@
               }
             }
           },
-          "description": "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed."
+          "description": "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed."
         }
       }
     },
-    "ToolBundle": {
+    "ToolArtifactLayer": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -397,7 +397,7 @@
         "bytes",
         "media_type"
       ],
-      "description": "Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation.",
+      "description": "Create-time-only immutable artifact-layer bytes. Brain stages these outside the journal, then discards this representation.",
       "properties": {
         "checksum": {
           "$ref": "#/$defs/Sha256Hex"
@@ -406,16 +406,94 @@
           "type": "string",
           "contentEncoding": "base64",
           "writeOnly": true,
-          "maxLength": 5592408
+          "maxLength": 89478488
         },
         "bytes": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 4194304
+          "maximum": 67108864
         },
         "media_type": {
           "type": "string",
-          "const": "application/javascript+esm"
+          "enum": ["application/javascript+esm", "application/x-xz"]
+        }
+      }
+    },
+    "ToolArtifactLayerRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checksum",
+        "bytes",
+        "media_type",
+        "mount_path",
+        "unpack"
+      ],
+      "properties": {
+        "checksum": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "media_type": {
+          "type": "string",
+          "enum": ["application/javascript+esm", "application/x-xz"]
+        },
+        "mount_path": {
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9._/-]+$",
+          "maxLength": 4096
+        },
+        "unpack": {
+          "type": "string",
+          "enum": ["file", "tar.xz"]
+        }
+      }
+    },
+    "ToolBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checksum",
+        "bytes",
+        "target",
+        "execute_path",
+        "layers"
+      ],
+      "description": "A canonical computer-profile manifest plus create-time-only immutable runtime and code layers.",
+      "properties": {
+        "checksum": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100663296
+        },
+        "target": {
+          "type": "string",
+          "enum": ["linux-amd64", "linux-arm64"]
+        },
+        "execute_path": {
+          "type": "string",
+          "pattern": "^/[^\\u0000]+$",
+          "maxLength": 4096
+        },
+        "setup_path": {
+          "type": ["string", "null"],
+          "pattern": "^/[^\\u0000]+$",
+          "maxLength": 4096
+        },
+        "layers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/ToolArtifactLayerRef"
+          }
         }
       }
     },
@@ -865,6 +943,14 @@
           },
           "writeOnly": true,
           "description": "Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal."
+        },
+        "tool_artifact_layers": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/ToolArtifactLayer"
+          },
+          "description": "Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles."
         },
         "secrets": {
           "type": "object",
