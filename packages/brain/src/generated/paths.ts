@@ -1065,9 +1065,26 @@ export type components = {
             kind: "engine";
             capability: string;
         };
+        NetworkDestination: {
+            host: string;
+            ports: [
+                443
+            ];
+            /** @constant */
+            protocol: "tls";
+        } | {
+            cidr: string;
+            ports: number[];
+            /** @constant */
+            protocol: "tcp";
+        };
         ToolConfig: {
             definition: components["schemas"]["ToolDefinition"];
             executor: components["schemas"]["ToolExecutor"];
+            /** @description The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed. */
+            network?: {
+                destinations: components["schemas"]["NetworkDestination"][];
+            };
         };
         /** @description Sealed at create with the rest of the prefix. Omitted tools default to an empty set. */
         ToolsConfig: {
@@ -1086,25 +1103,19 @@ export type components = {
         NetworkPolicy: {
             /** @constant */
             outbound: "none";
+            /** @description Hosts the session explicitly refuses (exact, or "*.suffix"). Subtracted from the merged allowlist at create; incompatible with outbound "public" (nothing enforces a deny off the gateway path). */
+            deny?: string[];
         } | {
             /** @constant */
             outbound: "public";
+            /** @description Hosts the session explicitly refuses (exact, or "*.suffix"). Subtracted from the merged allowlist at create; incompatible with outbound "public" (nothing enforces a deny off the gateway path). */
+            deny?: string[];
         } | {
             /** @constant */
             outbound: "allowlist";
-            destinations: ({
-                host: string;
-                ports: [
-                    443
-                ];
-                /** @constant */
-                protocol: "tls";
-            } | {
-                cidr: string;
-                ports: number[];
-                /** @constant */
-                protocol: "tcp";
-            })[];
+            destinations: components["schemas"]["NetworkDestination"][];
+            /** @description Hosts the session explicitly refuses (exact, or "*.suffix"). Subtracted from the merged allowlist at create; incompatible with outbound "public" (nothing enforces a deny off the gateway path). */
+            deny?: string[];
         };
         CustomerClientConfig: {
             id: string;
