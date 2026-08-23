@@ -712,6 +712,7 @@ impl LoopTurnCtx<'_> {
             tools,
             max_tokens,
             request.temperature.map(|temperature| temperature as f32),
+            request.reasoning_effort.map(|effort| effort.to_string()),
             matches!(
                 request.tool_choice,
                 Some(brain_protocol::agentloop::ModelRequestToolChoice::None)

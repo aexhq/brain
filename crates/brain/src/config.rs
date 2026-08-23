@@ -276,6 +276,7 @@ impl SealedPrefix {
         tools: Option<Vec<ToolDecl>>,
         max_tokens: Option<u32>,
         temperature: Option<f32>,
+        reasoning_effort: Option<String>,
         tool_choice_none: bool,
     ) -> SealedPrefix {
         let mut sampling = self.sampling.clone();
@@ -284,6 +285,9 @@ impl SealedPrefix {
         }
         if let Some(temperature) = temperature {
             sampling.temperature = Some(temperature);
+        }
+        if let Some(reasoning_effort) = reasoning_effort {
+            sampling.reasoning_effort = Some(reasoning_effort);
         }
         let system_prompt = system_prompt.unwrap_or_else(|| self.system_prompt.clone());
         let tools = tools.unwrap_or_else(|| self.tools.clone());
@@ -575,6 +579,7 @@ mod tests {
             Some(sealed.tools.clone()),
             Some(512),
             Some(0.25),
+            Some("high".into()),
             false,
         );
         assert_eq!(
@@ -584,6 +589,7 @@ mod tests {
         );
         assert_eq!(echoed.prompt_cache_key(), Some("aex:ses_test"));
         assert_eq!(echoed.sampling.max_tokens, 512);
+        assert_eq!(echoed.sampling.reasoning_effort.as_deref(), Some("high"));
     }
 
     #[test]
@@ -592,12 +598,12 @@ mod tests {
             Some(serde_json::json!({"frozen": "base"})),
             Some("aex:ses_test".into()),
         );
-        let new_system = sealed.loop_call_view(Some("different".into()), None, None, None, false);
+        let new_system = sealed.loop_call_view(Some("different".into()), None, None, None, None, false);
         assert!(new_system.rendered_base().is_none());
         assert!(new_system.prompt_cache_key().is_none());
         let mut tools = sealed.tools.clone();
         tools[0].description = "changed".into();
-        let new_tools = sealed.loop_call_view(None, Some(tools), None, None, false);
+        let new_tools = sealed.loop_call_view(None, Some(tools), None, None, None, false);
         assert!(new_tools.rendered_base().is_none());
         assert!(new_tools.prompt_cache_key().is_none());
     }

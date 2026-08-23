@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn the_closing_view_renders_tool_choice_none_with_tools_kept() {
-        let p = prefix().loop_call_view(None, None, None, None, true);
+        let p = prefix().loop_call_view(None, None, None, None, None, true);
         let r = Anthropic::build_request(
             &p,
             &[Message::user_text("hi")],
@@ -380,7 +380,7 @@ mod tests {
             Some(Value::Object(Anthropic::render_base(&prefix()))),
             Some("aex:ses_parity".into()),
         );
-        let echoed = sealed.loop_call_view(None, Some(sealed.tools.clone()), None, None, false);
+        let echoed = sealed.loop_call_view(None, Some(sealed.tools.clone()), None, None, None, false);
         let history = vec![Message::user_text("same turn")];
         let kernel = Anthropic::build_request(
             &sealed,

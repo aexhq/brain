@@ -80,6 +80,7 @@ export interface ModelRequest {
   tools?: ToolPresentation[];
   max_tokens?: number;
   temperature?: number;
+  reasoning_effort?: "low" | "medium" | "high";
   /** Only the closing-round constraint: tools stay on the wire, the model answers in text. */
   tool_choice?: "none";
 }

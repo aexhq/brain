@@ -186,6 +186,10 @@
         },
         "max_tokens": { "type": "integer", "minimum": 1 },
         "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+        "reasoning_effort": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        },
         "top_p": { "type": "number", "minimum": 0, "maximum": 1 },
         "tool_choice": {
           "type": "string",

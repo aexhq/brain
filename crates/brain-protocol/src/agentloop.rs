@@ -2326,6 +2326,14 @@ impl<'de> ::serde::Deserialize<'de> for ModelName {
 #[doc = "      \"maxItems\": 4096,"]
 #[doc = "      \"minItems\": 1"]
 #[doc = "    },"]
+#[doc = "    \"reasoning_effort\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"low\","]
+#[doc = "        \"medium\","]
+#[doc = "        \"high\""]
+#[doc = "      ]"]
+#[doc = "    },"]
 #[doc = "    \"system\": {"]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"maxLength\": 131072"]
@@ -2367,6 +2375,8 @@ pub struct ModelRequest {
     pub max_tokens: ::std::option::Option<::std::num::NonZeroU64>,
     pub messages: ::std::vec::Vec<ModelMessage>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub reasoning_effort: ::std::option::Option<ModelRequestReasoningEffort>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub system: ::std::option::Option<ModelRequestSystem>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub temperature: ::std::option::Option<f64>,
@@ -2378,6 +2388,83 @@ pub struct ModelRequest {
     pub tools: ::std::vec::Vec<ToolPresentationView>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub top_p: ::std::option::Option<f64>,
+}
+#[doc = "`ModelRequestReasoningEffort`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"low\","]
+#[doc = "    \"medium\","]
+#[doc = "    \"high\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ModelRequestReasoningEffort {
+    #[serde(rename = "low")]
+    Low,
+    #[serde(rename = "medium")]
+    Medium,
+    #[serde(rename = "high")]
+    High,
+}
+impl ::std::fmt::Display for ModelRequestReasoningEffort {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Low => f.write_str("low"),
+            Self::Medium => f.write_str("medium"),
+            Self::High => f.write_str("high"),
+        }
+    }
+}
+impl ::std::str::FromStr for ModelRequestReasoningEffort {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ModelRequestReasoningEffort {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ModelRequestReasoningEffort {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ModelRequestReasoningEffort {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
 }
 #[doc = "`ModelRequestSystem`"]
 #[doc = r""]
