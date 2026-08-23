@@ -2136,9 +2136,30 @@ impl TurnRun {
                 "managed Tool unknown-outcome reconciliation coordinator is unavailable".into(),
             )
         })?;
-        brain
+        match brain
             .reconcile_managed_unknown_default_sandbox(&self.session_id, st)
-            .await?;
+            .await
+        {
+            Ok(()) => {}
+            Err(BrainError::HandUnavailable(message)) if self.cancel.is_cancelled() => {
+                // The unknown marker is durable and revokes every future Submit replay;
+                // the target may still be materializing under the detached submit task. A
+                // cancelled turn concludes NOW — holding its terminal hostage to the
+                // launch (up to the full materialization time) is what kept cancelled
+                // turns open for minutes. Deferred recovery finishes the exact
+                // status/dematerialization reconciliation.
+                // No recovery anchor is written here: a mid-turn defer_recovery would
+                // race this turn's own lease. The end/delete path drives the exact
+                // dematerialization (as the canaries prove), and an untouched target
+                // expires on its own lease.
+                tracing::warn!(
+                    session = %self.session_id,
+                    error = %message,
+                    "cancelled managed submit leaves sandbox reconciliation to end-driven recovery"
+                );
+            }
+            Err(error) => return Err(error),
+        }
         Ok(DispatchedOutcome::from(managed_unknown_call_outcome(name)))
     }
 
