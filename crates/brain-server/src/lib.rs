@@ -6,7 +6,10 @@ use std::sync::Arc;
 
 pub mod api;
 
-use brain::session::{Brain, BrainConfig, BrainServices, ProviderFactory};
+#[cfg(feature = "loophost")]
+use brain::session::BrainServices;
+use brain::session::{Brain, BrainConfig, ProviderFactory};
+#[cfg(feature = "loophost")]
 use brain_standalone::durable_local_parts;
 
 /// Agent-loop compilation and content-addressed storage wiring.
@@ -34,6 +37,14 @@ pub struct LocalOptions {
 /// session-object storage under `data_dir`, Tool execution through the host node runtime, and
 /// the customer-environment transport served from the same listener. This is the whole wiring — the
 /// binary adds only env parsing, the operator token and the startup audit.
+#[cfg(not(feature = "loophost"))]
+pub fn compose_local(_options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
+    Err(anyhow::anyhow!(
+        "brain-server requires the loophost feature"
+    ))
+}
+
+#[cfg(feature = "loophost")]
 pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
     let allow_private = options.cfg.outbound_allow_private;
     let parts =
@@ -51,20 +62,14 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
     });
     let customer_transport =
         brain::customer::CustomerTransportConfig::new(websocket_url, observation_base_url)?;
-    #[cfg(feature = "loophost")]
     let loophost = options
         .loophost
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("loophost configuration is required"))?;
-    #[cfg(feature = "loophost")]
     let loop_services = brain_loophost::registry::services_with_loop_store(
         &options.data_dir.join("loops"),
         &loophost.toolchain_dir,
     )?;
-    #[cfg(not(feature = "loophost"))]
-    return Err(anyhow::anyhow!(
-        "brain-server requires the loophost feature"
-    ));
     let local_environment = parts.local_environment.clone();
     let brain = Brain::with_parts_and_services(
         options.cfg,
