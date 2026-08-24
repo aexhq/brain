@@ -2,7 +2,7 @@
 
 <p align="center"><strong>A minimal, extensible kernel for agents</strong></p>
 
-> [!NOTE] This repo is in heavy development, interfaces and contracts might change
+> This repo is in heavy early development, interfaces and contracts might change
 
 ## What it is
 Brain is minimal server that manages a set of primitives and environments for running agent sessions.
