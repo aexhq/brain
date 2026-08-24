@@ -895,6 +895,14 @@ pub struct PrefixDoc {
     pub storage_max_object_bytes: u64,
     pub storage_max_session_bytes: u64,
     pub storage_transfer_ttl_ms: u64,
+    /// Accepted only while reading CONFIG records written before named environments.
+    #[doc(hidden)]
+    #[serde(
+        default,
+        rename = "max_additional_sandboxes_per_root",
+        skip_serializing
+    )]
+    pub retired_additional_sandbox_limit: u32,
     /// Canonical normalized session outbound ceiling. Omission at the public API is sealed as
     /// deny-all; every Tool/target policy may only narrow this value.
     #[serde(default = "default_network_ceiling")]

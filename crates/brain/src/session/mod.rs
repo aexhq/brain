@@ -1400,6 +1400,7 @@ impl Brain {
             storage_max_object_bytes: self.cfg.storage_max_object_bytes,
             storage_max_session_bytes: self.cfg.storage_max_session_bytes,
             storage_transfer_ttl_ms: self.cfg.storage_transfer_ttl.as_millis() as u64,
+            retired_additional_sandbox_limit: 0,
             network: merge_session_network(req.network.as_ref(), &decls)?,
             max_child_depth: req.children.as_ref().map_or(4, |limits| {
                 u32::try_from(limits.max_depth)

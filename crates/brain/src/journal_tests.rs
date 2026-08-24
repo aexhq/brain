@@ -343,6 +343,7 @@ fn head_doc_round_trips() {
             storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
             storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
             storage_transfer_ttl_ms: crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
+            retired_additional_sandbox_limit: 0,
             max_child_depth: 4,
             max_direct_children: 32,
             max_descendants: 256,
@@ -378,6 +379,21 @@ fn head_doc_round_trips() {
     let back: HeadDoc = serde_json::from_str(&s).unwrap();
     assert_eq!(back.prefix.model, "claude");
     assert_eq!(back.state, SessionLifecycle::Open);
+
+    let mut retired = serde_json::to_value(&doc).unwrap();
+    retired["prefix"]["max_additional_sandboxes_per_root"] = serde_json::json!(2);
+    let recovered: HeadDoc = serde_json::from_value(retired.clone()).unwrap();
+    assert_eq!(recovered.prefix.retired_additional_sandbox_limit, 2);
+    assert!(
+        serde_json::to_value(recovered).unwrap()["prefix"]
+            .get("max_additional_sandboxes_per_root")
+            .is_none()
+    );
+    let mut invalid_type = retired.clone();
+    invalid_type["prefix"]["max_additional_sandboxes_per_root"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<HeadDoc>(invalid_type).is_err());
+    retired["prefix"]["unrecognized_limit"] = serde_json::json!(2);
+    assert!(serde_json::from_value::<HeadDoc>(retired).is_err());
 }
 
 fn head_doc() -> HeadDoc {
@@ -428,6 +444,7 @@ fn head_doc() -> HeadDoc {
             storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
             storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
             storage_transfer_ttl_ms: crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
+            retired_additional_sandbox_limit: 0,
             max_child_depth: 4,
             max_direct_children: 32,
             max_descendants: 256,
