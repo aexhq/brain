@@ -1,25 +1,12 @@
 <h1 align="center">Brain</h1>
 
-<p align="center"><strong>A minimal, environment-neutral kernel for agent sessions.</strong></p>
+<p align="center"><strong>A minimal, extensible kernel for agents</strong></p>
 
-Brain seals a session's model, imported agent loop, tools, and named environment bindings; journals
-effects before dispatch; and exposes neutral ports for execution, durability, custody, and storage.
-It does not select a default loop or default environment.
+> [!NOTE] This repo is in heavy development, interfaces and contracts might change
 
-## Components
-
-| Component | Purpose |
-| --- | --- |
-| [`brain-protocol`](crates/brain-protocol) | Session, agent-loop, and environment contracts |
-| [`brain`](crates/brain) | Session engine, tool router, recovery, and adapter ports |
-| [`brain-loophost`](crates/brain-loophost) | Isolated host for imported agent-loop components |
-| [`brain-standalone`](crates/brain-standalone) | SQLite journal, encrypted local custody/storage, and an explicit local environment |
-| [`brain-aws`](crates/brain-aws) | Neutral DynamoDB, KMS, and S3 adapters |
-| [`brain-server`](crates/brain-server) | HTTP server and development composition |
-
-Environment extensions implement Brain's public environment port. Tool execution always names its
-environment binding; Brain never searches for a default environment. An SDK may resolve an omitted
-binding before session creation only when exactly one declared environment is compatible.
+## What it is
+Brain is minimal server that manages a set of primitives and environments for running agent sessions.
+The term _Brain_ is originated from Anthropic engineering blog [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents) and minimalistic concept is inspired by [Pi Agent Harness](https://github.com/earendil-works/pi).
 
 ## Run standalone
 
