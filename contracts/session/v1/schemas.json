@@ -367,24 +367,6 @@
         },
         "executor": {
           "$ref": "#/$defs/ToolExecutor"
-        },
-        "network": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "destinations"
-          ],
-          "properties": {
-            "destinations": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 32,
-              "items": {
-                "$ref": "#/$defs/NetworkDestination"
-              }
-            }
-          },
-          "description": "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed."
         }
       }
     },
