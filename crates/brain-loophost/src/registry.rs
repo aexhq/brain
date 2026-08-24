@@ -35,6 +35,7 @@ pub struct LoophostRegistry {
     /// The directory holding `componentize-one.mjs` with the pinned componentizer installed.
     toolchain_dir: PathBuf,
     engines: Mutex<HashMap<String, Arc<WasmAgentloop>>>,
+    admissions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl LoophostRegistry {
@@ -49,6 +50,7 @@ impl LoophostRegistry {
             store_dir,
             toolchain_dir: toolchain_dir.into(),
             engines: Mutex::new(HashMap::new()),
+            admissions: Mutex::new(HashMap::new()),
         })
     }
 
@@ -155,6 +157,19 @@ impl LoophostRegistry {
         Ok(())
     }
 
+    async fn admit_bundle(&self, digest: &str, bundle: &[u8]) -> Result<(), BrainError> {
+        let lock = self
+            .admissions
+            .lock()
+            .expect("loop admissions")
+            .entry(digest.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+        self.store_source(digest, bundle)?;
+        self.componentize(digest).await
+    }
+
     fn custom_loop(&self, digest: &str) -> Result<Arc<WasmAgentloop>, BrainError> {
         let component = self.component_path(digest);
         if !component.exists() {
@@ -190,13 +205,14 @@ impl AgentloopRegistry for LoophostRegistry {
                 "loop toolchain {toolchain:?} is not supported; build against {LOOP_TOOLCHAIN:?}"
             )));
         }
-        self.store_source(source_bundle_sha256, bundle)?;
         // Componentize now, so a bundle the toolchain rejects fails the create with the
         // author's diagnostic instead of failing the session's first turn. The runtime is
         // available here: admission happens inside the async create path.
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| BrainError::Journal("loop admission requires a tokio runtime".into()))?;
-        tokio::task::block_in_place(|| handle.block_on(self.componentize(source_bundle_sha256)))?;
+        tokio::task::block_in_place(|| {
+            handle.block_on(self.admit_bundle(source_bundle_sha256, bundle))
+        })?;
         Ok(AgentloopSelectorDoc {
             source_bundle_sha256: source_bundle_sha256.to_string(),
             source_bundle_bytes: bundle.len() as u64,
