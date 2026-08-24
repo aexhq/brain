@@ -5714,6 +5714,17 @@ async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
                 .contract_op(CtxOp::ToolsDispatch { calls: vec![call] })
                 .await?
             {
+                Err(error) if error.code == AgentloopErrorCode::Aborted => {}
+                outcome => Err(BrainError::Agentloop(format!(
+                    "cancelled dispatch returned {outcome:?}"
+                )))?,
+            }
+            let failure = crate::agentloop::op_error(
+                AgentloopErrorCode::Internal,
+                "a loop must not override cancellation",
+                false,
+            );
+            match ctx.contract_op(CtxOp::TurnFail { error: failure }).await? {
                 Err(error) if error.code == AgentloopErrorCode::Aborted => {
                     Ok(crate::agentloop::LoopVerdict {
                         stop_reason: TurnStopReason::Cancelled,
@@ -5721,7 +5732,7 @@ async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
                     })
                 }
                 outcome => Err(BrainError::Agentloop(format!(
-                    "cancelled dispatch returned {outcome:?}"
+                    "terminal after cancellation returned {outcome:?}"
                 ))),
             }
         }
