@@ -6,6 +6,50 @@ use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse}
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+#[test]
+fn managed_secret_grant_is_scoped_to_the_environment_target() {
+    let root_id = "ses_rootsecret000000";
+    let session_id = "ses_childsecret0000";
+    let target_binding_ref =
+        brain_protocol::contract::environment_binding_ref(root_id, "workspace").to_string();
+    let grant = ManagedSecretGrant {
+        root_id: root_id.into(),
+        session_id: session_id.into(),
+        environment_id: "environment_secret_test".into(),
+        target_binding_ref: target_binding_ref.clone(),
+        env_names: vec!["SUBAGENT_TOKEN".into()],
+        expires_at_ms: crate::wall_ms() + 1_000,
+    };
+    let request: brain_protocol::environment::SecretDeliveryRequest =
+        serde_json::from_value(json!({
+            "capability_ref":"secret_scope_test",
+            "environment_id":"environment_secret_test",
+            "generation_intent":"generation_secret_test",
+            "root_id":root_id,
+            "session_id":session_id,
+            "target":{
+                "binding_ref":target_binding_ref,
+                "kind":"environment",
+                "root_id":root_id,
+                "session_id":session_id
+            }
+        }))
+        .expect("valid secret delivery request");
+
+    assert!(managed_secret_scope_matches(&grant, &request));
+
+    let mut tool_binding_request = request.clone();
+    tool_binding_request.target.binding_ref = "bnd_sessiontool0000".parse().unwrap();
+    assert!(!managed_secret_scope_matches(&grant, &tool_binding_request));
+
+    let mut other_session_request = request;
+    other_session_request.session_id = "ses_othersecret0000".parse().unwrap();
+    assert!(!managed_secret_scope_matches(
+        &grant,
+        &other_session_request
+    ));
+}
+
 fn test_environment_registry(
     extension: &str,
     execution: Arc<dyn crate::environment::EnvironmentPort>,

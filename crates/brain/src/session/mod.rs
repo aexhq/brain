@@ -129,9 +129,22 @@ struct ManagedSecretGrant {
     root_id: String,
     session_id: String,
     environment_id: String,
-    binding_refs: HashSet<String>,
+    target_binding_ref: String,
     env_names: Vec<String>,
     expires_at_ms: u64,
+}
+
+fn managed_secret_scope_matches(
+    grant: &ManagedSecretGrant,
+    request: &brain_protocol::environment::SecretDeliveryRequest,
+) -> bool {
+    grant.root_id == request.root_id.as_str()
+        && grant.session_id == request.session_id.as_str()
+        && grant.environment_id == request.environment_id.as_str()
+        && request.target.root_id.as_str() == grant.root_id
+        && request.target.session_id.as_str() == grant.session_id
+        && grant.target_binding_ref == request.target.binding_ref.as_str()
+        && request.target.kind == brain_protocol::environment::TargetKind::Environment
 }
 
 #[derive(Clone)]
@@ -748,7 +761,7 @@ impl Brain {
         session_id: &str,
         doc: &HeadDoc,
         environment_id: &str,
-        binding_refs: HashSet<String>,
+        target_binding_ref: String,
         mut env_names: Vec<String>,
     ) -> Result<Option<brain_protocol::environment::SecretCapability>> {
         env_names.sort_unstable();
@@ -783,7 +796,7 @@ impl Brain {
                     root_id: doc.root_id.clone(),
                     session_id: session_id.to_owned(),
                     environment_id: environment_id.to_owned(),
-                    binding_refs,
+                    target_binding_ref,
                     env_names: env_names.clone(),
                     expires_at_ms,
                 },
@@ -906,7 +919,7 @@ impl Brain {
             );
         }
 
-        for (_, preparation) in preparations {
+        for (environment_name, preparation) in preparations {
             let mut seen = HashSet::new();
             let mut bundles = Vec::new();
             for digest in preparation.bundle_digests {
@@ -922,7 +935,8 @@ impl Brain {
                 session_id,
                 doc,
                 &preparation.environment_id,
-                preparation.binding_refs,
+                brain_protocol::contract::environment_binding_ref(&doc.root_id, &environment_name)
+                    .to_string(),
                 preparation.env_names,
             )?;
             let request: brain_protocol::environment::PrepareSessionRequest =
@@ -3267,16 +3281,7 @@ impl crate::environment::SecretDeliveryPort for Brain {
             )
         })?;
 
-        if grant.root_id != request.root_id.as_str()
-            || grant.session_id != request.session_id.as_str()
-            || grant.environment_id != request.environment_id.as_str()
-            || request.target.root_id.as_str() != grant.root_id
-            || request.target.session_id.as_str() != grant.session_id
-            || !grant
-                .binding_refs
-                .contains(request.target.binding_ref.as_str())
-            || request.target.kind != brain_protocol::environment::TargetKind::Environment
-        {
+        if !managed_secret_scope_matches(&grant, &request) {
             return Err(secret_delivery_error(
                 EnvironmentErrorCode::BindingConflict,
                 false,
