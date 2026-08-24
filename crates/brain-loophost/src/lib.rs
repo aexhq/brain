@@ -454,9 +454,8 @@ async fn serve_local_activation(
     }
 }
 
-/// A `session_start` activation's return: any clean return is acceptance (the engine-mode aex
-/// guest answers with its legacy verdict shape), but a contract loop reporting failed/aborted
-/// fails the turn.
+/// A `session_start` activation's return: any clean return is acceptance, but a contract loop
+/// reporting failed or aborted fails the turn.
 pub(crate) fn check_session_start(returned: &str) -> Result<(), BrainError> {
     use brain_protocol::agentloop::{ActivationResult, ActivationResultOutcome};
     if let Ok(result) = serde_json::from_str::<ActivationResult>(returned)
@@ -489,9 +488,8 @@ pub struct WasmAgentloop {
 }
 
 impl WasmAgentloop {
-    /// Every guest — the official aex component, seeded officials and customer uploads
-    /// alike — speaks `contracts/agentloop/v1` plus the read-only `engine.session_start`
-    /// hydration.
+    /// Every imported loop speaks `contracts/agentloop/v1` plus the read-only
+    /// `engine.session_start` hydration.
     pub fn from_component_file(path: &Path) -> anyhow::Result<Self> {
         Ok(Self {
             instances: SessionInstances::new(WasmLoopEngine::from_component_file(path)?),
@@ -565,17 +563,4 @@ impl Agentloop for WasmAgentloop {
             }
         }
     }
-}
-
-/// Convenience for compositions: install the in-process wasm loop into
-/// [`brain::session::BrainServices`].
-pub fn services_with_wasm_loop(
-    component_path: &Path,
-) -> anyhow::Result<brain::session::BrainServices> {
-    let agentloop: Arc<dyn Agentloop> =
-        Arc::new(WasmAgentloop::from_component_file(component_path)?);
-    Ok(brain::session::BrainServices {
-        agentloop: Some(agentloop),
-        ..brain::session::BrainServices::default()
-    })
 }

@@ -95,6 +95,7 @@ impl Fold {
             | Record::ManagedCallIntent { .. }
             | Record::ManagedCallAccepted { .. }
             | Record::ManagedCallUnknown { .. }
+            | Record::ManagedSetupCompleted { .. }
             | Record::CustomerTerminalReceived { .. }
             | Record::CustomerTerminalAcknowledged { .. }
             | Record::ManagedTerminalReceived { .. }
@@ -103,7 +104,7 @@ impl Fold {
             | Record::TurnCompleted { .. }
             | Record::TurnFailed { .. }
             | Record::State { .. }
-            | Record::HandLost { .. }
+            | Record::EnvironmentLost { .. }
             | Record::StorageUploadReserved { .. }
             | Record::StorageUploadPublished { .. }
             | Record::StorageUploadCompleted { .. }
@@ -112,7 +113,7 @@ impl Fold {
             | Record::StorageDeleteCompleted { .. }
             | Record::SandboxFileEffectIntent { .. }
             | Record::SandboxFileEffectCompleted { .. }
-            | Record::DefaultSandboxChanged { .. }
+            | Record::EnvironmentChanged { .. }
             | Record::ContextChunk { .. }
             | Record::ContextInstalled { .. }
             // Loop-land state is never kernel model input; contract loops compose their own

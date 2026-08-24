@@ -1,6 +1,6 @@
 //! The B1 loop-host wire: one multiplexed duplex connection per loop-host process, carrying
 //! every activation the brain runs there. Frames are u32 big-endian length-prefixed JSON with
-//! a 2 MiB cap, following the hand-wire pattern (id-correlated request/response frames).
+//! a 2 MiB cap, following the environment-wire pattern (id-correlated request/response frames).
 //!
 //! Directions — brain→host: `hello`, `activate`, `abort`, `ctx_result`; host→brain:
 //! `hello_ack`, `ctx`, `activation_result`. Activation ids and ctx ids are connection-scoped;

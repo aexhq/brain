@@ -3,7 +3,7 @@
 
 The JSON schemas remain authoritative.  Our Rust schema generator derives `Debug` for every
 generated type, including write-only values and short-lived bearer capabilities.  Run this
-postprocessor after regenerating `hand.rs` or `session.rs`; `--check` is suitable for CI.
+postprocessor after regenerating `environment.rs` or `session.rs`; `--check` is suitable for CI.
 
 The expected match counts deliberately make schema/generator drift fail closed.
 """
@@ -19,7 +19,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 TARGETS = {
-    ROOT / "crates/brain-protocol/src/hand.rs": {
+    ROOT / "crates/brain-protocol/src/environment.rs": {
         "BundleFetch": 1,
         "BundleFetchHeadersValue": 1,
         "BundleFetchUrl": 1,
@@ -38,7 +38,8 @@ TARGETS = {
         "ModelConfig": 1,
         "ModelConfigApiKey": 1,
         "ToolBundle": 1,
-        "ToolBundleContentBase64": 1,
+        "ToolArtifactLayer": 1,
+        "ToolArtifactLayerContentBase64": 1,
     },
 }
 

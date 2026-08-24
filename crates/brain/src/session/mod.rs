@@ -7,7 +7,7 @@
 //! durable went through `Journal::commit` first.
 //!
 //! The brain is COMPOSED, not configured into a cloud: [`Brain::with_parts`] takes a journal
-//! store, key custody, typed Hand services and (optionally) a provider factory -- all trait
+//! store, key custody, typed Environment services and (optionally) a provider factory -- all trait
 //! objects (see [`crate::adapter`]). Durable local and cloud implementations live behind the
 //! same public ports.
 
@@ -16,8 +16,10 @@ use crate::compact::{
     DEFAULT_CONTEXT_HARD_TOKENS, DEFAULT_CONTEXT_SOFT_TOKENS, DEFAULT_CONTEXT_TAIL_TOKENS,
 };
 use crate::config::{AgentDef, Dialect, GenOpts, OutputTokenParameter, ProviderKey, SessionConfig};
+use crate::environment::{
+    managed_environment_resources, map_environment_port_error, sealed_sandbox_network,
+};
 use crate::events::EventHub;
-use crate::hand::{managed_hand_resources, map_hand_port_error, sealed_sandbox_network};
 use crate::journal::{
     ContextForkDoc, DELETION_TOMBSTONE_TTL_MS, DeletionState, DeletionStatusDoc, Entry, FailureDoc,
     Head, HeadDoc, Journal, Lease, PrefixDoc, ProviderAttemptState, Record, SessionLifecycle,
@@ -30,7 +32,7 @@ use crate::provider::Provider;
 use crate::turn::{TurnRun, TurnState};
 use crate::{BrainError, Result};
 use base64::Engine;
-use brain_protocol::hand::TerminalOutcome;
+use brain_protocol::environment::TerminalOutcome;
 use brain_protocol::session::ToolOutcome;
 use brain_protocol::session::{
     self, CreateSessionRequest, MessageRequestContent, Provider as ApiProvider,
@@ -50,15 +52,6 @@ pub use view::*;
 mod storage_state;
 use storage_state::*;
 
-#[path = "engine/sandbox.rs"]
-mod engine_sandbox;
-
-#[path = "engine/storage.rs"]
-mod engine_storage;
-
-#[path = "engine/subagents.rs"]
-mod engine_subagents;
-
 mod config;
 pub use config::*;
 mod recovery;
@@ -75,19 +68,15 @@ pub struct Brain {
     pub outbound: crate::outbound::OutboundPolicy,
     pub external_executor: Arc<dyn ToolExecutor>,
     /// Resolves each session's sealed selector to the loop implementation driving its turns.
-    /// The default registry serves only the official `aex` policy.
     pub agentloop_registry: Arc<dyn crate::agentloop::AgentloopRegistry>,
     /// Durable per-session object storage. Hosted composition supplies this adapter; `None` means
     /// the storage resource is unavailable, never an in-memory production fallback.
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
     pub bundle_storage: Option<Arc<dyn crate::storage::BundleStoragePort>>,
-    pub hand: Option<Arc<dyn crate::hand::HandPort>>,
-    pub session_preparation: Option<Arc<dyn crate::hand::SessionPreparationPort>>,
-    pub sandbox_files: Option<Arc<dyn crate::hand::SandboxFilesPort>>,
-    pub sandbox_control: Option<Arc<dyn crate::hand::SandboxControlPort>>,
+    pub environments: crate::environment::EnvironmentRegistry,
     /// Hosted customer-app delivery (for example API Gateway Management API). Absence means
     /// customer-app Tools are unavailable; Brain never silently routes them elsewhere.
-    pub customer_delivery: Option<Arc<dyn crate::customer::CustomerHandDeliveryPort>>,
+    pub customer_delivery: Option<Arc<dyn crate::customer::CustomerEnvironmentDeliveryPort>>,
     /// Customer-app connection/receipt coordinator. Present only when the composition supplied
     /// absolute socket and observation callback URLs.
     pub customer: Option<Arc<crate::customer::CustomerCoordinator>>,
@@ -120,7 +109,7 @@ pub struct Brain {
 
 struct RootExecutionSecrets {
     key: ProviderKey,
-    hand_env: HashMap<String, String>,
+    environment_env: HashMap<String, String>,
 }
 
 struct RootSecretCell {
@@ -139,7 +128,7 @@ const SANDBOX_TRANSFER_CLEANUP_SKEW_MS: u64 = 60_000;
 struct ManagedSecretGrant {
     root_id: String,
     session_id: String,
-    hand_id: String,
+    environment_id: String,
     binding_refs: HashSet<String>,
     env_names: Vec<String>,
     expires_at_ms: u64,
@@ -159,6 +148,7 @@ struct DirectSandboxTransfer {
 
 #[derive(Clone)]
 struct DirectSandboxDestination {
+    environment_name: String,
     path: String,
     generation: String,
     overwrite: bool,
@@ -170,7 +160,7 @@ enum DirectSandboxTransferState {
     DownloadReady,
     UploadReady,
     Completing,
-    Completed(brain_protocol::hand::FileEntry),
+    Completed(brain_protocol::environment::FileEntry),
     Ambiguous,
 }
 
@@ -178,18 +168,11 @@ enum DirectSandboxTransferState {
 pub struct BrainServices {
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
     pub bundle_storage: Option<Arc<dyn crate::storage::BundleStoragePort>>,
-    pub hand: Option<Arc<dyn crate::hand::HandPort>>,
-    pub session_preparation: Option<Arc<dyn crate::hand::SessionPreparationPort>>,
-    pub sandbox_files: Option<Arc<dyn crate::hand::SandboxFilesPort>>,
-    pub sandbox_control: Option<Arc<dyn crate::hand::SandboxControlPort>>,
-    pub customer_delivery: Option<Arc<dyn crate::customer::CustomerHandDeliveryPort>>,
+    pub environments: crate::environment::EnvironmentRegistry,
+    pub customer_delivery: Option<Arc<dyn crate::customer::CustomerEnvironmentDeliveryPort>>,
     pub customer_transport: Option<crate::customer::CustomerTransportConfig>,
     pub compactor: Option<Arc<dyn crate::compact::CompactionPort>>,
-    /// The implementation of the official `aex` loop. `None` installs the in-process builtin;
-    /// loop-host compositions install the wasm guest or the remote adapter here.
-    pub agentloop: Option<Arc<dyn crate::agentloop::Agentloop>>,
-    /// Selector→loop resolution. `None` installs [`crate::agentloop::OfficialAexRegistry`]
-    /// over the `agentloop` slot: official `aex` only, everything else refused at create.
+    /// Selector-to-loop resolution. Compositions must supply it explicitly.
     pub agentloop_registry: Option<Arc<dyn crate::agentloop::AgentloopRegistry>>,
 }
 
@@ -282,16 +265,36 @@ fn validate_model_tool_projection<'a>(
     Ok(())
 }
 
+struct DecodedToolBundle {
+    checksum: String,
+    bytes: usize,
+    target: brain_protocol::session::ToolBundleTarget,
+    execute_path: String,
+    setup_path: Option<String>,
+    layers: Vec<DecodedToolLayer>,
+}
+
+struct DecodedToolLayer {
+    checksum: String,
+    bytes: Vec<u8>,
+    media_type: brain_protocol::session::ToolArtifactLayerRefMediaType,
+    mount_path: String,
+    unpack: brain_protocol::session::ToolArtifactLayerRefUnpack,
+}
+
 fn managed_bundle_descriptors(
-    hand_tools: &[(&crate::config::ToolDecl, &crate::config::HandToolSeal)],
-    decoded_bundles: &[(String, Vec<u8>, String)],
-) -> Result<Vec<brain_protocol::hand::BundleDescriptor>> {
-    hand_tools
+    environment_tools: &[(
+        &crate::config::ToolDecl,
+        &crate::config::EnvironmentToolSeal,
+    )],
+    decoded_bundles: &[DecodedToolBundle],
+) -> Result<Vec<brain_protocol::environment::BundleDescriptor>> {
+    environment_tools
         .iter()
         .map(|(decl, seal)| {
-            let (_, bytes, media_type) = decoded_bundles
+            let bundle = decoded_bundles
                 .iter()
-                .find(|(digest, _, _)| digest == &seal.checksum)
+                .find(|bundle| bundle.checksum == seal.checksum)
                 .ok_or_else(|| {
                     BrainError::Invalid(format!(
                         "missing verified bundle for managed Tool {}",
@@ -300,18 +303,28 @@ fn managed_bundle_descriptors(
                 })?;
             serde_json::from_value(serde_json::json!({
                 "bundle_digest": seal.checksum,
-                "bytes": bytes.len(),
+                "bytes": bundle.bytes,
                 "contract_digest": decl.contract_digest,
                 "description": (!decl.description.is_empty()).then_some(decl.description.as_str()),
-                "object": {
-                    "bytes": bytes.len(),
-                    "media_type": media_type,
-                    "object_id": format!("bundle_{}", seal.checksum),
-                    "sha256": seal.checksum,
-                },
+                "layers": bundle.layers.iter().map(|layer| serde_json::json!({
+                    "digest": layer.checksum,
+                    "bytes": layer.bytes.len(),
+                    "media_type": layer.media_type,
+                    "mount_path": layer.mount_path,
+                    "unpack": layer.unpack,
+                    "object": {
+                        "bytes": layer.bytes.len(),
+                        "media_type": layer.media_type.to_string(),
+                        "object_id": format!("bundle_{}", layer.checksum),
+                        "sha256": layer.checksum,
+                    },
+                })).collect::<Vec<_>>(),
                 "required_env": seal.required_env,
-                "runtime": "node22",
+                "target": bundle.target,
+                "execute_path": bundle.execute_path,
+                "setup_path": bundle.setup_path,
                 "tool_name": decl.name,
+                "environment_name": seal.environment,
             }))
             .map_err(BrainError::from)
         })
@@ -319,8 +332,8 @@ fn managed_bundle_descriptors(
 }
 
 fn bundle_object_matches_descriptor(
-    object: &brain_protocol::hand::ObjectReference,
-    descriptor: &brain_protocol::hand::BundleDescriptor,
+    object: &brain_protocol::environment::ObjectReference,
+    descriptor: &brain_protocol::environment::ArtifactLayerDescriptor,
 ) -> Result<bool> {
     // An uncomputable comparison is an error, never a match: `.ok() == .ok()` would report
     // two canonicalization failures as equality.
@@ -335,10 +348,11 @@ fn bundle_object_matches_descriptor(
 fn sealed_managed_binding(
     session_id: &str,
     doc: &HeadDoc,
-    descriptor: &brain_protocol::hand::BundleDescriptor,
-) -> Result<brain_protocol::hand::SealedBinding> {
+    descriptor: &brain_protocol::environment::BundleDescriptor,
+    declaration: &brain_protocol::session::EnvironmentConfig,
+) -> Result<brain_protocol::environment::SealedBinding> {
     let network = sealed_sandbox_network(doc)?;
-    let resources = managed_hand_resources()?;
+    let resources = managed_environment_resources()?;
     let policy_digest = brain_protocol::contract::canonical_digest(&serde_json::json!({
         "network": network,
         "required_env": descriptor.required_env,
@@ -346,18 +360,23 @@ fn sealed_managed_binding(
     }))?;
     let binding_identity = brain_protocol::contract::canonical_digest(&serde_json::json!({
         "bundle": descriptor,
+        "environment": declaration,
         "root_id": doc.root_id,
         "session_id": session_id,
     }))?;
+    let implementation_identity = brain_protocol::contract::canonical_digest(declaration)?;
     serde_json::from_value(serde_json::json!({
         "binding_id": format!("bnd_{}", &binding_identity.as_str()[..24]),
         "bundle": descriptor,
         "capability": descriptor.tool_name,
         "contract_digest": descriptor.contract_digest,
-        "implementation_identity": descriptor.bundle_digest,
+        "implementation_identity": implementation_identity,
+        "extension": declaration.extension,
+        "protocol": declaration.protocol,
+        "profile": declaration.profile,
+        "configuration": declaration.configuration,
         "policy_digest": policy_digest,
-        "realm": "aex_managed",
-        "realm_id": "node22",
+        "environment_name": descriptor.environment_name,
         "required_capabilities": ["execution", "session_preparation"],
         "root_id": doc.root_id,
         "session_id": session_id,
@@ -365,44 +384,48 @@ fn sealed_managed_binding(
     .map_err(BrainError::from)
 }
 
-pub(crate) fn default_sandbox_target(root_id: &str) -> Result<brain_protocol::hand::SandboxTarget> {
-    let digest = hex::encode(Sha256::digest(
-        format!("aex.default-target\0{root_id}").as_bytes(),
-    ));
+pub(crate) fn environment_target(
+    root_id: &str,
+    environment_name: &str,
+) -> Result<brain_protocol::environment::SandboxTarget> {
     serde_json::from_value(serde_json::json!({
-        "kind": "default",
+        "kind": "environment",
         "session_id": root_id,
         "root_id": root_id,
-        "binding_ref": format!("bnd_{}", &digest[..24]),
+        "binding_ref": brain_protocol::contract::environment_binding_ref(root_id, environment_name),
     }))
     .map_err(BrainError::from)
 }
 
-fn initial_default_sandbox(root_id: &str) -> Result<brain_protocol::hand::SandboxStatus> {
+fn initial_environment(
+    root_id: &str,
+    environment_name: &str,
+) -> Result<brain_protocol::environment::SandboxStatus> {
     serde_json::from_value(serde_json::json!({
         "state": "never_materialized",
-        "target": default_sandbox_target(root_id)?,
+        "target": environment_target(root_id, environment_name)?,
         "expires_at_ms": null,
     }))
     .map_err(BrainError::from)
 }
 
-fn default_sandbox_request(
+fn environment_create_request(
     doc: &HeadDoc,
+    environment_name: &str,
     generation_intent: &str,
-) -> Result<brain_protocol::hand::CreateSandboxRequest> {
+) -> Result<brain_protocol::environment::CreateSandboxRequest> {
     sandbox_create_request(
         doc,
-        default_sandbox_target(&doc.root_id)?,
+        environment_target(&doc.root_id, environment_name)?,
         generation_intent,
     )
 }
 
 fn sandbox_create_request(
     doc: &HeadDoc,
-    target: brain_protocol::hand::SandboxTarget,
+    target: brain_protocol::environment::SandboxTarget,
     generation_intent: &str,
-) -> Result<brain_protocol::hand::CreateSandboxRequest> {
+) -> Result<brain_protocol::environment::CreateSandboxRequest> {
     serde_json::from_value(serde_json::json!({
         "target": target,
         "generation_intent": generation_intent,
@@ -516,26 +539,30 @@ enum Command {
     End {
         reply: oneshot::Sender<Result<HeadDoc>>,
     },
-    MaterializeDefaultSandbox {
-        reply: oneshot::Sender<Result<brain_protocol::hand::SandboxStatus>>,
+    MaterializeEnvironment {
+        environment_name: String,
+        reply: oneshot::Sender<Result<brain_protocol::environment::SandboxStatus>>,
     },
-    WriteDefaultSandboxFile {
+    WriteEnvironmentFile {
+        environment_name: String,
         operation_id: String,
         generation: String,
         path: String,
         content_base64: String,
         overwrite: bool,
-        reply: oneshot::Sender<Result<brain_protocol::hand::FileEntry>>,
+        reply: oneshot::Sender<Result<brain_protocol::environment::FileEntry>>,
     },
-    CopyStorageToDefaultSandbox {
+    CopyStorageToEnvironment {
+        environment_name: String,
         operation_id: String,
         generation: String,
         key: String,
         path: String,
         overwrite: bool,
-        reply: oneshot::Sender<Result<brain_protocol::hand::FileEntry>>,
+        reply: oneshot::Sender<Result<brain_protocol::environment::FileEntry>>,
     },
-    CopyDefaultSandboxToStorage {
+    CopyEnvironmentToStorage {
+        environment_name: String,
         operation_id: String,
         generation: String,
         key: String,
@@ -600,13 +627,13 @@ impl Brain {
         let customer = services.customer_transport.map(|config| {
             crate::customer::CustomerCoordinator::new(config, services.customer_delivery.clone())
         });
-        let aex_loop = services
-            .agentloop
-            .unwrap_or_else(|| Arc::new(crate::agentloop::BuiltinAexLoop));
+        let agentloop_registry = services.agentloop_registry;
+        #[cfg(test)]
+        let agentloop_registry =
+            agentloop_registry.or_else(|| Some(Arc::new(crate::agentloop::TestAgentloopRegistry)));
         Arc::new(Self {
-            agentloop_registry: services.agentloop_registry.unwrap_or_else(|| {
-                Arc::new(crate::agentloop::OfficialAexRegistry { aex: aex_loop })
-            }),
+            agentloop_registry: agentloop_registry
+                .expect("BrainServices.agentloop_registry is required"),
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
             create_permits: Arc::new(Semaphore::new(cfg.max_concurrent_creates)),
@@ -629,10 +656,7 @@ impl Brain {
             external_executor,
             session_storage: services.session_storage,
             bundle_storage: services.bundle_storage,
-            hand: services.hand,
-            session_preparation: services.session_preparation,
-            sandbox_files: services.sandbox_files,
-            sandbox_control: services.sandbox_control,
+            environments: services.environments,
             customer_delivery: services.customer_delivery,
             customer,
             compactor: services
@@ -666,7 +690,10 @@ impl Brain {
             Journal::new_memory(owner),
             Arc::new(crate::keys::PlainCustody),
             Arc::new(DisabledToolExecutor),
-            BrainServices::default(),
+            BrainServices {
+                agentloop_registry: Some(Arc::new(crate::agentloop::TestAgentloopRegistry)),
+                ..BrainServices::default()
+            },
             provider_factory,
         ))
     }
@@ -695,18 +722,21 @@ impl Brain {
                     .custody
                     .decrypt(&doc.root_id, &blob_from_b64(&doc.key_b64)?)
                     .await?;
-                let hand_env = if doc.hand_secrets_b64.is_empty() {
+                let environment_env = if doc.environment_secrets_b64.is_empty() {
                     HashMap::new()
                 } else {
                     let plain = self
                         .custody
-                        .decrypt(&doc.root_id, &blob_from_b64(&doc.hand_secrets_b64)?)
+                        .decrypt(&doc.root_id, &blob_from_b64(&doc.environment_secrets_b64)?)
                         .await?;
                     serde_json::from_str(plain.expose()).map_err(|error| {
                         BrainError::Custody(format!("managed Tool secret document: {error}"))
                     })?
                 };
-                Ok::<_, BrainError>(Arc::new(RootExecutionSecrets { key, hand_env }))
+                Ok::<_, BrainError>(Arc::new(RootExecutionSecrets {
+                    key,
+                    environment_env,
+                }))
             })
             .await?
             .clone();
@@ -717,10 +747,10 @@ impl Brain {
         &self,
         session_id: &str,
         doc: &HeadDoc,
-        hand_id: &str,
+        environment_id: &str,
         binding_refs: HashSet<String>,
         mut env_names: Vec<String>,
-    ) -> Result<Option<brain_protocol::hand::SecretCapability>> {
+    ) -> Result<Option<brain_protocol::environment::SecretCapability>> {
         env_names.sort_unstable();
         env_names.dedup();
         if env_names.is_empty() {
@@ -729,7 +759,7 @@ impl Brain {
         if env_names.len() > brain_protocol::MAX_SESSION_SECRET_NAMES
             || env_names
                 .iter()
-                .any(|name| !doc.prefix.hand_env_keys.contains(name))
+                .any(|name| !doc.prefix.environment_env_keys.contains(name))
         {
             return Err(BrainError::Invalid(
                 "managed Tool secret names are outside the immutable session seal".into(),
@@ -752,7 +782,7 @@ impl Brain {
                 ManagedSecretGrant {
                     root_id: doc.root_id.clone(),
                     session_id: session_id.to_owned(),
-                    hand_id: hand_id.to_owned(),
+                    environment_id: environment_id.to_owned(),
                     binding_refs,
                     env_names: env_names.clone(),
                     expires_at_ms,
@@ -772,66 +802,91 @@ impl Brain {
         &self,
         session_id: &str,
         doc: &HeadDoc,
-    ) -> Result<Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>> {
+    ) -> Result<Arc<HashMap<String, crate::environment::ManagedBinding>>> {
         if doc.prefix.managed_bundles.is_empty() {
             return Ok(Arc::new(HashMap::new()));
         }
-        let hand = self.hand.as_ref().ok_or_else(|| {
-            BrainError::Invalid("managed Tools require the canonical Hand execution port".into())
-        })?;
-        let preparation = self.session_preparation.as_ref().ok_or_else(|| {
-            BrainError::Invalid("managed Tools require the canonical Hand preparation port".into())
-        })?;
         let bundle_storage = self.bundle_storage.as_ref().ok_or_else(|| {
             BrainError::Invalid("managed Tools require durable Tool-bundle custody".into())
         })?;
 
-        let mut prepared_bindings = Vec::with_capacity(doc.prefix.managed_bundles.len());
         let mut resolved_by_tool = HashMap::with_capacity(doc.prefix.managed_bundles.len());
-        let mut hand_id = None::<String>;
-        let mut binding_refs = HashSet::new();
-        let mut env_names = Vec::new();
+        struct Preparation {
+            adapter: crate::environment::EnvironmentAdapter,
+            environment_id: String,
+            bindings: Vec<serde_json::Value>,
+            binding_refs: HashSet<String>,
+            env_names: Vec<String>,
+            bundle_digests: Vec<String>,
+        }
+        let mut preparations = HashMap::<String, Preparation>::new();
         for descriptor in &doc.prefix.managed_bundles {
-            let binding = sealed_managed_binding(session_id, doc, descriptor)?;
-            let resolved = hand
+            let logical_name = descriptor.environment_name.as_str();
+            let declaration = doc.prefix.environments.get(logical_name).ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "managed Tool {} names undeclared environment {logical_name}",
+                    descriptor.tool_name.as_str()
+                ))
+            })?;
+            let adapter = self
+                .environments
+                .resolve(declaration.extension.as_str())?
+                .clone();
+            let binding = sealed_managed_binding(session_id, doc, descriptor, declaration)?;
+            let resolved = adapter
+                .execution
                 .resolve_binding(binding)
                 .await
-                .map_err(map_hand_port_error)?;
-            if resolved.realm != brain_protocol::hand::ExecutionRealm::AexManaged
-                || resolved.recovery != brain_protocol::hand::RecoveryClass::Retained
+                .map_err(map_environment_port_error)?;
+            if resolved.recovery != brain_protocol::environment::RecoveryClass::Retained
                 || !resolved
                     .capabilities
-                    .contains(&brain_protocol::hand::HandCapability::Execution)
-                || !resolved
-                    .capabilities
-                    .contains(&brain_protocol::hand::HandCapability::SessionPreparation)
+                    .contains(&brain_protocol::environment::EnvironmentCapability::Execution)
+                || !resolved.capabilities.contains(
+                    &brain_protocol::environment::EnvironmentCapability::SessionPreparation,
+                )
                 || resolved.limits.max_inline_input_bytes.get()
                     < brain_protocol::MAX_MANAGED_TOOL_INPUT_BYTES as u64
                 || resolved.limits.max_inline_result_bytes.get()
                     < brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES as u64
             {
-                return Err(BrainError::HandUnavailable(
+                return Err(BrainError::EnvironmentUnavailable(
                     "resolved managed binding cannot enforce the immutable execution seal".into(),
                 ));
             }
-            match &hand_id {
-                Some(expected) if expected != resolved.hand_id.as_str() => {
-                    return Err(BrainError::HandUnavailable(
-                        "one session's managed bindings resolved to different Hands".into(),
-                    ));
-                }
-                None => hand_id = Some(resolved.hand_id.to_string()),
-                _ => {}
+            let preparation = preparations
+                .entry(logical_name.to_owned())
+                .or_insert_with(|| Preparation {
+                    adapter: adapter.clone(),
+                    environment_id: resolved.environment_id.to_string(),
+                    bindings: Vec::new(),
+                    binding_refs: HashSet::new(),
+                    env_names: Vec::new(),
+                    bundle_digests: Vec::new(),
+                });
+            if preparation.environment_id != resolved.environment_id.as_str() {
+                return Err(BrainError::EnvironmentUnavailable(format!(
+                    "logical environment {logical_name} resolved to more than one physical environment"
+                )));
             }
-            env_names.extend(
+            preparation.env_names.extend(
                 descriptor
                     .required_env
                     .iter()
                     .map(|name| name.as_str().to_owned()),
             );
-            binding_refs.insert(resolved.binding_ref.to_string());
+            preparation
+                .binding_refs
+                .insert(resolved.binding_ref.to_string());
             if resolved_by_tool
-                .insert(descriptor.tool_name.to_string(), resolved.clone())
+                .insert(
+                    descriptor.tool_name.to_string(),
+                    crate::environment::ManagedBinding {
+                        environment_name: logical_name.to_owned(),
+                        resolved: resolved.clone(),
+                        environment: adapter.execution.clone(),
+                    },
+                )
                 .is_some()
             {
                 return Err(BrainError::Invalid(format!(
@@ -839,44 +894,54 @@ impl Brain {
                     descriptor.tool_name.as_str()
                 )));
             }
-            prepared_bindings.push(serde_json::json!({
+            preparation.bindings.push(serde_json::json!({
                 "binding_ref": resolved.binding_ref.clone(),
-                "bundle_digests": [descriptor.bundle_digest],
+                "bundle_digests": descriptor.layers.iter().map(|layer| layer.digest.as_str()).collect::<Vec<_>>(),
             }));
+            preparation.bundle_digests.extend(
+                descriptor
+                    .layers
+                    .iter()
+                    .map(|layer| layer.digest.to_string()),
+            );
         }
 
-        let mut seen = HashSet::new();
-        let mut bundles = Vec::new();
-        for descriptor in &doc.prefix.managed_bundles {
-            if seen.insert(descriptor.bundle_digest.to_string()) {
-                bundles.push(
-                    bundle_storage
-                        .prepare_bundle_fetch(&doc.root_id, descriptor.bundle_digest.as_str())
-                        .await?,
-                );
+        for (_, preparation) in preparations {
+            let mut seen = HashSet::new();
+            let mut bundles = Vec::new();
+            for digest in preparation.bundle_digests {
+                if seen.insert(digest.clone()) {
+                    bundles.push(
+                        bundle_storage
+                            .prepare_bundle_fetch(&doc.root_id, &digest)
+                            .await?,
+                    );
+                }
             }
+            let secret_capability = self.mint_managed_secret_capability(
+                session_id,
+                doc,
+                &preparation.environment_id,
+                preparation.binding_refs,
+                preparation.env_names,
+            )?;
+            let request: brain_protocol::environment::PrepareSessionRequest =
+                serde_json::from_value(serde_json::json!({
+                    "bindings": preparation.bindings,
+                    "bundles": bundles,
+                    "network": sealed_sandbox_network(doc)?,
+                    "resources": managed_environment_resources()?,
+                    "root_id": doc.root_id,
+                    "secret_capability": secret_capability,
+                    "session_id": session_id,
+                }))?;
+            preparation
+                .adapter
+                .preparation
+                .prepare(request)
+                .await
+                .map_err(map_environment_port_error)?;
         }
-        let secret_capability = self.mint_managed_secret_capability(
-            session_id,
-            doc,
-            hand_id.as_deref().expect("managed bindings are nonempty"),
-            binding_refs,
-            env_names,
-        )?;
-        let request: brain_protocol::hand::PrepareSessionRequest =
-            serde_json::from_value(serde_json::json!({
-                "bindings": prepared_bindings,
-                "bundles": bundles,
-                "network": sealed_sandbox_network(doc)?,
-                "resources": managed_hand_resources()?,
-                "root_id": doc.root_id,
-                "secret_capability": secret_capability,
-                "session_id": session_id,
-            }))?;
-        preparation
-            .prepare(request)
-            .await
-            .map_err(map_hand_port_error)?;
         Ok(Arc::new(resolved_by_tool))
     }
 
@@ -998,9 +1063,6 @@ impl Brain {
             let crate::config::ToolRoute::Intrinsic(capability) = &decl.route else {
                 continue;
             };
-            if crate::tools::is_direct_engine_capability(capability) {
-                continue;
-            }
             let policy = self
                 .cfg
                 .official_capabilities
@@ -1037,32 +1099,10 @@ impl Brain {
                         decl.name, policy.capability
                     )));
                 }
-                crate::config::ToolRoute::Intrinsic(capability)
-                    if !crate::tools::is_direct_engine_capability(capability) =>
-                {
+                crate::config::ToolRoute::Intrinsic(capability) => {
                     return Err(BrainError::Invalid(format!(
                         "tool {} requires unavailable intrinsic capability {}",
                         decl.name, capability
-                    )));
-                }
-                crate::config::ToolRoute::Intrinsic(capability)
-                    if capability == "brain.storage"
-                        && (self.session_storage.is_none() || self.sandbox_files.is_none()) =>
-                {
-                    return Err(BrainError::Invalid(format!(
-                        "tool {} requires session storage and sandbox-files ports",
-                        decl.name
-                    )));
-                }
-                crate::config::ToolRoute::Intrinsic(capability)
-                    if capability == "brain.sandbox"
-                        && (self.session_storage.is_none()
-                            || self.sandbox_files.is_none()
-                            || self.sandbox_control.is_none()) =>
-                {
-                    return Err(BrainError::Invalid(format!(
-                        "tool {} requires session storage, sandbox-files and sandbox-control ports",
-                        decl.name
                     )));
                 }
                 _ => {}
@@ -1084,28 +1124,62 @@ impl Brain {
             }
         }
 
-        let hand_env: HashMap<String, String> = req
+        let environment_env: HashMap<String, String> = req
             .secrets
             .iter()
             .map(|(name, value)| (name.as_str().to_owned(), value.as_str().to_owned()))
             .collect();
+        let environments: HashMap<String, brain_protocol::session::EnvironmentConfig> = req
+            .environments
+            .as_ref()
+            .into_iter()
+            .flat_map(|environments| environments.iter())
+            .map(|(name, environment)| (name.as_str().to_owned(), environment.clone()))
+            .collect();
+        for decl in &decls {
+            let (environment_name, expected_profile) = match &decl.route {
+                crate::config::ToolRoute::Environment(seal) => {
+                    (seal.environment.as_str(), "computer")
+                }
+                crate::config::ToolRoute::Customer { environment, .. } => {
+                    (environment.as_str(), "callbacks")
+                }
+                _ => continue,
+            };
+            let environment = environments.get(environment_name).ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "tool {} is bound to undeclared environment {environment_name:?}",
+                    decl.name
+                ))
+            })?;
+            let actual_profile = match environment.profile.kind {
+                brain_protocol::session::EnvironmentProfileKind::Computer => "computer",
+                brain_protocol::session::EnvironmentProfileKind::Callbacks => "callbacks",
+            };
+            if actual_profile != expected_profile {
+                return Err(BrainError::Invalid(format!(
+                    "tool {} requires a {expected_profile} environment, but {environment_name:?} is {actual_profile}",
+                    decl.name
+                )));
+            }
+        }
         let shape = "1gb".to_string();
-        let hand_tools: Vec<_> = decls
+        let environment_tools: Vec<_> = decls
             .iter()
             .filter_map(|decl| match &decl.route {
-                crate::config::ToolRoute::Hand(seal) => Some((decl, seal)),
+                crate::config::ToolRoute::Environment(seal) => Some((decl, seal)),
                 _ => None,
             })
             .collect();
-        for (decl, seal) in &hand_tools {
+        for (decl, seal) in &environment_tools {
             let missing: Vec<_> = seal
                 .required_env
                 .iter()
-                .filter(|key| !hand_env.contains_key(*key))
+                .filter(|key| !environment_env.contains_key(*key))
                 .collect();
             if !missing.is_empty() {
                 return Err(BrainError::Invalid(format!(
-                    "tool {} is missing required Hand environment keys: {}",
+                    "tool {} is missing required Environment environment keys: {}",
                     decl.name,
                     missing
                         .into_iter()
@@ -1121,6 +1195,36 @@ impl Brain {
         let mut decoded_bundles = Vec::with_capacity(req.tool_bundles.len());
         let mut total_bundle_bytes = 0usize;
         let mut bundle_checksums = HashSet::new();
+        let mut layer_checksums = HashSet::new();
+        let mut layer_payloads = HashMap::with_capacity(req.tool_artifact_layers.len());
+        for (index, layer) in req.tool_artifact_layers.iter().enumerate() {
+            let checksum = layer.checksum.to_string();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(layer.content_base64.as_bytes())
+                .map_err(|error| {
+                    BrainError::Invalid(format!(
+                        "tool_artifact_layers[{index}].content_base64: {error}"
+                    ))
+                })?;
+            if bytes.len() != layer.bytes.get() as usize {
+                return Err(BrainError::Invalid(format!(
+                    "tool_artifact_layers[{index}].bytes does not match decoded content"
+                )));
+            }
+            if hex::encode(Sha256::digest(&bytes)) != checksum {
+                return Err(BrainError::Invalid(format!(
+                    "tool_artifact_layers[{index}] checksum mismatch"
+                )));
+            }
+            if layer_payloads
+                .insert(checksum, (bytes, layer.media_type))
+                .is_some()
+            {
+                return Err(BrainError::Invalid(format!(
+                    "tool_artifact_layers[{index}] repeats a checksum"
+                )));
+            }
+        }
         for (index, bundle) in req.tool_bundles.iter().enumerate() {
             let checksum = bundle.checksum.to_string();
             if !bundle_checksums.insert(checksum.clone()) {
@@ -1128,45 +1232,100 @@ impl Brain {
                     "tool_bundles[{index}]: duplicate checksum"
                 )));
             }
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(bundle.content_base64.as_bytes())
-                .map_err(|error| {
-                    BrainError::Invalid(format!("tool_bundles[{index}].content_base64: {error}"))
-                })?;
-            if bytes.len() != bundle.bytes.get() as usize {
+            let manifest = serde_json::json!({
+                "profile": "computer/v1",
+                "target": bundle.target,
+                "execute_path": bundle.execute_path,
+                "setup_path": bundle.setup_path,
+                "layers": bundle.layers.iter().map(|layer| serde_json::json!({
+                    "checksum": layer.checksum,
+                    "bytes": layer.bytes,
+                    "media_type": layer.media_type,
+                    "mount_path": layer.mount_path,
+                    "unpack": layer.unpack,
+                })).collect::<Vec<_>>(),
+            });
+            let actual_manifest = brain_protocol::contract::canonical_digest(&manifest)?;
+            if actual_manifest.as_str() != checksum {
                 return Err(BrainError::Invalid(format!(
-                    "tool_bundles[{index}].bytes does not match decoded content"
+                    "tool_bundles[{index}] manifest checksum mismatch"
                 )));
             }
-            if bytes.len() > brain_protocol::MAX_TOOL_BUNDLE_BYTES {
+            let mut decoded_layers = Vec::with_capacity(bundle.layers.len());
+            let mut bundle_bytes = 0usize;
+            for (layer_index, layer) in bundle.layers.iter().enumerate() {
+                let (bytes, media_type) = layer_payloads
+                    .get(layer.checksum.as_str())
+                    .ok_or_else(|| BrainError::Invalid(format!(
+                        "tool_bundles[{index}].layers[{layer_index}] has no supplied artifact layer"
+                    )))?;
+                if bytes.len() != layer.bytes.get() as usize {
+                    return Err(BrainError::Invalid(format!(
+                        "tool_bundles[{index}].layers[{layer_index}].bytes does not match decoded content"
+                    )));
+                }
+                if media_type.to_string() != layer.media_type.to_string() {
+                    return Err(BrainError::Invalid(format!(
+                        "tool_bundles[{index}].layers[{layer_index}] media type conflicts with its payload"
+                    )));
+                }
+                bundle_bytes = bundle_bytes.saturating_add(bytes.len());
+                if layer_checksums.insert(layer.checksum.to_string()) {
+                    total_bundle_bytes = total_bundle_bytes.saturating_add(bytes.len());
+                }
+                decoded_layers.push(DecodedToolLayer {
+                    checksum: layer.checksum.to_string(),
+                    bytes: bytes.clone(),
+                    media_type: layer.media_type,
+                    mount_path: layer.mount_path.to_string(),
+                    unpack: layer.unpack,
+                });
+            }
+            if bundle_bytes != bundle.bytes.get() as usize {
+                return Err(BrainError::Invalid(format!(
+                    "tool_bundles[{index}].bytes does not match its artifact layers"
+                )));
+            }
+            if bundle_bytes > brain_protocol::MAX_SESSION_BUNDLE_BYTES {
                 return Err(BrainError::Invalid(format!(
                     "tool_bundles[{index}] exceeds {} bytes",
-                    brain_protocol::MAX_TOOL_BUNDLE_BYTES,
+                    brain_protocol::MAX_SESSION_BUNDLE_BYTES,
                 )));
             }
-            total_bundle_bytes = total_bundle_bytes.saturating_add(bytes.len());
             if total_bundle_bytes > brain_protocol::MAX_SESSION_BUNDLE_BYTES {
                 return Err(BrainError::Invalid(format!(
                     "tool_bundles exceed the {}-byte session limit",
                     brain_protocol::MAX_SESSION_BUNDLE_BYTES,
                 )));
             }
-            let actual = hex::encode(Sha256::digest(&bytes));
-            if actual != checksum {
-                return Err(BrainError::Invalid(format!(
-                    "tool_bundles[{index}] checksum mismatch"
-                )));
-            }
-            decoded_bundles.push((checksum, bytes, bundle.media_type.clone()));
+            decoded_bundles.push(DecodedToolBundle {
+                checksum,
+                bytes: bundle_bytes,
+                target: bundle.target,
+                execute_path: bundle.execute_path.to_string(),
+                setup_path: bundle
+                    .setup_path
+                    .as_ref()
+                    .map(|path| path.as_str().to_owned()),
+                layers: decoded_layers,
+            });
         }
-        let referenced_bundle_checksums: HashSet<_> = hand_tools
+        if let Some(unused) = layer_payloads
+            .keys()
+            .find(|checksum| !layer_checksums.contains(*checksum))
+        {
+            return Err(BrainError::Invalid(format!(
+                "unreferenced tool artifact layer {unused}"
+            )));
+        }
+        let referenced_bundle_checksums: HashSet<_> = environment_tools
             .iter()
             .map(|(_, seal)| seal.checksum.as_str())
             .collect();
-        for (_, seal) in &hand_tools {
+        for (_, seal) in &environment_tools {
             if !bundle_checksums.contains(&seal.checksum) {
                 return Err(BrainError::Invalid(format!(
-                    "Hand bundle {} was not supplied",
+                    "Environment bundle {} was not supplied",
                     seal.checksum
                 )));
             }
@@ -1179,51 +1338,45 @@ impl Brain {
                 "unreferenced tool bundle {unused}"
             )));
         }
-        let managed_bundles = managed_bundle_descriptors(&hand_tools, &decoded_bundles)?;
+        let managed_bundles = managed_bundle_descriptors(&environment_tools, &decoded_bundles)?;
 
-        let mut hand_env_keys: Vec<_> = hand_env.keys().cloned().collect();
-        hand_env_keys.sort();
+        let mut environment_env_keys: Vec<_> = environment_env.keys().cloned().collect();
+        environment_env_keys.sort();
 
         // Seal the loop identity before anything else commits, rejecting a loop this
         // composition cannot run while the request is still refusable.
-        let agentloop_selector = match &req.agentloop {
-            None => self.agentloop_registry.pin_official("aex")?,
-            Some(brain_protocol::session::AgentloopConfig::String(name)) => {
-                self.agentloop_registry.pin_official(name.as_str())?
-            }
-            Some(brain_protocol::session::AgentloopConfig::Object {
-                source_bundle_sha256,
-                toolchain,
-                bundle_base64,
-            }) => {
-                use base64::Engine as _;
-                let bundle = base64::engine::general_purpose::STANDARD
-                    .decode(bundle_base64.as_str())
-                    .map_err(|_| {
-                        BrainError::Invalid("agentloop.bundle_base64 is not valid base64".into())
-                    })?;
-                if bundle.is_empty() || bundle.len() > brain_protocol::MAX_LOOP_BUNDLE_BYTES {
-                    return Err(BrainError::Invalid(
-                        "agentloop bundle must be between 1 byte and 8 MiB".into(),
-                    ));
-                }
-                let digest = hex::encode(Sha256::digest(&bundle));
-                if digest != source_bundle_sha256.as_str() {
-                    return Err(BrainError::Invalid(format!(
-                        "agentloop bundle digest is {digest}, not the declared {}",
-                        source_bundle_sha256.as_str()
-                    )));
-                }
-                self.agentloop_registry
-                    .admit_custom(&digest, toolchain.as_str(), &bundle)?
-            }
-        };
+        let brain_protocol::session::AgentloopConfig {
+            source_bundle_sha256,
+            toolchain,
+            bundle_base64,
+        } = &req.agentloop;
+        use base64::Engine as _;
+        let bundle = base64::engine::general_purpose::STANDARD
+            .decode(bundle_base64.as_str())
+            .map_err(|_| {
+                BrainError::Invalid("agentloop.bundle_base64 is not valid base64".into())
+            })?;
+        if bundle.is_empty() || bundle.len() > brain_protocol::MAX_LOOP_BUNDLE_BYTES {
+            return Err(BrainError::Invalid(
+                "agentloop bundle must be between 1 byte and 8 MiB".into(),
+            ));
+        }
+        let digest = hex::encode(Sha256::digest(&bundle));
+        if digest != source_bundle_sha256.as_str() {
+            return Err(BrainError::Invalid(format!(
+                "agentloop bundle digest is {digest}, not the declared {}",
+                source_bundle_sha256.as_str()
+            )));
+        }
+        let agentloop_selector =
+            self.agentloop_registry
+                .admit_custom(&digest, toolchain.as_str(), &bundle)?;
         self.agentloop_registry.resolve(&agentloop_selector)?;
 
         let now = crate::wall_ms();
         let mut prefix = PrefixDoc {
             agentloop: Some(agentloop_selector),
-            system_prompt: req.system_prompt.clone().map(String::from),
+            system_prompt: None,
             provider: provider.to_string(),
             model: req.model.name.to_string(),
             base_url: Some(base_url),
@@ -1247,7 +1400,6 @@ impl Brain {
             storage_max_object_bytes: self.cfg.storage_max_object_bytes,
             storage_max_session_bytes: self.cfg.storage_max_session_bytes,
             storage_transfer_ttl_ms: self.cfg.storage_transfer_ttl.as_millis() as u64,
-            max_additional_sandboxes_per_root: self.cfg.max_additional_sandboxes_per_root,
             network: merge_session_network(req.network.as_ref(), &decls)?,
             max_child_depth: req.children.as_ref().map_or(4, |limits| {
                 u32::try_from(limits.max_depth)
@@ -1271,14 +1423,15 @@ impl Brain {
             }),
             rendered_base: serde_json::Value::Null,
             rendered_base_digest: String::new(),
-            prompt_cache_key: format!("aex:{session_id}"),
+            prompt_cache_key: format!("brain:{session_id}"),
             tools: tool_items,
+            environments,
             managed_bundles,
             official_capabilities,
-            hand_enabled: true,
+            environment_enabled: true,
             shape: shape.clone(),
             sync_interval_seconds: 0,
-            hand_env_keys,
+            environment_env_keys,
             metadata: req
                 .metadata
                 .iter()
@@ -1314,22 +1467,37 @@ impl Brain {
                     "managed Tools require durable internal Tool-bundle custody".into(),
                 )
             })?;
-            for (digest, bytes, _) in &decoded_bundles {
-                let object = bundle_storage
-                    .store_bundle(&session_id, digest, bytes)
-                    .await?;
+            let mut stored_layers = HashSet::new();
+            for bundle in &decoded_bundles {
                 let descriptor = prefix
                     .managed_bundles
                     .iter()
-                    .find(|descriptor| descriptor.bundle_digest.as_str() == digest)
+                    .find(|descriptor| descriptor.bundle_digest.as_str() == bundle.checksum)
                     .ok_or_else(|| {
                         BrainError::Journal("stored Tool bundle has no immutable descriptor".into())
                     })?;
-                if !bundle_object_matches_descriptor(&object, descriptor)? {
-                    return Err(BrainError::Journal(
-                        "Tool-bundle storage returned an object outside the immutable descriptor"
-                            .into(),
-                    ));
+                for layer in &bundle.layers {
+                    if !stored_layers.insert(layer.checksum.clone()) {
+                        continue;
+                    }
+                    let object = bundle_storage
+                        .store_bundle(&session_id, &layer.checksum, &layer.bytes)
+                        .await?;
+                    let layer_descriptor = descriptor
+                        .layers
+                        .iter()
+                        .find(|candidate| candidate.digest.as_str() == layer.checksum)
+                        .ok_or_else(|| {
+                            BrainError::Journal(
+                                "stored Tool artifact layer has no immutable descriptor".into(),
+                            )
+                        })?;
+                    if !bundle_object_matches_descriptor(&object, layer_descriptor)? {
+                        return Err(BrainError::Journal(
+                            "Tool artifact storage returned an object outside the immutable descriptor"
+                                .into(),
+                        ));
+                    }
                 }
             }
         }
@@ -1338,10 +1506,10 @@ impl Brain {
         // external effect. The plaintext key and session secrets never reach the journal.
         let key = ProviderKey::new(req.model.api_key.to_string());
         let blob = self.custody.encrypt(&session_id, &key).await?;
-        let hand_secrets_b64 = if hand_env.is_empty() {
+        let environment_secrets_b64 = if environment_env.is_empty() {
             String::new()
         } else {
-            let json = serde_json::to_string(&hand_env)?;
+            let json = serde_json::to_string(&environment_env)?;
             let encrypted = self
                 .custody
                 .encrypt(&session_id, &ProviderKey::new(json))
@@ -1380,7 +1548,7 @@ impl Brain {
             ended: false,
             prefix,
             key_b64: blob_to_b64(&blob),
-            hand_secrets_b64,
+            environment_secrets_b64,
             session_storage_bytes: 0,
             storage_reserved_bytes: 0,
             // Root-hidden managed bundles are not part of the public storage gauges, but they
@@ -1391,7 +1559,8 @@ impl Brain {
             storage_delete: None,
             pending_customer_acks: Vec::new(),
             pending_managed_acks: Vec::new(),
-            default_sandbox: Some(initial_default_sandbox(&session_id)?),
+            environment_targets: HashMap::new(),
+            tool_setups: HashMap::new(),
         };
         if let Err(error) = self
             .journal
@@ -1762,44 +1931,54 @@ impl Brain {
         session_doc(session_id, &doc)
     }
 
-    /// Current logical status of the root tree's shared default sandbox. Reading status never
-    /// materializes compute. Descendants resolve through their immutable `root_id`.
-    pub async fn default_sandbox_status(
+    /// Current logical status of one declared environment. Reading status never materializes
+    /// compute. Descendants resolve through their immutable `root_id`.
+    pub async fn environment_status(
         &self,
         session_id: &str,
-    ) -> Result<brain_protocol::hand::SandboxStatus> {
+        environment_name: &str,
+    ) -> Result<brain_protocol::environment::SandboxStatus> {
         let head = self.journal.get_head(session_id).await?;
         let root = if head.doc.root_id == session_id {
             head
         } else {
             self.journal.get_head(&head.doc.root_id).await?
         };
+        if !root.doc.prefix.environments.contains_key(environment_name) {
+            return Err(BrainError::Invalid(format!(
+                "session has no environment named {environment_name:?}"
+            )));
+        }
         root.doc
-            .default_sandbox
-            .clone()
+            .environment_targets
+            .get(environment_name)
+            .cloned()
             .map(Ok)
-            .unwrap_or_else(|| initial_default_sandbox(&root.doc.root_id))
+            .unwrap_or_else(|| initial_environment(&root.doc.root_id, environment_name))
     }
 
-    /// Idempotently materialize the shared default target. This is separate from the official
-    /// model sandbox Tool, which creates additional isolated targets under a root quota.
-    pub async fn materialize_default_sandbox(
+    /// Idempotently materialize one declared computer environment.
+    pub async fn materialize_environment(
         self: &Arc<Self>,
         session_id: &str,
-    ) -> Result<brain_protocol::hand::SandboxStatus> {
+        environment_name: &str,
+    ) -> Result<brain_protocol::environment::SandboxStatus> {
         let head = self.journal.get_head(session_id).await?;
         let root_id = head.doc.root_id.clone();
-        self.deliver(&root_id, |reply| Command::MaterializeDefaultSandbox {
+        let environment_name = environment_name.to_owned();
+        self.deliver(&root_id, |reply| Command::MaterializeEnvironment {
+            environment_name: environment_name.clone(),
             reply,
         })
         .await?
     }
 
-    async fn default_sandbox_file_target(
+    async fn environment_file_target(
         &self,
         session_id: &str,
+        environment_name: &str,
         expected_generation: &str,
-    ) -> Result<brain_protocol::hand::SandboxTarget> {
+    ) -> Result<brain_protocol::environment::SandboxTarget> {
         let session = self.journal.get_head(session_id).await?;
         ensure_storage_readable(&session.doc, session_id)?;
         let root = if session.doc.root_id == session_id {
@@ -1812,15 +1991,15 @@ impl Brain {
         }
         let status = root
             .doc
-            .default_sandbox
-            .as_ref()
+            .environment_targets
+            .get(environment_name)
             .ok_or(BrainError::SandboxNotMaterialized)?;
         if status.generation.as_ref().map(|value| value.as_str()) != Some(expected_generation) {
             return Err(
                 if matches!(
                     status.state,
-                    brain_protocol::hand::SandboxState::Gone
-                        | brain_protocol::hand::SandboxState::Terminated
+                    brain_protocol::environment::SandboxState::Gone
+                        | brain_protocol::environment::SandboxState::Terminated
                 ) {
                     BrainError::SandboxGone
                 } else {
@@ -1829,37 +2008,66 @@ impl Brain {
             );
         }
         match status.state {
-            brain_protocol::hand::SandboxState::Running
-            | brain_protocol::hand::SandboxState::Suspended => Ok(status.target.clone()),
-            brain_protocol::hand::SandboxState::Gone
-            | brain_protocol::hand::SandboxState::Terminated => Err(BrainError::SandboxGone),
-            brain_protocol::hand::SandboxState::NeverMaterialized
-            | brain_protocol::hand::SandboxState::Creating => {
+            brain_protocol::environment::SandboxState::Running
+            | brain_protocol::environment::SandboxState::Suspended => Ok(status.target.clone()),
+            brain_protocol::environment::SandboxState::Gone
+            | brain_protocol::environment::SandboxState::Terminated => Err(BrainError::SandboxGone),
+            brain_protocol::environment::SandboxState::NeverMaterialized
+            | brain_protocol::environment::SandboxState::Creating => {
                 Err(BrainError::SandboxNotMaterialized)
             }
         }
     }
 
-    fn sandbox_files_port(&self) -> Result<&Arc<dyn crate::hand::SandboxFilesPort>> {
-        self.sandbox_files.as_ref().ok_or_else(|| {
-            BrainError::Invalid("sandbox files are unavailable in this composition".into())
-        })
+    fn environment_adapter(
+        &self,
+        doc: &HeadDoc,
+        environment_name: &str,
+    ) -> Result<crate::environment::EnvironmentAdapter> {
+        let declaration = doc
+            .prefix
+            .environments
+            .get(environment_name)
+            .ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "session has no environment named {environment_name:?}"
+                ))
+            })?;
+        self.environments
+            .resolve(declaration.extension.as_str())
+            .cloned()
+    }
+
+    fn environment_files_port(
+        &self,
+        doc: &HeadDoc,
+        environment_name: &str,
+    ) -> Result<Arc<dyn crate::environment::SandboxFilesPort>> {
+        self.environment_adapter(doc, environment_name)?
+            .files
+            .ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "environment {environment_name:?} does not provide files"
+                ))
+            })
     }
 
     pub async fn sandbox_file_list(
         &self,
         session_id: &str,
+        environment_name: &str,
         generation: &str,
         path: &str,
         cursor: Option<&str>,
         limit: u32,
-    ) -> Result<crate::hand::SandboxFileList> {
+    ) -> Result<crate::environment::SandboxFileList> {
         let path = normalize_workspace_path(path)?;
+        let head = self.journal.get_head(session_id).await?;
         let target = self
-            .default_sandbox_file_target(session_id, generation)
+            .environment_file_target(session_id, environment_name, generation)
             .await?;
-        self.sandbox_files_port()?
-            .list(crate::hand::SandboxFileListRequest {
+        self.environment_files_port(&head.doc, environment_name)?
+            .list(crate::environment::SandboxFileListRequest {
                 target,
                 expected_generation: generation.to_owned(),
                 path,
@@ -1867,44 +2075,48 @@ impl Brain {
                 limit: limit.clamp(1, 100),
             })
             .await
-            .map_err(map_hand_port_error)
+            .map_err(map_environment_port_error)
     }
 
     pub async fn sandbox_file_stat(
         &self,
         session_id: &str,
+        environment_name: &str,
         generation: &str,
         path: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         let path = normalize_workspace_path(path)?;
+        let head = self.journal.get_head(session_id).await?;
         let target = self
-            .default_sandbox_file_target(session_id, generation)
+            .environment_file_target(session_id, environment_name, generation)
             .await?;
-        self.sandbox_files_port()?
+        self.environment_files_port(&head.doc, environment_name)?
             .stat(sandbox_file_request(&target, generation, &path)?)
             .await
-            .map_err(map_hand_port_error)
+            .map_err(map_environment_port_error)
     }
 
     pub async fn sandbox_file_read_inline(
         &self,
         session_id: &str,
+        environment_name: &str,
         generation: &str,
         path: &str,
         max_bytes: u64,
-    ) -> Result<crate::hand::SandboxFileContent> {
+    ) -> Result<crate::environment::SandboxFileContent> {
         let path = normalize_workspace_path(path)?;
+        let head = self.journal.get_head(session_id).await?;
         let target = self
-            .default_sandbox_file_target(session_id, generation)
+            .environment_file_target(session_id, environment_name, generation)
             .await?;
         let content = self
-            .sandbox_files_port()?
+            .environment_files_port(&head.doc, environment_name)?
             .read(sandbox_file_request(&target, generation, &path)?)
             .await
-            .map_err(map_hand_port_error)?;
+            .map_err(map_environment_port_error)?;
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(&content.content_base64)
-            .map_err(|_| BrainError::Hand("sandbox returned invalid base64".into()))?;
+            .map_err(|_| BrainError::Environment("sandbox returned invalid base64".into()))?;
         let limit = max_bytes.min(1024 * 1024) as usize;
         if decoded.len() > limit || decoded.len() as u64 != content.entry.bytes {
             return Err(BrainError::FileTooLarge { limit });
@@ -1912,15 +2124,17 @@ impl Brain {
         Ok(content)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn sandbox_file_write_inline(
         self: &Arc<Self>,
         session_id: &str,
+        environment_name: &str,
         generation: String,
         path: String,
         content_base64: String,
         overwrite: bool,
         idempotency_key: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         if idempotency_key.is_empty() || idempotency_key.len() > 128 {
             return Err(BrainError::Invalid(
                 "Idempotency-Key must contain 1 to 128 bytes".into(),
@@ -1941,10 +2155,12 @@ impl Brain {
             ));
         }
         let identity = hash_create_key(&format!(
-            "aex.sandbox-file-write.v1\0{session_id}\0{idempotency_key}"
+            "brain.environment-file-write.v1\0{session_id}\0{environment_name}\0{idempotency_key}"
         ));
         let operation_id = format!("file_{}", &identity[..24]);
-        self.deliver(session_id, |reply| Command::WriteDefaultSandboxFile {
+        let environment_name = environment_name.to_owned();
+        self.deliver(session_id, |reply| Command::WriteEnvironmentFile {
+            environment_name: environment_name.clone(),
             operation_id: operation_id.clone(),
             generation: generation.clone(),
             path: path.clone(),
@@ -1959,21 +2175,23 @@ impl Brain {
     pub async fn sandbox_file_search(
         &self,
         session_id: &str,
+        environment_name: &str,
         generation: &str,
         path: &str,
         expression: &str,
         cursor: Option<&str>,
         limit: u32,
         grep: bool,
-    ) -> Result<crate::hand::SandboxFileList> {
+    ) -> Result<crate::environment::SandboxFileList> {
         let path = normalize_workspace_path(path)?;
         if expression.is_empty() || expression.len() > 4096 {
             return Err(BrainError::Invalid(
                 "sandbox search expression must contain 1 to 4096 UTF-8 bytes".into(),
             ));
         }
+        let head = self.journal.get_head(session_id).await?;
         let target = self
-            .default_sandbox_file_target(session_id, generation)
+            .environment_file_target(session_id, environment_name, generation)
             .await?;
         let request = sandbox_search_request(
             &target,
@@ -1983,31 +2201,33 @@ impl Brain {
             cursor,
             limit.clamp(1, 100),
         )?;
-        let files = self.sandbox_files_port()?;
+        let files = self.environment_files_port(&head.doc, environment_name)?;
         if grep {
             files.grep(request).await
         } else {
             files.find(request).await
         }
-        .map_err(map_hand_port_error)
+        .map_err(map_environment_port_error)
     }
 
     /// Prepare a short-lived direct download of one generation-fenced sandbox file. Bytes are
-    /// exported through the existing exact-pair Hand copy operation into quota-metered hidden
+    /// exported through the existing exact-pair Environment copy operation into quota-metered hidden
     /// session storage; the public ticket never exposes that storage key.
     pub async fn sandbox_file_prepare_download(
         self: &Arc<Self>,
         session_id: &str,
+        environment_name: &str,
         generation: String,
         path: String,
     ) -> Result<crate::storage::StorageTransferTicket> {
         self.storage_port()?;
-        self.sandbox_files_port()?;
+        let head = self.journal.get_head(session_id).await?;
+        self.environment_files_port(&head.doc, environment_name)?;
         let path = normalize_workspace_path(&path)?;
         let entry = self
-            .sandbox_file_stat(session_id, &generation, &path)
+            .sandbox_file_stat(session_id, environment_name, &generation, &path)
             .await?;
-        if entry.kind != brain_protocol::hand::FileEntryKind::File {
+        if entry.kind != brain_protocol::environment::FileEntryKind::File {
             return Err(BrainError::Invalid(
                 "sandbox download source must be a regular file".into(),
             ));
@@ -2043,6 +2263,7 @@ impl Brain {
         let object = self
             .storage_copy_from_sandbox_internal(
                 session_id,
+                environment_name,
                 storage_key.clone(),
                 path,
                 generation,
@@ -2062,7 +2283,7 @@ impl Brain {
         };
         let result = async {
             if object.bytes != entry.bytes {
-                return Err(BrainError::Hand(
+                return Err(BrainError::Environment(
                     "sandbox export changed size while preparing the download".into(),
                 ));
             }
@@ -2101,9 +2322,11 @@ impl Brain {
 
     /// Prepare a direct upload into hidden quota-metered storage. Completion performs one
     /// generation-fenced exact-pair import and never guesses after process loss or ambiguity.
+    #[allow(clippy::too_many_arguments)]
     pub async fn sandbox_file_prepare_upload(
         self: &Arc<Self>,
         session_id: &str,
+        environment_name: &str,
         generation: String,
         path: String,
         bytes: u64,
@@ -2111,13 +2334,13 @@ impl Brain {
         overwrite: bool,
     ) -> Result<crate::storage::StorageTransferTicket> {
         self.storage_port()?;
-        self.sandbox_files_port()?;
+        let head = self.journal.get_head(session_id).await?;
+        self.environment_files_port(&head.doc, environment_name)?;
         let path = normalize_workspace_path(&path)?;
         // This read-only lookup both authenticates the session's root and rejects a stale/gone
         // generation before reserving shared process or storage quota.
-        self.default_sandbox_file_target(session_id, &generation)
+        self.environment_file_target(session_id, environment_name, &generation)
             .await?;
-        let head = self.journal.get_head(session_id).await?;
         ensure_storage_readable(&head.doc, session_id)?;
         let transfer_id = crate::mint_id("sbxfer", 24);
         let storage_key = direct_sandbox_transfer_key(&transfer_id);
@@ -2142,6 +2365,7 @@ impl Brain {
                 cleanup_at_ms: expires_at_ms.saturating_add(SANDBOX_TRANSFER_CLEANUP_SKEW_MS),
                 storage_transfer_id: None,
                 destination: Some(DirectSandboxDestination {
+                    environment_name: environment_name.to_owned(),
                     path,
                     generation,
                     overwrite,
@@ -2184,7 +2408,7 @@ impl Brain {
         self: &Arc<Self>,
         session_id: &str,
         transfer_id: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         if transfer_id.is_empty() || transfer_id.len() > 128 {
             return Err(BrainError::Invalid(
                 "sandbox transfer id must contain 1 to 128 bytes".into(),
@@ -2232,6 +2456,7 @@ impl Brain {
                 .await?;
             self.storage_copy_to_sandbox_internal(
                 session_id,
+                &destination.environment_name,
                 storage_key.clone(),
                 destination.path,
                 destination.generation,
@@ -2296,18 +2521,21 @@ impl Brain {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn storage_copy_to_sandbox(
         self: &Arc<Self>,
         session_id: &str,
+        environment_name: &str,
         key: String,
         path: String,
         generation: String,
         overwrite: bool,
         idempotency_key: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         crate::storage::validate_storage_key(&key)?;
         self.storage_copy_to_sandbox_admitted(
             session_id,
+            environment_name,
             key,
             path,
             generation,
@@ -2317,18 +2545,21 @@ impl Brain {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn storage_copy_to_sandbox_internal(
         self: &Arc<Self>,
         session_id: &str,
+        environment_name: &str,
         key: String,
         path: String,
         generation: String,
         overwrite: bool,
         operation_key: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
+    ) -> Result<brain_protocol::environment::FileEntry> {
         crate::storage::validate_internal_storage_key(&key)?;
         self.storage_copy_to_sandbox_admitted(
             session_id,
+            environment_name,
             key,
             path,
             generation,
@@ -2338,18 +2569,26 @@ impl Brain {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn storage_copy_to_sandbox_admitted(
         self: &Arc<Self>,
         session_id: &str,
+        environment_name: &str,
         key: String,
         path: String,
         generation: String,
         overwrite: bool,
         operation_key: &str,
-    ) -> Result<brain_protocol::hand::FileEntry> {
-        let operation_id = sandbox_file_effect_id(session_id, operation_key, "storage-to-sandbox")?;
+    ) -> Result<brain_protocol::environment::FileEntry> {
+        let operation_id = sandbox_file_effect_id(
+            session_id,
+            operation_key,
+            &format!("storage-to-{environment_name}"),
+        )?;
         let path = normalize_workspace_path(&path)?;
-        self.deliver(session_id, |reply| Command::CopyStorageToDefaultSandbox {
+        let environment_name = environment_name.to_owned();
+        self.deliver(session_id, |reply| Command::CopyStorageToEnvironment {
+            environment_name: environment_name.clone(),
             operation_id: operation_id.clone(),
             generation: generation.clone(),
             key: key.clone(),
@@ -2360,9 +2599,11 @@ impl Brain {
         .await?
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn storage_copy_from_sandbox(
         self: &Arc<Self>,
         session_id: &str,
+        environment_name: &str,
         key: String,
         path: String,
         generation: String,
@@ -2372,6 +2613,7 @@ impl Brain {
         crate::storage::validate_storage_key(&key)?;
         self.storage_copy_from_sandbox_admitted(
             session_id,
+            environment_name,
             key,
             path,
             generation,
@@ -2384,6 +2626,7 @@ impl Brain {
     async fn storage_copy_from_sandbox_internal(
         self: &Arc<Self>,
         session_id: &str,
+        environment_name: &str,
         key: String,
         path: String,
         generation: String,
@@ -2392,6 +2635,7 @@ impl Brain {
         crate::storage::validate_internal_storage_key(&key)?;
         self.storage_copy_from_sandbox_admitted(
             session_id,
+            environment_name,
             key,
             path,
             generation,
@@ -2401,18 +2645,26 @@ impl Brain {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn storage_copy_from_sandbox_admitted(
         self: &Arc<Self>,
         session_id: &str,
+        environment_name: &str,
         key: String,
         path: String,
         generation: String,
         overwrite: bool,
         operation_key: &str,
     ) -> Result<crate::storage::StorageObject> {
-        let operation_id = sandbox_file_effect_id(session_id, operation_key, "sandbox-to-storage")?;
+        let operation_id = sandbox_file_effect_id(
+            session_id,
+            operation_key,
+            &format!("{environment_name}-to-storage"),
+        )?;
         let path = normalize_workspace_path(&path)?;
-        self.deliver(session_id, |reply| Command::CopyDefaultSandboxToStorage {
+        let environment_name = environment_name.to_owned();
+        self.deliver(session_id, |reply| Command::CopyEnvironmentToStorage {
+            environment_name: environment_name.clone(),
             operation_id: operation_id.clone(),
             generation: generation.clone(),
             key: key.clone(),
@@ -2512,52 +2764,6 @@ impl Brain {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    }
-
-    async fn persist_additional_sandbox_status(
-        &self,
-        current: &crate::journal::SandboxInventoryDoc,
-        status: brain_protocol::hand::SandboxStatus,
-    ) -> Result<crate::journal::SandboxInventoryDoc> {
-        use brain_protocol::hand::SandboxState;
-
-        if !sandbox_status_matches_target(&status, &current.status.target)? {
-            return Err(BrainError::Hand(
-                "Hand returned a lifecycle receipt for a different sandbox target".into(),
-            ));
-        }
-        if matches!(
-            status.state,
-            SandboxState::Creating | SandboxState::Running | SandboxState::Suspended
-        ) && status
-            .generation
-            .as_ref()
-            .map(|generation| generation.as_str())
-            != Some(current.generation_intent.as_str())
-        {
-            return Err(BrainError::Hand(
-                "Hand returned a different additional-sandbox generation".into(),
-            ));
-        }
-        if matches!(
-            status.state,
-            SandboxState::Running | SandboxState::Suspended
-        ) && (status.target_ref.is_none() || status.expires_at_ms.is_none())
-        {
-            return Err(BrainError::Hand(
-                "live sandbox receipt lacks target_ref or hard expiry".into(),
-            ));
-        }
-        self.journal
-            .update_sandbox(&crate::journal::SandboxUpdateRequest {
-                root_id: current.root_id.clone(),
-                sandbox_id: current.sandbox_id.clone(),
-                expected_version: current.version,
-                release_slot: sandbox_status_releases_slot(&status),
-                status,
-                now_ms: crate::wall_ms(),
-            })
-            .await
     }
 
     pub async fn delete(self: &Arc<Self>, session_id: &str) -> Result<()> {
@@ -3001,17 +3207,17 @@ impl Brain {
 }
 
 fn secret_delivery_error(
-    code: brain_protocol::hand::HandErrorCode,
+    code: brain_protocol::environment::EnvironmentErrorCode,
     retryable: bool,
     message: &str,
-) -> brain_protocol::hand::HandError {
+) -> brain_protocol::environment::EnvironmentError {
     serde_json::from_value(serde_json::json!({
         "code": code,
         "details": {},
         "message": message,
         "retryable": retryable,
     }))
-    .expect("static secret-delivery Hand errors satisfy the contract")
+    .expect("static secret-delivery Environment errors satisfy the contract")
 }
 
 #[async_trait::async_trait]
@@ -3020,58 +3226,27 @@ impl crate::turn::EngineServices for Brain {
         &self,
         session_id: &str,
         doc: &HeadDoc,
-    ) -> Result<Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>> {
+    ) -> Result<Arc<HashMap<String, crate::environment::ManagedBinding>>> {
         Brain::prepare_managed_session(self, session_id, doc).await
     }
 
-    async fn execute_child_capability(
-        self: Arc<Self>,
-        parent_id: &str,
-        operation_id: &str,
-        input: serde_json::Value,
-        cancel: CancellationToken,
-    ) -> CallOutcome {
-        Brain::execute_child_capability(&self, parent_id, operation_id, input, cancel).await
-    }
-
-    async fn execute_storage_capability(
+    async fn reconcile_managed_unknown_environment(
         self: Arc<Self>,
         session_id: &str,
-        operation_id: &str,
-        input: serde_json::Value,
-        cancel: CancellationToken,
-        st: &mut crate::turn::TurnState,
-    ) -> Result<CallOutcome> {
-        Brain::execute_storage_capability(&self, session_id, operation_id, input, cancel, st).await
-    }
-
-    async fn execute_sandbox_capability(
-        self: Arc<Self>,
-        session_id: &str,
-        operation_id: &str,
-        input: serde_json::Value,
-        cancel: CancellationToken,
-        st: &mut crate::turn::TurnState,
-    ) -> Result<CallOutcome> {
-        Brain::execute_sandbox_capability(&self, session_id, operation_id, input, cancel, st).await
-    }
-
-    async fn reconcile_managed_unknown_default_sandbox(
-        self: Arc<Self>,
-        session_id: &str,
+        tool_name: &str,
         st: &mut crate::turn::TurnState,
     ) -> Result<()> {
-        reconcile_managed_unknown_default_sandbox(&self, session_id, st).await
+        reconcile_managed_unknown_environment(&self, session_id, tool_name, st).await
     }
 }
 
 #[async_trait::async_trait]
-impl crate::hand::SecretDeliveryPort for Brain {
+impl crate::environment::SecretDeliveryPort for Brain {
     async fn redeem(
         &self,
-        request: brain_protocol::hand::SecretDeliveryRequest,
-    ) -> crate::hand::HandResult<crate::hand::SecretMaterial> {
-        use brain_protocol::hand::HandErrorCode;
+        request: brain_protocol::environment::SecretDeliveryRequest,
+    ) -> crate::environment::EnvironmentResult<crate::environment::SecretMaterial> {
+        use brain_protocol::environment::EnvironmentErrorCode;
 
         let now = crate::wall_ms();
         let grant = {
@@ -3084,7 +3259,7 @@ impl crate::hand::SecretDeliveryPort for Brain {
         }
         .ok_or_else(|| {
             secret_delivery_error(
-                HandErrorCode::CapabilityUnavailable,
+                EnvironmentErrorCode::CapabilityUnavailable,
                 false,
                 "secret capability is absent, expired, or already redeemed",
             )
@@ -3092,18 +3267,18 @@ impl crate::hand::SecretDeliveryPort for Brain {
 
         if grant.root_id != request.root_id.as_str()
             || grant.session_id != request.session_id.as_str()
-            || grant.hand_id != request.hand_id.as_str()
+            || grant.environment_id != request.environment_id.as_str()
             || request.target.root_id.as_str() != grant.root_id
             || request.target.session_id.as_str() != grant.session_id
             || !grant
                 .binding_refs
                 .contains(request.target.binding_ref.as_str())
-            || request.target.kind != brain_protocol::hand::TargetKind::Default
+            || request.target.kind != brain_protocol::environment::TargetKind::Environment
         {
             return Err(secret_delivery_error(
-                HandErrorCode::BindingConflict,
+                EnvironmentErrorCode::BindingConflict,
                 false,
-                "secret capability does not match the exact Hand/session/target scope",
+                "secret capability does not match the exact Environment/session/target scope",
             ));
         }
 
@@ -3113,47 +3288,38 @@ impl crate::hand::SecretDeliveryPort for Brain {
             .await
             .map_err(|_| {
                 secret_delivery_error(
-                    HandErrorCode::TemporarilyUnavailable,
+                    EnvironmentErrorCode::TemporarilyUnavailable,
                     true,
                     "secret custody is temporarily unavailable",
                 )
             })?;
         if head.doc.root_id != grant.root_id || head.doc.state != SessionLifecycle::Open {
             return Err(secret_delivery_error(
-                HandErrorCode::CapabilityUnavailable,
+                EnvironmentErrorCode::CapabilityUnavailable,
                 false,
                 "session no longer permits managed secret delivery",
             ));
         }
         let (_, secrets) = self.root_execution_secrets(&head.doc).await.map_err(|_| {
             secret_delivery_error(
-                HandErrorCode::TemporarilyUnavailable,
+                EnvironmentErrorCode::TemporarilyUnavailable,
                 true,
                 "secret custody is temporarily unavailable",
             )
         })?;
         let mut values = HashMap::with_capacity(grant.env_names.len());
         for name in grant.env_names {
-            let value = secrets.hand_env.get(&name).ok_or_else(|| {
+            let value = secrets.environment_env.get(&name).ok_or_else(|| {
                 secret_delivery_error(
-                    HandErrorCode::CapabilityUnavailable,
+                    EnvironmentErrorCode::CapabilityUnavailable,
                     false,
                     "immutable managed secret material is incomplete",
                 )
             })?;
             values.insert(name, value.clone());
         }
-        Ok(crate::hand::SecretMaterial::new(values))
+        Ok(crate::environment::SecretMaterial::new(values))
     }
-}
-
-fn required_child_string(input: &serde_json::Value, field: &str) -> Result<String> {
-    input
-        .get(field)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| BrainError::Invalid(format!("subagents.{field} is required")))
 }
 
 fn sandbox_file_effect_id(session_id: &str, key: &str, action: &str) -> Result<String> {
@@ -3163,7 +3329,7 @@ fn sandbox_file_effect_id(session_id: &str, key: &str, action: &str) -> Result<S
         ));
     }
     let identity = hash_create_key(&format!(
-        "aex.sandbox-file-effect.v1\0{action}\0{session_id}\0{key}"
+        "brain.sandbox-file-effect.v1\0{action}\0{session_id}\0{key}"
     ));
     Ok(format!("file_{}", &identity[..24]))
 }
@@ -3190,71 +3356,12 @@ fn direct_sandbox_prepare_failure_is_definitive(error: &BrainError) -> bool {
     )
 }
 
-fn required_bounded_string(
-    input: &serde_json::Value,
-    field: &str,
-    max_bytes: usize,
-    scope: &str,
-) -> Result<String> {
-    input
-        .get(field)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= max_bytes)
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            BrainError::Invalid(format!(
-                "{scope}.{field} must contain 1 to {max_bytes} UTF-8 bytes"
-            ))
-        })
-}
-
-fn optional_bounded_string(
-    input: &serde_json::Value,
-    field: &str,
-    max_bytes: usize,
-) -> Result<Option<String>> {
-    let Some(value) = input.get(field) else {
-        return Ok(None);
-    };
-    let value = value
-        .as_str()
-        .ok_or_else(|| BrainError::Invalid(format!("{field} must be a string when supplied")))?;
-    if value.len() > max_bytes {
-        return Err(BrainError::Invalid(format!(
-            "{field} exceeds {max_bytes} UTF-8 bytes"
-        )));
-    }
-    Ok(Some(value.to_owned()))
-}
-
 /// HTTP header-value grammar without pulling an HTTP client into the core: visible ASCII plus
 /// space and tab, no control bytes (RFC 9110 field-value).
 fn validate_header_value(value: &str) -> bool {
     value
         .bytes()
         .all(|byte| byte == b'\t' || (b' '..=b'~').contains(&byte) || byte >= 0x80)
-}
-
-/// Engine capability page limits share one bound: 1..=100 accepted, per-action default.
-fn engine_page_limit(input: &serde_json::Value, what: &str, default: u64) -> Result<u64> {
-    let limit = input
-        .get("limit")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(default);
-    if !(1..=100).contains(&limit) {
-        return Err(BrainError::Invalid(format!(
-            "{what} limit must be between 1 and 100"
-        )));
-    }
-    Ok(limit)
-}
-
-fn required_identifier(input: &serde_json::Value, field: &str, scope: &str) -> Result<String> {
-    let value = required_bounded_string(input, field, 128, scope)?;
-    value
-        .parse::<brain_protocol::hand::Identifier>()
-        .map_err(|error| BrainError::Invalid(format!("{scope}.{field}: {error}")))?;
-    Ok(value)
 }
 
 fn validate_storage_prefix(prefix: &str) -> Result<()> {
@@ -3272,10 +3379,10 @@ fn validate_storage_prefix(prefix: &str) -> Result<()> {
 }
 
 fn sandbox_file_request(
-    target: &brain_protocol::hand::SandboxTarget,
+    target: &brain_protocol::environment::SandboxTarget,
     generation: &str,
     path: &str,
-) -> Result<brain_protocol::hand::SandboxFileRequest> {
+) -> Result<brain_protocol::environment::SandboxFileRequest> {
     serde_json::from_value(serde_json::json!({
         "target": target,
         "expected_generation": generation,
@@ -3289,7 +3396,7 @@ fn storage_object_reference(
     bytes: u64,
     sha256: &str,
     media_type: Option<&str>,
-) -> Result<brain_protocol::hand::ObjectReference> {
+) -> Result<brain_protocol::environment::ObjectReference> {
     serde_json::from_value(serde_json::json!({
         "object_id": object_id,
         "bytes": bytes,
@@ -3302,15 +3409,15 @@ fn storage_object_reference(
 #[allow(clippy::too_many_arguments)]
 fn sandbox_copy_request(
     operation_id: &str,
-    target: &brain_protocol::hand::SandboxTarget,
+    target: &brain_protocol::environment::SandboxTarget,
     generation: &str,
     path: &str,
-    object: Option<brain_protocol::hand::ObjectReference>,
+    object: Option<brain_protocol::environment::ObjectReference>,
     ticket: &crate::storage::StorageTransferTicket,
     direction: &str,
     overwrite: bool,
-) -> Result<brain_protocol::hand::SandboxCopyRequest> {
-    let mut request: brain_protocol::hand::SandboxCopyRequest =
+) -> Result<brain_protocol::environment::SandboxCopyRequest> {
+    let mut request: brain_protocol::environment::SandboxCopyRequest =
         serde_json::from_value(serde_json::json!({
             "operation_id": operation_id,
             "request_digest": "0".repeat(64),
@@ -3335,78 +3442,37 @@ fn sandbox_copy_request(
 }
 
 fn validate_sandbox_copy_result(
-    result: &brain_protocol::hand::SandboxCopyResult,
+    result: &brain_protocol::environment::SandboxCopyResult,
     operation_id: &str,
-    request_digest: &brain_protocol::hand::Digest,
+    request_digest: &brain_protocol::environment::Digest,
 ) -> Result<()> {
     if result.operation_id.as_str() != operation_id || &result.request_digest != request_digest {
-        return Err(BrainError::Hand(
+        return Err(BrainError::Environment(
             "sandbox copy receipt identity mismatch".into(),
         ));
     }
     Ok(())
 }
 
-fn additional_sandbox_identity(
-    root_id: &str,
-    owner_session_id: &str,
-    operation_id: &str,
-) -> Result<(String, String, brain_protocol::hand::SandboxTarget)> {
-    let identity = |domain: &str| {
-        hex::encode(Sha256::digest(
-            format!("aex.{domain}\0{root_id}\0{owner_session_id}\0{operation_id}").as_bytes(),
-        ))
-    };
-    let sandbox_digest = identity("additional-sandbox");
-    let generation_digest = identity("additional-generation");
-    let binding_digest = identity("additional-binding");
-    let sandbox_id = format!("sbx_{}", &sandbox_digest[..24]);
-    let generation = format!("gen_{}", &generation_digest[..24]);
-    let target = serde_json::from_value(serde_json::json!({
-        "kind": "additional",
-        "session_id": owner_session_id,
-        "root_id": root_id,
-        "binding_ref": format!("bnd_{}", &binding_digest[..24]),
-        "sandbox_id": sandbox_id,
-    }))?;
-    Ok((sandbox_id, generation, target))
-}
-
-fn sandbox_request_digest(
-    root_id: &str,
-    owner_session_id: &str,
-    operation_id: &str,
-    input: &serde_json::Value,
-) -> Result<String> {
-    Ok(hex::encode(Sha256::digest(serde_jcs::to_vec(
-        &serde_json::json!({
-            "domain": "aex.brain.sandbox.v1",
-            "root_id": root_id,
-            "owner_session_id": owner_session_id,
-            "operation_id": operation_id,
-            "input": input,
-        }),
-    )?)))
-}
-
 fn sandbox_status_matches_target(
-    status: &brain_protocol::hand::SandboxStatus,
-    target: &brain_protocol::hand::SandboxTarget,
+    status: &brain_protocol::environment::SandboxStatus,
+    target: &brain_protocol::environment::SandboxTarget,
 ) -> Result<bool> {
     Ok(serde_json::to_value(&status.target)? == serde_json::to_value(target)?)
 }
 
-fn sandbox_status_releases_slot(status: &brain_protocol::hand::SandboxStatus) -> bool {
+fn sandbox_status_releases_slot(status: &brain_protocol::environment::SandboxStatus) -> bool {
     matches!(
         status.state,
-        brain_protocol::hand::SandboxState::Gone | brain_protocol::hand::SandboxState::Terminated
+        brain_protocol::environment::SandboxState::Gone
+            | brain_protocol::environment::SandboxState::Terminated
     )
 }
 
 fn sandbox_gone_status(
-    current: &brain_protocol::hand::SandboxStatus,
+    current: &brain_protocol::environment::SandboxStatus,
     reason: &str,
-) -> Result<brain_protocol::hand::SandboxStatus> {
+) -> Result<brain_protocol::environment::SandboxStatus> {
     serde_json::from_value(serde_json::json!({
         "state": "gone",
         "target": current.target,
@@ -3421,13 +3487,13 @@ fn sandbox_gone_status(
 
 fn sandbox_file_write_request(
     operation_id: &str,
-    target: &brain_protocol::hand::SandboxTarget,
+    target: &brain_protocol::environment::SandboxTarget,
     generation: &str,
     path: &str,
     content: &[u8],
     overwrite: bool,
-) -> Result<brain_protocol::hand::SandboxFileWriteRequest> {
-    let mut request: brain_protocol::hand::SandboxFileWriteRequest =
+) -> Result<brain_protocol::environment::SandboxFileWriteRequest> {
+    let mut request: brain_protocol::environment::SandboxFileWriteRequest =
         serde_json::from_value(serde_json::json!({
             "operation_id": operation_id,
             "request_digest": "0".repeat(64),
@@ -3445,12 +3511,12 @@ fn sandbox_file_write_request(
 }
 
 fn validate_sandbox_file_write_result(
-    result: &brain_protocol::hand::SandboxFileWriteResult,
+    result: &brain_protocol::environment::SandboxFileWriteResult,
     operation_id: &str,
-    request_digest: &brain_protocol::hand::Digest,
+    request_digest: &brain_protocol::environment::Digest,
 ) -> Result<()> {
     if result.operation_id.as_str() != operation_id || &result.request_digest != request_digest {
-        return Err(BrainError::Hand(
+        return Err(BrainError::Environment(
             "sandbox file write receipt identity mismatch".into(),
         ));
     }
@@ -3458,14 +3524,14 @@ fn validate_sandbox_file_write_result(
 }
 
 fn sandbox_search_request(
-    target: &brain_protocol::hand::SandboxTarget,
+    target: &brain_protocol::environment::SandboxTarget,
     generation: &str,
     path: &str,
     expression: &str,
     cursor: Option<&str>,
     limit: u32,
-) -> Result<crate::hand::SandboxSearchRequest> {
-    Ok(crate::hand::SandboxSearchRequest {
+) -> Result<crate::environment::SandboxSearchRequest> {
+    Ok(crate::environment::SandboxSearchRequest {
         target: target.clone(),
         expected_generation: generation.to_owned(),
         path: path.to_owned(),
@@ -3475,43 +3541,6 @@ fn sandbox_search_request(
     })
 }
 
-fn engine_outcome(
-    result: Result<serde_json::Value>,
-    started: std::time::Instant,
-) -> Result<CallOutcome> {
-    let duration_ms = started.elapsed().as_millis() as u64;
-    match result {
-        Ok(value) => Ok(CallOutcome {
-            outcome: TerminalOutcome::Completed,
-            content: serde_json::to_string(&value)?,
-            value: Some(value),
-            is_error: false,
-            exit_code: None,
-            duration_ms,
-            truncated: false,
-            terminal: None,
-        }),
-        Err(BrainError::Cancelled) => Ok(CallOutcome {
-            outcome: TerminalOutcome::Cancelled,
-            content: "engine operation cancelled".into(),
-            value: None,
-            is_error: true,
-            exit_code: None,
-            duration_ms,
-            truncated: false,
-            terminal: None,
-        }),
-        Err(error @ (BrainError::Journal(_) | BrainError::Fenced | BrainError::Custody(_))) => {
-            Err(error)
-        }
-        Err(error) => {
-            let mut outcome = CallOutcome::failed(error.to_string());
-            outcome.duration_ms = duration_ms;
-            Ok(outcome)
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // The actor
 // ---------------------------------------------------------------------------------------------
@@ -3519,7 +3548,7 @@ fn engine_outcome(
 struct Resident {
     st: TurnState,
     key: ProviderKey,
-    managed_bindings: Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>,
+    managed_bindings: Arc<HashMap<String, crate::environment::ManagedBinding>>,
     /// Keeps the root-scoped OnceCell alive while any root/descendant actor is resident.
     _root_secrets: Arc<RootSecretCell>,
     message_replays: HashMap<String, MessageReplay>,
@@ -3529,13 +3558,13 @@ struct Running {
     handle: tokio::task::JoinHandle<(TurnState, RunningOutcome)>,
     cancel: CancellationToken,
     key: ProviderKey,
-    managed_bindings: Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>,
+    managed_bindings: Arc<HashMap<String, crate::environment::ManagedBinding>>,
     root_secrets: Arc<RootSecretCell>,
     message_replays: HashMap<String, MessageReplay>,
     _heartbeat: LeaseHeartbeatGuard,
 }
 
-/// A lease renewal is deliberately independent from recovery scheduling. Long provider, Hand,
+/// A lease renewal is deliberately independent from recovery scheduling. Long provider, Environment,
 /// storage, and deletion effects keep ownership alive even while the actor is awaiting them. The
 /// due key is advanced only for immediate recoverable work; scheduled reservations keep their
 /// fixed expiry and quiescent sessions keep no due key at all.
@@ -3680,9 +3709,9 @@ struct RecoveredTurn {
 const MANAGED_UNKNOWN_SANDBOX_REASON: &str = "managed_operation_unknown_cleanup";
 
 fn managed_operation_running_status(
-    operation: &brain_protocol::hand::OperationRef,
+    operation: &brain_protocol::environment::OperationRef,
     expires_at_ms: std::num::NonZeroU64,
-) -> Result<brain_protocol::hand::SandboxStatus> {
+) -> Result<brain_protocol::environment::SandboxStatus> {
     serde_json::from_value(serde_json::json!({
         "state": "running",
         "target": operation.target,
@@ -3695,8 +3724,8 @@ fn managed_operation_running_status(
 }
 
 fn managed_operation_gone_status(
-    operation: &brain_protocol::hand::OperationRef,
-) -> Result<brain_protocol::hand::SandboxStatus> {
+    operation: &brain_protocol::environment::OperationRef,
+) -> Result<brain_protocol::environment::SandboxStatus> {
     serde_json::from_value(serde_json::json!({
         "state": "gone",
         "target": operation.target,
@@ -3816,7 +3845,7 @@ async fn actor(
                 } else {
                     // Create may stage/prepare immutable code, but neither create nor background
                     // recovery materializes a target. Only the first managed operation or explicit
-                    // default-sandbox materialization crosses that boundary.
+                    // environment materialization crosses that boundary.
                     resident = Some(r);
                 }
             }
@@ -3982,7 +4011,7 @@ async fn actor(
                         match begin_end_session(&brain, &session_id, &mut resident).await {
                             Ok(doc) => {
                                 // The durable fence supersedes the parked turn's lease before we
-                                // signal cancellation. A cancellation-resistant provider/Hand can
+                                // signal cancellation. A cancellation-resistant provider/Environment can
                                 // finish its external wait, but every late journal decision loses
                                 // the fence and descendants already observe admission closed.
                                 if let Some(task) = running.take() {
@@ -3991,7 +4020,7 @@ async fn actor(
                                 }
                                 let pending = doc.state == SessionLifecycle::Ending;
                                 // The response proves the constant-size durable admission fence;
-                                // descendant traversal and Hand release happen only afterwards.
+                                // descendant traversal and Environment release happen only afterwards.
                                 let _ = reply.send(Ok(doc));
                                 if pending {
                                     match continue_end_session(
@@ -4019,21 +4048,23 @@ async fn actor(
                             Err(e) => { let _ = reply.send(Err(e)); }
                         }
                     }
-                    Command::MaterializeDefaultSandbox { reply } => {
+                    Command::MaterializeEnvironment { environment_name, reply } => {
                         if running.is_some() {
                             let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
                             continue;
                         }
-                        let out = do_materialize_default_sandbox(
+                        let out = do_materialize_environment(
                             &brain,
                             &session_id,
                             &mut resident,
+                            &environment_name,
                         )
                         .await;
                         discard_if_fenced(&out, &mut resident);
                         let _ = reply.send(out);
                     }
-                    Command::WriteDefaultSandboxFile {
+                    Command::WriteEnvironmentFile {
+                        environment_name,
                         operation_id,
                         generation,
                         path,
@@ -4045,10 +4076,11 @@ async fn actor(
                             let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
                             continue;
                         }
-                        let out = do_write_default_sandbox_file(
+                        let out = do_write_environment_file(
                             &brain,
                             &session_id,
                             &mut resident,
+                            &environment_name,
                             operation_id,
                             generation,
                             path,
@@ -4059,7 +4091,8 @@ async fn actor(
                         discard_if_fenced(&out, &mut resident);
                         let _ = reply.send(out);
                     }
-                    Command::CopyStorageToDefaultSandbox {
+                    Command::CopyStorageToEnvironment {
+                        environment_name,
                         operation_id,
                         generation,
                         key,
@@ -4071,10 +4104,11 @@ async fn actor(
                             let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
                             continue;
                         }
-                        let out = do_copy_storage_to_default_sandbox(
+                        let out = do_copy_storage_to_environment(
                             &brain,
                             &session_id,
                             &mut resident,
+                            &environment_name,
                             operation_id,
                             generation,
                             key,
@@ -4085,7 +4119,8 @@ async fn actor(
                         discard_if_fenced(&out, &mut resident);
                         let _ = reply.send(out);
                     }
-                    Command::CopyDefaultSandboxToStorage {
+                    Command::CopyEnvironmentToStorage {
+                        environment_name,
                         operation_id,
                         generation,
                         key,
@@ -4097,10 +4132,11 @@ async fn actor(
                             let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
                             continue;
                         }
-                        let out = do_copy_default_sandbox_to_storage(
+                        let out = do_copy_environment_to_storage(
                             &brain,
                             &session_id,
                             &mut resident,
+                            &environment_name,
                             operation_id,
                             generation,
                             key,
@@ -4315,7 +4351,7 @@ async fn settle_running(
     brain: &Arc<Brain>,
     session_id: &str,
     key: ProviderKey,
-    managed_bindings: Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>,
+    managed_bindings: Arc<HashMap<String, crate::environment::ManagedBinding>>,
     root_secrets: Arc<RootSecretCell>,
     message_replays: HashMap<String, MessageReplay>,
     done: std::result::Result<(TurnState, RunningOutcome), tokio::task::JoinError>,
@@ -4344,10 +4380,10 @@ async fn settle_running(
             Some(TurnPhase::ManagedRunning | TurnPhase::ManagedCancelling)
         ) && matches!(
             error,
-            BrainError::HandUnavailable(_) | BrainError::Cancelled
+            BrainError::EnvironmentUnavailable(_) | BrainError::Cancelled
         ) =>
         {
-            // The managed intent is already durable and the effect may have crossed the Hand
+            // The managed intent is already durable and the effect may have crossed the Environment
             // boundary. Never manufacture a failed turn here. Release the lease with a due
             // anchor; exact submit/observe recovery reconstructs the terminal before the turn
             // can advance.
@@ -4575,7 +4611,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
     let (root_secret_cell, root_secrets) = brain.root_execution_secrets(&head.doc).await?;
     let key = root_secrets.key.clone();
     // A deleting session is past the subtree END barrier and can never execute another turn.
-    // Re-preparing its managed bindings here recreates Hand definition rows immediately before
+    // Re-preparing its managed bindings here recreates Environment definition rows immediately before
     // `purge_tree` removes them, so every cold deletion retry sees another nonempty purge page.
     let managed_bindings = if head.doc.state == SessionLifecycle::Deleting {
         Arc::new(HashMap::new())
@@ -4627,16 +4663,22 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             materialize_session_history(&resident.st.head, &entries, &resident.st.fork_context)?;
     }
     if resident.st.head.root_id == session_id {
-        let state = resident
+        let environments = resident
             .st
             .head
-            .default_sandbox
-            .as_ref()
-            .map(|status| status.state);
-        if state == Some(brain_protocol::hand::SandboxState::Creating) {
-            materialize_default_sandbox_resident(brain, session_id, &mut resident).await?;
-        } else {
-            reconcile_default_sandbox_expiry(brain, session_id, &mut resident).await?;
+            .environment_targets
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for environment in environments {
+            let state = resident.st.head.environment_targets[&environment].state;
+            if state == brain_protocol::environment::SandboxState::Creating {
+                materialize_environment_resident(brain, session_id, &mut resident, &environment)
+                    .await?;
+            } else {
+                reconcile_environment_expiry(brain, session_id, &mut resident, &environment)
+                    .await?;
+            }
         }
     }
     recover_provider_attempt(brain, session_id, &mut resident).await?;
@@ -4736,22 +4778,24 @@ async fn commit(
     Ok(())
 }
 
-async fn do_materialize_default_sandbox(
+async fn do_materialize_environment(
     brain: &Arc<Brain>,
     session_id: &str,
     resident: &mut Option<Resident>,
-) -> Result<brain_protocol::hand::SandboxStatus> {
+    environment_name: &str,
+) -> Result<brain_protocol::environment::SandboxStatus> {
     let r = ensure_resident(brain, session_id, resident).await?;
-    materialize_default_sandbox_resident(brain, session_id, r).await
+    materialize_environment_resident(brain, session_id, r, environment_name).await
 }
 
-async fn default_sandbox_for_effect(
+async fn environment_for_effect(
     brain: &Arc<Brain>,
     session_id: &str,
     st: &TurnState,
+    environment_name: &str,
     generation: &str,
-) -> Result<brain_protocol::hand::SandboxTarget> {
-    use brain_protocol::hand::SandboxState;
+) -> Result<brain_protocol::environment::SandboxTarget> {
+    use brain_protocol::environment::SandboxState;
 
     if st.head.ended || st.head.state != SessionLifecycle::Open {
         return Err(BrainError::SessionDeleted(session_id.to_owned()));
@@ -4760,11 +4804,15 @@ async fn default_sandbox_for_effect(
         (
             st.head.state,
             st.head.ended,
-            st.head.default_sandbox.clone(),
+            st.head.environment_targets.get(environment_name).cloned(),
         )
     } else {
         let root = brain.journal.get_head(&st.head.root_id).await?;
-        (root.doc.state, root.doc.ended, root.doc.default_sandbox)
+        (
+            root.doc.state,
+            root.doc.ended,
+            root.doc.environment_targets.get(environment_name).cloned(),
+        )
     };
     if root_ended || root_state != SessionLifecycle::Open {
         return Err(BrainError::SessionDeleted(st.head.root_id.clone()));
@@ -4795,21 +4843,24 @@ async fn default_sandbox_for_effect(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn do_write_default_sandbox_file(
+async fn do_write_environment_file(
     brain: &Arc<Brain>,
     session_id: &str,
     resident: &mut Option<Resident>,
+    environment_name: &str,
     operation_id: String,
     generation: String,
     path: String,
     content_base64: String,
     overwrite: bool,
-) -> Result<brain_protocol::hand::FileEntry> {
+) -> Result<brain_protocol::environment::FileEntry> {
     let r = ensure_resident(brain, session_id, resident).await?;
-    let target = default_sandbox_for_effect(brain, session_id, &r.st, &generation).await?;
+    let target =
+        environment_for_effect(brain, session_id, &r.st, environment_name, &generation).await?;
+    let files = brain.environment_files_port(&r.st.head, environment_name)?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&content_base64)
-        .map_err(|_| BrainError::Invalid("sandbox inline content is not valid base64".into()))?;
+        .map_err(|_| BrainError::Invalid("environment file content is not valid base64".into()))?;
     let request = sandbox_file_write_request(
         &operation_id,
         &target,
@@ -4829,23 +4880,19 @@ async fn do_write_default_sandbox_file(
             Record::SandboxFileEffectIntent {
                 operation_id: operation_id.clone(),
                 request_digest: request_digest.to_string(),
-                action: "write_inline".into(),
+                action: format!("environment:{environment_name}:write_inline"),
                 path: path.clone(),
             },
         )],
     )
     .await?;
-    let result = brain
-        .sandbox_files_port()?
-        .write(request)
-        .await
-        .map_err(|error| {
-            if error.code == brain_protocol::hand::HandErrorCode::BindingConflict {
-                BrainError::IdempotencyConflict
-            } else {
-                map_hand_port_error(error)
-            }
-        })?;
+    let result = files.write(request).await.map_err(|error| {
+        if error.code == brain_protocol::environment::EnvironmentErrorCode::BindingConflict {
+            BrainError::IdempotencyConflict
+        } else {
+            map_environment_port_error(error)
+        }
+    })?;
     validate_sandbox_file_write_result(&result, &operation_id, &request_digest)?;
     let seq = r.st.take_seq();
     commit(
@@ -4857,7 +4904,7 @@ async fn do_write_default_sandbox_file(
             Record::SandboxFileEffectCompleted {
                 operation_id,
                 request_digest: request_digest.to_string(),
-                action: "write_inline".into(),
+                action: format!("environment:{environment_name}:write_inline"),
                 path,
                 replayed: result.replayed,
             },
@@ -4868,18 +4915,21 @@ async fn do_write_default_sandbox_file(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn do_copy_storage_to_default_sandbox(
+async fn do_copy_storage_to_environment(
     brain: &Arc<Brain>,
     session_id: &str,
     resident: &mut Option<Resident>,
+    environment_name: &str,
     operation_id: String,
     generation: String,
     key: String,
     path: String,
     overwrite: bool,
-) -> Result<brain_protocol::hand::FileEntry> {
+) -> Result<brain_protocol::environment::FileEntry> {
     let r = ensure_resident(brain, session_id, resident).await?;
-    let target = default_sandbox_for_effect(brain, session_id, &r.st, &generation).await?;
+    let target =
+        environment_for_effect(brain, session_id, &r.st, environment_name, &generation).await?;
+    let files = brain.environment_files_port(&r.st.head, environment_name)?;
     ensure_storage_readable(&r.st.head, session_id)?;
     let storage = brain.storage_port()?.clone();
     let object = storage.stat(session_id, &key).await?;
@@ -4922,20 +4972,16 @@ async fn do_copy_storage_to_default_sandbox(
         )],
     )
     .await?;
-    let result = brain
-        .sandbox_files_port()?
-        .transfer(request)
-        .await
-        .map_err(|error| {
-            if error.code == brain_protocol::hand::HandErrorCode::BindingConflict {
-                BrainError::IdempotencyConflict
-            } else {
-                map_hand_port_error(error)
-            }
-        })?;
+    let result = files.transfer(request).await.map_err(|error| {
+        if error.code == brain_protocol::environment::EnvironmentErrorCode::BindingConflict {
+            BrainError::IdempotencyConflict
+        } else {
+            map_environment_port_error(error)
+        }
+    })?;
     validate_sandbox_copy_result(&result, &operation_id, &request_digest)?;
     if result.object.is_some() {
-        return Err(BrainError::Hand(
+        return Err(BrainError::Environment(
             "sandbox import returned an unexpected object identity".into(),
         ));
     }
@@ -4960,10 +5006,11 @@ async fn do_copy_storage_to_default_sandbox(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn do_copy_default_sandbox_to_storage(
+async fn do_copy_environment_to_storage(
     brain: &Arc<Brain>,
     session_id: &str,
     resident: &mut Option<Resident>,
+    environment_name: &str,
     operation_id: String,
     generation: String,
     key: String,
@@ -4971,19 +5018,20 @@ async fn do_copy_default_sandbox_to_storage(
     overwrite: bool,
 ) -> Result<crate::storage::StorageObject> {
     let r = ensure_resident(brain, session_id, resident).await?;
-    let target = default_sandbox_for_effect(brain, session_id, &r.st, &generation).await?;
-    let files = brain.sandbox_files_port()?.clone();
+    let target =
+        environment_for_effect(brain, session_id, &r.st, environment_name, &generation).await?;
+    let files = brain.environment_files_port(&r.st.head, environment_name)?;
     let entry = files
         .stat(sandbox_file_request(&target, &generation, &path)?)
         .await
-        .map_err(map_hand_port_error)?;
-    if entry.kind != brain_protocol::hand::FileEntryKind::File {
+        .map_err(map_environment_port_error)?;
+    if entry.kind != brain_protocol::environment::FileEntryKind::File {
         return Err(BrainError::Invalid(
             "sandbox copy source must be a regular file".into(),
         ));
     }
     let transfer_digest = hash_create_key(&format!(
-        "aex.sandbox-storage-transfer.v1\0{session_id}\0{operation_id}"
+        "brain.sandbox-storage-transfer.v1\0{session_id}\0{operation_id}"
     ));
     let transfer_id = format!("xfer_{}", &transfer_digest[..24]);
     let ticket = prepare_storage_upload_state_for_transfer(
@@ -5028,18 +5076,18 @@ async fn do_copy_default_sandbox_to_storage(
     )
     .await?;
     let result = files.transfer(request).await.map_err(|error| {
-        if error.code == brain_protocol::hand::HandErrorCode::BindingConflict {
+        if error.code == brain_protocol::environment::EnvironmentErrorCode::BindingConflict {
             BrainError::IdempotencyConflict
         } else {
-            map_hand_port_error(error)
+            map_environment_port_error(error)
         }
     })?;
     validate_sandbox_copy_result(&result, &operation_id, &request_digest)?;
     let exported = result.object.as_ref().ok_or_else(|| {
-        BrainError::Hand("sandbox export omitted its uploaded object identity".into())
+        BrainError::Environment("sandbox export omitted its uploaded object identity".into())
     })?;
     if exported.object_id.as_str() != ticket.object_id || exported.bytes != entry.bytes {
-        return Err(BrainError::Hand(
+        return Err(BrainError::Environment(
             "sandbox export returned a different object identity".into(),
         ));
     }
@@ -5070,27 +5118,48 @@ async fn do_copy_default_sandbox_to_storage(
     Ok(object)
 }
 
-async fn materialize_default_sandbox_resident(
+async fn materialize_environment_resident(
     brain: &Arc<Brain>,
     session_id: &str,
     r: &mut Resident,
-) -> Result<brain_protocol::hand::SandboxStatus> {
-    use brain_protocol::hand::SandboxState;
+    environment_name: &str,
+) -> Result<brain_protocol::environment::SandboxStatus> {
+    use brain_protocol::environment::SandboxState;
 
     if r.st.head.root_id != session_id {
         return Err(BrainError::Invalid(
-            "default sandbox materialization must be driven by the root actor".into(),
+            "environment materialization must be driven by the root actor".into(),
         ));
     }
     if r.st.head.ended || matches!(r.st.head.state.as_str(), "ending" | "ended" | "deleting") {
         return Err(BrainError::SessionDeleted(session_id.to_owned()));
     }
+    let declaration =
+        r.st.head
+            .prefix
+            .environments
+            .get(environment_name)
+            .ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "session has no environment named {environment_name:?}"
+                ))
+            })?;
+    if declaration.profile.kind != brain_protocol::session::EnvironmentProfileKind::Computer {
+        return Err(BrainError::Invalid(format!(
+            "environment {environment_name:?} is not a computer environment"
+        )));
+    }
+    let adapter = brain
+        .environments
+        .resolve(declaration.extension.as_str())?
+        .clone();
     let now = crate::wall_ms();
     let current =
         r.st.head
-            .default_sandbox
-            .clone()
-            .unwrap_or(initial_default_sandbox(session_id)?);
+            .environment_targets
+            .get(environment_name)
+            .cloned()
+            .unwrap_or(initial_environment(session_id, environment_name)?);
     let unexpired = current
         .expires_at_ms
         .is_none_or(|expires| expires.get() > now);
@@ -5108,13 +5177,13 @@ async fn materialize_default_sandbox_resident(
             .as_ref()
             .map(|generation| String::from(generation.clone()))
             .ok_or_else(|| {
-                BrainError::Journal("creating default sandbox lacks generation intent".into())
+                BrainError::Journal("creating environment lacks generation intent".into())
             })?
     } else {
         crate::mint_id("gen", 20)
     };
-    let target = default_sandbox_target(session_id)?;
-    let creating: brain_protocol::hand::SandboxStatus =
+    let target = environment_target(session_id, environment_name)?;
+    let creating: brain_protocol::environment::SandboxStatus =
         serde_json::from_value(serde_json::json!({
             "state": "creating",
             "target": target,
@@ -5123,30 +5192,36 @@ async fn materialize_default_sandbox_resident(
             "expires_at_ms": null,
         }))?;
     if current.state != SandboxState::Creating {
-        r.st.head.default_sandbox = Some(creating.clone());
+        r.st.head
+            .environment_targets
+            .insert(environment_name.to_owned(), creating.clone());
         let seq = r.st.take_seq();
         commit(
             brain,
             session_id,
             &mut r.st,
-            vec![(seq, Record::DefaultSandboxChanged { status: creating })],
+            vec![(
+                seq,
+                Record::EnvironmentChanged {
+                    environment: environment_name.to_owned(),
+                    status: creating,
+                },
+            )],
         )
         .await?;
     }
 
-    let request = default_sandbox_request(&r.st.head, &generation_intent)?;
-    let preparation = brain.session_preparation.as_ref().ok_or_else(|| {
-        BrainError::HandUnavailable("default sandbox preparation is unavailable".into())
-    })?;
-    let status = preparation
-        .materialize_default(request)
+    let request = environment_create_request(&r.st.head, environment_name, &generation_intent)?;
+    let status = adapter
+        .preparation
+        .materialize(request)
         .await
-        .map_err(map_hand_port_error)?;
+        .map_err(map_environment_port_error)?;
     if serde_json::to_value(&status.target)?
-        != serde_json::to_value(default_sandbox_target(session_id)?)?
+        != serde_json::to_value(environment_target(session_id, environment_name)?)?
     {
-        return Err(BrainError::Hand(
-            "Hand returned a default sandbox for a different logical target".into(),
+        return Err(BrainError::Environment(
+            "Environment returned a different logical target".into(),
         ));
     }
     if matches!(
@@ -5156,11 +5231,13 @@ async fn materialize_default_sandbox_resident(
         || status.target_ref.is_none()
         || status.expires_at_ms.is_none())
     {
-        return Err(BrainError::Hand(
-            "materialized sandbox receipt lacks generation, target_ref, or expiry".into(),
+        return Err(BrainError::Environment(
+            "materialized environment receipt lacks generation, target_ref, or expiry".into(),
         ));
     }
-    r.st.head.default_sandbox = Some(status.clone());
+    r.st.head
+        .environment_targets
+        .insert(environment_name.to_owned(), status.clone());
     let seq = r.st.take_seq();
     commit(
         brain,
@@ -5168,7 +5245,8 @@ async fn materialize_default_sandbox_resident(
         &mut r.st,
         vec![(
             seq,
-            Record::DefaultSandboxChanged {
+            Record::EnvironmentChanged {
+                environment: environment_name.to_owned(),
                 status: status.clone(),
             },
         )],
@@ -5177,14 +5255,21 @@ async fn materialize_default_sandbox_resident(
     Ok(status)
 }
 
-async fn reconcile_default_sandbox_expiry(
+async fn reconcile_environment_expiry(
     brain: &Arc<Brain>,
     session_id: &str,
     resident: &mut Resident,
+    environment_name: &str,
 ) -> Result<()> {
-    use brain_protocol::hand::SandboxState;
+    use brain_protocol::environment::SandboxState;
 
-    let Some(current) = resident.st.head.default_sandbox.clone() else {
+    let Some(current) = resident
+        .st
+        .head
+        .environment_targets
+        .get(environment_name)
+        .cloned()
+    else {
         return Ok(());
     };
     if !matches!(
@@ -5196,10 +5281,13 @@ async fn reconcile_default_sandbox_expiry(
     {
         return Ok(());
     }
-    let status = if let Some(files) = &brain.sandbox_files {
+    let adapter = brain.environment_adapter(&resident.st.head, environment_name)?;
+    let status = if let Some(files) = adapter.files {
         match files.status(current.target.clone()).await {
             Ok(status) => status,
-            Err(error) if error.code == brain_protocol::hand::HandErrorCode::SandboxGone => {
+            Err(error)
+                if error.code == brain_protocol::environment::EnvironmentErrorCode::SandboxGone =>
+            {
                 serde_json::from_value(serde_json::json!({
                     "state": "gone",
                     "target": current.target,
@@ -5210,7 +5298,7 @@ async fn reconcile_default_sandbox_expiry(
                     "reason": "hard_expiry",
                 }))?
             }
-            Err(error) => return Err(map_hand_port_error(error)),
+            Err(error) => return Err(map_environment_port_error(error)),
         }
     } else {
         // Local process-backed targets have no independent status port. Their sealed hard
@@ -5225,18 +5313,28 @@ async fn reconcile_default_sandbox_expiry(
             "reason": "hard_expiry",
         }))?
     };
-    resident.st.head.default_sandbox = Some(status.clone());
+    resident
+        .st
+        .head
+        .environment_targets
+        .insert(environment_name.to_owned(), status.clone());
     let seq = resident.st.take_seq();
     commit(
         brain,
         session_id,
         &mut resident.st,
-        vec![(seq, Record::DefaultSandboxChanged { status })],
+        vec![(
+            seq,
+            Record::EnvironmentChanged {
+                environment: environment_name.to_owned(),
+                status,
+            },
+        )],
     )
     .await
 }
 
-/// Admits one message: journals the decision, pokes the adapter, hands back the turn
+/// Admits one message: journals the decision, pokes the adapter, environments back the turn
 /// identity. 202 semantics: the reply happens after this commit succeeds.
 async fn admit(
     brain: &Arc<Brain>,
@@ -5348,11 +5446,13 @@ fn turn_run(
             let services: Arc<dyn crate::turn::EngineServices> = brain.clone();
             Arc::downgrade(&services)
         },
-        agentloop: {
-            let default = crate::journal::AgentloopSelectorDoc::official_aex();
-            let selector = r.st.head.prefix.agentloop.as_ref().unwrap_or(&default);
-            brain.agentloop_registry.resolve(selector)?
-        },
+        agentloop: brain.agentloop_registry.resolve(
+            r.st.head
+                .prefix
+                .agentloop
+                .as_ref()
+                .ok_or_else(|| BrainError::Journal("session has no sealed agent loop".into()))?,
+        )?,
         message,
         session_id: session_id.to_string(),
         turn_id: turn_id.to_string(),
@@ -5374,7 +5474,6 @@ fn turn_run(
         provider_total_timeout: brain.cfg.provider_total_timeout,
         compactor: brain.compactor.clone(),
         external_executor: brain.external_executor.clone(),
-        hand: brain.hand.clone(),
         managed_bindings: r.managed_bindings.clone(),
         customer: brain.customer.clone(),
         tenant_id: r.st.head.tenant_id.clone(),
@@ -5416,7 +5515,7 @@ async fn fail_turn_now(
         BrainError::ProviderStatus { .. } | BrainError::Transport(_) | BrainError::Protocol(_) => {
             ("provider_error", false)
         }
-        BrainError::HandUnavailable(_) => ("hand_unavailable", false),
+        BrainError::EnvironmentUnavailable(_) => ("environment_unavailable", false),
         BrainError::Agentloop(_) => ("agentloop_error", false),
         BrainError::SessionFailed(_) => ("session_failed", true),
         BrainError::Fenced => return Ok(()), // a newer owner exists; nothing to write
@@ -5527,7 +5626,7 @@ async fn create_child_session(
     // root-scoped and shared by reference: child creation never decrypts or re-encrypts provider
     // or managed-Tool secrets. Cold hydration uses `root_id` as the custody scope.
     let key_b64 = root.doc.key_b64.clone();
-    let hand_secrets_b64 = root.doc.hand_secrets_b64.clone();
+    let environment_secrets_b64 = root.doc.environment_secrets_b64.clone();
     let mut ancestor_ids = parent.doc.ancestor_ids.clone();
     ancestor_ids.push(parent_id.to_owned());
     let child = HeadDoc {
@@ -5561,7 +5660,7 @@ async fn create_child_session(
         ended: false,
         prefix: parent.doc.prefix.clone(),
         key_b64,
-        hand_secrets_b64,
+        environment_secrets_b64,
         session_storage_bytes: 0,
         storage_reserved_bytes: 0,
         tenant_metered_storage_bytes: 0,
@@ -5569,7 +5668,8 @@ async fn create_child_session(
         storage_delete: None,
         pending_customer_acks: Vec::new(),
         pending_managed_acks: Vec::new(),
-        default_sandbox: None,
+        environment_targets: HashMap::new(),
+        tool_setups: HashMap::new(),
     };
     brain
         .journal
@@ -5693,8 +5793,8 @@ fn fork_mode_doc(fork_turns: &ForkTurns) -> (&'static str, Option<u32>) {
 
 /// W6.1: the sealed session network is the create-time merge of the session's requested
 /// policy with every granted tool's declared needs. Effective allowlist =
-/// (union of tool declarations and session allows) minus session denies; Aex infra is
-/// always refused at declaration time (the egress gateway enforces it again at runtime).
+/// (union of tool declarations and session allows) minus session denies. Product-specific
+/// infrastructure denials are supplied by the hosting composition and enforced by its environment.
 /// Declaration and merge only — no per-tool runtime isolation is claimed.
 pub(crate) fn merge_session_network(
     requested: Option<&brain_protocol::session::NetworkPolicy>,
@@ -5702,9 +5802,6 @@ pub(crate) fn merge_session_network(
 ) -> Result<serde_json::Value> {
     fn host_of(destination: &serde_json::Value) -> Option<&str> {
         destination.get("host").and_then(serde_json::Value::as_str)
-    }
-    fn is_aex_infra(host: &str) -> bool {
-        host.eq_ignore_ascii_case("aex.dev") || host.to_ascii_lowercase().ends_with(".aex.dev")
     }
     fn denied(host: &str, deny: &[String]) -> bool {
         deny.iter().any(|rule| {
@@ -5724,14 +5821,6 @@ pub(crate) fn merge_session_network(
     let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
     for decl in decls {
         for destination in &decl.network_needs {
-            if let Some(host) = host_of(destination)
-                && is_aex_infra(host)
-            {
-                return Err(BrainError::Invalid(format!(
-                    "tool {} declares Aex infrastructure host {host:?}; Aex infra is always denied",
-                    decl.name
-                )));
-            }
             if seen.insert(serde_jcs::to_vec(destination)?) {
                 declared.push(destination.clone());
             }
@@ -5782,15 +5871,10 @@ pub(crate) fn merge_session_network(
         "none" | "allowlist" => {
             let mut merged: Vec<serde_json::Value> = Vec::new();
             for destination in session_destinations.into_iter().chain(declared) {
-                if let Some(host) = host_of(&destination) {
-                    if is_aex_infra(host) {
-                        return Err(BrainError::Invalid(format!(
-                            "network allowlist names Aex infrastructure host {host:?}; Aex infra is always denied"
-                        )));
-                    }
-                    if denied(host, &deny) {
-                        continue;
-                    }
+                if let Some(host) = host_of(&destination)
+                    && denied(host, &deny)
+                {
+                    continue;
                 }
                 if !merged.contains(&destination) {
                     merged.push(destination);
@@ -5950,7 +6034,7 @@ fn materialize_session_history(
 }
 
 /// Commit the constant-size subtree admission fence and return it to the caller. No child
-/// traversal or Hand operation is allowed before this decision: a successful response therefore
+/// traversal or Environment operation is allowed before this decision: a successful response therefore
 /// means every later descendant admission observes an ending ancestor, even if this process dies
 /// immediately after replying.
 async fn begin_end_session(
@@ -6037,13 +6121,10 @@ async fn continue_end_session(
         return Ok(false);
     }
 
-    terminate_additional_sandboxes_for_end(brain, session_id, &r.st.head.root_id).await?;
-
-    // The default target belongs to the whole root tree. Ending a child never releases the
-    // shared filesystem underneath its parent/siblings. This potentially slow external cleanup
-    // happens only after the 202 response and under an independent lease heartbeat.
+    // Root environments belong to the whole tree. Ending a child never releases state shared
+    // with its parent or siblings.
     if r.st.head.root_id == session_id {
-        dematerialize_default_sandbox_for_end(brain, session_id, r).await?;
+        dematerialize_environments_for_end(brain, session_id, r).await?;
     }
     r.st.head.state = SessionLifecycle::Ended;
     r.st.head.active_phase = None;
@@ -6058,116 +6139,70 @@ async fn continue_end_session(
     Ok(true)
 }
 
-async fn dematerialize_default_sandbox_for_end(
+async fn dematerialize_environments_for_end(
     brain: &Arc<Brain>,
     session_id: &str,
     resident: &mut Resident,
 ) -> Result<()> {
-    use brain_protocol::hand::SandboxState;
+    use brain_protocol::environment::SandboxState;
 
-    let current = resident
+    let environments = resident
         .st
         .head
-        .default_sandbox
-        .clone()
-        .unwrap_or(initial_default_sandbox(session_id)?);
-    if matches!(current.state, SandboxState::Gone | SandboxState::Terminated)
-        || (current.state == SandboxState::NeverMaterialized
-            && resident.st.head.prefix.managed_bundles.is_empty())
-    {
-        return Ok(());
-    }
-    let preparation = brain.session_preparation.as_ref().ok_or_else(|| {
-        BrainError::HandUnavailable(
-            "default sandbox dematerialization is unavailable during session end".into(),
-        )
-    })?;
-    let status = match preparation
-        .dematerialize_default(current.target.clone())
-        .await
-    {
-        Ok(status) => status,
-        Err(error)
-            if matches!(
-                error.code,
-                brain_protocol::hand::HandErrorCode::SandboxGone
-                    | brain_protocol::hand::HandErrorCode::SandboxNotMaterialized
-            ) =>
+        .environment_targets
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for environment in environments {
+        let current = resident.st.head.environment_targets[&environment].clone();
+        if matches!(
+            current.state,
+            SandboxState::Gone | SandboxState::Terminated | SandboxState::NeverMaterialized
+        ) {
+            continue;
+        }
+        let adapter = brain.environment_adapter(&resident.st.head, &environment)?;
+        let status = match adapter
+            .preparation
+            .dematerialize(current.target.clone())
+            .await
         {
-            sandbox_gone_status(&current, "hand_reported_gone")?
-        }
-        Err(error) => return Err(map_hand_port_error(error)),
-    };
-    if !matches!(status.state, SandboxState::Gone | SandboxState::Terminated) {
-        return Err(BrainError::Hand(
-            "default sandbox dematerialization did not return a terminal state".into(),
-        ));
-    }
-    resident.st.head.default_sandbox = Some(status.clone());
-    let seq = resident.st.take_seq();
-    commit(
-        brain,
-        session_id,
-        &mut resident.st,
-        vec![(seq, Record::DefaultSandboxChanged { status })],
-    )
-    .await
-}
-
-/// Converge Brain's root-scoped additional-sandbox inventory before publishing ENDED.
-///
-/// A root END owns every inventory item. A child END owns only items whose immutable lifecycle
-/// owner is that child; each descendant reaches ENDED only after cleaning its own items, so the
-/// parent's already-settled child barrier covers the rest of the subtree without scanning Hand or
-/// fabricating ownership. Terminal rows remain tombstoned until root deletion and release their
-/// live slot exactly once through the version-fenced journal update.
-async fn terminate_additional_sandboxes_for_end(
-    brain: &Arc<Brain>,
-    session_id: &str,
-    root_id: &str,
-) -> Result<()> {
-    let terminate_all = session_id == root_id;
-    let mut cursor = None;
-    loop {
-        let page = brain
-            .journal
-            .list_sandbox_page(&crate::journal::SandboxListQuery {
-                root_id,
-                limit: 100,
-                cursor: cursor.as_deref(),
-            })
-            .await?;
-        for current in page.sandboxes {
-            if (!terminate_all && current.owner_session_id != session_id)
-                || sandbox_status_releases_slot(&current.status)
+            Ok(status) => status,
+            Err(error)
+                if matches!(
+                    error.code,
+                    brain_protocol::environment::EnvironmentErrorCode::SandboxGone
+                        | brain_protocol::environment::EnvironmentErrorCode::SandboxNotMaterialized
+                ) =>
             {
-                continue;
+                sandbox_gone_status(&current, "environment_reported_gone")?
             }
-            let control = brain.sandbox_control.as_ref().ok_or_else(|| {
-                BrainError::HandUnavailable(
-                    "additional sandbox control is unavailable during session end".into(),
-                )
-            })?;
-            let status = match control.terminate(current.status.target.clone()).await {
-                Ok(status) => status,
-                Err(error) if error.code == brain_protocol::hand::HandErrorCode::SandboxGone => {
-                    sandbox_gone_status(&current.status, "hand_reported_gone")?
-                }
-                Err(error) => return Err(map_hand_port_error(error)),
-            };
-            if !sandbox_status_releases_slot(&status) {
-                return Err(BrainError::Hand(
-                    "sandbox termination did not return a confirmed terminal state".into(),
-                ));
-            }
-            brain
-                .persist_additional_sandbox_status(&current, status)
-                .await?;
+            Err(error) => return Err(map_environment_port_error(error)),
+        };
+        if !matches!(status.state, SandboxState::Gone | SandboxState::Terminated) {
+            return Err(BrainError::Environment(format!(
+                "environment {environment:?} dematerialization did not return a terminal state"
+            )));
         }
-        cursor = page.next_cursor;
-        if cursor.is_none() {
-            break;
-        }
+        resident
+            .st
+            .head
+            .environment_targets
+            .insert(environment.clone(), status.clone());
+        let seq = resident.st.take_seq();
+        commit(
+            brain,
+            session_id,
+            &mut resident.st,
+            vec![(
+                seq,
+                Record::EnvironmentChanged {
+                    environment,
+                    status,
+                },
+            )],
+        )
+        .await?;
     }
     Ok(())
 }
@@ -6199,7 +6234,9 @@ async fn delete_session(
 
 fn deletion_error_code(error: &BrainError) -> &'static str {
     match error {
-        BrainError::Hand(_) | BrainError::HandUnavailable(_) => "sandbox_cleanup_failed",
+        BrainError::Environment(_) | BrainError::EnvironmentUnavailable(_) => {
+            "sandbox_cleanup_failed"
+        }
         BrainError::FileNotFound(_)
         | BrainError::FileTooLarge { .. }
         | BrainError::StorageObjectTooLarge { .. }
@@ -6228,7 +6265,7 @@ async fn begin_delete_session(
         r.st.head.state == SessionLifecycle::Ending
     };
     if end_pending && !continue_end_session(brain, session_id, resident).await? {
-        return Err(BrainError::HandUnavailable(
+        return Err(BrainError::EnvironmentUnavailable(
             "session subtree end remains pending".into(),
         ));
     }
@@ -6328,20 +6365,30 @@ async fn continue_delete_session(
     // Every cleanup operation is idempotent. Any error leaves HEAD+CONFIG and its recovery-due
     // projection intact, so the background worker can retry without customer traffic.
     if r.st.head.root_id == session_id {
-        if let Some(preparation) = &brain.session_preparation {
-            preparation
+        let extensions =
+            r.st.head
+                .prefix
+                .environments
+                .values()
+                .filter(|environment| {
+                    environment.profile.kind
+                        == brain_protocol::session::EnvironmentProfileKind::Computer
+                })
+                .map(|environment| environment.extension.to_string())
+                .collect::<HashSet<_>>();
+        for extension in extensions {
+            brain
+                .environments
+                .resolve(&extension)?
+                .preparation
                 .purge_tree(session_id)
                 .await
-                .map_err(map_hand_port_error)?;
-        } else if !r.st.head.prefix.managed_bundles.is_empty() {
-            return Err(BrainError::HandUnavailable(
-                "managed Tool purge is unavailable during root deletion".into(),
-            ));
+                .map_err(map_environment_port_error)?;
         }
         if let Some(bundle_storage) = &brain.bundle_storage {
             bundle_storage.purge_root_bundles(session_id).await?;
         } else if !r.st.head.prefix.managed_bundles.is_empty() {
-            return Err(BrainError::HandUnavailable(
+            return Err(BrainError::EnvironmentUnavailable(
                 "managed Tool bundle purge is unavailable during root deletion".into(),
             ));
         }

@@ -97,7 +97,7 @@ impl reqwest::dns::Resolve for GuardingResolver {
 }
 
 /// Shared streaming path for every dialect: send, check status, decode SSE
-/// incrementally, hand each frame to the dialect decoder.
+/// incrementally, environment each frame to the dialect decoder.
 async fn http_stream(
     req: ModelRequest,
     outbound: &Outbound,

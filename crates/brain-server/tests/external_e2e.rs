@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use brain::Result;
 use brain::adapter::ToolExecutor;
+use brain::agentloop::{Agentloop, AgentloopRegistry, SequentialAgentloop};
 use brain::config::{Dialect, ServerToolPolicy};
 use brain::journal::Journal;
 use brain::provider::fake::{FakeProvider, Scripted};
@@ -15,6 +16,30 @@ use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse}
 use brain_protocol::session::{ExternalToolCompletion, ExternalToolEffect, ExternalToolScope};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
+
+struct TestRegistry;
+
+impl AgentloopRegistry for TestRegistry {
+    fn resolve(
+        &self,
+        _selector: &brain::journal::AgentloopSelectorDoc,
+    ) -> Result<Arc<dyn Agentloop>> {
+        Ok(Arc::new(SequentialAgentloop))
+    }
+
+    fn admit_custom(
+        &self,
+        source_bundle_sha256: &str,
+        toolchain: &str,
+        bundle: &[u8],
+    ) -> Result<brain::journal::AgentloopSelectorDoc> {
+        Ok(brain::journal::AgentloopSelectorDoc {
+            source_bundle_sha256: source_bundle_sha256.into(),
+            source_bundle_bytes: bundle.len() as u64,
+            toolchain: toolchain.into(),
+        })
+    }
+}
 
 struct TempDir(PathBuf);
 
@@ -145,7 +170,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
             idle_discard: Duration::from_secs(300),
             official_capabilities: [
                 (
-                    "aex.test_lookup".into(),
+                    "brain.test_lookup".into(),
                     ServerToolPolicy {
                         capability: "test.lookup".into(),
                         scope: ExternalToolScope::All,
@@ -155,7 +180,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
                     },
                 ),
                 (
-                    "aex.test_submit_result".into(),
+                    "brain.test_submit_result".into(),
                     ServerToolPolicy {
                         capability: "test.submit_result".into(),
                         scope: ExternalToolScope::Root,
@@ -171,7 +196,10 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
         Journal::new_memory("brain-external-test"),
         Arc::new(brain::keys::PlainCustody),
         executor.clone(),
-        BrainServices::default(),
+        BrainServices {
+            agentloop_registry: Some(Arc::new(TestRegistry)),
+            ..BrainServices::default()
+        },
         Arc::new(move |_| provider.clone() as Arc<dyn brain::provider::Provider>),
     );
 
@@ -191,6 +219,11 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
         .bearer_auth(token)
         .json(&json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+            "agentloop": {
+                "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                "toolchain": "test-loop",
+                "bundle_base64": "eA=="
+            },
             "tools": {"items": [
                 {
                     "definition": {
@@ -202,7 +235,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
                     },
                     "executor": {
                         "kind": "engine",
-                        "capability": "aex.test_lookup"
+                        "capability": "brain.test_lookup"
                     }
                 },
                 {
@@ -215,7 +248,7 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
                     },
                     "executor": {
                         "kind": "engine",
-                        "capability": "aex.test_submit_result"
+                        "capability": "brain.test_submit_result"
                     }
                 }
             ]}

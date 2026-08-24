@@ -31,7 +31,7 @@ async fn connected(
     connected_with_config(
         capacity,
         CustomerTransportConfig::new(
-            "ws://127.0.0.1:3210/v1/customer-hand/socket",
+            "ws://127.0.0.1:3210/v1/customer-environment/socket",
             "http://127.0.0.1:3210",
         )
         .unwrap(),
@@ -177,7 +177,7 @@ async fn local_offer_receipt_terminal_and_ack_round_trip() {
     let outcome = running.await.unwrap();
     assert_eq!(
         outcome.outcome.outcome,
-        brain_protocol::hand::TerminalOutcome::Completed
+        brain_protocol::environment::TerminalOutcome::Completed
     );
     assert_eq!(outcome.outcome.value, Some(serde_json::json!({"ok":true})));
     assert!(
@@ -268,7 +268,7 @@ async fn delivered_offer_without_receipt_is_resent_once_to_the_same_operation() 
         .unwrap();
     assert_eq!(
         running.await.unwrap().outcome.outcome,
-        brain_protocol::hand::TerminalOutcome::Completed
+        brain_protocol::environment::TerminalOutcome::Completed
     );
 }
 
@@ -305,7 +305,7 @@ async fn strict_submit_retry_zero_sends_once_and_reports_unknown_without_receipt
         .unwrap();
     assert_eq!(
         outcome.outcome.outcome,
-        brain_protocol::hand::TerminalOutcome::Interrupted
+        brain_protocol::environment::TerminalOutcome::Interrupted
     );
     assert!(outcome.outcome.content.contains("unknown"));
     assert!(
@@ -372,7 +372,7 @@ async fn ambiguous_ack_delivery_retains_the_exact_terminal_until_retry() {
     let receipt = execution.terminal_receipt.unwrap();
     assert_eq!(
         execution.outcome.outcome,
-        brain_protocol::hand::TerminalOutcome::Completed
+        brain_protocol::environment::TerminalOutcome::Completed
     );
 
     assert_eq!(
@@ -444,7 +444,7 @@ async fn local_delivery_is_bounded_and_an_oversized_offer_is_rejected_before_adm
         .await;
     assert_eq!(
         saturated.outcome.outcome,
-        brain_protocol::hand::TerminalOutcome::Interrupted
+        brain_protocol::environment::TerminalOutcome::Interrupted
     );
     let _ = receiver.recv().await;
 
@@ -465,7 +465,7 @@ async fn local_delivery_is_bounded_and_an_oversized_offer_is_rejected_before_adm
         .await;
     assert_eq!(
         oversized.outcome.outcome,
-        brain_protocol::hand::TerminalOutcome::Failed
+        brain_protocol::environment::TerminalOutcome::Failed
     );
     assert!(oversized.outcome.content.contains("24 KiB"));
     assert!(
@@ -478,7 +478,7 @@ async fn local_delivery_is_bounded_and_an_oversized_offer_is_rejected_before_adm
 async fn observation_url_never_contains_secret_and_id_token_pairs_cannot_be_swapped() {
     let coordinator = CustomerCoordinator::new(
         CustomerTransportConfig::new(
-            "wss://example.test/v1/customer-hand/socket",
+            "wss://example.test/v1/customer-environment/socket",
             "https://example.test",
         )
         .unwrap(),
@@ -612,7 +612,7 @@ async fn reconnect_storm_keeps_exactly_one_connection_and_reverse_key() {
 async fn expired_unregistered_connect_prunes_its_local_sender() {
     let coordinator = CustomerCoordinator::new(
         CustomerTransportConfig::new(
-            "ws://127.0.0.1:3210/v1/customer-hand/socket",
+            "ws://127.0.0.1:3210/v1/customer-environment/socket",
             "http://127.0.0.1:3210",
         )
         .unwrap(),
@@ -703,7 +703,7 @@ async fn process_registration_byte_admission_is_atomic() {
     };
     let lookup_bytes = serde_json::to_vec(&lookup).unwrap().len();
     let mut config = CustomerTransportConfig::new(
-        "ws://127.0.0.1:3210/v1/customer-hand/socket",
+        "ws://127.0.0.1:3210/v1/customer-environment/socket",
         "http://127.0.0.1:3210",
     )
     .unwrap();
@@ -745,7 +745,7 @@ async fn process_registration_byte_admission_is_atomic() {
 #[tokio::test]
 async fn retained_terminal_applies_backpressure_without_eviction() {
     let mut config = CustomerTransportConfig::new(
-        "ws://127.0.0.1:3210/v1/customer-hand/socket",
+        "ws://127.0.0.1:3210/v1/customer-environment/socket",
         "http://127.0.0.1:3210",
     )
     .unwrap();
@@ -810,7 +810,7 @@ async fn retained_terminal_applies_backpressure_without_eviction() {
         .await;
     assert_eq!(
         blocked.outcome.outcome,
-        brain_protocol::hand::TerminalOutcome::Interrupted
+        brain_protocol::environment::TerminalOutcome::Interrupted
     );
     assert!(blocked.outcome.content.contains("capacity"));
     let state = coordinator.state.lock().await;
@@ -825,7 +825,7 @@ async fn retained_terminal_applies_backpressure_without_eviction() {
 #[tokio::test]
 async fn terminal_capacity_is_reserved_before_an_offer_can_reach_customer_code() {
     let mut config = CustomerTransportConfig::new(
-        "ws://127.0.0.1:3210/v1/customer-hand/socket",
+        "ws://127.0.0.1:3210/v1/customer-environment/socket",
         "http://127.0.0.1:3210",
     )
     .unwrap();
@@ -848,7 +848,7 @@ async fn terminal_capacity_is_reserved_before_an_offer_can_reach_customer_code()
         .await;
     assert_eq!(
         blocked.outcome.outcome,
-        brain_protocol::hand::TerminalOutcome::Interrupted
+        brain_protocol::environment::TerminalOutcome::Interrupted
     );
     assert!(blocked.outcome.content.contains("capacity"));
     assert!(

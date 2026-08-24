@@ -246,8 +246,7 @@ pub fn report() -> Option<String> {
 use brain::journal::{
     ChildListQuery, ChildPage, CommitDecision, CreateDecision, DeletionStatusDoc, EndFence, Head,
     HeadDoc, JournalRetentionLimits, JournalStore, MemoryStore, RecordPage, RecordPageQuery,
-    RecoveryPage, RecoveryQuery, SandboxInventoryDoc, SandboxListQuery, SandboxPage,
-    SandboxReserveRequest, SandboxUpdateRequest, SessionListQuery, SessionPage,
+    RecoveryPage, RecoveryQuery, SessionListQuery, SessionPage,
 };
 
 pub struct WriteBehindStore {
@@ -347,28 +346,6 @@ impl JournalStore for WriteBehindStore {
     }
     async fn list_child_page(&self, query: &ChildListQuery<'_>) -> brain::Result<ChildPage> {
         self.memory.list_child_page(query).await
-    }
-    async fn reserve_sandbox(
-        &self,
-        request: &SandboxReserveRequest,
-    ) -> brain::Result<SandboxInventoryDoc> {
-        self.memory.reserve_sandbox(request).await
-    }
-    async fn get_sandbox(
-        &self,
-        root_id: &str,
-        sandbox_id: &str,
-    ) -> brain::Result<SandboxInventoryDoc> {
-        self.memory.get_sandbox(root_id, sandbox_id).await
-    }
-    async fn list_sandbox_page(&self, query: &SandboxListQuery<'_>) -> brain::Result<SandboxPage> {
-        self.memory.list_sandbox_page(query).await
-    }
-    async fn update_sandbox(
-        &self,
-        request: &SandboxUpdateRequest,
-    ) -> brain::Result<SandboxInventoryDoc> {
-        self.memory.update_sandbox(request).await
     }
     async fn list_recovery_page(&self, query: &RecoveryQuery<'_>) -> brain::Result<RecoveryPage> {
         self.memory.list_recovery_page(query).await

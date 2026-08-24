@@ -266,29 +266,29 @@ pub(super) fn end_accepted(session: session::Session) -> (StatusCode, Json<sessi
     (END_ACCEPTED_STATUS, Json(session))
 }
 
-pub(super) async fn get_default_sandbox(
+pub(super) async fn get_environment(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<Json<brain_protocol::hand::SandboxStatus>, Failure> {
+    Path((id, environment)): Path<(String, String)>,
+) -> Result<Json<brain_protocol::environment::SandboxStatus>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain
-        .default_sandbox_status(&id)
+        .environment_status(&id, &environment)
         .await
         .map(Json)
         .map_err(map_err)
 }
 
-pub(super) async fn create_default_sandbox(
+pub(super) async fn create_environment(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<Json<brain_protocol::hand::SandboxStatus>, Failure> {
+    Path((id, environment)): Path<(String, String)>,
+) -> Result<Json<brain_protocol::environment::SandboxStatus>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     state
         .brain
-        .materialize_default_sandbox(&id)
+        .materialize_environment(&id, &environment)
         .await
         .map(Json)
         .map_err(map_err)

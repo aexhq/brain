@@ -11,7 +11,7 @@ pub fn provider_name(p: &ApiProvider) -> &'static str {
     }
 }
 
-/// Canonical public file path. The URL surface is deliberately narrower than hand tool paths:
+/// Canonical public file path. The URL surface is deliberately narrower than environment tool paths:
 /// only absolute POSIX paths beneath `/workspace` are accepted.
 pub fn normalize_workspace_path(path: &str) -> Result<String> {
     if path.len() > 4096 {
@@ -93,9 +93,7 @@ pub fn build_prefix(
     }
     let mut decls = crate::tools::resolve(&p.tools)?;
     for decl in &mut decls {
-        if let crate::config::ToolRoute::Intrinsic(capability) = &decl.route
-            && !crate::tools::is_direct_engine_capability(capability)
-        {
+        if let crate::config::ToolRoute::Intrinsic(capability) = &decl.route {
             let policy = p
                 .official_capabilities
                 .get(capability)
@@ -158,33 +156,23 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
             "session {session_id}: journaled {what} violates the public contract"
         ))
     };
-    let agentloop = Some(
-        match doc
-            .prefix
-            .agentloop
-            .clone()
-            .unwrap_or_else(crate::journal::AgentloopSelectorDoc::official_aex)
-        {
-            crate::journal::AgentloopSelectorDoc::Official { name, version } => {
-                session::AgentloopInfo::Official {
-                    name: name.parse().map_err(|_| corrupt("agentloop name"))?,
-                    version: version.parse().map_err(|_| corrupt("agentloop version"))?,
-                }
-            }
-            crate::journal::AgentloopSelectorDoc::Custom {
-                source_bundle_sha256,
-                toolchain,
-                ..
-            } => session::AgentloopInfo::Custom {
-                source_bundle_sha256: source_bundle_sha256
+    let agentloop = doc
+        .prefix
+        .agentloop
+        .as_ref()
+        .map(|selector| -> Result<session::AgentloopInfo> {
+            Ok(session::AgentloopInfo {
+                source_bundle_sha256: selector
+                    .source_bundle_sha256
                     .parse()
                     .map_err(|_| corrupt("agentloop bundle digest"))?,
-                toolchain: toolchain
+                toolchain: selector
+                    .toolchain
                     .parse()
                     .map_err(|_| corrupt("agentloop toolchain"))?,
-            },
-        },
-    );
+            })
+        })
+        .transpose()?;
     Ok(session::Session {
         agentloop,
         context_fork: doc.context_fork.as_ref().map(public_context_fork),
@@ -199,7 +187,7 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
             code: match f.code.as_str() {
                 "binding_conflict" => session::SessionFailureCode::BindingConflict,
                 "provider_unusable" => session::SessionFailureCode::ProviderUnusable,
-                "hand_unavailable" => session::SessionFailureCode::HandUnavailable,
+                "environment_unavailable" => session::SessionFailureCode::EnvironmentUnavailable,
                 _ => session::SessionFailureCode::Internal,
             },
             message: f.message.clone(),
@@ -288,7 +276,9 @@ pub(super) fn session_doc_summary(
                 code: match failure.code.as_str() {
                     "binding_conflict" => session::SessionFailureCode::BindingConflict,
                     "provider_unusable" => session::SessionFailureCode::ProviderUnusable,
-                    "hand_unavailable" => session::SessionFailureCode::HandUnavailable,
+                    "environment_unavailable" => {
+                        session::SessionFailureCode::EnvironmentUnavailable
+                    }
                     _ => session::SessionFailureCode::Internal,
                 },
                 message: failure.message.clone(),

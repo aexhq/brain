@@ -86,47 +86,47 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions/{id}/cancel", post(cancel_turn))
         .route("/v1/sessions/{id}/end", post(end_session))
         .route(
-            "/v1/sessions/{id}/sandbox",
-            get(get_default_sandbox).post(create_default_sandbox),
+            "/v1/sessions/{id}/environments/{environment}",
+            get(get_environment).post(create_environment),
         )
         .route(
-            "/v1/sessions/{id}/sandbox/files/list",
+            "/v1/sessions/{id}/environments/{environment}/files/list",
             post(sandbox_file_list).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/sessions/{id}/sandbox/files/stat",
+            "/v1/sessions/{id}/environments/{environment}/files/stat",
             post(sandbox_file_stat).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/sessions/{id}/sandbox/files/read-inline",
+            "/v1/sessions/{id}/environments/{environment}/files/read-inline",
             post(sandbox_file_read_inline)
                 .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/sessions/{id}/sandbox/files/write-inline",
+            "/v1/sessions/{id}/environments/{environment}/files/write-inline",
             post(sandbox_file_write_inline)
                 .layer(DefaultBodyLimit::max(INLINE_FILE_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/sessions/{id}/sandbox/files/downloads",
+            "/v1/sessions/{id}/environments/{environment}/files/downloads",
             post(sandbox_file_prepare_download)
                 .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/sessions/{id}/sandbox/files/uploads",
+            "/v1/sessions/{id}/environments/{environment}/files/uploads",
             post(sandbox_file_prepare_upload)
                 .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/sessions/{id}/sandbox/files/uploads/{transfer_id}/complete",
+            "/v1/sessions/{id}/environments/{environment}/files/uploads/{transfer_id}/complete",
             post(sandbox_file_complete_upload),
         )
         .route(
-            "/v1/sessions/{id}/sandbox/files/find",
+            "/v1/sessions/{id}/environments/{environment}/files/find",
             post(sandbox_file_find).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/sessions/{id}/sandbox/files/grep",
+            "/v1/sessions/{id}/environments/{environment}/files/grep",
             post(sandbox_file_grep).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
@@ -193,25 +193,28 @@ pub fn router(state: AppState) -> Router {
             post(storage_delete).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/sessions/{id}/storage/copy-from-sandbox",
-            post(storage_copy_from_sandbox)
+            "/v1/sessions/{id}/storage/copy-from-environment/{environment}",
+            post(storage_copy_from_environment)
                 .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/sessions/{id}/storage/copy-to-sandbox",
-            post(storage_copy_to_sandbox).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
+            "/v1/sessions/{id}/storage/copy-to-environment/{environment}",
+            post(storage_copy_to_environment)
+                .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/v1/customer-hand/grants",
-            post(customer_hand_grant).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
+            "/v1/customer-environment/grants",
+            post(customer_environment_grant)
+                .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/internal/v1/customer-hand/grants",
-            post(customer_hand_grant).layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
+            "/internal/v1/customer-environment/grants",
+            post(customer_environment_grant)
+                .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/internal/v1/customer-hand/gateway",
-            post(customer_hand_gateway).layer(DefaultBodyLimit::max(
+            "/internal/v1/customer-environment/gateway",
+            post(customer_environment_gateway).layer(DefaultBodyLimit::max(
                 brain_protocol::MAX_CUSTOMER_WS_FRAME_BYTES,
             )),
         )
@@ -223,8 +226,8 @@ pub fn router(state: AppState) -> Router {
 
     let public_observation = Router::new()
         .route(
-            "/v1/customer-hand/observations/{grant_id}",
-            post(customer_hand_observation).layer(DefaultBodyLimit::max(
+            "/v1/customer-environment/observations/{grant_id}",
+            post(customer_environment_observation).layer(DefaultBodyLimit::max(
                 brain_protocol::MAX_CUSTOMER_OBSERVATION_BYTES,
             )),
         )
@@ -234,8 +237,8 @@ pub fn router(state: AppState) -> Router {
         ));
     let internal_observation = Router::new()
         .route(
-            "/internal/v1/customer-hand/observations/{grant_id}",
-            post(internal_customer_hand_observation).layer(DefaultBodyLimit::max(
+            "/internal/v1/customer-environment/observations/{grant_id}",
+            post(internal_customer_environment_observation).layer(DefaultBodyLimit::max(
                 brain_protocol::MAX_CUSTOMER_OBSERVATION_BYTES,
             )),
         )
@@ -246,7 +249,10 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/v1/customer-hand/socket", get(customer_hand_socket))
+        .route(
+            "/v1/customer-environment/socket",
+            get(customer_environment_socket),
+        )
         .merge(operator)
         .merge(public_observation)
         .merge(internal_observation)

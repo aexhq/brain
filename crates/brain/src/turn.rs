@@ -5,7 +5,7 @@
 //! - only a COMPLETE assistant message is journaled; a stream that dies mid-message leaves no
 //!   trace in history;
 //! - tool intents are journaled BEFORE dispatch (an ambiguous outcome is recorded as
-//!   possibly-run) and managed results are journaled before the typed Hand terminal ACK lets the
+//!   possibly-run) and managed results are journaled before the typed Environment terminal ACK lets the
 //!   substrate forget them;
 //! - the error flag on a failed tool result is always set (a dropped flag turns a failure
 //!   into a success in the model's eyes);
@@ -14,7 +14,7 @@
 //!   completes with `stop_reason = cancelled`.
 //!
 //! WHERE arbitrary user code runs is not this module's business: managed dispatch goes through
-//! the transport-neutral typed Hand receipt port.
+//! the transport-neutral typed Environment receipt port.
 
 use crate::adapter::{CallOutcome, ToolExecutor, TurnTerminal};
 use crate::config::{SealedPrefix, SessionConfig, ToolRoute};
@@ -25,7 +25,7 @@ use crate::journal::{
 use crate::message::{ContentBlock, Message, StopReason};
 use crate::provider::{Accumulator, Provider, ProviderEvent};
 use crate::{BrainError, Result, Shared};
-use brain_protocol::hand::TerminalOutcome;
+use brain_protocol::environment::TerminalOutcome;
 use brain_protocol::session::EventStream;
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
@@ -121,8 +121,8 @@ impl TurnState {
     }
 }
 
-/// The closed engine services a running turn calls back into: the three intrinsic
-/// capabilities, managed re-preparation and unknown-outcome reconciliation. The turn holds
+/// The closed engine services a running turn calls back into: child sessions,
+/// environment re-preparation and unknown-outcome reconciliation. The turn holds
 /// this weakly and never names the concrete session engine, so the dependency points from the
 /// engine to this seam and not the other way around.
 #[async_trait::async_trait]
@@ -131,37 +131,12 @@ pub trait EngineServices: Send + Sync {
         &self,
         session_id: &str,
         doc: &HeadDoc,
-    ) -> Result<Arc<std::collections::HashMap<String, brain_protocol::hand::ResolvedBinding>>>;
+    ) -> Result<Arc<std::collections::HashMap<String, crate::environment::ManagedBinding>>>;
 
-    async fn execute_child_capability(
-        self: Arc<Self>,
-        parent_id: &str,
-        operation_id: &str,
-        input: serde_json::Value,
-        cancel: CancellationToken,
-    ) -> CallOutcome;
-
-    async fn execute_storage_capability(
+    async fn reconcile_managed_unknown_environment(
         self: Arc<Self>,
         session_id: &str,
-        operation_id: &str,
-        input: serde_json::Value,
-        cancel: CancellationToken,
-        st: &mut TurnState,
-    ) -> Result<CallOutcome>;
-
-    async fn execute_sandbox_capability(
-        self: Arc<Self>,
-        session_id: &str,
-        operation_id: &str,
-        input: serde_json::Value,
-        cancel: CancellationToken,
-        st: &mut TurnState,
-    ) -> Result<CallOutcome>;
-
-    async fn reconcile_managed_unknown_default_sandbox(
-        self: Arc<Self>,
-        session_id: &str,
+        tool_name: &str,
         st: &mut TurnState,
     ) -> Result<()>;
 }
@@ -169,7 +144,7 @@ pub trait EngineServices: Send + Sync {
 /// The immutable turn context.
 pub struct TurnRun {
     /// Weak back-reference used only by the closed engine capabilities. It cannot keep the
-    /// engine alive and keeps the typed state-machine ports out of provider/Hand adapters.
+    /// engine alive and keeps the typed state-machine ports out of provider/Environment adapters.
     pub engine: Weak<dyn EngineServices>,
     pub session_id: String,
     pub turn_id: String,
@@ -192,8 +167,7 @@ pub struct TurnRun {
     pub provider_total_timeout: std::time::Duration,
     pub compactor: Arc<dyn crate::compact::CompactionPort>,
     pub external_executor: Arc<dyn ToolExecutor>,
-    pub hand: Option<Arc<dyn crate::hand::HandPort>>,
-    pub managed_bindings: Arc<HashMap<String, brain_protocol::hand::ResolvedBinding>>,
+    pub managed_bindings: Arc<HashMap<String, crate::environment::ManagedBinding>>,
     pub customer: Option<Arc<crate::customer::CustomerCoordinator>>,
     pub tenant_id: String,
     pub customer_client_id: Option<String>,
@@ -202,7 +176,7 @@ pub struct TurnRun {
     /// Trusted metadata journaled with this message and forwarded only to host executors.
     pub context: std::collections::HashMap<String, String>,
     /// The loop implementation driving this turn's policy. The engine composition installs
-    /// [`crate::agentloop::BuiltinAexLoop`]; remote loop hosts implement the same trait over
+    /// [`crate::agentloop::SequentialAgentloop`]; remote loop hosts implement the same trait over
     /// `contracts/agentloop/v1`.
     pub agentloop: Arc<dyn crate::agentloop::Agentloop>,
     /// The admitted message this turn answers. `None` only for a recovered turn whose admission
@@ -238,7 +212,8 @@ struct DispatchedOutcome {
 
 #[derive(Clone)]
 struct ManagedTerminalReceipt {
-    operation: brain_protocol::hand::OperationRef,
+    environment: Arc<dyn crate::environment::EnvironmentPort>,
+    operation: brain_protocol::environment::OperationRef,
     terminal_digest: String,
 }
 
@@ -712,6 +687,7 @@ impl LoopTurnCtx<'_> {
             tools,
             max_tokens,
             request.temperature.map(|temperature| temperature as f32),
+            request.reasoning_effort.map(|effort| effort.to_string()),
             matches!(
                 request.tool_choice,
                 Some(brain_protocol::agentloop::ModelRequestToolChoice::None)
@@ -892,7 +868,7 @@ impl LoopTurnCtx<'_> {
                 )));
             }
         }
-        // Kernel call ids own journal, SSE and hand attribution. A call echoing an id this
+        // Kernel call ids own journal, SSE and environment attribution. A call echoing an id this
         // turn's model_stream minted reuses it, keeping the assistant message and its results
         // linked; a synthesized call gets a fresh kernel id and the loop's own id only appears
         // in the returned views.
@@ -1302,7 +1278,7 @@ impl TurnRun {
             let Some(tool) = self.prefix.tool(name) else {
                 continue;
             };
-            let ToolRoute::Customer { registration } = &tool.route else {
+            let ToolRoute::Customer { registration, .. } = &tool.route else {
                 continue;
             };
             let prepared = match (&self.customer, &self.customer_client_id) {
@@ -1519,20 +1495,20 @@ impl TurnRun {
             }
             self.commit(st, result_records).await?;
 
-            if let Some(hand) = &self.hand {
+            {
                 let previous_pending = st.head.pending_managed_acks.clone();
                 let mut acknowledged = Vec::new();
                 for receipt in outcomes
                     .iter()
                     .filter_map(|outcome| outcome.managed_terminal.as_ref())
                 {
-                    let request = brain_protocol::hand::AcknowledgeTerminalRequest {
+                    let request = brain_protocol::environment::AcknowledgeTerminalRequest {
                         operation: receipt.operation.clone(),
                         terminal_digest: receipt.terminal_digest.parse().map_err(|error| {
                             BrainError::Protocol(format!("terminal digest: {error}"))
                         })?,
                     };
-                    match hand.acknowledge_terminal(request).await {
+                    match receipt.environment.acknowledge_terminal(request).await {
                         Ok(ack) if ack.acknowledged => acknowledged.push(receipt.clone()),
                         Ok(_) => tracing::warn!(
                             session = %self.session_id,
@@ -1833,18 +1809,166 @@ impl TurnRun {
         name: &str,
         input: serde_json::Value,
     ) -> Result<DispatchedOutcome> {
-        use brain_protocol::hand::{HandErrorCode, OperationState, OutputChunkStream};
+        use brain_protocol::environment::{OperationEnvelopePhase, TerminalOutcome};
 
-        let hand = self.hand.as_ref().ok_or_else(|| {
-            BrainError::HandUnavailable(
-                "managed Tools require the canonical Hand receipt port".into(),
-            )
-        })?;
         let binding = self.managed_bindings.get(name).ok_or_else(|| {
-            BrainError::HandUnavailable(format!(
+            BrainError::EnvironmentUnavailable(format!(
                 "managed Tool {name} has no prepared immutable binding"
             ))
         })?;
+        let descriptor = st
+            .head
+            .prefix
+            .managed_bundles
+            .iter()
+            .find(|descriptor| descriptor.tool_name.as_str() == name);
+        let environment_name = binding.environment_name.clone();
+
+        if let Some(descriptor) = descriptor.filter(|descriptor| descriptor.setup_path.is_some()) {
+            let artifact_digest = descriptor.bundle_digest.to_string();
+            let current_generation = st
+                .head
+                .environment_targets
+                .get(&environment_name)
+                .and_then(running_environment_target)
+                .map(|(generation, _)| generation);
+            if let Some(setup) = st.head.tool_setups.get(name)
+                && setup.artifact_digest == artifact_digest
+                && setup.environment == environment_name
+                && (setup.generation.is_empty()
+                    || current_generation.as_deref() == Some(setup.generation.as_str()))
+            {
+                match setup.state {
+                    journal::ToolSetupState::Ready => {
+                        if current_generation.as_deref() == Some(setup.generation.as_str()) {
+                            return self
+                                .execute_managed_phase(
+                                    st,
+                                    operation_id,
+                                    name,
+                                    input,
+                                    OperationEnvelopePhase::Execute,
+                                )
+                                .await;
+                        }
+                    }
+                    journal::ToolSetupState::Unknown => {
+                        return Ok(DispatchedOutcome::from(CallOutcome::failed(format!(
+                            "managed Tool {name} setup may have run, but its terminal receipt is unavailable; it will not be replayed in this environment generation"
+                        ))));
+                    }
+                }
+            }
+
+            let setup_operation_id = format!("{operation_id}:setup");
+            let setup = self
+                .execute_managed_phase(
+                    st,
+                    &setup_operation_id,
+                    name,
+                    serde_json::json!({}),
+                    OperationEnvelopePhase::Setup,
+                )
+                .await?;
+            let generation = setup
+                .managed_terminal
+                .as_ref()
+                .map(|receipt| receipt.operation.generation.to_string())
+                .or_else(|| {
+                    st.head
+                        .environment_targets
+                        .get(&environment_name)
+                        .and_then(running_environment_target)
+                        .map(|(generation, _)| generation)
+                })
+                .unwrap_or_default();
+            if setup.outcome.outcome == TerminalOutcome::Interrupted {
+                let setup_doc = journal::ToolSetupDoc {
+                    artifact_digest,
+                    environment: environment_name,
+                    generation,
+                    state: journal::ToolSetupState::Unknown,
+                };
+                st.head
+                    .tool_setups
+                    .insert(name.to_owned(), setup_doc.clone());
+                self.commit(
+                    st,
+                    vec![(
+                        st.take_seq(),
+                        Record::ManagedSetupCompleted {
+                            turn: self.turn_id.clone(),
+                            call: setup_operation_id,
+                            name: name.to_owned(),
+                            setup: Some(setup_doc),
+                        },
+                    )],
+                )
+                .await?;
+                return Ok(setup);
+            }
+            if setup.outcome.outcome != TerminalOutcome::Completed || setup.outcome.is_error {
+                self.commit(
+                    st,
+                    vec![(
+                        st.take_seq(),
+                        Record::ManagedSetupCompleted {
+                            turn: self.turn_id.clone(),
+                            call: setup_operation_id,
+                            name: name.to_owned(),
+                            setup: None,
+                        },
+                    )],
+                )
+                .await?;
+                return Ok(setup);
+            }
+            let receipt = setup.managed_terminal.ok_or_else(|| {
+                BrainError::Protocol("successful managed Tool setup has no terminal receipt".into())
+            })?;
+            let setup_doc = journal::ToolSetupDoc {
+                artifact_digest,
+                environment: environment_name,
+                generation,
+                state: journal::ToolSetupState::Ready,
+            };
+            st.head
+                .tool_setups
+                .insert(name.to_owned(), setup_doc.clone());
+            self.persist_and_ack_setup_terminal(st, name, setup_operation_id, setup_doc, receipt)
+                .await?;
+        }
+
+        self.execute_managed_phase(
+            st,
+            operation_id,
+            name,
+            input,
+            OperationEnvelopePhase::Execute,
+        )
+        .await
+    }
+
+    async fn execute_managed_phase(
+        &self,
+        st: &mut TurnState,
+        operation_id: &str,
+        name: &str,
+        input: serde_json::Value,
+        phase: brain_protocol::environment::OperationEnvelopePhase,
+    ) -> Result<DispatchedOutcome> {
+        use brain_protocol::environment::{
+            EnvironmentErrorCode, OperationState, OutputChunkStream,
+        };
+
+        let binding = self.managed_bindings.get(name).ok_or_else(|| {
+            BrainError::EnvironmentUnavailable(format!(
+                "managed Tool {name} has no prepared immutable binding"
+            ))
+        })?;
+        let environment_name = binding.environment_name.clone();
+        let environment = &binding.environment;
+        let binding = &binding.resolved;
         let input_bytes = serde_jcs::to_vec(&input)?.len();
         if input_bytes > brain_protocol::MAX_MANAGED_TOOL_INPUT_BYTES
             || input_bytes > binding.limits.max_inline_input_bytes.get() as usize
@@ -1856,24 +1980,14 @@ impl TurnRun {
             ))));
         }
 
-        let resources = crate::hand::managed_hand_resources()?;
+        let resources = crate::environment::managed_environment_resources()?;
         let deadline_at_ms = crate::wall_ms().saturating_add(resources.timeout_ms.get());
-        let current_target =
-            st.head
-                .default_sandbox
-                .as_ref()
-                .and_then(|status| match status.state {
-                    brain_protocol::hand::SandboxState::Running
-                    | brain_protocol::hand::SandboxState::Suspended => status
-                        .generation
-                        .as_ref()
-                        .zip(status.target_ref.as_ref())
-                        .map(|(generation, target_ref)| {
-                            (generation.to_string(), target_ref.to_string())
-                        }),
-                    _ => None,
-                });
-        let mut envelope: brain_protocol::hand::OperationEnvelope =
+        let current_target = st
+            .head
+            .environment_targets
+            .get(&environment_name)
+            .and_then(running_environment_target);
+        let mut envelope: brain_protocol::environment::OperationEnvelope =
             serde_json::from_value(serde_json::json!({
                 "operation_id": operation_id,
                 "request_digest": "0".repeat(64),
@@ -1886,10 +2000,11 @@ impl TurnRun {
                 "binding_ref": binding.binding_ref,
                 "capability": name,
                 "input": {"kind": "inline", "value": input},
+                "phase": phase,
                 "target_ref": current_target.as_ref().map(|(_, target_ref)| target_ref),
                 "deadline_at_ms": deadline_at_ms,
                 "resources": resources,
-                "network": crate::hand::sealed_sandbox_network(&st.head)?,
+                "network": crate::environment::sealed_sandbox_network(&st.head)?,
                 "trace": {},
             }))?;
         envelope.request_digest = brain_protocol::contract::operation_request_digest(&envelope);
@@ -1909,7 +2024,7 @@ impl TurnRun {
         )
         .await?;
 
-        let submit_request = brain_protocol::hand::SubmitRequest {
+        let submit_request = brain_protocol::environment::SubmitRequest {
             envelope: envelope.clone(),
             wait_up_to_ms: binding.limits.max_wait_ms.min(30_000),
         };
@@ -1921,18 +2036,18 @@ impl TurnRun {
             // reservation until the attempt lease expires. Cancellation and the sealed
             // deadline stop the WAITING; the attempt itself always runs to its own
             // conclusion, and exact recovery reconciles whatever it produced.
-            let submit_hand = hand.clone();
+            let submit_environment = environment.clone();
             let submit_once = submit_request.clone();
             let mut submit_task =
-                tokio::spawn(async move { submit_hand.submit(submit_once).await });
+                tokio::spawn(async move { submit_environment.submit(submit_once).await });
             let result = tokio::select! {
                 joined = &mut submit_task => joined.map_err(|join_error| {
-                    BrainError::HandUnavailable(format!(
+                    BrainError::EnvironmentUnavailable(format!(
                         "managed Tool submit task did not complete: {join_error}"
                     ))
                 })?,
                 () = tokio::time::sleep(std::time::Duration::from_millis(remaining)) => {
-                    return Err(BrainError::HandUnavailable(
+                    return Err(BrainError::EnvironmentUnavailable(
                         "managed Tool submit exceeded its sealed deadline".into(),
                     ));
                 }
@@ -1944,9 +2059,11 @@ impl TurnRun {
             };
             match result {
                 Ok(receipt) => break receipt,
-                Err(error) if error.code == HandErrorCode::CapabilityUnavailable && !reprepared => {
+                Err(error)
+                    if error.code == EnvironmentErrorCode::CapabilityUnavailable && !reprepared =>
+                {
                     let brain = self.engine.upgrade().ok_or_else(|| {
-                        BrainError::HandUnavailable(
+                        BrainError::EnvironmentUnavailable(
                             "managed Tool preparation coordinator is unavailable".into(),
                         )
                     })?;
@@ -1954,23 +2071,23 @@ impl TurnRun {
                         .prepare_managed_session(&self.session_id, &st.head)
                         .await?;
                     let refreshed = bindings.get(name).ok_or_else(|| {
-                        BrainError::HandUnavailable(format!(
+                        BrainError::EnvironmentUnavailable(format!(
                             "managed Tool {name} disappeared during re-preparation"
                         ))
                     })?;
-                    if refreshed.binding_ref != binding.binding_ref {
-                        return Err(BrainError::HandUnavailable(
+                    if refreshed.resolved.binding_ref != binding.binding_ref {
+                        return Err(BrainError::EnvironmentUnavailable(
                             "managed Tool binding changed during exact re-preparation".into(),
                         ));
                     }
                     reprepared = true;
                 }
-                Err(error) if error.code == HandErrorCode::OperationUnknown => {
+                Err(error) if error.code == EnvironmentErrorCode::OperationUnknown => {
                     return self
                         .finish_managed_submit_unknown(st, operation_id, name, &request_digest)
                         .await;
                 }
-                Err(error) => return Err(crate::hand::map_hand_port_error(error)),
+                Err(error) => return Err(crate::environment::map_environment_port_error(error)),
             }
         };
         verify_managed_operation(
@@ -1983,7 +2100,7 @@ impl TurnRun {
         verify_managed_observation(&receipt.observation, &receipt.operation)?;
 
         if let Some(target) = &receipt.observation.target {
-            let status: brain_protocol::hand::SandboxStatus =
+            let status: brain_protocol::environment::SandboxStatus =
                 serde_json::from_value(serde_json::json!({
                     "state": "running",
                     "target": receipt.operation.target,
@@ -1992,7 +2109,9 @@ impl TurnRun {
                     "changed_at_ms": crate::wall_ms(),
                     "expires_at_ms": target.expires_at_ms,
                 }))?;
-            st.head.default_sandbox = Some(status);
+            st.head
+                .environment_targets
+                .insert(environment_name.clone(), status);
         }
         self.commit(
             st,
@@ -2043,18 +2162,19 @@ impl TurnRun {
             if observation.state == OperationState::Terminal {
                 let terminal = observation.terminal.ok_or_else(|| {
                     BrainError::Protocol(
-                        "managed Hand reported terminal state without a terminal receipt".into(),
+                        "managed Environment reported terminal state without a terminal receipt"
+                            .into(),
                     )
                 })?;
-                return managed_terminal_outcome(receipt.operation, terminal);
+                return managed_terminal_outcome(environment.clone(), receipt.operation, terminal);
             }
             if observation.terminal.is_some() {
                 return Err(BrainError::Protocol(
-                    "managed Hand returned a terminal receipt before terminal state".into(),
+                    "managed Environment returned a terminal receipt before terminal state".into(),
                 ));
             }
             if crate::wall_ms() >= deadline_at_ms {
-                return Err(BrainError::HandUnavailable(
+                return Err(BrainError::EnvironmentUnavailable(
                     "managed Tool did not reach a terminal receipt before its sealed deadline"
                         .into(),
                 ));
@@ -2062,19 +2182,21 @@ impl TurnRun {
             if self.cancel.is_cancelled() && !cancellation_sent {
                 st.head.active_phase = Some(TurnPhase::ManagedCancelling);
                 self.commit(st, vec![]).await?;
-                let request: brain_protocol::hand::CancelRequest =
+                let request: brain_protocol::environment::CancelRequest =
                     serde_json::from_value(serde_json::json!({
                         "operation": receipt.operation,
                         "reason": "turn_cancelled",
                     }))?;
-                match hand.cancel(request).await {
+                match environment.cancel(request).await {
                     Ok(_) => {}
-                    Err(error) if error.code == HandErrorCode::OperationUnknown => {
+                    Err(error) if error.code == EnvironmentErrorCode::OperationUnknown => {
                         return self
                             .finish_managed_submit_unknown(st, operation_id, name, &request_digest)
                             .await;
                     }
-                    Err(error) => return Err(crate::hand::map_hand_port_error(error)),
+                    Err(error) => {
+                        return Err(crate::environment::map_environment_port_error(error));
+                    }
                 }
                 cancellation_sent = true;
             }
@@ -2083,7 +2205,7 @@ impl TurnRun {
                 .max_wait_ms
                 .min(30_000)
                 .min(deadline_at_ms.saturating_sub(crate::wall_ms()));
-            let request: brain_protocol::hand::ObserveRequest =
+            let request: brain_protocol::environment::ObserveRequest =
                 serde_json::from_value(serde_json::json!({
                     "operation": receipt.operation,
                     "cursor": observation.next_cursor,
@@ -2091,22 +2213,105 @@ impl TurnRun {
                 }))?;
             let observed = tokio::time::timeout(
                 std::time::Duration::from_millis(wait_ms.saturating_add(1_000).max(1)),
-                hand.observe(request),
+                environment.observe(request),
             )
             .await
             .map_err(|_| {
-                BrainError::HandUnavailable("managed Tool observation timed out".into())
+                BrainError::EnvironmentUnavailable("managed Tool observation timed out".into())
             })?;
             observation = match observed {
                 Ok(observation) => observation,
-                Err(error) if error.code == HandErrorCode::OperationUnknown => {
+                Err(error) if error.code == EnvironmentErrorCode::OperationUnknown => {
                     return self
                         .finish_managed_submit_unknown(st, operation_id, name, &request_digest)
                         .await;
                 }
-                Err(error) => return Err(crate::hand::map_hand_port_error(error)),
+                Err(error) => return Err(crate::environment::map_environment_port_error(error)),
             };
         }
+    }
+
+    async fn persist_and_ack_setup_terminal(
+        &self,
+        st: &mut TurnState,
+        name: &str,
+        call: String,
+        setup: journal::ToolSetupDoc,
+        receipt: ManagedTerminalReceipt,
+    ) -> Result<()> {
+        let pending = journal::ManagedTerminalAckDoc {
+            turn: self.turn_id.clone(),
+            call: receipt.operation.operation_id.to_string(),
+            operation: receipt.operation.clone(),
+            terminal_digest: receipt.terminal_digest.clone(),
+        };
+        st.head.pending_managed_acks.push(pending);
+        self.commit(
+            st,
+            vec![
+                (
+                    st.take_seq(),
+                    Record::ManagedSetupCompleted {
+                        turn: self.turn_id.clone(),
+                        call,
+                        name: name.to_owned(),
+                        setup: Some(setup),
+                    },
+                ),
+                (
+                    st.take_seq(),
+                    Record::ManagedTerminalReceived {
+                        turn: self.turn_id.clone(),
+                        call: receipt.operation.operation_id.to_string(),
+                        operation: receipt.operation.clone(),
+                        terminal_digest: receipt.terminal_digest.clone(),
+                    },
+                ),
+            ],
+        )
+        .await?;
+
+        let request = brain_protocol::environment::AcknowledgeTerminalRequest {
+            operation: receipt.operation.clone(),
+            terminal_digest: receipt
+                .terminal_digest
+                .parse()
+                .map_err(|error| BrainError::Protocol(format!("terminal digest: {error}")))?,
+        };
+        match receipt.environment.acknowledge_terminal(request).await {
+            Ok(ack) if ack.acknowledged => {
+                st.head.pending_managed_acks.retain(|pending| {
+                    pending.operation.operation_id != receipt.operation.operation_id
+                        || pending.operation.request_digest != receipt.operation.request_digest
+                        || pending.terminal_digest != receipt.terminal_digest
+                });
+                self.commit(
+                    st,
+                    vec![(
+                        st.take_seq(),
+                        Record::ManagedTerminalAcknowledged {
+                            turn: self.turn_id.clone(),
+                            call: receipt.operation.operation_id.to_string(),
+                            request_digest: receipt.operation.request_digest.to_string(),
+                            terminal_digest: receipt.terminal_digest,
+                        },
+                    )],
+                )
+                .await?;
+            }
+            Ok(_) => tracing::warn!(
+                session = %self.session_id,
+                operation = receipt.operation.operation_id.as_str(),
+                "managed setup terminal acknowledgement was not accepted"
+            ),
+            Err(error) => tracing::warn!(
+                session = %self.session_id,
+                operation = receipt.operation.operation_id.as_str(),
+                error = error.message.as_str(),
+                "managed setup terminal acknowledgement remains pending after durable commit"
+            ),
+        }
+        Ok(())
     }
 
     async fn finish_managed_submit_unknown(
@@ -2132,16 +2337,16 @@ impl TurnRun {
         )
         .await?;
         let brain = self.engine.upgrade().ok_or_else(|| {
-            BrainError::HandUnavailable(
+            BrainError::EnvironmentUnavailable(
                 "managed Tool unknown-outcome reconciliation coordinator is unavailable".into(),
             )
         })?;
         match brain
-            .reconcile_managed_unknown_default_sandbox(&self.session_id, st)
+            .reconcile_managed_unknown_environment(&self.session_id, name, st)
             .await
         {
             Ok(()) => {}
-            Err(BrainError::HandUnavailable(message)) if self.cancel.is_cancelled() => {
+            Err(BrainError::EnvironmentUnavailable(message)) if self.cancel.is_cancelled() => {
                 // The unknown marker is durable and revokes every future Submit replay;
                 // the target may still be materializing under the detached submit task. A
                 // cancelled turn concludes NOW — holding its terminal hostage to the
@@ -2203,63 +2408,6 @@ impl TurnRun {
                         )
                     });
                 }
-                Some(ToolRoute::Intrinsic(capability)) if capability == "brain.subagents" => {
-                    let brain = self.engine.clone();
-                    let parent_id = self.session_id.clone();
-                    let cancel = self.cancel.clone();
-                    join.spawn(async move {
-                        let _permit = permit.acquire_owned().await;
-                        let outcome = match brain.upgrade() {
-                            Some(brain) => {
-                                brain
-                                    .execute_child_capability(&parent_id, &op_id, input, cancel)
-                                    .await
-                            }
-                            None => CallOutcome::failed(
-                                "ordinary child-session coordinator is unavailable",
-                            ),
-                        };
-                        (idx, DispatchedOutcome::from(outcome))
-                    });
-                }
-                Some(ToolRoute::Intrinsic(capability)) if capability == "brain.storage" => {
-                    let _permit = permit
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| BrainError::Overloaded)?;
-                    let brain = self.engine.upgrade().ok_or_else(|| {
-                        BrainError::Journal("engine capability coordinator is unavailable".into())
-                    })?;
-                    let outcome = brain
-                        .execute_storage_capability(
-                            &self.session_id,
-                            &op_id,
-                            input,
-                            self.cancel.clone(),
-                            st,
-                        )
-                        .await?;
-                    done[idx] = Some(DispatchedOutcome::from(outcome));
-                }
-                Some(ToolRoute::Intrinsic(capability)) if capability == "brain.sandbox" => {
-                    let _permit = permit
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| BrainError::Overloaded)?;
-                    let brain = self.engine.upgrade().ok_or_else(|| {
-                        BrainError::Journal("engine capability coordinator is unavailable".into())
-                    })?;
-                    let outcome = brain
-                        .execute_sandbox_capability(
-                            &self.session_id,
-                            &op_id,
-                            input,
-                            self.cancel.clone(),
-                            st,
-                        )
-                        .await?;
-                    done[idx] = Some(DispatchedOutcome::from(outcome));
-                }
                 Some(ToolRoute::Intrinsic(capability)) => {
                     join.spawn(async move {
                         let _permit = permit.acquire_owned().await;
@@ -2296,7 +2444,7 @@ impl TurnRun {
                         (idx, DispatchedOutcome::from(out))
                     });
                 }
-                Some(ToolRoute::Customer { registration }) => {
+                Some(ToolRoute::Customer { registration, .. }) => {
                     let customer = self.customer.clone();
                     let cancel = self.cancel.clone();
                     let submit_retries = self.customer_submit_retries;
@@ -2327,7 +2475,7 @@ impl TurnRun {
                         (idx, outcome)
                     });
                 }
-                Some(ToolRoute::Hand(_)) => {
+                Some(ToolRoute::Environment(_)) => {
                     let _permit = permit
                         .acquire_owned()
                         .await
@@ -2367,8 +2515,22 @@ impl TurnRun {
     }
 }
 
+fn running_environment_target(
+    status: &brain_protocol::environment::SandboxStatus,
+) -> Option<(String, String)> {
+    match status.state {
+        brain_protocol::environment::SandboxState::Running
+        | brain_protocol::environment::SandboxState::Suspended => status
+            .generation
+            .as_ref()
+            .zip(status.target_ref.as_ref())
+            .map(|(generation, target_ref)| (generation.to_string(), target_ref.to_string())),
+        _ => None,
+    }
+}
+
 pub(crate) fn verify_managed_operation(
-    operation: &brain_protocol::hand::OperationRef,
+    operation: &brain_protocol::environment::OperationRef,
     operation_id: &str,
     request_digest: &str,
     session_id: &str,
@@ -2378,44 +2540,48 @@ pub(crate) fn verify_managed_operation(
         || operation.request_digest.as_str() != request_digest
         || operation.target.session_id.as_str() != session_id
         || operation.target.root_id.as_str() != head.root_id
-        || operation.target.kind != brain_protocol::hand::TargetKind::Default
+        || operation.target.kind != brain_protocol::environment::TargetKind::Environment
         || operation.target.sandbox_id.is_some()
     {
         return Err(BrainError::Protocol(
-            "managed Hand returned an operation outside the committed session/root request".into(),
+            "managed Environment returned an operation outside the committed session/root request"
+                .into(),
         ));
     }
     Ok(())
 }
 
 pub(crate) fn verify_managed_observation(
-    observation: &brain_protocol::hand::OperationObservation,
-    operation: &brain_protocol::hand::OperationRef,
+    observation: &brain_protocol::environment::OperationObservation,
+    operation: &brain_protocol::environment::OperationRef,
 ) -> Result<()> {
     if serde_jcs::to_vec(&observation.operation)? != serde_jcs::to_vec(operation)? {
         return Err(BrainError::Protocol(
-            "managed Hand observation references a different operation".into(),
+            "managed Environment observation references a different operation".into(),
         ));
     }
     if let Some(target) = &observation.target
         && (target.generation != operation.generation || target.target_ref != operation.target_ref)
     {
         return Err(BrainError::Protocol(
-            "managed Hand observation target conflicts with its rooted operation receipt".into(),
+            "managed Environment observation target conflicts with its rooted operation receipt"
+                .into(),
         ));
     }
     Ok(())
 }
 
 fn managed_terminal_outcome(
-    operation: brain_protocol::hand::OperationRef,
-    terminal: brain_protocol::hand::TerminalResult,
+    environment: Arc<dyn crate::environment::EnvironmentPort>,
+    operation: brain_protocol::environment::OperationRef,
+    terminal: brain_protocol::environment::TerminalResult,
 ) -> Result<DispatchedOutcome> {
     let (outcome, terminal_digest) = managed_terminal_call_outcome(terminal)?;
     Ok(DispatchedOutcome {
         outcome,
         customer_terminal: None,
         managed_terminal: Some(ManagedTerminalReceipt {
+            environment,
             operation,
             terminal_digest,
         }),
@@ -2431,12 +2597,12 @@ pub(crate) fn managed_unknown_call_outcome(name: &str) -> CallOutcome {
 }
 
 pub(crate) fn managed_terminal_call_outcome(
-    terminal: brain_protocol::hand::TerminalResult,
+    terminal: brain_protocol::environment::TerminalResult,
 ) -> Result<(CallOutcome, String)> {
     let expected = brain_protocol::contract::terminal_result_digest(&terminal);
     if expected != terminal.terminal_digest {
         return Err(BrainError::Protocol(
-            "managed Hand terminal digest does not match its canonical receipt".into(),
+            "managed Environment terminal digest does not match its canonical receipt".into(),
         ));
     }
     if terminal
@@ -2445,14 +2611,14 @@ pub(crate) fn managed_terminal_call_outcome(
         .is_some_and(|value| !brain_protocol::contract::terminal_inline_fits(value))
     {
         return Err(BrainError::Protocol(format!(
-            "managed Hand terminal exceeds the {}-byte inline result limit",
+            "managed Environment terminal exceeds the {}-byte inline result limit",
             brain_protocol::MAX_TOOL_TERMINAL_INLINE_BYTES
         )));
     }
-    let completed = terminal.outcome == brain_protocol::hand::TerminalOutcome::Completed;
+    let completed = terminal.outcome == brain_protocol::environment::TerminalOutcome::Completed;
     if terminal.is_error == completed {
         return Err(BrainError::Protocol(
-            "managed Hand terminal outcome and is_error flag conflict".into(),
+            "managed Environment terminal outcome and is_error flag conflict".into(),
         ));
     }
     let value = terminal.inline.clone().or_else(|| {
@@ -2492,7 +2658,7 @@ fn provider_failure_is_unknown(error: &BrainError) -> bool {
 fn customer_preparation_failure(error: BrainError) -> CallOutcome {
     let retryable = matches!(
         error,
-        BrainError::HandUnavailable(_) | BrainError::Overloaded
+        BrainError::EnvironmentUnavailable(_) | BrainError::Overloaded
     );
     let mut outcome = CallOutcome::failed(error.to_string());
     if retryable {
@@ -2659,7 +2825,7 @@ pub(crate) struct RoundCtx<'a> {
 }
 
 /// Replaces provider-local tool-use ids with the brain-minted call ids that
-/// own journal, SSE, and hand attribution. The normalized assistant message
+/// own journal, SSE, and environment attribution. The normalized assistant message
 /// and its following results then stay internally linked after cold replay.
 pub(crate) fn mint_tool_calls(message: &mut Message) -> Vec<(String, String, serde_json::Value)> {
     message
@@ -2683,7 +2849,7 @@ pub(crate) fn model_request_digest(request: &crate::provider::ModelRequest) -> S
     }
 
     let mut digest = Sha256::new();
-    field(&mut digest, b"aex.model-request.v1");
+    field(&mut digest, b"brain.model-request.v1");
     field(&mut digest, request.method.as_bytes());
     field(&mut digest, request.url.as_bytes());
     let mut headers: Vec<_> = request

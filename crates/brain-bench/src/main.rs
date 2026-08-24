@@ -1,5 +1,5 @@
 //! Benchmark gates for Brain. Every number measures the engine, never a model:
-//! the provider is the scripted fake (instant unless paced), the hand is an in-process echo,
+//! the provider is the scripted fake (instant unless paced), the environment is an in-process echo,
 //! the journal is in-memory — and the drive path is the real public HTTP API with SSE, because
 //! that is what production serves.
 //!
@@ -29,7 +29,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use brain::agentloop::{Agentloop, AgentloopRegistry, SequentialAgentloop};
 use brain::config::Dialect;
+use brain::journal::AgentloopSelectorDoc;
 use brain::journal::Journal;
 use brain::provider::Provider;
 use brain::provider::fake::{FakeMode, FakeProvider};
@@ -119,6 +121,27 @@ struct Bench {
     executor: Arc<echo::EchoExecutor>,
 }
 
+struct BenchAgentloopRegistry;
+
+impl AgentloopRegistry for BenchAgentloopRegistry {
+    fn resolve(&self, _selector: &AgentloopSelectorDoc) -> brain::Result<Arc<dyn Agentloop>> {
+        Ok(Arc::new(SequentialAgentloop))
+    }
+
+    fn admit_custom(
+        &self,
+        source_bundle_sha256: &str,
+        toolchain: &str,
+        bundle: &[u8],
+    ) -> brain::Result<AgentloopSelectorDoc> {
+        Ok(AgentloopSelectorDoc {
+            source_bundle_sha256: source_bundle_sha256.into(),
+            source_bundle_bytes: bundle.len() as u64,
+            toolchain: toolchain.into(),
+        })
+    }
+}
+
 /// Compose the brain + the bench sidecar routes and serve on a loopback port.
 async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
@@ -152,7 +175,7 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         ..BrainConfig::default()
     };
     cfg.official_capabilities.insert(
-        "aex.bench_echo".into(),
+        "brain.bench_echo".into(),
         brain::config::ServerToolPolicy {
             capability: "bench.echo".into(),
             scope: brain_protocol::session::ExternalToolScope::All,
@@ -239,7 +262,10 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         journal,
         Arc::new(brain::keys::PlainCustody),
         executor.clone(),
-        BrainServices::default(),
+        BrainServices {
+            agentloop_registry: Some(Arc::new(BenchAgentloopRegistry)),
+            ..BrainServices::default()
+        },
         Arc::new(move |_| factory_fake.clone() as Arc<dyn Provider>),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -325,6 +351,11 @@ impl Api {
             .bearer_auth(TOKEN)
             .headers(self.tenant_headers())
             .json(&json!({
+                "agentloop": {
+                    "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                    "toolchain": "brain-bench",
+                    "bundle_base64": "eA=="
+                },
                 // Keep semantic compaction out of the turn-throughput instrument. Its own
                 // correctness and wire-budget gates live in Brain's compaction test suite.
                 "model": {
@@ -335,7 +366,7 @@ impl Api {
                 },
                 // Brain deliberately has no implicit tools. The benchmark's scripted provider
                 // calls `bash`, so map that model-visible definition to the sealed benchmark
-                // host capability. No legacy Hand adapter participates in this measurement.
+                // host capability. No legacy Environment adapter participates in this measurement.
                 "tools": {"items": [{
                     "definition": {
                         "name": "bash",
@@ -344,7 +375,7 @@ impl Api {
                         "input_schema": {"type": "object", "additionalProperties": true},
                         "output_schema": {"type": "object", "additionalProperties": true}
                     },
-                    "executor": {"kind":"engine","capability":"aex.bench_echo"}
+                    "executor": {"kind":"engine","capability":"brain.bench_echo"}
                 }]}
             }))
             .send()

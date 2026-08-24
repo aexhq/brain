@@ -313,9 +313,9 @@ pub struct HeadDoc {
     pub prefix: PrefixDoc,
     /// Custody blob of the BYOK key, base64. Never the plaintext.
     pub key_b64: String,
-    /// Custody blob of the session-wide Hand environment map, base64. Never plaintext.
+    /// Custody blob of the session-wide Environment environment map, base64. Never plaintext.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub hand_secrets_b64: String,
+    pub environment_secrets_b64: String,
     #[serde(default)]
     pub session_storage_bytes: u64,
     /// Bytes in an outstanding staged upload. They are not published storage, but are included
@@ -335,13 +335,15 @@ pub struct HeadDoc {
     /// most MAX_TOOL_CALLS_PER_MODEL_ROUND entries; payload bytes are never duplicated here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_customer_acks: Vec<CustomerTerminalAckDoc>,
-    /// Bounded rooted receipts waiting for post-commit managed-Hand terminal ACK.
+    /// Bounded rooted receipts waiting for post-commit managed-Environment terminal ACK.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_managed_acks: Vec<ManagedTerminalAckDoc>,
-    /// Brain-owned durable projection of the root tree's shared default target. Descendants
-    /// address this same target through `root_id`; they do not get a second default sandbox.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_sandbox: Option<brain_protocol::hand::SandboxStatus>,
+    /// Last rooted target observed for each logical environment binding.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub environment_targets: HashMap<String, brain_protocol::environment::SandboxStatus>,
+    /// Durable first-load setup result for each managed Tool artifact.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tool_setups: HashMap<String, ToolSetupDoc>,
     /// Present iff the session has ever committed a loop record. Its presence gates the
     /// loop-state journal fold at rehydration, so sessions that never used loop state pay no
     /// extra read. The kv map itself lives in records, never here (it can reach 512 KiB).
@@ -395,9 +397,27 @@ pub struct ControlDoc {
     #[serde(default)]
     pub pending_managed_acks: Vec<ManagedTerminalAckDoc>,
     #[serde(default)]
-    pub default_sandbox: Option<brain_protocol::hand::SandboxStatus>,
+    pub environment_targets: HashMap<String, brain_protocol::environment::SandboxStatus>,
+    #[serde(default)]
+    pub tool_setups: HashMap<String, ToolSetupDoc>,
     #[serde(default)]
     pub loop_state: Option<LoopStateDoc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolSetupDoc {
+    pub artifact_digest: String,
+    pub environment: String,
+    pub generation: String,
+    pub state: ToolSetupState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSetupState {
+    Ready,
+    Unknown,
 }
 
 /// Immutable create-time material, stored once as `CONFIG` and content-addressed by its digest.
@@ -413,7 +433,7 @@ pub struct ConfigDoc {
     pub depth: u32,
     pub prefix: PrefixDoc,
     pub key_b64: String,
-    pub hand_secrets_b64: String,
+    pub environment_secrets_b64: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -457,7 +477,7 @@ pub struct CustomerTerminalAckDoc {
 pub struct ManagedTerminalAckDoc {
     pub turn: String,
     pub call: String,
-    pub operation: brain_protocol::hand::OperationRef,
+    pub operation: brain_protocol::environment::OperationRef,
     pub terminal_digest: String,
 }
 
@@ -515,7 +535,8 @@ impl HeadDoc {
             storage_delete,
             pending_customer_acks,
             pending_managed_acks,
-            default_sandbox,
+            environment_targets,
+            tool_setups,
             loop_state,
             root_id: _,
             parent_id: _,
@@ -525,7 +546,7 @@ impl HeadDoc {
             depth: _,
             prefix: _,
             key_b64: _,
-            hand_secrets_b64: _,
+            environment_secrets_b64: _,
         } = self;
         ControlDoc {
             tenant_id: tenant_id.clone(),
@@ -556,7 +577,8 @@ impl HeadDoc {
             storage_delete: storage_delete.clone(),
             pending_customer_acks: pending_customer_acks.clone(),
             pending_managed_acks: pending_managed_acks.clone(),
-            default_sandbox: default_sandbox.clone(),
+            environment_targets: environment_targets.clone(),
+            tool_setups: tool_setups.clone(),
             loop_state: *loop_state,
         }
     }
@@ -573,7 +595,7 @@ impl HeadDoc {
             depth,
             prefix,
             key_b64,
-            hand_secrets_b64,
+            environment_secrets_b64,
             tenant_id: _,
             last_seq: _,
             state: _,
@@ -602,7 +624,8 @@ impl HeadDoc {
             storage_delete: _,
             pending_customer_acks: _,
             pending_managed_acks: _,
-            default_sandbox: _,
+            environment_targets: _,
+            tool_setups: _,
             loop_state: _,
         } = self;
         ConfigDoc {
@@ -614,7 +637,7 @@ impl HeadDoc {
             depth: *depth,
             prefix: prefix.clone(),
             key_b64: key_b64.clone(),
-            hand_secrets_b64: hand_secrets_b64.clone(),
+            environment_secrets_b64: environment_secrets_b64.clone(),
         }
     }
 
@@ -652,7 +675,8 @@ impl HeadDoc {
             storage_delete,
             pending_customer_acks,
             pending_managed_acks,
-            default_sandbox,
+            environment_targets,
+            tool_setups,
             loop_state,
         } = control;
         let ConfigDoc {
@@ -664,7 +688,7 @@ impl HeadDoc {
             depth,
             prefix,
             key_b64,
-            hand_secrets_b64,
+            environment_secrets_b64,
         } = config;
         Self {
             tenant_id,
@@ -695,7 +719,8 @@ impl HeadDoc {
             storage_delete,
             pending_customer_acks,
             pending_managed_acks,
-            default_sandbox,
+            environment_targets,
+            tool_setups,
             loop_state,
             root_id,
             parent_id,
@@ -705,7 +730,7 @@ impl HeadDoc {
             depth,
             prefix,
             key_b64,
-            hand_secrets_b64,
+            environment_secrets_b64,
         }
     }
 }
@@ -719,18 +744,22 @@ impl HeadDoc {
     pub fn with_recovery_projection(&self, now_ms: u64) -> Self {
         let mut projected = self.clone();
         let lease_safe_due = now_ms.saturating_add(LEASE_MS + STEAL_GRACE_MS);
-        let sandbox_due = self.default_sandbox.as_ref().and_then(|sandbox| {
-            use brain_protocol::hand::SandboxState;
-            match sandbox.state {
-                SandboxState::Creating => {
-                    Some(self.recovery_due_ms.unwrap_or(0).max(lease_safe_due))
+        let environment_due = self
+            .environment_targets
+            .values()
+            .filter_map(|environment| {
+                use brain_protocol::environment::SandboxState;
+                match environment.state {
+                    SandboxState::Creating => {
+                        Some(self.recovery_due_ms.unwrap_or(0).max(lease_safe_due))
+                    }
+                    SandboxState::Running | SandboxState::Suspended => {
+                        environment.expires_at_ms.map(|expires| expires.get())
+                    }
+                    _ => None,
                 }
-                SandboxState::Running | SandboxState::Suspended => {
-                    sandbox.expires_at_ms.map(|expires| expires.get())
-                }
-                _ => None,
-            }
-        });
+            })
+            .min();
         let upload_due = self.storage_upload.as_ref().and_then(|upload| {
             match upload.state.as_str() {
                 // A reservation is scheduled work, not an active effect. Lease heartbeats must
@@ -756,7 +785,7 @@ impl HeadDoc {
         {
             Some(self.recovery_due_ms.unwrap_or(0).max(lease_safe_due))
         } else {
-            match (sandbox_due, upload_due) {
+            match (environment_due, upload_due) {
                 (Some(left), Some(right)) => Some(left.min(right)),
                 (left, right) => left.or(right),
             }
@@ -866,8 +895,6 @@ pub struct PrefixDoc {
     pub storage_max_object_bytes: u64,
     pub storage_max_session_bytes: u64,
     pub storage_transfer_ttl_ms: u64,
-    #[serde(default = "default_additional_sandbox_limit")]
-    pub max_additional_sandboxes_per_root: u32,
     /// Canonical normalized session outbound ceiling. Omission at the public API is sealed as
     /// deny-all; every Tool/target policy may only narrow this value.
     #[serde(default = "default_network_ceiling")]
@@ -892,51 +919,37 @@ pub struct PrefixDoc {
     /// Exact native Tool definitions and execution seals, in cache-visible declaration order.
     /// Bundle bytes live in internal root-scoped object custody and never appear here.
     pub tools: Vec<brain_protocol::session::ToolConfig>,
+    /// Logical environment declarations, keyed by the stable names used by every tool binding.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub environments: HashMap<String, brain_protocol::session::EnvironmentConfig>,
     /// Immutable managed implementation descriptors. Children inherit these descriptors but
     /// resolve their own session-scoped binding identity; the referenced bytes remain root-owned.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub managed_bundles: Vec<brain_protocol::hand::BundleDescriptor>,
+    pub managed_bundles: Vec<brain_protocol::environment::BundleDescriptor>,
     /// Trusted host policies sealed for official engine capabilities. SDK callers can name only
     /// the capability; they cannot forge these execution semantics.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub official_capabilities: HashMap<String, crate::config::ServerToolPolicy>,
-    pub hand_enabled: bool,
+    pub environment_enabled: bool,
     pub shape: String,
     pub sync_interval_seconds: u64,
     /// Names only, allowing create-time required-env validation without persisting values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hand_env_keys: Vec<String>,
+    pub environment_env_keys: Vec<String>,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
-    /// The sealed agentloop identity (`contracts/agentloop/v1` selector semantics). Absent on
-    /// sessions created before selectors existed, which sealed the official `aex` policy.
+    /// The sealed agent loop identity (`contracts/agentloop/v1` selector semantics).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agentloop: Option<AgentloopSelectorDoc>,
 }
 
-/// Which agentloop a session sealed at create. Children inherit the parent's selector.
+/// Which agent loop a session sealed at create. Children inherit the parent's selector.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AgentloopSelectorDoc {
-    Official {
-        name: String,
-        version: String,
-    },
-    Custom {
-        source_bundle_sha256: String,
-        source_bundle_bytes: u64,
-        toolchain: String,
-    },
-}
-
-impl AgentloopSelectorDoc {
-    /// The identity every pre-selector session sealed implicitly.
-    pub fn official_aex() -> Self {
-        Self::Official {
-            name: "aex".into(),
-            version: "1".into(),
-        }
-    }
+#[serde(deny_unknown_fields)]
+pub struct AgentloopSelectorDoc {
+    pub source_bundle_sha256: String,
+    pub source_bundle_bytes: u64,
+    pub toolchain: String,
 }
 
 fn default_customer_submit_retries() -> u32 {
@@ -953,10 +966,6 @@ fn default_direct_children() -> u32 {
 
 fn default_descendants() -> u32 {
     256
-}
-
-fn default_additional_sandbox_limit() -> u32 {
-    2
 }
 
 fn default_network_ceiling() -> serde_json::Value {
@@ -1015,59 +1024,6 @@ pub struct ChildListQuery<'a> {
 #[derive(Debug, Clone)]
 pub struct ChildPage {
     pub sessions: Vec<SessionSummary>,
-    pub next_cursor: Option<String>,
-}
-
-/// O(1)-addressable logical additional-sandbox inventory owned by Brain. Physical locator fields
-/// remain opaque inside `status.target`; terminal entries are tombstones until explicit root
-/// purge, so a stale logical id can never materialize a replacement target.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SandboxInventoryDoc {
-    pub root_id: String,
-    pub owner_session_id: String,
-    pub sandbox_id: String,
-    pub operation_id: String,
-    pub request_digest: String,
-    pub generation_intent: String,
-    pub status: brain_protocol::hand::SandboxStatus,
-    pub created_at_ms: u64,
-    pub updated_at_ms: u64,
-    pub version: u64,
-    pub slot_released: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct SandboxReserveRequest {
-    pub root_id: String,
-    pub owner_session_id: String,
-    pub sandbox_id: String,
-    pub operation_id: String,
-    pub request_digest: String,
-    pub generation_intent: String,
-    pub initial_status: brain_protocol::hand::SandboxStatus,
-    pub now_ms: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct SandboxUpdateRequest {
-    pub root_id: String,
-    pub sandbox_id: String,
-    pub expected_version: u64,
-    pub status: brain_protocol::hand::SandboxStatus,
-    pub release_slot: bool,
-    pub now_ms: u64,
-}
-
-pub struct SandboxListQuery<'a> {
-    pub root_id: &'a str,
-    pub limit: usize,
-    pub cursor: Option<&'a str>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SandboxPage {
-    pub sandboxes: Vec<SandboxInventoryDoc>,
     pub next_cursor: Option<String>,
 }
 

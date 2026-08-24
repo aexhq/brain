@@ -185,14 +185,14 @@ fn every_brain_error_has_an_explicit_safe_public_mapping() {
             "provider_error",
         ),
         (
-            BrainError::HandUnavailable(SECRET.into()),
+            BrainError::EnvironmentUnavailable(SECRET.into()),
             StatusCode::SERVICE_UNAVAILABLE,
-            "hand_unavailable",
+            "environment_unavailable",
         ),
         (
-            BrainError::Hand(SECRET.into()),
+            BrainError::Environment(SECRET.into()),
             StatusCode::SERVICE_UNAVAILABLE,
-            "hand_unavailable",
+            "environment_unavailable",
         ),
         (
             BrainError::Journal(SECRET.into()),

@@ -1,6 +1,6 @@
 //! Neutral AWS persistence and custody adapters for Brain.
 //!
-//! Hand implementations intentionally do not live here: the selected Hands substrate implements
+//! Environment implementations intentionally do not live here: the selected Environments substrate implements
 //! Brain's public ports and is supplied by the downstream composition.
 
 pub mod dynamo;
@@ -11,21 +11,15 @@ use std::sync::Arc;
 
 use brain::Result;
 use brain::adapter::ToolExecutor;
-use brain::hand::{HandPort, SandboxControlPort, SandboxFilesPort, SessionPreparationPort};
+use brain::environment::EnvironmentRegistry;
 use brain::journal::Journal;
 use brain::session::{Brain, BrainConfig};
 
 pub struct AwsRuntimePorts {
-    pub hand: Arc<dyn HandPort>,
-    pub session_preparation: Arc<dyn SessionPreparationPort>,
-    pub sandbox_files: Arc<dyn SandboxFilesPort>,
-    pub sandbox_control: Arc<dyn SandboxControlPort>,
+    pub environments: EnvironmentRegistry,
     pub external_executor: Option<Arc<dyn ToolExecutor>>,
-    pub customer_delivery: Option<Arc<dyn brain::customer::CustomerHandDeliveryPort>>,
+    pub customer_delivery: Option<Arc<dyn brain::customer::CustomerEnvironmentDeliveryPort>>,
     pub customer_transport: Option<brain::customer::CustomerTransportConfig>,
-    /// Custom-agentloop wiring, identical in shape to the local composition's: the official
-    /// aex loop plus a registry (e.g. brain-loophost's store). Absent, the built-in loop runs.
-    pub agentloop: Option<Arc<dyn brain::agentloop::Agentloop>>,
     pub agentloop_registry: Option<Arc<dyn brain::agentloop::AgentloopRegistry>>,
     /// Overrides the live providers; the hosted default is the guarded transport with private
     /// addresses denied.
@@ -62,7 +56,7 @@ impl AwsPersistenceConfig {
     }
 }
 
-/// Compose AWS durability with an independently supplied Hand implementation.
+/// Compose AWS durability with an independently supplied Environment implementation.
 pub async fn compose(
     cfg: BrainConfig,
     persistence: AwsPersistenceConfig,
@@ -109,14 +103,10 @@ pub async fn compose(
         brain::session::BrainServices {
             session_storage: Some(storage.clone()),
             bundle_storage: Some(storage),
-            hand: Some(ports.hand),
-            session_preparation: Some(ports.session_preparation),
-            sandbox_files: Some(ports.sandbox_files),
-            sandbox_control: Some(ports.sandbox_control),
+            environments: ports.environments,
             customer_delivery: ports.customer_delivery,
             customer_transport: ports.customer_transport,
             compactor: None,
-            agentloop: ports.agentloop,
             agentloop_registry: ports.agentloop_registry,
         },
         ports

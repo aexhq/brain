@@ -2,9 +2,8 @@
 //! durable mechanism stays on the kernel side of [`TurnCtx`].
 //!
 //! The public wire form of this seam is `contracts/agentloop/v1` (activations + ctx operations).
-//! [`BuiltinAexLoop`] is the in-process official `aex` policy — the engine composition of the
-//! same seam a remote loop host will implement over the contract. Design record:
-//! aex-research `docs/harness-extension-design.md` (HX4/HX5, §6¾ B).
+//! [`SequentialAgentloop`] is the in-process reference sequential policy — the engine composition
+//! of the same seam a remote loop host implements over the contract.
 //!
 //! The kernel never lets a loop widen authority: model rounds run against the sealed
 //! provider/model, dispatch validates against the sealed grant, and round/wall budgets are
@@ -113,7 +112,7 @@ pub type ContractOpOutcome = std::result::Result<
 /// effect; delivery of one logical step is at-least-once with kernel-side deduplication, so a
 /// loop implementation must treat repeated invocation after recovery as normal.
 ///
-/// The `engine.*` methods drive kernel-managed context (the official `aex` policy); the
+/// The `engine.*` methods drive kernel-managed context (the reference sequential policy); the
 /// contract surface (`contract_op` and the activation payloads) is `contracts/agentloop/v1`,
 /// where the loop composes its own context and the kernel executes and journals every effect.
 #[async_trait]
@@ -168,9 +167,6 @@ pub trait AgentloopRegistry: Send + Sync {
         selector: &crate::journal::AgentloopSelectorDoc,
     ) -> Result<std::sync::Arc<dyn Agentloop>>;
 
-    /// Resolve an official loop name to the pinned identity this composition seals for it.
-    fn pin_official(&self, name: &str) -> Result<crate::journal::AgentloopSelectorDoc>;
-
     /// Admit a customer source bundle (already digest-verified by the caller) and return the
     /// identity to seal. Compositions with a loop store override this; the default refuses.
     fn admit_custom(
@@ -186,56 +182,40 @@ pub trait AgentloopRegistry: Send + Sync {
     }
 }
 
-/// The default registry: exactly one official loop, `aex`, backed by whatever implementation
-/// the composition installed (in-process builtin, wasm guest, or remote loop host).
-pub struct OfficialAexRegistry {
-    pub aex: std::sync::Arc<dyn Agentloop>,
-}
+pub(crate) struct TestAgentloopRegistry;
 
-impl AgentloopRegistry for OfficialAexRegistry {
+impl AgentloopRegistry for TestAgentloopRegistry {
     fn resolve(
         &self,
-        selector: &crate::journal::AgentloopSelectorDoc,
+        _selector: &crate::journal::AgentloopSelectorDoc,
     ) -> Result<std::sync::Arc<dyn Agentloop>> {
-        match selector {
-            crate::journal::AgentloopSelectorDoc::Official { name, .. } if name == "aex" => {
-                Ok(self.aex.clone())
-            }
-            crate::journal::AgentloopSelectorDoc::Official { name, version } => {
-                Err(BrainError::Invalid(format!(
-                    "official agentloop {name}@{version} is not available in this composition"
-                )))
-            }
-            crate::journal::AgentloopSelectorDoc::Custom { .. } => Err(BrainError::Invalid(
-                "custom agentloops are not enabled in this composition".into(),
-            )),
-        }
+        Ok(std::sync::Arc::new(SequentialAgentloop))
     }
 
-    fn pin_official(&self, name: &str) -> Result<crate::journal::AgentloopSelectorDoc> {
-        if name == "aex" {
-            Ok(crate::journal::AgentloopSelectorDoc::official_aex())
-        } else {
-            Err(BrainError::Invalid(format!(
-                "official agentloop {name:?} is not available in this composition"
-            )))
-        }
+    fn admit_custom(
+        &self,
+        source_bundle_sha256: &str,
+        toolchain: &str,
+        bundle: &[u8],
+    ) -> Result<crate::journal::AgentloopSelectorDoc> {
+        Ok(crate::journal::AgentloopSelectorDoc {
+            source_bundle_sha256: source_bundle_sha256.into(),
+            source_bundle_bytes: bundle.len() as u64,
+            toolchain: toolchain.into(),
+        })
     }
 }
 
-/// The official `aex` loop policy, contract mode: the in-process twin of the wasm guest
-/// (`crates/brain-loophost/guest/loop-aex.mjs`), driven entirely through
-/// `contracts/agentloop/v1` ctx ops. Stateless per turn: it rebuilds loop memory from the
-/// session_start hydration exactly as a fresh guest instance would, so residency is an
-/// optimization the guest adds, never a semantic.
-pub struct BuiltinAexLoop;
+/// A reference sequential loop policy driven through the same kernel seam as imported loops.
+/// It is available to explicit compositions and is never selected as a session default.
+pub struct SequentialAgentloop;
 
 type OpOutcome = std::result::Result<
     brain_protocol::agentloop::CtxOpResult,
     brain_protocol::agentloop::AgentloopError,
 >;
 
-impl BuiltinAexLoop {
+impl SequentialAgentloop {
     fn message_from_view(view: &serde_json::Value) -> Option<serde_json::Value> {
         match view["type"].as_str() {
             Some("user_message") => Some(serde_json::json!({
@@ -276,8 +256,10 @@ impl BuiltinAexLoop {
     }
 
     async fn op(ctx: &mut dyn TurnCtx, body: serde_json::Value) -> Result<OpOutcome> {
-        let op: brain_protocol::agentloop::CtxOp = serde_json::from_value(body)
-            .map_err(|error| BrainError::Agentloop(format!("builtin aex op encoding: {error}")))?;
+        let op: brain_protocol::agentloop::CtxOp =
+            serde_json::from_value(body).map_err(|error| {
+                BrainError::Agentloop(format!("sequential loop op encoding: {error}"))
+            })?;
         ctx.contract_op(op).await
     }
 
@@ -364,7 +346,7 @@ impl BuiltinAexLoop {
 }
 
 #[async_trait]
-impl Agentloop for BuiltinAexLoop {
+impl Agentloop for SequentialAgentloop {
     async fn drive_turn(&self, ctx: &mut dyn TurnCtx) -> Result<LoopVerdict> {
         use brain_protocol::agentloop::{AgentloopErrorCode, CtxOpResult};
         let start = ctx.session_start_payload().await?;
@@ -704,7 +686,7 @@ mod tests {
         }
         let waker = unsafe { Waker::from_raw(noop_raw()) };
         let mut cx = Context::from_waker(&waker);
-        let mut fut = Box::pin(BuiltinAexLoop.drive_turn(ctx));
+        let mut fut = Box::pin(SequentialAgentloop.drive_turn(ctx));
         loop {
             match fut.as_mut().poll(&mut cx) {
                 Poll::Ready(verdict) => return verdict.expect("verdict"),

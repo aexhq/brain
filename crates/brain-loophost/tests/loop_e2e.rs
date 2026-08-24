@@ -1,7 +1,4 @@
-//! End-to-end contract for both loop-host compositions: the same scripted session driven by
-//! the in-process BuiltinAexLoop, the in-process wasm guest, and the wasm guest running in a
-//! separate loop-host daemon must produce identical public transcripts — and loop-host failures
-//! must fail turns honestly, never hang them.
+//! End-to-end conformance for Brain's neutral loop-host contract and failure behavior.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Once};
@@ -11,49 +8,79 @@ use brain::config::Dialect;
 use brain::journal::Journal;
 use brain::provider::fake::{FakeProvider, Scripted};
 use brain::session::{Brain, BrainConfig, BrainServices};
-use brain_loophost::remote::{SpawnedLoopHost, WireClient, services_with_remote_loop};
+use brain_loophost::remote::{RemoteAgentloop, SpawnedLoopHost, WireClient};
+use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
 use serde_json::{Value, json};
 
 fn guest_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("guest")
 }
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
 fn component_path() -> PathBuf {
-    guest_dir().join("dist/aex-loop.component.wasm")
-}
-
-fn contract_component_path() -> PathBuf {
     guest_dir().join("dist/contract-loop.component.wasm")
 }
 
-fn sdk_component_path() -> PathBuf {
-    guest_dir().join("dist/sdk-loop.component.wasm")
-}
-
-/// The shared content-addressed loop store the official-loop tests seed into: keeping it
-/// under guest/dist means the componentized officials persist across runs (and ride the CI
-/// guest cache) exactly like the prebuilt fixtures.
+/// Shared content-addressed test loop store under the cacheable guest output directory.
 fn shared_loop_store() -> PathBuf {
     guest_dir().join("dist/loop-store")
 }
 
-/// One loop package's published artifact pair: the deterministic source bundle plus its
-/// sealed identity, built by the package's own `build.mjs` through the public
-/// `buildLoopBundle` — the same artifact an external contributor ships.
-fn loop_package_artifact(package: &str) -> (Vec<u8>, Value) {
-    let dist = repo_root().join("packages").join(package).join("dist");
-    let bundle = std::fs::read(dist.join("loop.bundle.mjs"))
-        .unwrap_or_else(|error| panic!("{package} bundle missing: {error}"));
-    let identity: Value = serde_json::from_str(
-        &std::fs::read_to_string(dist.join("identity.json"))
-            .unwrap_or_else(|error| panic!("{package} identity missing: {error}")),
-    )
-    .expect("loop identity is JSON");
-    (bundle, identity)
+struct FixedRegistry {
+    agentloop: Arc<dyn brain::agentloop::Agentloop>,
+}
+
+impl brain::agentloop::AgentloopRegistry for FixedRegistry {
+    fn resolve(
+        &self,
+        _selector: &brain::journal::AgentloopSelectorDoc,
+    ) -> brain::Result<Arc<dyn brain::agentloop::Agentloop>> {
+        Ok(self.agentloop.clone())
+    }
+
+    fn admit_custom(
+        &self,
+        source_bundle_sha256: &str,
+        toolchain: &str,
+        bundle: &[u8],
+    ) -> brain::Result<brain::journal::AgentloopSelectorDoc> {
+        Ok(brain::journal::AgentloopSelectorDoc {
+            source_bundle_sha256: source_bundle_sha256.into(),
+            source_bundle_bytes: bundle.len() as u64,
+            toolchain: toolchain.into(),
+        })
+    }
+}
+
+fn fixed_services(agentloop: Arc<dyn brain::agentloop::Agentloop>) -> BrainServices {
+    BrainServices {
+        agentloop_registry: Some(Arc::new(FixedRegistry { agentloop })),
+        ..BrainServices::default()
+    }
+}
+
+fn builtin_services() -> BrainServices {
+    fixed_services(Arc::new(brain::agentloop::SequentialAgentloop))
+}
+
+fn wasm_services(component: &Path) -> BrainServices {
+    fixed_services(Arc::new(
+        brain_loophost::WasmAgentloop::from_component_file(component).expect("wasm loop"),
+    ))
+}
+
+fn remote_services(client: Arc<WireClient>) -> BrainServices {
+    fixed_services(Arc::new(RemoteAgentloop::new(client)))
+}
+
+fn test_loop_config() -> Value {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let bundle = b"loophost integration test loop";
+    json!({
+        "source_bundle_sha256": hex::encode(sha2::Sha256::digest(bundle)),
+        "toolchain": "test-loop",
+        "bundle_base64": base64::engine::general_purpose::STANDARD.encode(bundle),
+    })
 }
 
 fn npm_command(args: &[&str]) -> std::process::Command {
@@ -68,15 +95,11 @@ fn npm_command(args: &[&str]) -> std::process::Command {
     command
 }
 
-/// Build the guest components and loop-package bundles when absent. Requires Node + npm,
-/// exactly like the standalone managed-tool tests; builds are cached under guest/dist and
-/// packages/*/dist. Once-guarded so parallel tests never race the npm/componentize pipeline.
+/// Build the neutral guest fixtures when absent. Once-guarded so parallel tests never race.
 fn ensure_component() {
     static BUILD: Once = Once::new();
     BUILD.call_once(|| {
-        // The componentize toolchain must be installed even when every prebuilt component is
-        // cache-hit: the upload and official-seeding e2es componentize server-side through
-        // this install. It is a runtime dependency of the tests, not only of the build below.
+        // Custom-bundle admission componentizes through this install even on a fixture cache hit.
         if !guest_dir()
             .join("node_modules/@bytecodealliance/componentize-js")
             .exists()
@@ -87,39 +110,8 @@ fn ensure_component() {
                 .expect("npm is required for the loop toolchain");
             assert!(install.success(), "npm install failed for the guest loop");
         }
-        // The loop packages and the SDK build through the root npm workspaces — the public
-        // toolchain path, shared with any external contributor.
-        let workspace_dists = [
-            repo_root().join("packages/agentloop/dist/build.js"),
-            repo_root().join("packages/loop-pi/dist/identity.json"),
-            repo_root().join("packages/loop-codex/dist/identity.json"),
-        ];
-        if workspace_dists.iter().any(|path| !path.exists()) {
-            if !repo_root().join("node_modules/@aexhq/agentloop").exists() {
-                let install = npm_command(&["ci"])
-                    .current_dir(repo_root())
-                    .status()
-                    .expect("npm is required for the workspace install");
-                assert!(install.success(), "npm ci failed at the workspace root");
-            }
-            let build = npm_command(&[
-                "run",
-                "build",
-                "-w",
-                "packages/agentloop",
-                "-w",
-                "packages/loop-pi",
-                "-w",
-                "packages/loop-codex",
-            ])
-            .current_dir(repo_root())
-            .status()
-            .expect("npm is required to build the loop packages");
-            assert!(build.success(), "loop package builds failed");
-        }
         if component_path().exists()
-            && contract_component_path().exists()
-            && sdk_component_path().exists()
+            && guest_dir().join("dist/contract-loop.source.mjs").exists()
             && guest_dir().join("dist/rogue-loop.source.mjs").exists()
         {
             return;
@@ -131,8 +123,7 @@ fn ensure_component() {
             .expect("node is required to build the guest loop");
         assert!(build.success(), "guest loop componentization failed");
         assert!(component_path().exists());
-        assert!(contract_component_path().exists());
-        assert!(sdk_component_path().exists());
+        assert!(guest_dir().join("dist/contract-loop.source.mjs").exists());
         assert!(guest_dir().join("dist/rogue-loop.source.mjs").exists());
     });
 }
@@ -143,7 +134,7 @@ fn spawn_loop_host() -> SpawnedLoopHost {
         .expect("loop-host daemon")
 }
 
-/// One tool round then a final message: the script both parity tests replay.
+/// One tool round then a final message: the script both host compositions replay.
 fn tool_call_script() -> Vec<Scripted> {
     vec![
         Scripted::ToolCalls(vec![(
@@ -161,23 +152,58 @@ struct TestBrain {
     http: reqwest::Client,
 }
 
+struct EchoExecutor;
+
+#[async_trait::async_trait]
+impl brain::adapter::ToolExecutor for EchoExecutor {
+    fn supports(&self, capability: &str) -> bool {
+        capability == "brain.test.echo"
+    }
+
+    async fn call(
+        &self,
+        capability: &str,
+        request: ExternalToolCallRequest,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> brain::Result<ExternalToolCallResponse> {
+        assert_eq!(capability, "brain.test.echo");
+        Ok(serde_json::from_value(json!({
+            "outcome": "completed",
+            "content": request.input.to_string(),
+            "is_error": false,
+            "disposition": "continue",
+            "result": request.input,
+        }))?)
+    }
+}
+
 async fn serve_brain(services: BrainServices, script: Vec<Scripted>) -> TestBrain {
     serve_brain_with(BrainConfig::default(), services, script).await
 }
 
 async fn serve_brain_with(
-    config: BrainConfig,
+    mut config: BrainConfig,
     services: BrainServices,
     script: Vec<Scripted>,
 ) -> TestBrain {
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     fake.script(script);
     let factory_fake = fake.clone();
+    config.official_capabilities.insert(
+        "brain.test.echo".into(),
+        brain::config::ServerToolPolicy {
+            capability: "brain.test.echo".into(),
+            scope: brain_protocol::session::ExternalToolScope::All,
+            completion: brain_protocol::session::ExternalToolCompletion::Continue,
+            effect: brain_protocol::session::ExternalToolEffect::ReplaySafe,
+            max_input_bytes: 1024,
+        },
+    );
     let brain = Brain::with_parts_and_services(
         config,
         Journal::new_memory("loop-e2e"),
         Arc::new(brain::keys::PlainCustody),
-        Arc::new(brain::adapter::DisabledToolExecutor),
+        Arc::new(EchoExecutor),
         services,
         Arc::new(move |_| factory_fake.clone() as Arc<dyn brain::provider::Provider>),
     );
@@ -205,36 +231,36 @@ impl TestBrain {
         .await
     }
 
-    /// A session with the sealed engine task tool — the one dispatchable tool that needs no
-    /// Hand or customer transport, so a contract loop can drive a real successful dispatch.
-    async fn create_session_with_task_tool(&self) -> String {
+    /// A session with one sealed host capability so the contract loop can drive a real dispatch.
+    async fn create_session_with_echo_tool(&self) -> String {
         self.create_session_from(json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
             "tools": {"items": [{
                 "definition": {
-                    "name": "subagents",
-                    "description": "spawn a child session",
+                    "name": "echo",
+                    "description": "echo structured input",
                     "input_schema": {
                         "type": "object",
                         "properties": {
-                            "action": {"type": "string"},
-                            "task_name": {"type": "string"},
-                            "message": {"type": "string"},
-                            "fork_turns": {"type": "string"}
+                            "value": {"type": "string"}
                         },
-                        "required": ["action", "task_name", "message"],
-                        "additionalProperties": true
+                        "required": ["value"],
+                        "additionalProperties": false
                     },
                     "output_schema": {"type": "object", "additionalProperties": true},
                     "contract_digest": "a".repeat(64),
                 },
-                "executor": {"kind": "engine", "capability": "brain.subagents"},
+                "executor": {"kind": "engine", "capability": "brain.test.echo"},
             }]}
         }))
         .await
     }
 
-    async fn create_session_from(&self, body: Value) -> String {
+    async fn create_session_from(&self, mut body: Value) -> String {
+        body.as_object_mut()
+            .expect("create request is an object")
+            .entry("agentloop")
+            .or_insert_with(test_loop_config);
         let created: Value = self
             .http
             .post(format!("{}/v1/sessions", self.base))
@@ -343,39 +369,20 @@ fn assert_tool_turn_shape(events: &[Value], kinds: &[String]) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_wasm_guest_loop_reproduces_the_builtin_transcript() {
-    ensure_component();
-
-    let builtin = run_one_turn(BrainServices::default()).await;
-    let wasm = run_one_turn(
-        brain_loophost::services_with_wasm_loop(&component_path()).expect("wasm loop"),
-    )
-    .await;
-
-    let builtin_types = transcript(&builtin);
-    let wasm_types = transcript(&wasm);
-    assert_eq!(
-        builtin_types, wasm_types,
-        "the wasm loop must reproduce the builtin event sequence"
-    );
-    assert_tool_turn_shape(&wasm, &wasm_types);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_daemon_hosted_loop_reproduces_the_builtin_transcript() {
+async fn in_process_and_daemon_hosts_run_the_same_loop_contract() {
     let host = spawn_loop_host();
     let client = WireClient::connect(host.addr, &host.token)
         .await
         .expect("connect to the loop host");
 
-    let builtin = run_one_turn(BrainServices::default()).await;
-    let remote = run_one_turn(services_with_remote_loop(client)).await;
+    let in_process = run_one_turn(wasm_services(&component_path())).await;
+    let remote = run_one_turn(remote_services(client)).await;
 
-    let builtin_types = transcript(&builtin);
+    let in_process_types = transcript(&in_process);
     let remote_types = transcript(&remote);
     assert_eq!(
-        builtin_types, remote_types,
-        "the daemon-hosted loop must reproduce the builtin event sequence"
+        in_process_types, remote_types,
+        "both loop hosts must reproduce the same event sequence"
     );
     assert_tool_turn_shape(&remote, &remote_types);
 }
@@ -389,7 +396,7 @@ async fn two_sessions_multiplex_one_loop_host_connection() {
 
     // Identical text-only turns so any pop order of the shared script is observationally equal.
     let brain = serve_brain(
-        services_with_remote_loop(client),
+        remote_services(client),
         vec![
             Scripted::Text("solo answer".into()),
             Scripted::Text("solo answer".into()),
@@ -442,29 +449,22 @@ fn max_seq(events: &[Value]) -> u64 {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_contract_loop_drives_turns_through_ctx_ops() {
     ensure_component();
-    // Queue order is the execution order: the parent's first composed round asks for the task
-    // tool, the spawned child's single round pops next while the parent dispatch awaits it,
-    // then the parent's follow-up round, then turn 2.
+    // Queue order is the execution order: the first round asks for echo, followed by the
+    // parent's follow-up round and then turn 2.
     let brain = serve_brain(
-        brain_loophost::services_with_wasm_loop(&contract_component_path()).expect("contract loop"),
+        wasm_services(&component_path()),
         vec![
             Scripted::ToolCalls(vec![(
-                "call_task".into(),
-                "subagents".into(),
-                json!({
-                    "action": "spawn_agent",
-                    "task_name": "worker",
-                    "message": "child prompt",
-                    "fork_turns": "all"
-                }),
+                "call_echo".into(),
+                "echo".into(),
+                json!({"value": "ping"}),
             )]),
-            Scripted::Text("child answer".into()),
-            Scripted::Text("done after task".into()),
+            Scripted::Text("done after echo".into()),
             Scripted::Text("second answer".into()),
         ],
     )
     .await;
-    let session = brain.create_session_with_task_tool().await;
+    let session = brain.create_session_with_echo_tool().await;
 
     // ---- turn 1: a fresh session with no loop state ----
     brain.send_message(&session, "run the probe").await;
@@ -504,10 +504,10 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
     assert_eq!(checks[0]["kv_limit"], "kv_limit");
 
     let dispatched = loop_event_data(&first, "loop.dispatched");
-    assert_eq!(dispatched[0]["results"][0]["name"], "subagents");
+    assert_eq!(dispatched[0]["results"][0]["name"], "echo");
     assert_eq!(
         dispatched[0]["results"][0]["is_error"], false,
-        "the sealed engine task tool dispatches successfully: {}",
+        "the sealed host tool dispatches successfully: {}",
         dispatched[0]
     );
 
@@ -526,7 +526,7 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
     assert_eq!(undeclared["outcome"], "failed");
     let tool_result = first
         .iter()
-        .find(|event| event["type"] == "tool.result" && event["name"] == "subagents")
+        .find(|event| event["type"] == "tool.result" && event["name"] == "echo")
         .expect("the dispatched call is journaled");
     assert_eq!(tool_result["outcome"], "completed");
 
@@ -589,309 +589,12 @@ async fn the_contract_loop_drives_turns_through_ctx_ops() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_sdk_authored_loop_drives_turns_end_to_end() {
-    ensure_component();
-    let brain = serve_brain(
-        brain_loophost::services_with_wasm_loop(&sdk_component_path()).expect("sdk loop"),
-        vec![
-            Scripted::Text("sdk answer one".into()),
-            Scripted::Text("sdk answer two".into()),
-        ],
-    )
-    .await;
-    let session = brain.create_session().await;
-
-    brain.send_message(&session, "first").await;
-    let first = brain.wait_turn(&session).await;
-    let completed = first
-        .iter()
-        .find(|event| event["type"] == "turn.completed")
-        .expect("the sdk-driven turn completes");
-    assert_eq!(completed["stop_reason"], "end_turn");
-    assert_eq!(
-        completed["result"]["value"]["n"], 1,
-        "ctx.turn.finish carried the structured result: {completed}"
-    );
-    let turn_events = loop_event_data(&first, "sdk.turn");
-    assert_eq!(turn_events[0]["n"], 1);
-    assert_eq!(turn_events[0]["text"], "sdk answer one");
-    assert_eq!(
-        turn_events[0]["resumed"], false,
-        "the delivered session_start hydration reached ctx.start: {}",
-        turn_events[0]
-    );
-
-    let high_water = max_seq(&first);
-    brain.send_message(&session, "second").await;
-    let second = brain.wait_turn_after(&session, high_water).await;
-    let completed = second
-        .iter()
-        .find(|event| event["type"] == "turn.completed")
-        .expect("turn 2 completes");
-    assert_eq!(
-        completed["result"]["value"]["n"], 2,
-        "kv persisted across turns"
-    );
-    let turn_events = loop_event_data(&second, "sdk.turn");
-    assert_eq!(turn_events[0]["text"], "sdk answer two");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_official_pi_loop_drives_turns() {
-    ensure_component();
-    // The official pi loop arrives exactly like a customer bundle: the @aexhq/loop-pi
-    // package's public-toolchain artifact, seeded through the admission path.
-    let (bundle, identity) = loop_package_artifact("loop-pi");
-    let pi_version = identity["version"]
-        .as_str()
-        .expect("pi version")
-        .to_string();
-    let aex: Arc<dyn brain::agentloop::Agentloop> = Arc::new(
-        brain_loophost::WasmAgentloop::from_component_file(&component_path()).expect("aex loop"),
-    );
-    let registry = brain_loophost::registry::LoophostRegistry::new(
-        aex.clone(),
-        shared_loop_store(),
-        guest_dir(),
-    )
-    .expect("registry")
-    .seed_official(
-        "pi",
-        &pi_version,
-        identity["toolchain"].as_str().expect("toolchain"),
-        &bundle,
-    )
-    .await
-    .expect("pi seeds through the customer admission path");
-    let brain = serve_brain(
-        BrainServices {
-            agentloop: Some(aex),
-            agentloop_registry: Some(Arc::new(registry)),
-            ..BrainServices::default()
-        },
-        // The parent's first pi round asks for the task tool, the spawned child's single round
-        // pops next while pi's execute awaits the dispatch, then pi's follow-up round, then a
-        // text-only second turn.
-        vec![
-            Scripted::ToolCalls(vec![(
-                "call_task".into(),
-                "subagents".into(),
-                json!({
-                    "action": "spawn_agent",
-                    "task_name": "worker",
-                    "message": "child prompt",
-                    "fork_turns": "all"
-                }),
-            )]),
-            Scripted::Text("child answer".into()),
-            Scripted::Text("pi final answer".into()),
-            Scripted::Text("pi second answer".into()),
-        ],
-    )
-    .await;
-
-    let created: Value = brain
-        .http
-        .post(format!("{}/v1/sessions", brain.base))
-        .bearer_auth(&brain.token)
-        .json(&json!({
-            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "agentloop": "pi",
-            "tools": {"items": [{
-                "definition": {
-                    "name": "subagents",
-                    "description": "spawn a child session",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {"type": "string"},
-                            "task_name": {"type": "string"},
-                            "message": {"type": "string"},
-                            "fork_turns": {"type": "string"}
-                        },
-                        "required": ["action", "task_name", "message"],
-                        "additionalProperties": true
-                    },
-                    "output_schema": {"type": "object", "additionalProperties": true},
-                    "contract_digest": "a".repeat(64),
-                },
-                "executor": {"kind": "engine", "capability": "brain.subagents"},
-            }]}
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        created["agentloop"],
-        json!({"kind": "official", "name": "pi", "version": pi_version}),
-        "the pinned pi identity seals: {created}"
-    );
-    let session = created["id"].as_str().expect("session id").to_string();
-
-    brain.send_message(&session, "hello pi").await;
-    let first = brain.wait_turn(&session).await;
-    let completed = first
-        .iter()
-        .find(|event| event["type"] == "turn.completed")
-        .expect("the pi-driven turn completes");
-    assert_eq!(completed["stop_reason"], "end_turn");
-    assert_eq!(
-        transcript(&first)
-            .iter()
-            .filter(|kind| kind.as_str() == "assistant.message")
-            .count(),
-        2,
-        "pi drove the tool round and its follow-up: {:?}",
-        transcript(&first)
-    );
-    let tool_result = first
-        .iter()
-        .find(|event| event["type"] == "tool.result")
-        .expect("pi dispatched the sealed task tool");
-    assert_eq!(tool_result["name"], "subagents");
-    assert_eq!(tool_result["outcome"], "completed");
-
-    let high_water = max_seq(&first);
-    brain.send_message(&session, "and again").await;
-    let second = brain.wait_turn_after(&session, high_water).await;
-    assert!(
-        second
-            .iter()
-            .any(|event| event["type"] == "turn.completed" && event["stop_reason"] == "end_turn"),
-        "the resident pi conversation carries into turn 2"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_codex_style_loop_executes_tools_sequentially() {
-    ensure_component();
-    let (bundle, identity) = loop_package_artifact("loop-codex");
-    let codex_version = identity["version"]
-        .as_str()
-        .expect("codex version")
-        .to_string();
-    let aex: Arc<dyn brain::agentloop::Agentloop> = Arc::new(
-        brain_loophost::WasmAgentloop::from_component_file(&component_path()).expect("aex loop"),
-    );
-    let registry = brain_loophost::registry::LoophostRegistry::new(
-        aex.clone(),
-        shared_loop_store(),
-        guest_dir(),
-    )
-    .expect("registry")
-    .seed_official(
-        "codex-style",
-        &codex_version,
-        identity["toolchain"].as_str().expect("toolchain"),
-        &bundle,
-    )
-    .await
-    .expect("codex-style seeds through the customer admission path");
-    let brain = serve_brain(
-        BrainServices {
-            agentloop: Some(aex),
-            agentloop_registry: Some(Arc::new(registry)),
-            ..BrainServices::default()
-        },
-        // Two task calls in one round: sequential execution means child A runs to completion
-        // (popping its answer) before child B is even dispatched.
-        vec![
-            Scripted::ToolCalls(vec![
-                (
-                    "call_a".into(),
-                    "subagents".into(),
-                    json!({"action": "spawn_agent", "task_name": "a", "message": "child prompt", "fork_turns": "all"}),
-                ),
-                (
-                    "call_b".into(),
-                    "subagents".into(),
-                    json!({"action": "spawn_agent", "task_name": "b", "message": "child prompt", "fork_turns": "all"}),
-                ),
-            ]),
-            Scripted::Text("child a answer".into()),
-            Scripted::Text("child b answer".into()),
-            Scripted::Text("codex-style wrap-up".into()),
-        ],
-    )
-    .await;
-
-    let created: Value = brain
-        .http
-        .post(format!("{}/v1/sessions", brain.base))
-        .bearer_auth(&brain.token)
-        .json(&json!({
-            "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-            "agentloop": "codex-style",
-            "tools": {"items": [{
-                "definition": {
-                    "name": "subagents",
-                    "description": "spawn a child session",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {"type": "string"},
-                            "task_name": {"type": "string"},
-                            "message": {"type": "string"},
-                            "fork_turns": {"type": "string"}
-                        },
-                        "required": ["action", "task_name", "message"],
-                        "additionalProperties": true
-                    },
-                    "output_schema": {"type": "object", "additionalProperties": true},
-                    "contract_digest": "a".repeat(64),
-                },
-                "executor": {"kind": "engine", "capability": "brain.subagents"},
-            }]}
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        created["agentloop"],
-        json!({"kind": "official", "name": "codex-style", "version": codex_version}),
-        "{created}"
-    );
-    let session = created["id"].as_str().expect("session id").to_string();
-
-    brain.send_message(&session, "run two tools").await;
-    let events = brain.wait_turn(&session).await;
-    let completed = events
-        .iter()
-        .find(|event| event["type"] == "turn.completed")
-        .expect("the codex-style turn completes");
-    assert_eq!(completed["stop_reason"], "end_turn");
-
-    // The port's distinctive shape: strictly sequential execution — each call's result is
-    // journaled before the next call is journaled (the aex batch loop journals both calls,
-    // then both results).
-    let tool_order: Vec<&str> = events
-        .iter()
-        .filter_map(|event| match event["type"].as_str() {
-            Some("tool.call") => Some("call"),
-            Some("tool.result") => Some("result"),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        tool_order,
-        vec!["call", "result", "call", "result"],
-        "sequential dispatch is visible in the public transcript"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_customer_bundle_uploads_componentizes_and_drives_turns() {
     use base64::Engine as _;
     use sha2::Digest as _;
     ensure_component();
-    let source =
-        std::fs::read(guest_dir().join("dist/sdk-loop.source.mjs")).expect("the source bundle");
+    let source = std::fs::read(guest_dir().join("dist/contract-loop.source.mjs"))
+        .expect("the source bundle");
     let digest = hex::encode(sha2::Sha256::digest(&source));
     let encoded = base64::engine::general_purpose::STANDARD.encode(&source);
     let store = std::env::temp_dir().join(format!(
@@ -904,7 +607,7 @@ async fn a_customer_bundle_uploads_componentizes_and_drives_turns() {
     ));
 
     let brain = serve_brain(
-        brain_loophost::registry::services_with_loop_store(&component_path(), &store, &guest_dir())
+        brain_loophost::registry::services_with_loop_store(&store, &guest_dir())
             .expect("loop store composition"),
         vec![Scripted::Text("uploaded answer".into())],
     )
@@ -931,7 +634,7 @@ async fn a_customer_bundle_uploads_componentizes_and_drives_turns() {
         .unwrap();
     assert_eq!(refused["error"]["code"], "invalid_request", "{refused}");
 
-    // The customer flow: upload the SDK-built source bundle at create; the composition
+    // The customer flow: upload a contract source bundle at create; the composition
     // componentizes it under the pinned toolchain and the sealed loop drives the turn.
     let session = brain
         .create_session_from(json!({
@@ -951,9 +654,8 @@ async fn a_customer_bundle_uploads_componentizes_and_drives_turns() {
         .iter()
         .find(|event| event["type"] == "turn.completed")
         .expect("the uploaded loop completes its turn");
-    assert_eq!(completed["result"]["value"]["n"], 1);
-    let turn_events = loop_event_data(&events, "sdk.turn");
-    assert_eq!(turn_events[0]["text"], "uploaded answer");
+    assert_eq!(completed["result"]["value"]["turns"], 1);
+    assert_eq!(loop_event_data(&events, "loop.hydration").len(), 1);
 
     // The componentized artifact is cached content-addressed for every later admission.
     let cached = store.join("component").join(format!(
@@ -981,12 +683,8 @@ async fn a_customer_loop_cannot_reach_the_engine_vocabulary() {
     let encoded = base64::engine::general_purpose::STANDARD.encode(&source);
 
     let brain = serve_brain(
-        brain_loophost::registry::services_with_loop_store(
-            &component_path(),
-            &shared_loop_store(),
-            &guest_dir(),
-        )
-        .expect("loop store composition"),
+        brain_loophost::registry::services_with_loop_store(&shared_loop_store(), &guest_dir())
+            .expect("loop store composition"),
         vec![Scripted::Text("never reached".into())],
     )
     .await;
@@ -1031,61 +729,35 @@ async fn a_customer_loop_cannot_reach_the_engine_vocabulary() {
     );
 }
 
-/// A sealed official identity means what it says: a composition registered with a different
-/// version of the same named loop refuses to run the session rather than silently
-/// substituting.
-#[tokio::test(flavor = "multi_thread")]
-async fn an_official_version_mismatch_refuses_resolution() {
+#[test]
+fn a_sealed_loop_requires_the_exact_toolchain_and_stored_digest() {
     use brain::agentloop::AgentloopRegistry as _;
     use brain::journal::AgentloopSelectorDoc;
-    ensure_component();
-    let (bundle, identity) = loop_package_artifact("loop-codex");
-    let aex: Arc<dyn brain::agentloop::Agentloop> = Arc::new(
-        brain_loophost::WasmAgentloop::from_component_file(&component_path()).expect("aex loop"),
-    );
-    let registry = brain_loophost::registry::LoophostRegistry::new(
-        aex.clone(),
-        shared_loop_store(),
-        guest_dir(),
-    )
-    .expect("registry")
-    .seed_official(
-        "codex-style",
-        identity["version"].as_str().expect("version"),
-        identity["toolchain"].as_str().expect("toolchain"),
-        &bundle,
-    )
-    .await
-    .expect("codex-style seeds");
-
-    let sealed_elsewhere = AgentloopSelectorDoc::Official {
-        name: "codex-style".into(),
-        version: "0.0.1-not-here".into(),
-    };
-    let error = registry
-        .resolve(&sealed_elsewhere)
-        .err()
-        .expect("a version mismatch must refuse");
-    let message = format!("{error:?}");
-    assert!(
-        message.contains("0.0.1-not-here") && message.contains("this composition runs"),
-        "the refusal names both versions: {message}"
-    );
-
-    // The bootstrap default is version-checked the same way.
-    let wrong_aex = AgentloopSelectorDoc::Official {
-        name: "aex".into(),
-        version: "999".into(),
+    let registry =
+        brain_loophost::registry::LoophostRegistry::new(shared_loop_store(), guest_dir())
+            .expect("registry");
+    let wrong_toolchain = AgentloopSelectorDoc {
+        source_bundle_sha256: "0".repeat(64),
+        source_bundle_bytes: 1,
+        toolchain: "other-toolchain".into(),
     };
     assert!(
-        registry.resolve(&wrong_aex).is_err(),
-        "a foreign aex version must refuse"
+        registry.resolve(&wrong_toolchain).is_err(),
+        "a foreign toolchain must refuse"
+    );
+    let missing = AgentloopSelectorDoc {
+        source_bundle_sha256: "0".repeat(64),
+        source_bundle_bytes: 1,
+        toolchain: brain_loophost::registry::LOOP_TOOLCHAIN.into(),
+    };
+    assert!(
+        registry.resolve(&missing).is_err(),
+        "an artifact absent from this composition must refuse"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_round_ceiling_closes_with_a_final_text_round_on_both_loop_hosts() {
-    ensure_component();
+async fn the_reference_loop_closes_with_a_final_text_round_at_the_round_ceiling() {
     // Cap of one: the first round's tool call exhausts it, and the graceful closing round
     // (tool_choice none) produces the wrap-up text instead of a truncation error.
     let capped = || BrainConfig {
@@ -1103,38 +775,27 @@ async fn the_round_ceiling_closes_with_a_final_text_round_on_both_loop_hosts() {
         ]
     };
 
-    let mut transcripts = Vec::new();
-    for services in [
-        BrainServices::default(),
-        brain_loophost::services_with_wasm_loop(&component_path()).expect("wasm loop"),
-    ] {
-        let brain = serve_brain_with(capped(), services, script()).await;
-        let session = brain.create_session().await;
-        brain.send_message(&session, "run until the cap").await;
-        let events = brain.wait_turn(&session).await;
+    let brain = serve_brain_with(capped(), builtin_services(), script()).await;
+    let session = brain.create_session().await;
+    brain.send_message(&session, "run until the cap").await;
+    let events = brain.wait_turn(&session).await;
 
-        let completed = events
-            .iter()
-            .find(|event| event["type"] == "turn.completed")
-            .expect("the capped turn completes");
-        assert_eq!(
-            completed["stop_reason"], "max_rounds",
-            "the ceiling stays the honest stop reason: {completed}"
-        );
-        let kinds = transcript(&events);
-        assert_eq!(
-            kinds
-                .iter()
-                .filter(|kind| kind.as_str() == "assistant.message")
-                .count(),
-            2,
-            "the closing round reached the transcript: {kinds:?}"
-        );
-        transcripts.push(kinds);
-    }
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .expect("the capped turn completes");
     assert_eq!(
-        transcripts[0], transcripts[1],
-        "the builtin loop and the wasm guest close identically at the cap"
+        completed["stop_reason"], "max_rounds",
+        "the ceiling stays the honest stop reason: {completed}"
+    );
+    let kinds = transcript(&events);
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| kind.as_str() == "assistant.message")
+            .count(),
+        2,
+        "the closing round reached the transcript: {kinds:?}"
     );
 }
 
@@ -1149,7 +810,7 @@ async fn loop_host_failures_are_honest() {
     let client = WireClient::connect(host.addr, &host.token)
         .await
         .expect("connect to the loop host");
-    let brain = serve_brain(services_with_remote_loop(client), tool_call_script()).await;
+    let brain = serve_brain(remote_services(client), tool_call_script()).await;
     let session = brain.create_session().await;
 
     // Kill the daemon out from under the brain: the turn must fail with a message naming the

@@ -1,7 +1,7 @@
 # Benchmarks
 
 Brain's benchmark suite measures the engine, not a model. It drives the public HTTP and SSE paths
-with an instant scripted provider, an in-process echo Hand, and an in-memory journal. Reference
+with an instant scripted provider, an in-process echo Environment, and an in-memory journal. Reference
 measurements below were recorded on 18 August 2026 using a release build on a c7g.xlarge
 (4-vCPU Graviton3, Ubuntu, glibc).
 

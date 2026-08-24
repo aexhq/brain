@@ -2,6 +2,14 @@ use brain::session::{Brain, BrainConfig};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
+fn loop_config() -> Value {
+    json!({
+        "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+        "toolchain": "test-loop",
+        "bundle_base64": "eA==",
+    })
+}
+
 struct TempDir(PathBuf);
 
 impl TempDir {
@@ -44,6 +52,7 @@ async fn create_replays_one_session_and_rejects_key_reuse_with_another_body() {
     let http = reqwest::Client::new();
     let body = json!({
         "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
+        "agentloop": loop_config(),
         "metadata": {"test": "create-idempotency"}
     });
 
@@ -71,7 +80,8 @@ async fn create_replays_one_session_and_rejects_key_reuse_with_another_body() {
         .bearer_auth(&token)
         .header("Idempotency-Key", "same-create-request")
         .json(&json!({
-            "model": {"provider": "anthropic", "name": "different", "api_key": "sk-fake"}
+            "model": {"provider": "anthropic", "name": "different", "api_key": "sk-fake"},
+            "agentloop": loop_config()
         }))
         .send()
         .await

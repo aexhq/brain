@@ -47,11 +47,11 @@ fn customer_socket_accepts_exactly_one_grant_subprotocol() {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::SEC_WEBSOCKET_PROTOCOL,
-        HeaderValue::from_static("aex-grant.valid-token"),
+        HeaderValue::from_static("environment-grant.valid-token"),
     );
     assert_eq!(
         customer_grant_subprotocol(&headers).unwrap(),
-        "aex-grant.valid-token"
+        "environment-grant.valid-token"
     );
 }
 
@@ -62,25 +62,25 @@ fn customer_socket_rejects_missing_extra_or_duplicate_subprotocols() {
     let mut extra = HeaderMap::new();
     extra.insert(
         header::SEC_WEBSOCKET_PROTOCOL,
-        HeaderValue::from_static("aex-grant.valid-token, chat"),
+        HeaderValue::from_static("environment-grant.valid-token, chat"),
     );
     assert!(customer_grant_subprotocol(&extra).is_err());
 
     let mut duplicate = HeaderMap::new();
     duplicate.append(
         header::SEC_WEBSOCKET_PROTOCOL,
-        HeaderValue::from_static("aex-grant.first"),
+        HeaderValue::from_static("environment-grant.first"),
     );
     duplicate.append(
         header::SEC_WEBSOCKET_PROTOCOL,
-        HeaderValue::from_static("aex-grant.second"),
+        HeaderValue::from_static("environment-grant.second"),
     );
     assert!(customer_grant_subprotocol(&duplicate).is_err());
 
     let mut empty_grant = HeaderMap::new();
     empty_grant.insert(
         header::SEC_WEBSOCKET_PROTOCOL,
-        HeaderValue::from_static("aex-grant."),
+        HeaderValue::from_static("environment-grant."),
     );
     assert!(customer_grant_subprotocol(&empty_grant).is_err());
 }

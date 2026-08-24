@@ -96,7 +96,7 @@ pub(super) fn map_err(e: BrainError) -> Failure {
         BrainError::SandboxNotMaterialized => (
             S::CONFLICT,
             "sandbox_not_materialized",
-            "the default sandbox has not been materialized",
+            "the environment has not been materialized",
             false,
         ),
         BrainError::SandboxGone => (
@@ -188,9 +188,9 @@ pub(super) fn map_err(e: BrainError) -> Failure {
             "the upstream provider request failed",
             false,
         ),
-        BrainError::HandUnavailable(_) | BrainError::Hand(_) => (
+        BrainError::EnvironmentUnavailable(_) | BrainError::Environment(_) => (
             S::SERVICE_UNAVAILABLE,
-            "hand_unavailable",
+            "environment_unavailable",
             "the execution runtime is unavailable",
             false,
         ),

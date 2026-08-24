@@ -8,13 +8,11 @@ use async_trait::async_trait;
 use brain::journal::{
     ChildListQuery, ChildPage, ConfigDoc, ControlDoc, DeletionStatusDoc, EndFence, Entry, Head,
     HeadDoc, JournalRetention, JournalRetentionLimits, JournalStore, LEASE_MS, RecordPage,
-    RecordPageQuery, RecoveryItem, RecoveryPage, RecoveryQuery, STEAL_GRACE_MS,
-    SandboxInventoryDoc, SandboxListQuery, SandboxPage, SandboxReserveRequest,
-    SandboxUpdateRequest, SessionListQuery, SessionPage, SessionSummary, child_admission_open,
-    initial_retention, project_end_fence, project_retention, recovery_due_key, recovery_shard,
-    requires_ancestor_admission, retention_delta, session_id_from_list_cursor,
-    tenant_session_sort_key, validate_ancestor_path, validate_config_doc,
-    validate_record_page_query,
+    RecordPageQuery, RecoveryItem, RecoveryPage, RecoveryQuery, STEAL_GRACE_MS, SessionListQuery,
+    SessionPage, SessionSummary, child_admission_open, initial_retention, project_end_fence,
+    project_retention, recovery_due_key, recovery_shard, requires_ancestor_admission,
+    retention_delta, session_id_from_list_cursor, tenant_session_sort_key, validate_ancestor_path,
+    validate_config_doc, validate_record_page_query,
 };
 use brain::{BrainError, Result};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -61,7 +59,6 @@ impl SqliteStore {
                     list_key TEXT NOT NULL,
                     direct_children INTEGER NOT NULL DEFAULT 0,
                     descendants INTEGER NOT NULL DEFAULT 0,
-                    live_sandboxes INTEGER NOT NULL DEFAULT 0,
                     journal_metered_bytes INTEGER NOT NULL DEFAULT 0,
                     journal_effect_reserve_bytes INTEGER NOT NULL DEFAULT 0,
                     journal_lifecycle_reserve_bytes INTEGER NOT NULL DEFAULT 0
@@ -96,14 +93,6 @@ impl SqliteStore {
                     total_bytes INTEGER NOT NULL CHECK(total_bytes >= 0),
                     session_count INTEGER NOT NULL CHECK(session_count >= 0)
                  ) STRICT;
-                 CREATE TABLE IF NOT EXISTS sandbox_inventory (
-                    root_id TEXT NOT NULL,
-                    sandbox_id TEXT NOT NULL,
-                    version INTEGER NOT NULL,
-                    doc_json TEXT NOT NULL,
-                    PRIMARY KEY (root_id, sandbox_id),
-                    FOREIGN KEY (root_id) REFERENCES sessions(session_id) ON DELETE CASCADE
-                 ) STRICT;
                  CREATE INDEX IF NOT EXISTS sessions_created
                     ON sessions(created_ms DESC, session_id ASC);
                  CREATE INDEX IF NOT EXISTS sessions_tenant_list
@@ -115,7 +104,6 @@ impl SqliteStore {
             .map_err(|error| db_error("initialise SQLite journal", error))?;
         ensure_session_column(&connection, "direct_children", "INTEGER NOT NULL DEFAULT 0")?;
         ensure_session_column(&connection, "descendants", "INTEGER NOT NULL DEFAULT 0")?;
-        ensure_session_column(&connection, "live_sandboxes", "INTEGER NOT NULL DEFAULT 0")?;
         ensure_session_column(
             &connection,
             "journal_metered_bytes",
@@ -1040,16 +1028,10 @@ impl JournalStore for SqliteStore {
         let removed = transaction
             .execute("DELETE FROM records WHERE session_id=?1", [session_id])
             .map_err(|error| db_error("delete journal history", error))?;
-        let sandboxes = transaction
-            .execute(
-                "DELETE FROM sandbox_inventory WHERE root_id=?1",
-                [session_id],
-            )
-            .map_err(|error| db_error("delete sandbox inventory", error))?;
         transaction
             .commit()
             .map_err(|error| db_error("commit journal history purge", error))?;
-        Ok((removed + sandboxes) as u64)
+        Ok(removed as u64)
     }
 
     async fn put_deletion_status(&self, status: &DeletionStatusDoc) -> Result<()> {
@@ -1355,231 +1337,6 @@ impl JournalStore for SqliteStore {
         })
     }
 
-    async fn reserve_sandbox(
-        &self,
-        request: &SandboxReserveRequest,
-    ) -> Result<SandboxInventoryDoc> {
-        let mut connection = self.connection()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| db_error("begin sandbox reservation", error))?;
-        let existing: Option<String> = transaction
-            .query_row(
-                "SELECT doc_json FROM sandbox_inventory WHERE root_id=?1 AND sandbox_id=?2",
-                params![request.root_id, request.sandbox_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| db_error("read sandbox reservation", error))?;
-        if let Some(existing) = existing {
-            let existing: SandboxInventoryDoc = decode(&existing, "sandbox inventory")?;
-            if existing.operation_id == request.operation_id
-                && existing.request_digest == request.request_digest
-                && existing.owner_session_id == request.owner_session_id
-            {
-                transaction
-                    .commit()
-                    .map_err(|error| db_error("finish sandbox reservation replay", error))?;
-                return Ok(existing);
-            }
-            return Err(BrainError::IdempotencyConflict);
-        }
-        let root: Option<(String, String, u32)> = transaction
-            .query_row(
-                "SELECT control_json,config_json,live_sandboxes FROM sessions WHERE session_id=?1",
-                [&request.root_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(|error| db_error("read sandbox root admission", error))?;
-        let Some((control, config, live_sandboxes)) = root else {
-            return Err(BrainError::NoSuchSession(request.root_id.clone()));
-        };
-        let root = decode_head(&control, &config)?;
-        if root.root_id != request.root_id || !child_admission_open(&root) {
-            return Err(BrainError::Invalid(
-                "additional sandbox admission is closed for this root".into(),
-            ));
-        }
-        if live_sandboxes >= root.prefix.max_additional_sandboxes_per_root {
-            return Err(BrainError::SandboxResourceExhausted);
-        }
-        let doc = SandboxInventoryDoc {
-            root_id: request.root_id.clone(),
-            owner_session_id: request.owner_session_id.clone(),
-            sandbox_id: request.sandbox_id.clone(),
-            operation_id: request.operation_id.clone(),
-            request_digest: request.request_digest.clone(),
-            generation_intent: request.generation_intent.clone(),
-            status: request.initial_status.clone(),
-            created_at_ms: request.now_ms,
-            updated_at_ms: request.now_ms,
-            version: 1,
-            slot_released: false,
-        };
-        transaction
-            .execute(
-                "UPDATE sessions SET live_sandboxes=live_sandboxes+1 WHERE session_id=?1",
-                [&request.root_id],
-            )
-            .map_err(|error| db_error("reserve sandbox slot", error))?;
-        transaction
-            .execute(
-                "INSERT INTO sandbox_inventory(root_id,sandbox_id,version,doc_json)
-                 VALUES (?1,?2,1,?3)",
-                params![
-                    request.root_id,
-                    request.sandbox_id,
-                    encode(&doc, "sandbox inventory")?
-                ],
-            )
-            .map_err(|error| db_error("insert sandbox inventory", error))?;
-        transaction
-            .commit()
-            .map_err(|error| db_error("commit sandbox reservation", error))?;
-        Ok(doc)
-    }
-
-    async fn get_sandbox(&self, root_id: &str, sandbox_id: &str) -> Result<SandboxInventoryDoc> {
-        let connection = self.connection()?;
-        let value: Option<String> = connection
-            .query_row(
-                "SELECT doc_json FROM sandbox_inventory WHERE root_id=?1 AND sandbox_id=?2",
-                params![root_id, sandbox_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| db_error("get sandbox inventory", error))?;
-        value
-            .map(|value| decode(&value, "sandbox inventory"))
-            .transpose()?
-            .ok_or_else(|| BrainError::FileNotFound(format!("sandbox {sandbox_id}")))
-    }
-
-    async fn list_sandbox_page(&self, query: &SandboxListQuery<'_>) -> Result<SandboxPage> {
-        let connection = self.connection()?;
-        let limit = query.limit.clamp(1, 100);
-        let mut statement = connection
-            .prepare(
-                "SELECT doc_json FROM sandbox_inventory
-                 WHERE root_id=?1 AND sandbox_id>?2 ORDER BY sandbox_id ASC LIMIT ?3",
-            )
-            .map_err(|error| db_error("prepare sandbox inventory list", error))?;
-        let rows = statement
-            .query_map(
-                params![
-                    query.root_id,
-                    query.cursor.unwrap_or(""),
-                    integer((limit + 1) as u64, "sandbox list limit")?
-                ],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(|error| db_error("query sandbox inventory", error))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|error| db_error("read sandbox inventory", error))?
-            .into_iter()
-            .map(|value| decode(&value, "sandbox inventory"))
-            .collect::<Result<Vec<SandboxInventoryDoc>>>()?;
-        let mut sandboxes = rows;
-        let has_more = sandboxes.len() > limit;
-        sandboxes.truncate(limit);
-        let next_cursor = has_more.then(|| {
-            sandboxes
-                .last()
-                .expect("sandbox page with more rows is non-empty")
-                .sandbox_id
-                .clone()
-        });
-        Ok(SandboxPage {
-            sandboxes,
-            next_cursor,
-        })
-    }
-
-    async fn update_sandbox(&self, request: &SandboxUpdateRequest) -> Result<SandboxInventoryDoc> {
-        let mut connection = self.connection()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| db_error("begin sandbox lifecycle update", error))?;
-        let row: Option<(u64, String)> = transaction
-            .query_row(
-                "SELECT version,doc_json FROM sandbox_inventory WHERE root_id=?1 AND sandbox_id=?2",
-                params![request.root_id, request.sandbox_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(|error| db_error("read sandbox lifecycle", error))?;
-        let Some((version, body)) = row else {
-            return Err(BrainError::FileNotFound(format!(
-                "sandbox {}",
-                request.sandbox_id
-            )));
-        };
-        let mut current: SandboxInventoryDoc = decode(&body, "sandbox inventory")?;
-        if version != request.expected_version || current.version != request.expected_version {
-            if serde_json::to_value(&current.status)? == serde_json::to_value(&request.status)? {
-                transaction
-                    .commit()
-                    .map_err(|error| db_error("finish sandbox lifecycle replay", error))?;
-                return Ok(current);
-            }
-            return Err(BrainError::Fenced);
-        }
-        if serde_json::to_value(&current.status.target)?
-            != serde_json::to_value(&request.status.target)?
-        {
-            return Err(BrainError::Journal(
-                "sandbox lifecycle update changed its sealed target".into(),
-            ));
-        }
-        if current.slot_released && !request.release_slot {
-            return Err(BrainError::SandboxGone);
-        }
-        if request.release_slot
-            && !matches!(
-                request.status.state.to_string().as_str(),
-                "gone" | "terminated"
-            )
-        {
-            return Err(BrainError::Journal(
-                "sandbox slot may be released only for a confirmed terminal target".into(),
-            ));
-        }
-        if request.release_slot && !current.slot_released {
-            transaction
-                .execute(
-                    "UPDATE sessions SET live_sandboxes=MAX(live_sandboxes-1,0)
-                     WHERE session_id=?1",
-                    [&request.root_id],
-                )
-                .map_err(|error| db_error("release sandbox slot", error))?;
-            current.slot_released = true;
-        }
-        current.status = request.status.clone();
-        current.updated_at_ms = request.now_ms;
-        current.version = current.version.saturating_add(1);
-        let updated = transaction
-            .execute(
-                "UPDATE sandbox_inventory SET version=?3,doc_json=?4
-                 WHERE root_id=?1 AND sandbox_id=?2 AND version=?5",
-                params![
-                    request.root_id,
-                    request.sandbox_id,
-                    integer(current.version, "sandbox version")?,
-                    encode(&current, "sandbox inventory")?,
-                    integer(request.expected_version, "sandbox expected version")?
-                ],
-            )
-            .map_err(|error| db_error("update sandbox lifecycle", error))?;
-        if updated != 1 {
-            return Err(BrainError::Fenced);
-        }
-        transaction
-            .commit()
-            .map_err(|error| db_error("commit sandbox lifecycle update", error))?;
-        Ok(current)
-    }
-
     async fn list_recovery_page(&self, query: &RecoveryQuery<'_>) -> Result<RecoveryPage> {
         // Local mode has one durable SQLite node. A bounded scan avoids a second migration-only
         // index while preserving the exact hosted ordering/cursor contract.
@@ -1794,9 +1551,7 @@ fn secure_file(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use brain::journal::Record;
-    use brain::journal::{
-        Journal, Lease, PrefixDoc, SandboxListQuery, SandboxReserveRequest, SandboxUpdateRequest,
-    };
+    use brain::journal::{Journal, Lease, PrefixDoc};
     use brain::message::ContentBlock;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1865,7 +1620,6 @@ mod tests {
                 storage_max_object_bytes: brain::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
                 storage_max_session_bytes: brain::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
                 storage_transfer_ttl_ms: brain::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
-                max_additional_sandboxes_per_root: 2,
                 max_child_depth: 4,
                 max_direct_children: 32,
                 max_descendants: 256,
@@ -1875,17 +1629,18 @@ mod tests {
                 rendered_base_digest: String::new(),
                 prompt_cache_key: String::new(),
                 tools: vec![],
+                environments: HashMap::new(),
                 managed_bundles: vec![],
                 official_capabilities: HashMap::new(),
-                hand_enabled: false,
+                environment_enabled: false,
                 shape: "1gb".into(),
                 sync_interval_seconds: 600,
-                hand_env_keys: vec![],
+                environment_env_keys: vec![],
                 network: serde_json::json!({"outbound": "none"}),
                 metadata: HashMap::new(),
             },
             key_b64: String::new(),
-            hand_secrets_b64: String::new(),
+            environment_secrets_b64: String::new(),
             session_storage_bytes: 0,
             storage_reserved_bytes: 0,
             tenant_metered_storage_bytes: 0,
@@ -1893,7 +1648,8 @@ mod tests {
             storage_delete: None,
             pending_customer_acks: vec![],
             pending_managed_acks: vec![],
-            default_sandbox: None,
+            environment_targets: HashMap::new(),
+            tool_setups: HashMap::new(),
         }
     }
 
@@ -2159,109 +1915,5 @@ mod tests {
             .create("ses_sqlite_rejected", &rejected, &user("replacement"))
             .await
             .expect("one physical final deletion releases one durable identity");
-    }
-
-    fn sandbox_reservation(index: usize) -> SandboxReserveRequest {
-        let sandbox_id = format!("sbx_{index:02}");
-        SandboxReserveRequest {
-            root_id: "ses_test".into(),
-            owner_session_id: "ses_test".into(),
-            sandbox_id: sandbox_id.clone(),
-            operation_id: format!("op_{index:02}"),
-            request_digest: format!("{index:064x}"),
-            generation_intent: format!("gen_{index:02}"),
-            initial_status: serde_json::from_value(serde_json::json!({
-                "state": "creating",
-                "target": {
-                    "kind": "additional",
-                    "session_id": "ses_test",
-                    "root_id": "ses_test",
-                    "binding_ref": format!("bnd_{index:02}"),
-                    "sandbox_id": sandbox_id,
-                },
-                "generation": format!("gen_{index:02}"),
-                "changed_at_ms": index as u64 + 1,
-                "expires_at_ms": null,
-            }))
-            .unwrap(),
-            now_ms: index as u64 + 1,
-        }
-    }
-
-    #[tokio::test]
-    async fn sandbox_inventory_cap_and_terminal_tombstone_survive_reopen() {
-        let dir = TestDir::new();
-        let path = dir.0.join("journal.sqlite3");
-        let store = SqliteStore::open(&path).unwrap();
-        create_direct(&store, "ses_test", &doc(), &user("root"), "owner-a", 0)
-            .await
-            .unwrap();
-        let first = store
-            .reserve_sandbox(&sandbox_reservation(0))
-            .await
-            .unwrap();
-        store
-            .reserve_sandbox(&sandbox_reservation(1))
-            .await
-            .unwrap();
-        assert!(matches!(
-            store.reserve_sandbox(&sandbox_reservation(2)).await,
-            Err(BrainError::SandboxResourceExhausted)
-        ));
-        drop(store);
-
-        let store = SqliteStore::open(&path).unwrap();
-        assert_eq!(
-            store
-                .reserve_sandbox(&sandbox_reservation(0))
-                .await
-                .unwrap()
-                .sandbox_id,
-            first.sandbox_id
-        );
-        let mut terminal = first.status.clone();
-        terminal.state = brain_protocol::hand::SandboxState::Terminated;
-        let tombstone = store
-            .update_sandbox(&SandboxUpdateRequest {
-                root_id: first.root_id,
-                sandbox_id: first.sandbox_id,
-                expected_version: first.version,
-                status: terminal,
-                release_slot: true,
-                now_ms: 10,
-            })
-            .await
-            .unwrap();
-        assert!(tombstone.slot_released);
-        store
-            .reserve_sandbox(&sandbox_reservation(2))
-            .await
-            .expect("terminal target releases one live slot");
-        assert_eq!(
-            store
-                .list_sandbox_page(&SandboxListQuery {
-                    root_id: "ses_test",
-                    limit: 10,
-                    cursor: None,
-                })
-                .await
-                .unwrap()
-                .sandboxes
-                .len(),
-            3
-        );
-        assert!(matches!(
-            store
-                .update_sandbox(&SandboxUpdateRequest {
-                    root_id: tombstone.root_id.clone(),
-                    sandbox_id: tombstone.sandbox_id.clone(),
-                    expected_version: tombstone.version,
-                    status: sandbox_reservation(0).initial_status,
-                    release_slot: false,
-                    now_ms: 11,
-                })
-                .await,
-            Err(BrainError::SandboxGone)
-        ));
     }
 }

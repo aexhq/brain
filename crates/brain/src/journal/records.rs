@@ -117,26 +117,36 @@ pub enum Record {
         request_digest: String,
         deadline_at_ms: u64,
     },
-    /// Exact managed-Hand request envelope committed before `HandPort::submit`.
+    /// Exact managed-Environment request envelope committed before `EnvironmentPort::submit`.
     ManagedCallIntent {
         turn: String,
         call: String,
         name: String,
-        envelope: brain_protocol::hand::OperationEnvelope,
+        envelope: brain_protocol::environment::OperationEnvelope,
     },
     /// Opaque rooted receipt committed before Brain begins observing the operation.
     ManagedCallAccepted {
         turn: String,
         call: String,
-        operation: brain_protocol::hand::OperationRef,
+        operation: brain_protocol::environment::OperationRef,
     },
-    /// `HandPort::submit` may have reached the guest, but no rooted operation receipt can be
+    /// `EnvironmentPort::submit` may have reached the guest, but no rooted operation receipt can be
     /// recovered. This marker permanently revokes Brain's right to submit the intent again; the
-    /// exact fenced default target is reconciled separately through `DefaultSandboxChanged`.
+    /// exact fenced environment target is reconciled separately through `EnvironmentChanged`.
     ManagedCallUnknown {
         turn: String,
         call: String,
         request_digest: String,
+    },
+    /// Closes a setup-phase managed operation without creating a model-visible result for the
+    /// synthetic setup operation id. `setup` is present only for ready or unknown setup state;
+    /// a known failure remains retryable and is represented by `None`.
+    ManagedSetupCompleted {
+        turn: String,
+        call: String,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        setup: Option<ToolSetupDoc>,
     },
     /// Journaled BEFORE dispatch: an ambiguous outcome is recorded as possibly-run.
     ToolCall {
@@ -182,7 +192,7 @@ pub enum Record {
     ManagedTerminalReceived {
         turn: String,
         call: String,
-        operation: brain_protocol::hand::OperationRef,
+        operation: brain_protocol::environment::OperationRef,
         terminal_digest: String,
     },
     /// The exact managed terminal ACK was accepted. Lost responses are safely replayed.
@@ -207,12 +217,12 @@ pub enum Record {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
     },
-    /// A session/hand state transition worth telling clients about (`session.updated`).
+    /// A session/environment state transition worth telling clients about (`session.updated`).
     State {
         state: SessionLifecycle,
         turn: Option<String>,
     },
-    HandLost {
+    EnvironmentLost {
         turn: Option<String>,
         interrupted: Vec<String>,
         synced_ms: Option<u64>,
@@ -267,9 +277,9 @@ pub enum Record {
         published_bytes: u64,
         reserved_bytes: u64,
     },
-    /// A public/engine sandbox file mutation is sealed before it reaches Hand. The deterministic
+    /// A public/engine sandbox file mutation is sealed before it reaches Environment. The deterministic
     /// operation identity lets an exact HTTP retry recover a lost response without repeating the
-    /// effect; Hand rejects the same operation id with a different request digest.
+    /// effect; Environment rejects the same operation id with a different request digest.
     SandboxFileEffectIntent {
         operation_id: String,
         request_digest: String,
@@ -283,10 +293,9 @@ pub enum Record {
         path: String,
         replayed: bool,
     },
-    /// Durable logical state of the root tree's shared default sandbox. Brain owns this
-    /// projection; Hand returns the opaque physical locator and generation.
-    DefaultSandboxChanged {
-        status: brain_protocol::hand::SandboxStatus,
+    EnvironmentChanged {
+        environment: String,
+        status: brain_protocol::environment::SandboxStatus,
     },
     /// Immutable content-addressed checkpoint payload chunk. Installation is a separate record in
     /// the same atomic decision, so a partial write is never visible through HEAD.
@@ -360,6 +369,7 @@ impl Record {
             Record::ManagedCallIntent { .. } => "managed_call_intent",
             Record::ManagedCallAccepted { .. } => "managed_call_accepted",
             Record::ManagedCallUnknown { .. } => "managed_call_unknown",
+            Record::ManagedSetupCompleted { .. } => "managed_setup_completed",
             Record::ToolCall { .. } => "tool_call",
             Record::ToolResult { .. } => "tool_result",
             Record::CustomerTerminalReceived { .. } => "customer_terminal_received",
@@ -369,7 +379,7 @@ impl Record {
             Record::TurnCompleted { .. } => "turn_completed",
             Record::TurnFailed { .. } => "turn_failed",
             Record::State { .. } => "state",
-            Record::HandLost { .. } => "hand_lost",
+            Record::EnvironmentLost { .. } => "environment_lost",
             Record::StorageUploadReserved { .. } => "storage_upload_reserved",
             Record::StorageUploadPublished { .. } => "storage_upload_published",
             Record::StorageUploadCompleted { .. } => "storage_upload_completed",
@@ -378,7 +388,7 @@ impl Record {
             Record::StorageDeleteCompleted { .. } => "storage_delete_completed",
             Record::SandboxFileEffectIntent { .. } => "sandbox_file_effect_intent",
             Record::SandboxFileEffectCompleted { .. } => "sandbox_file_effect_completed",
-            Record::DefaultSandboxChanged { .. } => "default_sandbox_changed",
+            Record::EnvironmentChanged { .. } => "environment_changed",
             Record::ContextChunk { .. } => "context_chunk",
             Record::ContextInstalled { .. } => "context_installed",
             Record::LoopCustom { .. } => "loop_custom",
@@ -467,7 +477,7 @@ pub(super) fn serialized_record_charge(records: &[(u64, Record)]) -> Result<u64>
 }
 
 fn retention_class(records: &[(u64, Record)]) -> RetentionClass {
-    use brain_protocol::hand::SandboxState;
+    use brain_protocol::environment::SandboxState;
 
     let mut class = RetentionClass::default();
     let mut completed_model = false;
@@ -521,13 +531,13 @@ fn retention_class(records: &[(u64, Record)]) -> RetentionClass {
                     .ensure_effect_reserve_bytes
                     .max(JOURNAL_TERMINAL_RESERVE_BYTES);
             }
-            Record::DefaultSandboxChanged { status } if status.state == SandboxState::Creating => {
+            Record::EnvironmentChanged { status, .. } if status.state == SandboxState::Creating => {
                 class.consume_effect_reserve = true;
                 class.ensure_effect_reserve_bytes = class
                     .ensure_effect_reserve_bytes
                     .max(JOURNAL_TERMINAL_RESERVE_BYTES);
             }
-            Record::DefaultSandboxChanged { .. } => {
+            Record::EnvironmentChanged { .. } => {
                 class.consume_effect_reserve = true;
                 class.close_effect_reserve = true;
             }
@@ -535,7 +545,7 @@ fn retention_class(records: &[(u64, Record)]) -> RetentionClass {
             | Record::TurnFailed { .. }
             | Record::CustomerTerminalAcknowledged { .. }
             | Record::ManagedTerminalAcknowledged { .. }
-            | Record::HandLost { .. } => {
+            | Record::EnvironmentLost { .. } => {
                 class.consume_lifecycle_reserve = true;
             }
             Record::State { state, .. }

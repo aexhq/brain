@@ -13,17 +13,18 @@ use brain::config::Dialect;
 use brain::journal::{
     ChildListQuery, ChildPage, CommitDecision, CreateDecision, DeletionStatusDoc, EndFence, Head,
     HeadDoc, Journal, JournalRetentionLimits, JournalStore, MemoryStore, RecordPage,
-    RecordPageQuery, RecoveryPage, RecoveryQuery, SandboxInventoryDoc, SandboxListQuery,
-    SandboxPage, SandboxReserveRequest, SandboxUpdateRequest, SessionListQuery, SessionPage,
+    RecordPageQuery, RecoveryPage, RecoveryQuery, SessionListQuery, SessionPage,
 };
 use brain::provider::Provider;
 use brain::provider::fake::{FakeMode, FakeProvider};
-use brain::session::{Brain, BrainConfig, BrainServices};
+use brain::session::{Brain, BrainConfig};
 use brain_protocol::session::{CreateSessionRequest, MessageRequestContent};
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+
+mod support;
 
 /// Every store operation pays the injected delay; mutations pay double. 15 ms per op is
 /// DynamoDB-class once a decision makes two or three of them, while keeping the whole
@@ -140,32 +141,6 @@ impl JournalStore for SlowStore {
         self.read().await;
         self.inner.list_child_page(query).await
     }
-    async fn reserve_sandbox(
-        &self,
-        request: &SandboxReserveRequest,
-    ) -> brain::Result<SandboxInventoryDoc> {
-        self.write().await;
-        self.inner.reserve_sandbox(request).await
-    }
-    async fn get_sandbox(
-        &self,
-        root_id: &str,
-        sandbox_id: &str,
-    ) -> brain::Result<SandboxInventoryDoc> {
-        self.read().await;
-        self.inner.get_sandbox(root_id, sandbox_id).await
-    }
-    async fn list_sandbox_page(&self, query: &SandboxListQuery<'_>) -> brain::Result<SandboxPage> {
-        self.read().await;
-        self.inner.list_sandbox_page(query).await
-    }
-    async fn update_sandbox(
-        &self,
-        request: &SandboxUpdateRequest,
-    ) -> brain::Result<SandboxInventoryDoc> {
-        self.write().await;
-        self.inner.update_sandbox(request).await
-    }
     async fn list_recovery_page(&self, query: &RecoveryQuery<'_>) -> brain::Result<RecoveryPage> {
         self.read().await;
         self.inner.list_recovery_page(query).await
@@ -183,7 +158,7 @@ fn create_request() -> CreateSessionRequest {
             "name": "scripted",
             "api_key": "sk-fake"
         },
-        "system_prompt": "slow store lane"
+        "agentloop": support::loop_config()
     }))
     .expect("typed create request")
 }
@@ -226,7 +201,7 @@ async fn concurrent_turns_on_a_slow_store_complete_without_spurious_retries() {
         Journal::new(Arc::new(SlowStore::new()), "slow-lane"),
         Arc::new(brain::keys::PlainCustody),
         Arc::new(DisabledToolExecutor),
-        BrainServices::default(),
+        support::services(),
         Arc::new(move |_| provider.clone() as Arc<dyn Provider>),
     );
 

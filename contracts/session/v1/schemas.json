@@ -22,7 +22,7 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 64,
-      "description": "Brain-minted id of one durable Tool operation. Managed Hands receive the same operation_id."
+      "description": "Brain-minted id of one durable Tool operation. Managed Environments receive the same operation_id."
     },
     "ModelAttemptId": {
       "type": "string",
@@ -223,45 +223,27 @@
           "additionalProperties": false,
           "required": [
             "kind",
-            "bundle_digest",
-            "required_env"
+            "environment",
+            "requirements"
           ],
-          "description": "A digest-sealed executable in the session's default Aex-managed realm.",
+          "description": "An explicitly bound tool executed by one declared logical environment.",
           "properties": {
             "kind": {
               "type": "string",
-              "const": "aex_managed"
+              "const": "environment"
             },
-            "bundle_digest": {
+            "environment": {
+              "$ref": "#/$defs/EnvironmentName"
+            },
+            "artifact_digest": {
               "$ref": "#/$defs/Sha256Hex"
             },
-            "required_env": {
-              "type": "array",
-              "maxItems": 64,
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-              },
-              "description": "Environment-key names only. Secret values never enter the seal."
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "registration"
-          ],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "customer_app"
-            },
-            "registration": {
+            "callback_registration": {
               "type": "string",
               "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "requirements": {
+              "$ref": "#/$defs/ToolRequirements"
             }
           }
         },
@@ -279,11 +261,98 @@
             },
             "capability": {
               "type": "string",
-              "pattern": "^(brain|aex)\\.[A-Za-z0-9_.:-]{1,120}$"
+              "pattern": "^brain\\.[A-Za-z0-9_.:-]{1,120}$"
             }
           }
         }
       ]
+    },
+    "EnvironmentName": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+    },
+    "ToolRequirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
+        "workspace": { "type": "boolean" },
+        "processes": { "type": "boolean" },
+        "network": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/NetworkDestination" }
+        },
+        "streaming": { "type": "boolean" },
+        "recovery": {
+          "type": "string",
+          "enum": ["retained", "connection", "replay_safe"]
+        }
+      }
+    },
+    "EnvironmentProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "network", "recovery"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["computer", "callbacks"]
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["linux-amd64", "linux-arm64"]
+        },
+        "network": {
+          "type": "string",
+          "enum": ["none", "allowlist", "unrestricted"]
+        },
+        "recovery": {
+          "type": "string",
+          "enum": ["retained", "connection", "replay_safe"]
+        }
+      }
+    },
+    "EnvironmentConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extension", "protocol", "profile", "configuration"],
+      "properties": {
+        "extension": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "protocol": {
+          "type": "string",
+          "const": "environment/v1"
+        },
+        "profile": {
+          "$ref": "#/$defs/EnvironmentProfile"
+        },
+        "configuration": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "EnvironmentsConfig": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "#/$defs/EnvironmentName"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/EnvironmentConfig"
+      }
     },
     "ToolConfig": {
       "type": "object",
@@ -315,11 +384,11 @@
               }
             }
           },
-          "description": "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed."
+          "description": "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed."
         }
       }
     },
-    "ToolBundle": {
+    "ToolArtifactLayer": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -328,7 +397,7 @@
         "bytes",
         "media_type"
       ],
-      "description": "Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation.",
+      "description": "Create-time-only immutable artifact-layer bytes. Brain stages these outside the journal, then discards this representation.",
       "properties": {
         "checksum": {
           "$ref": "#/$defs/Sha256Hex"
@@ -337,16 +406,94 @@
           "type": "string",
           "contentEncoding": "base64",
           "writeOnly": true,
-          "maxLength": 5592408
+          "maxLength": 89478488
         },
         "bytes": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 4194304
+          "maximum": 67108864
         },
         "media_type": {
           "type": "string",
-          "const": "application/javascript+esm"
+          "enum": ["application/javascript+esm", "application/x-xz"]
+        }
+      }
+    },
+    "ToolArtifactLayerRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checksum",
+        "bytes",
+        "media_type",
+        "mount_path",
+        "unpack"
+      ],
+      "properties": {
+        "checksum": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "media_type": {
+          "type": "string",
+          "enum": ["application/javascript+esm", "application/x-xz"]
+        },
+        "mount_path": {
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9._/-]+$",
+          "maxLength": 4096
+        },
+        "unpack": {
+          "type": "string",
+          "enum": ["file", "tar.xz"]
+        }
+      }
+    },
+    "ToolBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checksum",
+        "bytes",
+        "target",
+        "execute_path",
+        "layers"
+      ],
+      "description": "A canonical computer-profile manifest plus create-time-only immutable runtime and code layers.",
+      "properties": {
+        "checksum": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100663296
+        },
+        "target": {
+          "type": "string",
+          "enum": ["linux-amd64", "linux-arm64"]
+        },
+        "execute_path": {
+          "type": "string",
+          "pattern": "^/[^\\u0000]+$",
+          "maxLength": 4096
+        },
+        "setup_path": {
+          "type": ["string", "null"],
+          "pattern": "^/[^\\u0000]+$",
+          "maxLength": 4096
+        },
+        "layers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/ToolArtifactLayerRef"
+          }
         }
       }
     },
@@ -398,7 +545,7 @@
           "enum": [
             "binding_conflict",
             "provider_unusable",
-            "hand_unavailable",
+            "environment_unavailable",
             "internal"
           ]
         },
@@ -652,100 +799,52 @@
       }
     },
     "AgentloopConfig": {
-      "description": "Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop.",
-      "oneOf": [
-        {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_bundle_sha256",
+        "toolchain",
+        "bundle_base64"
+      ],
+      "description": "The agent loop that drives this session's turns. It is sealed at create for the life of the session; children inherit it unless spawn supplies another loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.",
+      "properties": {
+        "source_bundle_sha256": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "toolchain": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-          "description": "An official loop by name (e.g. \"aex\", \"pi\"), resolved to the composition's pinned version and sealed as (name, version)."
+          "description": "The pinned loop-toolchain identity the bundle was built for."
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "source_bundle_sha256",
-            "toolchain",
-            "bundle_base64"
-          ],
-          "description": "A customer loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.",
-          "properties": {
-            "source_bundle_sha256": {
-              "$ref": "#/$defs/Sha256Hex"
-            },
-            "toolchain": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-              "description": "The pinned loop-toolchain identity the bundle was built for."
-            },
-            "bundle_base64": {
-              "type": "string",
-              "maxLength": 11184812,
-              "writeOnly": true,
-              "description": "The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."
-            }
-          }
+        "bundle_base64": {
+          "type": "string",
+          "maxLength": 11184812,
+          "writeOnly": true,
+          "description": "The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."
         }
-      ]
+      }
     },
     "AgentloopInfo": {
       "description": "The sealed agentloop identity of a session.",
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "name",
-            "version"
-          ],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "official"
-            },
-            "name": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-            },
-            "version": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-            }
-          }
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_bundle_sha256",
+        "toolchain"
+      ],
+      "properties": {
+        "source_bundle_sha256": {
+          "$ref": "#/$defs/Sha256Hex"
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "source_bundle_sha256",
-            "toolchain"
-          ],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "custom"
-            },
-            "source_bundle_sha256": {
-              "$ref": "#/$defs/Sha256Hex"
-            },
-            "toolchain": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-            }
-          }
+        "toolchain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
         }
-      ]
+      }
     },
     "ChildLimits": {
       "type": "object",
@@ -822,19 +921,19 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "model"
+        "model",
+        "agentloop"
       ],
       "description": "Everything here except metadata is part of the immutable prefix: it cannot change for the life of the session.",
       "properties": {
         "model": {
           "$ref": "#/$defs/ModelConfig"
         },
-        "system_prompt": {
-          "type": "string",
-          "maxLength": 131072
-        },
         "tools": {
           "$ref": "#/$defs/ToolsConfig"
+        },
+        "environments": {
+          "$ref": "#/$defs/EnvironmentsConfig"
         },
         "tool_bundles": {
           "type": "array",
@@ -844,6 +943,14 @@
           },
           "writeOnly": true,
           "description": "Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal."
+        },
+        "tool_artifact_layers": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/ToolArtifactLayer"
+          },
+          "description": "Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles."
         },
         "secrets": {
           "type": "object",
@@ -1754,7 +1861,7 @@
             "type": {
               "type": "string",
               "enum": [
-                "hand.lost"
+                "environment.lost"
               ]
             },
             "seq": {

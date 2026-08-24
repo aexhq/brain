@@ -4,9 +4,9 @@
 //! reusing these exact Brain-owned local persistence/storage seams. Selecting local remains an
 //! explicit outer composition decision; production is never downgraded implicitly.
 
-use crate::{LocalHand, LocalKeyCustody, LocalSessionStorage, SqliteStore};
+use crate::{LocalEnvironment, LocalKeyCustody, LocalSessionStorage, SqliteStore};
 use brain::Result;
-use brain::hand::{HandPort, SandboxControlPort, SandboxFilesPort, SessionPreparationPort};
+use brain::environment::{EnvironmentPort, SandboxFilesPort, SessionPreparationPort};
 use brain::journal::Journal;
 use brain::keys::KeyCustody;
 use brain::storage::{BundleStoragePort, SessionStoragePort};
@@ -20,11 +20,10 @@ pub struct DurableLocalParts {
     pub bundle_storage: Arc<dyn BundleStoragePort>,
     /// Concrete handle retained so the outer composition can attach Brain's one-purpose secret
     /// delivery port after constructing the circular service graph.
-    pub local_hand: Arc<LocalHand>,
-    pub hand: Arc<dyn HandPort>,
+    pub local_environment: Arc<LocalEnvironment>,
+    pub environment: Arc<dyn EnvironmentPort>,
     pub session_preparation: Arc<dyn SessionPreparationPort>,
     pub sandbox_files: Arc<dyn SandboxFilesPort>,
-    pub sandbox_control: Arc<dyn SandboxControlPort>,
 }
 
 pub fn durable_local_parts(data_dir: impl Into<PathBuf>) -> Result<DurableLocalParts> {
@@ -37,20 +36,18 @@ pub fn durable_local_parts(data_dir: impl Into<PathBuf>) -> Result<DurableLocalP
     let storage = Arc::new(LocalSessionStorage::open(data_dir.join("session-storage"))?);
     let session_storage: Arc<dyn SessionStoragePort> = storage.clone();
     let bundle_storage: Arc<dyn BundleStoragePort> = storage;
-    let local_hand = LocalHand::open(data_dir.join("local-hand"))?;
-    let hand: Arc<dyn HandPort> = local_hand.clone();
-    let session_preparation: Arc<dyn SessionPreparationPort> = local_hand.clone();
-    let sandbox_files: Arc<dyn SandboxFilesPort> = local_hand.clone();
-    let sandbox_control: Arc<dyn SandboxControlPort> = local_hand.clone();
+    let local_environment = LocalEnvironment::open(data_dir.join("local-environment"))?;
+    let environment: Arc<dyn EnvironmentPort> = local_environment.clone();
+    let session_preparation: Arc<dyn SessionPreparationPort> = local_environment.clone();
+    let sandbox_files: Arc<dyn SandboxFilesPort> = local_environment.clone();
     Ok(DurableLocalParts {
         journal: Journal::new(store, format!("brain-{}", brain::mint_id("node", 16))),
         custody,
         session_storage,
         bundle_storage,
-        local_hand,
-        hand,
+        local_environment,
+        environment,
         session_preparation,
         sandbox_files,
-        sandbox_control,
     })
 }

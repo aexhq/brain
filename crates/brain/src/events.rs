@@ -52,10 +52,10 @@ fn preview(content: &str) -> (String, bool) {
     }
 }
 
-/// The Brain-to-Hand receipt outcome and the public tool outcome share one vocabulary but are
+/// The Brain-to-Environment receipt outcome and the public tool outcome share one vocabulary but are
 /// distinct generated types; this is the exhaustive bridge.
-pub fn tool_outcome(o: brain_protocol::hand::TerminalOutcome) -> ToolOutcome {
-    use brain_protocol::hand::TerminalOutcome;
+pub fn tool_outcome(o: brain_protocol::environment::TerminalOutcome) -> ToolOutcome {
+    use brain_protocol::environment::TerminalOutcome;
     match o {
         TerminalOutcome::Completed => ToolOutcome::Completed,
         TerminalOutcome::Failed => ToolOutcome::Failed,
@@ -262,11 +262,11 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
             turn_id: turn.as_deref().and_then(|t| t.parse().ok()),
             turn_state: session_turn_state(turn.as_deref()),
         },
-        Record::HandLost {
+        Record::EnvironmentLost {
             turn,
             interrupted,
             synced_ms: _,
-        } => Event::HandLost {
+        } => Event::EnvironmentLost {
             at,
             interrupted_calls: interrupted.iter().filter_map(|c| c.parse().ok()).collect(),
             seq,
@@ -321,7 +321,7 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
         },
         Record::ContextChunk { .. }
         | Record::ContextInstalled { .. }
-        | Record::DefaultSandboxChanged { .. }
+        | Record::EnvironmentChanged { .. }
         | Record::ModelCallIntent { .. }
         | Record::ModelCallUnknown { .. }
         | Record::ModelCallCompleted { .. }
@@ -332,6 +332,7 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
         | Record::ManagedCallIntent { .. }
         | Record::ManagedCallAccepted { .. }
         | Record::ManagedCallUnknown { .. }
+        | Record::ManagedSetupCompleted { .. }
         | Record::CustomerTerminalReceived { .. }
         | Record::CustomerTerminalAcknowledged { .. }
         | Record::ManagedTerminalReceived { .. }
@@ -428,7 +429,7 @@ pub fn event_seq(e: &Event) -> u64 {
         | Event::ModelUsage { seq, .. }
         | Event::StorageUsage { seq, .. }
         | Event::SessionUpdated { seq, .. }
-        | Event::HandLost { seq, .. }
+        | Event::EnvironmentLost { seq, .. }
         | Event::TurnCompleted { seq, .. }
         | Event::TurnFailed { seq, .. }
         | Event::LoopEvent { seq, .. } => seq.get(),

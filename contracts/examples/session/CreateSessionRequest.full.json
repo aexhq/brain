@@ -7,13 +7,12 @@
     "context_window_tokens": 128000,
     "reasoning_effort": "medium"
   },
-  "system_prompt": "You are a careful engineer.",
   "tools": {
     "items": [
       {
         "definition": {
           "name": "sandbox",
-          "description": "Work in the session's generation-fenced default sandbox.",
+          "description": "Work in the session's bound environment.",
           "input_schema": {
             "type": "object",
             "additionalProperties": true
@@ -44,11 +43,25 @@
           "contract_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         },
         "executor": {
-          "kind": "customer_app",
-          "registration": "example.result.v1"
+          "kind": "environment",
+          "environment": "app",
+          "callback_registration": "example.result.v1",
+          "requirements": {}
         }
       }
     ]
+  },
+  "environments": {
+    "app": {
+      "extension": "example-app",
+      "protocol": "environment/v1",
+      "profile": {
+        "kind": "callbacks",
+        "network": "none",
+        "recovery": "connection"
+      },
+      "configuration": {}
+    }
   },
   "network": {
     "outbound": "none"
@@ -66,5 +79,9 @@
   "metadata": {
     "customer_ref": "job-77"
   },
-  "agentloop": "aex"
+  "agentloop": {
+    "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+    "toolchain": "loop-toolchain-1",
+    "bundle_base64": "eA=="
+  }
 }

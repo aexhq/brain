@@ -1,15 +1,8 @@
-//! The loop-host registry: resolves sealed selectors to runnable loops and owns the custom
-//! loop store. A customer uploads the deterministic esbuild source bundle; its sealed
+//! The loop-host registry resolves sealed selectors to runnable loops and owns the loop
+//! store. A caller uploads the deterministic source bundle; its sealed
 //! identity is (source sha256, toolchain), and this composition componentizes it once
 //! server-side — cached content-addressed on disk — because componentization itself is
-//! non-deterministic (design ledger A2/B3).
-//!
-//! Official loops are not special: a composition seeds each one through the same admission
-//! path a customer upload takes (source digest, toolchain check, server-side componentize,
-//! author diagnostics), and the `Official { name, version }` selector is only a named pin of
-//! that sealed identity. The single exception is `aex`, the contract-named default the
-//! kernel seals when a create omits `agentloop`: it is the composition's engine-vocabulary
-//! bootstrap loop, injected at construction.
+//! non-deterministic.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,14 +13,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use brain::BrainError;
 use brain::agentloop::{Agentloop, AgentloopRegistry};
 use brain::journal::AgentloopSelectorDoc;
-use sha2::Digest as _;
 
 use crate::WasmAgentloop;
 
 /// The one loop toolchain this build supports: the pinned guest engine plus componentizer.
 /// A different toolchain string is a different sealed identity and is refused, never guessed.
-/// The TS SDK exports the same constant (`LOOP_TOOLCHAIN` in `@aexhq/agentloop/build`); the
-/// upload e2e seals a bundle under the SDK's constant, so a drift between the two fails CI.
+/// External builders must seal source bundles with this exact value.
 pub const LOOP_TOOLCHAIN: &str = "starlingmonkey-componentize-js-0.22.0";
 
 /// Componentization is minutes of CPU at worst; a componentizer that exceeds this wall is
@@ -38,28 +29,17 @@ const COMPONENTIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// same digest run concurrently on the async create path.
 static STAGING_NONCE: AtomicU64 = AtomicU64::new(0);
 
-/// A seeded official: the version the name pins and the sealed source identity it resolves
-/// to. Resolution refuses a version mismatch — a session sealed `pi@X` never silently runs Y.
-struct OfficialPin {
-    version: String,
-    source_digest: String,
-}
-
-/// Selector→loop resolution over a content-addressed loop store. Officials are named pins of
-/// seeded customer-path bundles; customs componentize at admission. Both load lazily through
-/// the same content-addressed store.
+/// Selector-to-loop resolution over a content-addressed loop store.
 pub struct LoophostRegistry {
-    aex: Arc<dyn Agentloop>,
-    officials: HashMap<String, OfficialPin>,
     store_dir: PathBuf,
     /// The directory holding `componentize-one.mjs` with the pinned componentizer installed.
     toolchain_dir: PathBuf,
     engines: Mutex<HashMap<String, Arc<WasmAgentloop>>>,
+    admissions: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl LoophostRegistry {
     pub fn new(
-        aex: Arc<dyn Agentloop>,
         store_dir: impl Into<PathBuf>,
         toolchain_dir: impl Into<PathBuf>,
     ) -> std::io::Result<Self> {
@@ -67,41 +47,11 @@ impl LoophostRegistry {
         std::fs::create_dir_all(store_dir.join("source"))?;
         std::fs::create_dir_all(store_dir.join("component"))?;
         Ok(Self {
-            aex,
-            officials: HashMap::new(),
             store_dir,
             toolchain_dir: toolchain_dir.into(),
             engines: Mutex::new(HashMap::new()),
+            admissions: Mutex::new(HashMap::new()),
         })
-    }
-
-    /// Seed one official loop through the customer admission path: store the source bundle
-    /// content-addressed, componentize it under the pinned toolchain, and pin `name@version`
-    /// to the sealed identity. The bundle is a `buildLoopBundle` artifact (e.g. a loop
-    /// package's `dist/loop.bundle.mjs`), and `toolchain` is its identity's toolchain string.
-    pub async fn seed_official(
-        mut self,
-        name: impl Into<String>,
-        version: impl Into<String>,
-        toolchain: &str,
-        bundle: &[u8],
-    ) -> Result<Self, BrainError> {
-        if toolchain != LOOP_TOOLCHAIN {
-            return Err(BrainError::Invalid(format!(
-                "loop toolchain {toolchain:?} is not supported; this composition runs {LOOP_TOOLCHAIN:?}"
-            )));
-        }
-        let digest = hex::encode(sha2::Sha256::digest(bundle));
-        self.store_source(&digest, bundle)?;
-        self.componentize(&digest).await?;
-        self.officials.insert(
-            name.into(),
-            OfficialPin {
-                version: version.into(),
-                source_digest: digest,
-            },
-        );
-        Ok(self)
     }
 
     fn load_component(
@@ -207,6 +157,19 @@ impl LoophostRegistry {
         Ok(())
     }
 
+    async fn admit_bundle(&self, digest: &str, bundle: &[u8]) -> Result<(), BrainError> {
+        let lock = self
+            .admissions
+            .lock()
+            .expect("loop admissions")
+            .entry(digest.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+        self.store_source(digest, bundle)?;
+        self.componentize(digest).await
+    }
+
     fn custom_loop(&self, digest: &str) -> Result<Arc<WasmAgentloop>, BrainError> {
         let component = self.component_path(digest);
         if !component.exists() {
@@ -221,64 +184,14 @@ impl LoophostRegistry {
 
 impl AgentloopRegistry for LoophostRegistry {
     fn resolve(&self, selector: &AgentloopSelectorDoc) -> brain::Result<Arc<dyn Agentloop>> {
-        match selector {
-            AgentloopSelectorDoc::Official { name, version } if name == "aex" => {
-                // The contract-named bootstrap: the version authority is the kernel's
-                // `official_aex` constructor, and a mismatch refuses like any other official.
-                let default = AgentloopSelectorDoc::official_aex();
-                match &default {
-                    AgentloopSelectorDoc::Official {
-                        version: default_version,
-                        ..
-                    } if version == default_version => Ok(self.aex.clone()),
-                    _ => Err(BrainError::Invalid(format!(
-                        "official agentloop aex@{version} is not available in this composition"
-                    ))),
-                }
-            }
-            AgentloopSelectorDoc::Official { name, version } => {
-                let Some(pin) = self.officials.get(name) else {
-                    return Err(BrainError::Invalid(format!(
-                        "official agentloop {name}@{version} is not available in this composition"
-                    )));
-                };
-                if version != &pin.version {
-                    return Err(BrainError::Invalid(format!(
-                        "official agentloop {name}@{version} is not available; \
-                         this composition runs {name}@{}",
-                        pin.version
-                    )));
-                }
-                Ok(self.custom_loop(&pin.source_digest)?)
-            }
-            AgentloopSelectorDoc::Custom {
-                source_bundle_sha256,
-                toolchain,
-                ..
-            } => {
-                if toolchain != LOOP_TOOLCHAIN {
-                    return Err(BrainError::Invalid(format!(
-                        "loop toolchain {toolchain:?} is not supported; this composition runs {LOOP_TOOLCHAIN:?}"
-                    )));
-                }
-                Ok(self.custom_loop(source_bundle_sha256)?)
-            }
+        if selector.toolchain != LOOP_TOOLCHAIN {
+            return Err(BrainError::Invalid(format!(
+                "loop toolchain {:?} is not supported; this composition runs {LOOP_TOOLCHAIN:?}",
+                selector.toolchain
+            )));
         }
-    }
-
-    fn pin_official(&self, name: &str) -> brain::Result<AgentloopSelectorDoc> {
-        if name == "aex" {
-            return Ok(AgentloopSelectorDoc::official_aex());
-        }
-        if let Some(pin) = self.officials.get(name) {
-            return Ok(AgentloopSelectorDoc::Official {
-                name: name.to_string(),
-                version: pin.version.clone(),
-            });
-        }
-        Err(BrainError::Invalid(format!(
-            "official agentloop {name:?} is not available in this composition"
-        )))
+        self.custom_loop(&selector.source_bundle_sha256)
+            .map(|agentloop| agentloop as Arc<dyn Agentloop>)
     }
 
     fn admit_custom(
@@ -292,14 +205,15 @@ impl AgentloopRegistry for LoophostRegistry {
                 "loop toolchain {toolchain:?} is not supported; build against {LOOP_TOOLCHAIN:?}"
             )));
         }
-        self.store_source(source_bundle_sha256, bundle)?;
         // Componentize now, so a bundle the toolchain rejects fails the create with the
         // author's diagnostic instead of failing the session's first turn. The runtime is
         // available here: admission happens inside the async create path.
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| BrainError::Journal("loop admission requires a tokio runtime".into()))?;
-        tokio::task::block_in_place(|| handle.block_on(self.componentize(source_bundle_sha256)))?;
-        Ok(AgentloopSelectorDoc::Custom {
+        tokio::task::block_in_place(|| {
+            handle.block_on(self.admit_bundle(source_bundle_sha256, bundle))
+        })?;
+        Ok(AgentloopSelectorDoc {
             source_bundle_sha256: source_bundle_sha256.to_string(),
             source_bundle_bytes: bundle.len() as u64,
             toolchain: toolchain.to_string(),
@@ -307,17 +221,13 @@ impl AgentloopRegistry for LoophostRegistry {
     }
 }
 
-/// Convenience for compositions: the aex loop as a wasm guest plus a custom-loop store, all
-/// behind one registry.
+/// Convenience for compositions: a content-addressed loop store behind one registry.
 pub fn services_with_loop_store(
-    aex_component: &Path,
     store_dir: &Path,
     toolchain_dir: &Path,
 ) -> anyhow::Result<brain::session::BrainServices> {
-    let aex: Arc<dyn Agentloop> = Arc::new(WasmAgentloop::from_component_file(aex_component)?);
-    let registry = LoophostRegistry::new(aex.clone(), store_dir, toolchain_dir)?;
+    let registry = LoophostRegistry::new(store_dir, toolchain_dir)?;
     Ok(brain::session::BrainServices {
-        agentloop: Some(aex),
         agentloop_registry: Some(Arc::new(registry)),
         ..brain::session::BrainServices::default()
     })

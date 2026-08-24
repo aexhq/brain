@@ -485,11 +485,13 @@ mod tests {
         // prompt caching on every loop-driven request.
         let sealed = AgentDef::new("sys", "gpt-5.4", Dialect::OpenAiChat)
             .seal()
-            .with_provider_base(None, Some("aex:ses_parity".into()));
-        let echoed = sealed.loop_call_view(None, Some(sealed.tools.clone()), None, None, false);
+            .with_provider_base(None, Some("brain:ses_parity".into()));
+        let echoed =
+            sealed.loop_call_view(None, Some(sealed.tools.clone()), None, None, None, false);
         let body = OpenAiChat::render_base(&std::sync::Arc::new(echoed));
-        assert_eq!(body["prompt_cache_key"], "aex:ses_parity");
-        let changed = sealed.loop_call_view(Some("different".into()), None, None, None, false);
+        assert_eq!(body["prompt_cache_key"], "brain:ses_parity");
+        let changed =
+            sealed.loop_call_view(Some("different".into()), None, None, None, None, false);
         let body = OpenAiChat::render_base(&std::sync::Arc::new(changed));
         assert!(!body.contains_key("prompt_cache_key"));
     }

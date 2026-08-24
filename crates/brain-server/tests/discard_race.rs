@@ -4,12 +4,10 @@
 //! without answering it). The fix is close-then-drain in the actor plus a one-shot send retry
 //! in the callers; this test forces the collision hundreds of times.
 
-use brain::adapter::DisabledToolExecutor;
 use brain::config::Dialect;
-use brain::journal::Journal;
 use brain::provider::Provider;
 use brain::provider::fake::{FakeMode, FakeProvider};
-use brain::session::{Brain, BrainConfig, BrainServices};
+use brain::session::{Brain, BrainConfig};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,18 +24,16 @@ async fn a_message_racing_the_idle_discard_always_lands() {
         text_bytes: 16,
     });
     let f = fake.clone();
-    let brain = Brain::with_parts_and_services(
+    let brain = Brain::in_memory_test(
+        data_dir.clone(),
         BrainConfig {
             // Aggressive enough that every inter-message pause crosses it.
             idle_discard: Duration::from_millis(2),
             ..BrainConfig::default()
         },
-        Journal::new_memory("discard-race"),
-        Arc::new(brain::keys::PlainCustody),
-        Arc::new(DisabledToolExecutor),
-        BrainServices::default(),
         Arc::new(move |_| f.clone() as Arc<dyn Provider>),
-    );
+    )
+    .unwrap();
     let token = "race-token".to_string();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -52,7 +48,14 @@ async fn a_message_racing_the_idle_discard_always_lands() {
     let r = http
         .post(format!("{base}/v1/sessions"))
         .bearer_auth(&token)
-        .json(&json!({"model": {"provider": "anthropic", "name": "race", "api_key": "sk-x"}}))
+        .json(&json!({
+            "model": {"provider": "anthropic", "name": "race", "api_key": "sk-x"},
+            "agentloop": {
+                "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                "toolchain": "test-loop",
+                "bundle_base64": "eA=="
+            }
+        }))
         .send()
         .await
         .unwrap();

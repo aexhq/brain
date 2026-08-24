@@ -1,4 +1,4 @@
-//! Transport-neutral customer-app Hand ingress and delivery seams.
+//! Transport-neutral customer-app Environment ingress and delivery seams.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -12,19 +12,21 @@ use tokio_util::sync::CancellationToken;
 
 use crate::adapter::CallOutcome;
 use crate::{BrainError, Result};
-use brain_protocol::hand::TerminalOutcome;
+use brain_protocol::environment::TerminalOutcome;
 
 pub use brain_protocol::MAX_CUSTOMER_OBSERVATION_BYTES as MAX_CUSTOMER_HTTP_OBSERVATION_BYTES;
 /// Leaves deterministic metadata headroom below API Gateway WebSocket's 32 KiB frame maximum.
 pub use brain_protocol::MAX_CUSTOMER_WS_FRAME_BYTES;
 pub use brain_protocol::{MAX_CUSTOMER_REGISTRATION_DESCRIPTOR_BYTES, MAX_CUSTOMER_REGISTRATIONS};
 
-pub const CUSTOMER_MAX_GRANTS_ENV: &str = "BRAIN_CUSTOMER_HAND_MAX_GRANTS";
-pub const CUSTOMER_MAX_CONNECTIONS_ENV: &str = "BRAIN_CUSTOMER_HAND_MAX_CONNECTIONS";
-pub const CUSTOMER_MAX_PENDING_OPERATIONS_ENV: &str = "BRAIN_CUSTOMER_HAND_MAX_PENDING_OPERATIONS";
+pub const CUSTOMER_MAX_GRANTS_ENV: &str = "BRAIN_CUSTOMER_ENVIRONMENT_MAX_GRANTS";
+pub const CUSTOMER_MAX_CONNECTIONS_ENV: &str = "BRAIN_CUSTOMER_ENVIRONMENT_MAX_CONNECTIONS";
+pub const CUSTOMER_MAX_PENDING_OPERATIONS_ENV: &str =
+    "BRAIN_CUSTOMER_ENVIRONMENT_MAX_PENDING_OPERATIONS";
 pub const CUSTOMER_MAX_PENDING_TERMINAL_BYTES_ENV: &str =
-    "BRAIN_CUSTOMER_HAND_MAX_PENDING_TERMINAL_BYTES";
-pub const CUSTOMER_MAX_REGISTRATION_BYTES_ENV: &str = "BRAIN_CUSTOMER_HAND_MAX_REGISTRATION_BYTES";
+    "BRAIN_CUSTOMER_ENVIRONMENT_MAX_PENDING_TERMINAL_BYTES";
+pub const CUSTOMER_MAX_REGISTRATION_BYTES_ENV: &str =
+    "BRAIN_CUSTOMER_ENVIRONMENT_MAX_REGISTRATION_BYTES";
 
 pub const DEFAULT_MAX_CUSTOMER_GRANTS: usize = 4_096;
 pub const DEFAULT_MAX_CUSTOMER_CONNECTIONS: usize = 1_024;
@@ -159,13 +161,13 @@ pub enum CustomerDelivery {
 
 /// Receives authenticated connect/message/disconnect callbacks and durably advances epochs.
 #[async_trait]
-pub trait CustomerHandIngressPort: Send + Sync {
+pub trait CustomerEnvironmentIngressPort: Send + Sync {
     async fn receive(&self, input: CustomerGatewayInput) -> Result<()>;
 }
 
 /// Sends offers through an injected gateway. Implementations must not select another connection.
 #[async_trait]
-pub trait CustomerHandDeliveryPort: Send + Sync {
+pub trait CustomerEnvironmentDeliveryPort: Send + Sync {
     async fn send(&self, request: CustomerDeliveryRequest) -> Result<CustomerDelivery>;
 }
 
@@ -197,14 +199,14 @@ impl CustomerTransportConfig {
         let observation_base_url = observation_base_url.into().trim_end_matches('/').to_owned();
         if !(websocket_url.starts_with("ws://") || websocket_url.starts_with("wss://")) {
             return Err(BrainError::Invalid(
-                "customer Hand WebSocket URL must use ws or wss".into(),
+                "customer Environment WebSocket URL must use ws or wss".into(),
             ));
         }
         if !(observation_base_url.starts_with("http://")
             || observation_base_url.starts_with("https://"))
         {
             return Err(BrainError::Invalid(
-                "customer Hand observation base URL must use http or https".into(),
+                "customer Environment observation base URL must use http or https".into(),
             ));
         }
         Ok(Self {
@@ -463,14 +465,14 @@ impl CoordinatorState {
 /// hosted composition injects API Gateway Management API through `external_delivery`.
 pub struct CustomerCoordinator {
     config: CustomerTransportConfig,
-    external_delivery: Option<Arc<dyn CustomerHandDeliveryPort>>,
+    external_delivery: Option<Arc<dyn CustomerEnvironmentDeliveryPort>>,
     state: Mutex<CoordinatorState>,
 }
 
 impl CustomerCoordinator {
     pub fn new(
         config: CustomerTransportConfig,
-        external_delivery: Option<Arc<dyn CustomerHandDeliveryPort>>,
+        external_delivery: Option<Arc<dyn CustomerEnvironmentDeliveryPort>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config,
@@ -485,7 +487,7 @@ impl CustomerCoordinator {
         let expires_at_ms = now.saturating_add(self.config.grant_ttl.as_millis() as u64);
         let observation_expires =
             now.saturating_add(self.config.observation_ttl.as_millis() as u64);
-        let protocol = format!("aex-grant.{}", crate::mint_id("g", 32));
+        let protocol = format!("environment-grant.{}", crate::mint_id("g", 32));
         let grant_id = crate::mint_id("grant", 24);
         let observation_token = crate::mint_id("obs", 40);
         let claims = GrantClaims {
@@ -516,7 +518,7 @@ impl CustomerCoordinator {
             expires_at_ms,
             grant_id: grant_id.clone(),
             observation_url: format!(
-                "{}/v1/customer-hand/observations/{}",
+                "{}/v1/customer-environment/observations/{}",
                 self.config.observation_base_url, grant_id
             ),
             observation_token,
@@ -538,7 +540,7 @@ impl CustomerCoordinator {
             state.local_senders.insert(connection_id.to_owned(), sender);
         } else {
             return Err(BrainError::Invalid(
-                "customer Hand local connection is not pending".into(),
+                "customer Environment local connection is not pending".into(),
             ));
         }
         Ok(())
@@ -561,12 +563,12 @@ impl CustomerCoordinator {
         self.prune(&mut state, now);
         let Some(grant) = state.observation_grants.get(grant_id) else {
             return Err(BrainError::Invalid(
-                "customer Hand observation grant is invalid or expired".into(),
+                "customer Environment observation grant is invalid or expired".into(),
             ));
         };
         if grant.token_hash != secret_hash(token) {
             return Err(BrainError::Invalid(
-                "customer Hand observation grant is invalid or expired".into(),
+                "customer Environment observation grant is invalid or expired".into(),
             ));
         }
         let tenant_id = grant.tenant_id.clone();
@@ -611,7 +613,7 @@ impl CustomerCoordinator {
             || !pending.offered_epochs.contains(&epoch)
         {
             return Err(BrainError::Invalid(
-                "customer Hand observation does not match its operation receipt".into(),
+                "customer Environment observation does not match its operation receipt".into(),
             ));
         }
         let process_id = pending.process_id.clone();
@@ -639,7 +641,7 @@ impl CustomerCoordinator {
                 {
                     if current_digest != terminal_digest {
                         return Err(BrainError::Invalid(
-                            "customer Hand supplied conflicting terminal facts".into(),
+                            "customer Environment supplied conflicting terminal facts".into(),
                         ));
                     }
                 } else {
@@ -675,7 +677,7 @@ impl CustomerCoordinator {
             .is_some_and(|grant| grant.token_hash == secret_hash(token));
         if !valid {
             return Err(BrainError::Invalid(
-                "customer Hand observation grant is invalid or expired".into(),
+                "customer Environment observation grant is invalid or expired".into(),
             ));
         }
         Ok(())
@@ -709,7 +711,7 @@ impl CustomerCoordinator {
             .connections
             .get(&(tenant_id.to_owned(), client_id.to_owned()))
             .ok_or_else(|| {
-                BrainError::HandUnavailable("customer application is not connected".into())
+                BrainError::EnvironmentUnavailable("customer application is not connected".into())
             })?;
         let registered = connection.registrations.get(registration).ok_or_else(|| {
             BrainError::Invalid("customer Tool registration is unavailable".into())
@@ -776,7 +778,9 @@ impl CustomerCoordinator {
             .await
         {
             Ok(intent) => self.execute_prepared(intent, submit_retries, cancel).await,
-            Err(BrainError::HandUnavailable(message)) => customer_execution(interrupted(message)),
+            Err(BrainError::EnvironmentUnavailable(message)) => {
+                customer_execution(interrupted(message))
+            }
             Err(BrainError::Overloaded) => customer_execution(interrupted(
                 "customer Tool coordinator is at capacity; retry with backoff",
             )),
@@ -1090,7 +1094,7 @@ impl CustomerCoordinator {
                 .get(&(pending.tenant_id.clone(), pending.client_id.clone()))
                 .filter(|connection| connection.process_id == pending.process_id)
                 .ok_or_else(|| {
-                    BrainError::HandUnavailable(
+                    BrainError::EnvironmentUnavailable(
                         "customer process is not connected for terminal acknowledgement".into(),
                     )
                 })?;
@@ -1108,7 +1112,7 @@ impl CustomerCoordinator {
             })
             .await?;
         if delivery != CustomerDelivery::Delivered {
-            return Err(BrainError::HandUnavailable(
+            return Err(BrainError::EnvironmentUnavailable(
                 "customer terminal acknowledgement delivery is ambiguous".into(),
             ));
         }
@@ -1148,7 +1152,7 @@ impl CustomerCoordinator {
                 .get(&(tenant_id.to_owned(), client_id.to_owned()))
                 .filter(|connection| connection.process_id == receipt.process_id)
                 .ok_or_else(|| {
-                    BrainError::HandUnavailable(
+                    BrainError::EnvironmentUnavailable(
                         "sealed customer process is not connected for terminal acknowledgement"
                             .into(),
                     )
@@ -1169,7 +1173,7 @@ impl CustomerCoordinator {
         if delivery == CustomerDelivery::Delivered {
             Ok(())
         } else {
-            Err(BrainError::HandUnavailable(
+            Err(BrainError::EnvironmentUnavailable(
                 "customer terminal acknowledgement delivery is ambiguous".into(),
             ))
         }
@@ -1233,17 +1237,17 @@ impl CustomerCoordinator {
 }
 
 #[async_trait]
-impl CustomerHandIngressPort for CustomerCoordinator {
+impl CustomerEnvironmentIngressPort for CustomerCoordinator {
     async fn receive(&self, input: CustomerGatewayInput) -> Result<()> {
         match input.route {
             CustomerGatewayRoute::Connect => {
                 let protocol = input.subprotocol.ok_or_else(|| {
-                    BrainError::Invalid("customer Hand grant subprotocol is missing".into())
+                    BrainError::Invalid("customer Environment grant subprotocol is missing".into())
                 })?;
                 let mut state = self.state.lock().await;
                 self.prune(&mut state, crate::wall_ms());
                 let claims = state.grants.get(&protocol).cloned().ok_or_else(|| {
-                    BrainError::Invalid("customer Hand grant is invalid or expired".into())
+                    BrainError::Invalid("customer Environment grant is invalid or expired".into())
                 })?;
                 if state.pending_connections.len() >= self.config.max_connections {
                     return Err(BrainError::Overloaded);
@@ -1252,7 +1256,7 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                     || state.connection_keys.contains_key(&input.connection_id)
                 {
                     return Err(BrainError::Invalid(
-                        "customer Hand connection id is already in use".into(),
+                        "customer Environment connection id is already in use".into(),
                     ));
                 }
                 state.grants.remove(&protocol);
@@ -1271,7 +1275,7 @@ impl CustomerHandIngressPort for CustomerCoordinator {
             }
             CustomerGatewayRoute::Message => {
                 let body = input.body.ok_or_else(|| {
-                    BrainError::Invalid("customer Hand frame body is missing".into())
+                    BrainError::Invalid("customer Environment frame body is missing".into())
                 })?;
                 if body.len() > MAX_CUSTOMER_WS_FRAME_BYTES {
                     return Err(BrainError::FileTooLarge {
@@ -1296,18 +1300,19 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                                 .cloned()
                                 .ok_or_else(|| {
                                     BrainError::Invalid(
-                                        "customer Hand connection has no grant".into(),
+                                        "customer Environment connection has no grant".into(),
                                     )
                                 })?;
                             if pending.proof_hash != secret_hash(&proof) {
                                 return Err(BrainError::Invalid(
-                                    "customer Hand frame proof is invalid".into(),
+                                    "customer Environment frame proof is invalid".into(),
                                 ));
                             }
                             let claims = pending.claims;
                             if claims.client_id != client_id || claims.expires_at_ms < now {
                                 return Err(BrainError::Invalid(
-                                    "customer Hand registration does not match its grant".into(),
+                                    "customer Environment registration does not match its grant"
+                                        .into(),
                                 ));
                             }
                             let key = (claims.tenant_id.clone(), claims.client_id.clone());
@@ -1353,8 +1358,8 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                             })
                             .await?;
                         if delivery != CustomerDelivery::Delivered {
-                            return Err(BrainError::HandUnavailable(
-                                "customer Hand ready frame was not delivered".into(),
+                            return Err(BrainError::EnvironmentUnavailable(
+                                "customer Environment ready frame was not delivered".into(),
                             ));
                         }
                     }
@@ -1366,7 +1371,7 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                     } => {
                         if registrations.len() > 128 {
                             return Err(BrainError::Invalid(
-                                "customer Hand registration batch exceeds 128 tools".into(),
+                                "customer Environment registration batch exceeds 128 tools".into(),
                             ));
                         }
                         {
@@ -1379,7 +1384,7 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                                 .cloned()
                                 .ok_or_else(|| {
                                     BrainError::Invalid(
-                                        "customer Hand connection is not registered".into(),
+                                        "customer Environment connection is not registered".into(),
                                     )
                                 })?;
                             let process_registration_bytes = state.registration_bytes;
@@ -1387,12 +1392,12 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                                 let connection =
                                     state.connections.get_mut(&key).ok_or_else(|| {
                                         BrainError::Invalid(
-                                            "customer Hand connection is not current".into(),
+                                            "customer Environment connection is not current".into(),
                                         )
                                     })?;
                                 if connection.proof_hash != secret_hash(&proof) {
                                     return Err(BrainError::Invalid(
-                                        "customer Hand frame proof is invalid".into(),
+                                        "customer Environment frame proof is invalid".into(),
                                     ));
                                 }
                                 if connection.epoch != epoch {
@@ -1422,7 +1427,7 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                                                 != registration.contract_digest)
                                     {
                                         return Err(BrainError::Invalid(format!(
-                                            "customer Hand registration {} conflicts with its existing contract",
+                                            "customer Environment registration {} conflicts with its existing contract",
                                             registration.registration
                                         )));
                                     }
@@ -1444,14 +1449,14 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                                     > MAX_CUSTOMER_REGISTRATIONS
                                 {
                                     return Err(BrainError::Invalid(format!(
-                                        "customer Hand exceeds its {MAX_CUSTOMER_REGISTRATIONS} registration limit"
+                                        "customer Environment exceeds its {MAX_CUSTOMER_REGISTRATIONS} registration limit"
                                     )));
                                 }
                                 if connection.registration_bytes.saturating_add(added_bytes)
                                     > MAX_CUSTOMER_REGISTRATION_DESCRIPTOR_BYTES
                                 {
                                     return Err(BrainError::Invalid(format!(
-                                        "customer Hand registration descriptors exceed {MAX_CUSTOMER_REGISTRATION_DESCRIPTOR_BYTES} bytes"
+                                        "customer Environment registration descriptors exceed {MAX_CUSTOMER_REGISTRATION_DESCRIPTOR_BYTES} bytes"
                                     )));
                                 }
                                 let Some(next_process_bytes) =
@@ -1485,8 +1490,8 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                             })
                             .await?;
                         if delivery != CustomerDelivery::Delivered {
-                            return Err(BrainError::HandUnavailable(
-                                "customer Hand registration acknowledgement was not delivered"
+                            return Err(BrainError::EnvironmentUnavailable(
+                                "customer Environment registration acknowledgement was not delivered"
                                     .into(),
                             ));
                         }
@@ -1506,17 +1511,17 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                                 .cloned()
                                 .ok_or_else(|| {
                                     BrainError::Invalid(
-                                        "customer Hand connection is not registered".into(),
+                                        "customer Environment connection is not registered".into(),
                                     )
                                 })?;
                             let connection = state.connections.get_mut(&key).ok_or_else(|| {
                                 BrainError::Invalid(
-                                    "customer Hand connection is not current".into(),
+                                    "customer Environment connection is not current".into(),
                                 )
                             })?;
                             if connection.proof_hash != secret_hash(&proof) {
                                 return Err(BrainError::Invalid(
-                                    "customer Hand frame proof is invalid".into(),
+                                    "customer Environment frame proof is invalid".into(),
                                 ));
                             }
                             if connection.epoch != epoch {
@@ -1531,8 +1536,9 @@ impl CustomerHandIngressPort for CustomerCoordinator {
                             })
                             .await?;
                         if delivery != CustomerDelivery::Delivered {
-                            return Err(BrainError::HandUnavailable(
-                                "customer Hand heartbeat acknowledgement was not delivered".into(),
+                            return Err(BrainError::EnvironmentUnavailable(
+                                "customer Environment heartbeat acknowledgement was not delivered"
+                                    .into(),
                             ));
                         }
                     }
@@ -1662,7 +1668,7 @@ fn secret_hash(value: &str) -> String {
 /// grant is consumed at `$connect`.
 pub fn frame_proof(protocol: &str) -> String {
     let mut digest = Sha256::new();
-    digest.update(b"aex.customer-hand.frame-proof\0");
+    digest.update(b"brain.customer-environment.frame-proof\0");
     digest.update(protocol.as_bytes());
     hex::encode(digest.finalize())
 }

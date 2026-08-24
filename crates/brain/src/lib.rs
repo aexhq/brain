@@ -7,8 +7,8 @@
 //! session is nothing but a cached fold of its journal (hydrate-act-commit-
 //! discard).
 //!
-//! This repository owns the session and Brain-to-Hand wire formats exposed by `brain-protocol`;
-//! downstream Hands and products consume immutable Brain identities.
+//! This repository owns the session and Brain-to-Environment wire formats exposed by `brain-protocol`;
+//! downstream Environments and products consume immutable Brain identities.
 
 pub mod adapter;
 pub mod agentloop;
@@ -17,7 +17,7 @@ pub mod config;
 pub mod customer;
 pub mod events;
 
-pub mod hand;
+pub mod environment;
 pub mod journal;
 pub mod keys;
 pub(crate) mod loopctx;
@@ -81,7 +81,7 @@ pub enum BrainError {
     #[error("session storage object exceeds the sealed limit of {limit} bytes")]
     StorageObjectTooLarge { limit: u64 },
 
-    #[error("the default sandbox has never been materialized")]
+    #[error("the environment has never been materialized")]
     SandboxNotMaterialized,
 
     #[error("the requested sandbox generation is gone")]
@@ -171,11 +171,11 @@ pub enum BrainError {
         retry_after_ms: Option<u64>,
     },
 
-    #[error("hand unavailable: {0}")]
-    HandUnavailable(String),
+    #[error("environment unavailable: {0}")]
+    EnvironmentUnavailable(String),
 
-    #[error("hand operation error: {0}")]
-    Hand(String),
+    #[error("environment operation error: {0}")]
+    Environment(String),
 
     #[error("journal: {0}")]
     Journal(String),

@@ -1,8 +1,6 @@
 //! Composition-owned execution for trusted external capabilities.
 //!
-//! Brain itself owns the three closed engine capabilities (`brain.subagents`, `brain.storage`,
-//! and `brain.sandbox`) and routes managed execution through the typed Hand ports. Arbitrary
-//! trusted host capabilities use [`ToolExecutor`]; model-visible names never select code.
+//! Trusted host capabilities use [`ToolExecutor`]; model-visible names never select code.
 
 use crate::Result;
 use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};
@@ -12,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 /// What one durable Tool call produced.
 #[derive(Debug, Clone)]
 pub struct CallOutcome {
-    pub outcome: brain_protocol::hand::TerminalOutcome,
+    pub outcome: brain_protocol::environment::TerminalOutcome,
     /// Successful structured value before presentation formatting. Brain validates this against
     /// the sealed output schema immediately before it commits the result.
     pub value: Option<Value>,
@@ -41,7 +39,7 @@ pub enum TurnTerminal {
 impl CallOutcome {
     pub fn failed(content: impl Into<String>) -> Self {
         Self {
-            outcome: brain_protocol::hand::TerminalOutcome::Failed,
+            outcome: brain_protocol::environment::TerminalOutcome::Failed,
             value: None,
             content: content.into(),
             is_error: true,

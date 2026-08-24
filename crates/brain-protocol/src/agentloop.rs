@@ -580,90 +580,46 @@ impl<'de> ::serde::Deserialize<'de> for AgentloopErrorMessage {
             })
     }
 }
-#[doc = "Which agentloop a session runs. Sealed at session creation; children default to the parent's selector and may override at spawn. The sealed identity of a custom loop is (source_bundle_sha256, toolchain): componentization is non-deterministic, so the deterministic esbuild source bundle is the identity and Brain-side tooling componentizes it, cached by this pair."]
+#[doc = "Which agent loop a session runs. Sealed at session creation; children inherit the parent's selector unless spawn supplies another loop. The sealed identity is (source_bundle_sha256, toolchain): componentization is non-deterministic, so the deterministic source bundle is the identity and composition tooling componentizes it, cached by this pair."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Which agentloop a session runs. Sealed at session creation; children default to the parent's selector and may override at spawn. The sealed identity of a custom loop is (source_bundle_sha256, toolchain): componentization is non-deterministic, so the deterministic esbuild source bundle is the identity and Brain-side tooling componentizes it, cached by this pair.\","]
-#[doc = "  \"oneOf\": ["]
-#[doc = "    {"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"kind\","]
-#[doc = "        \"name\","]
-#[doc = "        \"version\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"kind\": {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"enum\": ["]
-#[doc = "            \"official\""]
-#[doc = "          ]"]
-#[doc = "        },"]
-#[doc = "        \"name\": {"]
-#[doc = "          \"description\": \"An official loop name, e.g. \\\"aex\\\", \\\"pi\\\", \\\"codex-style\\\". Officials are prebuilt and stored by the composition; no bytes travel at create.\","]
-#[doc = "          \"$ref\": \"#/$defs/Identifier\""]
-#[doc = "        },"]
-#[doc = "        \"version\": {"]
-#[doc = "          \"$ref\": \"#/$defs/Identifier\""]
-#[doc = "        }"]
-#[doc = "      },"]
-#[doc = "      \"additionalProperties\": false"]
+#[doc = "  \"description\": \"Which agent loop a session runs. Sealed at session creation; children inherit the parent's selector unless spawn supplies another loop. The sealed identity is (source_bundle_sha256, toolchain): componentization is non-deterministic, so the deterministic source bundle is the identity and composition tooling componentizes it, cached by this pair.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"source_bundle_bytes\","]
+#[doc = "    \"source_bundle_sha256\","]
+#[doc = "    \"toolchain\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"source_bundle_bytes\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 8388608.0,"]
+#[doc = "      \"minimum\": 1.0"]
 #[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"kind\","]
-#[doc = "        \"source_bundle_bytes\","]
-#[doc = "        \"source_bundle_sha256\","]
-#[doc = "        \"toolchain\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"kind\": {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"enum\": ["]
-#[doc = "            \"custom\""]
-#[doc = "          ]"]
-#[doc = "        },"]
-#[doc = "        \"source_bundle_bytes\": {"]
-#[doc = "          \"type\": \"integer\","]
-#[doc = "          \"maximum\": 8388608.0,"]
-#[doc = "          \"minimum\": 1.0"]
-#[doc = "        },"]
-#[doc = "        \"source_bundle_sha256\": {"]
-#[doc = "          \"description\": \"SHA-256 of the customer's deterministic esbuild source bundle.\","]
-#[doc = "          \"$ref\": \"#/$defs/Digest\""]
-#[doc = "        },"]
-#[doc = "        \"toolchain\": {"]
-#[doc = "          \"description\": \"The pinned loop-toolchain identity (engine + componentizer + wasmtime config family) the composition builds and runs this bundle with.\","]
-#[doc = "          \"$ref\": \"#/$defs/Identifier\""]
-#[doc = "        }"]
-#[doc = "      },"]
-#[doc = "      \"additionalProperties\": false"]
+#[doc = "    \"source_bundle_sha256\": {"]
+#[doc = "      \"description\": \"SHA-256 of the deterministic source bundle.\","]
+#[doc = "      \"$ref\": \"#/$defs/Digest\""]
+#[doc = "    },"]
+#[doc = "    \"toolchain\": {"]
+#[doc = "      \"description\": \"The pinned loop-toolchain identity (engine + componentizer + wasmtime config family) the composition builds and runs this bundle with.\","]
+#[doc = "      \"$ref\": \"#/$defs/Identifier\""]
 #[doc = "    }"]
-#[doc = "  ]"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(tag = "kind", deny_unknown_fields)]
-pub enum AgentloopSelector {
-    #[serde(rename = "official")]
-    Official {
-        #[doc = "An official loop name, e.g. \"aex\", \"pi\", \"codex-style\". Officials are prebuilt and stored by the composition; no bytes travel at create."]
-        name: Identifier,
-        version: Identifier,
-    },
-    #[serde(rename = "custom")]
-    Custom {
-        source_bundle_bytes: ::std::num::NonZeroU64,
-        #[doc = "SHA-256 of the customer's deterministic esbuild source bundle."]
-        source_bundle_sha256: Digest,
-        #[doc = "The pinned loop-toolchain identity (engine + componentizer + wasmtime config family) the composition builds and runs this bundle with."]
-        toolchain: Identifier,
-    },
+#[serde(deny_unknown_fields)]
+pub struct AgentloopSelector {
+    pub source_bundle_bytes: ::std::num::NonZeroU64,
+    #[doc = "SHA-256 of the deterministic source bundle."]
+    pub source_bundle_sha256: Digest,
+    #[doc = "The pinned loop-toolchain identity (engine + componentizer + wasmtime config family) the composition builds and runs this bundle with."]
+    pub toolchain: Identifier,
 }
 #[doc = "One folded model round. Token deltas stream Brain-to-application directly; the loop receives complete messages only."]
 #[doc = r""]
@@ -2370,6 +2326,14 @@ impl<'de> ::serde::Deserialize<'de> for ModelName {
 #[doc = "      \"maxItems\": 4096,"]
 #[doc = "      \"minItems\": 1"]
 #[doc = "    },"]
+#[doc = "    \"reasoning_effort\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"low\","]
+#[doc = "        \"medium\","]
+#[doc = "        \"high\""]
+#[doc = "      ]"]
+#[doc = "    },"]
 #[doc = "    \"system\": {"]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"maxLength\": 131072"]
@@ -2411,6 +2375,8 @@ pub struct ModelRequest {
     pub max_tokens: ::std::option::Option<::std::num::NonZeroU64>,
     pub messages: ::std::vec::Vec<ModelMessage>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub reasoning_effort: ::std::option::Option<ModelRequestReasoningEffort>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub system: ::std::option::Option<ModelRequestSystem>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub temperature: ::std::option::Option<f64>,
@@ -2422,6 +2388,83 @@ pub struct ModelRequest {
     pub tools: ::std::vec::Vec<ToolPresentationView>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub top_p: ::std::option::Option<f64>,
+}
+#[doc = "`ModelRequestReasoningEffort`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"low\","]
+#[doc = "    \"medium\","]
+#[doc = "    \"high\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ModelRequestReasoningEffort {
+    #[serde(rename = "low")]
+    Low,
+    #[serde(rename = "medium")]
+    Medium,
+    #[serde(rename = "high")]
+    High,
+}
+impl ::std::fmt::Display for ModelRequestReasoningEffort {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Low => f.write_str("low"),
+            Self::Medium => f.write_str("medium"),
+            Self::High => f.write_str("high"),
+        }
+    }
+}
+impl ::std::str::FromStr for ModelRequestReasoningEffort {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ModelRequestReasoningEffort {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ModelRequestReasoningEffort {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ModelRequestReasoningEffort {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
 }
 #[doc = "`ModelRequestSystem`"]
 #[doc = r""]

@@ -25,7 +25,7 @@ pub(super) async fn stream_events(
 ) -> Result<Sse<impl Stream<Item = Result<SseFrame, Infallible>>>, Failure> {
     authorize_session(&state, &headers, &id).await?;
     // Last-Event-ID (reconnect) wins over ?after. A present-but-malformed resume cursor is a
-    // request error: silently replaying from ?after would hand the client the wrong window.
+    // request error: silently replaying from ?after would environment the client the wrong window.
     let after = match headers.get("last-event-id") {
         None => q.after,
         Some(value) => value

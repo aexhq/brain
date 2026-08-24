@@ -102,77 +102,57 @@ impl<'de> ::serde::Deserialize<'de> for AgentId {
             })
     }
 }
-#[doc = "Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop."]
+#[doc = "The agent loop that drives this session's turns. It is sealed at create for the life of the session; children inherit it unless spawn supplies another loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Which agentloop drives this session's turns. Sealed at create for the life of the session; children inherit the parent's loop. Omission seals the official aex loop.\","]
-#[doc = "  \"oneOf\": ["]
-#[doc = "    {"]
-#[doc = "      \"description\": \"An official loop by name (e.g. \\\"aex\\\", \\\"pi\\\"), resolved to the composition's pinned version and sealed as (name, version).\","]
+#[doc = "  \"description\": \"The agent loop that drives this session's turns. It is sealed at create for the life of the session; children inherit it unless spawn supplies another loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"bundle_base64\","]
+#[doc = "    \"source_bundle_sha256\","]
+#[doc = "    \"toolchain\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"bundle_base64\": {"]
+#[doc = "      \"description\": \"The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix.\","]
+#[doc = "      \"writeOnly\": true,"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 11184812"]
+#[doc = "    },"]
+#[doc = "    \"source_bundle_sha256\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "    },"]
+#[doc = "    \"toolchain\": {"]
+#[doc = "      \"description\": \"The pinned loop-toolchain identity the bundle was built for.\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"maxLength\": 128,"]
 #[doc = "      \"minLength\": 1,"]
 #[doc = "      \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"description\": \"A customer loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.\","]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"bundle_base64\","]
-#[doc = "        \"source_bundle_sha256\","]
-#[doc = "        \"toolchain\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"bundle_base64\": {"]
-#[doc = "          \"description\": \"The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix.\","]
-#[doc = "          \"writeOnly\": true,"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"maxLength\": 11184812"]
-#[doc = "        },"]
-#[doc = "        \"source_bundle_sha256\": {"]
-#[doc = "          \"$ref\": \"#/$defs/Sha256Hex\""]
-#[doc = "        },"]
-#[doc = "        \"toolchain\": {"]
-#[doc = "          \"description\": \"The pinned loop-toolchain identity the bundle was built for.\","]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"maxLength\": 128,"]
-#[doc = "          \"minLength\": 1,"]
-#[doc = "          \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
-#[doc = "        }"]
-#[doc = "      },"]
-#[doc = "      \"additionalProperties\": false"]
 #[doc = "    }"]
-#[doc = "  ]"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(untagged, deny_unknown_fields)]
-pub enum AgentloopConfig {
-    String(AgentloopConfigString),
-    Object {
-        #[doc = "The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."]
-        bundle_base64: AgentloopConfigObjectBundleBase64,
-        source_bundle_sha256: Sha256Hex,
-        #[doc = "The pinned loop-toolchain identity the bundle was built for."]
-        toolchain: AgentloopConfigObjectToolchain,
-    },
+#[serde(deny_unknown_fields)]
+pub struct AgentloopConfig {
+    #[doc = "The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."]
+    pub bundle_base64: AgentloopConfigBundleBase64,
+    pub source_bundle_sha256: Sha256Hex,
+    #[doc = "The pinned loop-toolchain identity the bundle was built for."]
+    pub toolchain: AgentloopConfigToolchain,
 }
-impl ::std::convert::From<AgentloopConfigString> for AgentloopConfig {
-    fn from(value: AgentloopConfigString) -> Self {
-        Self::String(value)
-    }
-}
-#[doc = "The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."]
+#[doc = "The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"The deterministic esbuild source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix.\","]
+#[doc = "  \"description\": \"The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix.\","]
 #[doc = "  \"writeOnly\": true,"]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"maxLength\": 11184812"]
@@ -181,19 +161,19 @@ impl ::std::convert::From<AgentloopConfigString> for AgentloopConfig {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct AgentloopConfigObjectBundleBase64(::std::string::String);
-impl ::std::ops::Deref for AgentloopConfigObjectBundleBase64 {
+pub struct AgentloopConfigBundleBase64(::std::string::String);
+impl ::std::ops::Deref for AgentloopConfigBundleBase64 {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<AgentloopConfigObjectBundleBase64> for ::std::string::String {
-    fn from(value: AgentloopConfigObjectBundleBase64) -> Self {
+impl ::std::convert::From<AgentloopConfigBundleBase64> for ::std::string::String {
+    fn from(value: AgentloopConfigBundleBase64) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for AgentloopConfigObjectBundleBase64 {
+impl ::std::str::FromStr for AgentloopConfigBundleBase64 {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 11184812usize {
@@ -202,13 +182,13 @@ impl ::std::str::FromStr for AgentloopConfigObjectBundleBase64 {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for AgentloopConfigObjectBundleBase64 {
+impl ::std::convert::TryFrom<&str> for AgentloopConfigBundleBase64 {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigObjectBundleBase64 {
+impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigBundleBase64 {
     type Error = self::error::ConversionError;
     fn try_from(
         value: &::std::string::String,
@@ -216,7 +196,7 @@ impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigObjectBu
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigObjectBundleBase64 {
+impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigBundleBase64 {
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,
@@ -224,7 +204,7 @@ impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigObjectBun
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for AgentloopConfigObjectBundleBase64 {
+impl<'de> ::serde::Deserialize<'de> for AgentloopConfigBundleBase64 {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -252,19 +232,19 @@ impl<'de> ::serde::Deserialize<'de> for AgentloopConfigObjectBundleBase64 {
 #[doc = r" </details>"]
 #[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct AgentloopConfigObjectToolchain(::std::string::String);
-impl ::std::ops::Deref for AgentloopConfigObjectToolchain {
+pub struct AgentloopConfigToolchain(::std::string::String);
+impl ::std::ops::Deref for AgentloopConfigToolchain {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<AgentloopConfigObjectToolchain> for ::std::string::String {
-    fn from(value: AgentloopConfigObjectToolchain) -> Self {
+impl ::std::convert::From<AgentloopConfigToolchain> for ::std::string::String {
+    fn from(value: AgentloopConfigToolchain) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for AgentloopConfigObjectToolchain {
+impl ::std::str::FromStr for AgentloopConfigToolchain {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         if value.chars().count() > 128usize {
@@ -283,13 +263,13 @@ impl ::std::str::FromStr for AgentloopConfigObjectToolchain {
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for AgentloopConfigObjectToolchain {
+impl ::std::convert::TryFrom<&str> for AgentloopConfigToolchain {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigObjectToolchain {
+impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigToolchain {
     type Error = self::error::ConversionError;
     fn try_from(
         value: &::std::string::String,
@@ -297,7 +277,7 @@ impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigObjectTo
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigObjectToolchain {
+impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigToolchain {
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,
@@ -305,88 +285,7 @@ impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigObjectToo
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for AgentloopConfigObjectToolchain {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
-#[doc = "An official loop by name (e.g. \"aex\", \"pi\"), resolved to the composition's pinned version and sealed as (name, version)."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"description\": \"An official loop by name (e.g. \\\"aex\\\", \\\"pi\\\"), resolved to the composition's pinned version and sealed as (name, version).\","]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 128,"]
-#[doc = "  \"minLength\": 1,"]
-#[doc = "  \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct AgentloopConfigString(::std::string::String);
-impl ::std::ops::Deref for AgentloopConfigString {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<AgentloopConfigString> for ::std::string::String {
-    fn from(value: AgentloopConfigString) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for AgentloopConfigString {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 128usize {
-            return Err("longer than 128 characters".into());
-        }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
-            ::std::sync::LazyLock::new(|| {
-                ::regress::Regex::new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$").unwrap()
-            });
-        if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for AgentloopConfigString {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigString {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigString {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for AgentloopConfigString {
+impl<'de> ::serde::Deserialize<'de> for AgentloopConfigToolchain {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -405,155 +304,31 @@ impl<'de> ::serde::Deserialize<'de> for AgentloopConfigString {
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"description\": \"The sealed agentloop identity of a session.\","]
-#[doc = "  \"oneOf\": ["]
-#[doc = "    {"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"kind\","]
-#[doc = "        \"name\","]
-#[doc = "        \"version\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"kind\": {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"const\": \"official\""]
-#[doc = "        },"]
-#[doc = "        \"name\": {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"maxLength\": 128,"]
-#[doc = "          \"minLength\": 1,"]
-#[doc = "          \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
-#[doc = "        },"]
-#[doc = "        \"version\": {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"maxLength\": 128,"]
-#[doc = "          \"minLength\": 1,"]
-#[doc = "          \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
-#[doc = "        }"]
-#[doc = "      },"]
-#[doc = "      \"additionalProperties\": false"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"source_bundle_sha256\","]
+#[doc = "    \"toolchain\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"source_bundle_sha256\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
 #[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"kind\","]
-#[doc = "        \"source_bundle_sha256\","]
-#[doc = "        \"toolchain\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"kind\": {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"const\": \"custom\""]
-#[doc = "        },"]
-#[doc = "        \"source_bundle_sha256\": {"]
-#[doc = "          \"$ref\": \"#/$defs/Sha256Hex\""]
-#[doc = "        },"]
-#[doc = "        \"toolchain\": {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"maxLength\": 128,"]
-#[doc = "          \"minLength\": 1,"]
-#[doc = "          \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
-#[doc = "        }"]
-#[doc = "      },"]
-#[doc = "      \"additionalProperties\": false"]
+#[doc = "    \"toolchain\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 128,"]
+#[doc = "      \"minLength\": 1,"]
+#[doc = "      \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
 #[doc = "    }"]
-#[doc = "  ]"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(tag = "kind", deny_unknown_fields)]
-pub enum AgentloopInfo {
-    #[serde(rename = "official")]
-    Official {
-        name: AgentloopInfoName,
-        version: AgentloopInfoVersion,
-    },
-    #[serde(rename = "custom")]
-    Custom {
-        source_bundle_sha256: Sha256Hex,
-        toolchain: AgentloopInfoToolchain,
-    },
-}
-#[doc = "`AgentloopInfoName`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 128,"]
-#[doc = "  \"minLength\": 1,"]
-#[doc = "  \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct AgentloopInfoName(::std::string::String);
-impl ::std::ops::Deref for AgentloopInfoName {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<AgentloopInfoName> for ::std::string::String {
-    fn from(value: AgentloopInfoName) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for AgentloopInfoName {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 128usize {
-            return Err("longer than 128 characters".into());
-        }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
-            ::std::sync::LazyLock::new(|| {
-                ::regress::Regex::new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$").unwrap()
-            });
-        if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for AgentloopInfoName {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for AgentloopInfoName {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for AgentloopInfoName {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for AgentloopInfoName {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
+#[serde(deny_unknown_fields)]
+pub struct AgentloopInfo {
+    pub source_bundle_sha256: Sha256Hex,
+    pub toolchain: AgentloopInfoToolchain,
 }
 #[doc = "`AgentloopInfoToolchain`"]
 #[doc = r""]
@@ -624,86 +399,6 @@ impl ::std::convert::TryFrom<::std::string::String> for AgentloopInfoToolchain {
     }
 }
 impl<'de> ::serde::Deserialize<'de> for AgentloopInfoToolchain {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
-#[doc = "`AgentloopInfoVersion`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 128,"]
-#[doc = "  \"minLength\": 1,"]
-#[doc = "  \"pattern\": \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\""]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct AgentloopInfoVersion(::std::string::String);
-impl ::std::ops::Deref for AgentloopInfoVersion {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<AgentloopInfoVersion> for ::std::string::String {
-    fn from(value: AgentloopInfoVersion) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for AgentloopInfoVersion {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 128usize {
-            return Err("longer than 128 characters".into());
-        }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
-            ::std::sync::LazyLock::new(|| {
-                ::regress::Regex::new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$").unwrap()
-            });
-        if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$\"".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for AgentloopInfoVersion {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for AgentloopInfoVersion {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for AgentloopInfoVersion {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for AgentloopInfoVersion {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -884,13 +579,13 @@ impl ::std::convert::From<::serde_json::Value> for BrainSessionApiV1Types {
         Self(value)
     }
 }
-#[doc = "Brain-minted id of one durable Tool operation. Managed Hands receive the same operation_id."]
+#[doc = "Brain-minted id of one durable Tool operation. Managed Environments receive the same operation_id."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Brain-minted id of one durable Tool operation. Managed Hands receive the same operation_id.\","]
+#[doc = "  \"description\": \"Brain-minted id of one durable Tool operation. Managed Environments receive the same operation_id.\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"maxLength\": 64,"]
 #[doc = "  \"minLength\": 1"]
@@ -1290,6 +985,7 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[doc = "  \"description\": \"Everything here except metadata is part of the immutable prefix: it cannot change for the life of the session.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
+#[doc = "    \"agentloop\","]
 #[doc = "    \"model\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
@@ -1301,6 +997,9 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[doc = "    },"]
 #[doc = "    \"client\": {"]
 #[doc = "      \"$ref\": \"#/$defs/CustomerClientConfig\""]
+#[doc = "    },"]
+#[doc = "    \"environments\": {"]
+#[doc = "      \"$ref\": \"#/$defs/EnvironmentsConfig\""]
 #[doc = "    },"]
 #[doc = "    \"metadata\": {"]
 #[doc = "      \"type\": \"object\","]
@@ -1341,9 +1040,13 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[doc = "        \"pattern\": \"^[A-Za-z_][A-Za-z0-9_]{0,127}$\""]
 #[doc = "      }"]
 #[doc = "    },"]
-#[doc = "    \"system_prompt\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"maxLength\": 131072"]
+#[doc = "    \"tool_artifact_layers\": {"]
+#[doc = "      \"description\": \"Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles.\","]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"$ref\": \"#/$defs/ToolArtifactLayer\""]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 256"]
 #[doc = "    },"]
 #[doc = "    \"tool_bundles\": {"]
 #[doc = "      \"description\": \"Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal.\","]
@@ -1365,12 +1068,13 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub agentloop: ::std::option::Option<AgentloopConfig>,
+    pub agentloop: AgentloopConfig,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub children: ::std::option::Option<ChildLimits>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub client: ::std::option::Option<CustomerClientConfig>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub environments: ::std::option::Option<EnvironmentsConfig>,
     #[serde(
         default,
         skip_serializing_if = ":: std :: collections :: HashMap::is_empty"
@@ -1393,8 +1097,9 @@ pub struct CreateSessionRequest {
         CreateSessionRequestSecretsKey,
         CreateSessionRequestSecretsValue,
     >,
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub system_prompt: ::std::option::Option<CreateSessionRequestSystemPrompt>,
+    #[doc = "Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles."]
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub tool_artifact_layers: ::std::vec::Vec<ToolArtifactLayer>,
     #[doc = "Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal."]
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub tool_bundles: ::std::vec::Vec<ToolBundle>,
@@ -1681,74 +1386,6 @@ impl<'de> ::serde::Deserialize<'de> for CreateSessionRequestSecretsValue {
             })
     }
 }
-#[doc = "`CreateSessionRequestSystemPrompt`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 131072"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct CreateSessionRequestSystemPrompt(::std::string::String);
-impl ::std::ops::Deref for CreateSessionRequestSystemPrompt {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<CreateSessionRequestSystemPrompt> for ::std::string::String {
-    fn from(value: CreateSessionRequestSystemPrompt) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for CreateSessionRequestSystemPrompt {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 131072usize {
-            return Err("longer than 131072 characters".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for CreateSessionRequestSystemPrompt {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for CreateSessionRequestSystemPrompt {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for CreateSessionRequestSystemPrompt {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for CreateSessionRequestSystemPrompt {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
 #[doc = "`CustomerClientConfig`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -1852,6 +1489,588 @@ impl<'de> ::serde::Deserialize<'de> for CustomerClientConfigId {
             .map_err(|e: self::error::ConversionError| {
                 <D::Error as ::serde::de::Error>::custom(e.to_string())
             })
+    }
+}
+#[doc = "`EnvironmentConfig`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"configuration\","]
+#[doc = "    \"extension\","]
+#[doc = "    \"profile\","]
+#[doc = "    \"protocol\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"configuration\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
+#[doc = "    },"]
+#[doc = "    \"extension\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 256,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"profile\": {"]
+#[doc = "      \"$ref\": \"#/$defs/EnvironmentProfile\""]
+#[doc = "    },"]
+#[doc = "    \"protocol\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"environment/v1\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentConfig {
+    pub configuration: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    pub extension: EnvironmentConfigExtension,
+    pub profile: EnvironmentProfile,
+    pub protocol: ::std::string::String,
+}
+#[doc = "`EnvironmentConfigExtension`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 256,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct EnvironmentConfigExtension(::std::string::String);
+impl ::std::ops::Deref for EnvironmentConfigExtension {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<EnvironmentConfigExtension> for ::std::string::String {
+    fn from(value: EnvironmentConfigExtension) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for EnvironmentConfigExtension {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 256usize {
+            return Err("longer than 256 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for EnvironmentConfigExtension {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for EnvironmentConfigExtension {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for EnvironmentConfigExtension {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for EnvironmentConfigExtension {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`EnvironmentName`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^[A-Za-z][A-Za-z0-9_-]{0,63}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct EnvironmentName(::std::string::String);
+impl ::std::ops::Deref for EnvironmentName {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<EnvironmentName> for ::std::string::String {
+    fn from(value: EnvironmentName) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for EnvironmentName {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z][A-Za-z0-9_-]{0,63}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z][A-Za-z0-9_-]{0,63}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for EnvironmentName {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for EnvironmentName {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for EnvironmentName {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for EnvironmentName {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`EnvironmentProfile`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"kind\","]
+#[doc = "    \"network\","]
+#[doc = "    \"recovery\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"kind\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"computer\","]
+#[doc = "        \"callbacks\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"network\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"none\","]
+#[doc = "        \"allowlist\","]
+#[doc = "        \"unrestricted\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"platform\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"linux-amd64\","]
+#[doc = "        \"linux-arm64\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"recovery\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"retained\","]
+#[doc = "        \"connection\","]
+#[doc = "        \"replay_safe\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentProfile {
+    pub kind: EnvironmentProfileKind,
+    pub network: EnvironmentProfileNetwork,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub platform: ::std::option::Option<EnvironmentProfilePlatform>,
+    pub recovery: EnvironmentProfileRecovery,
+}
+#[doc = "`EnvironmentProfileKind`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"computer\","]
+#[doc = "    \"callbacks\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum EnvironmentProfileKind {
+    #[serde(rename = "computer")]
+    Computer,
+    #[serde(rename = "callbacks")]
+    Callbacks,
+}
+impl ::std::fmt::Display for EnvironmentProfileKind {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Computer => f.write_str("computer"),
+            Self::Callbacks => f.write_str("callbacks"),
+        }
+    }
+}
+impl ::std::str::FromStr for EnvironmentProfileKind {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "computer" => Ok(Self::Computer),
+            "callbacks" => Ok(Self::Callbacks),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for EnvironmentProfileKind {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for EnvironmentProfileKind {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for EnvironmentProfileKind {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`EnvironmentProfileNetwork`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"none\","]
+#[doc = "    \"allowlist\","]
+#[doc = "    \"unrestricted\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum EnvironmentProfileNetwork {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "allowlist")]
+    Allowlist,
+    #[serde(rename = "unrestricted")]
+    Unrestricted,
+}
+impl ::std::fmt::Display for EnvironmentProfileNetwork {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::None => f.write_str("none"),
+            Self::Allowlist => f.write_str("allowlist"),
+            Self::Unrestricted => f.write_str("unrestricted"),
+        }
+    }
+}
+impl ::std::str::FromStr for EnvironmentProfileNetwork {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "none" => Ok(Self::None),
+            "allowlist" => Ok(Self::Allowlist),
+            "unrestricted" => Ok(Self::Unrestricted),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for EnvironmentProfileNetwork {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for EnvironmentProfileNetwork {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for EnvironmentProfileNetwork {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`EnvironmentProfilePlatform`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"linux-amd64\","]
+#[doc = "    \"linux-arm64\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum EnvironmentProfilePlatform {
+    #[serde(rename = "linux-amd64")]
+    LinuxAmd64,
+    #[serde(rename = "linux-arm64")]
+    LinuxArm64,
+}
+impl ::std::fmt::Display for EnvironmentProfilePlatform {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::LinuxAmd64 => f.write_str("linux-amd64"),
+            Self::LinuxArm64 => f.write_str("linux-arm64"),
+        }
+    }
+}
+impl ::std::str::FromStr for EnvironmentProfilePlatform {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "linux-amd64" => Ok(Self::LinuxAmd64),
+            "linux-arm64" => Ok(Self::LinuxArm64),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for EnvironmentProfilePlatform {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for EnvironmentProfilePlatform {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for EnvironmentProfilePlatform {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`EnvironmentProfileRecovery`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"retained\","]
+#[doc = "    \"connection\","]
+#[doc = "    \"replay_safe\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum EnvironmentProfileRecovery {
+    #[serde(rename = "retained")]
+    Retained,
+    #[serde(rename = "connection")]
+    Connection,
+    #[serde(rename = "replay_safe")]
+    ReplaySafe,
+}
+impl ::std::fmt::Display for EnvironmentProfileRecovery {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Retained => f.write_str("retained"),
+            Self::Connection => f.write_str("connection"),
+            Self::ReplaySafe => f.write_str("replay_safe"),
+        }
+    }
+}
+impl ::std::str::FromStr for EnvironmentProfileRecovery {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "retained" => Ok(Self::Retained),
+            "connection" => Ok(Self::Connection),
+            "replay_safe" => Ok(Self::ReplaySafe),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for EnvironmentProfileRecovery {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for EnvironmentProfileRecovery {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for EnvironmentProfileRecovery {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`EnvironmentsConfig`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"maxProperties\": 32,"]
+#[doc = "  \"additionalProperties\": {"]
+#[doc = "    \"$ref\": \"#/$defs/EnvironmentConfig\""]
+#[doc = "  },"]
+#[doc = "  \"propertyNames\": {"]
+#[doc = "    \"$ref\": \"#/$defs/EnvironmentName\""]
+#[doc = "  }"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(transparent)]
+pub struct EnvironmentsConfig(pub ::std::collections::HashMap<EnvironmentName, EnvironmentConfig>);
+impl ::std::ops::Deref for EnvironmentsConfig {
+    type Target = ::std::collections::HashMap<EnvironmentName, EnvironmentConfig>;
+    fn deref(&self) -> &::std::collections::HashMap<EnvironmentName, EnvironmentConfig> {
+        &self.0
+    }
+}
+impl ::std::convert::From<EnvironmentsConfig>
+    for ::std::collections::HashMap<EnvironmentName, EnvironmentConfig>
+{
+    fn from(value: EnvironmentsConfig) -> Self {
+        value.0
+    }
+}
+impl ::std::convert::From<::std::collections::HashMap<EnvironmentName, EnvironmentConfig>>
+    for EnvironmentsConfig
+{
+    fn from(value: ::std::collections::HashMap<EnvironmentName, EnvironmentConfig>) -> Self {
+        Self(value)
     }
 }
 #[doc = "One journal event, delivered over SSE as `event: <type>` with `id: <seq>` and this object as data. Discriminated by `type`."]
@@ -2487,7 +2706,7 @@ impl<'de> ::serde::Deserialize<'de> for CustomerClientConfigId {
 #[doc = "        \"type\": {"]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"enum\": ["]
-#[doc = "            \"hand.lost\""]
+#[doc = "            \"environment.lost\""]
 #[doc = "          ]"]
 #[doc = "        }"]
 #[doc = "      }"]
@@ -2772,8 +2991,8 @@ pub enum Event {
         turn_phase: ::std::option::Option<EventTurnPhase>,
         turn_state: SessionTurnState,
     },
-    #[serde(rename = "hand.lost")]
-    HandLost {
+    #[serde(rename = "environment.lost")]
+    EnvironmentLost {
         at: Timestamp,
         #[doc = "Calls whose outcome is unknown; they are reported to the model as interrupted and never replayed."]
         interrupted_calls: ::std::vec::Vec<CallId>,
@@ -5180,7 +5399,7 @@ pub struct Session {
 #[doc = "      \"enum\": ["]
 #[doc = "        \"binding_conflict\","]
 #[doc = "        \"provider_unusable\","]
-#[doc = "        \"hand_unavailable\","]
+#[doc = "        \"environment_unavailable\","]
 #[doc = "        \"internal\""]
 #[doc = "      ]"]
 #[doc = "    },"]
@@ -5207,7 +5426,7 @@ pub struct SessionFailure {
 #[doc = "  \"enum\": ["]
 #[doc = "    \"binding_conflict\","]
 #[doc = "    \"provider_unusable\","]
-#[doc = "    \"hand_unavailable\","]
+#[doc = "    \"environment_unavailable\","]
 #[doc = "    \"internal\""]
 #[doc = "  ]"]
 #[doc = "}"]
@@ -5230,8 +5449,8 @@ pub enum SessionFailureCode {
     BindingConflict,
     #[serde(rename = "provider_unusable")]
     ProviderUnusable,
-    #[serde(rename = "hand_unavailable")]
-    HandUnavailable,
+    #[serde(rename = "environment_unavailable")]
+    EnvironmentUnavailable,
     #[serde(rename = "internal")]
     Internal,
 }
@@ -5240,7 +5459,7 @@ impl ::std::fmt::Display for SessionFailureCode {
         match *self {
             Self::BindingConflict => f.write_str("binding_conflict"),
             Self::ProviderUnusable => f.write_str("provider_unusable"),
-            Self::HandUnavailable => f.write_str("hand_unavailable"),
+            Self::EnvironmentUnavailable => f.write_str("environment_unavailable"),
             Self::Internal => f.write_str("internal"),
         }
     }
@@ -5251,7 +5470,7 @@ impl ::std::str::FromStr for SessionFailureCode {
         match value {
             "binding_conflict" => Ok(Self::BindingConflict),
             "provider_unusable" => Ok(Self::ProviderUnusable),
-            "hand_unavailable" => Ok(Self::HandUnavailable),
+            "environment_unavailable" => Ok(Self::EnvironmentUnavailable),
             "internal" => Ok(Self::Internal),
             _ => Err("invalid value".into()),
         }
@@ -6225,13 +6444,13 @@ impl ::std::fmt::Display for Timestamp {
         self.0.fmt(f)
     }
 }
-#[doc = "Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation."]
+#[doc = "Create-time-only immutable artifact-layer bytes. Brain stages these outside the journal, then discards this representation."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Create-time-only bundle bytes. Brain stages these outside the journal, then discards this representation.\","]
+#[doc = "  \"description\": \"Create-time-only immutable artifact-layer bytes. Brain stages these outside the journal, then discards this representation.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"bytes\","]
@@ -6242,7 +6461,7 @@ impl ::std::fmt::Display for Timestamp {
 #[doc = "  \"properties\": {"]
 #[doc = "    \"bytes\": {"]
 #[doc = "      \"type\": \"integer\","]
-#[doc = "      \"maximum\": 4194304.0,"]
+#[doc = "      \"maximum\": 67108864.0,"]
 #[doc = "      \"minimum\": 1.0"]
 #[doc = "    },"]
 #[doc = "    \"checksum\": {"]
@@ -6251,12 +6470,496 @@ impl ::std::fmt::Display for Timestamp {
 #[doc = "    \"content_base64\": {"]
 #[doc = "      \"writeOnly\": true,"]
 #[doc = "      \"type\": \"string\","]
-#[doc = "      \"maxLength\": 5592408,"]
+#[doc = "      \"maxLength\": 89478488,"]
 #[doc = "      \"contentEncoding\": \"base64\""]
 #[doc = "    },"]
 #[doc = "    \"media_type\": {"]
 #[doc = "      \"type\": \"string\","]
-#[doc = "      \"const\": \"application/javascript+esm\""]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"application/javascript+esm\","]
+#[doc = "        \"application/x-xz\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ToolArtifactLayer {
+    pub bytes: ::std::num::NonZeroU64,
+    pub checksum: Sha256Hex,
+    pub content_base64: ToolArtifactLayerContentBase64,
+    pub media_type: ToolArtifactLayerMediaType,
+}
+#[doc = "`ToolArtifactLayerContentBase64`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"writeOnly\": true,"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 89478488,"]
+#[doc = "  \"contentEncoding\": \"base64\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ToolArtifactLayerContentBase64(::std::string::String);
+impl ::std::ops::Deref for ToolArtifactLayerContentBase64 {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ToolArtifactLayerContentBase64> for ::std::string::String {
+    fn from(value: ToolArtifactLayerContentBase64) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ToolArtifactLayerContentBase64 {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 89478488usize {
+            return Err("longer than 89478488 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolArtifactLayerContentBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolArtifactLayerContentBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolArtifactLayerContentBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ToolArtifactLayerContentBase64 {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ToolArtifactLayerMediaType`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"application/javascript+esm\","]
+#[doc = "    \"application/x-xz\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ToolArtifactLayerMediaType {
+    #[serde(rename = "application/javascript+esm")]
+    ApplicationJavascriptEsm,
+    #[serde(rename = "application/x-xz")]
+    ApplicationXXz,
+}
+impl ::std::fmt::Display for ToolArtifactLayerMediaType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ApplicationJavascriptEsm => f.write_str("application/javascript+esm"),
+            Self::ApplicationXXz => f.write_str("application/x-xz"),
+        }
+    }
+}
+impl ::std::str::FromStr for ToolArtifactLayerMediaType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "application/javascript+esm" => Ok(Self::ApplicationJavascriptEsm),
+            "application/x-xz" => Ok(Self::ApplicationXXz),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolArtifactLayerMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolArtifactLayerMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolArtifactLayerMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ToolArtifactLayerRef`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"bytes\","]
+#[doc = "    \"checksum\","]
+#[doc = "    \"media_type\","]
+#[doc = "    \"mount_path\","]
+#[doc = "    \"unpack\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"bytes\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 67108864.0,"]
+#[doc = "      \"minimum\": 1.0"]
+#[doc = "    },"]
+#[doc = "    \"checksum\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "    },"]
+#[doc = "    \"media_type\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"application/javascript+esm\","]
+#[doc = "        \"application/x-xz\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"mount_path\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 4096,"]
+#[doc = "      \"pattern\": \"^/[A-Za-z0-9._/-]+$\""]
+#[doc = "    },"]
+#[doc = "    \"unpack\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"file\","]
+#[doc = "        \"tar.xz\""]
+#[doc = "      ]"]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ToolArtifactLayerRef {
+    pub bytes: ::std::num::NonZeroU64,
+    pub checksum: Sha256Hex,
+    pub media_type: ToolArtifactLayerRefMediaType,
+    pub mount_path: ToolArtifactLayerRefMountPath,
+    pub unpack: ToolArtifactLayerRefUnpack,
+}
+#[doc = "`ToolArtifactLayerRefMediaType`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"application/javascript+esm\","]
+#[doc = "    \"application/x-xz\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ToolArtifactLayerRefMediaType {
+    #[serde(rename = "application/javascript+esm")]
+    ApplicationJavascriptEsm,
+    #[serde(rename = "application/x-xz")]
+    ApplicationXXz,
+}
+impl ::std::fmt::Display for ToolArtifactLayerRefMediaType {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::ApplicationJavascriptEsm => f.write_str("application/javascript+esm"),
+            Self::ApplicationXXz => f.write_str("application/x-xz"),
+        }
+    }
+}
+impl ::std::str::FromStr for ToolArtifactLayerRefMediaType {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "application/javascript+esm" => Ok(Self::ApplicationJavascriptEsm),
+            "application/x-xz" => Ok(Self::ApplicationXXz),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolArtifactLayerRefMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolArtifactLayerRefMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolArtifactLayerRefMediaType {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ToolArtifactLayerRefMountPath`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 4096,"]
+#[doc = "  \"pattern\": \"^/[A-Za-z0-9._/-]+$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ToolArtifactLayerRefMountPath(::std::string::String);
+impl ::std::ops::Deref for ToolArtifactLayerRefMountPath {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ToolArtifactLayerRefMountPath> for ::std::string::String {
+    fn from(value: ToolArtifactLayerRefMountPath) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ToolArtifactLayerRefMountPath {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 4096usize {
+            return Err("longer than 4096 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^/[A-Za-z0-9._/-]+$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^/[A-Za-z0-9._/-]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolArtifactLayerRefMountPath {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolArtifactLayerRefMountPath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolArtifactLayerRefMountPath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ToolArtifactLayerRefMountPath {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ToolArtifactLayerRefUnpack`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"file\","]
+#[doc = "    \"tar.xz\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ToolArtifactLayerRefUnpack {
+    #[serde(rename = "file")]
+    File,
+    #[serde(rename = "tar.xz")]
+    TarXz,
+}
+impl ::std::fmt::Display for ToolArtifactLayerRefUnpack {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::File => f.write_str("file"),
+            Self::TarXz => f.write_str("tar.xz"),
+        }
+    }
+}
+impl ::std::str::FromStr for ToolArtifactLayerRefUnpack {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "file" => Ok(Self::File),
+            "tar.xz" => Ok(Self::TarXz),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolArtifactLayerRefUnpack {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolArtifactLayerRefUnpack {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolArtifactLayerRefUnpack {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "A canonical computer-profile manifest plus create-time-only immutable runtime and code layers."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"A canonical computer-profile manifest plus create-time-only immutable runtime and code layers.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"bytes\","]
+#[doc = "    \"checksum\","]
+#[doc = "    \"execute_path\","]
+#[doc = "    \"layers\","]
+#[doc = "    \"target\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"bytes\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 100663296.0,"]
+#[doc = "      \"minimum\": 1.0"]
+#[doc = "    },"]
+#[doc = "    \"checksum\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "    },"]
+#[doc = "    \"execute_path\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 4096,"]
+#[doc = "      \"pattern\": \"^/[^\\\\u0000]+$\""]
+#[doc = "    },"]
+#[doc = "    \"layers\": {"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"$ref\": \"#/$defs/ToolArtifactLayerRef\""]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 16,"]
+#[doc = "      \"minItems\": 1"]
+#[doc = "    },"]
+#[doc = "    \"setup_path\": {"]
+#[doc = "      \"type\": ["]
+#[doc = "        \"string\","]
+#[doc = "        \"null\""]
+#[doc = "      ],"]
+#[doc = "      \"maxLength\": 4096,"]
+#[doc = "      \"pattern\": \"^/[^\\\\u0000]+$\""]
+#[doc = "    },"]
+#[doc = "    \"target\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"linux-amd64\","]
+#[doc = "        \"linux-arm64\""]
+#[doc = "      ]"]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"additionalProperties\": false"]
@@ -6268,52 +6971,59 @@ impl ::std::fmt::Display for Timestamp {
 pub struct ToolBundle {
     pub bytes: ::std::num::NonZeroU64,
     pub checksum: Sha256Hex,
-    pub content_base64: ToolBundleContentBase64,
-    pub media_type: ::std::string::String,
+    pub execute_path: ToolBundleExecutePath,
+    pub layers: ::std::vec::Vec<ToolArtifactLayerRef>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub setup_path: ::std::option::Option<ToolBundleSetupPath>,
+    pub target: ToolBundleTarget,
 }
-#[doc = "`ToolBundleContentBase64`"]
+#[doc = "`ToolBundleExecutePath`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"writeOnly\": true,"]
 #[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 5592408,"]
-#[doc = "  \"contentEncoding\": \"base64\""]
+#[doc = "  \"maxLength\": 4096,"]
+#[doc = "  \"pattern\": \"^/[^\\\\u0000]+$\""]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[serde(transparent)]
-pub struct ToolBundleContentBase64(::std::string::String);
-impl ::std::ops::Deref for ToolBundleContentBase64 {
+pub struct ToolBundleExecutePath(::std::string::String);
+impl ::std::ops::Deref for ToolBundleExecutePath {
     type Target = ::std::string::String;
     fn deref(&self) -> &::std::string::String {
         &self.0
     }
 }
-impl ::std::convert::From<ToolBundleContentBase64> for ::std::string::String {
-    fn from(value: ToolBundleContentBase64) -> Self {
+impl ::std::convert::From<ToolBundleExecutePath> for ::std::string::String {
+    fn from(value: ToolBundleExecutePath) -> Self {
         value.0
     }
 }
-impl ::std::str::FromStr for ToolBundleContentBase64 {
+impl ::std::str::FromStr for ToolBundleExecutePath {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 5592408usize {
-            return Err("longer than 5592408 characters".into());
+        if value.chars().count() > 4096usize {
+            return Err("longer than 4096 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^/[^\\u0000]+$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^/[^\\u0000]+$\"".into());
         }
         Ok(Self(value.to_string()))
     }
 }
-impl ::std::convert::TryFrom<&str> for ToolBundleContentBase64 {
+impl ::std::convert::TryFrom<&str> for ToolBundleExecutePath {
     type Error = self::error::ConversionError;
     fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<&::std::string::String> for ToolBundleContentBase64 {
+impl ::std::convert::TryFrom<&::std::string::String> for ToolBundleExecutePath {
     type Error = self::error::ConversionError;
     fn try_from(
         value: &::std::string::String,
@@ -6321,7 +7031,7 @@ impl ::std::convert::TryFrom<&::std::string::String> for ToolBundleContentBase64
         value.parse()
     }
 }
-impl ::std::convert::TryFrom<::std::string::String> for ToolBundleContentBase64 {
+impl ::std::convert::TryFrom<::std::string::String> for ToolBundleExecutePath {
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,
@@ -6329,7 +7039,7 @@ impl ::std::convert::TryFrom<::std::string::String> for ToolBundleContentBase64 
         value.parse()
     }
 }
-impl<'de> ::serde::Deserialize<'de> for ToolBundleContentBase64 {
+impl<'de> ::serde::Deserialize<'de> for ToolBundleExecutePath {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -6339,6 +7049,152 @@ impl<'de> ::serde::Deserialize<'de> for ToolBundleContentBase64 {
             .map_err(|e: self::error::ConversionError| {
                 <D::Error as ::serde::de::Error>::custom(e.to_string())
             })
+    }
+}
+#[doc = "`ToolBundleSetupPath`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 4096,"]
+#[doc = "  \"pattern\": \"^/[^\\\\u0000]+$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ToolBundleSetupPath(::std::string::String);
+impl ::std::ops::Deref for ToolBundleSetupPath {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ToolBundleSetupPath> for ::std::string::String {
+    fn from(value: ToolBundleSetupPath) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ToolBundleSetupPath {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 4096usize {
+            return Err("longer than 4096 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^/[^\\u0000]+$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^/[^\\u0000]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolBundleSetupPath {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolBundleSetupPath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolBundleSetupPath {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ToolBundleSetupPath {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ToolBundleTarget`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"linux-amd64\","]
+#[doc = "    \"linux-arm64\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ToolBundleTarget {
+    #[serde(rename = "linux-amd64")]
+    LinuxAmd64,
+    #[serde(rename = "linux-arm64")]
+    LinuxArm64,
+}
+impl ::std::fmt::Display for ToolBundleTarget {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::LinuxAmd64 => f.write_str("linux-amd64"),
+            Self::LinuxArm64 => f.write_str("linux-arm64"),
+        }
+    }
+}
+impl ::std::str::FromStr for ToolBundleTarget {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "linux-amd64" => Ok(Self::LinuxAmd64),
+            "linux-arm64" => Ok(Self::LinuxArm64),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolBundleTarget {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolBundleTarget {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolBundleTarget {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
     }
 }
 #[doc = "`ToolConfig`"]
@@ -6360,7 +7216,7 @@ impl<'de> ::serde::Deserialize<'de> for ToolBundleContentBase64 {
 #[doc = "      \"$ref\": \"#/$defs/ToolExecutor\""]
 #[doc = "    },"]
 #[doc = "    \"network\": {"]
-#[doc = "      \"description\": \"The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed.\","]
+#[doc = "      \"description\": \"The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
 #[doc = "        \"destinations\""]
@@ -6390,13 +7246,13 @@ pub struct ToolConfig {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub network: ::std::option::Option<ToolConfigNetwork>,
 }
-#[doc = "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed."]
+#[doc = "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies; Aex infra is always denied. Declaration and merge only - no per-tool runtime isolation is claimed.\","]
+#[doc = "  \"description\": \"The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"destinations\""]
@@ -6551,48 +7407,30 @@ impl<'de> ::serde::Deserialize<'de> for ToolDefinitionDescription {
 #[doc = "{"]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
-#[doc = "      \"description\": \"A digest-sealed executable in the session's default Aex-managed realm.\","]
+#[doc = "      \"description\": \"An explicitly bound tool executed by one declared logical environment.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
-#[doc = "        \"bundle_digest\","]
+#[doc = "        \"environment\","]
 #[doc = "        \"kind\","]
-#[doc = "        \"required_env\""]
+#[doc = "        \"requirements\""]
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
-#[doc = "        \"bundle_digest\": {"]
+#[doc = "        \"artifact_digest\": {"]
 #[doc = "          \"$ref\": \"#/$defs/Sha256Hex\""]
 #[doc = "        },"]
-#[doc = "        \"kind\": {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"const\": \"aex_managed\""]
-#[doc = "        },"]
-#[doc = "        \"required_env\": {"]
-#[doc = "          \"description\": \"Environment-key names only. Secret values never enter the seal.\","]
-#[doc = "          \"type\": \"array\","]
-#[doc = "          \"items\": {"]
-#[doc = "            \"type\": \"string\","]
-#[doc = "            \"pattern\": \"^[A-Za-z_][A-Za-z0-9_]*$\""]
-#[doc = "          },"]
-#[doc = "          \"maxItems\": 64,"]
-#[doc = "          \"uniqueItems\": true"]
-#[doc = "        }"]
-#[doc = "      },"]
-#[doc = "      \"additionalProperties\": false"]
-#[doc = "    },"]
-#[doc = "    {"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"required\": ["]
-#[doc = "        \"kind\","]
-#[doc = "        \"registration\""]
-#[doc = "      ],"]
-#[doc = "      \"properties\": {"]
-#[doc = "        \"kind\": {"]
-#[doc = "          \"type\": \"string\","]
-#[doc = "          \"const\": \"customer_app\""]
-#[doc = "        },"]
-#[doc = "        \"registration\": {"]
+#[doc = "        \"callback_registration\": {"]
 #[doc = "          \"type\": \"string\","]
 #[doc = "          \"pattern\": \"^[A-Za-z0-9_.:-]{1,128}$\""]
+#[doc = "        },"]
+#[doc = "        \"environment\": {"]
+#[doc = "          \"$ref\": \"#/$defs/EnvironmentName\""]
+#[doc = "        },"]
+#[doc = "        \"kind\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"environment\""]
+#[doc = "        },"]
+#[doc = "        \"requirements\": {"]
+#[doc = "          \"$ref\": \"#/$defs/ToolRequirements\""]
 #[doc = "        }"]
 #[doc = "      },"]
 #[doc = "      \"additionalProperties\": false"]
@@ -6606,7 +7444,7 @@ impl<'de> ::serde::Deserialize<'de> for ToolDefinitionDescription {
 #[doc = "      \"properties\": {"]
 #[doc = "        \"capability\": {"]
 #[doc = "          \"type\": \"string\","]
-#[doc = "          \"pattern\": \"^(brain|aex)\\\\.[A-Za-z0-9_.:-]{1,120}$\""]
+#[doc = "          \"pattern\": \"^brain\\\\.[A-Za-z0-9_.:-]{1,120}$\""]
 #[doc = "        },"]
 #[doc = "        \"kind\": {"]
 #[doc = "          \"type\": \"string\","]
@@ -6622,19 +7460,90 @@ impl<'de> ::serde::Deserialize<'de> for ToolDefinitionDescription {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum ToolExecutor {
-    #[doc = "A digest-sealed executable in the session's default Aex-managed realm."]
-    #[serde(rename = "aex_managed")]
-    AexManaged {
-        bundle_digest: Sha256Hex,
-        #[doc = "Environment-key names only. Secret values never enter the seal."]
-        required_env: Vec<ToolExecutorRequiredEnvItem>,
-    },
-    #[serde(rename = "customer_app")]
-    CustomerApp {
-        registration: ToolExecutorRegistration,
+    #[doc = "An explicitly bound tool executed by one declared logical environment."]
+    #[serde(rename = "environment")]
+    Environment {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        artifact_digest: ::std::option::Option<Sha256Hex>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        callback_registration: ::std::option::Option<ToolExecutorCallbackRegistration>,
+        environment: EnvironmentName,
+        requirements: ToolRequirements,
     },
     #[serde(rename = "engine")]
     Engine { capability: ToolExecutorCapability },
+}
+#[doc = "`ToolExecutorCallbackRegistration`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9_.:-]{1,128}$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ToolExecutorCallbackRegistration(::std::string::String);
+impl ::std::ops::Deref for ToolExecutorCallbackRegistration {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ToolExecutorCallbackRegistration> for ::std::string::String {
+    fn from(value: ToolExecutorCallbackRegistration) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ToolExecutorCallbackRegistration {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z0-9_.:-]{1,128}$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z0-9_.:-]{1,128}$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolExecutorCallbackRegistration {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolExecutorCallbackRegistration {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolExecutorCallbackRegistration {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ToolExecutorCallbackRegistration {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
 }
 #[doc = "`ToolExecutorCapability`"]
 #[doc = r""]
@@ -6643,7 +7552,7 @@ pub enum ToolExecutor {
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"type\": \"string\","]
-#[doc = "  \"pattern\": \"^(brain|aex)\\\\.[A-Za-z0-9_.:-]{1,120}$\""]
+#[doc = "  \"pattern\": \"^brain\\\\.[A-Za-z0-9_.:-]{1,120}$\""]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
@@ -6666,10 +7575,10 @@ impl ::std::str::FromStr for ToolExecutorCapability {
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
             ::std::sync::LazyLock::new(|| {
-                ::regress::Regex::new("^(brain|aex)\\.[A-Za-z0-9_.:-]{1,120}$").unwrap()
+                ::regress::Regex::new("^brain\\.[A-Za-z0-9_.:-]{1,120}$").unwrap()
             });
         if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^(brain|aex)\\.[A-Za-z0-9_.:-]{1,120}$\"".into());
+            return Err("doesn't match pattern \"^brain\\.[A-Za-z0-9_.:-]{1,120}$\"".into());
         }
         Ok(Self(value.to_string()))
     }
@@ -6697,150 +7606,6 @@ impl ::std::convert::TryFrom<::std::string::String> for ToolExecutorCapability {
     }
 }
 impl<'de> ::serde::Deserialize<'de> for ToolExecutorCapability {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
-#[doc = "`ToolExecutorRegistration`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"pattern\": \"^[A-Za-z0-9_.:-]{1,128}$\""]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct ToolExecutorRegistration(::std::string::String);
-impl ::std::ops::Deref for ToolExecutorRegistration {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<ToolExecutorRegistration> for ::std::string::String {
-    fn from(value: ToolExecutorRegistration) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for ToolExecutorRegistration {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
-            ::std::sync::LazyLock::new(|| {
-                ::regress::Regex::new("^[A-Za-z0-9_.:-]{1,128}$").unwrap()
-            });
-        if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^[A-Za-z0-9_.:-]{1,128}$\"".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for ToolExecutorRegistration {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for ToolExecutorRegistration {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for ToolExecutorRegistration {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for ToolExecutorRegistration {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
-#[doc = "`ToolExecutorRequiredEnvItem`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"pattern\": \"^[A-Za-z_][A-Za-z0-9_]*$\""]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct ToolExecutorRequiredEnvItem(::std::string::String);
-impl ::std::ops::Deref for ToolExecutorRequiredEnvItem {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<ToolExecutorRequiredEnvItem> for ::std::string::String {
-    fn from(value: ToolExecutorRequiredEnvItem) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for ToolExecutorRequiredEnvItem {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
-            ::std::sync::LazyLock::new(|| {
-                ::regress::Regex::new("^[A-Za-z_][A-Za-z0-9_]*$").unwrap()
-            });
-        if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^[A-Za-z_][A-Za-z0-9_]*$\"".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for ToolExecutorRequiredEnvItem {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for ToolExecutorRequiredEnvItem {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for ToolExecutorRequiredEnvItem {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for ToolExecutorRequiredEnvItem {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,
@@ -7004,6 +7769,229 @@ impl ::std::convert::TryFrom<&::std::string::String> for ToolOutcome {
     }
 }
 impl ::std::convert::TryFrom<::std::string::String> for ToolOutcome {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+#[doc = "`ToolRequirements`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"env\": {"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"type\": \"string\","]
+#[doc = "        \"pattern\": \"^[A-Za-z_][A-Za-z0-9_]*$\""]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 64,"]
+#[doc = "      \"uniqueItems\": true"]
+#[doc = "    },"]
+#[doc = "    \"network\": {"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"$ref\": \"#/$defs/NetworkDestination\""]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 32"]
+#[doc = "    },"]
+#[doc = "    \"processes\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"recovery\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"enum\": ["]
+#[doc = "        \"retained\","]
+#[doc = "        \"connection\","]
+#[doc = "        \"replay_safe\""]
+#[doc = "      ]"]
+#[doc = "    },"]
+#[doc = "    \"streaming\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"workspace\": {"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRequirements {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub env: ::std::option::Option<Vec<ToolRequirementsEnvItem>>,
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    pub network: ::std::vec::Vec<NetworkDestination>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub processes: ::std::option::Option<bool>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub recovery: ::std::option::Option<ToolRequirementsRecovery>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub streaming: ::std::option::Option<bool>,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub workspace: ::std::option::Option<bool>,
+}
+impl ::std::default::Default for ToolRequirements {
+    fn default() -> Self {
+        Self {
+            env: Default::default(),
+            network: Default::default(),
+            processes: Default::default(),
+            recovery: Default::default(),
+            streaming: Default::default(),
+            workspace: Default::default(),
+        }
+    }
+}
+#[doc = "`ToolRequirementsEnvItem`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"pattern\": \"^[A-Za-z_][A-Za-z0-9_]*$\""]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ToolRequirementsEnvItem(::std::string::String);
+impl ::std::ops::Deref for ToolRequirementsEnvItem {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ToolRequirementsEnvItem> for ::std::string::String {
+    fn from(value: ToolRequirementsEnvItem) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ToolRequirementsEnvItem {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| {
+                ::regress::Regex::new("^[A-Za-z_][A-Za-z0-9_]*$").unwrap()
+            });
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z_][A-Za-z0-9_]*$\"".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolRequirementsEnvItem {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolRequirementsEnvItem {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolRequirementsEnvItem {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ToolRequirementsEnvItem {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
+#[doc = "`ToolRequirementsRecovery`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"retained\","]
+#[doc = "    \"connection\","]
+#[doc = "    \"replay_safe\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ToolRequirementsRecovery {
+    #[serde(rename = "retained")]
+    Retained,
+    #[serde(rename = "connection")]
+    Connection,
+    #[serde(rename = "replay_safe")]
+    ReplaySafe,
+}
+impl ::std::fmt::Display for ToolRequirementsRecovery {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Retained => f.write_str("retained"),
+            Self::Connection => f.write_str("connection"),
+            Self::ReplaySafe => f.write_str("replay_safe"),
+        }
+    }
+}
+impl ::std::str::FromStr for ToolRequirementsRecovery {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "retained" => Ok(Self::Retained),
+            "connection" => Ok(Self::Connection),
+            "replay_safe" => Ok(Self::ReplaySafe),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolRequirementsRecovery {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolRequirementsRecovery {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolRequirementsRecovery {
     type Error = self::error::ConversionError;
     fn try_from(
         value: ::std::string::String,

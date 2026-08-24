@@ -1,4 +1,4 @@
-//! Durable session-object storage port. This is distinct from a Hand's live sandbox files.
+//! Durable session-object storage port. This is distinct from a Environment's live sandbox files.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use crate::Result;
 
 /// Internal immutable Tool bundle custody. Bundle objects are scoped to the root lifetime but
 /// excluded from user storage listing and quota. A fresh short-lived fetch is minted whenever a
-/// Hand preparation cache must be rebuilt after process loss.
+/// Environment preparation cache must be rebuilt after process loss.
 #[async_trait]
 pub trait BundleStoragePort: Send + Sync {
     async fn store_bundle(
@@ -15,13 +15,13 @@ pub trait BundleStoragePort: Send + Sync {
         root_id: &str,
         bundle_digest: &str,
         bytes: &[u8],
-    ) -> Result<brain_protocol::hand::ObjectReference>;
+    ) -> Result<brain_protocol::environment::ObjectReference>;
 
     async fn prepare_bundle_fetch(
         &self,
         root_id: &str,
         bundle_digest: &str,
-    ) -> Result<brain_protocol::hand::BundleFetch>;
+    ) -> Result<brain_protocol::environment::BundleFetch>;
 
     /// Remove only the root-hidden bundle namespace after a definitively rejected root create.
     /// This must never touch user storage; normal root deletion uses the exhaustive session purge.
@@ -80,7 +80,7 @@ pub struct StorageUploadRequest {
     pub key: String,
     pub bytes: u64,
     /// Lowercase hexadecimal SHA-256 of the final bytes.
-    /// Expected digest for caller-uploaded bytes. Sandbox exports leave this absent and Hand
+    /// Expected digest for caller-uploaded bytes. Sandbox exports leave this absent and Environment
     /// supplies the actual digest from the single streamed transfer.
     pub sha256: Option<String>,
     pub content_type: Option<String>,
@@ -104,7 +104,7 @@ pub struct StorageUploadIntent {
 pub struct StorageTransferTicket {
     pub transfer_id: String,
     /// Opaque immutable source identity (download) or pending destination identity (upload).
-    /// It is distinct from the capability/reservation id and is safe to expose to a Hand.
+    /// It is distinct from the capability/reservation id and is safe to expose to a Environment.
     pub object_id: String,
     pub method: String,
     pub url: String,
