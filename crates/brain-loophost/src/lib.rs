@@ -403,6 +403,10 @@ pub(crate) fn resolve_verdict(
             ActivationResultOutcome::Completed => Err(BrainError::Agentloop(
                 "the message activation completed without turn_finish or turn_fail".into(),
             )),
+            ActivationResultOutcome::Aborted => Ok(LoopVerdict {
+                stop_reason: brain::journal::TurnStopReason::Cancelled,
+                terminal_committed: false,
+            }),
             outcome => Err(BrainError::Agentloop(format!(
                 "the activation ended {outcome}: {}",
                 result
@@ -562,5 +566,36 @@ impl Agentloop for WasmAgentloop {
                 Err(BrainError::Agentloop(guest))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EmptyCtx;
+
+    #[async_trait]
+    impl TurnCtx for EmptyCtx {}
+
+    #[test]
+    fn an_aborted_activation_maps_to_a_cancelled_turn() {
+        let returned = serde_json::json!({
+            "activation_id": "act-cancelled",
+            "outcome": "aborted",
+            "error": {
+                "code": "aborted",
+                "message": "the turn was cancelled",
+                "retryable": false
+            }
+        })
+        .to_string();
+
+        let verdict = resolve_verdict(&returned, &EmptyCtx).expect("cancelled verdict");
+        assert_eq!(
+            verdict.stop_reason,
+            brain::journal::TurnStopReason::Cancelled
+        );
+        assert!(!verdict.terminal_committed);
     }
 }
