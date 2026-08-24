@@ -29,7 +29,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use brain::agentloop::{Agentloop, AgentloopRegistry, SequentialAgentloop};
 use brain::config::Dialect;
+use brain::journal::AgentloopSelectorDoc;
 use brain::journal::Journal;
 use brain::provider::Provider;
 use brain::provider::fake::{FakeMode, FakeProvider};
@@ -117,6 +119,27 @@ struct Bench {
     api: Api,
     fake: Arc<FakeProvider>,
     executor: Arc<echo::EchoExecutor>,
+}
+
+struct BenchAgentloopRegistry;
+
+impl AgentloopRegistry for BenchAgentloopRegistry {
+    fn resolve(&self, _selector: &AgentloopSelectorDoc) -> brain::Result<Arc<dyn Agentloop>> {
+        Ok(Arc::new(SequentialAgentloop))
+    }
+
+    fn admit_custom(
+        &self,
+        source_bundle_sha256: &str,
+        toolchain: &str,
+        bundle: &[u8],
+    ) -> brain::Result<AgentloopSelectorDoc> {
+        Ok(AgentloopSelectorDoc {
+            source_bundle_sha256: source_bundle_sha256.into(),
+            source_bundle_bytes: bundle.len() as u64,
+            toolchain: toolchain.into(),
+        })
+    }
 }
 
 /// Compose the brain + the bench sidecar routes and serve on a loopback port.
@@ -239,7 +262,10 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         journal,
         Arc::new(brain::keys::PlainCustody),
         executor.clone(),
-        BrainServices::default(),
+        BrainServices {
+            agentloop_registry: Some(Arc::new(BenchAgentloopRegistry)),
+            ..BrainServices::default()
+        },
         Arc::new(move |_| factory_fake.clone() as Arc<dyn Provider>),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
