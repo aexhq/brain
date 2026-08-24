@@ -351,6 +351,11 @@ impl Api {
             .bearer_auth(TOKEN)
             .headers(self.tenant_headers())
             .json(&json!({
+                "agentloop": {
+                    "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                    "toolchain": "brain-bench",
+                    "bundle_base64": "eA=="
+                },
                 // Keep semantic compaction out of the turn-throughput instrument. Its own
                 // correctness and wire-budget gates live in Brain's compaction test suite.
                 "model": {
