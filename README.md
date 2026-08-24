@@ -1,6 +1,6 @@
 <h1 align="center">Brain</h1>
 
-<p align="center"><strong>A minimal, extensible kernel for agents</strong></p>
+<p align="center"><strong>A minimal, extensible kernel for agents on server</strong></p>
 
 > This repo is in heavy early development, interfaces and contracts might change
 
