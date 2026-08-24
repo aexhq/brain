@@ -5725,12 +5725,9 @@ async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
                 false,
             );
             match ctx.contract_op(CtxOp::TurnFail { error: failure }).await? {
-                Err(error) if error.code == AgentloopErrorCode::Aborted => {
-                    Ok(crate::agentloop::LoopVerdict {
-                        stop_reason: TurnStopReason::Cancelled,
-                        terminal_committed: false,
-                    })
-                }
+                Err(error) if error.code == AgentloopErrorCode::Aborted => Err(
+                    BrainError::Agentloop("loop surfaced cancellation as an error".into()),
+                ),
                 outcome => Err(BrainError::Agentloop(format!(
                     "terminal after cancellation returned {outcome:?}"
                 ))),

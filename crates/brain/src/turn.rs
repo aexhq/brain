@@ -1192,7 +1192,17 @@ impl TurnRun {
         rounds: u64,
         tool_calls: u64,
     ) -> Result<TurnReport> {
-        let report = self.run_work_from(st, rounds, tool_calls).await?;
+        let report = match self.run_work_from(st, rounds, tool_calls).await {
+            Ok(report) => report,
+            Err(_) if self.cancel.is_cancelled() => TurnReport {
+                stop_reason: TurnStopReason::Cancelled,
+                rounds: st.head.active_rounds,
+                tool_calls: st.head.active_tool_calls,
+                terminal_committed: false,
+                result: None,
+            },
+            Err(error) => return Err(error),
+        };
         if report.terminal_committed {
             return Ok(report);
         }
