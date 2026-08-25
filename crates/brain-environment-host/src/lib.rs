@@ -17,7 +17,7 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::Value;
 
-const MAX_DISPATCH_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+const MAX_DISPATCH_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DISPATCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 static STAGING_NONCE: AtomicU64 = AtomicU64::new(1);
@@ -113,7 +113,7 @@ impl ComponentEnvironmentRegistry for WasmEnvironmentRegistry {
                     parent_id: request.parent_id,
                     environment_id: request.environment_id,
                     config_json: serde_json::to_string(&declaration.config)?,
-                    authority_json: "{}".into(),
+                    policy_json: serde_json::to_string(&request.policy)?,
                 },
             })
             .await
@@ -198,6 +198,56 @@ impl ComponentEnvironmentRegistry for WasmEnvironmentRegistry {
                 }
             }
         }
+    }
+
+    async fn release(
+        &self,
+        declaration: &brain_protocol::session::ComponentEnvironmentConfig,
+        request: brain::environment::ComponentEnvironmentRelease,
+    ) -> Result<()> {
+        let path = self.path(declaration.component_digest.as_str());
+        if !path.is_file() {
+            return Err(BrainError::Journal(format!(
+                "Environment component {} is absent from this Brain store",
+                declaration.component_digest.as_str()
+            )));
+        }
+        let instance_id = format!(
+            "{}:{}:{}",
+            request.session_id,
+            request.environment_id,
+            declaration.component_digest.as_str()
+        );
+        let component = ComponentSource {
+            path,
+            sha256: declaration.component_digest.to_string(),
+        };
+        let resolved = self
+            .pool
+            .call(WorkerRequest::EnvironmentResolve {
+                instance_id: instance_id.clone(),
+                component,
+                request: environment::aex::environment::types::ResolveRequest {
+                    tenant_id: request.tenant_id,
+                    session_id: request.session_id,
+                    root_id: request.root_id,
+                    parent_id: request.parent_id,
+                    environment_id: request.environment_id,
+                    config_json: serde_json::to_string(&declaration.config)?,
+                    policy_json: serde_json::to_string(&request.policy)?,
+                },
+            })
+            .await
+            .map_err(environment_transport)?;
+        let binding_json = required_string(&resolved, "binding_json")?.to_owned();
+        self.pool
+            .call(WorkerRequest::EnvironmentRelease {
+                instance_id,
+                binding_json,
+            })
+            .await
+            .map_err(environment_transport)?;
+        Ok(())
     }
 }
 
@@ -397,7 +447,7 @@ impl CapabilityHandler for HttpEnvironmentCapabilities {
         if body.len() > MAX_DISPATCH_REQUEST_BYTES {
             return Err(capability_failure(
                 "request_too_large",
-                "Environment dispatch request exceeds 2097152 bytes",
+                "Environment dispatch request exceeds 8388608 bytes",
                 false,
             ));
         }

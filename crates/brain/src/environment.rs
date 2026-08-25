@@ -30,11 +30,22 @@ pub struct ComponentEnvironmentInvocation {
     pub root_id: String,
     pub parent_id: Option<String>,
     pub environment_id: String,
+    pub policy: serde_json::Value,
     pub operation_id: String,
     pub descriptor_json: String,
     pub bundle: Option<Vec<u8>>,
     pub input_json: String,
     pub deadline_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComponentEnvironmentRelease {
+    pub tenant_id: String,
+    pub session_id: String,
+    pub root_id: String,
+    pub parent_id: Option<String>,
+    pub environment_id: String,
+    pub policy: serde_json::Value,
 }
 
 #[async_trait]
@@ -46,6 +57,12 @@ pub trait ComponentEnvironmentRegistry: Send + Sync {
         declaration: &brain_protocol::session::ComponentEnvironmentConfig,
         request: ComponentEnvironmentInvocation,
     ) -> Result<String>;
+
+    async fn release(
+        &self,
+        declaration: &brain_protocol::session::ComponentEnvironmentConfig,
+        request: ComponentEnvironmentRelease,
+    ) -> Result<()>;
 }
 
 /// The mandatory operation receipt protocol implemented by every Environment.

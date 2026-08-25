@@ -74,7 +74,7 @@ async fn four_worlds_execute_without_ambient_authority() {
                 parent_id: None,
                 environment_id: "workspace".into(),
                 config_json: "{}".into(),
-                authority_json: "{}".into(),
+                policy_json: "{}".into(),
             },
             environment::aex::environment::types::Operation {
                 operation_id: "env_op_1".into(),
@@ -277,7 +277,7 @@ async fn worker_keeps_environment_and_model_lifecycles_resident() {
                 parent_id: None,
                 environment_id: "workspace".into(),
                 config_json: "{}".into(),
-                authority_json: "{}".into(),
+                policy_json: "{}".into(),
             },
         })
         .await

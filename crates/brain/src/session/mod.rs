@@ -3706,6 +3706,9 @@ impl Brain {
                             root_id: head.doc.root_id.clone(),
                             parent_id: head.doc.parent_id.clone(),
                             environment_id: environment_id.to_owned(),
+                            policy: serde_json::json!({
+                                "network": head.doc.prefix.network,
+                            }),
                             operation_id: operation_id.to_owned(),
                             descriptor_json: required_tool_capability_string(
                                 &request,
@@ -6898,6 +6901,51 @@ async fn dematerialize_environments_for_end(
         )
         .await?;
     }
+    release_component_environments(brain, session_id, &resident.st.head).await?;
+    Ok(())
+}
+
+async fn release_component_environments(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    head: &HeadDoc,
+) -> Result<()> {
+    let declarations = head
+        .prefix
+        .environments
+        .iter()
+        .filter_map(|(environment_id, declaration)| {
+            component_environment(declaration)
+                .ok()
+                .map(|declaration| (environment_id.clone(), declaration.clone()))
+        })
+        .collect::<Vec<_>>();
+    if declarations.is_empty() {
+        return Ok(());
+    }
+    let registry = brain
+        .component_environment_registry
+        .as_ref()
+        .ok_or_else(|| {
+            BrainError::EnvironmentUnavailable(
+                "component Environment release is unavailable".into(),
+            )
+        })?;
+    for (environment_id, declaration) in declarations {
+        registry
+            .release(
+                &declaration,
+                crate::environment::ComponentEnvironmentRelease {
+                    tenant_id: head.tenant_id.clone(),
+                    session_id: session_id.to_owned(),
+                    root_id: head.root_id.clone(),
+                    parent_id: head.parent_id.clone(),
+                    environment_id,
+                    policy: serde_json::json!({ "network": head.prefix.network }),
+                },
+            )
+            .await?;
+    }
     Ok(())
 }
 
@@ -7059,6 +7107,7 @@ async fn continue_delete_session(
     // Every cleanup operation is idempotent. Any error leaves HEAD+CONFIG and its recovery-due
     // projection intact, so the background worker can retry without customer traffic.
     if r.st.head.root_id == session_id {
+        release_component_environments(brain, session_id, &r.st.head).await?;
         let extensions =
             r.st.head
                 .prefix

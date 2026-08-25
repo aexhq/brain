@@ -179,6 +179,84 @@ async fn tenant_changefeed_is_partitioned_paginated_and_tenant_scoped() {
     );
 }
 
+struct ReleaseTrackingEnvironment {
+    releases: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl crate::environment::ComponentEnvironmentRegistry for ReleaseTrackingEnvironment {
+    fn admit(&self, _component_digest: &str, _world: &str, _component: &[u8]) -> Result<()> {
+        Ok(())
+    }
+
+    async fn invoke(
+        &self,
+        _declaration: &brain_protocol::session::ComponentEnvironmentConfig,
+        _request: crate::environment::ComponentEnvironmentInvocation,
+    ) -> Result<String> {
+        Err(BrainError::Environment("unexpected test invocation".into()))
+    }
+
+    async fn release(
+        &self,
+        _declaration: &brain_protocol::session::ComponentEnvironmentConfig,
+        request: crate::environment::ComponentEnvironmentRelease,
+    ) -> Result<()> {
+        assert_eq!(request.session_id, request.root_id);
+        assert!(request.parent_id.is_none());
+        assert_eq!(request.environment_id, "workspace");
+        self.releases.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn ending_a_root_releases_each_component_environment() {
+    let releases = Arc::new(AtomicUsize::new(0));
+    let registry = Arc::new(ReleaseTrackingEnvironment {
+        releases: releases.clone(),
+    });
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-component-environment-release"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices {
+            component_environment_registry: Some(registry),
+            ..BrainServices::default()
+        },
+        crate::provider::fake::unscripted_factory(),
+    );
+    let component = b"test environment";
+    let digest = hex::encode(Sha256::digest(component));
+    let mut request = typed_create(json!({
+        "model": {"provider":"anthropic", "name":"model", "api_key":"key"},
+        "environments": {"workspace": {
+            "component_digest": digest,
+            "world": crate::environment::COMPONENT_ENVIRONMENT_WORLD,
+            "config": {}
+        }}
+    }));
+    request.component_artifacts.push(
+        serde_json::from_value(json!({
+            "component_digest": hex::encode(Sha256::digest(component)),
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(component),
+            "bytes": component.len()
+        }))
+        .unwrap(),
+    );
+    let created = brain.create_session(request, None).await.unwrap();
+    brain.end(created.id.as_str()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while releases.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("component Environment release");
+    assert_eq!(releases.load(Ordering::Relaxed), 1);
+}
+
 #[test]
 fn journal_retention_config_rejects_malformed_and_inconsistent_policy() {
     assert_eq!(parse_strict_env_u64("TEST_LIMIT", None, 17).unwrap(), 17);

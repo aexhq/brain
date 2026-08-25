@@ -46,7 +46,7 @@ interface types {
     parent-id: option<string>,
     environment-id: string,
     config-json: string,
-    authority-json: string,
+    policy-json: string,
   }
 
   record resolved {

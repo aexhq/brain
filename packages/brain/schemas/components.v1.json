@@ -16,7 +16,7 @@
     {
       "kind": "environment",
       "world": "aex:environment/environment@1.0.0",
-      "digest": "3a4e2c5510ac243a0111050daf2e0359afa9ab703edfd707c72518a954fcf1de",
+      "digest": "a7eb96d260d7a2470ea335242a846bd3ee43457641aeccefab77428c3631df08",
       "path": "contracts/environment/v1/environment.wit"
     },
     {
