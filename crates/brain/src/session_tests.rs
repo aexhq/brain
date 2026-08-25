@@ -1340,6 +1340,7 @@ impl crate::storage::BundleStoragePort for TestBundleStorage {
         &self,
         _root_id: &str,
         _bundle_digest: &str,
+        _media_type: &str,
         _bytes: &[u8],
     ) -> Result<brain_protocol::environment::ObjectReference> {
         panic!("test bundle storage does not accept writes")

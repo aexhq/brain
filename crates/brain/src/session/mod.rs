@@ -1686,8 +1686,9 @@ impl Brain {
                     if !stored_layers.insert(layer.checksum.clone()) {
                         continue;
                     }
+                    let media_type = layer.media_type.to_string();
                     let object = bundle_storage
-                        .store_bundle(&session_id, &layer.checksum, &layer.bytes)
+                        .store_bundle(&session_id, &layer.checksum, &media_type, &layer.bytes)
                         .await?;
                     let layer_descriptor = descriptor
                         .layers

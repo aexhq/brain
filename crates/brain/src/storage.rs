@@ -14,6 +14,7 @@ pub trait BundleStoragePort: Send + Sync {
         &self,
         root_id: &str,
         bundle_digest: &str,
+        media_type: &str,
         bytes: &[u8],
     ) -> Result<brain_protocol::environment::ObjectReference>;
 
