@@ -1,5 +1,7 @@
-use super::customer_ws::{bearer_token, customer_grant_subprotocol, observation_grant_header};
-use axum::http::{HeaderMap, HeaderValue, header};
+use super::customer_ws::{
+    bearer_token, customer_gateway_response, customer_grant_subprotocol, observation_grant_header,
+};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 
 #[test]
 fn internal_observation_keeps_operator_and_scoped_grant_separate() {
@@ -83,4 +85,28 @@ fn customer_socket_rejects_missing_extra_or_duplicate_subprotocols() {
         HeaderValue::from_static("environment-grant."),
     );
     assert!(customer_grant_subprotocol(&empty_grant).is_err());
+}
+
+#[test]
+fn customer_gateway_connect_acknowledges_upgrade_and_message_acknowledges_delivery() {
+    let protocol = "environment-grant.valid-token";
+    let connect = customer_gateway_response(
+        brain::customer::CustomerGatewayRoute::Connect,
+        Some(protocol.into()),
+    )
+    .unwrap();
+    assert_eq!(connect.status(), StatusCode::OK);
+    assert_eq!(
+        connect.headers().get(header::SEC_WEBSOCKET_PROTOCOL),
+        Some(&HeaderValue::from_static(protocol))
+    );
+
+    let message =
+        customer_gateway_response(brain::customer::CustomerGatewayRoute::Message, None).unwrap();
+    assert_eq!(message.status(), StatusCode::NO_CONTENT);
+    assert!(
+        !message
+            .headers()
+            .contains_key(header::SEC_WEBSOCKET_PROTOCOL)
+    );
 }
