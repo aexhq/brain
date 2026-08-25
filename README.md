@@ -61,7 +61,7 @@ Omitting `tools` exposes no model tools.
 | [`brain-aws`](crates/brain-aws) | Neutral DynamoDB, KMS, and S3 adapters |
 | [`brain-server`](crates/brain-server) | Standalone server and development composition |
 | [`@aexhq/brain`](packages/brain) | TypeScript client, Tool API, customer Environment, schemas, and builder |
-| [`@aexhq/agentloop`](packages/agentloop) | Neutral Agentloop component authoring SDK and builder |
+| [`packages/agentloop`](packages/agentloop) | Private conformance fixture for the Agentloop host ABI |
 
 Environments implement Brain's public ports. Brain never imports a Environments implementation.
 

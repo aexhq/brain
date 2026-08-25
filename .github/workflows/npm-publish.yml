@@ -186,7 +186,7 @@ jobs:
         shell: bash
         env:
           # OIDC trusted publishing cannot mutate dist-tags. Keep this granular token scoped to
-          # these two packages and protected by the reviewed npm-production environment.
+          # this package and protected by the reviewed npm-production environment.
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
         run: node "$RUNNER_TEMP/brain-npm-release/publish.mjs" promote

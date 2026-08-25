@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-const allWorkspaces = ["brain", "agentloop"];
+const allWorkspaces = ["brain"];
 const requestedWorkspaces = process.env.RELEASE_WORKSPACES?.split(",").filter(Boolean);
 const workspaces = requestedWorkspaces?.length ? requestedWorkspaces : allWorkspaces;
 if (
