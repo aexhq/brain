@@ -1354,31 +1354,32 @@ impl Brain {
         // Seal the loop identity before anything else commits, rejecting a loop this
         // composition cannot run while the request is still refusable.
         let brain_protocol::session::AgentloopConfig {
-            source_bundle_sha256,
-            toolchain,
-            bundle_base64,
+            component_digest,
+            world,
+            component_base64,
+            config,
         } = &req.agentloop;
         use base64::Engine as _;
-        let bundle = base64::engine::general_purpose::STANDARD
-            .decode(bundle_base64.as_str())
+        let component = base64::engine::general_purpose::STANDARD
+            .decode(component_base64.as_str())
             .map_err(|_| {
-                BrainError::Invalid("agentloop.bundle_base64 is not valid base64".into())
+                BrainError::Invalid("agentloop.component_base64 is not valid base64".into())
             })?;
-        if bundle.is_empty() || bundle.len() > brain_protocol::MAX_LOOP_BUNDLE_BYTES {
+        if component.is_empty() || component.len() > 32 * 1024 * 1024 {
             return Err(BrainError::Invalid(
-                "agentloop bundle must be between 1 byte and 8 MiB".into(),
+                "agentloop component must be between 1 byte and 32 MiB".into(),
             ));
         }
-        let digest = hex::encode(Sha256::digest(&bundle));
-        if digest != source_bundle_sha256.as_str() {
+        let digest = hex::encode(Sha256::digest(&component));
+        if digest != component_digest.as_str() {
             return Err(BrainError::Invalid(format!(
-                "agentloop bundle digest is {digest}, not the declared {}",
-                source_bundle_sha256.as_str()
+                "agentloop component digest is {digest}, not the declared {}",
+                component_digest.as_str()
             )));
         }
         let agentloop_selector =
             self.agentloop_registry
-                .admit_custom(&digest, toolchain.as_str(), &bundle)?;
+                .admit(&digest, world.as_str(), &component, config)?;
         self.agentloop_registry.resolve(&agentloop_selector)?;
 
         let now = crate::wall_ms();

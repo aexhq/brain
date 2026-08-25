@@ -34,7 +34,10 @@ redacted_debug!(
     crate::environment::ObjectTransferAuthority,
     "ObjectTransferAuthority"
 );
-redacted_debug!(crate::environment::PrepareSessionRequest, "PrepareSessionRequest");
+redacted_debug!(
+    crate::environment::PrepareSessionRequest,
+    "PrepareSessionRequest"
+);
 redacted_debug!(crate::environment::SandboxCopyRequest, "SandboxCopyRequest");
 redacted_debug!(
     crate::environment::SandboxFileWriteRequest,
@@ -45,7 +48,10 @@ redacted_debug!(
     "SandboxFileWriteSource"
 );
 redacted_debug!(crate::environment::SecretCapability, "SecretCapability");
-redacted_debug!(crate::environment::SecretDeliveryRequest, "SecretDeliveryRequest");
+redacted_debug!(
+    crate::environment::SecretDeliveryRequest,
+    "SecretDeliveryRequest"
+);
 
 redacted_debug!(crate::session::CreateSessionRequest, "CreateSessionRequest");
 redacted_debug!(crate::session::ModelConfigApiKey, "ModelConfigApiKey");

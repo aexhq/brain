@@ -27,16 +27,18 @@ impl AgentloopRegistry for TestRegistry {
         Ok(Arc::new(SequentialAgentloop))
     }
 
-    fn admit_custom(
+    fn admit(
         &self,
-        source_bundle_sha256: &str,
-        toolchain: &str,
-        bundle: &[u8],
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        config: &serde_json::Map<String, Value>,
     ) -> Result<brain::journal::AgentloopSelectorDoc> {
         Ok(brain::journal::AgentloopSelectorDoc {
-            source_bundle_sha256: source_bundle_sha256.into(),
-            source_bundle_bytes: bundle.len() as u64,
-            toolchain: toolchain.into(),
+            component_digest: component_digest.into(),
+            component_bytes: component.len() as u64,
+            world: world.into(),
+            config: config.clone(),
         })
     }
 }
@@ -220,9 +222,9 @@ async fn repair_then_return_direct_completes_without_an_extra_model_round() {
         .json(&json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
             "agentloop": {
-                "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-                "toolchain": "test-loop",
-                "bundle_base64": "eA=="
+                "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                "world": "aex:agentloop/agentloop@1.0.0",
+                "component_base64": "eA=="
             },
             "tools": {"items": [
                 {

@@ -164,14 +164,15 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
         .as_ref()
         .map(|selector| -> Result<session::AgentloopInfo> {
             Ok(session::AgentloopInfo {
-                source_bundle_sha256: selector
-                    .source_bundle_sha256
+                component_digest: selector
+                    .component_digest
                     .parse()
-                    .map_err(|_| corrupt("agentloop bundle digest"))?,
-                toolchain: selector
-                    .toolchain
+                    .map_err(|_| corrupt("agentloop component digest"))?,
+                world: selector
+                    .world
                     .parse()
-                    .map_err(|_| corrupt("agentloop toolchain"))?,
+                    .map_err(|_| corrupt("agentloop world"))?,
+                config: selector.config.clone(),
             })
         })
         .transpose()?;

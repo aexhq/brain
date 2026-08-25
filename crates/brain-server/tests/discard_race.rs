@@ -51,9 +51,9 @@ async fn a_message_racing_the_idle_discard_always_lands() {
         .json(&json!({
             "model": {"provider": "anthropic", "name": "race", "api_key": "sk-x"},
             "agentloop": {
-                "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-                "toolchain": "test-loop",
-                "bundle_base64": "eA=="
+                "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                "world": "aex:agentloop/agentloop@1.0.0",
+                "component_base64": "eA=="
             }
         }))
         .send()

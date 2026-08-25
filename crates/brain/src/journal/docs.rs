@@ -947,9 +947,10 @@ pub struct PrefixDoc {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentloopSelectorDoc {
-    pub source_bundle_sha256: String,
-    pub source_bundle_bytes: u64,
-    pub toolchain: String,
+    pub component_digest: String,
+    pub component_bytes: u64,
+    pub world: String,
+    pub config: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_customer_submit_retries() -> u32 {

@@ -855,8 +855,11 @@ export interface ContextFork {
  * via the `definition` "AgentloopInfo".
  */
 export interface AgentloopInfo {
-  source_bundle_sha256: Sha256Hex;
-  toolchain: string;
+  component_digest: Sha256Hex;
+  world: "aex:agentloop/agentloop@1.0.0";
+  config?: {
+    [k: string]: unknown | undefined;
+  };
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
@@ -877,21 +880,24 @@ export interface CustomerClientConfig {
   submit_retries?: number;
 }
 /**
- * The agent loop that drives this session's turns. It is sealed at create for the life of the session; children inherit it unless spawn supplies another loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.
+ * One precompiled Agentloop component and immutable JSON configuration. Brain verifies the component digest and canonical world before sealing it; no server-side source compilation exists.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "AgentloopConfig".
  */
 export interface AgentloopConfig {
-  source_bundle_sha256: Sha256Hex;
+  component_digest: Sha256Hex;
+  world: "aex:agentloop/agentloop@1.0.0";
   /**
-   * The pinned loop-toolchain identity the bundle was built for.
+   * The precompiled Wasm component, base64 (32 MiB decoded maximum). Create-time-only and staged outside the journal.
    */
-  toolchain: string;
+  component_base64: string;
   /**
-   * The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix.
+   * Immutable package configuration passed to every activation.
    */
-  bundle_base64: string;
+  config?: {
+    [k: string]: unknown | undefined;
+  };
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema

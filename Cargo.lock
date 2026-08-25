@@ -1008,6 +1008,7 @@ dependencies = [
  "axum",
  "base64",
  "brain",
+ "brain-component-host",
  "brain-loophost",
  "brain-protocol",
  "brain-providers",

@@ -80,9 +80,9 @@ fn typed_create_result(mut value: serde_json::Value) -> serde_json::Result<Creat
     object.entry("agentloop").or_insert_with(|| {
         let bundle = b"test loop";
         json!({
-            "source_bundle_sha256": hex::encode(Sha256::digest(bundle)),
-            "toolchain": "test-loop",
-            "bundle_base64": base64::engine::general_purpose::STANDARD.encode(bundle)
+            "component_digest": hex::encode(Sha256::digest(bundle)),
+            "world": "aex:agentloop/agentloop@1.0.0",
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(bundle)
         })
     });
     serde_json::from_value(value)
@@ -4189,9 +4189,9 @@ async fn loop_bundles_are_verified_before_registry_admission() {
     let wrong_digest = brain
         .create_session(
             serde_json::from_value(json!({"model": model, "agentloop": {
-                "source_bundle_sha256": "0".repeat(64),
-                "toolchain": "loopchain-1",
-                "bundle_base64": encoded,
+                "component_digest": "0".repeat(64),
+                "world": "aex:agentloop/agentloop@1.0.0",
+                "component_base64": encoded,
             }}))
             .unwrap(),
             None,
@@ -4204,9 +4204,9 @@ async fn loop_bundles_are_verified_before_registry_admission() {
     let custom = brain
         .create_session(
             serde_json::from_value(json!({"model": model, "agentloop": {
-                "source_bundle_sha256": digest,
-                "toolchain": "loopchain-1",
-                "bundle_base64": encoded,
+                "component_digest": digest,
+                "world": "aex:agentloop/agentloop@1.0.0",
+                "component_base64": encoded,
             }}))
             .unwrap(),
             None,
@@ -4228,16 +4228,18 @@ async fn a_composition_registry_resolves_a_sealed_loop() {
         ) -> Result<Arc<dyn crate::agentloop::Agentloop>> {
             Ok(Arc::new(crate::agentloop::SequentialAgentloop))
         }
-        fn admit_custom(
+        fn admit(
             &self,
-            source_bundle_sha256: &str,
-            toolchain: &str,
-            bundle: &[u8],
+            component_digest: &str,
+            world: &str,
+            component: &[u8],
+            config: &serde_json::Map<String, serde_json::Value>,
         ) -> Result<crate::journal::AgentloopSelectorDoc> {
             Ok(crate::journal::AgentloopSelectorDoc {
-                source_bundle_sha256: source_bundle_sha256.into(),
-                source_bundle_bytes: bundle.len() as u64,
-                toolchain: toolchain.into(),
+                component_digest: component_digest.into(),
+                component_bytes: component.len() as u64,
+                world: world.into(),
+                config: config.clone(),
             })
         }
     }
@@ -4262,9 +4264,9 @@ async fn a_composition_registry_resolves_a_sealed_loop() {
             serde_json::from_value(json!({
                 "model": {"provider":"anthropic", "name":"registry-test", "api_key":"sk-test"},
                 "agentloop": {
-                    "source_bundle_sha256": hex::encode(Sha256::digest(bundle)),
-                    "toolchain": "test-loop",
-                    "bundle_base64": base64::engine::general_purpose::STANDARD.encode(bundle)
+                    "component_digest": hex::encode(Sha256::digest(bundle)),
+                    "world": "aex:agentloop/agentloop@1.0.0",
+                    "component_base64": base64::engine::general_purpose::STANDARD.encode(bundle)
                 }
             }))
             .unwrap(),
@@ -4273,8 +4275,8 @@ async fn a_composition_registry_resolves_a_sealed_loop() {
         .await
         .unwrap();
     assert_eq!(
-        serde_json::to_value(&created).unwrap()["agentloop"]["toolchain"],
-        "test-loop",
+        serde_json::to_value(&created).unwrap()["agentloop"]["world"],
+        "aex:agentloop/agentloop@1.0.0",
         "the registry's admitted identity seals"
     );
     let session_id = created.id.to_string();

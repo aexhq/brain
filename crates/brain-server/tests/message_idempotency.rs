@@ -79,9 +79,9 @@ async fn message_key_replays_while_active_after_completion_and_after_cold_hydrat
         .json(&json!({
             "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
             "agentloop": {
-                "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-                "toolchain": "test-loop",
-                "bundle_base64": "eA=="
+                "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                "world": "aex:agentloop/agentloop@1.0.0",
+                "component_base64": "eA=="
             }
         }))
         .send()

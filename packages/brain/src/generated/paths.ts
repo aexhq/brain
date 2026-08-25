@@ -976,8 +976,13 @@ export type components = {
         Sha256Hex: string;
         /** @description The sealed agentloop identity of a session. */
         AgentloopInfo: {
-            source_bundle_sha256: components["schemas"]["Sha256Hex"];
-            toolchain: string;
+            component_digest: components["schemas"]["Sha256Hex"];
+            /** @constant */
+            world: "aex:agentloop/agentloop@1.0.0";
+            /** @default {} */
+            config?: {
+                [key: string]: unknown;
+            };
         };
         Session: {
             id: components["schemas"]["SessionId"];
@@ -1175,13 +1180,20 @@ export type components = {
             /** @default 1 */
             submit_retries?: number;
         };
-        /** @description The agent loop that drives this session's turns. It is sealed at create for the life of the session; children inherit it unless spawn supplies another loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair. */
+        /** @description One precompiled Agentloop component and immutable JSON configuration. Brain verifies the component digest and canonical world before sealing it; no server-side source compilation exists. */
         AgentloopConfig: {
-            source_bundle_sha256: components["schemas"]["Sha256Hex"];
-            /** @description The pinned loop-toolchain identity the bundle was built for. */
-            toolchain: string;
-            /** @description The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix. */
-            bundle_base64: string;
+            component_digest: components["schemas"]["Sha256Hex"];
+            /** @constant */
+            world: "aex:agentloop/agentloop@1.0.0";
+            /** @description The precompiled Wasm component, base64 (32 MiB decoded maximum). Create-time-only and staged outside the journal. */
+            component_base64: string;
+            /**
+             * @description Immutable package configuration passed to every activation.
+             * @default {}
+             */
+            config?: {
+                [key: string]: unknown;
+            };
         };
         ChildLimits: {
             /** @default 4 */

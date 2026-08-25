@@ -63,9 +63,8 @@ async fn run() -> anyhow::Result<()> {
                 ),
             };
             let loophost = Some(brain_server::LoophostOptions {
-                toolchain_dir: std::env::var("BRAIN_LOOPHOST_TOOLCHAIN_DIR")
-                    .map_err(|_| anyhow::anyhow!("BRAIN_LOOPHOST_TOOLCHAIN_DIR is required"))?
-                    .into(),
+                component_host: component_host_path()?,
+                workers: component_workers()?,
             });
             let brain = brain_server::compose_local(brain_server::LocalOptions {
                 data_dir: data.clone(),
@@ -74,7 +73,8 @@ async fn run() -> anyhow::Result<()> {
                 transport_urls,
                 provider_factory: None,
                 loophost,
-            })?;
+            })
+            .await?;
             audit_local(&brain.journal, &brain.custody).await?;
             brain
         }
@@ -90,6 +90,32 @@ async fn run() -> anyhow::Result<()> {
     .await
 }
 
+fn component_host_path() -> anyhow::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("BRAIN_COMPONENT_HOST_BIN") {
+        return Ok(path.into());
+    }
+    let executable = std::env::current_exe()?;
+    let name = if cfg!(windows) {
+        "brain-component-host.exe"
+    } else {
+        "brain-component-host"
+    };
+    Ok(executable
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Brain executable has no parent directory"))?
+        .join(name))
+}
+
+fn component_workers() -> anyhow::Result<usize> {
+    let workers = std::env::var("BRAIN_COMPONENT_WORKERS")
+        .unwrap_or_else(|_| "4".into())
+        .parse::<usize>()?;
+    if !(1..=64).contains(&workers) {
+        anyhow::bail!("BRAIN_COMPONENT_WORKERS must be 1 through 64");
+    }
+    Ok(workers)
+}
+
 async fn audit_local(journal: &Journal, custody: &Arc<dyn KeyCustody>) -> anyhow::Result<()> {
     let heads = journal.list_sessions(1_000_000).await?;
     for head in &heads {
@@ -102,7 +128,10 @@ async fn audit_local(journal: &Journal, custody: &Arc<dyn KeyCustody>) -> anyhow
                     head.session_id
                 )
             })?;
-        for (label, encoded) in [("Environment environment", head.doc.environment_secrets_b64.as_str())] {
+        for (label, encoded) in [(
+            "Environment environment",
+            head.doc.environment_secrets_b64.as_str(),
+        )] {
             if encoded.is_empty() {
                 continue;
             }

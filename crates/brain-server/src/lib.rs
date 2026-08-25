@@ -9,11 +9,11 @@ pub mod api;
 use brain::session::{Brain, BrainConfig, BrainServices, ProviderFactory};
 use brain_standalone::durable_local_parts;
 
-/// Agent-loop compilation and content-addressed storage wiring.
+/// Bounded Agentloop component workers and content-addressed storage wiring.
 #[cfg(feature = "loophost")]
 pub struct LoophostOptions {
-    /// Directory holding `componentize-one.mjs` with the pinned componentizer installed.
-    pub toolchain_dir: PathBuf,
+    pub component_host: PathBuf,
+    pub workers: usize,
 }
 
 pub struct LocalOptions {
@@ -34,7 +34,7 @@ pub struct LocalOptions {
 /// session-object storage under `data_dir`, Tool execution through the host node runtime, and
 /// the customer-environment transport served from the same listener. This is the whole wiring — the
 /// binary adds only env parsing, the operator token and the startup audit.
-pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
+pub async fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
     let allow_private = options.cfg.outbound_allow_private;
     let parts =
         durable_local_parts(&options.data_dir).map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -57,10 +57,12 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("loophost configuration is required"))?;
     #[cfg(feature = "loophost")]
-    let loop_services = brain_loophost::registry::services_with_loop_store(
+    let loop_services = brain_loophost::registry::services_with_component_store(
         &options.data_dir.join("loops"),
-        &loophost.toolchain_dir,
-    )?;
+        &loophost.component_host,
+        loophost.workers,
+    )
+    .await?;
     #[cfg(not(feature = "loophost"))]
     return Err(anyhow::anyhow!(
         "brain-server requires the loophost feature"

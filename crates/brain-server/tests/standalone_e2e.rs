@@ -77,12 +77,11 @@ fn create_body(
     bundle: &[u8],
     bundle_digest: &str,
 ) -> Value {
-    let loop_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/loop-pi/dist");
-    let loop_bundle = std::fs::read(loop_dist.join("loop.bundle.mjs")).expect("pi loop bundle");
-    let loop_identity: Value = serde_json::from_slice(
-        &std::fs::read(loop_dist.join("identity.json")).expect("pi loop identity"),
+    let loop_component = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../brain-component-host/guest/dist/agentloop.component.wasm"),
     )
-    .expect("pi loop identity JSON");
+    .expect("run npm run build:components before the standalone gate");
     let manifest = json!({
         "profile":"computer/v1",
         "target":"linux-amd64",
@@ -100,9 +99,10 @@ fn create_body(
     json!({
         "model": {"provider":provider, "name":model, "api_key":api_key},
         "agentloop": {
-            "source_bundle_sha256": loop_identity["source_bundle_sha256"],
-            "toolchain": loop_identity["toolchain"],
-            "bundle_base64": base64::engine::general_purpose::STANDARD.encode(loop_bundle),
+            "component_digest": hex::encode(Sha256::digest(&loop_component)),
+            "world": "aex:agentloop/agentloop@1.0.0",
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(loop_component),
+            "config": {"fixture":"sequential"},
         },
         "tools": {"items":[{
             "definition": {
@@ -396,10 +396,11 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
             Dialect::OpenAiChat => beta_factory.clone() as Arc<dyn Provider>,
         })),
         loophost: Some(brain_server::LoophostOptions {
-            toolchain_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../brain-loophost/guest"),
+            component_host: PathBuf::from(env!("CARGO_BIN_EXE_brain-component-host")),
+            workers: 2,
         }),
     })
+    .await
     .expect("open the durable local composition");
     let journal = brain.journal.clone();
     let app = brain_server::api::router(brain_server::api::AppState {

@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 fn loop_config() -> Value {
     json!({
-        "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-        "toolchain": "test-loop",
-        "bundle_base64": "eA==",
+        "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+        "world": "aex:agentloop/agentloop@1.0.0",
+        "component_base64": "eA==",
     })
 }
 

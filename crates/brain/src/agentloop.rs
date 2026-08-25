@@ -168,15 +168,15 @@ pub trait AgentloopRegistry: Send + Sync {
         selector: &crate::journal::AgentloopSelectorDoc,
     ) -> Result<std::sync::Arc<dyn Agentloop>>;
 
-    /// Admit a customer source bundle (already digest-verified by the caller) and return the
-    /// identity to seal. Compositions with a loop store override this; the default refuses.
-    fn admit_custom(
+    /// Admit a precompiled component whose digest the caller already verified.
+    fn admit(
         &self,
-        source_bundle_sha256: &str,
-        toolchain: &str,
-        bundle: &[u8],
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        config: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::journal::AgentloopSelectorDoc> {
-        let _ = (source_bundle_sha256, toolchain, bundle);
+        let _ = (component_digest, world, component, config);
         Err(BrainError::Invalid(
             "custom agentloops are not enabled in this composition".into(),
         ))
@@ -193,16 +193,18 @@ impl AgentloopRegistry for TestAgentloopRegistry {
         Ok(std::sync::Arc::new(SequentialAgentloop))
     }
 
-    fn admit_custom(
+    fn admit(
         &self,
-        source_bundle_sha256: &str,
-        toolchain: &str,
-        bundle: &[u8],
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        config: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::journal::AgentloopSelectorDoc> {
         Ok(crate::journal::AgentloopSelectorDoc {
-            source_bundle_sha256: source_bundle_sha256.into(),
-            source_bundle_bytes: bundle.len() as u64,
-            toolchain: toolchain.into(),
+            component_digest: component_digest.into(),
+            component_bytes: component.len() as u64,
+            world: world.into(),
+            config: config.clone(),
         })
     }
 }
