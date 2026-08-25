@@ -476,6 +476,21 @@ impl tool::aex::tool::children::Host for State {
         tool_string(value)
     }
 
+    async fn wait(
+        &mut self,
+        child_id: String,
+        timeout_ms: u64,
+    ) -> Result<String, tool::aex::tool::types::ExtensionError> {
+        let value = self
+            .tool_capability(
+                "children",
+                "tool.children.wait",
+                serde_json::json!({ "child_id": child_id, "timeout_ms": timeout_ms }),
+            )
+            .await?;
+        tool_string(value)
+    }
+
     async fn events(
         &mut self,
         child_id: String,

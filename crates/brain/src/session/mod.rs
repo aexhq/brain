@@ -3780,6 +3780,20 @@ impl Brain {
                     &self.get_child(parent_id, child_id).await?,
                 )?))
             }
+            "tool.children.wait" => {
+                let child_id = required_tool_capability_string(&request, "child_id")?;
+                self.get_child(parent_id, child_id).await?;
+                let timeout_ms = request
+                    .get("timeout_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(30_000)
+                    .min(300_000);
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &self
+                        .wait_child(parent_id, child_id, Duration::from_millis(timeout_ms))
+                        .await?,
+                )?))
+            }
             "tool.children.events" => {
                 let child_id = required_tool_capability_string(&request, "child_id")?;
                 self.get_child(parent_id, child_id).await?;

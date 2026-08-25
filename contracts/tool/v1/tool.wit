@@ -84,6 +84,7 @@ interface children {
   spawn: func(request-json: string) -> result<string, extension-error>;
   send: func(child-id: string, request-json: string) -> result<string, extension-error>;
   inspect: func(child-id: string) -> result<string, extension-error>;
+  wait: func(child-id: string, timeout-ms: u64) -> result<string, extension-error>;
   events: func(child-id: string, after-seq: option<u64>, limit: u32) -> result<page, extension-error>;
   manage: func(child-id: string, action: string) -> result<string, extension-error>;
   list-children: func(cursor: option<string>, limit: u32) -> result<page, extension-error>;
