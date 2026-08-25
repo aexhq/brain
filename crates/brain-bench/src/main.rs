@@ -29,7 +29,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use brain::agentloop::{Agentloop, AgentloopRegistry, SequentialAgentloop};
 use brain::config::Dialect;
+use brain::journal::AgentloopSelectorDoc;
 use brain::journal::Journal;
 use brain::provider::Provider;
 use brain::provider::fake::{FakeMode, FakeProvider};
@@ -119,6 +121,29 @@ struct Bench {
     executor: Arc<echo::EchoExecutor>,
 }
 
+struct BenchAgentloopRegistry;
+
+impl AgentloopRegistry for BenchAgentloopRegistry {
+    fn resolve(&self, _selector: &AgentloopSelectorDoc) -> brain::Result<Arc<dyn Agentloop>> {
+        Ok(Arc::new(SequentialAgentloop))
+    }
+
+    fn admit(
+        &self,
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        config: &serde_json::Map<String, Value>,
+    ) -> brain::Result<AgentloopSelectorDoc> {
+        Ok(AgentloopSelectorDoc {
+            component_digest: component_digest.into(),
+            component_bytes: component.len() as u64,
+            world: world.into(),
+            config: config.clone(),
+        })
+    }
+}
+
 /// Compose the brain + the bench sidecar routes and serve on a loopback port.
 async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
@@ -152,7 +177,7 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         ..BrainConfig::default()
     };
     cfg.official_capabilities.insert(
-        "aex.bench_echo".into(),
+        "brain.bench_echo".into(),
         brain::config::ServerToolPolicy {
             capability: "bench.echo".into(),
             scope: brain_protocol::session::ExternalToolScope::All,
@@ -239,7 +264,10 @@ async fn serve(args: &Args, idle_discard: Duration) -> anyhow::Result<Bench> {
         journal,
         Arc::new(brain::keys::PlainCustody),
         executor.clone(),
-        BrainServices::default(),
+        BrainServices {
+            agentloop_registry: Some(Arc::new(BenchAgentloopRegistry)),
+            ..BrainServices::default()
+        },
         Arc::new(move |_| factory_fake.clone() as Arc<dyn Provider>),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -325,9 +353,20 @@ impl Api {
             .bearer_auth(TOKEN)
             .headers(self.tenant_headers())
             .json(&json!({
+                "component_artifacts": [{
+                    "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                    "component_base64": "eA==",
+                    "bytes": 1
+                }],
+                "agentloop": {
+                    "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                    "world": "aex:agentloop/agentloop@1.0.0"
+                },
                 // Keep semantic compaction out of the turn-throughput instrument. Its own
                 // correctness and wire-budget gates live in Brain's compaction test suite.
                 "model": {
+                    "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                    "world": "aex:model/model@1.0.0",
                     "provider": "anthropic",
                     "name": "bench",
                     "api_key": "sk-bench",
@@ -344,7 +383,7 @@ impl Api {
                         "input_schema": {"type": "object", "additionalProperties": true},
                         "output_schema": {"type": "object", "additionalProperties": true}
                     },
-                    "executor": {"kind":"engine","capability":"aex.bench_echo"}
+                    "executor": {"kind":"engine","capability":"brain.bench_echo"}
                 }]}
             }))
             .send()
