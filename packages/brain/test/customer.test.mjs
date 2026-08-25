@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import test from "node:test";
 
 import { z } from "zod";
@@ -539,4 +540,35 @@ test("close interrupts a pending connector without leaving a reconnect timer", a
     request: { url: "wss://environment.invalid", protocol: "grant.too-late" },
     async observe() {},
   });
+});
+
+test("initial readiness keeps Node alive while the gateway is retrying", async () => {
+  const moduleUrl = new URL("../dist/index.js", import.meta.url).href;
+  const source = `
+    import { CustomerEnvironment } from ${JSON.stringify(moduleUrl)};
+    const environment = new CustomerEnvironment(
+      async () => { throw new Error("gateway unavailable"); },
+      [],
+      () => { throw new Error("socket must not be created"); },
+      { clientId: "app.primary", reconnectDelayMs: 1_000, maxReconnectDelayMs: 1_000 },
+    );
+    await environment.ready;
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", source], {
+    stdio: "ignore",
+  });
+  const closed = new Promise((resolve) => {
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  const stillRunning = Symbol("still running");
+  try {
+    const outcome = await Promise.race([
+      closed,
+      new Promise((resolve) => setTimeout(() => resolve(stillRunning), 500)),
+    ]);
+    assert.equal(outcome, stillRunning, `child exited before initial readiness: ${JSON.stringify(outcome)}`);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await closed;
+  }
 });

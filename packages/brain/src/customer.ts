@@ -220,7 +220,7 @@ export class CustomerEnvironment {
       throw new TypeError("Customer Environment heartbeat bounds are invalid");
     }
     this.#closedPromise = new Promise<void>((resolve) => { this.#resolveClosed = resolve; });
-    this.ready = this.#connectUntilReady();
+    this.ready = this.#connectUntilReady(true);
     // Keep a caller that intentionally closes before awaiting readiness from creating a process-
     // level unhandled rejection. The original promise remains rejecting for explicit awaiters.
     void this.ready.catch(() => undefined);
@@ -297,13 +297,13 @@ export class CustomerEnvironment {
     return this.#opening;
   }
 
-  async #connectUntilReady(): Promise<void> {
+  async #connectUntilReady(keepProcessAlive = false): Promise<void> {
     while (!this.#closed) {
       try {
         await this.#ensureOpen();
         return;
       } catch {
-        await this.#waitReconnect(this.#nextReconnectDelay());
+        await this.#waitReconnect(this.#nextReconnectDelay(), keepProcessAlive);
       }
     }
     throw new Error("Customer Environment is closed");
@@ -482,7 +482,7 @@ export class CustomerEnvironment {
     this.#pendingHeartbeatNonce = undefined;
   }
 
-  async #waitReconnect(delayMs: number): Promise<void> {
+  async #waitReconnect(delayMs: number, keepProcessAlive = false): Promise<void> {
     if (this.#closed) return;
     await new Promise<void>((resolve) => {
       let done = false;
@@ -496,7 +496,7 @@ export class CustomerEnvironment {
       };
       this.#wakeReconnectSleep = finish;
       this.#reconnectSleepTimer = setTimeout(finish, delayMs);
-      unrefTimer(this.#reconnectSleepTimer);
+      if (!keepProcessAlive) unrefTimer(this.#reconnectSleepTimer);
     });
   }
 

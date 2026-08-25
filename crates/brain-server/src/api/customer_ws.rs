@@ -398,7 +398,7 @@ pub(super) async fn customer_environment_gateway(
     brain::customer::CustomerEnvironmentIngressPort::receive(
         coordinator.as_ref(),
         brain::customer::CustomerGatewayInput {
-            route,
+            route: route.clone(),
             connection_id,
             request_id,
             route_key,
@@ -409,7 +409,19 @@ pub(super) async fn customer_environment_gateway(
     )
     .await
     .map_err(map_err)?;
-    let mut response = StatusCode::NO_CONTENT.into_response();
+    customer_gateway_response(route, subprotocol)
+}
+
+pub(super) fn customer_gateway_response(
+    route: brain::customer::CustomerGatewayRoute,
+    subprotocol: Option<String>,
+) -> Result<Response, Failure> {
+    let status = if route == brain::customer::CustomerGatewayRoute::Connect {
+        StatusCode::OK
+    } else {
+        StatusCode::NO_CONTENT
+    };
+    let mut response = status.into_response();
     if let Some(protocol) = subprotocol {
         response.headers_mut().insert(
             header::SEC_WEBSOCKET_PROTOCOL,
