@@ -98,6 +98,8 @@ jobs:
 
   test-component-host:
     runs-on: ubuntu-24.04
+    env:
+      BRAIN_COMPONENT_CACHE_DIR: ${{ runner.temp }}/brain-component-cache
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -113,6 +115,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-debug
+      - name: Warm the shared component compilation cache
+        run: >-
+          cargo test -p brain-component-host --test vertical_slice
+          four_worlds_execute_without_ambient_authority -- --exact
       - run: cargo test -p brain-component-host
       - run: cargo test -p brain-server --test component_tool_environment
       - run: cargo test -p brain-server --test standalone_e2e

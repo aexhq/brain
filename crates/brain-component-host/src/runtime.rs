@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use wasmtime::component::{Component, HasSelf, Linker};
-use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
+use wasmtime::{Cache, CacheConfig, Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use async_trait::async_trait;
@@ -936,6 +937,11 @@ impl ComponentRuntime {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.epoch_interruption(true);
+        if let Some(directory) = std::env::var_os("BRAIN_COMPONENT_CACHE_DIR") {
+            let mut cache = CacheConfig::new();
+            cache.with_directory(PathBuf::from(directory));
+            config.cache(Some(wt(Cache::new(cache))?));
+        }
         let engine = wt(Engine::new(&config))?;
         let ticker = engine.clone();
         std::thread::Builder::new()
