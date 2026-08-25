@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-loophost", "crates/brain-providers", "crates/brain-standalone", "crates/brain-server"]
+members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-component-host", "crates/brain-loophost", "crates/brain-providers", "crates/brain-standalone", "crates/brain-server"]
 resolver = "2"
 
 [workspace.package]

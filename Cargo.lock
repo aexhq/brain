@@ -925,6 +925,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-component-host"
+version = "0.1.0"
+dependencies = [
+ "wasmtime",
+]
+
+[[package]]
 name = "brain-loophost"
 version = "0.1.0"
 dependencies = [

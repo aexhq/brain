@@ -1,0 +1,35 @@
+package aex:agentloop@1.0.0;
+
+interface types {
+  record extension-error {
+    code: string,
+    message: string,
+    retryable: bool,
+  }
+
+  record activation {
+    operation-id: string,
+    session-id: string,
+    kind: string,
+    payload-json: string,
+    deadline-at-ms: u64,
+  }
+
+  record activation-result {
+    payload-json: string,
+  }
+}
+
+interface context {
+  use types.{extension-error};
+
+  call: func(operation-id: string, request-json: string) -> result<string, extension-error>;
+  cancelled: func() -> bool;
+}
+
+world agentloop {
+  import context;
+  use types.{activation, activation-result, extension-error};
+
+  export activate: func(request: activation) -> result<activation-result, extension-error>;
+}

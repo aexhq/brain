@@ -1,0 +1,10 @@
+[package]
+name = "brain-component-host"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared isolated component runtime and host bindings for Brain extensions"
+
+[dependencies]
+wasmtime.workspace = true

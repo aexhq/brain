@@ -71,7 +71,8 @@ jobs:
       - name: generated protocol views are fresh
         run: |
           python3 tools/generate-protocol.py all
-          git diff --exit-code crates/brain-protocol/src contracts
+          python3 tools/generate-component-contracts.py
+          git diff --exit-code crates/brain-protocol/src crates/brain-component-host/src/generated.rs contracts packages/brain/src/generated/components.ts packages/brain/schemas/components.v1.json
       - name: security postprocessor invariants hold
         run: python3 tools/postprocess-generated.py --check
 
