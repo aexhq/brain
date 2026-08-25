@@ -21,7 +21,7 @@ const MAX_COMPONENT_BYTES: u64 = 32 << 20;
 const MAX_FRAME_BYTES: usize = 16 << 20;
 const WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ComponentSource {
     pub path: PathBuf,
     pub sha256: String,
