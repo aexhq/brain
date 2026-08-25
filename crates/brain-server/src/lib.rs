@@ -12,19 +12,11 @@ use brain::session::{Brain, BrainConfig, ProviderFactory};
 #[cfg(feature = "loophost")]
 use brain_standalone::durable_local_parts;
 
-<<<<<<< HEAD
 /// Bounded Agentloop component workers and content-addressed storage wiring.
 #[cfg(feature = "loophost")]
 pub struct LoophostOptions {
     pub component_host: PathBuf,
     pub workers: usize,
-=======
-/// Agent-loop compilation and content-addressed storage wiring.
-#[cfg(feature = "loophost")]
-pub struct LoophostOptions {
-    /// Directory holding `componentize-one.mjs` with the pinned componentizer installed.
-    pub toolchain_dir: PathBuf,
->>>>>>> origin/main
 }
 
 pub struct LocalOptions {
@@ -125,20 +117,8 @@ pub async fn compose_aws(_options: AwsOptions) -> anyhow::Result<Arc<Brain>> {
 /// session-object storage under `data_dir`, Tool execution through the host node runtime, and
 /// the customer-environment transport served from the same listener. This is the whole wiring — the
 /// binary adds only env parsing, the operator token and the startup audit.
-<<<<<<< HEAD
 #[cfg(feature = "loophost")]
 pub async fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
-=======
-#[cfg(not(feature = "loophost"))]
-pub fn compose_local(_options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
-    Err(anyhow::anyhow!(
-        "brain-server requires the loophost feature"
-    ))
-}
-
-#[cfg(feature = "loophost")]
-pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
->>>>>>> origin/main
     let allow_private = options.cfg.outbound_allow_private;
     let parts =
         durable_local_parts(&options.data_dir).map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -159,7 +139,6 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
         .loophost
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("loophost configuration is required"))?;
-<<<<<<< HEAD
     let loop_services = brain_loophost::registry::services_with_component_store(
         &options.data_dir.join("loops"),
         &loophost.component_host,
@@ -188,12 +167,6 @@ pub fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> {
             .unwrap_or_else(|| Arc::new(brain_environment_host::RejectEnvironmentCapabilities)),
     )
     .await?;
-=======
-    let loop_services = brain_loophost::registry::services_with_loop_store(
-        &options.data_dir.join("loops"),
-        &loophost.toolchain_dir,
-    )?;
->>>>>>> origin/main
     let local_environment = parts.local_environment.clone();
     let brain = Brain::with_parts_and_services(
         options.cfg,

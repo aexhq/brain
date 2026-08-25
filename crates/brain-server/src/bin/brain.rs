@@ -83,14 +83,8 @@ async fn run() -> anyhow::Result<()> {
                 ),
             };
             let loophost = Some(brain_server::LoophostOptions {
-<<<<<<< HEAD
                 component_host: component_host_path()?,
                 workers: component_workers()?,
-=======
-                toolchain_dir: std::env::var("BRAIN_LOOPHOST_TOOLCHAIN_DIR")
-                    .map_err(|_| anyhow::anyhow!("BRAIN_LOOPHOST_TOOLCHAIN_DIR is required"))?
-                    .into(),
->>>>>>> origin/main
             });
             let brain = brain_server::compose_local(brain_server::LocalOptions {
                 data_dir: data.clone(),

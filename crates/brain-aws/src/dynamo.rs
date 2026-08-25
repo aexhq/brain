@@ -1069,7 +1069,6 @@ impl JournalStore for DynamoJournal {
         .ok_or_else(|| {
             BrainError::Journal("journal retention delta does not match the projection".into())
         })?;
-        let control_doc_json = serde_json::to_string(&doc.control_doc())?;
         let mut tx = self.db.transact_write_items();
         if requires_ancestor_admission(records) {
             for ancestor_id in &doc.ancestor_ids {
@@ -1133,7 +1132,10 @@ impl JournalStore for DynamoJournal {
                 AttributeValue::N(old_journal_meter.to_string()),
             )
             .expression_attribute_values(":hw", AttributeValue::N(high_water.to_string()))
-            .expression_attribute_values(":doc", AttributeValue::S(control_doc_json.clone()))
+            .expression_attribute_values(
+                ":doc",
+                AttributeValue::S(serde_json::to_string(&doc.control_doc())?),
+            )
             .expression_attribute_values(
                 ":listing",
                 AttributeValue::S(serde_json::to_string(&SessionSummary::from_head(
@@ -1244,16 +1246,10 @@ impl JournalStore for DynamoJournal {
             true => BrainError::Fenced,
             false => BrainError::Journal(format!("commit: {}", describe(&error))),
         };
-        // Recovery and the turn loop both write doc-only commits, so session, fence and high
-        // water alone do not identify one transaction. Two different commits sharing that
-        // position would reuse a token, which the provider rejects with
-        // IdempotentParameterMismatch; including the head document keeps an identical retry
-        // deduped while giving a genuinely different commit its own token.
         let token = transaction_token(&[
             session_id.as_bytes(),
             &fence.to_be_bytes(),
             &high_water.to_be_bytes(),
-            control_doc_json.as_bytes(),
         ]);
         let mut attempt = 0u32;
         loop {
@@ -2029,14 +2025,6 @@ fn transaction_conflicted<R>(
     let SdkError::ServiceError(service) = error else {
         return false;
     };
-    // The stable client request token means a concurrent identical attempt can still be in
-    // flight. Retrying it settles as that attempt's own success.
-    if matches!(
-        service.err(),
-        TransactWriteItemsError::TransactionInProgressException(_)
-    ) {
-        return true;
-    }
     let TransactWriteItemsError::TransactionCanceledException(cancelled) = service.err() else {
         return false;
     };
@@ -2112,20 +2100,6 @@ mod conflict_tests {
     }
 
     #[test]
-    fn an_in_flight_identical_transaction_is_retryable() {
-        use aws_sdk_dynamodb::types::error::TransactionInProgressException;
-        let error = SdkError::service_error(
-            TransactWriteItemsError::TransactionInProgressException(
-                TransactionInProgressException::builder()
-                    .message("Transaction from previous request is still in progress")
-                    .build(),
-            ),
-            (),
-        );
-        assert!(transaction_conflicted(&error));
-    }
-
-    #[test]
     fn pure_conflict_is_retryable() {
         assert!(transaction_conflicted(&cancelled(&[
             "None",
@@ -2166,13 +2140,6 @@ mod conflict_tests {
         let c = transaction_token(&[b"ses_x", &2u64.to_be_bytes()]);
         assert_eq!(a, b);
         assert_ne!(a, c);
-        // Two commits at the same position but with different head documents must not share a
-        // token: the provider rejects the second as IdempotentParameterMismatch.
-        let position: &[&[u8]] = &[b"ses_x", &1u64.to_be_bytes()];
-        let one = transaction_token(&[position[0], position[1], br#"{"state":"ending"}"#]);
-        let two = transaction_token(&[position[0], position[1], br#"{"state":"ended"}"#]);
-        assert_ne!(one, two);
-        assert_ne!(one, a);
         // DynamoDB ClientRequestToken allows at most 36 characters.
         assert_eq!(a.len(), 32);
     }

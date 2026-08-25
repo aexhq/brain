@@ -2,14 +2,9 @@
 //! durable mechanism stays on the kernel side of [`TurnCtx`].
 //!
 //! The public wire form of this seam is `contracts/agentloop/v1` (activations + ctx operations).
-<<<<<<< HEAD
 //! [`SequentialAgentloop`] is the in-process reference sequential policy — the engine composition of the
 //! same seam a remote loop host will implement over the contract. Design record:
 //! aex-research `docs/harness-extension-design.md` (HX4/HX5, §6¾ B).
-=======
-//! [`SequentialAgentloop`] is the in-process reference sequential policy — the engine composition
-//! of the same seam a remote loop host implements over the contract.
->>>>>>> origin/main
 //!
 //! The kernel never lets a loop widen authority: model rounds run against the sealed
 //! provider/model, dispatch validates against the sealed grant, and round/wall budgets are
@@ -173,14 +168,8 @@ pub trait AgentloopRegistry: Send + Sync {
         selector: &crate::journal::AgentloopSelectorDoc,
     ) -> Result<std::sync::Arc<dyn Agentloop>>;
 
-<<<<<<< HEAD
     /// Admit a precompiled component whose digest the caller already verified.
     fn admit(
-=======
-    /// Admit a customer source bundle (already digest-verified by the caller) and return the
-    /// identity to seal. Compositions with a loop store override this; the default refuses.
-    fn admit_custom(
->>>>>>> origin/main
         &self,
         component_digest: &str,
         world: &str,
@@ -204,7 +193,6 @@ impl AgentloopRegistry for TestAgentloopRegistry {
         Ok(std::sync::Arc::new(SequentialAgentloop))
     }
 
-<<<<<<< HEAD
     fn admit(
         &self,
         component_digest: &str,
@@ -217,32 +205,15 @@ impl AgentloopRegistry for TestAgentloopRegistry {
             component_bytes: component.len() as u64,
             world: world.into(),
             config: config.clone(),
-=======
-    fn admit_custom(
-        &self,
-        source_bundle_sha256: &str,
-        toolchain: &str,
-        bundle: &[u8],
-    ) -> Result<crate::journal::AgentloopSelectorDoc> {
-        Ok(crate::journal::AgentloopSelectorDoc {
-            source_bundle_sha256: source_bundle_sha256.into(),
-            source_bundle_bytes: bundle.len() as u64,
-            toolchain: toolchain.into(),
->>>>>>> origin/main
         })
     }
 }
 
-<<<<<<< HEAD
 /// The reference sequential loop policy, contract mode: the in-process twin of the wasm guest
 /// (`crates/brain-loophost/guest/loop-aex.mjs`), driven entirely through
 /// `contracts/agentloop/v1` ctx ops. Stateless per turn: it rebuilds loop memory from the
 /// session_start hydration exactly as a fresh guest instance would, so residency is an
 /// optimization the guest adds, never a semantic.
-=======
-/// A reference sequential loop policy driven through the same kernel seam as imported loops.
-/// It is available to explicit compositions and is never selected as a session default.
->>>>>>> origin/main
 pub struct SequentialAgentloop;
 
 type OpOutcome = std::result::Result<

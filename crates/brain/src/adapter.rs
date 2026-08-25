@@ -1,12 +1,8 @@
 //! Composition-owned execution for trusted external capabilities.
 //!
-<<<<<<< HEAD
 //! Brain itself owns the three closed engine capabilities (`brain.subagents`, `brain.storage`,
 //! and `brain.sandbox`) and routes managed execution through the typed Environment ports. Arbitrary
 //! trusted host capabilities use [`ToolExecutor`]; model-visible names never select code.
-=======
-//! Trusted host capabilities use [`ToolExecutor`]; model-visible names never select code.
->>>>>>> origin/main
 
 use crate::Result;
 use brain_protocol::session::{ExternalToolCallRequest, ExternalToolCallResponse};

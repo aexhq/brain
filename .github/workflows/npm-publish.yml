@@ -1,0 +1,199 @@
+name: publish npm packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Publish immutable versions under next, or promote those same versions to latest
+        type: choice
+        required: true
+        default: stage
+        options:
+          - stage
+          - promote
+      expected_commit:
+        description: Exact 40-character Brain commit selected by the workflow ref
+        type: string
+        required: true
+      release_scope:
+        description: Package set to stage; promotion always consumes the selected stage artifact
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - brain-tools
+      stage_run_id:
+        description: Successful stage workflow run containing the immutable archives (promote only)
+        type: string
+        required: false
+        default: ''
+
+concurrency:
+  group: brain-npm-publish
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the immutable source identity
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          OPERATION: ${{ inputs.operation }}
+          SELECTED_COMMIT: ${{ github.sha }}
+          SELECTED_REF: ${{ github.ref }}
+          STAGE_RUN_ID: ${{ inputs.stage_run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          test "$SELECTED_COMMIT" = "$EXPECTED_COMMIT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          test "$SELECTED_REF" = "refs/tags/release/sha-$EXPECTED_COMMIT"
+          test "$(git cat-file -t "$GITHUB_REF")" = tag
+          git merge-base --is-ancestor "$EXPECTED_COMMIT" origin/main
+          if [[ "$OPERATION" == promote ]]; then
+            [[ "$STAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            stage_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STAGE_RUN_ID")
+            test "$(jq -r .head_sha <<<"$stage_run")" = "$EXPECTED_COMMIT"
+            test "$(jq -r .event <<<"$stage_run")" = workflow_dispatch
+            test "$(jq -r .status <<<"$stage_run")" = completed
+            test "$(jq -r .conclusion <<<"$stage_run")" = success
+            stage_path=$(jq -r .path <<<"$stage_run")
+            [[ "$stage_path" == .github/workflows/npm-publish.yml || \
+              "$stage_path" == .github/workflows/npm-publish.yml@* ]]
+          else
+            test -z "$STAGE_RUN_ID"
+          fi
+
+  prepare:
+    if: inputs.operation == 'stage'
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      versions: ${{ steps.pack.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Use the npm version pinned for trusted publishing
+        run: npm install --global npm@11.19.0
+      - run: npm ci
+      - run: npm test
+      - run: npm run package-smoke
+      - name: Pack the exact release archives
+        id: pack
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          RELEASE_SCOPE: ${{ inputs.release_scope }}
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/brain-npm-release"
+          case "$RELEASE_SCOPE" in
+            all) unset RELEASE_WORKSPACES ;;
+            brain-tools) export RELEASE_WORKSPACES=brain-tools ;;
+            *) echo "unsupported release scope: $RELEASE_SCOPE" >&2; exit 1 ;;
+          esac
+          node tools/npm-release.mjs pack "$release_dir"
+          versions=$(node tools/npm-release.mjs versions "$release_dir/manifest.json")
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          {
+            echo '### Immutable Brain npm archives'
+            echo
+            node tools/npm-release.mjs markdown "$release_dir/manifest.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-npm-release
+          if-no-files-found: error
+          retention-days: 30
+
+  stage:
+    if: inputs.operation == 'stage'
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-npm-release
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Use the npm version pinned for trusted publishing
+        run: npm install --global npm@11.19.0
+      - name: Publish once with provenance under next
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: node "$RUNNER_TEMP/brain-npm-release/publish.mjs" stage
+      - name: Record staged versions
+        shell: bash
+        env:
+          VERSIONS: ${{ needs.prepare.outputs.versions }}
+        run: |
+          echo "Staged exact versions under npm dist-tag \`next\`: \`$VERSIONS\`" >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    if: inputs.operation == 'promote'
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: npm-production
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-npm-release
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.stage_run_id }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Use the npm version pinned for promotion
+        run: npm install --global npm@11.19.0
+      - name: Promote the already-staged archives without republishing
+        shell: bash
+        env:
+          # OIDC trusted publishing cannot mutate dist-tags. Keep this granular token scoped to
+          # these two packages and protected by the reviewed npm-production environment.
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
+        run: node "$RUNNER_TEMP/brain-npm-release/publish.mjs" promote
+      - name: Record promoted versions
+        shell: bash
+        run: |
+          versions=$(node "$RUNNER_TEMP/brain-npm-release/npm-release.mjs" versions "$RUNNER_TEMP/brain-npm-release/manifest.json")
+          echo "Promoted the same registry objects to npm dist-tag \`latest\`: \`$versions\`" >> "$GITHUB_STEP_SUMMARY"

@@ -269,7 +269,6 @@
           "additionalProperties": false,
           "required": [
             "kind",
-<<<<<<< HEAD
             "component_digest",
             "world"
           ],
@@ -327,23 +326,6 @@
             "artifact_digest": {
               "$ref": "#/$defs/Sha256Hex"
             },
-=======
-            "environment",
-            "requirements"
-          ],
-          "description": "An explicitly bound tool executed by one declared logical environment.",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "environment"
-            },
-            "environment": {
-              "$ref": "#/$defs/EnvironmentName"
-            },
-            "artifact_digest": {
-              "$ref": "#/$defs/Sha256Hex"
-            },
->>>>>>> origin/main
             "callback_registration": {
               "type": "string",
               "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
@@ -427,7 +409,6 @@
         }
       }
     },
-<<<<<<< HEAD
     "ComponentEnvironmentConfig": {
       "type": "object",
       "additionalProperties": false,
@@ -449,9 +430,6 @@
       }
     },
     "LegacyEnvironmentConfig": {
-=======
-    "EnvironmentConfig": {
->>>>>>> origin/main
       "type": "object",
       "additionalProperties": false,
       "required": ["extension", "protocol", "profile", "configuration"],
@@ -474,7 +452,6 @@
         }
       }
     },
-<<<<<<< HEAD
     "EnvironmentConfig": {
       "oneOf": [
         { "$ref": "#/$defs/ComponentEnvironmentConfig" },
@@ -482,8 +459,6 @@
       ],
       "description": "Environment binding. The legacy arm remains only until the generic component adapter passes the existing managed-runtime gates."
     },
-=======
->>>>>>> origin/main
     "EnvironmentsConfig": {
       "type": "object",
       "maxProperties": 32,
@@ -507,7 +482,6 @@
         },
         "executor": {
           "$ref": "#/$defs/ToolExecutor"
-<<<<<<< HEAD
         },
         "network": {
           "type": "object",
@@ -526,8 +500,6 @@
             }
           },
           "description": "The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed."
-=======
->>>>>>> origin/main
         }
       }
     },
@@ -1015,7 +987,6 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-<<<<<<< HEAD
         "component_digest",
         "world"
       ],
@@ -1033,29 +1004,6 @@
           "additionalProperties": true,
           "default": {},
           "description": "Immutable package configuration passed to every activation."
-=======
-        "source_bundle_sha256",
-        "toolchain",
-        "bundle_base64"
-      ],
-      "description": "The agent loop that drives this session's turns. It is sealed at create for the life of the session; children inherit it unless spawn supplies another loop. The sealed identity is (source-bundle digest, toolchain); the composition componentizes the bundle server-side, cached by that pair.",
-      "properties": {
-        "source_bundle_sha256": {
-          "$ref": "#/$defs/Sha256Hex"
-        },
-        "toolchain": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-          "description": "The pinned loop-toolchain identity the bundle was built for."
-        },
-        "bundle_base64": {
-          "type": "string",
-          "maxLength": 11184812,
-          "writeOnly": true,
-          "description": "The deterministic source bundle, base64 (8 MiB decoded maximum). Create-time-only: staged outside the journal, never part of the model prefix."
->>>>>>> origin/main
         }
       }
     },
@@ -1064,7 +1012,6 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-<<<<<<< HEAD
         "component_digest",
         "world"
       ],
@@ -1080,20 +1027,6 @@
           "type": "object",
           "additionalProperties": true,
           "default": {}
-=======
-        "source_bundle_sha256",
-        "toolchain"
-      ],
-      "properties": {
-        "source_bundle_sha256": {
-          "$ref": "#/$defs/Sha256Hex"
-        },
-        "toolchain": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
->>>>>>> origin/main
         }
       }
     },
@@ -1173,19 +1106,14 @@
       "additionalProperties": false,
       "required": [
         "model",
-<<<<<<< HEAD
         "agentloop",
         "component_artifacts"
-=======
-        "agentloop"
->>>>>>> origin/main
       ],
       "description": "Everything here except metadata is part of the immutable prefix: it cannot change for the life of the session.",
       "properties": {
         "model": {
           "$ref": "#/$defs/ModelConfig"
         },
-<<<<<<< HEAD
         "retain_until": {
           "$ref": "#/$defs/Timestamp",
           "description": "Requested durable-retention deadline, capped by the Brain deployment. Omission uses the deployment default."
@@ -1200,8 +1128,6 @@
           "writeOnly": true,
           "description": "Unique component payloads referenced by the session's Model, Agentloop, Tool, and Environment bindings."
         },
-=======
->>>>>>> origin/main
         "tools": {
           "$ref": "#/$defs/ToolsConfig"
         },

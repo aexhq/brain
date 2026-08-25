@@ -1,0 +1,31 @@
+{
+  "name": "@aexhq/loop-pi",
+  "version": "0.84.2",
+  "description": "The pi agentloop for Brain sessions: pinned @earendil-works/pi-agent-core adapted onto contracts/agentloop/v1, built with the public @aexhq/agentloop toolchain",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aexhq/brain.git",
+    "directory": "packages/loop-pi"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": { "node": ">=22.0.0" },
+  "publishConfig": { "access": "public", "provenance": true, "tag": "next" },
+  "agentloop": { "name": "pi" },
+  "exports": {
+    "./bundle": "./dist/loop.bundle.mjs",
+    "./identity": "./dist/identity.json",
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "src", "README.md"],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@aexhq/agentloop": "0.1.0",
+    "@earendil-works/pi-agent-core": "0.84.2",
+    "@earendil-works/pi-ai": "0.84.2"
+  }
+}

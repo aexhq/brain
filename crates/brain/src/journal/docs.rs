@@ -920,17 +920,6 @@ pub struct PrefixDoc {
     pub storage_max_object_bytes: u64,
     pub storage_max_session_bytes: u64,
     pub storage_transfer_ttl_ms: u64,
-<<<<<<< HEAD
-=======
-    /// Accepted only while reading CONFIG records written before named environments.
-    #[doc(hidden)]
-    #[serde(
-        default,
-        rename = "max_additional_sandboxes_per_root",
-        skip_serializing
-    )]
-    pub retired_additional_sandbox_limit: u32,
->>>>>>> origin/main
     /// Canonical normalized session outbound ceiling. Omission at the public API is sealed as
     /// deny-all; every Tool/target policy may only narrow this value.
     #[serde(default = "default_network_ceiling")]
@@ -983,7 +972,6 @@ pub struct PrefixDoc {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentloopSelectorDoc {
-<<<<<<< HEAD
     pub component_digest: String,
     pub component_bytes: u64,
     pub world: String,
@@ -1012,11 +1000,6 @@ pub struct ToolSelectorDoc {
     pub grants: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
-=======
-    pub source_bundle_sha256: String,
-    pub source_bundle_bytes: u64,
-    pub toolchain: String,
->>>>>>> origin/main
 }
 
 fn default_customer_submit_retries() -> u32 {

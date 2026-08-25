@@ -51,12 +51,9 @@ pub use view::*;
 mod storage_state;
 use storage_state::*;
 
-<<<<<<< HEAD
 #[path = "engine/subagents.rs"]
 mod engine_subagents;
 
-=======
->>>>>>> origin/main
 mod config;
 pub use config::*;
 mod recovery;
@@ -142,26 +139,9 @@ struct ManagedSecretGrant {
     root_id: String,
     session_id: String,
     environment_id: String,
-<<<<<<< HEAD
     binding_refs: HashSet<String>,
-=======
-    target_binding_ref: String,
->>>>>>> origin/main
     env_names: Vec<String>,
     expires_at_ms: u64,
-}
-
-fn managed_secret_scope_matches(
-    grant: &ManagedSecretGrant,
-    request: &brain_protocol::environment::SecretDeliveryRequest,
-) -> bool {
-    grant.root_id == request.root_id.as_str()
-        && grant.session_id == request.session_id.as_str()
-        && grant.environment_id == request.environment_id.as_str()
-        && request.target.root_id.as_str() == grant.root_id
-        && request.target.session_id.as_str() == grant.session_id
-        && grant.target_binding_ref == request.target.binding_ref.as_str()
-        && request.target.kind == brain_protocol::environment::TargetKind::Environment
 }
 
 #[derive(Clone)]
@@ -413,10 +393,7 @@ fn sealed_managed_binding(
     descriptor: &brain_protocol::environment::BundleDescriptor,
     declaration: &brain_protocol::session::EnvironmentConfig,
 ) -> Result<brain_protocol::environment::SealedBinding> {
-<<<<<<< HEAD
     let declaration = legacy_environment(declaration)?;
-=======
->>>>>>> origin/main
     let network = sealed_sandbox_network(doc)?;
     let resources = managed_environment_resources()?;
     let policy_digest = brain_protocol::contract::canonical_digest(&serde_json::json!({
@@ -450,7 +427,6 @@ fn sealed_managed_binding(
     .map_err(BrainError::from)
 }
 
-<<<<<<< HEAD
 fn legacy_environment(
     declaration: &brain_protocol::session::EnvironmentConfig,
 ) -> Result<&brain_protocol::session::LegacyEnvironmentConfig> {
@@ -477,8 +453,6 @@ fn component_environment(
     }
 }
 
-=======
->>>>>>> origin/main
 pub(crate) fn environment_target(
     root_id: &str,
     environment_name: &str,
@@ -737,7 +711,6 @@ impl Brain {
         #[cfg(test)]
         let agentloop_registry =
             agentloop_registry.or_else(|| Some(Arc::new(crate::agentloop::TestAgentloopRegistry)));
-<<<<<<< HEAD
         let model_registry = services.model_registry.unwrap_or_else(|| {
             Arc::new(FactoryModelRegistry {
                 factory: provider_factory.clone(),
@@ -752,11 +725,6 @@ impl Brain {
             model_registry,
             tool_registry: services.tool_registry,
             component_environment_registry: services.component_environment_registry,
-=======
-        Arc::new(Self {
-            agentloop_registry: agentloop_registry
-                .expect("BrainServices.agentloop_registry is required"),
->>>>>>> origin/main
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
             create_permits: Arc::new(Semaphore::new(cfg.max_concurrent_creates)),
@@ -871,11 +839,7 @@ impl Brain {
         session_id: &str,
         doc: &HeadDoc,
         environment_id: &str,
-<<<<<<< HEAD
         binding_refs: HashSet<String>,
-=======
-        target_binding_ref: String,
->>>>>>> origin/main
         mut env_names: Vec<String>,
     ) -> Result<Option<brain_protocol::environment::SecretCapability>> {
         env_names.sort_unstable();
@@ -910,11 +874,7 @@ impl Brain {
                     root_id: doc.root_id.clone(),
                     session_id: session_id.to_owned(),
                     environment_id: environment_id.to_owned(),
-<<<<<<< HEAD
                     binding_refs,
-=======
-                    target_binding_ref,
->>>>>>> origin/main
                     env_names: env_names.clone(),
                     expires_at_ms,
                 },
@@ -961,11 +921,7 @@ impl Brain {
             })?;
             let adapter = self
                 .environments
-<<<<<<< HEAD
                 .resolve(legacy_environment(declaration)?.extension.as_str())?
-=======
-                .resolve(declaration.extension.as_str())?
->>>>>>> origin/main
                 .clone();
             let binding = sealed_managed_binding(session_id, doc, descriptor, declaration)?;
             let resolved = adapter
@@ -1041,11 +997,7 @@ impl Brain {
             );
         }
 
-<<<<<<< HEAD
         for (_, preparation) in preparations {
-=======
-        for (environment_name, preparation) in preparations {
->>>>>>> origin/main
             let mut seen = HashSet::new();
             let mut bundles = Vec::new();
             for digest in preparation.bundle_digests {
@@ -1061,12 +1013,7 @@ impl Brain {
                 session_id,
                 doc,
                 &preparation.environment_id,
-<<<<<<< HEAD
                 preparation.binding_refs,
-=======
-                brain_protocol::contract::environment_binding_ref(&doc.root_id, &environment_name)
-                    .to_string(),
->>>>>>> origin/main
                 preparation.env_names,
             )?;
             let request: brain_protocol::environment::PrepareSessionRequest =
@@ -1277,6 +1224,9 @@ impl Brain {
             let crate::config::ToolRoute::Intrinsic(capability) = &decl.route else {
                 continue;
             };
+            if crate::tools::is_direct_engine_capability(capability) {
+                continue;
+            }
             let policy = self
                 .cfg
                 .official_capabilities
@@ -1313,7 +1263,9 @@ impl Brain {
                         decl.name, policy.capability
                     )));
                 }
-                crate::config::ToolRoute::Intrinsic(capability) => {
+                crate::config::ToolRoute::Intrinsic(capability)
+                    if !crate::tools::is_direct_engine_capability(capability) =>
+                {
                     return Err(BrainError::Invalid(format!(
                         "tool {} requires unavailable intrinsic capability {}",
                         decl.name, capability
@@ -1350,7 +1302,6 @@ impl Brain {
             .flat_map(|environments| environments.iter())
             .map(|(name, environment)| (name.as_str().to_owned(), environment.clone()))
             .collect();
-<<<<<<< HEAD
         let mut referenced_environment_components = HashSet::new();
         for (name, declaration) in &environments {
             let brain_protocol::session::EnvironmentConfig::ComponentEnvironmentConfig(declaration) =
@@ -1385,9 +1336,6 @@ impl Brain {
                 }
                 continue;
             }
-=======
-        for decl in &decls {
->>>>>>> origin/main
             let (environment_name, expected_profile) = match &decl.route {
                 crate::config::ToolRoute::Environment(seal) => {
                     (seal.environment.as_str(), "computer")
@@ -1403,10 +1351,7 @@ impl Brain {
                     decl.name
                 ))
             })?;
-<<<<<<< HEAD
             let environment = legacy_environment(environment)?;
-=======
->>>>>>> origin/main
             let actual_profile = match environment.profile.kind {
                 brain_protocol::session::EnvironmentProfileKind::Computer => "computer",
                 brain_protocol::session::EnvironmentProfileKind::Callbacks => "callbacks",
@@ -1601,7 +1546,6 @@ impl Brain {
         // Seal the loop identity before anything else commits, rejecting a loop this
         // composition cannot run while the request is still refusable.
         let brain_protocol::session::AgentloopConfig {
-<<<<<<< HEAD
             component_digest,
             world,
             config,
@@ -1615,33 +1559,6 @@ impl Brain {
         let agentloop_selector =
             self.agentloop_registry
                 .admit(digest, world.as_str(), component, config)?;
-=======
-            source_bundle_sha256,
-            toolchain,
-            bundle_base64,
-        } = &req.agentloop;
-        use base64::Engine as _;
-        let bundle = base64::engine::general_purpose::STANDARD
-            .decode(bundle_base64.as_str())
-            .map_err(|_| {
-                BrainError::Invalid("agentloop.bundle_base64 is not valid base64".into())
-            })?;
-        if bundle.is_empty() || bundle.len() > brain_protocol::MAX_LOOP_BUNDLE_BYTES {
-            return Err(BrainError::Invalid(
-                "agentloop bundle must be between 1 byte and 8 MiB".into(),
-            ));
-        }
-        let digest = hex::encode(Sha256::digest(&bundle));
-        if digest != source_bundle_sha256.as_str() {
-            return Err(BrainError::Invalid(format!(
-                "agentloop bundle digest is {digest}, not the declared {}",
-                source_bundle_sha256.as_str()
-            )));
-        }
-        let agentloop_selector =
-            self.agentloop_registry
-                .admit_custom(&digest, toolchain.as_str(), &bundle)?;
->>>>>>> origin/main
         self.agentloop_registry.resolve(&agentloop_selector)?;
         let mut referenced_components = HashSet::from([model_digest, digest]);
         referenced_components.extend(referenced_tool_components.iter().map(String::as_str));
@@ -1689,10 +1606,6 @@ impl Brain {
             storage_max_object_bytes: self.cfg.storage_max_object_bytes,
             storage_max_session_bytes: self.cfg.storage_max_session_bytes,
             storage_transfer_ttl_ms: self.cfg.storage_transfer_ttl.as_millis() as u64,
-<<<<<<< HEAD
-=======
-            retired_additional_sandbox_limit: 0,
->>>>>>> origin/main
             network: merge_session_network(req.network.as_ref(), &decls)?,
             max_child_depth: req.children.as_ref().map_or(4, |limits| {
                 u32::try_from(limits.max_depth)
@@ -1773,14 +1686,8 @@ impl Brain {
                     if !stored_layers.insert(layer.checksum.clone()) {
                         continue;
                     }
-<<<<<<< HEAD
                     let object = bundle_storage
                         .store_bundle(&session_id, &layer.checksum, &layer.bytes)
-=======
-                    let media_type = layer.media_type.to_string();
-                    let object = bundle_storage
-                        .store_bundle(&session_id, &layer.checksum, &media_type, &layer.bytes)
->>>>>>> origin/main
                         .await?;
                     let layer_descriptor = descriptor
                         .layers
@@ -2364,11 +2271,7 @@ impl Brain {
                 ))
             })?;
         self.environments
-<<<<<<< HEAD
             .resolve(legacy_environment(declaration)?.extension.as_str())
-=======
-            .resolve(declaration.extension.as_str())
->>>>>>> origin/main
             .cloned()
     }
 
@@ -3653,7 +3556,6 @@ impl crate::turn::EngineServices for Brain {
         Brain::prepare_managed_session(self, session_id, doc).await
     }
 
-<<<<<<< HEAD
     async fn execute_child_capability(
         self: Arc<Self>,
         parent_id: &str,
@@ -3693,8 +3595,6 @@ impl crate::turn::EngineServices for Brain {
         })
     }
 
-=======
->>>>>>> origin/main
     async fn reconcile_managed_unknown_environment(
         self: Arc<Self>,
         session_id: &str,
@@ -4147,7 +4047,6 @@ impl crate::environment::SecretDeliveryPort for Brain {
             )
         })?;
 
-<<<<<<< HEAD
         if grant.root_id != request.root_id.as_str()
             || grant.session_id != request.session_id.as_str()
             || grant.environment_id != request.environment_id.as_str()
@@ -4158,9 +4057,6 @@ impl crate::environment::SecretDeliveryPort for Brain {
                 .contains(request.target.binding_ref.as_str())
             || request.target.kind != brain_protocol::environment::TargetKind::Environment
         {
-=======
-        if !managed_secret_scope_matches(&grant, &request) {
->>>>>>> origin/main
             return Err(secret_delivery_error(
                 EnvironmentErrorCode::BindingConflict,
                 false,
@@ -4206,6 +4102,15 @@ impl crate::environment::SecretDeliveryPort for Brain {
         }
         Ok(crate::environment::SecretMaterial::new(values))
     }
+}
+
+fn required_child_string(input: &serde_json::Value, field: &str) -> Result<String> {
+    input
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| BrainError::Invalid(format!("subagents.{field} is required")))
 }
 
 fn sandbox_file_effect_id(session_id: &str, key: &str, action: &str) -> Result<String> {
@@ -4698,65 +4603,10 @@ async fn actor(
     let mut resident: Option<Resident> = None;
     let mut running: Option<Running> = None;
     if startup != ActorStartup::Lazy {
-<<<<<<< HEAD
         let Some(recovered) = Box::pin(recover_actor_startup(&brain, &session_id)).await else {
             return;
         };
         resident = Some(recovered);
-=======
-        match hydrate(&brain, &session_id).await {
-            Ok(r) => {
-                if r.st.head.state == SessionLifecycle::Deleting {
-                    resident = Some(r);
-                    if let Err(error) = delete_session(&brain, &session_id, &mut resident).await {
-                        tracing::warn!(session = %session_id, error = %error, "background session deletion will retry");
-                    }
-                    return;
-                } else if r.st.head.state == SessionLifecycle::Ending {
-                    resident = Some(r);
-                    match continue_end_session(&brain, &session_id, &mut resident).await {
-                        Ok(true) => {
-                            // End is complete and quiescent. Keep serving if the narrow lease
-                            // release transiently fails; the ordinary idle path retries it.
-                            if try_discard_resident(&brain, &session_id, &mut resident).await {
-                                return;
-                            }
-                        }
-                        Ok(false) => {
-                            if brain.journal.defer_recovery(&session_id).await.is_ok() {
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            tracing::warn!(session = %session_id, error = %error, "background session end will retry");
-                            if brain.journal.defer_recovery(&session_id).await.is_ok() {
-                                return;
-                            }
-                        }
-                    }
-                } else {
-                    // Create may stage/prepare immutable code, but neither create nor background
-                    // recovery materializes a target. Only the first managed operation or explicit
-                    // environment materialization crosses that boundary.
-                    resident = Some(r);
-                }
-            }
-            Err(e) => {
-                if !matches!(&e, BrainError::Fenced) {
-                    tracing::warn!(session = %session_id, error = %e, "eager hydrate failed; durable recovery remains due");
-                    if let Err(backoff_error) = brain.journal.defer_recovery(&session_id).await
-                        && !matches!(&backoff_error, BrainError::Fenced)
-                    {
-                        tracing::warn!(session = %session_id, error = %backoff_error, "could not persist recovery backoff");
-                    }
-                }
-                // Do not leave a dead actor resident after a failed background claim/hydrate.
-                // Its inbox closes, the supervisor removes it, and the unchanged due key is
-                // retried after the prior lease expires.
-                return;
-            }
-        }
->>>>>>> origin/main
     }
 
     loop {
@@ -5724,14 +5574,7 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             .collect::<Vec<_>>();
         for environment in environments {
             let state = resident.st.head.environment_targets[&environment].state;
-<<<<<<< HEAD
             if state == brain_protocol::environment::SandboxState::Creating {
-=======
-            if state == brain_protocol::environment::SandboxState::Creating
-                && resident.st.head.state == SessionLifecycle::Open
-                && !resident.st.head.ended
-            {
->>>>>>> origin/main
                 materialize_environment_resident(brain, session_id, &mut resident, &environment)
                     .await?;
             } else {
@@ -6203,10 +6046,7 @@ async fn materialize_environment_resident(
                     "session has no environment named {environment_name:?}"
                 ))
             })?;
-<<<<<<< HEAD
     let declaration = legacy_environment(declaration)?;
-=======
->>>>>>> origin/main
     if declaration.profile.kind != brain_protocol::session::EnvironmentProfileKind::Computer {
         return Err(BrainError::Invalid(format!(
             "environment {environment_name:?} is not a computer environment"
@@ -6549,10 +6389,7 @@ fn turn_run(
         provider_total_timeout: brain.cfg.provider_total_timeout,
         compactor: brain.compactor.clone(),
         external_executor: brain.external_executor.clone(),
-<<<<<<< HEAD
         tool_registry: brain.tool_registry.clone(),
-=======
->>>>>>> origin/main
         managed_bindings: r.managed_bindings.clone(),
         customer: brain.customer.clone(),
         tenant_id: r.st.head.tenant_id.clone(),
@@ -7204,11 +7041,7 @@ async fn continue_end_session(
     // Root environments belong to the whole tree. Ending a child never releases state shared
     // with its parent or siblings.
     if r.st.head.root_id == session_id {
-<<<<<<< HEAD
         release_live_environments(brain, session_id, r).await?;
-=======
-        dematerialize_environments_for_end(brain, session_id, r).await?;
->>>>>>> origin/main
     }
     r.st.head.state = SessionLifecycle::Ended;
     r.st.head.active_phase = None;
@@ -7223,11 +7056,7 @@ async fn continue_end_session(
     Ok(true)
 }
 
-<<<<<<< HEAD
 async fn release_live_environments(
-=======
-async fn dematerialize_environments_for_end(
->>>>>>> origin/main
     brain: &Arc<Brain>,
     session_id: &str,
     resident: &mut Resident,
@@ -7291,7 +7120,6 @@ async fn dematerialize_environments_for_end(
             )],
         )
         .await?;
-<<<<<<< HEAD
     }
     release_component_environments(brain, session_id, &resident.st.head).await?;
     Ok(())
@@ -7567,8 +7395,6 @@ async fn release_component_environments(
                 },
             )
             .await?;
-=======
->>>>>>> origin/main
     }
     Ok(())
 }
@@ -7731,19 +7557,13 @@ async fn continue_delete_session(
     // Every cleanup operation is idempotent. Any error leaves HEAD+CONFIG and its recovery-due
     // projection intact, so the background worker can retry without customer traffic.
     if r.st.head.root_id == session_id {
-<<<<<<< HEAD
         release_component_environments(brain, session_id, &r.st.head).await?;
-=======
->>>>>>> origin/main
         let extensions =
             r.st.head
                 .prefix
                 .environments
                 .values()
-<<<<<<< HEAD
                 .filter_map(|environment| legacy_environment(environment).ok())
-=======
->>>>>>> origin/main
                 .filter(|environment| {
                     environment.profile.kind
                         == brain_protocol::session::EnvironmentProfileKind::Computer

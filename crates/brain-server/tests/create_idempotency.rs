@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 fn loop_config() -> Value {
     json!({
-<<<<<<< HEAD
         "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
         "world": "aex:agentloop/agentloop@1.0.0",
     })
@@ -25,11 +24,6 @@ fn model_config(name: &str) -> Value {
         "provider": "anthropic",
         "name": name,
         "api_key": "sk-fake"
-=======
-        "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-        "toolchain": "test-loop",
-        "bundle_base64": "eA==",
->>>>>>> origin/main
     })
 }
 
@@ -74,14 +68,9 @@ async fn create_replays_one_session_and_rejects_key_reuse_with_another_body() {
 
     let http = reqwest::Client::new();
     let body = json!({
-<<<<<<< HEAD
         "model": model_config("scripted"),
         "agentloop": loop_config(),
         "component_artifacts": component_artifacts(),
-=======
-        "model": {"provider": "anthropic", "name": "scripted", "api_key": "sk-fake"},
-        "agentloop": loop_config(),
->>>>>>> origin/main
         "metadata": {"test": "create-idempotency"}
     });
 
@@ -109,14 +98,9 @@ async fn create_replays_one_session_and_rejects_key_reuse_with_another_body() {
         .bearer_auth(&token)
         .header("Idempotency-Key", "same-create-request")
         .json(&json!({
-<<<<<<< HEAD
             "model": model_config("different"),
             "agentloop": loop_config(),
             "component_artifacts": component_artifacts()
-=======
-            "model": {"provider": "anthropic", "name": "different", "api_key": "sk-fake"},
-            "agentloop": loop_config()
->>>>>>> origin/main
         }))
         .send()
         .await

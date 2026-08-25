@@ -73,7 +73,6 @@ fn create_body(
     bundle: &[u8],
     bundle_digest: &str,
 ) -> Value {
-<<<<<<< HEAD
     let loop_component = std::fs::read(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../brain-component-host/guest/dist/agentloop.component.wasm"),
@@ -86,13 +85,6 @@ fn create_body(
     .expect("run npm run build:components before the standalone gate");
     let loop_digest = hex::encode(Sha256::digest(&loop_component));
     let model_digest = hex::encode(Sha256::digest(&model_component));
-=======
-    let loop_bundle = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../brain-loophost/guest/loop-contract.mjs"
-    ));
-    let loop_digest = hex::encode(Sha256::digest(loop_bundle));
->>>>>>> origin/main
     let manifest = json!({
         "profile":"computer/v1",
         "target":"linux-amd64",
@@ -108,7 +100,6 @@ fn create_body(
     });
     let manifest_digest = brain_protocol::contract::canonical_digest(&manifest).unwrap();
     json!({
-<<<<<<< HEAD
         "component_artifacts": [
             {
                 "component_digest": loop_digest,
@@ -137,13 +128,6 @@ fn create_body(
             "component_digest": loop_digest,
             "world": "aex:agentloop/agentloop@1.0.0",
             "config": {"fixture":"sequential"},
-=======
-        "model": {"provider":provider, "name":model, "api_key":api_key},
-        "agentloop": {
-            "source_bundle_sha256": loop_digest,
-            "toolchain": brain_loophost::registry::LOOP_TOOLCHAIN,
-            "bundle_base64": base64::engine::general_purpose::STANDARD.encode(loop_bundle),
->>>>>>> origin/main
         },
         "tools": {"items":[{
             "definition": {
@@ -420,21 +404,11 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
         },
         advertised_address: address.to_string(),
         transport_urls: None,
-<<<<<<< HEAD
         provider_factory: None,
         environment_capabilities: None,
         loophost: Some(brain_server::LoophostOptions {
             component_host: PathBuf::from(env!("CARGO_BIN_EXE_brain-component-host")),
             workers: 2,
-=======
-        provider_factory: Some(Arc::new(move |dialect| match dialect {
-            Dialect::AnthropicMessages => alpha_factory.clone() as Arc<dyn Provider>,
-            Dialect::OpenAiChat => beta_factory.clone() as Arc<dyn Provider>,
-        })),
-        loophost: Some(brain_server::LoophostOptions {
-            toolchain_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../brain-loophost/guest"),
->>>>>>> origin/main
         }),
     })
     .await
@@ -538,16 +512,10 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
             .iter()
             .position(|kind| *kind == "managed_call_accepted")
             .expect("managed receipt");
-        let result = records
+        let result = kinds
             .iter()
-            .position(|entry| {
-                matches!(
-                    &entry.record,
-                    brain::journal::Record::ToolResult { name, .. }
-                        if name == "workspace_probe"
-                )
-            })
-            .expect("managed tool result");
+            .position(|kind| *kind == "tool_result")
+            .expect("tool result");
         assert!(intent < accepted && accepted < result);
         let durable = format!(
             "{}{}",

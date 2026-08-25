@@ -85,7 +85,6 @@ impl BundleStoragePort for LocalSessionStorage {
         &self,
         root_id: &str,
         bundle_digest: &str,
-        media_type: &str,
         bytes: &[u8],
     ) -> Result<brain_protocol::environment::ObjectReference> {
         validate_bundle_digest(bundle_digest)?;
@@ -102,7 +101,7 @@ impl BundleStoragePort for LocalSessionStorage {
         let path = self.bundle_path(root_id, bundle_digest)?;
         if let Ok(existing) = tokio::fs::read(&path).await {
             if existing == bytes {
-                return bundle_object_reference(bundle_digest, media_type, bytes.len() as u64);
+                return bundle_object_reference(bundle_digest, bytes.len() as u64);
             }
             return Err(BrainError::Journal(
                 "immutable local Tool bundle digest collision".into(),
@@ -114,7 +113,7 @@ impl BundleStoragePort for LocalSessionStorage {
                 BrainError::Journal(format!("create local bundle directory: {error}"))
             })?;
         atomic_write(&path, bytes).await?;
-        bundle_object_reference(bundle_digest, media_type, bytes.len() as u64)
+        bundle_object_reference(bundle_digest, bytes.len() as u64)
     }
 
     async fn prepare_bundle_fetch(
@@ -173,14 +172,13 @@ fn validate_bundle_digest(bundle_digest: &str) -> Result<()> {
 
 fn bundle_object_reference(
     bundle_digest: &str,
-    media_type: &str,
     bytes: u64,
 ) -> Result<brain_protocol::environment::ObjectReference> {
     serde_json::from_value(serde_json::json!({
         "object_id": format!("bundle_{bundle_digest}"),
         "bytes": bytes,
         "sha256": bundle_digest,
-        "media_type": media_type,
+        "media_type": "application/javascript+esm",
     }))
     .map_err(BrainError::from)
 }
@@ -451,7 +449,7 @@ mod tests {
         let digest = hex::encode(Sha256::digest(bytes));
         let first = LocalSessionStorage::open(&root).unwrap();
         let object = first
-            .store_bundle("ses_bundle_root", &digest, "application/x-xz", bytes)
+            .store_bundle("ses_bundle_root", &digest, bytes)
             .await
             .unwrap();
         assert_eq!(object.object_id.as_str(), format!("bundle_{digest}"));
@@ -459,7 +457,7 @@ mod tests {
         assert_eq!(object.bytes, bytes.len() as u64);
         assert_eq!(
             object.media_type.as_deref().map(String::as_str),
-            Some("application/x-xz")
+            Some("application/javascript+esm")
         );
         assert!(
             first

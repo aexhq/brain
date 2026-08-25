@@ -153,16 +153,8 @@ impl JournalStore for SlowStore {
 
 fn create_request() -> CreateSessionRequest {
     serde_json::from_value(json!({
-<<<<<<< HEAD
         "model": support::model_config(),
         "component_artifacts": support::component_artifacts(),
-=======
-        "model": {
-            "provider": "anthropic",
-            "name": "scripted",
-            "api_key": "sk-fake"
-        },
->>>>>>> origin/main
         "agentloop": support::loop_config()
     }))
     .expect("typed create request")

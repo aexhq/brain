@@ -2342,7 +2342,6 @@ impl SessionPreparationPort for LocalEnvironment {
                             "local secret delivery is not attached",
                         )
                     })?;
-<<<<<<< HEAD
                 let first_binding = request.bindings.first().ok_or_else(|| {
                     environment_error(
                         EnvironmentErrorCode::BindingConflict,
@@ -2350,8 +2349,6 @@ impl SessionPreparationPort for LocalEnvironment {
                         "secret capability requires a prepared binding",
                     )
                 })?;
-=======
->>>>>>> origin/main
                 let generation = format!("prep_{}", &hash_component(&session_id)[..24]);
                 let secret_request = typed(json!({
                     "capability_ref": capability.capability_ref,
@@ -2363,7 +2360,7 @@ impl SessionPreparationPort for LocalEnvironment {
                         "kind": "environment",
                         "session_id": request.session_id,
                         "root_id": request.root_id,
-                        "binding_ref": environment_binding_ref,
+                        "binding_ref": first_binding.binding_ref,
                     }
                 }))?;
                 let values = delivery.redeem(secret_request).await?.into_env();

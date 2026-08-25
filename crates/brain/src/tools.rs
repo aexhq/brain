@@ -62,7 +62,6 @@ pub trait ToolRegistry: Send + Sync {
     ) -> Result<crate::adapter::CallOutcome>;
 }
 
-<<<<<<< HEAD
 /// Closed engine capabilities implemented by Brain's state machine over typed ports. These are
 /// not host-side extension points: an SDK caller may select only these exact identifiers, and
 /// model-visible Tool names never participate in dispatch.
@@ -70,8 +69,6 @@ pub fn is_direct_engine_capability(capability: &str) -> bool {
     capability == "brain.subagents"
 }
 
-=======
->>>>>>> origin/main
 /// Resolve native tools in exact declaration order. Kind discriminator strings and protocol
 /// constants are checked here because generated Rust structs intentionally preserve JSON `const`
 /// fields as strings/integers.
@@ -87,7 +84,6 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
     validate_schema(&name, "output", &output_schema)?;
     // The executor union is kind-tagged at the serde layer, so a payload declaring one realm
     // can no longer deserialize as another; no per-arm kind re-checks remain.
-<<<<<<< HEAD
     let route = match &tool.executor {
         ToolExecutor::Component {
             component_digest,
@@ -114,15 +110,11 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
                     .map(|environment| environment.as_str().to_owned()),
             })
         }
-=======
-    let (route, network_needs) = match &tool.executor {
->>>>>>> origin/main
         ToolExecutor::Environment {
             artifact_digest,
             callback_registration,
             environment,
             requirements,
-<<<<<<< HEAD
         } => match (artifact_digest, callback_registration) {
             (Some(digest), None) => ToolRoute::Environment(EnvironmentToolSeal {
                 environment: environment.to_string(),
@@ -155,43 +147,12 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
         .map(|network| {
             network
                 .destinations
-=======
-        } => {
-            let network_needs = requirements
-                .network
->>>>>>> origin/main
                 .iter()
                 .map(|destination| serde_json::to_value(destination).map_err(BrainError::from))
-                .collect::<Result<Vec<_>>>()?;
-            let route = match (artifact_digest, callback_registration) {
-                (Some(digest), None) => ToolRoute::Environment(EnvironmentToolSeal {
-                    environment: environment.to_string(),
-                    protocol: 1,
-                    checksum: digest.to_string(),
-                    required_env: requirements
-                        .env
-                        .iter()
-                        .flatten()
-                        .cloned()
-                        .map(String::from)
-                        .collect(),
-                }),
-                (None, Some(registration)) => ToolRoute::Customer {
-                    environment: environment.to_string(),
-                    registration: registration.to_string(),
-                },
-                _ => {
-                    return Err(BrainError::Invalid(format!(
-                        "tool {name} environment executor requires exactly one of artifact_digest or callback_registration"
-                    )));
-                }
-            };
-            (route, network_needs)
-        }
-        ToolExecutor::Engine { capability } => {
-            (ToolRoute::Intrinsic(capability.to_string()), Vec::new())
-        }
-    };
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
 
     Ok(ToolDecl {
         name,
@@ -366,14 +327,7 @@ mod tests {
                     "kind":"environment",
                     "environment":"workspace",
                     "artifact_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-<<<<<<< HEAD
                     "requirements":{"env":["TOKEN"]}
-=======
-                    "requirements":{
-                        "env":["TOKEN"],
-                        "network":[{"host":"api.example.com","ports":[443],"protocol":"tls"}]
-                    }
->>>>>>> origin/main
                 }
             },
             {
@@ -384,7 +338,7 @@ mod tests {
                     "input_schema": {"type":"object"},
                     "output_schema": {"type":"string"}
                 },
-                "executor": {"kind":"engine", "capability":"brain.test.delegate"}
+                "executor": {"kind":"engine", "capability":"brain.subagents"}
             }
         ]))
         .unwrap();
@@ -393,7 +347,7 @@ mod tests {
         assert!(matches!(decls[0].route, ToolRoute::Environment(_)));
         assert!(matches!(
             &decls[1].route,
-            ToolRoute::Intrinsic(capability) if capability == "brain.test.delegate"
+            ToolRoute::Intrinsic(capability) if capability == "brain.subagents"
         ));
         assert!(matches!(
             &decls[0].route,
@@ -403,10 +357,6 @@ mod tests {
                     && seal.required_env == ["TOKEN"]
                     && seal.checksum == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
-        assert_eq!(
-            decls[0].network_needs,
-            [serde_json::json!({"host":"api.example.com","ports":[443],"protocol":"tls"})]
-        );
     }
 
     #[test]
