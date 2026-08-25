@@ -3,7 +3,7 @@ export const MAX_MESSAGE_REQUEST_BYTES = 192 * 1024;
 export const MAX_MANAGED_TOOL_INPUT_BYTES = 192 * 1024;
 
 /** Maximum UTF-8 JSON bytes accepted by the Session create endpoint. */
-export const MAX_CREATE_SESSION_REQUEST_BYTES = 24 * 1024 * 1024;
+export const MAX_CREATE_SESSION_REQUEST_BYTES = 144 * 1024 * 1024;
 
 /** Maximum encoded bytes for one customer-Environment WebSocket command frame. */
 export const MAX_CUSTOMER_WS_FRAME_BYTES = 24 * 1024;

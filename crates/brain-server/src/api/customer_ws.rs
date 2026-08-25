@@ -97,6 +97,43 @@ pub(super) struct CustomerGrantResponse {
     observation_token: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CustomerEnvironmentDispatchRequest {
+    operation_id: String,
+    action: String,
+    request: serde_json::Value,
+    deadline_at_ms: String,
+}
+
+pub(super) async fn customer_environment_dispatch(
+    State(state): State<AppState>,
+    Json(request): Json<CustomerEnvironmentDispatchRequest>,
+) -> Result<Json<serde_json::Value>, Failure> {
+    let deadline_at_ms = request.deadline_at_ms.parse::<u64>().map_err(|_| {
+        Failure(
+            StatusCode::BAD_REQUEST,
+            api_code("invalid_request"),
+            "customer Environment dispatch deadline is invalid".into(),
+        )
+    })?;
+    let driver = state.brain.customer_component.as_ref().ok_or_else(|| {
+        map_err(BrainError::EnvironmentUnavailable(
+            "customer Environment is unavailable".into(),
+        ))
+    })?;
+    driver
+        .dispatch(
+            &request.operation_id,
+            &request.action,
+            request.request,
+            deadline_at_ms,
+        )
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
 pub(super) async fn customer_environment_grant(
     State(state): State<AppState>,
     headers: HeaderMap,

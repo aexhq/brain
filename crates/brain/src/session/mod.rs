@@ -89,6 +89,7 @@ pub struct Brain {
     /// Customer-app connection/receipt coordinator. Present only when the composition supplied
     /// absolute socket and observation callback URLs.
     pub customer: Option<Arc<crate::customer::CustomerCoordinator>>,
+    pub customer_component: Option<Arc<crate::customer_component::CustomerComponentDriver>>,
     pub compactor: Arc<dyn crate::compact::CompactionPort>,
     turn_permits: Arc<Semaphore>,
     create_permits: Arc<Semaphore>,
@@ -678,6 +679,9 @@ impl Brain {
                 factory: provider_factory.clone(),
             })
         });
+        let customer_component = customer.as_ref().map(|coordinator| {
+            crate::customer_component::CustomerComponentDriver::new(coordinator.clone())
+        });
         Arc::new(Self {
             agentloop_registry: agentloop_registry
                 .expect("BrainServices.agentloop_registry is required"),
@@ -708,6 +712,7 @@ impl Brain {
             environments: services.environments,
             customer_delivery: services.customer_delivery,
             customer,
+            customer_component,
             compactor: services
                 .compactor
                 .unwrap_or_else(|| Arc::new(crate::compact::SameProviderCompactor)),

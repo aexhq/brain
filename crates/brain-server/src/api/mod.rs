@@ -219,6 +219,11 @@ pub fn router(state: AppState) -> Router {
                 brain_protocol::MAX_CUSTOMER_WS_FRAME_BYTES,
             )),
         )
+        .route(
+            "/internal/v1/customer-environment/dispatch",
+            post(customer_environment_dispatch)
+                .layer(DefaultBodyLimit::max(INLINE_FILE_BODY_LIMIT_BYTES)),
+        )
         .merge(create)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
