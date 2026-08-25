@@ -1,8 +1,10 @@
 //! Generated host-side bindings for Brain's four component contracts.
 
 mod generated;
+mod runtime;
 
 pub use generated::*;
+pub use runtime::*;
 
 pub mod agentloop {
     wasmtime::component::bindgen!({

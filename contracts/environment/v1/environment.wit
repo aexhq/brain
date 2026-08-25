@@ -80,18 +80,14 @@ interface host {
   http: func(request: http-request) -> result<http-response, extension-error>;
 }
 
-interface adapter {
-  use types.{extension-error, observation, operation, resolve-request, resolved, submitted};
-
-  resolve: func(request: resolve-request) -> result<resolved, extension-error>;
-  submit: func(binding-json: string, operation: operation) -> result<submitted, extension-error>;
-  observe: func(binding-json: string, provider-operation-id: string, cursor: option<string>) -> result<observation, extension-error>;
-  cancel: func(binding-json: string, provider-operation-id: string) -> result<_, extension-error>;
-  acknowledge: func(binding-json: string, provider-operation-id: string, terminal-json: string) -> result<_, extension-error>;
-  release: func(binding-json: string) -> result<_, extension-error>;
-}
-
 world environment {
   import host;
-  export adapter;
+  use types.{extension-error, observation, operation, resolve-request, resolved, submitted};
+
+  export resolve: func(request: resolve-request) -> result<resolved, extension-error>;
+  export submit: func(binding-json: string, operation: operation) -> result<submitted, extension-error>;
+  export observe: func(binding-json: string, provider-operation-id: string, cursor: option<string>) -> result<observation, extension-error>;
+  export cancel: func(binding-json: string, provider-operation-id: string) -> result<_, extension-error>;
+  export acknowledge: func(binding-json: string, provider-operation-id: string, terminal-json: string) -> result<_, extension-error>;
+  export release: func(binding-json: string) -> result<_, extension-error>;
 }

@@ -7,4 +7,7 @@ license.workspace = true
 description = "Shared isolated component runtime and host bindings for Brain extensions"
 
 [dependencies]
+anyhow.workspace = true
+tokio.workspace = true
 wasmtime.workspace = true
+wasmtime-wasi.workspace = true

@@ -12,10 +12,10 @@ pub const TOOL_WIT: &str = include_str!("../../../contracts/tool/v1/tool.wit");
 
 pub const ENVIRONMENT_WORLD: &str = "aex:environment/environment@1.0.0";
 pub const ENVIRONMENT_CONTRACT_DIGEST: &str =
-    "7cc8fae7a3516002edcbb4c14766471222a3bd28e0835e356ed1d9d5f8f67947";
+    "8c00534afab60b5d95c2f9931bac7a27191657ffe6d193e6a7fa8bcd2a20aa1b";
 pub const ENVIRONMENT_WIT: &str = include_str!("../../../contracts/environment/v1/environment.wit");
 
 pub const MODEL_WORLD: &str = "aex:model/model@1.0.0";
 pub const MODEL_CONTRACT_DIGEST: &str =
-    "0b138f93f787a5e8ea6442370926ec5ddf7f355e84038b8d3725f17c831501d4";
+    "2c076c1b50c970dd95d178e4b91f6aff6f6559399b5f7a38f69f2b3290366123";
 pub const MODEL_WIT: &str = include_str!("../../../contracts/model/v1/model.wit");

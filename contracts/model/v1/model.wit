@@ -85,16 +85,12 @@ interface host {
   http: func(request: http-request) -> result<http-response, extension-error>;
 }
 
-interface adapter {
-  use types.{extension-error, observation, request, started};
-
-  start: func(request: request) -> result<started, extension-error>;
-  observe: func(provider-operation-id: string, cursor: option<string>) -> result<observation, extension-error>;
-  cancel: func(provider-operation-id: string) -> result<_, extension-error>;
-  acknowledge: func(provider-operation-id: string, terminal-json: string) -> result<_, extension-error>;
-}
-
 world model {
   import host;
-  export adapter;
+  use types.{extension-error, observation, request, started};
+
+  export start: func(request: request) -> result<started, extension-error>;
+  export observe: func(provider-operation-id: string, cursor: option<string>) -> result<observation, extension-error>;
+  export cancel: func(provider-operation-id: string) -> result<_, extension-error>;
+  export acknowledge: func(provider-operation-id: string, terminal-json: string) -> result<_, extension-error>;
 }

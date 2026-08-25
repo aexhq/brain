@@ -3,8 +3,8 @@
 export const componentContracts = {
   agentloop: { world: "aex:agentloop/agentloop@1.0.0", digest: "b2d04fdd74f8051992298f0535d412da4b7cfa7982d05d6ce54e2e6ba1f9447b" },
   tool: { world: "aex:tool/tool@1.0.0", digest: "c1434ba34caaedaedc9594e85be6ee0926475ecf2820a25d0e5522ec7d9f55c5" },
-  environment: { world: "aex:environment/environment@1.0.0", digest: "7cc8fae7a3516002edcbb4c14766471222a3bd28e0835e356ed1d9d5f8f67947" },
-  model: { world: "aex:model/model@1.0.0", digest: "0b138f93f787a5e8ea6442370926ec5ddf7f355e84038b8d3725f17c831501d4" },
+  environment: { world: "aex:environment/environment@1.0.0", digest: "8c00534afab60b5d95c2f9931bac7a27191657ffe6d193e6a7fa8bcd2a20aa1b" },
+  model: { world: "aex:model/model@1.0.0", digest: "2c076c1b50c970dd95d178e4b91f6aff6f6559399b5f7a38f69f2b3290366123" },
 } as const;
 
 export type ComponentKind = keyof typeof componentContracts;

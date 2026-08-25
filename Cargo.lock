@@ -928,7 +928,10 @@ dependencies = [
 name = "brain-component-host"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "tokio",
  "wasmtime",
+ "wasmtime-wasi",
 ]
 
 [[package]]
