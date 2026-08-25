@@ -4,66 +4,56 @@
 <p align="center">
   <a href="https://aex.dev">Aex</a> ·
   <a href="contracts/session/v1/openapi.yaml">Session API</a> ·
-  <a href="https://github.com/aexhq/environments">Environments</a> ·
+  <a href="https://github.com/aexhq/extensions">Extensions</a> ·
   <a href="https://discord.gg/Qk2YnHMHVb">Discord</a>
 </p>
 
 ## What it is
-Brain is minimal server that manages a set of primitives and environments for running agent sessions.
+Brain is a minimal session kernel that hosts four replaceable component kinds: Agentloop, Tool,
+Environment, and Model.
 The term _Brain_ is originated from Anthropic engineering blog [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents) and minimalistic concept is inspired by [Pi Agent Harness](https://github.com/earendil-works/pi).
 
 ## TypeScript client
 
 ```sh
-npm install @aexhq/brain zod
+npm install @aexhq/brain @aexhq/loop-pi @aexhq/model-openai
 ```
 
 ```ts
-import { Brain, tool } from "@aexhq/brain";
-import { z } from "zod";
-
-const echo = tool(
-  z.object({ text: z.string() }),
-  async function echo({ text }) {
-    return { text };
-  },
-)
-  .describe("Return the supplied text.")
-  .returns(z.object({ text: z.string() }))
-  .server(import.meta.url);
-
-export default echo;
+import { Brain } from "@aexhq/brain";
+import { pi } from "@aexhq/loop-pi";
+import { openai } from "@aexhq/model-openai";
 
 const brain = new Brain({ token: process.env.BRAIN_TOKEN! });
 const session = await brain.sessions.create({
   model: {
-    provider: "openai",
+    component: openai(),
     name: process.env.MODEL_NAME!,
     apiKey: process.env.OPENAI_API_KEY!,
   },
-  tools: [echo],
+  agentloop: pi(),
 });
 
 console.log(await session.send("Echo hello."));
 ```
 
-`.server(import.meta.url)` bundles a function for the session's Environment. Use `.client()` with a stable
-`Brain({ client: { id } })` identity when the callback must stay in the application process.
-Omitting `tools` exposes no model tools.
+Omitting `tools` exposes no model tools. Components are ordinary immutable package values; the
+official packages use the same public contract as third-party components.
 
 ## Components
 
 | Component | Purpose |
 | --- | --- |
 | [`brain-protocol`](crates/brain-protocol) | Session API and Brain-to-Environment contracts |
-| [`brain`](crates/brain) | Session engine, providers, tool router, recovery, and adapter ports |
+| [`brain`](crates/brain) | Session engine, component routing, recovery, and adapter ports |
 | [`brain-standalone`](crates/brain-standalone) | SQLite journal, encrypted local custody/storage, and an explicit local Environment |
 | [`brain-aws`](crates/brain-aws) | Neutral DynamoDB, KMS, and S3 adapters |
 | [`brain-server`](crates/brain-server) | Standalone server and development composition |
 | [`@aexhq/brain`](packages/brain) | TypeScript client, Tool API, customer Environment, schemas, and builder |
 | [`packages/agentloop`](packages/agentloop) | Private conformance fixture for the Agentloop host ABI |
 
-Environments implement Brain's public ports. Brain never imports a Environments implementation.
+Extensions implement Brain's public component worlds. Brain does not import an official
+implementation or require components to have been authored in JavaScript.
 
 ## Run standalone
 
@@ -99,6 +89,10 @@ Structured logs always go to stderr. Setting `OTEL_EXPORTER_OTLP_ENDPOINT` enabl
 metric, and log export; `OTEL_EXPORTER_OTLP_PROTOCOL`, when present, must be `http/protobuf`.
 Component workers inherit only `OTEL_*` and `RUST_LOG`, while guest components retain no ambient
 process environment.
+
+Set `BRAIN_COMPONENT_CACHE_DIR` to an absolute, Brain-owned directory to share Wasmtime's validated
+compiled-component cache across worker processes. The cache changes startup cost only; component
+bytes and digests remain the runtime identity.
 
 ## Embed Brain
 
