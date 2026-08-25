@@ -317,6 +317,13 @@ impl crate::agentloop::TurnCtx for LoopTurnCtx<'_> {
                 false,
             )));
         }
+        if self.run.cancel.is_cancelled() {
+            return Ok(Err(crate::agentloop::op_error(
+                AgentloopErrorCode::Aborted,
+                "the turn was cancelled",
+                false,
+            )));
+        }
         match op {
             CtxOp::JournalAppend { entries } => self.op_journal_append(entries).await,
             CtxOp::KvGet { keys } => Ok(Ok(CtxOpResult::KvGet {
