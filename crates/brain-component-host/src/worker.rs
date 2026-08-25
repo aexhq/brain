@@ -10,6 +10,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
+use tracing::Instrument as _;
 
 use crate::{
     AgentloopInstance, CapabilityCall, CapabilityFailure, CapabilityHandler, ComponentRuntime,
@@ -123,6 +124,148 @@ impl WorkerRequest {
             Self::Tool { .. } | Self::Environment { .. } | Self::Model { .. } => None,
         }
     }
+
+    fn trace_fields(&self) -> (&str, &str, Option<&str>, Option<&str>, Option<&str>) {
+        match self {
+            Self::Agentloop {
+                instance_id,
+                component,
+                ..
+            } => (
+                "invoke",
+                "agentloop/v1",
+                Some(&component.sha256),
+                Some(instance_id),
+                None,
+            ),
+            Self::Tool { component, .. } => {
+                ("invoke", "tool/v1", Some(&component.sha256), None, None)
+            }
+            Self::Environment { component, .. } => (
+                "invoke",
+                "environment/v1",
+                Some(&component.sha256),
+                None,
+                None,
+            ),
+            Self::EnvironmentResolve {
+                instance_id,
+                component,
+                ..
+            } => (
+                "resolve",
+                "environment/v1",
+                Some(&component.sha256),
+                Some(instance_id),
+                None,
+            ),
+            Self::EnvironmentSubmit { instance_id, .. } => {
+                ("submit", "environment/v1", None, Some(instance_id), None)
+            }
+            Self::EnvironmentObserve {
+                instance_id,
+                provider_operation_id,
+                ..
+            } => (
+                "observe",
+                "environment/v1",
+                None,
+                Some(instance_id),
+                Some(provider_operation_id),
+            ),
+            Self::EnvironmentCancel {
+                instance_id,
+                provider_operation_id,
+                ..
+            } => (
+                "cancel",
+                "environment/v1",
+                None,
+                Some(instance_id),
+                Some(provider_operation_id),
+            ),
+            Self::EnvironmentAcknowledge {
+                instance_id,
+                provider_operation_id,
+                ..
+            } => (
+                "acknowledge",
+                "environment/v1",
+                None,
+                Some(instance_id),
+                Some(provider_operation_id),
+            ),
+            Self::EnvironmentRelease { instance_id, .. } => {
+                ("release", "environment/v1", None, Some(instance_id), None)
+            }
+            Self::Model { component, .. } => {
+                ("invoke", "model/v1", Some(&component.sha256), None, None)
+            }
+            Self::ModelStart {
+                instance_id,
+                component,
+                ..
+            } => (
+                "start",
+                "model/v1",
+                Some(&component.sha256),
+                Some(instance_id),
+                None,
+            ),
+            Self::ModelObserve {
+                instance_id,
+                provider_operation_id,
+                ..
+            } => (
+                "observe",
+                "model/v1",
+                None,
+                Some(instance_id),
+                Some(provider_operation_id),
+            ),
+            Self::ModelCancel {
+                instance_id,
+                provider_operation_id,
+            } => (
+                "cancel",
+                "model/v1",
+                None,
+                Some(instance_id),
+                Some(provider_operation_id),
+            ),
+            Self::ModelAcknowledge {
+                instance_id,
+                provider_operation_id,
+                ..
+            } => (
+                "acknowledge",
+                "model/v1",
+                None,
+                Some(instance_id),
+                Some(provider_operation_id),
+            ),
+            Self::Release { world, instance_id } => {
+                ("release", world, None, Some(instance_id), None)
+            }
+        }
+    }
+}
+
+fn invocation_span(request: &WorkerRequest) -> tracing::Span {
+    let (kind, world, digest, instance_id, operation_id) = request.trace_fields();
+    tracing::info_span!(
+        "brain.component.invoke",
+        component.kind = kind,
+        component.world = world,
+        component.digest = digest.unwrap_or(""),
+        component.instance_id = instance_id.unwrap_or(""),
+        component.operation_id = operation_id.unwrap_or("")
+    )
+}
+
+fn worker_env_allowed(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|name| name == "RUST_LOG" || name.starts_with("OTEL_"))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -131,6 +274,8 @@ enum ParentFrame {
     Request {
         id: u64,
         request: Box<WorkerRequest>,
+        #[serde(default)]
+        trace_context: HashMap<String, String>,
     },
     CapabilityResult {
         id: u64,
@@ -545,12 +690,18 @@ pub async fn run_worker() -> anyhow::Result<()> {
         if bytes > MAX_FRAME_BYTES {
             anyhow::bail!("worker request exceeds the frame bound");
         }
-        let (id, request) = match serde_json::from_str(&line)? {
-            ParentFrame::Request { id, request } => (id, request),
+        let (id, request, trace_context) = match serde_json::from_str(&line)? {
+            ParentFrame::Request {
+                id,
+                request,
+                trace_context,
+            } => (id, request, trace_context),
             ParentFrame::CapabilityResult { .. } => {
                 anyhow::bail!("worker received a capability result outside an invocation")
             }
         };
+        let span = invocation_span(&request);
+        brain_observability::set_parent_from_trace(&span, &trace_context);
         let response = WorkerFrame::Response {
             id,
             result: execute(
@@ -561,6 +712,7 @@ pub async fn run_worker() -> anyhow::Result<()> {
                 policy,
                 *request,
             )
+            .instrument(span)
             .await
             .map_err(|error| error.to_string()),
         };
@@ -719,11 +871,17 @@ struct Worker {
 
 impl Worker {
     fn spawn(program: &Path) -> anyhow::Result<Self> {
-        let mut child = Command::new(program)
-            .env_clear()
+        let mut command = Command::new(program);
+        command.env_clear();
+        for (name, value) in std::env::vars_os() {
+            if worker_env_allowed(&name) {
+                command.env(name, value);
+            }
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()?;
         let input = child
@@ -753,6 +911,7 @@ impl Worker {
         let mut encoded = serde_json::to_vec(&ParentFrame::Request {
             id,
             request: Box::new(request),
+            trace_context: brain_observability::inject_current_trace(),
         })?;
         if encoded.len() + 1 > MAX_FRAME_BYTES {
             anyhow::bail!("component worker request exceeds the frame bound");
@@ -794,5 +953,18 @@ impl Worker {
                 _ => anyhow::bail!("component worker response id does not match request {id}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worker_env_allowed;
+
+    #[test]
+    fn worker_only_inherits_observability_configuration() {
+        assert!(worker_env_allowed("RUST_LOG".as_ref()));
+        assert!(worker_env_allowed("OTEL_EXPORTER_OTLP_ENDPOINT".as_ref()));
+        assert!(!worker_env_allowed("AWS_SECRET_ACCESS_KEY".as_ref()));
+        assert!(!worker_env_allowed("BRAIN_API_TOKEN".as_ref()));
     }
 }

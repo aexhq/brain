@@ -10,13 +10,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,hyper=warn".into()),
-        )
-        .init();
-    tokio::runtime::Runtime::new()?.block_on(run())
+    let telemetry = brain_observability::install("brain")?;
+    let result = tokio::runtime::Runtime::new()?.block_on(run());
+    telemetry.shutdown()?;
+    result
 }
 
 /// The two runtime compositions. Production is the default when omitted.

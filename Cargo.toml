@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-component-host", "crates/brain-environment-host", "crates/brain-loophost", "crates/brain-providers", "crates/brain-standalone", "crates/brain-server", "crates/brain-toolhost"]
+members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-component-host", "crates/brain-environment-host", "crates/brain-loophost", "crates/brain-observability", "crates/brain-providers", "crates/brain-standalone", "crates/brain-server", "crates/brain-toolhost"]
 resolver = "2"
 
 [workspace.package]
@@ -18,6 +18,7 @@ brain-standalone = { path = "crates/brain-standalone" }
 brain-loophost = { path = "crates/brain-loophost" }
 brain-toolhost = { path = "crates/brain-toolhost" }
 brain-environment-host = { path = "crates/brain-environment-host" }
+brain-observability = { path = "crates/brain-observability" }
 
 anyhow = "1"
 aes-gcm = "0.10"
@@ -27,7 +28,7 @@ aws-config = { version = "1", default-features = false, features = ["behavior-ve
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "ws"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "tokio", "query", "ws"] }
 base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
@@ -35,6 +36,10 @@ clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 globset = "0.4"
 hex = "0.4"
+opentelemetry = { version = "0.32", features = ["logs", "metrics", "trace"] }
+opentelemetry-appender-tracing = "0.32"
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "reqwest-blocking-client", "logs", "metrics", "trace"] }
+opentelemetry_sdk = { version = "0.32", features = ["logs", "metrics", "trace"] }
 jsonschema = { version = "0.49", default-features = false }
 libc = "0.2"
 rand = "0.9"
@@ -53,6 +58,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tokio-util = "0.7"
 tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 tracing = "0.1"
+tracing-opentelemetry = { version = "0.33", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = { version = "0.5", features = ["util"] }
 url = "2"

@@ -43,6 +43,7 @@ use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{Notify, OnceCell, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 mod view;
 pub use view::*;
@@ -4695,12 +4696,17 @@ async fn actor(
                                 let root_secrets = parked._root_secrets.clone();
                                 let heartbeat_lease = parked.st.lease.clone();
                                 let message_replays = std::mem::take(&mut parked.message_replays);
+                                let turn_span = tracing::info_span!(
+                                    "brain.turn",
+                                    session.id = %session_id,
+                                    turn.id = %turn_id
+                                );
                                 let handle = tokio::spawn(async move {
                                     let _permit = permit; // held for the whole turn (admission)
                                     let mut st = parked.st;
                                     let out = run.run(&mut st).await;
                                     (st, RunningOutcome::Turn { turn_id: turn_id.clone(), outcome: out })
-                                });
+                                }.instrument(turn_span));
                                 running = Some(Running {
                                     handle,
                                     cancel: cancel.clone(),

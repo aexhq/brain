@@ -11,12 +11,7 @@
 use std::io::Write;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let telemetry = brain_observability::install("brain-loophost")?;
     let component = std::env::var("BRAIN_LOOPHOST_COMPONENT").map_err(|_| {
         anyhow::anyhow!("BRAIN_LOOPHOST_COMPONENT is required (path to the guest component)")
     })?;
@@ -26,12 +21,14 @@ fn main() -> anyhow::Result<()> {
 
     let engine =
         brain_loophost::WasmLoopEngine::from_component_file(std::path::Path::new(&component))?;
-    tokio::runtime::Runtime::new()?.block_on(async move {
+    let result = tokio::runtime::Runtime::new()?.block_on(async move {
         let listener = tokio::net::TcpListener::bind(&listen).await?;
         let addr = listener.local_addr()?;
         println!("listening {addr}");
         std::io::stdout().flush()?;
         tracing::info!(%addr, component, "loop host serving");
         brain_loophost::daemon::serve(listener, engine, token).await
-    })
+    });
+    telemetry.shutdown()?;
+    result
 }
