@@ -84,7 +84,7 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
     validate_schema(&name, "output", &output_schema)?;
     // The executor union is kind-tagged at the serde layer, so a payload declaring one realm
     // can no longer deserialize as another; no per-arm kind re-checks remain.
-    let route = match &tool.executor {
+    let (route, network_needs) = match &tool.executor {
         ToolExecutor::Component {
             component_digest,
             config,
@@ -99,60 +99,60 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
                     "tool {name} must declare environment exactly when its environment grant is present"
                 )));
             }
-            ToolRoute::Component(crate::journal::ToolSelectorDoc {
-                component_digest: component_digest.to_string(),
-                component_bytes: 0,
-                world: world.clone(),
-                config: config.clone(),
-                grants,
-                environment: environment
-                    .as_ref()
-                    .map(|environment| environment.as_str().to_owned()),
-            })
+            (
+                ToolRoute::Component(crate::journal::ToolSelectorDoc {
+                    component_digest: component_digest.to_string(),
+                    component_bytes: 0,
+                    world: world.clone(),
+                    config: config.clone(),
+                    grants,
+                    environment: environment
+                        .as_ref()
+                        .map(|environment| environment.as_str().to_owned()),
+                }),
+                Vec::new(),
+            )
         }
         ToolExecutor::Environment {
             artifact_digest,
             callback_registration,
             environment,
             requirements,
-        } => match (artifact_digest, callback_registration) {
-            (Some(digest), None) => ToolRoute::Environment(EnvironmentToolSeal {
-                environment: environment.to_string(),
-                protocol: 1,
-                checksum: digest.to_string(),
-                required_env: requirements
-                    .env
-                    .iter()
-                    .flatten()
-                    .cloned()
-                    .map(String::from)
-                    .collect(),
-            }),
-            (None, Some(registration)) => ToolRoute::Customer {
-                environment: environment.to_string(),
-                registration: registration.to_string(),
-            },
-            _ => {
-                return Err(BrainError::Invalid(format!(
-                    "tool {name} environment executor requires exactly one of artifact_digest or callback_registration"
-                )));
-            }
-        },
-        ToolExecutor::Engine { capability } => ToolRoute::Intrinsic(capability.to_string()),
-    };
-
-    let network_needs = tool
-        .network
-        .as_ref()
-        .map(|network| {
-            network
-                .destinations
+        } => {
+            let network_needs = requirements
+                .network
                 .iter()
                 .map(|destination| serde_json::to_value(destination).map_err(BrainError::from))
-                .collect::<Result<Vec<_>>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
+                .collect::<Result<Vec<_>>>()?;
+            let route = match (artifact_digest, callback_registration) {
+                (Some(digest), None) => ToolRoute::Environment(EnvironmentToolSeal {
+                    environment: environment.to_string(),
+                    protocol: 1,
+                    checksum: digest.to_string(),
+                    required_env: requirements
+                        .env
+                        .iter()
+                        .flatten()
+                        .cloned()
+                        .map(String::from)
+                        .collect(),
+                }),
+                (None, Some(registration)) => ToolRoute::Customer {
+                    environment: environment.to_string(),
+                    registration: registration.to_string(),
+                },
+                _ => {
+                    return Err(BrainError::Invalid(format!(
+                        "tool {name} environment executor requires exactly one of artifact_digest or callback_registration"
+                    )));
+                }
+            };
+            (route, network_needs)
+        }
+        ToolExecutor::Engine { capability } => {
+            (ToolRoute::Intrinsic(capability.to_string()), Vec::new())
+        }
+    };
 
     Ok(ToolDecl {
         name,
@@ -327,7 +327,10 @@ mod tests {
                     "kind":"environment",
                     "environment":"workspace",
                     "artifact_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    "requirements":{"env":["TOKEN"]}
+                    "requirements":{
+                        "env":["TOKEN"],
+                        "network":[{"host":"api.example.com","ports":[443],"protocol":"tls"}]
+                    }
                 }
             },
             {
@@ -357,6 +360,10 @@ mod tests {
                     && seal.required_env == ["TOKEN"]
                     && seal.checksum == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
+        assert_eq!(
+            decls[0].network_needs,
+            [serde_json::json!({"host":"api.example.com","ports":[443],"protocol":"tls"})]
+        );
     }
 
     #[test]
