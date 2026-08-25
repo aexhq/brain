@@ -2278,7 +2278,7 @@ async fn direct_sandbox_transfers_stage_hidden_bytes_and_replay_only_exact_succe
 #[async_trait::async_trait]
 impl ToolExecutor for RecoveryExecutor {
     fn supports(&self, capability: &str) -> bool {
-        capability == "brain.submit"
+        capability == "aex.submit"
     }
 
     async fn call(
@@ -2287,7 +2287,7 @@ impl ToolExecutor for RecoveryExecutor {
         request: ExternalToolCallRequest,
         _cancel: CancellationToken,
     ) -> Result<ExternalToolCallResponse> {
-        assert_eq!(capability, "brain.submit");
+        assert_eq!(capability, "aex.submit");
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.call_ids
             .lock()
@@ -2901,10 +2901,12 @@ async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() 
     std::fs::create_dir_all(&data_dir).expect("create recovery data dir");
     let journal = Journal::new_memory("brain-recovery-test");
     let executor = Arc::new(RecoveryExecutor::default());
+    let mut policy = submit_policy();
+    policy.capability = "aex.submit".into();
     let brain = Brain::with_parts_and_services(
         BrainConfig {
             idle_discard: Duration::from_secs(300),
-            official_capabilities: HashMap::from([("brain.submit".into(), submit_policy())]),
+            official_capabilities: HashMap::from([("aex.submit".into(), policy)]),
             ..BrainConfig::default()
         },
         journal.clone(),
@@ -2930,7 +2932,7 @@ async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() 
                             "input_schema": {"type": "object"},
                             "output_schema": {"type": "object"}
                         },
-                        "executor": {"kind": "engine", "capability": "brain.submit"}
+                        "executor": {"kind": "engine", "capability": "aex.submit"}
                     }]
                 }
             }))
@@ -3025,7 +3027,7 @@ async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() 
             tool.name == "submit"
                 && matches!(
                     &tool.route,
-                    crate::config::ToolRoute::Server(policy) if policy.capability == "brain.submit"
+                    crate::config::ToolRoute::Server(policy) if policy.capability == "aex.submit"
                 )
         }),
         "resolved tools: {resolved:?}; prefix tools: {:?}",
@@ -3041,7 +3043,7 @@ async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() 
         1,
         "the committed server-tool intent is pending"
     );
-    assert_eq!(pending[0].policy.capability, "brain.submit");
+    assert_eq!(pending[0].policy.capability, "aex.submit");
     // Model the durable failure transition that follows an observed owner loss. It releases
     // the stale lease and installs the bounded retry due-time atomically, so the background
     // scheduler can resume without customer traffic and without waiting another lease term.

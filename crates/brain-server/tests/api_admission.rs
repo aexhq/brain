@@ -91,6 +91,52 @@ async fn a_tenanted_composition_refuses_requests_without_the_tenant_header() {
 }
 
 #[tokio::test]
+async fn scoped_customer_ingress_does_not_require_a_tenant_header() {
+    let temp = TempDir::new("scoped-customer-ingress");
+    let brain = Brain::in_memory_test(
+        temp.0.clone(),
+        BrainConfig::default(),
+        brain::provider::fake::unscripted_factory(),
+    )
+    .unwrap();
+    let app = router(AppState {
+        brain,
+        token: "operator-token".into(),
+        tenancy: brain_server::api::Tenancy::Required,
+    });
+
+    let gateway = Request::builder()
+        .method("POST")
+        .uri("/internal/v1/customer-environment/gateway")
+        .header(header::AUTHORIZATION, "Bearer operator-token")
+        .header("x-brain-connection-id", "connection-1")
+        .header("x-brain-request-id", "request-1")
+        .header("x-brain-route-key", "$connect")
+        .header("x-brain-source-ip", "192.0.2.10")
+        .header(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            "environment-grant.valid-token",
+        )
+        .body(Body::empty())
+        .unwrap();
+    let gateway_response = app.clone().oneshot(gateway).await.unwrap();
+    assert_eq!(gateway_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let observation = Request::builder()
+        .method("POST")
+        .uri("/internal/v1/customer-environment/observations/grant-1")
+        .header(header::AUTHORIZATION, "Bearer operator-token")
+        .header("x-brain-observation-grant", "observation-token")
+        .body(Body::from("{}"))
+        .unwrap();
+    let observation_response = app.oneshot(observation).await.unwrap();
+    assert_eq!(
+        observation_response.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+#[tokio::test]
 async fn saturated_create_admission_rejects_before_polling_another_body() {
     let temp = TempDir::new("saturated");
     let brain = Brain::in_memory_test(
