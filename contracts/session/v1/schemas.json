@@ -817,11 +817,7 @@
       "additionalProperties": false,
       "required": [
         "id",
-        "session_id",
-        "root_id",
-        "last_seq",
-        "state",
-        "updated_at"
+        "session"
       ],
       "properties": {
         "id": {
@@ -830,24 +826,8 @@
           "maxLength": 256,
           "description": "Stable deduplication identity for this session high-water observation."
         },
-        "session_id": {
-          "$ref": "#/$defs/SessionId"
-        },
-        "root_id": {
-          "$ref": "#/$defs/SessionId"
-        },
-        "parent_id": {
-          "$ref": "#/$defs/SessionId"
-        },
-        "last_seq": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "state": {
-          "$ref": "#/$defs/SessionState"
-        },
-        "updated_at": {
-          "$ref": "#/$defs/Timestamp"
+        "session": {
+          "$ref": "#/$defs/Session"
         }
       }
     },

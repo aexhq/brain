@@ -5367,11 +5367,7 @@ pub struct Session {
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"id\","]
-#[doc = "    \"last_seq\","]
-#[doc = "    \"root_id\","]
-#[doc = "    \"session_id\","]
-#[doc = "    \"state\","]
-#[doc = "    \"updated_at\""]
+#[doc = "    \"session\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"id\": {"]
@@ -5380,24 +5376,8 @@ pub struct Session {
 #[doc = "      \"maxLength\": 256,"]
 #[doc = "      \"minLength\": 1"]
 #[doc = "    },"]
-#[doc = "    \"last_seq\": {"]
-#[doc = "      \"type\": \"integer\","]
-#[doc = "      \"minimum\": 0.0"]
-#[doc = "    },"]
-#[doc = "    \"parent_id\": {"]
-#[doc = "      \"$ref\": \"#/$defs/SessionId\""]
-#[doc = "    },"]
-#[doc = "    \"root_id\": {"]
-#[doc = "      \"$ref\": \"#/$defs/SessionId\""]
-#[doc = "    },"]
-#[doc = "    \"session_id\": {"]
-#[doc = "      \"$ref\": \"#/$defs/SessionId\""]
-#[doc = "    },"]
-#[doc = "    \"state\": {"]
-#[doc = "      \"$ref\": \"#/$defs/SessionState\""]
-#[doc = "    },"]
-#[doc = "    \"updated_at\": {"]
-#[doc = "      \"$ref\": \"#/$defs/Timestamp\""]
+#[doc = "    \"session\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Session\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"additionalProperties\": false"]
@@ -5409,13 +5389,7 @@ pub struct Session {
 pub struct SessionChange {
     #[doc = "Stable deduplication identity for this session high-water observation."]
     pub id: SessionChangeId,
-    pub last_seq: u64,
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub parent_id: ::std::option::Option<SessionId>,
-    pub root_id: SessionId,
-    pub session_id: SessionId,
-    pub state: SessionState,
-    pub updated_at: Timestamp,
+    pub session: Session,
 }
 #[doc = "`SessionChangeFeed`"]
 #[doc = r""]

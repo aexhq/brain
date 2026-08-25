@@ -1288,12 +1288,7 @@ export type components = {
         SessionChange: {
             /** @description Stable deduplication identity for this session high-water observation. */
             id: string;
-            session_id: components["schemas"]["SessionId"];
-            root_id: components["schemas"]["SessionId"];
-            parent_id?: components["schemas"]["SessionId"];
-            last_seq: number;
-            state: components["schemas"]["SessionState"];
-            updated_at: components["schemas"]["Timestamp"];
+            session: components["schemas"]["Session"];
         };
         SessionChangeFeed: {
             /** @enum {string} */

@@ -960,12 +960,7 @@ export interface SessionChange {
    * Stable deduplication identity for this session high-water observation.
    */
   id: string;
-  session_id: SessionId;
-  root_id: SessionId;
-  parent_id?: SessionId;
-  last_seq: number;
-  state: SessionState;
-  updated_at: Timestamp;
+  session: Session;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema

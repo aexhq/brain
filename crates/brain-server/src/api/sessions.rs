@@ -141,15 +141,7 @@ pub(super) async fn list_session_changes(
             )
             .parse()
             .expect("bounded session change identity");
-            session::SessionChange {
-                id,
-                last_seq: item.last_seq,
-                parent_id: item.parent_id,
-                root_id: item.root_id,
-                session_id: item.id,
-                state: item.state,
-                updated_at: item.updated_at,
-            }
+            session::SessionChange { id, session: item }
         })
         .collect();
     Ok(Json(session::SessionChangeFeed {
