@@ -265,7 +265,13 @@ fn invocation_span(request: &WorkerRequest) -> tracing::Span {
 
 fn worker_env_allowed(name: &std::ffi::OsStr) -> bool {
     name.to_str().is_some_and(|name| {
-        name == "BRAIN_COMPONENT_CACHE_DIR" || name == "RUST_LOG" || name.starts_with("OTEL_")
+        matches!(
+            name,
+            "BRAIN_COMPONENT_CACHE_DIR"
+                | "BRAIN_COMPONENT_INSTANCE_IDLE_MS"
+                | "BRAIN_COMPONENT_INSTANCE_CAP"
+                | "RUST_LOG"
+        ) || name.starts_with("OTEL_")
     })
 }
 
@@ -965,6 +971,10 @@ mod tests {
     fn worker_only_inherits_observability_configuration() {
         assert!(worker_env_allowed("RUST_LOG".as_ref()));
         assert!(worker_env_allowed("BRAIN_COMPONENT_CACHE_DIR".as_ref()));
+        assert!(worker_env_allowed(
+            "BRAIN_COMPONENT_INSTANCE_IDLE_MS".as_ref()
+        ));
+        assert!(worker_env_allowed("BRAIN_COMPONENT_INSTANCE_CAP".as_ref()));
         assert!(worker_env_allowed("OTEL_EXPORTER_OTLP_ENDPOINT".as_ref()));
         assert!(!worker_env_allowed("AWS_SECRET_ACCESS_KEY".as_ref()));
         assert!(!worker_env_allowed("BRAIN_API_TOKEN".as_ref()));
