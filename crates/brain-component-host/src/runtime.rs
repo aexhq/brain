@@ -1,9 +1,12 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+
+use sha2::{Digest, Sha256};
 
 use crate::{agentloop, environment, model, tool};
 
@@ -277,6 +280,7 @@ impl model::aex::model::types::Host for State {}
 
 pub struct ComponentRuntime {
     engine: Engine,
+    components: Mutex<HashMap<String, Component>>,
 }
 
 impl ComponentRuntime {
@@ -294,7 +298,10 @@ impl ComponentRuntime {
                     ticker.increment_epoch();
                 }
             })?;
-        Ok(Arc::new(Self { engine }))
+        Ok(Arc::new(Self {
+            engine,
+            components: Mutex::new(HashMap::new()),
+        }))
     }
 
     fn store(&self) -> Store<State> {
@@ -305,7 +312,16 @@ impl ComponentRuntime {
     }
 
     fn component(&self, bytes: &[u8]) -> anyhow::Result<Component> {
-        wt(Component::new(&self.engine, bytes))
+        let digest = component_digest(bytes);
+        if let Some(component) = self.components.lock().expect("components").get(&digest) {
+            return Ok(component.clone());
+        }
+        let component = wt(Component::new(&self.engine, bytes))?;
+        self.components
+            .lock()
+            .expect("components")
+            .insert(digest, component.clone());
+        Ok(component)
     }
 
     pub async fn invoke_agentloop(
@@ -464,4 +480,8 @@ impl ComponentRuntime {
         .map_err(|error| anyhow::anyhow!(error.message))?;
         Ok(observation)
     }
+}
+
+pub fn component_digest(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
 }

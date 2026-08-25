@@ -1,11 +1,18 @@
 use std::path::PathBuf;
 
-use brain_component_host::{ComponentRuntime, agentloop, environment, model, tool};
+use brain_component_host::{
+    ComponentRuntime, ComponentSource, WorkerPool, WorkerRequest, agentloop, component_digest,
+    environment, model, tool,
+};
+
+fn component_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("guest/dist")
+        .join(format!("{name}.component.wasm"))
+}
 
 fn component(name: &str) -> Vec<u8> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("guest/dist")
-        .join(format!("{name}.component.wasm"));
+    let path = component_path(name);
     std::fs::read(&path).unwrap_or_else(|error| {
         panic!(
             "read {}: {error}; run `npm run build:components` first",
@@ -101,4 +108,33 @@ async fn four_worlds_execute_without_ambient_authority() {
         model::aex::model::types::AttemptState::Completed
     );
     assert_eq!(model.events.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bounded_worker_pool_executes_in_separate_processes() {
+    let pool = WorkerPool::new(env!("CARGO_BIN_EXE_component-host"), 2)
+        .await
+        .unwrap();
+    let path = component_path("tool");
+    let bytes = std::fs::read(&path).unwrap();
+    let request = WorkerRequest::Tool {
+        component: ComponentSource {
+            path,
+            sha256: component_digest(&bytes),
+        },
+        request: tool::aex::tool::types::Invocation {
+            metadata: tool::aex::tool::types::CallMetadata {
+                tenant_id: "tenant_1".into(),
+                session_id: "ses_1".into(),
+                turn_id: "turn_1".into(),
+                call_id: "call_process".into(),
+                tool_name: "echo".into(),
+            },
+            input_json: r#"{"process":true}"#.into(),
+            config_json: "{}".into(),
+            deadline_at_ms: u64::MAX,
+        },
+    };
+    let response = pool.call(request).await.unwrap();
+    assert_eq!(response["value_json"], r#"{"process":true}"#);
 }

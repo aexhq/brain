@@ -2,9 +2,11 @@
 
 mod generated;
 mod runtime;
+mod worker;
 
 pub use generated::*;
 pub use runtime::*;
+pub use worker::*;
 
 pub mod agentloop {
     wasmtime::component::bindgen!({
@@ -12,6 +14,7 @@ pub mod agentloop {
         world: "agentloop",
         imports: { default: async },
         exports: { default: async },
+        additional_derives: [serde::Serialize, serde::Deserialize],
     });
 }
 
@@ -21,6 +24,7 @@ pub mod tool {
         world: "tool",
         imports: { default: async },
         exports: { default: async },
+        additional_derives: [serde::Serialize, serde::Deserialize],
     });
 }
 
@@ -30,6 +34,7 @@ pub mod environment {
         world: "environment",
         imports: { default: async },
         exports: { default: async },
+        additional_derives: [serde::Serialize, serde::Deserialize],
     });
 }
 
@@ -39,6 +44,7 @@ pub mod model {
         world: "model",
         imports: { default: async },
         exports: { default: async },
+        additional_derives: [serde::Serialize, serde::Deserialize],
     });
 }
 

@@ -8,6 +8,10 @@ description = "Shared isolated component runtime and host bindings for Brain ext
 
 [dependencies]
 anyhow.workspace = true
-tokio.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util", "process"] }
 wasmtime.workspace = true
 wasmtime-wasi.workspace = true
