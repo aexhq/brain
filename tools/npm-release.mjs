@@ -5,9 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-// Dependency order: the loop packages build against @aexhq/agentloop, so the SDK publishes
-// (and becomes registry-visible) first.
-const allWorkspaces = ["brain", "brain-tools", "agentloop", "loop-pi", "loop-codex"];
+const allWorkspaces = ["brain", "agentloop"];
 const requestedWorkspaces = process.env.RELEASE_WORKSPACES?.split(",").filter(Boolean);
 const workspaces = requestedWorkspaces?.length ? requestedWorkspaces : allWorkspaces;
 if (

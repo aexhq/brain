@@ -1,7 +1,5 @@
 // Build the loop-host's own guest artifacts: the engine-vocabulary bootstrap `aex` loop and
-// the raw-ABI test fixtures. Official loops (pi, codex-style) are NOT built here — they are
-// independent packages (packages/loop-pi, packages/loop-codex) built with the public
-// `buildLoopBundle`, seeded through the same admission path a customer upload takes.
+// the raw-ABI test fixtures. Official loops live outside Brain and use the same public builder.
 // No ambient network: http features disabled.
 import { componentize } from "@bytecodealliance/componentize-js";
 import { build } from "esbuild";
