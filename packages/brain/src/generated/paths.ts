@@ -1204,10 +1204,6 @@ export type components = {
         ToolConfig: {
             definition: components["schemas"]["ToolDefinition"];
             executor: components["schemas"]["ToolExecutor"];
-            /** @description The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed. */
-            network?: {
-                destinations: components["schemas"]["NetworkDestination"][];
-            };
         };
         /** @description Sealed at create with the rest of the prefix. Omitted tools default to an empty set. */
         ToolsConfig: {

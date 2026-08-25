@@ -624,16 +624,6 @@ export interface EnvironmentsConfig {
 export interface ToolConfig {
   definition: ToolDefinition;
   executor: ToolExecutor;
-  /**
-   * The tool's declared outbound needs. Merged at create: effective allowlist = (union of tool declarations and session allows) minus session denies. Product-specific infrastructure denials belong to the hosting composition. Declaration and merge only - no per-tool runtime isolation is claimed.
-   */
-  network?: {
-    /**
-     * @minItems 1
-     * @maxItems 32
-     */
-    destinations: [NetworkDestination, ...NetworkDestination[]];
-  };
 }
 /**
  * Create-time-only immutable artifact-layer bytes. Brain stages these outside the journal, then discards this representation.
