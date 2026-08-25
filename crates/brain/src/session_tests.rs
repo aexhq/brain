@@ -6154,12 +6154,72 @@ async fn storage_upload_reservation_is_durable_bounded_and_retried_after_restart
 
 #[tokio::test]
 async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
+    struct DispatchLoop {
+        name: String,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::agentloop::Agentloop for DispatchLoop {
+        async fn drive_turn(
+            &self,
+            ctx: &mut dyn crate::agentloop::TurnCtx,
+        ) -> Result<crate::agentloop::LoopVerdict> {
+            use brain_protocol::agentloop::{AgentloopErrorCode, CtxOp};
+            let call = serde_json::from_value(json!({
+                "tool_call_id": "call-managed-cancel",
+                "name": self.name,
+                "input": {"sleep": 30}
+            }))?;
+            match ctx
+                .contract_op(CtxOp::ToolsDispatch { calls: vec![call] })
+                .await?
+            {
+                Err(error) if error.code == AgentloopErrorCode::Aborted => {
+                    Ok(crate::agentloop::LoopVerdict {
+                        stop_reason: TurnStopReason::Cancelled,
+                        terminal_committed: false,
+                    })
+                }
+                outcome => Err(BrainError::Agentloop(format!(
+                    "cancelled dispatch returned {outcome:?}"
+                ))),
+            }
+        }
+    }
+
+    struct DispatchRegistry {
+        name: String,
+    }
+
+    impl crate::agentloop::AgentloopRegistry for DispatchRegistry {
+        fn resolve(
+            &self,
+            _selector: &crate::journal::AgentloopSelectorDoc,
+        ) -> Result<Arc<dyn crate::agentloop::Agentloop>> {
+            Ok(Arc::new(DispatchLoop {
+                name: self.name.clone(),
+            }))
+        }
+
+        fn admit_custom(
+            &self,
+            source_bundle_sha256: &str,
+            toolchain: &str,
+            bundle: &[u8],
+        ) -> Result<crate::journal::AgentloopSelectorDoc> {
+            Ok(crate::journal::AgentloopSelectorDoc {
+                source_bundle_sha256: source_bundle_sha256.into(),
+                source_bundle_bytes: bundle.len() as u64,
+                toolchain: toolchain.into(),
+            })
+        }
+    }
+
     let journal = Journal::new_memory("brain-managed-submit-live-cancel");
     let ports = Arc::new(UnknownManagedPorts::default());
     ports.block_submit.store(true, Ordering::Release);
     let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
     let name = "managed_cancel_test".to_owned();
-    fake.script([Scripted::tool(&name, json!({"sleep":30}))]);
     let provider = fake.clone();
     let brain = Brain::with_parts_and_services(
         BrainConfig {
@@ -6170,6 +6230,7 @@ async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
         Arc::new(crate::keys::PlainCustody),
         Arc::new(crate::adapter::DisabledToolExecutor),
         BrainServices {
+            agentloop_registry: Some(Arc::new(DispatchRegistry { name: name.clone() })),
             bundle_storage: Some(Arc::new(TestBundleStorage)),
             environments: test_environment_registry(
                 "test.managed",
@@ -6296,7 +6357,8 @@ async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
             .count(),
         1
     );
-    fake.assert_drained(1, "live managed cancellation").unwrap();
+    fake.assert_drained(0, "contract managed cancellation")
+        .unwrap();
     journal
         .release(&session_id, &state.lease)
         .await

@@ -982,6 +982,12 @@ impl LoopTurnCtx<'_> {
                 stop_reason: TurnStopReason::EndTurn,
             });
             self.terminal_committed = true;
+        } else if self.run.cancel.is_cancelled() {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::Aborted,
+                "the turn was cancelled",
+                false,
+            )));
         }
         let views = calls
             .iter()
