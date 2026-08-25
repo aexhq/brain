@@ -24,7 +24,7 @@ pub const STORAGE_MAX_TENANT_BYTES_ENV: &str = "BRAIN_STORAGE_MAX_TENANT_BYTES";
 pub const STORAGE_TRANSFER_TTL_ENV: &str = "BRAIN_STORAGE_TRANSFER_TTL_MS";
 pub const EXTERNAL_EXECUTOR_URL_ENV: &str = "BRAIN_EXTERNAL_TOOL_EXECUTOR_URL";
 pub const EXTERNAL_EXECUTOR_TOKEN_ENV: &str = "BRAIN_EXTERNAL_TOOL_EXECUTOR_TOKEN";
-pub const EXTERNAL_EXECUTOR_CAPABILITIES_ENV: &str = "BRAIN_EXTERNAL_TOOL_CAPABILITIES";
+pub const EXTERNAL_EXECUTOR_POLICIES_ENV: &str = "BRAIN_EXTERNAL_TOOL_POLICIES_JSON";
 pub const RECOVERY_POLL_ENV: &str = "BRAIN_RECOVERY_POLL_MS";
 pub const RECOVERY_SHARDS_PER_POLL_ENV: &str = "BRAIN_RECOVERY_SHARDS_PER_POLL";
 pub const RECOVERY_PAGE_SIZE_ENV: &str = "BRAIN_RECOVERY_PAGE_SIZE";
@@ -74,6 +74,7 @@ pub const MAX_EXTERNAL_EXECUTOR_URL_BYTES: usize = 2_048;
 pub const MAX_EXTERNAL_EXECUTOR_TOKEN_BYTES: usize = 8 * 1_024;
 pub const MAX_EXTERNAL_EXECUTOR_CAPABILITIES: usize = 128;
 pub const MAX_EXTERNAL_EXECUTOR_CAPABILITY_BYTES: usize = 128;
+pub const MAX_EXTERNAL_EXECUTOR_POLICIES_BYTES: usize = 64 * 1024;
 
 /// Process configuration: the knobs that are NOT adapters.
 #[derive(Debug, Clone)]
@@ -375,8 +376,9 @@ impl BrainConfig {
             MAX_EXTERNAL_EXECUTOR_TOKEN_BYTES,
         )?
         .map(ProviderKey::new);
-        cfg.external_executor_capabilities =
-            parse_capabilities(read(EXTERNAL_EXECUTOR_CAPABILITIES_ENV)?)?;
+        cfg.official_capabilities =
+            parse_external_tool_policies(read(EXTERNAL_EXECUTOR_POLICIES_ENV)?)?;
+        cfg.external_executor_capabilities = cfg.official_capabilities.keys().cloned().collect();
         cfg.recovery_poll_interval = Duration::from_millis(parse_env_u64(
             RECOVERY_POLL_ENV,
             read(RECOVERY_POLL_ENV)?.as_deref(),
@@ -559,7 +561,7 @@ pub(super) fn validate_external_executor_config(cfg: &BrainConfig) -> Result<()>
         && (cfg.external_executor_token.is_some() || !cfg.external_executor_capabilities.is_empty())
     {
         return Err(BrainError::Invalid(format!(
-            "{EXTERNAL_EXECUTOR_TOKEN_ENV} and {EXTERNAL_EXECUTOR_CAPABILITIES_ENV} require {EXTERNAL_EXECUTOR_URL_ENV}"
+            "{EXTERNAL_EXECUTOR_TOKEN_ENV} and {EXTERNAL_EXECUTOR_POLICIES_ENV} require {EXTERNAL_EXECUTOR_URL_ENV}"
         )));
     }
     if cfg.external_executor_capabilities.len() > MAX_EXTERNAL_EXECUTOR_CAPABILITIES
@@ -572,7 +574,7 @@ pub(super) fn validate_external_executor_config(cfg: &BrainConfig) -> Result<()>
         })
     {
         return Err(BrainError::Invalid(format!(
-            "{EXTERNAL_EXECUTOR_CAPABILITIES_ENV} exceeds its count, byte, or identifier bound"
+            "{EXTERNAL_EXECUTOR_POLICIES_ENV} exceeds its count, byte, or identifier bound"
         )));
     }
     if let Some(endpoint) = &cfg.external_executor_url {
@@ -672,35 +674,46 @@ pub(super) fn parse_optional_env_string(
     Ok(Some(raw))
 }
 
-pub(super) fn parse_capabilities(raw: Option<String>) -> Result<HashSet<String>> {
+pub(super) fn parse_external_tool_policies(
+    raw: Option<String>,
+) -> Result<HashMap<String, crate::config::ServerToolPolicy>> {
     let Some(raw) = raw else {
-        return Ok(HashSet::new());
+        return Ok(HashMap::new());
     };
-    if raw.is_empty() {
+    if raw.is_empty() || raw.len() > MAX_EXTERNAL_EXECUTOR_POLICIES_BYTES {
         return Err(BrainError::Invalid(format!(
-            "{EXTERNAL_EXECUTOR_CAPABILITIES_ENV} must not be empty when set"
+            "{EXTERNAL_EXECUTOR_POLICIES_ENV} must contain between 1 and {MAX_EXTERNAL_EXECUTOR_POLICIES_BYTES} UTF-8 bytes"
         )));
     }
-    let mut capabilities = HashSet::new();
-    for capability in raw.split(',').map(str::trim) {
+    let policies: Vec<crate::config::ServerToolPolicy> =
+        serde_json::from_str(&raw).map_err(|error| {
+            BrainError::Invalid(format!("{EXTERNAL_EXECUTOR_POLICIES_ENV}: {error}"))
+        })?;
+    if policies.is_empty() || policies.len() > MAX_EXTERNAL_EXECUTOR_CAPABILITIES {
+        return Err(BrainError::Invalid(format!(
+            "{EXTERNAL_EXECUTOR_POLICIES_ENV} must contain 1 to {MAX_EXTERNAL_EXECUTOR_CAPABILITIES} policies"
+        )));
+    }
+    let mut by_capability = HashMap::new();
+    for policy in policies {
+        let capability = policy.capability.as_str();
         if capability.is_empty()
             || capability.len() > MAX_EXTERNAL_EXECUTOR_CAPABILITY_BYTES
             || !capability
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-            || !capabilities.insert(capability.to_owned())
+            || policy.max_input_bytes == 0
+            || policy.max_input_bytes > brain_protocol::MAX_EXTERNAL_TOOL_INPUT_BYTES
+            || by_capability
+                .insert(capability.to_owned(), policy)
+                .is_some()
         {
             return Err(BrainError::Invalid(format!(
-                "{EXTERNAL_EXECUTOR_CAPABILITIES_ENV} contains an invalid or duplicate capability"
+                "{EXTERNAL_EXECUTOR_POLICIES_ENV} contains an invalid or duplicate policy"
             )));
         }
     }
-    if capabilities.len() > MAX_EXTERNAL_EXECUTOR_CAPABILITIES {
-        return Err(BrainError::Invalid(format!(
-            "{EXTERNAL_EXECUTOR_CAPABILITIES_ENV} contains more than {MAX_EXTERNAL_EXECUTOR_CAPABILITIES} capabilities"
-        )));
-    }
-    Ok(capabilities)
+    Ok(by_capability)
 }
 
 pub(super) fn validate_usize_range(

@@ -4,6 +4,7 @@
 //! Brain's public ports and is supplied by the downstream composition.
 
 pub mod dynamo;
+pub mod gateway;
 pub mod kms;
 pub mod s3;
 

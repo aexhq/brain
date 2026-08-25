@@ -25,6 +25,7 @@ aes-gcm = "0.10"
 async-trait = "0.1"
 async-stream = "0.3"
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "credentials-process", "default-https-client", "rt-tokio", "sso"] }
+aws-sdk-apigatewaymanagement = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }

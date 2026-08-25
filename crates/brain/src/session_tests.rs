@@ -680,8 +680,8 @@ fn process_environment_policy_rejects_cross_field_and_string_drift() {
         load(&[
             (EXTERNAL_EXECUTOR_URL_ENV, "http://127.0.0.1:1234/tools"),
             (
-                EXTERNAL_EXECUTOR_CAPABILITIES_ENV,
-                "brain.output,brain.output"
+                EXTERNAL_EXECUTOR_POLICIES_ENV,
+                r#"[{"capability":"brain.output","scope":"root","completion":"return_direct","effect":"replay_safe","max_input_bytes":1024},{"capability":"brain.output","scope":"all","completion":"continue","effect":"replay_safe","max_input_bytes":1024}]"#
             ),
         ])
         .is_err()
@@ -689,7 +689,10 @@ fn process_environment_policy_rejects_cross_field_and_string_drift() {
     load(&[
         (EXTERNAL_EXECUTOR_URL_ENV, "http://127.0.0.1:1234/tools"),
         (EXTERNAL_EXECUTOR_TOKEN_ENV, "valid-token"),
-        (EXTERNAL_EXECUTOR_CAPABILITIES_ENV, "brain.output,brain.web"),
+        (
+            EXTERNAL_EXECUTOR_POLICIES_ENV,
+            r#"[{"capability":"brain.output","scope":"root","completion":"return_direct","effect":"replay_safe","max_input_bytes":1024},{"capability":"brain.web","scope":"all","completion":"continue","effect":"replay_safe","max_input_bytes":8192}]"#,
+        ),
     ])
     .unwrap();
 }

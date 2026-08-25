@@ -51,12 +51,17 @@ async fn run() -> anyhow::Result<()> {
     let brain = match mode {
         BrainMode::Production => {
             let cfg = BrainConfig::from_env().map_err(|error| anyhow::anyhow!("{error}"))?;
+            let persistence = brain_aws::AwsPersistenceConfig::from_env()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            let (customer_delivery, customer_transport) =
+                aws_customer_environment(&persistence.region).await?;
             brain_server::compose_aws(brain_server::AwsOptions {
                 data_dir: data.clone(),
                 cfg,
-                persistence: brain_aws::AwsPersistenceConfig::from_env()
-                    .map_err(|error| anyhow::anyhow!("{error}"))?,
+                persistence,
                 environment_capabilities: environment_capabilities()?,
+                customer_delivery,
+                customer_transport,
                 loophost: Some(brain_server::LoophostOptions {
                     component_host: component_host_path()?,
                     workers: component_workers()?,
@@ -107,6 +112,34 @@ async fn run() -> anyhow::Result<()> {
         address,
     )
     .await
+}
+
+async fn aws_customer_environment(
+    region: &str,
+) -> anyhow::Result<(
+    Option<Arc<dyn brain::customer::CustomerEnvironmentDeliveryPort>>,
+    Option<brain::customer::CustomerTransportConfig>,
+)> {
+    const WEBSOCKET: &str = "BRAIN_CUSTOMER_ENVIRONMENT_WEBSOCKET_URL";
+    const OBSERVATION: &str = "BRAIN_CUSTOMER_ENVIRONMENT_OBSERVATION_BASE_URL";
+    const CALLBACK: &str = "BRAIN_CUSTOMER_ENVIRONMENT_CALLBACK_URL";
+    let websocket = std::env::var(WEBSOCKET).ok();
+    let observation = std::env::var(OBSERVATION).ok();
+    let callback = std::env::var(CALLBACK).ok();
+    match (websocket, observation, callback) {
+        (None, None, None) => Ok((None, None)),
+        (Some(websocket), Some(observation), Some(callback))
+            if !websocket.is_empty() && !observation.is_empty() && !callback.is_empty() =>
+        {
+            let transport = brain::customer::CustomerTransportConfig::new(websocket, observation)?;
+            let delivery =
+                brain_aws::gateway::ApiGatewayCustomerDelivery::new(region, &callback).await?;
+            Ok((Some(Arc::new(delivery)), Some(transport)))
+        }
+        _ => anyhow::bail!(
+            "set non-empty {WEBSOCKET}, {OBSERVATION}, and {CALLBACK} together or omit all three"
+        ),
+    }
 }
 
 fn required(name: &str) -> anyhow::Result<String> {

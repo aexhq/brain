@@ -38,6 +38,8 @@ pub struct AwsOptions {
     pub cfg: BrainConfig,
     pub persistence: brain_aws::AwsPersistenceConfig,
     pub environment_capabilities: Option<Arc<dyn brain_component_host::CapabilityHandler>>,
+    pub customer_delivery: Option<Arc<dyn brain::customer::CustomerEnvironmentDeliveryPort>>,
+    pub customer_transport: Option<brain::customer::CustomerTransportConfig>,
     #[cfg(feature = "loophost")]
     pub loophost: Option<LoophostOptions>,
 }
@@ -96,8 +98,8 @@ pub async fn compose_aws(options: AwsOptions) -> anyhow::Result<Arc<Brain>> {
         brain_aws::AwsRuntimePorts {
             environments: brain::environment::EnvironmentRegistry::default(),
             external_executor: Some(external_executor),
-            customer_delivery: None,
-            customer_transport: None,
+            customer_delivery: options.customer_delivery,
+            customer_transport: options.customer_transport,
             agentloop_registry: loop_services.agentloop_registry,
             model_registry: Some(model_registry),
             tool_registry: Some(tool_registry),

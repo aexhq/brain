@@ -301,6 +301,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-apigatewaymanagement"
+version = "1.107.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cf04822b09c9d3b7b05242711c233217f10bdd07eaec9881d80b9d491717895"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-dynamodb"
 version = "1.121.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -882,6 +908,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "aws-config",
+ "aws-sdk-apigatewaymanagement",
  "aws-sdk-dynamodb",
  "aws-sdk-kms",
  "aws-sdk-s3",
@@ -891,6 +918,7 @@ dependencies = [
  "brain-providers",
  "chrono",
  "hex",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",

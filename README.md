@@ -88,6 +88,18 @@ Production mode uses Brain's AWS journal, custody, and session-storage adapters 
 content-addressed store for admitted component binaries. Hosted requests require an explicit
 `x-brain-tenant-id`; no product-specific composition is embedded in the image.
 
+A trusted HTTP Tool executor is configured with `BRAIN_EXTERNAL_TOOL_EXECUTOR_URL`, optional
+`BRAIN_EXTERNAL_TOOL_EXECUTOR_TOKEN`, and `BRAIN_EXTERNAL_TOOL_POLICIES_JSON`. The policy value is
+a bounded JSON array of `{ capability, scope, completion, effect, max_input_bytes }` objects; it is
+deployment configuration, never customer session input. Hosted application callbacks additionally
+set the three `BRAIN_CUSTOMER_ENVIRONMENT_{WEBSOCKET_URL,OBSERVATION_BASE_URL,CALLBACK_URL}` values
+together. The callback endpoint is an HTTPS AWS API Gateway Management endpoint.
+
+Structured logs always go to stderr. Setting `OTEL_EXPORTER_OTLP_ENDPOINT` enables OTLP/HTTP trace,
+metric, and log export; `OTEL_EXPORTER_OTLP_PROTOCOL`, when present, must be `http/protobuf`.
+Component workers inherit only `OTEL_*` and `RUST_LOG`, while guest components retain no ambient
+process environment.
+
 ## Embed Brain
 
 Implement the public Environment, journal, custody, storage, or trusted-tool ports your environment needs,
