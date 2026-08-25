@@ -6370,16 +6370,18 @@ async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
             }))
         }
 
-        fn admit_custom(
+        fn admit(
             &self,
-            source_bundle_sha256: &str,
-            toolchain: &str,
-            bundle: &[u8],
+            component_digest: &str,
+            world: &str,
+            component: &[u8],
+            config: &serde_json::Map<String, serde_json::Value>,
         ) -> Result<crate::journal::AgentloopSelectorDoc> {
             Ok(crate::journal::AgentloopSelectorDoc {
-                source_bundle_sha256: source_bundle_sha256.into(),
-                source_bundle_bytes: bundle.len() as u64,
-                toolchain: toolchain.into(),
+                component_digest: component_digest.into(),
+                component_bytes: component.len() as u64,
+                world: world.into(),
+                config: config.clone(),
             })
         }
     }
