@@ -95,7 +95,6 @@ jobs:
           --test discard_race
           --test external_e2e
           --test message_idempotency
-          --test standalone_e2e
 
   test-component-host:
     runs-on: ubuntu-24.04
@@ -116,6 +115,7 @@ jobs:
           shared-key: workspace-debug
       - run: cargo test -p brain-component-host
       - run: cargo test -p brain-server --test component_tool_environment
+      - run: cargo test -p brain-server --test standalone_e2e
 
   test-loophost:
     runs-on: ubuntu-24.04
