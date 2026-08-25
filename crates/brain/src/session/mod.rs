@@ -72,6 +72,9 @@ pub struct Brain {
     pub agentloop_registry: Arc<dyn crate::agentloop::AgentloopRegistry>,
     /// Resolves each session's sealed selector to its Model component.
     pub model_registry: Arc<dyn crate::provider::ModelRegistry>,
+    /// Admits and invokes precompiled Tool components. It may be absent only when no component
+    /// Tool is declared.
+    pub tool_registry: Option<Arc<dyn crate::tools::ToolRegistry>>,
     /// Durable per-session object storage. Hosted composition supplies this adapter; `None` means
     /// the storage resource is unavailable, never an in-memory production fallback.
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
@@ -178,6 +181,8 @@ pub struct BrainServices {
     pub agentloop_registry: Option<Arc<dyn crate::agentloop::AgentloopRegistry>>,
     /// Selector-to-Model resolution. Production compositions must supply it explicitly.
     pub model_registry: Option<Arc<dyn crate::provider::ModelRegistry>>,
+    /// Precompiled Tool component admission and invocation.
+    pub tool_registry: Option<Arc<dyn crate::tools::ToolRegistry>>,
 }
 
 fn hash_create_key(key: &str) -> String {
@@ -644,6 +649,7 @@ impl Brain {
             agentloop_registry: agentloop_registry
                 .expect("BrainServices.agentloop_registry is required"),
             model_registry,
+            tool_registry: services.tool_registry,
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
             create_permits: Arc::new(Semaphore::new(cfg.max_concurrent_creates)),
@@ -1099,6 +1105,31 @@ impl Brain {
         }
         let tool_items = tools_cfg.items.clone();
         let mut decls = crate::tools::resolve(&tool_items)?;
+        let mut referenced_tool_components = HashSet::new();
+        for decl in &mut decls {
+            let crate::config::ToolRoute::Component(selector) = &mut decl.route else {
+                continue;
+            };
+            let registry = self.tool_registry.as_ref().ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "tool {} requires component execution, which is unavailable in this Brain composition",
+                    decl.name
+                ))
+            })?;
+            let digest = selector.component_digest.clone();
+            let component = component_artifacts.get(&digest).ok_or_else(|| {
+                BrainError::Invalid(format!("Tool component {digest} has no supplied artifact"))
+            })?;
+            *selector = registry.admit(
+                &digest,
+                &selector.world,
+                component,
+                &selector.config,
+                &selector.grants,
+                selector.environment.as_deref(),
+            )?;
+            referenced_tool_components.insert(digest);
+        }
         let has_customer_tools = decls
             .iter()
             .any(|decl| matches!(decl.route, crate::config::ToolRoute::Customer { .. }));
@@ -1419,7 +1450,8 @@ impl Brain {
             self.agentloop_registry
                 .admit(digest, world.as_str(), component, config)?;
         self.agentloop_registry.resolve(&agentloop_selector)?;
-        let referenced_components = HashSet::from([model_digest, digest]);
+        let mut referenced_components = HashSet::from([model_digest, digest]);
+        referenced_components.extend(referenced_tool_components.iter().map(String::as_str));
         if let Some(unused) = component_artifacts
             .keys()
             .find(|candidate| !referenced_components.contains(candidate.as_str()))
@@ -3317,6 +3349,35 @@ impl crate::turn::EngineServices for Brain {
         Brain::execute_child_capability(&self, parent_id, operation_id, input, cancel).await
     }
 
+    async fn execute_tool_capability(
+        self: Arc<Self>,
+        session_id: &str,
+        environment: Option<&str>,
+        capability: &str,
+        operation_id: &str,
+        request: serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, crate::tools::ToolCapabilityFailure> {
+        self.execute_component_tool_capability(
+            session_id,
+            environment,
+            capability,
+            operation_id,
+            request,
+        )
+        .await
+        .map_err(|error| crate::tools::ToolCapabilityFailure {
+            code: match error {
+                BrainError::Invalid(_) => "invalid_request",
+                BrainError::NoSuchSession(_) => "not_found",
+                BrainError::Cancelled => "cancelled",
+                _ => "tool_capability_failed",
+            }
+            .into(),
+            message: error.to_string(),
+            retryable: false,
+        })
+    }
+
     async fn reconcile_managed_unknown_environment(
         self: Arc<Self>,
         session_id: &str,
@@ -3325,6 +3386,348 @@ impl crate::turn::EngineServices for Brain {
     ) -> Result<()> {
         reconcile_managed_unknown_environment(&self, session_id, tool_name, st).await
     }
+}
+
+impl Brain {
+    async fn execute_component_tool_capability(
+        self: &Arc<Self>,
+        session_id: &str,
+        environment: Option<&str>,
+        capability: &str,
+        operation_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let head = self.journal.get_head(session_id).await?;
+        match capability {
+            "tool.journal.read" => {
+                let after = request
+                    .get("after_seq")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let limit = request
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(32)
+                    .clamp(1, 100) as usize;
+                let page = self
+                    .journal
+                    .read_record_page(&crate::journal::RecordPageQuery {
+                        session_id,
+                        after,
+                        through_seq: head.last_seq,
+                        limit,
+                        max_bytes: crate::journal::DEFAULT_RECORD_PAGE_BYTES,
+                    })
+                    .await?;
+                let items = page
+                    .entries
+                    .into_iter()
+                    .map(|entry| {
+                        serde_json::json!({
+                            "seq": entry.seq,
+                            "ts_ms": entry.ts_ms,
+                            "record": entry.record,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(serde_json::json!({
+                    "items_json": serde_json::to_string(&items)?,
+                    "next_cursor": page.next_after.map(|cursor| cursor.to_string()),
+                }))
+            }
+            "tool.storage.list" => {
+                let prefix = request.get("prefix").and_then(serde_json::Value::as_str);
+                let cursor = request.get("cursor").and_then(serde_json::Value::as_str);
+                let limit = request
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(32) as u32;
+                let page = self.storage_list(session_id, prefix, cursor, limit).await?;
+                Ok(serde_json::json!({
+                    "items_json": serde_json::to_string(&page.objects)?,
+                    "next_cursor": page.next_cursor,
+                }))
+            }
+            "tool.storage.stat" => {
+                let key = required_tool_capability_string(&request, "key")?;
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &self.storage_stat(session_id, key).await?,
+                )?))
+            }
+            "tool.storage.read" => {
+                let key = required_tool_capability_string(&request, "key")?;
+                let offset = request
+                    .get("offset")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let length = request
+                    .get("length")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let through = offset
+                    .checked_add(length)
+                    .ok_or_else(|| BrainError::Invalid("storage read range overflows".into()))?;
+                if through > 1024 * 1024 {
+                    return Err(BrainError::Invalid(
+                        "Tool storage reads are limited to the first 1 MiB; use an Environment for larger transfers".into(),
+                    ));
+                }
+                let (_, bytes) = self.storage_read_inline(session_id, key, through).await?;
+                let start = usize::try_from(offset)
+                    .expect("1 MiB bound")
+                    .min(bytes.len());
+                let end = usize::try_from(through)
+                    .expect("1 MiB bound")
+                    .min(bytes.len());
+                Ok(serde_json::to_value(&bytes[start..end])?)
+            }
+            "tool.storage.write" => {
+                let key = required_tool_capability_string(&request, "key")?.to_owned();
+                let bytes: Vec<u8> =
+                    serde_json::from_value(request.get("bytes").cloned().ok_or_else(|| {
+                        BrainError::Invalid("storage write bytes are required".into())
+                    })?)?;
+                if bytes.len() > 1024 * 1024 {
+                    return Err(BrainError::FileTooLarge { limit: 1024 * 1024 });
+                }
+                let object = self
+                    .storage_write_inline(
+                        session_id,
+                        key,
+                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                        None,
+                        true,
+                    )
+                    .await?;
+                Ok(serde_json::Value::String(serde_json::to_string(&object)?))
+            }
+            "tool.storage.delete" => {
+                let key = required_tool_capability_string(&request, "key")?.to_owned();
+                self.storage_delete(session_id, key).await?;
+                Ok(serde_json::Value::Null)
+            }
+            capability if capability.starts_with("tool.children.") => {
+                self.execute_component_child_capability(
+                    session_id,
+                    capability,
+                    operation_id,
+                    request,
+                )
+                .await
+            }
+            capability if capability.starts_with("tool.parent.") => {
+                let parent_id =
+                    head.doc.parent_id.as_deref().ok_or_else(|| {
+                        BrainError::Invalid("the root session has no parent".into())
+                    })?;
+                self.execute_component_parent_capability(
+                    session_id,
+                    parent_id,
+                    capability,
+                    operation_id,
+                    request,
+                )
+                .await
+            }
+            "tool.environment.invoke" => Err(BrainError::Invalid(format!(
+                "Environment {environment:?} is not yet backed by a generic component"
+            ))),
+            _ => Err(BrainError::Invalid(format!(
+                "unknown Tool capability {capability:?}"
+            ))),
+        }
+    }
+
+    async fn execute_component_child_capability(
+        self: &Arc<Self>,
+        parent_id: &str,
+        capability: &str,
+        operation_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        match capability {
+            "tool.children.spawn" => {
+                let body = parse_tool_request_json(&request)?;
+                let prompt = required_tool_capability_string(&body, "prompt")?.to_owned();
+                let name = body
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                let fork_turns = body.get("fork_turns").and_then(serde_json::Value::as_str);
+                let child = self
+                    .create_child(
+                        parent_id,
+                        prompt,
+                        name,
+                        fork_turns.map(str::to_owned),
+                        Some(operation_id),
+                    )
+                    .await?;
+                Ok(serde_json::Value::String(serde_json::to_string(&child)?))
+            }
+            "tool.children.send" => {
+                let child_id = required_tool_capability_string(&request, "child_id")?;
+                self.get_child(parent_id, child_id).await?;
+                let body = parse_tool_request_json(&request)?;
+                let content = tool_message_content(&body)?;
+                let (turn_id, seq) = self
+                    .message_with_metadata_idempotent(
+                        child_id,
+                        content,
+                        HashMap::new(),
+                        Some(operation_id),
+                    )
+                    .await?;
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &serde_json::json!({"turn_id": turn_id, "seq": seq}),
+                )?))
+            }
+            "tool.children.inspect" => {
+                let child_id = required_tool_capability_string(&request, "child_id")?;
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &self.get_child(parent_id, child_id).await?,
+                )?))
+            }
+            "tool.children.events" => {
+                let child_id = required_tool_capability_string(&request, "child_id")?;
+                self.get_child(parent_id, child_id).await?;
+                self.component_event_page(child_id, &request).await
+            }
+            "tool.children.manage" => {
+                let child_id = required_tool_capability_string(&request, "child_id")?;
+                self.get_child(parent_id, child_id).await?;
+                let child = match required_tool_capability_string(&request, "action")? {
+                    "cancel" => self.cancel(child_id).await?,
+                    "end" => self.end(child_id).await?,
+                    action => {
+                        return Err(BrainError::Invalid(format!(
+                            "unknown child action {action:?}"
+                        )));
+                    }
+                };
+                Ok(serde_json::Value::String(serde_json::to_string(&child)?))
+            }
+            "tool.children.list" => {
+                let cursor = request.get("cursor").and_then(serde_json::Value::as_str);
+                let limit = request
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(32) as usize;
+                let (items, next_cursor) = self.list_children(parent_id, cursor, limit).await?;
+                Ok(serde_json::json!({
+                    "items_json": serde_json::to_string(&items)?,
+                    "next_cursor": next_cursor,
+                }))
+            }
+            _ => Err(BrainError::Invalid(format!(
+                "unknown child capability {capability:?}"
+            ))),
+        }
+    }
+
+    async fn execute_component_parent_capability(
+        self: &Arc<Self>,
+        session_id: &str,
+        parent_id: &str,
+        capability: &str,
+        operation_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        match capability {
+            "tool.parent.metadata" => Ok(serde_json::Value::String(serde_json::to_string(
+                &serde_json::json!({"session_id": session_id, "parent_id": parent_id}),
+            )?)),
+            "tool.parent.inspect" => Ok(serde_json::Value::String(serde_json::to_string(
+                &self.get(parent_id).await?,
+            )?)),
+            "tool.parent.events" => self.component_event_page(parent_id, &request).await,
+            "tool.parent.send" => {
+                let body = parse_tool_request_json(&request)?;
+                let content = tool_message_content(&body)?;
+                let (turn_id, seq) = self
+                    .message_with_metadata_idempotent(
+                        parent_id,
+                        content,
+                        HashMap::new(),
+                        Some(operation_id),
+                    )
+                    .await?;
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &serde_json::json!({"turn_id": turn_id, "seq": seq}),
+                )?))
+            }
+            _ => Err(BrainError::Invalid(format!(
+                "unknown parent capability {capability:?}"
+            ))),
+        }
+    }
+
+    async fn component_event_page(
+        &self,
+        session_id: &str,
+        request: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let head = self.journal.get_head(session_id).await?;
+        let after = request
+            .get("after_seq")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let limit = request
+            .get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(32)
+            .clamp(1, 100) as usize;
+        let page = self
+            .journal
+            .read_record_page(&crate::journal::RecordPageQuery {
+                session_id,
+                after,
+                through_seq: head.last_seq,
+                limit,
+                max_bytes: crate::journal::DEFAULT_RECORD_PAGE_BYTES,
+            })
+            .await?;
+        let items = page
+            .entries
+            .into_iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "seq": entry.seq,
+                    "ts_ms": entry.ts_ms,
+                    "record": entry.record,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "items_json": serde_json::to_string(&items)?,
+            "next_cursor": page.next_after.map(|cursor| cursor.to_string()),
+        }))
+    }
+}
+
+fn required_tool_capability_string<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| BrainError::Invalid(format!("Tool capability field {key:?} is required")))
+}
+
+fn parse_tool_request_json(request: &serde_json::Value) -> Result<serde_json::Value> {
+    serde_json::from_str(required_tool_capability_string(request, "request_json")?)
+        .map_err(|error| BrainError::Invalid(format!("Tool request_json: {error}")))
+}
+
+fn tool_message_content(value: &serde_json::Value) -> Result<MessageRequestContent> {
+    let content = value
+        .as_str()
+        .or_else(|| value.get("content").and_then(serde_json::Value::as_str))
+        .ok_or_else(|| {
+            BrainError::Invalid("Tool message request must be a string or contain content".into())
+        })?;
+    Ok(MessageRequestContent::String(content.parse().map_err(
+        |error| BrainError::Invalid(format!("Tool message content: {error}")),
+    )?))
 }
 
 #[async_trait::async_trait]
@@ -5574,6 +5977,7 @@ fn turn_run(
         provider_total_timeout: brain.cfg.provider_total_timeout,
         compactor: brain.compactor.clone(),
         external_executor: brain.external_executor.clone(),
+        tool_registry: brain.tool_registry.clone(),
         managed_bindings: r.managed_bindings.clone(),
         customer: brain.customer.clone(),
         tenant_id: r.st.head.tenant_id.clone(),

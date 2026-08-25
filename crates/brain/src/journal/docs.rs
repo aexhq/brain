@@ -967,6 +967,19 @@ pub struct ModelSelectorDoc {
     pub config: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Which Tool component and kernel imports one immutable model-visible Tool declaration uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolSelectorDoc {
+    pub component_digest: String,
+    pub component_bytes: u64,
+    pub world: String,
+    pub config: serde_json::Map<String, serde_json::Value>,
+    pub grants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+}
+
 fn default_customer_submit_retries() -> u32 {
     1
 }

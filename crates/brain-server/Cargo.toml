@@ -13,6 +13,7 @@ brain-component-host = { path = "../brain-component-host" }
 brain-loophost = { workspace = true, optional = true }
 brain-providers = { workspace = true }
 brain-standalone = { workspace = true }
+brain-toolhost = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

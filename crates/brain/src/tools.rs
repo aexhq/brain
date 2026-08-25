@@ -9,6 +9,58 @@ use crate::{BrainError, Result};
 use brain_protocol::environment::TerminalOutcome;
 use brain_protocol::session::{ToolConfig, ToolExecutor};
 use serde::Deserialize;
+use serde_json::Value;
+use std::sync::Arc;
+
+pub const TOOL_WORLD: &str = "aex:tool/tool@1.0.0";
+
+#[derive(Debug, Clone)]
+pub struct ComponentToolRequest {
+    pub tenant_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub call_id: String,
+    pub tool_name: String,
+    pub input: Value,
+    pub deadline_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCapabilityFailure {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+#[async_trait::async_trait]
+pub trait ToolCapabilityHandler: Send + Sync {
+    async fn call(
+        &self,
+        capability: &str,
+        operation_id: &str,
+        request: Value,
+    ) -> std::result::Result<Value, ToolCapabilityFailure>;
+}
+
+#[async_trait::async_trait]
+pub trait ToolRegistry: Send + Sync {
+    fn admit(
+        &self,
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        config: &serde_json::Map<String, Value>,
+        grants: &[String],
+        environment: Option<&str>,
+    ) -> Result<crate::journal::ToolSelectorDoc>;
+
+    async fn invoke(
+        &self,
+        selector: &crate::journal::ToolSelectorDoc,
+        request: ComponentToolRequest,
+        capabilities: Arc<dyn ToolCapabilityHandler>,
+    ) -> Result<crate::adapter::CallOutcome>;
+}
 
 /// Closed engine capabilities implemented by Brain's state machine over typed ports. These are
 /// not host-side extension points: an SDK caller may select only these exact identifiers, and
@@ -33,6 +85,31 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
     // The executor union is kind-tagged at the serde layer, so a payload declaring one realm
     // can no longer deserialize as another; no per-arm kind re-checks remain.
     let route = match &tool.executor {
+        ToolExecutor::Component {
+            component_digest,
+            config,
+            environment,
+            grants,
+            world,
+        } => {
+            let grants: Vec<String> = grants.iter().map(ToString::to_string).collect();
+            let has_environment = grants.iter().any(|grant| grant == "environment");
+            if has_environment != environment.is_some() {
+                return Err(BrainError::Invalid(format!(
+                    "tool {name} must declare environment exactly when its environment grant is present"
+                )));
+            }
+            ToolRoute::Component(crate::journal::ToolSelectorDoc {
+                component_digest: component_digest.to_string(),
+                component_bytes: 0,
+                world: world.clone(),
+                config: config.clone(),
+                grants,
+                environment: environment
+                    .as_ref()
+                    .map(|environment| environment.as_str().to_owned()),
+            })
+        }
         ToolExecutor::Environment {
             artifact_digest,
             callback_registration,
@@ -280,6 +357,53 @@ mod tests {
                     && seal.required_env == ["TOKEN"]
                     && seal.checksum == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ));
+    }
+
+    #[test]
+    fn component_tools_seal_identity_config_grants_and_environment() {
+        let item: ToolConfig = serde_json::from_value(serde_json::json!({
+            "definition": {
+                "name": "component_tool",
+                "contract_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "input_schema": {"type":"object"},
+                "output_schema": {"type":"object"}
+            },
+            "executor": {
+                "kind": "component",
+                "component_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "world": "aex:tool/tool@1.0.0",
+                "config": {"mode":"strict"},
+                "grants": ["storage", "environment"],
+                "environment": "workspace"
+            }
+        }))
+        .unwrap();
+        let tool = resolve(&[item]).unwrap().remove(0);
+        assert!(matches!(
+            tool.route,
+            ToolRoute::Component(selector)
+                if selector.component_digest == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    && selector.world == TOOL_WORLD
+                    && selector.config == serde_json::json!({"mode":"strict"}).as_object().unwrap().clone()
+                    && selector.grants == ["storage", "environment"]
+                    && selector.environment.as_deref() == Some("workspace")
+        ));
+
+        let missing_environment: ToolConfig = serde_json::from_value(serde_json::json!({
+            "definition": {
+                "name": "invalid_component_tool",
+                "contract_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "input_schema": {"type":"object"}
+            },
+            "executor": {
+                "kind": "component",
+                "component_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "world": "aex:tool/tool@1.0.0",
+                "grants": ["environment"]
+            }
+        }))
+        .unwrap();
+        assert!(resolve(&[missing_environment]).is_err());
     }
 
     #[test]

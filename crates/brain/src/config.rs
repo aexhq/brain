@@ -76,6 +76,8 @@ pub struct ToolDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolRoute {
+    /// A precompiled Tool component with only its explicitly granted kernel imports.
+    Component(crate::journal::ToolSelectorDoc),
     /// A deliberately selected Brain engine capability. The model-visible name is
     /// unrelated to this stable capability identifier.
     Intrinsic(String),

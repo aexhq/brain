@@ -4210,6 +4210,97 @@ async fn loop_bundles_are_verified_before_registry_admission() {
 }
 
 #[tokio::test]
+async fn tool_components_are_verified_and_admitted_before_session_commit() {
+    struct TestToolRegistry(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl crate::tools::ToolRegistry for TestToolRegistry {
+        fn admit(
+            &self,
+            component_digest: &str,
+            world: &str,
+            component: &[u8],
+            config: &serde_json::Map<String, serde_json::Value>,
+            grants: &[String],
+            environment: Option<&str>,
+        ) -> Result<crate::journal::ToolSelectorDoc> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(world, crate::tools::TOOL_WORLD);
+            assert_eq!(component_digest, hex::encode(Sha256::digest(component)));
+            assert_eq!(config["mode"], "echo");
+            assert_eq!(grants, ["journal"]);
+            assert_eq!(environment, None);
+            Ok(crate::journal::ToolSelectorDoc {
+                component_digest: component_digest.into(),
+                component_bytes: component.len() as u64,
+                world: world.into(),
+                config: config.clone(),
+                grants: grants.to_vec(),
+                environment: None,
+            })
+        }
+
+        async fn invoke(
+            &self,
+            _selector: &crate::journal::ToolSelectorDoc,
+            _request: crate::tools::ComponentToolRequest,
+            _capabilities: Arc<dyn crate::tools::ToolCapabilityHandler>,
+        ) -> Result<CallOutcome> {
+            unreachable!("create only admits the component")
+        }
+    }
+
+    let registry = Arc::new(TestToolRegistry(AtomicUsize::new(0)));
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("tool-component-admission"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices {
+            tool_registry: Some(registry.clone()),
+            ..BrainServices::default()
+        },
+        Arc::new(move |_| provider.clone()),
+    );
+    let tool_component = b"test tool";
+    let tool_digest = hex::encode(Sha256::digest(tool_component));
+    let mut request = serde_json::to_value(typed_create(json!({
+        "model": {"provider":"anthropic", "name":"tool-test", "api_key":"sk-test"},
+        "tools": {"items": [{
+            "definition": {
+                "name": "echo",
+                "contract_digest": "a".repeat(64),
+                "input_schema": {"type":"object"},
+                "output_schema": {"type":"object"}
+            },
+            "executor": {
+                "kind": "component",
+                "component_digest": tool_digest,
+                "world": "aex:tool/tool@1.0.0",
+                "config": {"mode":"echo"},
+                "grants": ["journal"]
+            }
+        }]}
+    })))
+    .unwrap();
+    request["component_artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "component_digest": tool_digest,
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(tool_component),
+            "bytes": tool_component.len()
+        }));
+    brain
+        .create_session(serde_json::from_value(request).unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(registry.0.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn a_composition_registry_resolves_a_sealed_loop() {
     struct TestRegistry;
     impl crate::agentloop::AgentloopRegistry for TestRegistry {

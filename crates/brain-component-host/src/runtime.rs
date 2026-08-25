@@ -173,7 +173,7 @@ impl State {
         metadata: tool::aex::tool::types::CallMetadata,
         grants: &[String],
     ) -> Self {
-        let mut state = Self::new(capabilities, "tool", Some(metadata.session_id.clone()));
+        let mut state = Self::new(capabilities, "tool", Some(metadata.call_id.clone()));
         state.tool_metadata = Some(metadata);
         state.tool_grants.extend(grants.iter().cloned());
         state

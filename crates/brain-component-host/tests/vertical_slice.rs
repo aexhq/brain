@@ -150,7 +150,7 @@ impl CapabilityHandler for EchoEnvironment {
     async fn call(&self, call: CapabilityCall) -> Result<Value, CapabilityFailure> {
         assert_eq!(call.capability, "tool.environment.invoke");
         assert_eq!(call.world, "tool");
-        assert_eq!(call.instance_id.as_deref(), Some("ses_1"));
+        assert_eq!(call.instance_id.as_deref(), Some("call_relay"));
         Ok(Value::String(
             call.request["input_json"]
                 .as_str()

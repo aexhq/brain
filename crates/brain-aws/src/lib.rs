@@ -102,6 +102,7 @@ pub async fn compose(
         executor,
         brain::session::BrainServices {
             model_registry: None,
+            tool_registry: None,
             session_storage: Some(storage.clone()),
             bundle_storage: Some(storage),
             environments: ports.environments,

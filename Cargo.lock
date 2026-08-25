@@ -1014,6 +1014,7 @@ dependencies = [
  "brain-protocol",
  "brain-providers",
  "brain-standalone",
+ "brain-toolhost",
  "futures-util",
  "hex",
  "libc",
@@ -1058,6 +1059,19 @@ dependencies = [
  "url",
  "walkdir",
  "zeroize",
+]
+
+[[package]]
+name = "brain-toolhost"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "brain",
+ "brain-component-host",
+ "brain-protocol",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

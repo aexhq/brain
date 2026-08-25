@@ -267,6 +267,48 @@
           "additionalProperties": false,
           "required": [
             "kind",
+            "component_digest",
+            "world"
+          ],
+          "description": "A precompiled Tool component binding. Imports are denied unless named in grants.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "component"
+            },
+            "component_digest": {
+              "$ref": "#/$defs/Sha256Hex"
+            },
+            "world": {
+              "type": "string",
+              "const": "aex:tool/tool@1.0.0"
+            },
+            "config": {
+              "type": "object",
+              "additionalProperties": true,
+              "default": {}
+            },
+            "grants": {
+              "type": "array",
+              "maxItems": 5,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": ["environment", "journal", "storage", "children", "parent"]
+              },
+              "default": []
+            },
+            "environment": {
+              "$ref": "#/$defs/EnvironmentName",
+              "description": "Logical Environment available to the environment import. Required when that grant is present."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
             "environment",
             "requirements"
           ],

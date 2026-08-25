@@ -1101,6 +1101,20 @@ export type components = {
         };
         ToolExecutor: {
             /** @constant */
+            kind: "component";
+            component_digest: components["schemas"]["Sha256Hex"];
+            /** @constant */
+            world: "aex:tool/tool@1.0.0";
+            /** @default {} */
+            config?: {
+                [key: string]: unknown;
+            };
+            /** @default [] */
+            grants?: ("environment" | "journal" | "storage" | "children" | "parent")[];
+            /** @description Logical Environment available to the environment import. Required when that grant is present. */
+            environment?: components["schemas"]["EnvironmentName"];
+        } | {
+            /** @constant */
             kind: "environment";
             environment: components["schemas"]["EnvironmentName"];
             artifact_digest?: components["schemas"]["Sha256Hex"];

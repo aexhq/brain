@@ -7315,6 +7315,54 @@ impl<'de> ::serde::Deserialize<'de> for ToolDefinitionDescription {
 #[doc = "{"]
 #[doc = "  \"oneOf\": ["]
 #[doc = "    {"]
+#[doc = "      \"description\": \"A precompiled Tool component binding. Imports are denied unless named in grants.\","]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"required\": ["]
+#[doc = "        \"component_digest\","]
+#[doc = "        \"kind\","]
+#[doc = "        \"world\""]
+#[doc = "      ],"]
+#[doc = "      \"properties\": {"]
+#[doc = "        \"component_digest\": {"]
+#[doc = "          \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "        },"]
+#[doc = "        \"config\": {"]
+#[doc = "          \"default\": {},"]
+#[doc = "          \"type\": \"object\","]
+#[doc = "          \"additionalProperties\": true"]
+#[doc = "        },"]
+#[doc = "        \"environment\": {"]
+#[doc = "          \"description\": \"Logical Environment available to the environment import. Required when that grant is present.\","]
+#[doc = "          \"$ref\": \"#/$defs/EnvironmentName\""]
+#[doc = "        },"]
+#[doc = "        \"grants\": {"]
+#[doc = "          \"default\": [],"]
+#[doc = "          \"type\": \"array\","]
+#[doc = "          \"items\": {"]
+#[doc = "            \"type\": \"string\","]
+#[doc = "            \"enum\": ["]
+#[doc = "              \"environment\","]
+#[doc = "              \"journal\","]
+#[doc = "              \"storage\","]
+#[doc = "              \"children\","]
+#[doc = "              \"parent\""]
+#[doc = "            ]"]
+#[doc = "          },"]
+#[doc = "          \"maxItems\": 5,"]
+#[doc = "          \"uniqueItems\": true"]
+#[doc = "        },"]
+#[doc = "        \"kind\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"component\""]
+#[doc = "        },"]
+#[doc = "        \"world\": {"]
+#[doc = "          \"type\": \"string\","]
+#[doc = "          \"const\": \"aex:tool/tool@1.0.0\""]
+#[doc = "        }"]
+#[doc = "      },"]
+#[doc = "      \"additionalProperties\": false"]
+#[doc = "    },"]
+#[doc = "    {"]
 #[doc = "      \"description\": \"An explicitly bound tool executed by one declared logical environment.\","]
 #[doc = "      \"type\": \"object\","]
 #[doc = "      \"required\": ["]
@@ -7368,6 +7416,19 @@ impl<'de> ::serde::Deserialize<'de> for ToolDefinitionDescription {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum ToolExecutor {
+    #[doc = "A precompiled Tool component binding. Imports are denied unless named in grants."]
+    #[serde(rename = "component")]
+    Component {
+        component_digest: Sha256Hex,
+        #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+        config: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+        #[doc = "Logical Environment available to the environment import. Required when that grant is present."]
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        environment: ::std::option::Option<EnvironmentName>,
+        #[serde(default = "defaults::tool_executor_component_grants")]
+        grants: Vec<ToolExecutorGrantsItem>,
+        world: ::std::string::String,
+    },
     #[doc = "An explicitly bound tool executed by one declared logical environment."]
     #[serde(rename = "environment")]
     Environment {
@@ -7523,6 +7584,93 @@ impl<'de> ::serde::Deserialize<'de> for ToolExecutorCapability {
             .map_err(|e: self::error::ConversionError| {
                 <D::Error as ::serde::de::Error>::custom(e.to_string())
             })
+    }
+}
+#[doc = "`ToolExecutorGrantsItem`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"environment\","]
+#[doc = "    \"journal\","]
+#[doc = "    \"storage\","]
+#[doc = "    \"children\","]
+#[doc = "    \"parent\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum ToolExecutorGrantsItem {
+    #[serde(rename = "environment")]
+    Environment,
+    #[serde(rename = "journal")]
+    Journal,
+    #[serde(rename = "storage")]
+    Storage,
+    #[serde(rename = "children")]
+    Children,
+    #[serde(rename = "parent")]
+    Parent,
+}
+impl ::std::fmt::Display for ToolExecutorGrantsItem {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Environment => f.write_str("environment"),
+            Self::Journal => f.write_str("journal"),
+            Self::Storage => f.write_str("storage"),
+            Self::Children => f.write_str("children"),
+            Self::Parent => f.write_str("parent"),
+        }
+    }
+}
+impl ::std::str::FromStr for ToolExecutorGrantsItem {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "environment" => Ok(Self::Environment),
+            "journal" => Ok(Self::Journal),
+            "storage" => Ok(Self::Storage),
+            "children" => Ok(Self::Children),
+            "parent" => Ok(Self::Parent),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ToolExecutorGrantsItem {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ToolExecutorGrantsItem {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ToolExecutorGrantsItem {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
     }
 }
 #[doc = "`ToolName`"]
@@ -8067,5 +8215,8 @@ pub mod defaults {
         <T as ::std::convert::TryFrom<u64>>::Error: ::std::fmt::Debug,
     {
         T::try_from(V).unwrap()
+    }
+    pub(super) fn tool_executor_component_grants() -> Vec<super::ToolExecutorGrantsItem> {
+        vec![]
     }
 }

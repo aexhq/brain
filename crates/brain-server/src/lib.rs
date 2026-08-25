@@ -71,6 +71,13 @@ pub async fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> 
         brain_providers::Outbound::new(allow_private),
     )
     .await?;
+    #[cfg(feature = "loophost")]
+    let tool_registry = brain_toolhost::registry_with_component_store(
+        &options.data_dir.join("tools"),
+        &loophost.component_host,
+        loophost.workers,
+    )
+    .await?;
     #[cfg(not(feature = "loophost"))]
     return Err(anyhow::anyhow!(
         "brain-server requires the loophost feature"
@@ -95,6 +102,7 @@ pub async fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> 
             customer_transport: Some(customer_transport),
             agentloop_registry: loop_services.agentloop_registry,
             model_registry: Some(model_registry),
+            tool_registry: Some(tool_registry),
             ..BrainServices::default()
         },
         options

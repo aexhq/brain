@@ -97,6 +97,46 @@ export type ExternalToolEffect = "opaque" | "replay_safe";
  */
 export type ToolExecutor =
   | {
+      kind: "component";
+      component_digest: Sha256Hex;
+      world: "aex:tool/tool@1.0.0";
+      config?: {
+        [k: string]: unknown | undefined;
+      };
+      /**
+       * @maxItems 5
+       */
+      grants?:
+        | []
+        | ["environment" | "journal" | "storage" | "children" | "parent"]
+        | [
+            "environment" | "journal" | "storage" | "children" | "parent",
+            "environment" | "journal" | "storage" | "children" | "parent"
+          ]
+        | [
+            "environment" | "journal" | "storage" | "children" | "parent",
+            "environment" | "journal" | "storage" | "children" | "parent",
+            "environment" | "journal" | "storage" | "children" | "parent"
+          ]
+        | [
+            "environment" | "journal" | "storage" | "children" | "parent",
+            "environment" | "journal" | "storage" | "children" | "parent",
+            "environment" | "journal" | "storage" | "children" | "parent",
+            "environment" | "journal" | "storage" | "children" | "parent"
+          ]
+        | [
+            "environment" | "journal" | "storage" | "children" | "parent",
+            "environment" | "journal" | "storage" | "children" | "parent",
+            "environment" | "journal" | "storage" | "children" | "parent",
+            "environment" | "journal" | "storage" | "children" | "parent",
+            "environment" | "journal" | "storage" | "children" | "parent"
+          ];
+      /**
+       * Logical Environment available to the environment import. Required when that grant is present.
+       */
+      environment?: string;
+    }
+  | {
       kind: "environment";
       environment: EnvironmentName;
       artifact_digest?: Sha256Hex;
