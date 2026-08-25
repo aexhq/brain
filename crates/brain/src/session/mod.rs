@@ -34,9 +34,7 @@ use crate::{BrainError, Result};
 use base64::Engine;
 use brain_protocol::environment::TerminalOutcome;
 use brain_protocol::session::ToolOutcome;
-use brain_protocol::session::{
-    self, CreateSessionRequest, MessageRequestContent, Provider as ApiProvider,
-};
+use brain_protocol::session::{self, CreateSessionRequest, MessageRequestContent};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -45,12 +43,16 @@ use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
 use tokio::sync::{Notify, OnceCell, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument as _;
 
 mod view;
 pub use view::*;
 
 mod storage_state;
 use storage_state::*;
+
+#[path = "engine/subagents.rs"]
+mod engine_subagents;
 
 mod config;
 pub use config::*;
@@ -69,6 +71,14 @@ pub struct Brain {
     pub external_executor: Arc<dyn ToolExecutor>,
     /// Resolves each session's sealed selector to the loop implementation driving its turns.
     pub agentloop_registry: Arc<dyn crate::agentloop::AgentloopRegistry>,
+    /// Resolves each session's sealed selector to its Model component.
+    pub model_registry: Arc<dyn crate::provider::ModelRegistry>,
+    /// Admits and invokes precompiled Tool components. It may be absent only when no component
+    /// Tool is declared.
+    pub tool_registry: Option<Arc<dyn crate::tools::ToolRegistry>>,
+    /// Admits and invokes generic precompiled Environment components.
+    pub component_environment_registry:
+        Option<Arc<dyn crate::environment::ComponentEnvironmentRegistry>>,
     /// Durable per-session object storage. Hosted composition supplies this adapter; `None` means
     /// the storage resource is unavailable, never an in-memory production fallback.
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
@@ -80,8 +90,8 @@ pub struct Brain {
     /// Customer-app connection/receipt coordinator. Present only when the composition supplied
     /// absolute socket and observation callback URLs.
     pub customer: Option<Arc<crate::customer::CustomerCoordinator>>,
+    pub customer_component: Option<Arc<crate::customer_component::CustomerComponentDriver>>,
     pub compactor: Arc<dyn crate::compact::CompactionPort>,
-    provider_factory: ProviderFactory,
     turn_permits: Arc<Semaphore>,
     create_permits: Arc<Semaphore>,
     sessions: Mutex<HashMap<String, mpsc::Sender<Command>>>,
@@ -187,6 +197,13 @@ pub struct BrainServices {
     pub compactor: Option<Arc<dyn crate::compact::CompactionPort>>,
     /// Selector-to-loop resolution. Compositions must supply it explicitly.
     pub agentloop_registry: Option<Arc<dyn crate::agentloop::AgentloopRegistry>>,
+    /// Selector-to-Model resolution. Production compositions must supply it explicitly.
+    pub model_registry: Option<Arc<dyn crate::provider::ModelRegistry>>,
+    /// Precompiled Tool component admission and invocation.
+    pub tool_registry: Option<Arc<dyn crate::tools::ToolRegistry>>,
+    /// Precompiled Environment component admission and invocation.
+    pub component_environment_registry:
+        Option<Arc<dyn crate::environment::ComponentEnvironmentRegistry>>,
 }
 
 fn hash_create_key(key: &str) -> String {
@@ -246,6 +263,31 @@ fn validate_create_request(req: &CreateSessionRequest) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn requested_retention_deadline(
+    requested: Option<&session::Timestamp>,
+    now_ms: u64,
+    default_retention: Duration,
+    max_retention: Duration,
+) -> Result<u64> {
+    let deadline = match requested {
+        Some(value) => u64::try_from(value.timestamp_millis())
+            .map_err(|_| BrainError::Invalid("retain_until must be after the Unix epoch".into()))?,
+        None => now_ms.saturating_add(default_retention.as_millis() as u64),
+    };
+    if deadline <= now_ms {
+        return Err(BrainError::Invalid(
+            "retain_until must be in the future when a session is created".into(),
+        ));
+    }
+    let maximum = now_ms.saturating_add(max_retention.as_millis() as u64);
+    if deadline > maximum {
+        return Err(BrainError::Invalid(
+            "retain_until exceeds the deployment retention maximum".into(),
+        ));
+    }
+    Ok(deadline)
 }
 
 fn validate_model_tool_projection<'a>(
@@ -364,6 +406,7 @@ fn sealed_managed_binding(
     descriptor: &brain_protocol::environment::BundleDescriptor,
     declaration: &brain_protocol::session::EnvironmentConfig,
 ) -> Result<brain_protocol::environment::SealedBinding> {
+    let declaration = legacy_environment(declaration)?;
     let network = sealed_sandbox_network(doc)?;
     let resources = managed_environment_resources()?;
     let policy_digest = brain_protocol::contract::canonical_digest(&serde_json::json!({
@@ -395,6 +438,32 @@ fn sealed_managed_binding(
         "session_id": session_id,
     }))
     .map_err(BrainError::from)
+}
+
+fn legacy_environment(
+    declaration: &brain_protocol::session::EnvironmentConfig,
+) -> Result<&brain_protocol::session::LegacyEnvironmentConfig> {
+    match declaration {
+        brain_protocol::session::EnvironmentConfig::LegacyEnvironmentConfig(declaration) => {
+            Ok(declaration)
+        }
+        brain_protocol::session::EnvironmentConfig::ComponentEnvironmentConfig(_) => Err(
+            BrainError::Invalid("a legacy managed Tool cannot use a component Environment".into()),
+        ),
+    }
+}
+
+fn component_environment(
+    declaration: &brain_protocol::session::EnvironmentConfig,
+) -> Result<&brain_protocol::session::ComponentEnvironmentConfig> {
+    match declaration {
+        brain_protocol::session::EnvironmentConfig::ComponentEnvironmentConfig(declaration) => {
+            Ok(declaration)
+        }
+        brain_protocol::session::EnvironmentConfig::LegacyEnvironmentConfig(_) => Err(
+            BrainError::Invalid("a component Tool cannot use a legacy Environment".into()),
+        ),
+    }
 }
 
 pub(crate) fn environment_target(
@@ -549,6 +618,17 @@ enum Command {
     Cancel {
         reply: oneshot::Sender<Result<HeadDoc>>,
     },
+    Suspend {
+        reply: oneshot::Sender<Result<HeadDoc>>,
+    },
+    Resume {
+        reply: oneshot::Sender<Result<HeadDoc>>,
+    },
+    UpdateRetention {
+        retain_until_ms: u64,
+        allow_shorten: bool,
+        reply: oneshot::Sender<Result<HeadDoc>>,
+    },
     End {
         reply: oneshot::Sender<Result<HeadDoc>>,
     },
@@ -644,15 +724,25 @@ impl Brain {
         #[cfg(test)]
         let agentloop_registry =
             agentloop_registry.or_else(|| Some(Arc::new(crate::agentloop::TestAgentloopRegistry)));
+        let model_registry = services.model_registry.unwrap_or_else(|| {
+            Arc::new(FactoryModelRegistry {
+                factory: provider_factory.clone(),
+            })
+        });
+        let customer_component = customer.as_ref().map(|coordinator| {
+            crate::customer_component::CustomerComponentDriver::new(coordinator.clone())
+        });
         Arc::new(Self {
             agentloop_registry: agentloop_registry
                 .expect("BrainServices.agentloop_registry is required"),
+            model_registry,
+            tool_registry: services.tool_registry,
+            component_environment_registry: services.component_environment_registry,
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
             create_permits: Arc::new(Semaphore::new(cfg.max_concurrent_creates)),
             journal,
             custody,
-            provider_factory,
             hub: Arc::new(EventHub::with_max_followers(cfg.max_event_followers)),
             sessions: Mutex::new(HashMap::new()),
             draining: AtomicBool::new(false),
@@ -672,6 +762,7 @@ impl Brain {
             environments: services.environments,
             customer_delivery: services.customer_delivery,
             customer,
+            customer_component,
             compactor: services
                 .compactor
                 .unwrap_or_else(|| Arc::new(crate::compact::SameProviderCompactor)),
@@ -843,7 +934,7 @@ impl Brain {
             })?;
             let adapter = self
                 .environments
-                .resolve(declaration.extension.as_str())?
+                .resolve(legacy_environment(declaration)?.extension.as_str())?
                 .clone();
             let binding = sealed_managed_binding(session_id, doc, descriptor, declaration)?;
             let resolved = adapter
@@ -1028,16 +1119,20 @@ impl Brain {
         }
 
         // Validate and resolve the sealed configuration.
-        let provider = provider_name(&req.model.provider);
-        let base_url = resolve_base_url(
-            &req.model.provider,
-            req.model.base_url.as_ref().map(|value| value.as_str()),
-        )?;
-        let checked_base = self.outbound.check_url(&base_url)?;
-        if checked_base.query().is_some() {
-            return Err(BrainError::Invalid(
-                "model.base_url must not contain a query".into(),
-            ));
+        let provider = req.model.provider.as_str();
+        let base_url = req
+            .model
+            .base_url
+            .as_ref()
+            .map(|value| value.as_str().trim_end_matches('/').to_owned())
+            .unwrap_or_default();
+        if !base_url.is_empty() {
+            let checked_base = self.outbound.check_url(&base_url)?;
+            if checked_base.query().is_some() {
+                return Err(BrainError::Invalid(
+                    "model.base_url must not contain a query".into(),
+                ));
+            }
         }
         if req.model.api_key.is_empty() {
             return Err(BrainError::Invalid(
@@ -1050,6 +1145,47 @@ impl Brain {
             .ok_or_else(|| {
                 BrainError::Invalid("model.api_key is not a valid HTTP header value".into())
             })?;
+        let mut component_artifacts = HashMap::with_capacity(req.component_artifacts.len());
+        for (index, artifact) in req.component_artifacts.iter().enumerate() {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(artifact.component_base64.as_bytes())
+                .map_err(|_| {
+                    BrainError::Invalid(format!(
+                        "component_artifacts[{index}].component_base64 is not valid base64"
+                    ))
+                })?;
+            if bytes.len() != artifact.bytes.get() as usize {
+                return Err(BrainError::Invalid(format!(
+                    "component_artifacts[{index}].bytes does not match decoded content"
+                )));
+            }
+            let digest = hex::encode(Sha256::digest(&bytes));
+            if digest != artifact.component_digest.as_str() {
+                return Err(BrainError::Invalid(format!(
+                    "component_artifacts[{index}] digest is {digest}, not the declared {}",
+                    artifact.component_digest.as_str()
+                )));
+            }
+            if component_artifacts.insert(digest, bytes).is_some() {
+                return Err(BrainError::Invalid(format!(
+                    "component_artifacts[{index}] repeats a component digest"
+                )));
+            }
+        }
+        let model_digest = req.model.component_digest.as_str();
+        let model_component = component_artifacts.get(model_digest).ok_or_else(|| {
+            BrainError::Invalid(format!(
+                "Model component {model_digest} has no supplied artifact"
+            ))
+        })?;
+        let model_selector = self.model_registry.admit(
+            model_digest,
+            &req.model.world,
+            model_component,
+            provider,
+            &req.model.config,
+        )?;
+        self.model_registry.resolve(&model_selector)?;
         if req.metadata.len() > 16 {
             return Err(BrainError::Invalid("metadata: at most 16 pairs".into()));
         }
@@ -1059,6 +1195,31 @@ impl Brain {
         }
         let tool_items = tools_cfg.items.clone();
         let mut decls = crate::tools::resolve(&tool_items)?;
+        let mut referenced_tool_components = HashSet::new();
+        for decl in &mut decls {
+            let crate::config::ToolRoute::Component(selector) = &mut decl.route else {
+                continue;
+            };
+            let registry = self.tool_registry.as_ref().ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "tool {} requires component execution, which is unavailable in this Brain composition",
+                    decl.name
+                ))
+            })?;
+            let digest = selector.component_digest.clone();
+            let component = component_artifacts.get(&digest).ok_or_else(|| {
+                BrainError::Invalid(format!("Tool component {digest} has no supplied artifact"))
+            })?;
+            *selector = registry.admit(
+                &digest,
+                &selector.world,
+                component,
+                &selector.config,
+                &selector.grants,
+                selector.environment.as_deref(),
+            )?;
+            referenced_tool_components.insert(digest);
+        }
         let has_customer_tools = decls
             .iter()
             .any(|decl| matches!(decl.route, crate::config::ToolRoute::Customer { .. }));
@@ -1077,6 +1238,9 @@ impl Brain {
             let crate::config::ToolRoute::Intrinsic(capability) = &decl.route else {
                 continue;
             };
+            if crate::tools::is_direct_engine_capability(capability) {
+                continue;
+            }
             let policy = self
                 .cfg
                 .official_capabilities
@@ -1113,7 +1277,9 @@ impl Brain {
                         decl.name, policy.capability
                     )));
                 }
-                crate::config::ToolRoute::Intrinsic(capability) => {
+                crate::config::ToolRoute::Intrinsic(capability)
+                    if !crate::tools::is_direct_engine_capability(capability) =>
+                {
                     return Err(BrainError::Invalid(format!(
                         "tool {} requires unavailable intrinsic capability {}",
                         decl.name, capability
@@ -1150,7 +1316,40 @@ impl Brain {
             .flat_map(|environments| environments.iter())
             .map(|(name, environment)| (name.as_str().to_owned(), environment.clone()))
             .collect();
+        let mut referenced_environment_components = HashSet::new();
+        for (name, declaration) in &environments {
+            let brain_protocol::session::EnvironmentConfig::ComponentEnvironmentConfig(declaration) =
+                declaration
+            else {
+                continue;
+            };
+            let registry = self.component_environment_registry.as_ref().ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "environment {name:?} requires component execution, which is unavailable in this Brain composition"
+                ))
+            })?;
+            let digest = declaration.component_digest.as_str();
+            let component = component_artifacts.get(digest).ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "Environment component {digest} has no supplied artifact"
+                ))
+            })?;
+            registry.admit(digest, &declaration.world, component)?;
+            referenced_environment_components.insert(digest.to_owned());
+        }
         for decl in &decls {
+            if let crate::config::ToolRoute::Component(selector) = &decl.route {
+                if let Some(environment_name) = selector.environment.as_deref() {
+                    let environment = environments.get(environment_name).ok_or_else(|| {
+                        BrainError::Invalid(format!(
+                            "tool {} is bound to undeclared environment {environment_name:?}",
+                            decl.name
+                        ))
+                    })?;
+                    component_environment(environment)?;
+                }
+                continue;
+            }
             let (environment_name, expected_profile) = match &decl.route {
                 crate::config::ToolRoute::Environment(seal) => {
                     (seal.environment.as_str(), "computer")
@@ -1166,6 +1365,7 @@ impl Brain {
                     decl.name
                 ))
             })?;
+            let environment = legacy_environment(environment)?;
             let actual_profile = match environment.profile.kind {
                 brain_protocol::session::EnvironmentProfileKind::Computer => "computer",
                 brain_protocol::session::EnvironmentProfileKind::Callbacks => "callbacks",
@@ -1360,38 +1560,44 @@ impl Brain {
         // Seal the loop identity before anything else commits, rejecting a loop this
         // composition cannot run while the request is still refusable.
         let brain_protocol::session::AgentloopConfig {
-            source_bundle_sha256,
-            toolchain,
-            bundle_base64,
+            component_digest,
+            world,
+            config,
         } = &req.agentloop;
-        use base64::Engine as _;
-        let bundle = base64::engine::general_purpose::STANDARD
-            .decode(bundle_base64.as_str())
-            .map_err(|_| {
-                BrainError::Invalid("agentloop.bundle_base64 is not valid base64".into())
-            })?;
-        if bundle.is_empty() || bundle.len() > brain_protocol::MAX_LOOP_BUNDLE_BYTES {
-            return Err(BrainError::Invalid(
-                "agentloop bundle must be between 1 byte and 8 MiB".into(),
-            ));
-        }
-        let digest = hex::encode(Sha256::digest(&bundle));
-        if digest != source_bundle_sha256.as_str() {
-            return Err(BrainError::Invalid(format!(
-                "agentloop bundle digest is {digest}, not the declared {}",
-                source_bundle_sha256.as_str()
-            )));
-        }
+        let digest = component_digest.as_str();
+        let component = component_artifacts.get(digest).ok_or_else(|| {
+            BrainError::Invalid(format!(
+                "Agentloop component {digest} has no supplied artifact"
+            ))
+        })?;
         let agentloop_selector =
             self.agentloop_registry
-                .admit_custom(&digest, toolchain.as_str(), &bundle)?;
+                .admit(digest, world.as_str(), component, config)?;
         self.agentloop_registry.resolve(&agentloop_selector)?;
+        let mut referenced_components = HashSet::from([model_digest, digest]);
+        referenced_components.extend(referenced_tool_components.iter().map(String::as_str));
+        referenced_components.extend(referenced_environment_components.iter().map(String::as_str));
+        if let Some(unused) = component_artifacts
+            .keys()
+            .find(|candidate| !referenced_components.contains(candidate.as_str()))
+        {
+            return Err(BrainError::Invalid(format!(
+                "unreferenced component artifact {unused}"
+            )));
+        }
 
         let now = crate::wall_ms();
+        let retain_until_ms = requested_retention_deadline(
+            req.retain_until.as_ref(),
+            now,
+            self.cfg.default_retention,
+            self.cfg.max_retention,
+        )?;
         let mut prefix = PrefixDoc {
             agentloop: Some(agentloop_selector),
             system_prompt: None,
             provider: provider.to_string(),
+            model_component: Some(model_selector),
             model: req.model.name.to_string(),
             base_url: Some(base_url),
             max_output_tokens: req.model.max_output_tokens.map(|n| n.get()),
@@ -1414,7 +1620,6 @@ impl Brain {
             storage_max_object_bytes: self.cfg.storage_max_object_bytes,
             storage_max_session_bytes: self.cfg.storage_max_session_bytes,
             storage_transfer_ttl_ms: self.cfg.storage_transfer_ttl.as_millis() as u64,
-            retired_additional_sandbox_limit: 0,
             network: merge_session_network(req.network.as_ref(), &decls)?,
             max_child_depth: req.children.as_ref().map_or(4, |limits| {
                 u32::try_from(limits.max_depth)
@@ -1555,6 +1760,7 @@ impl Brain {
             context: None,
             turns: 0,
             created_ms: now,
+            retain_until_ms,
             updated_ms: now,
             recovery_due_ms: None,
             recovery_attempt: 0,
@@ -1940,6 +2146,36 @@ impl Brain {
         session_doc(session_id, &doc)
     }
 
+    pub async fn suspend(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
+        let doc = self
+            .deliver(session_id, |reply| Command::Suspend { reply })
+            .await??;
+        session_doc(session_id, &doc)
+    }
+
+    pub async fn resume(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
+        let doc = self
+            .deliver(session_id, |reply| Command::Resume { reply })
+            .await??;
+        session_doc(session_id, &doc)
+    }
+
+    pub async fn update_retention(
+        self: &Arc<Self>,
+        session_id: &str,
+        retain_until_ms: u64,
+        allow_shorten: bool,
+    ) -> Result<session::Session> {
+        let doc = self
+            .deliver(session_id, |reply| Command::UpdateRetention {
+                retain_until_ms,
+                allow_shorten,
+                reply,
+            })
+            .await??;
+        session_doc(session_id, &doc)
+    }
+
     pub async fn end(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
         let doc = self
             .deliver(session_id, |reply| Command::End { reply })
@@ -2050,7 +2286,7 @@ impl Brain {
                 ))
             })?;
         self.environments
-            .resolve(declaration.extension.as_str())
+            .resolve(legacy_environment(declaration)?.extension.as_str())
             .cloned()
     }
 
@@ -3217,8 +3453,97 @@ impl Brain {
         ))
     }
 
+    pub async fn list_changes_for(
+        self: &Arc<Self>,
+        principal: &TrustedPrincipal,
+        after_ms: u64,
+        partition: u16,
+        partitions: u16,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<session::Session>, Option<String>, u64)> {
+        if partitions == 0 || partitions > 256 || partition >= partitions {
+            return Err(BrainError::Invalid(
+                "changefeed partition must be lower than a partitions value from 1 through 256"
+                    .into(),
+            ));
+        }
+        let limit = limit.clamp(1, 100);
+        let mut cursor = cursor.map(str::to_owned);
+        let mut changes = Vec::with_capacity(limit);
+        let mut watermark_ms = after_ms;
+        loop {
+            let remaining = limit - changes.len();
+            let page = self
+                .journal
+                .list_session_page(&crate::journal::SessionListQuery {
+                    tenant_id: principal.as_str(),
+                    state: None,
+                    limit: remaining,
+                    cursor: cursor.as_deref(),
+                })
+                .await?;
+            let mut reached_lower_bound = false;
+            for summary in &page.sessions {
+                if summary.updated_ms <= after_ms {
+                    reached_lower_bound = true;
+                    break;
+                }
+                if change_partition(&summary.session_id, partitions) != partition {
+                    continue;
+                }
+                watermark_ms = watermark_ms.max(summary.updated_ms);
+                changes.push(crate::session::view::session_doc_summary(summary)?);
+                if changes.len() == limit {
+                    return Ok((changes, page.next_cursor, watermark_ms));
+                }
+            }
+            if reached_lower_bound {
+                return Ok((changes, None, watermark_ms));
+            }
+            let Some(next) = page.next_cursor else {
+                return Ok((changes, None, watermark_ms));
+            };
+            cursor = Some(next);
+        }
+    }
+
     pub async fn head(&self, session_id: &str) -> Result<Head> {
         self.journal.get_head(session_id).await
+    }
+}
+
+fn change_partition(session_id: &str, partitions: u16) -> u16 {
+    use sha2::{Digest as _, Sha256};
+
+    let digest = Sha256::digest(session_id.as_bytes());
+    u16::from_be_bytes([digest[0], digest[1]]) % partitions
+}
+
+struct FactoryModelRegistry {
+    factory: ProviderFactory,
+}
+
+impl crate::provider::ModelRegistry for FactoryModelRegistry {
+    fn resolve(&self, selector: &crate::journal::ModelSelectorDoc) -> Result<Arc<dyn Provider>> {
+        Ok((self.factory)(dialect_of(&selector.provider)))
+    }
+
+    fn admit(
+        &self,
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        provider: &str,
+        config: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::journal::ModelSelectorDoc> {
+        Ok(crate::journal::ModelSelectorDoc {
+            component_digest: component_digest.into(),
+            component_bytes: component.len() as u64,
+            world: world.into(),
+            provider: provider.into(),
+            config: config.clone(),
+        })
     }
 }
 
@@ -3246,6 +3571,45 @@ impl crate::turn::EngineServices for Brain {
         Brain::prepare_managed_session(self, session_id, doc).await
     }
 
+    async fn execute_child_capability(
+        self: Arc<Self>,
+        parent_id: &str,
+        operation_id: &str,
+        input: serde_json::Value,
+        cancel: CancellationToken,
+    ) -> CallOutcome {
+        Brain::execute_child_capability(&self, parent_id, operation_id, input, cancel).await
+    }
+
+    async fn execute_tool_capability(
+        self: Arc<Self>,
+        session_id: &str,
+        environment: Option<&str>,
+        capability: &str,
+        operation_id: &str,
+        request: serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, crate::tools::ToolCapabilityFailure> {
+        self.execute_component_tool_capability(
+            session_id,
+            environment,
+            capability,
+            operation_id,
+            request,
+        )
+        .await
+        .map_err(|error| crate::tools::ToolCapabilityFailure {
+            code: match error {
+                BrainError::Invalid(_) => "invalid_request",
+                BrainError::NoSuchSession(_) => "not_found",
+                BrainError::Cancelled => "cancelled",
+                _ => "tool_capability_failed",
+            }
+            .into(),
+            message: error.to_string(),
+            retryable: false,
+        })
+    }
+
     async fn reconcile_managed_unknown_environment(
         self: Arc<Self>,
         session_id: &str,
@@ -3254,6 +3618,423 @@ impl crate::turn::EngineServices for Brain {
     ) -> Result<()> {
         reconcile_managed_unknown_environment(&self, session_id, tool_name, st).await
     }
+}
+
+impl Brain {
+    async fn execute_component_tool_capability(
+        self: &Arc<Self>,
+        session_id: &str,
+        environment: Option<&str>,
+        capability: &str,
+        operation_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let head = self.journal.get_head(session_id).await?;
+        match capability {
+            "tool.journal.read" => {
+                let after = request
+                    .get("after_seq")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let limit = request
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(32)
+                    .clamp(1, 100) as usize;
+                let page = self
+                    .journal
+                    .read_record_page(&crate::journal::RecordPageQuery {
+                        session_id,
+                        after,
+                        through_seq: head.last_seq,
+                        limit,
+                        max_bytes: crate::journal::DEFAULT_RECORD_PAGE_BYTES,
+                    })
+                    .await?;
+                let items = page
+                    .entries
+                    .into_iter()
+                    .map(|entry| {
+                        serde_json::json!({
+                            "seq": entry.seq,
+                            "ts_ms": entry.ts_ms,
+                            "record": entry.record,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(serde_json::json!({
+                    "items_json": serde_json::to_string(&items)?,
+                    "next_cursor": page.next_after.map(|cursor| cursor.to_string()),
+                }))
+            }
+            "tool.storage.list" => {
+                let prefix = request.get("prefix").and_then(serde_json::Value::as_str);
+                let cursor = request.get("cursor").and_then(serde_json::Value::as_str);
+                let limit = request
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(32) as u32;
+                let page = self.storage_list(session_id, prefix, cursor, limit).await?;
+                Ok(serde_json::json!({
+                    "items_json": serde_json::to_string(&page.objects)?,
+                    "next_cursor": page.next_cursor,
+                }))
+            }
+            "tool.storage.stat" => {
+                let key = required_tool_capability_string(&request, "key")?;
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &self.storage_stat(session_id, key).await?,
+                )?))
+            }
+            "tool.storage.read" => {
+                let key = required_tool_capability_string(&request, "key")?;
+                let offset = request
+                    .get("offset")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let length = request
+                    .get("length")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let through = offset
+                    .checked_add(length)
+                    .ok_or_else(|| BrainError::Invalid("storage read range overflows".into()))?;
+                if through > 1024 * 1024 {
+                    return Err(BrainError::Invalid(
+                        "Tool storage reads are limited to the first 1 MiB; use an Environment for larger transfers".into(),
+                    ));
+                }
+                let (_, bytes) = self.storage_read_inline(session_id, key, through).await?;
+                let start = usize::try_from(offset)
+                    .expect("1 MiB bound")
+                    .min(bytes.len());
+                let end = usize::try_from(through)
+                    .expect("1 MiB bound")
+                    .min(bytes.len());
+                Ok(serde_json::to_value(&bytes[start..end])?)
+            }
+            "tool.storage.write" => {
+                let key = required_tool_capability_string(&request, "key")?.to_owned();
+                let bytes: Vec<u8> =
+                    serde_json::from_value(request.get("bytes").cloned().ok_or_else(|| {
+                        BrainError::Invalid("storage write bytes are required".into())
+                    })?)?;
+                if bytes.len() > 1024 * 1024 {
+                    return Err(BrainError::FileTooLarge { limit: 1024 * 1024 });
+                }
+                let object = self
+                    .storage_write_inline(
+                        session_id,
+                        key,
+                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                        None,
+                        true,
+                    )
+                    .await?;
+                Ok(serde_json::Value::String(serde_json::to_string(&object)?))
+            }
+            "tool.storage.delete" => {
+                let key = required_tool_capability_string(&request, "key")?.to_owned();
+                self.storage_delete(session_id, key).await?;
+                Ok(serde_json::Value::Null)
+            }
+            capability if capability.starts_with("tool.children.") => {
+                self.execute_component_child_capability(
+                    session_id,
+                    capability,
+                    operation_id,
+                    request,
+                )
+                .await
+            }
+            capability if capability.starts_with("tool.parent.") => {
+                let parent_id =
+                    head.doc.parent_id.as_deref().ok_or_else(|| {
+                        BrainError::Invalid("the root session has no parent".into())
+                    })?;
+                self.execute_component_parent_capability(
+                    session_id,
+                    parent_id,
+                    capability,
+                    operation_id,
+                    request,
+                )
+                .await
+            }
+            "tool.environment.invoke" => {
+                let environment_id = environment.ok_or_else(|| {
+                    BrainError::Invalid("Tool Environment binding is absent".into())
+                })?;
+                let declaration = head
+                    .doc
+                    .prefix
+                    .environments
+                    .get(environment_id)
+                    .ok_or_else(|| {
+                        BrainError::Invalid(format!(
+                            "session has no environment named {environment_id:?}"
+                        ))
+                    })?;
+                let declaration = component_environment(declaration)?;
+                let registry = self
+                    .component_environment_registry
+                    .as_ref()
+                    .ok_or_else(|| {
+                        BrainError::EnvironmentUnavailable(
+                            "component Environment execution is unavailable".into(),
+                        )
+                    })?;
+                let deadline_at_ms = required_tool_capability_string(&request, "deadline_at_ms")?
+                    .parse::<u64>()
+                    .map_err(|_| BrainError::Invalid("Environment deadline is invalid".into()))?;
+                let bundle = request
+                    .get("bundle_base64")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|encoded| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(encoded)
+                            .map_err(|_| {
+                                BrainError::Invalid("Environment bundle is invalid base64".into())
+                            })
+                    })
+                    .transpose()?;
+                let result = registry
+                    .invoke(
+                        declaration,
+                        crate::environment::ComponentEnvironmentInvocation {
+                            tenant_id: head.doc.tenant_id.clone(),
+                            session_id: session_id.to_owned(),
+                            root_id: head.doc.root_id.clone(),
+                            parent_id: head.doc.parent_id.clone(),
+                            environment_id: environment_id.to_owned(),
+                            policy: serde_json::json!({
+                                "network": head.doc.prefix.network,
+                            }),
+                            operation_id: operation_id.to_owned(),
+                            descriptor_json: required_tool_capability_string(
+                                &request,
+                                "descriptor_json",
+                            )?
+                            .to_owned(),
+                            bundle,
+                            input_json: required_tool_capability_string(&request, "input_json")?
+                                .to_owned(),
+                            deadline_at_ms,
+                        },
+                    )
+                    .await?;
+                Ok(serde_json::Value::String(result))
+            }
+            _ => Err(BrainError::Invalid(format!(
+                "unknown Tool capability {capability:?}"
+            ))),
+        }
+    }
+
+    async fn execute_component_child_capability(
+        self: &Arc<Self>,
+        parent_id: &str,
+        capability: &str,
+        operation_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        match capability {
+            "tool.children.spawn" => {
+                let body = parse_tool_request_json(&request)?;
+                let prompt = required_tool_capability_string(&body, "prompt")?.to_owned();
+                let name = body
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                let fork_turns = body.get("fork_turns").and_then(serde_json::Value::as_str);
+                let child = self
+                    .create_child(
+                        parent_id,
+                        prompt,
+                        name,
+                        fork_turns.map(str::to_owned),
+                        Some(operation_id),
+                    )
+                    .await?;
+                Ok(serde_json::Value::String(serde_json::to_string(&child)?))
+            }
+            "tool.children.send" => {
+                let child_id = required_tool_capability_string(&request, "child_id")?;
+                self.get_child(parent_id, child_id).await?;
+                let body = parse_tool_request_json(&request)?;
+                let content = tool_message_content(&body)?;
+                let (turn_id, seq) = self
+                    .message_with_metadata_idempotent(
+                        child_id,
+                        content,
+                        HashMap::new(),
+                        Some(operation_id),
+                    )
+                    .await?;
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &serde_json::json!({"turn_id": turn_id, "seq": seq}),
+                )?))
+            }
+            "tool.children.inspect" => {
+                let child_id = required_tool_capability_string(&request, "child_id")?;
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &self.get_child(parent_id, child_id).await?,
+                )?))
+            }
+            "tool.children.wait" => {
+                let child_id = required_tool_capability_string(&request, "child_id")?;
+                self.get_child(parent_id, child_id).await?;
+                let timeout_ms = request
+                    .get("timeout_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(30_000)
+                    .min(300_000);
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &self
+                        .wait_child(parent_id, child_id, Duration::from_millis(timeout_ms))
+                        .await?,
+                )?))
+            }
+            "tool.children.events" => {
+                let child_id = required_tool_capability_string(&request, "child_id")?;
+                self.get_child(parent_id, child_id).await?;
+                self.component_event_page(child_id, &request).await
+            }
+            "tool.children.manage" => {
+                let child_id = required_tool_capability_string(&request, "child_id")?;
+                self.get_child(parent_id, child_id).await?;
+                let child = match required_tool_capability_string(&request, "action")? {
+                    "cancel" => self.cancel(child_id).await?,
+                    "end" => self.end(child_id).await?,
+                    action => {
+                        return Err(BrainError::Invalid(format!(
+                            "unknown child action {action:?}"
+                        )));
+                    }
+                };
+                Ok(serde_json::Value::String(serde_json::to_string(&child)?))
+            }
+            "tool.children.list" => {
+                let cursor = request.get("cursor").and_then(serde_json::Value::as_str);
+                let limit = request
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(32) as usize;
+                let (items, next_cursor) = self.list_children(parent_id, cursor, limit).await?;
+                Ok(serde_json::json!({
+                    "items_json": serde_json::to_string(&items)?,
+                    "next_cursor": next_cursor,
+                }))
+            }
+            _ => Err(BrainError::Invalid(format!(
+                "unknown child capability {capability:?}"
+            ))),
+        }
+    }
+
+    async fn execute_component_parent_capability(
+        self: &Arc<Self>,
+        session_id: &str,
+        parent_id: &str,
+        capability: &str,
+        operation_id: &str,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        match capability {
+            "tool.parent.metadata" => Ok(serde_json::Value::String(serde_json::to_string(
+                &serde_json::json!({"session_id": session_id, "parent_id": parent_id}),
+            )?)),
+            "tool.parent.inspect" => Ok(serde_json::Value::String(serde_json::to_string(
+                &self.get(parent_id).await?,
+            )?)),
+            "tool.parent.events" => self.component_event_page(parent_id, &request).await,
+            "tool.parent.send" => {
+                let body = parse_tool_request_json(&request)?;
+                let content = tool_message_content(&body)?;
+                let (turn_id, seq) = self
+                    .message_with_metadata_idempotent(
+                        parent_id,
+                        content,
+                        HashMap::new(),
+                        Some(operation_id),
+                    )
+                    .await?;
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &serde_json::json!({"turn_id": turn_id, "seq": seq}),
+                )?))
+            }
+            _ => Err(BrainError::Invalid(format!(
+                "unknown parent capability {capability:?}"
+            ))),
+        }
+    }
+
+    async fn component_event_page(
+        &self,
+        session_id: &str,
+        request: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let head = self.journal.get_head(session_id).await?;
+        let after = request
+            .get("after_seq")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let limit = request
+            .get("limit")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(32)
+            .clamp(1, 100) as usize;
+        let page = self
+            .journal
+            .read_record_page(&crate::journal::RecordPageQuery {
+                session_id,
+                after,
+                through_seq: head.last_seq,
+                limit,
+                max_bytes: crate::journal::DEFAULT_RECORD_PAGE_BYTES,
+            })
+            .await?;
+        let items = page
+            .entries
+            .into_iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "seq": entry.seq,
+                    "ts_ms": entry.ts_ms,
+                    "record": entry.record,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "items_json": serde_json::to_string(&items)?,
+            "next_cursor": page.next_after.map(|cursor| cursor.to_string()),
+        }))
+    }
+}
+
+fn required_tool_capability_string<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| BrainError::Invalid(format!("Tool capability field {key:?} is required")))
+}
+
+fn parse_tool_request_json(request: &serde_json::Value) -> Result<serde_json::Value> {
+    serde_json::from_str(required_tool_capability_string(request, "request_json")?)
+        .map_err(|error| BrainError::Invalid(format!("Tool request_json: {error}")))
+}
+
+fn tool_message_content(value: &serde_json::Value) -> Result<MessageRequestContent> {
+    let content = value
+        .as_str()
+        .or_else(|| value.get("content").and_then(serde_json::Value::as_str))
+        .ok_or_else(|| {
+            BrainError::Invalid("Tool message request must be a string or contain content".into())
+        })?;
+    Ok(MessageRequestContent::String(content.parse().map_err(
+        |error| BrainError::Invalid(format!("Tool message content: {error}")),
+    )?))
 }
 
 #[async_trait::async_trait]
@@ -3327,6 +4108,15 @@ impl crate::environment::SecretDeliveryPort for Brain {
         }
         Ok(crate::environment::SecretMaterial::new(values))
     }
+}
+
+fn required_child_string(input: &serde_json::Value, field: &str) -> Result<String> {
+    input
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| BrainError::Invalid(format!("subagents.{field} is required")))
 }
 
 fn sandbox_file_effect_id(session_id: &str, key: &str, action: &str) -> Result<String> {
@@ -3819,58 +4609,10 @@ async fn actor(
     let mut resident: Option<Resident> = None;
     let mut running: Option<Running> = None;
     if startup != ActorStartup::Lazy {
-        match hydrate(&brain, &session_id).await {
-            Ok(r) => {
-                if r.st.head.state == SessionLifecycle::Deleting {
-                    resident = Some(r);
-                    if let Err(error) = delete_session(&brain, &session_id, &mut resident).await {
-                        tracing::warn!(session = %session_id, error = %error, "background session deletion will retry");
-                    }
-                    return;
-                } else if r.st.head.state == SessionLifecycle::Ending {
-                    resident = Some(r);
-                    match continue_end_session(&brain, &session_id, &mut resident).await {
-                        Ok(true) => {
-                            // End is complete and quiescent. Keep serving if the narrow lease
-                            // release transiently fails; the ordinary idle path retries it.
-                            if try_discard_resident(&brain, &session_id, &mut resident).await {
-                                return;
-                            }
-                        }
-                        Ok(false) => {
-                            if brain.journal.defer_recovery(&session_id).await.is_ok() {
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            tracing::warn!(session = %session_id, error = %error, "background session end will retry");
-                            if brain.journal.defer_recovery(&session_id).await.is_ok() {
-                                return;
-                            }
-                        }
-                    }
-                } else {
-                    // Create may stage/prepare immutable code, but neither create nor background
-                    // recovery materializes a target. Only the first managed operation or explicit
-                    // environment materialization crosses that boundary.
-                    resident = Some(r);
-                }
-            }
-            Err(e) => {
-                if !matches!(&e, BrainError::Fenced) {
-                    tracing::warn!(session = %session_id, error = %e, "eager hydrate failed; durable recovery remains due");
-                    if let Err(backoff_error) = brain.journal.defer_recovery(&session_id).await
-                        && !matches!(&backoff_error, BrainError::Fenced)
-                    {
-                        tracing::warn!(session = %session_id, error = %backoff_error, "could not persist recovery backoff");
-                    }
-                }
-                // Do not leave a dead actor resident after a failed background claim/hydrate.
-                // Its inbox closes, the supervisor removes it, and the unchanged due key is
-                // retried after the prior lease expires.
-                return;
-            }
-        }
+        let Some(recovered) = Box::pin(recover_actor_startup(&brain, &session_id)).await else {
+            return;
+        };
+        resident = Some(recovered);
     }
 
     loop {
@@ -3967,12 +4709,17 @@ async fn actor(
                                 let root_secrets = parked._root_secrets.clone();
                                 let heartbeat_lease = parked.st.lease.clone();
                                 let message_replays = std::mem::take(&mut parked.message_replays);
+                                let turn_span = tracing::info_span!(
+                                    "brain.turn",
+                                    session.id = %session_id,
+                                    turn.id = %turn_id
+                                );
                                 let handle = tokio::spawn(async move {
                                     let _permit = permit; // held for the whole turn (admission)
                                     let mut st = parked.st;
                                     let out = run.run(&mut st).await;
                                     (st, RunningOutcome::Turn { turn_id: turn_id.clone(), outcome: out })
-                                });
+                                }.instrument(turn_span));
                                 running = Some(Running {
                                     handle,
                                     cancel: cancel.clone(),
@@ -4013,6 +4760,30 @@ async fn actor(
                             },
                         };
                         let _ = reply.send(Ok(doc));
+                    }
+                    Command::Suspend { reply } => {
+                        if running.is_some() {
+                            let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
+                            continue;
+                        }
+                        let result =
+                            Box::pin(suspend_session(&brain, &session_id, &mut resident)).await;
+                        let failed = result.is_err();
+                        let _ = reply.send(result);
+                        if failed
+                            && brain.journal.defer_recovery(&session_id).await.is_ok()
+                        {
+                            break;
+                        }
+                    }
+                    Command::Resume { reply } => {
+                        if running.is_some() {
+                            let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
+                            continue;
+                        }
+                        let result =
+                            Box::pin(resume_session(&brain, &session_id, &mut resident)).await;
+                        let _ = reply.send(result);
                     }
                     Command::End { reply } => {
                         match begin_end_session(&brain, &session_id, &mut resident).await {
@@ -4216,6 +4987,22 @@ async fn actor(
                         }
                         break; // complete or durable state=deleting; recovery owns any retry
                     }
+                    Command::UpdateRetention { retain_until_ms, allow_shorten, reply } => {
+                        if running.is_some() {
+                            let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
+                            continue;
+                        }
+                        let out = Box::pin(update_session_retention(
+                            &brain,
+                            &session_id,
+                            &mut resident,
+                            retain_until_ms,
+                            allow_shorten,
+                        ))
+                        .await;
+                        discard_if_fenced(&out, &mut resident);
+                        let _ = reply.send(out);
+                    }
                     Command::PrepareStorageUpload { request, reply } => {
                         if running.is_some() {
                             let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
@@ -4325,6 +5112,19 @@ async fn actor(
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
+            _ = sleep_until_retention_expiry(&resident), if resident.is_some() => {
+                if let Err(error) = Box::pin(expire_session(
+                    &brain,
+                    &session_id,
+                    &mut running,
+                    &mut resident,
+                ))
+                .await
+                {
+                    tracing::warn!(session = %session_id, error = %error, "expired session deletion will retry");
+                }
+                break;
+            }
             _ = brain.resident_pressure.notified(), if running.is_none() && can_discard_under_pressure(&resident) => {
                 // Cooperative pressure eviction: only the actor itself decides it is safe to
                 // release. Close after the lease release succeeds; commands already buffered
@@ -4352,6 +5152,71 @@ async fn actor(
         }
     }
     tracing::debug!(session = %session_id, "actor exited");
+}
+
+async fn recover_actor_startup(brain: &Arc<Brain>, session_id: &str) -> Option<Resident> {
+    let r = match hydrate(brain, session_id).await {
+        Ok(r) => r,
+        Err(error) => {
+            if !matches!(&error, BrainError::Fenced) {
+                tracing::warn!(session = %session_id, error = %error, "eager hydrate failed; durable recovery remains due");
+                if let Err(backoff_error) = brain.journal.defer_recovery(session_id).await
+                    && !matches!(&backoff_error, BrainError::Fenced)
+                {
+                    tracing::warn!(session = %session_id, error = %backoff_error, "could not persist recovery backoff");
+                }
+            }
+            return None;
+        }
+    };
+    let mut resident = Some(r);
+    let head = &resident.as_ref().expect("hydrated").st.head;
+    if head.retain_until_ms <= crate::wall_ms() || head.state == SessionLifecycle::Deleting {
+        let expired = head.retain_until_ms <= crate::wall_ms();
+        if let Err(error) =
+            delete_on_fresh_task(brain.clone(), session_id.to_owned(), resident.take()).await
+        {
+            let operation = if expired { "expired" } else { "background" };
+            tracing::warn!(session = %session_id, error = %error, operation, "session deletion will retry");
+        }
+        return None;
+    }
+    if head.state == SessionLifecycle::Suspending {
+        match Box::pin(continue_suspend_session(brain, session_id, &mut resident)).await {
+            Ok(()) => {
+                if try_discard_resident(brain, session_id, &mut resident).await {
+                    return None;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(session = %session_id, error = %error, "background session suspension will retry");
+                if brain.journal.defer_recovery(session_id).await.is_ok() {
+                    return None;
+                }
+            }
+        }
+    } else if head.state == SessionLifecycle::Ending {
+        match continue_end_session(brain, session_id, &mut resident).await {
+            Ok(true) => {
+                if try_discard_resident(brain, session_id, &mut resident).await {
+                    return None;
+                }
+            }
+            Ok(false) => {
+                if brain.journal.defer_recovery(session_id).await.is_ok() {
+                    return None;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(session = %session_id, error = %error, "background session end will retry");
+                if brain.journal.defer_recovery(session_id).await.is_ok() {
+                    return None;
+                }
+            }
+        }
+    }
+    // Create may stage immutable code, but recovery never materializes Environment capacity.
+    resident
 }
 
 async fn settle_running(
@@ -4433,6 +5298,42 @@ async fn settle_running(
             }
         }
     }
+}
+
+async fn expire_session(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    running: &mut Option<Running>,
+    resident: &mut Option<Resident>,
+) -> Result<()> {
+    if let Some(task) = running.take() {
+        task.cancel.cancel();
+        let key = task.key;
+        let managed_bindings = task.managed_bindings;
+        let root_secrets = task.root_secrets;
+        let message_replays = task.message_replays;
+        *resident = settle_running(
+            brain,
+            session_id,
+            key,
+            managed_bindings,
+            root_secrets,
+            message_replays,
+            task.handle.await,
+        )
+        .await;
+    }
+    delete_on_fresh_task(brain.clone(), session_id.to_owned(), resident.take()).await
+}
+
+async fn delete_on_fresh_task(
+    brain: Arc<Brain>,
+    session_id: String,
+    mut resident: Option<Resident>,
+) -> Result<()> {
+    tokio::spawn(async move { delete_session(&brain, &session_id, &mut resident).await })
+        .await
+        .map_err(|error| BrainError::Journal(format!("session deletion task failed: {error}")))?
 }
 
 async fn ensure_resident<'a>(
@@ -5141,7 +6042,7 @@ async fn materialize_environment_resident(
             "environment materialization must be driven by the root actor".into(),
         ));
     }
-    if r.st.head.ended || matches!(r.st.head.state.as_str(), "ending" | "ended" | "deleting") {
+    if r.st.head.ended || r.st.head.state != SessionLifecycle::Open {
         return Err(BrainError::SessionDeleted(session_id.to_owned()));
     }
     let declaration =
@@ -5154,6 +6055,7 @@ async fn materialize_environment_resident(
                     "session has no environment named {environment_name:?}"
                 ))
             })?;
+    let declaration = legacy_environment(declaration)?;
     if declaration.profile.kind != brain_protocol::session::EnvironmentProfileKind::Computer {
         return Err(BrainError::Invalid(format!(
             "environment {environment_name:?} is not a computer environment"
@@ -5363,6 +6265,14 @@ async fn admit(
                 .unwrap_or_default(),
         ));
     }
+    if r.st.head.state != SessionLifecycle::Open {
+        return Err(match r.st.head.state {
+            SessionLifecycle::Suspending | SessionLifecycle::Suspended => BrainError::Invalid(
+                "session is suspended; resume it before sending a message".into(),
+            ),
+            _ => BrainError::SessionDeleted(session_id.to_owned()),
+        });
+    }
     let turn_id = crate::mint_id("trn", 24);
     let user_seq = r.st.take_seq();
     let started_seq = r.st.take_seq();
@@ -5448,7 +6358,7 @@ fn turn_run(
     cancel: CancellationToken,
     message: Option<crate::turn::AdmittedMessage>,
 ) -> Result<TurnRun> {
-    let (prefix, dialect) = build_prefix(&r.st.head.prefix, brain.cfg.default_max_rounds)?;
+    let (prefix, _) = build_prefix(&r.st.head.prefix, brain.cfg.default_max_rounds)?;
     let base_url = r.st.head.prefix.base_url.clone().unwrap_or_default();
     let session = SessionConfig::new(prefix.clone(), r.key.clone(), base_url);
     Ok(TurnRun {
@@ -5468,7 +6378,11 @@ fn turn_run(
         turn_id: turn_id.to_string(),
         prefix,
         session,
-        provider: (brain.provider_factory)(dialect),
+        provider: brain.model_registry.resolve(
+            r.st.head.prefix.model_component.as_ref().ok_or_else(|| {
+                BrainError::Journal("session has no sealed Model component".into())
+            })?,
+        )?,
         provider_name: r.st.head.prefix.provider.clone(),
         journal: brain.journal.clone(),
         hub: brain.hub.clone(),
@@ -5484,6 +6398,7 @@ fn turn_run(
         provider_total_timeout: brain.cfg.provider_total_timeout,
         compactor: brain.compactor.clone(),
         external_executor: brain.external_executor.clone(),
+        tool_registry: brain.tool_registry.clone(),
         managed_bindings: r.managed_bindings.clone(),
         customer: brain.customer.clone(),
         tenant_id: r.st.head.tenant_id.clone(),
@@ -5661,6 +6576,7 @@ async fn create_child_session(
         context: None,
         turns: 1,
         created_ms: now,
+        retain_until_ms: parent.doc.retain_until_ms,
         updated_ms: now,
         recovery_due_ms: None,
         recovery_attempt: 0,
@@ -6134,7 +7050,7 @@ async fn continue_end_session(
     // Root environments belong to the whole tree. Ending a child never releases state shared
     // with its parent or siblings.
     if r.st.head.root_id == session_id {
-        dematerialize_environments_for_end(brain, session_id, r).await?;
+        release_live_environments(brain, session_id, r).await?;
     }
     r.st.head.state = SessionLifecycle::Ended;
     r.st.head.active_phase = None;
@@ -6149,7 +7065,7 @@ async fn continue_end_session(
     Ok(true)
 }
 
-async fn dematerialize_environments_for_end(
+async fn release_live_environments(
     brain: &Arc<Brain>,
     session_id: &str,
     resident: &mut Resident,
@@ -6213,6 +7129,281 @@ async fn dematerialize_environments_for_end(
             )],
         )
         .await?;
+    }
+    release_component_environments(brain, session_id, &resident.st.head).await?;
+    Ok(())
+}
+
+async fn suspend_session(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+) -> Result<HeadDoc> {
+    let r = ensure_resident(brain, session_id, resident).await?;
+    if r.st.head.root_id != session_id {
+        return Err(BrainError::Invalid(
+            "only a root session can suspend its shared Environment tree".into(),
+        ));
+    }
+    match r.st.head.state {
+        SessionLifecycle::Suspended => return Ok(r.st.head.clone()),
+        SessionLifecycle::Open => {
+            if r.st.head.turn.is_some() || r.st.head.active_phase.is_some() {
+                return Err(BrainError::TurnInFlight(session_id.to_owned()));
+            }
+            if Box::pin(tree_has_active_turn(brain, session_id)).await? {
+                return Err(BrainError::TurnInFlight(session_id.to_owned()));
+            }
+            r.st.head.state = SessionLifecycle::Suspending;
+            let seq = r.st.take_seq();
+            commit(
+                brain,
+                session_id,
+                &mut r.st,
+                vec![(
+                    seq,
+                    Record::State {
+                        state: SessionLifecycle::Suspending,
+                        turn: None,
+                    },
+                )],
+            )
+            .await?;
+            if Box::pin(tree_has_active_turn(brain, session_id)).await? {
+                r.st.head.state = SessionLifecycle::Open;
+                let seq = r.st.take_seq();
+                commit(
+                    brain,
+                    session_id,
+                    &mut r.st,
+                    vec![(
+                        seq,
+                        Record::State {
+                            state: SessionLifecycle::Open,
+                            turn: None,
+                        },
+                    )],
+                )
+                .await?;
+                return Err(BrainError::TurnInFlight(session_id.to_owned()));
+            }
+        }
+        SessionLifecycle::Suspending => {}
+        SessionLifecycle::Failed => {
+            return Err(BrainError::SessionFailed(
+                r.st.head
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.message.clone())
+                    .unwrap_or_default(),
+            ));
+        }
+        _ => return Err(BrainError::SessionDeleted(session_id.to_owned())),
+    }
+    continue_suspend_session(brain, session_id, resident).await?;
+    Ok(ensure_resident(brain, session_id, resident)
+        .await?
+        .st
+        .head
+        .clone())
+}
+
+async fn tree_has_active_turn(brain: &Arc<Brain>, root_id: &str) -> Result<bool> {
+    let mut parents = vec![root_id.to_owned()];
+    while let Some(parent_id) = parents.pop() {
+        let mut cursor = None;
+        loop {
+            let page = brain
+                .journal
+                .list_child_page(&crate::journal::ChildListQuery {
+                    parent_id: &parent_id,
+                    limit: 100,
+                    cursor: cursor.as_deref(),
+                })
+                .await?;
+            for child in page.sessions {
+                let head = brain.journal.get_head(&child.session_id).await?;
+                if head.doc.turn.is_some() || head.doc.active_phase.is_some() {
+                    return Ok(true);
+                }
+                parents.push(child.session_id);
+            }
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            cursor = Some(next);
+        }
+    }
+    Ok(false)
+}
+
+async fn continue_suspend_session(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+) -> Result<()> {
+    let r = ensure_resident(brain, session_id, resident).await?;
+    if r.st.head.state == SessionLifecycle::Suspended {
+        return Ok(());
+    }
+    if r.st.head.state != SessionLifecycle::Suspending {
+        return Err(BrainError::Invalid(
+            "session is not awaiting suspension".into(),
+        ));
+    }
+    if Box::pin(tree_has_active_turn(brain, session_id)).await? {
+        return Err(BrainError::TurnInFlight(session_id.to_owned()));
+    }
+    release_live_environments(brain, session_id, r).await?;
+    r.st.head.state = SessionLifecycle::Suspended;
+    let seq = r.st.take_seq();
+    commit(
+        brain,
+        session_id,
+        &mut r.st,
+        vec![(
+            seq,
+            Record::State {
+                state: SessionLifecycle::Suspended,
+                turn: None,
+            },
+        )],
+    )
+    .await
+}
+
+async fn resume_session(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+) -> Result<HeadDoc> {
+    let r = ensure_resident(brain, session_id, resident).await?;
+    if r.st.head.root_id != session_id {
+        return Err(BrainError::Invalid(
+            "only a root session can resume its shared Environment tree".into(),
+        ));
+    }
+    match r.st.head.state {
+        SessionLifecycle::Open => return Ok(r.st.head.clone()),
+        SessionLifecycle::Suspended => {}
+        SessionLifecycle::Suspending => {
+            return Err(BrainError::Invalid(
+                "session suspension has not completed".into(),
+            ));
+        }
+        SessionLifecycle::Failed => {
+            return Err(BrainError::SessionFailed(
+                r.st.head
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.message.clone())
+                    .unwrap_or_default(),
+            ));
+        }
+        _ => return Err(BrainError::SessionDeleted(session_id.to_owned())),
+    }
+    r.st.head.state = SessionLifecycle::Open;
+    let seq = r.st.take_seq();
+    commit(
+        brain,
+        session_id,
+        &mut r.st,
+        vec![(
+            seq,
+            Record::State {
+                state: SessionLifecycle::Open,
+                turn: None,
+            },
+        )],
+    )
+    .await?;
+    Ok(r.st.head.clone())
+}
+
+async fn update_session_retention(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+    retain_until_ms: u64,
+    allow_shorten: bool,
+) -> Result<HeadDoc> {
+    let now_ms = crate::wall_ms();
+    let maximum = now_ms.saturating_add(brain.cfg.max_retention.as_millis() as u64);
+    if retain_until_ms > maximum {
+        return Err(BrainError::Invalid(
+            "retain_until exceeds the deployment retention maximum".into(),
+        ));
+    }
+    let r = ensure_resident(brain, session_id, resident).await?;
+    if matches!(
+        r.st.head.state,
+        SessionLifecycle::Deleting | SessionLifecycle::Deleted
+    ) || r.st.head.retain_until_ms <= now_ms
+    {
+        return Err(BrainError::SessionDeleted(session_id.to_owned()));
+    }
+    if retain_until_ms == r.st.head.retain_until_ms {
+        return Ok(r.st.head.clone());
+    }
+    if retain_until_ms < r.st.head.retain_until_ms && !allow_shorten {
+        return Err(BrainError::Invalid(
+            "allow_shorten must be true when moving retain_until earlier".into(),
+        ));
+    }
+    r.st.head.retain_until_ms = retain_until_ms;
+    let state = r.st.head.state;
+    let turn = r.st.head.turn.clone();
+    let seq = r.st.take_seq();
+    commit(
+        brain,
+        session_id,
+        &mut r.st,
+        vec![(seq, Record::State { state, turn })],
+    )
+    .await?;
+    Ok(r.st.head.clone())
+}
+
+async fn release_component_environments(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    head: &HeadDoc,
+) -> Result<()> {
+    let declarations = head
+        .prefix
+        .environments
+        .iter()
+        .filter_map(|(environment_id, declaration)| {
+            component_environment(declaration)
+                .ok()
+                .map(|declaration| (environment_id.clone(), declaration.clone()))
+        })
+        .collect::<Vec<_>>();
+    if declarations.is_empty() {
+        return Ok(());
+    }
+    let registry = brain
+        .component_environment_registry
+        .as_ref()
+        .ok_or_else(|| {
+            BrainError::EnvironmentUnavailable(
+                "component Environment release is unavailable".into(),
+            )
+        })?;
+    for (environment_id, declaration) in declarations {
+        registry
+            .release(
+                &declaration,
+                crate::environment::ComponentEnvironmentRelease {
+                    tenant_id: head.tenant_id.clone(),
+                    session_id: session_id.to_owned(),
+                    root_id: head.root_id.clone(),
+                    parent_id: head.parent_id.clone(),
+                    environment_id,
+                    policy: serde_json::json!({ "network": head.prefix.network }),
+                },
+            )
+            .await?;
     }
     Ok(())
 }
@@ -6375,11 +7566,13 @@ async fn continue_delete_session(
     // Every cleanup operation is idempotent. Any error leaves HEAD+CONFIG and its recovery-due
     // projection intact, so the background worker can retry without customer traffic.
     if r.st.head.root_id == session_id {
+        release_component_environments(brain, session_id, &r.st.head).await?;
         let extensions =
             r.st.head
                 .prefix
                 .environments
                 .values()
+                .filter_map(|environment| legacy_environment(environment).ok())
                 .filter(|environment| {
                     environment.profile.kind
                         == brain_protocol::session::EnvironmentProfileKind::Computer
@@ -6502,6 +7695,17 @@ async fn sleep_until_storage_expiry(resident: &Option<Resident>) {
         .unwrap_or_else(|| crate::wall_ms().saturating_add(60_000));
     tokio::time::sleep(std::time::Duration::from_millis(
         expires_at_ms.saturating_sub(crate::wall_ms()),
+    ))
+    .await;
+}
+
+async fn sleep_until_retention_expiry(resident: &Option<Resident>) {
+    let retain_until_ms = resident.as_ref().map_or_else(
+        || crate::wall_ms().saturating_add(60_000),
+        |resident| resident.st.head.retain_until_ms,
+    );
+    tokio::time::sleep(Duration::from_millis(
+        retain_until_ms.saturating_sub(crate::wall_ms()),
     ))
     .await;
 }
@@ -6954,17 +8158,6 @@ pub(crate) async fn write_storage_inline_state(
 // ---------------------------------------------------------------------------------------------
 // Mapping helpers
 // ---------------------------------------------------------------------------------------------
-
-/// Explicit Chat-Completions compatibility profile. OpenAI and generic compatible endpoints
-/// opt into the current OpenAI field; the named legacy-compatible providers retain the field
-/// their published Chat APIs specify. This choice is sealed into the request digest.
-fn output_token_parameter(provider: &str) -> OutputTokenParameter {
-    match provider {
-        "deepseek" | "moonshot" | "xai" | "anthropic" => OutputTokenParameter::MaxTokens,
-        "openai" | "openai_compatible" => OutputTokenParameter::MaxCompletionTokens,
-        _ => OutputTokenParameter::MaxCompletionTokens,
-    }
-}
 
 fn default_system_prompt() -> String {
     "You are an autonomous engineering agent running in an isolated Linux workspace \

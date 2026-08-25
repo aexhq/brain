@@ -1595,6 +1595,7 @@ mod tests {
             context: None,
             turns: 0,
             created_ms: 1,
+            retain_until_ms: 1_000_000,
             updated_ms: 1,
             recovery_due_ms: None,
             recovery_attempt: 0,
@@ -1603,6 +1604,7 @@ mod tests {
             last_message_ms: None,
             ended: false,
             prefix: PrefixDoc {
+                model_component: None,
                 agentloop: None,
                 system_prompt: Some("test".into()),
                 provider: "openai".into(),
@@ -1620,7 +1622,6 @@ mod tests {
                 storage_max_object_bytes: brain::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
                 storage_max_session_bytes: brain::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
                 storage_transfer_ttl_ms: brain::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
-                retired_additional_sandbox_limit: 0,
                 max_child_depth: 4,
                 max_direct_children: 32,
                 max_descendants: 256,

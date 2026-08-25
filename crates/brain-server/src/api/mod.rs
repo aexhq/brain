@@ -12,7 +12,7 @@
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, MatchedPath, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseFrame, KeepAlive, Sse};
@@ -26,7 +26,7 @@ use brain::session::{Brain, TrustedPrincipal};
 use brain::{BrainError, mint_id};
 use brain_protocol::session::{
     self, ApiError, ApiErrorCode, ApiErrorResponse, CreateSessionRequest, MessageAccepted,
-    MessageRequest, MessageRequestContent, SessionList,
+    MessageRequest, MessageRequestContent, RetentionUpdate, SessionList,
 };
 use futures_util::stream::Stream;
 use futures_util::{SinkExt, StreamExt};
@@ -34,6 +34,8 @@ use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::time::Instant;
+use tracing::Instrument as _;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -74,6 +76,7 @@ pub fn router(state: AppState) -> Router {
         ));
     let operator = Router::new()
         .route("/v1/sessions", get(list_sessions))
+        .route("/v1/session-changes", get(list_session_changes))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/deletion", get(get_deletion_status))
         .route(
@@ -84,6 +87,13 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/sessions/{id}/events", get(stream_events))
         .route("/v1/sessions/{id}/cancel", post(cancel_turn))
+        .route("/v1/sessions/{id}/suspend", post(suspend_session))
+        .route("/v1/sessions/{id}/resume", post(resume_session))
+        .route(
+            "/v1/sessions/{id}/retention",
+            post(update_session_retention)
+                .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
+        )
         .route("/v1/sessions/{id}/end", post(end_session))
         .route(
             "/v1/sessions/{id}/environments/{environment}",
@@ -218,6 +228,11 @@ pub fn router(state: AppState) -> Router {
                 brain_protocol::MAX_CUSTOMER_WS_FRAME_BYTES,
             )),
         )
+        .route(
+            "/internal/v1/customer-environment/dispatch",
+            post(customer_environment_dispatch)
+                .layer(DefaultBodyLimit::max(INLINE_FILE_BODY_LIMIT_BYTES)),
+        )
         .merge(create)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -256,7 +271,51 @@ pub fn router(state: AppState) -> Router {
         .merge(operator)
         .merge(public_observation)
         .merge(internal_observation)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            observe_request,
+        ))
         .with_state(state)
+}
+
+async fn observe_request(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let method = request.method().to_string();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or("unmatched", MatchedPath::as_str)
+        .to_owned();
+    let trace_context = ["traceparent", "tracestate"]
+        .into_iter()
+        .filter_map(|name| {
+            request
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| (name.to_owned(), value.to_owned()))
+        })
+        .collect();
+    let span = tracing::info_span!(
+        "brain.http.request",
+        http.request.method = %method,
+        http.route = %route,
+        http.response.status_code = tracing::field::Empty,
+        tenant.id = tracing::field::Empty,
+        session.id = tracing::field::Empty
+    );
+    brain_observability::set_parent_from_trace(&span, &trace_context);
+    let started = Instant::now();
+    let response = next.run(request).instrument(span.clone()).await;
+    let status = response.status().as_u16();
+    span.record("http.response.status_code", status);
+    brain_observability::record_http_request(
+        &method,
+        &route,
+        status,
+        started.elapsed(),
+        state.brain.active_turns(),
+    );
+    response
 }
 
 pub async fn serve(state: AppState, addr: std::net::SocketAddr) -> anyhow::Result<()> {
@@ -346,7 +405,9 @@ fn auth(state: &AppState, headers: &HeaderMap) -> Result<TrustedPrincipal, Failu
             }
             (None, Tenancy::Implicit(tenant)) => tenant.as_str(),
         };
-        TrustedPrincipal::new(tenant_id).map_err(map_err)
+        let principal = TrustedPrincipal::new(tenant_id).map_err(map_err)?;
+        tracing::Span::current().record("tenant.id", principal.as_str());
+        Ok(principal)
     } else {
         Err(Failure(
             StatusCode::UNAUTHORIZED,
@@ -374,6 +435,7 @@ async fn authorize_session(
     session_id: &str,
 ) -> Result<TrustedPrincipal, Failure> {
     let principal = auth(state, headers)?;
+    tracing::Span::current().record("session.id", session_id);
     state
         .brain
         .authorize(&principal, session_id)

@@ -318,6 +318,7 @@ fn head_doc_round_trips() {
         context: None,
         turns: 0,
         created_ms: 1,
+        retain_until_ms: 1_000_000,
         updated_ms: 2,
         recovery_due_ms: None,
         recovery_attempt: 0,
@@ -326,6 +327,7 @@ fn head_doc_round_trips() {
         last_message_ms: None,
         ended: false,
         prefix: PrefixDoc {
+            model_component: None,
             agentloop: None,
             system_prompt: Some("sp".into()),
             provider: "anthropic".into(),
@@ -343,7 +345,6 @@ fn head_doc_round_trips() {
             storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
             storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
             storage_transfer_ttl_ms: crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
-            retired_additional_sandbox_limit: 0,
             max_child_depth: 4,
             max_direct_children: 32,
             max_descendants: 256,
@@ -379,21 +380,6 @@ fn head_doc_round_trips() {
     let back: HeadDoc = serde_json::from_str(&s).unwrap();
     assert_eq!(back.prefix.model, "claude");
     assert_eq!(back.state, SessionLifecycle::Open);
-
-    let mut retired = serde_json::to_value(&doc).unwrap();
-    retired["prefix"]["max_additional_sandboxes_per_root"] = serde_json::json!(2);
-    let recovered: HeadDoc = serde_json::from_value(retired.clone()).unwrap();
-    assert_eq!(recovered.prefix.retired_additional_sandbox_limit, 2);
-    assert!(
-        serde_json::to_value(recovered).unwrap()["prefix"]
-            .get("max_additional_sandboxes_per_root")
-            .is_none()
-    );
-    let mut invalid_type = retired.clone();
-    invalid_type["prefix"]["max_additional_sandboxes_per_root"] = serde_json::Value::Null;
-    assert!(serde_json::from_value::<HeadDoc>(invalid_type).is_err());
-    retired["prefix"]["unrecognized_limit"] = serde_json::json!(2);
-    assert!(serde_json::from_value::<HeadDoc>(retired).is_err());
 }
 
 fn head_doc() -> HeadDoc {
@@ -419,6 +405,7 @@ fn head_doc() -> HeadDoc {
         context: None,
         turns: 0,
         created_ms: 1,
+        retain_until_ms: 1_000_000,
         updated_ms: 1,
         recovery_due_ms: None,
         recovery_attempt: 0,
@@ -427,6 +414,7 @@ fn head_doc() -> HeadDoc {
         last_message_ms: None,
         ended: false,
         prefix: PrefixDoc {
+            model_component: None,
             agentloop: None,
             system_prompt: None,
             provider: "anthropic".into(),
@@ -444,7 +432,6 @@ fn head_doc() -> HeadDoc {
             storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
             storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
             storage_transfer_ttl_ms: crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
-            retired_additional_sandbox_limit: 0,
             max_child_depth: 4,
             max_direct_children: 32,
             max_descendants: 256,
@@ -873,8 +860,8 @@ async fn lease_renewal_preserves_scheduled_upload_expiry_and_idle_due_absence() 
             .unwrap()
             .doc
             .recovery_due_ms,
-        None,
-        "quiescent lease renewal must not create recovery work"
+        Some(1_000_000),
+        "quiescent lease renewal must preserve the finite retention deadline"
     );
 }
 
@@ -900,7 +887,7 @@ fn unacknowledged_customer_terminal_keeps_a_quiescent_session_recoverable() {
         acknowledged
             .with_recovery_projection(200_000)
             .recovery_due_ms,
-        None
+        Some(1_000_000)
     );
 }
 
@@ -919,8 +906,8 @@ fn accepted_end_remains_due_until_the_subtree_reaches_ended() {
     ended.state = SessionLifecycle::Ended;
     assert_eq!(
         ended.with_recovery_projection(200_000).recovery_due_ms,
-        None,
-        "a fully converged end must leave no recovery anchor"
+        Some(1_000_000),
+        "a fully converged end remains scheduled for finite retention cleanup"
     );
 }
 
@@ -957,7 +944,7 @@ async fn successful_quiescent_commit_returns_the_canonical_cleared_projection() 
         .commit("ses_projection", &mut lease, &[], &doc, head.last_seq)
         .await
         .unwrap();
-    assert_eq!(persisted.recovery_due_ms, None);
+    assert_eq!(persisted.recovery_due_ms, Some(1_000_000));
     journal
         .renew("ses_projection", &lease, false)
         .await
@@ -969,8 +956,8 @@ async fn successful_quiescent_commit_returns_the_canonical_cleared_projection() 
             .unwrap()
             .doc
             .recovery_due_ms,
-        None,
-        "a later heartbeat cannot resurrect the completed recovery row"
+        Some(1_000_000),
+        "a later heartbeat preserves the finite retention deadline"
     );
 }
 
@@ -2333,6 +2320,8 @@ fn enum_string_encodings_agree() {
     }
     check!(
         SessionLifecycle::Open,
+        SessionLifecycle::Suspending,
+        SessionLifecycle::Suspended,
         SessionLifecycle::Ending,
         SessionLifecycle::Ended,
         SessionLifecycle::Deleting,

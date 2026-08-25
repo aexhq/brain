@@ -307,13 +307,30 @@ fn credential_debug_is_redacted_without_changing_wire_serialization() {
     const CAPABILITY_SECRET: &str = "secret-capability-sentinel";
 
     let create_value = serde_json::json!({
-        "model": {"provider": "openai", "name": "test-model", "api_key": API_SECRET},
+        "model": {
+            "provider": "openai",
+            "name": "test-model",
+            "api_key": API_SECRET,
+            "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+            "world": "aex:model/model@1.0.0",
+        },
         "secrets": {"TOKEN": ENV_SECRET},
         "agentloop": {
-            "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-            "toolchain": "loop-toolchain-1",
-            "bundle_base64": "eA==",
+            "component_digest": "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa",
+            "world": "aex:agentloop/agentloop@1.0.0",
         },
+        "component_artifacts": [
+            {
+                "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                "component_base64": "eA==",
+                "bytes": 1,
+            },
+            {
+                "component_digest": "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa",
+                "component_base64": "eQ==",
+                "bytes": 1,
+            },
+        ],
     });
     let create: session::CreateSessionRequest =
         serde_json::from_value(create_value.clone()).unwrap();

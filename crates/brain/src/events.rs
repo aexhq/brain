@@ -66,14 +66,8 @@ pub fn tool_outcome(o: brain_protocol::environment::TerminalOutcome) -> ToolOutc
 }
 
 fn provider_of(s: &str) -> session::Provider {
-    match s {
-        "openai" => session::Provider::Openai,
-        "anthropic" => session::Provider::Anthropic,
-        "deepseek" => session::Provider::Deepseek,
-        "moonshot" => session::Provider::Moonshot,
-        "xai" => session::Provider::Xai,
-        _ => session::Provider::OpenaiCompatible,
-    }
+    s.parse()
+        .expect("sealed provider provenance satisfies the public contract")
 }
 
 pub fn usage_of(u: &crate::message::Usage) -> ProviderUsage {
@@ -351,6 +345,8 @@ pub fn session_state(s: crate::journal::SessionLifecycle) -> session::SessionSta
     use crate::journal::SessionLifecycle;
     match s {
         SessionLifecycle::Open => session::SessionState::Open,
+        SessionLifecycle::Suspending => session::SessionState::Suspending,
+        SessionLifecycle::Suspended => session::SessionState::Suspended,
         SessionLifecycle::Ending => session::SessionState::Ending,
         SessionLifecycle::Ended => session::SessionState::Ended,
         SessionLifecycle::Deleting => session::SessionState::Deleting,

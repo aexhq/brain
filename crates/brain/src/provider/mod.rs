@@ -20,6 +20,7 @@ use crate::config::{Dialect, ProviderKey, SealedPrefix};
 use crate::message::{ContentBlock, Message, StopReason, Usage};
 use crate::{BrainError, Result};
 use futures_util::stream::BoxStream;
+use serde_json::Value;
 
 /// The bytes that would go on the wire, fully formed. Building one requires no
 /// network, no credentials validation and no provider round trip.
@@ -108,6 +109,28 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
     ) -> Result<ModelRequest>;
 
     async fn stream(&self, req: ModelRequest) -> Result<BoxStream<'static, Result<ProviderEvent>>>;
+}
+
+/// Maps a session's sealed Model selector to the component-backed provider implementation.
+pub trait ModelRegistry: Send + Sync {
+    fn resolve(
+        &self,
+        selector: &crate::journal::ModelSelectorDoc,
+    ) -> Result<std::sync::Arc<dyn Provider>>;
+
+    fn admit(
+        &self,
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        provider: &str,
+        config: &serde_json::Map<String, Value>,
+    ) -> Result<crate::journal::ModelSelectorDoc> {
+        let _ = (component_digest, world, component, provider, config);
+        Err(BrainError::Invalid(
+            "custom Model components are not enabled in this composition".into(),
+        ))
+    }
 }
 
 /// Accumulates a dialect-neutral event stream into one complete assistant

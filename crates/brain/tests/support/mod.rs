@@ -13,16 +13,18 @@ impl AgentloopRegistry for TestRegistry {
         Ok(Arc::new(SequentialAgentloop))
     }
 
-    fn admit_custom(
+    fn admit(
         &self,
-        source_bundle_sha256: &str,
-        toolchain: &str,
-        bundle: &[u8],
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        config: &serde_json::Map<String, Value>,
     ) -> brain::Result<AgentloopSelectorDoc> {
         Ok(AgentloopSelectorDoc {
-            source_bundle_sha256: source_bundle_sha256.into(),
-            source_bundle_bytes: bundle.len() as u64,
-            toolchain: toolchain.into(),
+            component_digest: component_digest.into(),
+            component_bytes: component.len() as u64,
+            world: world.into(),
+            config: config.clone(),
         })
     }
 }
@@ -39,11 +41,38 @@ pub fn services() -> BrainServices {
 }
 
 pub fn loop_config() -> Value {
-    use base64::Engine as _;
     let bundle = b"integration test loop";
     json!({
-        "source_bundle_sha256": hex::encode(Sha256::digest(bundle)),
-        "toolchain": "test-loop",
-        "bundle_base64": base64::engine::general_purpose::STANDARD.encode(bundle),
+        "component_digest": hex::encode(Sha256::digest(bundle)),
+        "world": "aex:agentloop/agentloop@1.0.0"
     })
+}
+
+pub fn model_config() -> Value {
+    let component = b"integration test model";
+    json!({
+        "component_digest": hex::encode(Sha256::digest(component)),
+        "world": "aex:model/model@1.0.0",
+        "provider": "anthropic",
+        "name": "scripted",
+        "api_key": "sk-fake"
+    })
+}
+
+pub fn component_artifacts() -> Value {
+    use base64::Engine as _;
+    let loop_component = b"integration test loop";
+    let model_component = b"integration test model";
+    json!([
+        {
+            "component_digest": hex::encode(Sha256::digest(loop_component)),
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(loop_component),
+            "bytes": loop_component.len()
+        },
+        {
+            "component_digest": hex::encode(Sha256::digest(model_component)),
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component),
+            "bytes": model_component.len()
+        }
+    ])
 }

@@ -13,6 +13,7 @@ use brain::session::ProviderFactory;
 use brain::{BrainError, Result};
 use futures_util::stream::BoxStream;
 
+pub mod component;
 pub mod external;
 
 pub use external::HttpExternalToolExecutor;

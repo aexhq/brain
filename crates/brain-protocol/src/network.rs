@@ -1,4 +1,4 @@
-//! Canonical special-use address policy for environment implementations.
+//! Canonical special-use address policy shared by Brain, Aex, and Environments.
 //!
 //! Hosted trusted-tier HTTP and sandbox connector policy is fail-closed: only ordinary public
 //! unicast addresses pass. Keep additions data-only and cover them in [`SPECIAL_USE_FIXTURES`].

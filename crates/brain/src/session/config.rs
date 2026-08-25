@@ -15,6 +15,8 @@ pub const MAX_CONCURRENT_CREATES_ENV: &str = "BRAIN_MAX_CONCURRENT_CREATES";
 pub const MAX_EVENT_FOLLOWERS_ENV: &str = "BRAIN_MAX_EVENT_FOLLOWERS";
 pub const MAX_RESIDENT_SESSIONS_ENV: &str = "BRAIN_MAX_RESIDENT_SESSIONS";
 pub const IDLE_DISCARD_SECONDS_ENV: &str = "BRAIN_IDLE_DISCARD_SECONDS";
+pub const DEFAULT_RETENTION_SECONDS_ENV: &str = "BRAIN_DEFAULT_RETENTION_SECONDS";
+pub const MAX_RETENTION_SECONDS_ENV: &str = "BRAIN_MAX_RETENTION_SECONDS";
 pub const OUTBOUND_ALLOW_PRIVATE_ENV: &str = "BRAIN_OUTBOUND_ALLOW_PRIVATE";
 pub const STORAGE_MAX_OBJECT_BYTES_ENV: &str = "BRAIN_STORAGE_MAX_OBJECT_BYTES";
 pub const STORAGE_MAX_SESSION_BYTES_ENV: &str = "BRAIN_STORAGE_MAX_SESSION_BYTES";
@@ -22,7 +24,7 @@ pub const STORAGE_MAX_TENANT_BYTES_ENV: &str = "BRAIN_STORAGE_MAX_TENANT_BYTES";
 pub const STORAGE_TRANSFER_TTL_ENV: &str = "BRAIN_STORAGE_TRANSFER_TTL_MS";
 pub const EXTERNAL_EXECUTOR_URL_ENV: &str = "BRAIN_EXTERNAL_TOOL_EXECUTOR_URL";
 pub const EXTERNAL_EXECUTOR_TOKEN_ENV: &str = "BRAIN_EXTERNAL_TOOL_EXECUTOR_TOKEN";
-pub const EXTERNAL_EXECUTOR_CAPABILITIES_ENV: &str = "BRAIN_EXTERNAL_TOOL_CAPABILITIES";
+pub const EXTERNAL_EXECUTOR_POLICIES_ENV: &str = "BRAIN_EXTERNAL_TOOL_POLICIES_JSON";
 pub const RECOVERY_POLL_ENV: &str = "BRAIN_RECOVERY_POLL_MS";
 pub const RECOVERY_SHARDS_PER_POLL_ENV: &str = "BRAIN_RECOVERY_SHARDS_PER_POLL";
 pub const RECOVERY_PAGE_SIZE_ENV: &str = "BRAIN_RECOVERY_PAGE_SIZE";
@@ -38,6 +40,7 @@ pub const DEFAULT_MAX_CONCURRENT_CREATES: usize = 4;
 pub const DEFAULT_MAX_EVENT_FOLLOWERS: usize = 64;
 pub const DEFAULT_MAX_RESIDENT_SESSIONS: usize = 128;
 pub const DEFAULT_IDLE_DISCARD_SECONDS: u64 = 900;
+pub const DEFAULT_RETENTION_SECONDS: u64 = 400 * 24 * 60 * 60;
 pub const DEFAULT_STORAGE_MAX_TENANT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 pub const DEFAULT_RECOVERY_POLL_MS: u64 = 1_000;
 pub const DEFAULT_RECOVERY_SHARDS_PER_POLL: usize = 4;
@@ -58,6 +61,8 @@ pub const MAX_CONCURRENT_CREATES: usize = 64;
 pub const MAX_EVENT_FOLLOWERS: usize = 1_024;
 pub const MAX_RESIDENT_SESSIONS: usize = 4_096;
 pub const MAX_IDLE_DISCARD_SECONDS: u64 = 24 * 60 * 60;
+pub const MIN_RETENTION_SECONDS: u64 = 60;
+pub const MAX_RETENTION_SECONDS: u64 = 10 * 365 * 24 * 60 * 60;
 pub const MAX_STORAGE_POLICY_BYTES: u64 = i64::MAX as u64;
 pub const MIN_STORAGE_TRANSFER_TTL_MS: u64 = 60_000;
 pub const MAX_STORAGE_TRANSFER_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -69,6 +74,7 @@ pub const MAX_EXTERNAL_EXECUTOR_URL_BYTES: usize = 2_048;
 pub const MAX_EXTERNAL_EXECUTOR_TOKEN_BYTES: usize = 8 * 1_024;
 pub const MAX_EXTERNAL_EXECUTOR_CAPABILITIES: usize = 128;
 pub const MAX_EXTERNAL_EXECUTOR_CAPABILITY_BYTES: usize = 128;
+pub const MAX_EXTERNAL_EXECUTOR_POLICIES_BYTES: usize = 64 * 1024;
 
 /// Process configuration: the knobs that are NOT adapters.
 #[derive(Debug, Clone)]
@@ -89,6 +95,10 @@ pub struct BrainConfig {
     pub max_resident_sessions: usize,
     /// Idle residency before the actor discards its fold and exits.
     pub idle_discard: Duration,
+    /// Default and absolute maximum durable session retention. Both are finite; a session may
+    /// renew within the moving deployment maximum through the public retention operation.
+    pub default_retention: Duration,
+    pub max_retention: Duration,
     pub context_soft_tokens: usize,
     pub context_hard_tokens: usize,
     pub context_tail_tokens: usize,
@@ -149,6 +159,8 @@ impl Default for BrainConfig {
             max_event_followers: DEFAULT_MAX_EVENT_FOLLOWERS,
             max_resident_sessions: DEFAULT_MAX_RESIDENT_SESSIONS,
             idle_discard: Duration::from_secs(DEFAULT_IDLE_DISCARD_SECONDS),
+            default_retention: Duration::from_secs(DEFAULT_RETENTION_SECONDS),
+            max_retention: Duration::from_secs(MAX_RETENTION_SECONDS),
             context_soft_tokens: DEFAULT_CONTEXT_SOFT_TOKENS,
             context_hard_tokens: DEFAULT_CONTEXT_HARD_TOKENS,
             context_tail_tokens: DEFAULT_CONTEXT_TAIL_TOKENS,
@@ -241,6 +253,20 @@ impl BrainConfig {
             DEFAULT_IDLE_DISCARD_SECONDS,
             1,
             MAX_IDLE_DISCARD_SECONDS,
+        )?);
+        cfg.default_retention = Duration::from_secs(parse_env_u64(
+            DEFAULT_RETENTION_SECONDS_ENV,
+            read(DEFAULT_RETENTION_SECONDS_ENV)?.as_deref(),
+            DEFAULT_RETENTION_SECONDS,
+            MIN_RETENTION_SECONDS,
+            MAX_RETENTION_SECONDS,
+        )?);
+        cfg.max_retention = Duration::from_secs(parse_env_u64(
+            MAX_RETENTION_SECONDS_ENV,
+            read(MAX_RETENTION_SECONDS_ENV)?.as_deref(),
+            MAX_RETENTION_SECONDS,
+            MIN_RETENTION_SECONDS,
+            MAX_RETENTION_SECONDS,
         )?);
         cfg.provider_header_timeout = Duration::from_millis(parse_env_u64(
             PROVIDER_HEADER_TIMEOUT_ENV,
@@ -350,8 +376,9 @@ impl BrainConfig {
             MAX_EXTERNAL_EXECUTOR_TOKEN_BYTES,
         )?
         .map(ProviderKey::new);
-        cfg.external_executor_capabilities =
-            parse_capabilities(read(EXTERNAL_EXECUTOR_CAPABILITIES_ENV)?)?;
+        cfg.official_capabilities =
+            parse_external_tool_policies(read(EXTERNAL_EXECUTOR_POLICIES_ENV)?)?;
+        cfg.external_executor_capabilities = cfg.official_capabilities.keys().cloned().collect();
         cfg.recovery_poll_interval = Duration::from_millis(parse_env_u64(
             RECOVERY_POLL_ENV,
             read(RECOVERY_POLL_ENV)?.as_deref(),
@@ -421,6 +448,23 @@ impl BrainConfig {
             1,
             MAX_IDLE_DISCARD_SECONDS.saturating_mul(1_000),
         )?;
+        validate_timeout(
+            DEFAULT_RETENTION_SECONDS_ENV,
+            self.default_retention,
+            MIN_RETENTION_SECONDS.saturating_mul(1_000),
+            MAX_RETENTION_SECONDS.saturating_mul(1_000),
+        )?;
+        validate_timeout(
+            MAX_RETENTION_SECONDS_ENV,
+            self.max_retention,
+            MIN_RETENTION_SECONDS.saturating_mul(1_000),
+            MAX_RETENTION_SECONDS.saturating_mul(1_000),
+        )?;
+        if self.default_retention > self.max_retention {
+            return Err(BrainError::Invalid(format!(
+                "{DEFAULT_RETENTION_SECONDS_ENV} cannot exceed {MAX_RETENTION_SECONDS_ENV}"
+            )));
+        }
         if self.context_tail_tokens == 0
             || self.context_tail_tokens >= self.context_soft_tokens
             || self.context_soft_tokens >= self.context_hard_tokens
@@ -517,7 +561,7 @@ pub(super) fn validate_external_executor_config(cfg: &BrainConfig) -> Result<()>
         && (cfg.external_executor_token.is_some() || !cfg.external_executor_capabilities.is_empty())
     {
         return Err(BrainError::Invalid(format!(
-            "{EXTERNAL_EXECUTOR_TOKEN_ENV} and {EXTERNAL_EXECUTOR_CAPABILITIES_ENV} require {EXTERNAL_EXECUTOR_URL_ENV}"
+            "{EXTERNAL_EXECUTOR_TOKEN_ENV} and {EXTERNAL_EXECUTOR_POLICIES_ENV} require {EXTERNAL_EXECUTOR_URL_ENV}"
         )));
     }
     if cfg.external_executor_capabilities.len() > MAX_EXTERNAL_EXECUTOR_CAPABILITIES
@@ -530,7 +574,7 @@ pub(super) fn validate_external_executor_config(cfg: &BrainConfig) -> Result<()>
         })
     {
         return Err(BrainError::Invalid(format!(
-            "{EXTERNAL_EXECUTOR_CAPABILITIES_ENV} exceeds its count, byte, or identifier bound"
+            "{EXTERNAL_EXECUTOR_POLICIES_ENV} exceeds its count, byte, or identifier bound"
         )));
     }
     if let Some(endpoint) = &cfg.external_executor_url {
@@ -630,35 +674,46 @@ pub(super) fn parse_optional_env_string(
     Ok(Some(raw))
 }
 
-pub(super) fn parse_capabilities(raw: Option<String>) -> Result<HashSet<String>> {
+pub(super) fn parse_external_tool_policies(
+    raw: Option<String>,
+) -> Result<HashMap<String, crate::config::ServerToolPolicy>> {
     let Some(raw) = raw else {
-        return Ok(HashSet::new());
+        return Ok(HashMap::new());
     };
-    if raw.is_empty() {
+    if raw.is_empty() || raw.len() > MAX_EXTERNAL_EXECUTOR_POLICIES_BYTES {
         return Err(BrainError::Invalid(format!(
-            "{EXTERNAL_EXECUTOR_CAPABILITIES_ENV} must not be empty when set"
+            "{EXTERNAL_EXECUTOR_POLICIES_ENV} must contain between 1 and {MAX_EXTERNAL_EXECUTOR_POLICIES_BYTES} UTF-8 bytes"
         )));
     }
-    let mut capabilities = HashSet::new();
-    for capability in raw.split(',').map(str::trim) {
+    let policies: Vec<crate::config::ServerToolPolicy> =
+        serde_json::from_str(&raw).map_err(|error| {
+            BrainError::Invalid(format!("{EXTERNAL_EXECUTOR_POLICIES_ENV}: {error}"))
+        })?;
+    if policies.is_empty() || policies.len() > MAX_EXTERNAL_EXECUTOR_CAPABILITIES {
+        return Err(BrainError::Invalid(format!(
+            "{EXTERNAL_EXECUTOR_POLICIES_ENV} must contain 1 to {MAX_EXTERNAL_EXECUTOR_CAPABILITIES} policies"
+        )));
+    }
+    let mut by_capability = HashMap::new();
+    for policy in policies {
+        let capability = policy.capability.as_str();
         if capability.is_empty()
             || capability.len() > MAX_EXTERNAL_EXECUTOR_CAPABILITY_BYTES
             || !capability
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-            || !capabilities.insert(capability.to_owned())
+            || policy.max_input_bytes == 0
+            || policy.max_input_bytes > brain_protocol::MAX_EXTERNAL_TOOL_INPUT_BYTES
+            || by_capability
+                .insert(capability.to_owned(), policy)
+                .is_some()
         {
             return Err(BrainError::Invalid(format!(
-                "{EXTERNAL_EXECUTOR_CAPABILITIES_ENV} contains an invalid or duplicate capability"
+                "{EXTERNAL_EXECUTOR_POLICIES_ENV} contains an invalid or duplicate policy"
             )));
         }
     }
-    if capabilities.len() > MAX_EXTERNAL_EXECUTOR_CAPABILITIES {
-        return Err(BrainError::Invalid(format!(
-            "{EXTERNAL_EXECUTOR_CAPABILITIES_ENV} contains more than {MAX_EXTERNAL_EXECUTOR_CAPABILITIES} capabilities"
-        )));
-    }
-    Ok(capabilities)
+    Ok(by_capability)
 }
 
 pub(super) fn validate_usize_range(

@@ -1,0 +1,112 @@
+package aex:tool@1.0.0;
+
+interface types {
+  enum log-level {
+    trace,
+    debug,
+    info,
+    warn,
+    error,
+  }
+
+  record extension-error {
+    code: string,
+    message: string,
+    retryable: bool,
+  }
+
+  record call-metadata {
+    tenant-id: string,
+    session-id: string,
+    turn-id: string,
+    call-id: string,
+    tool-name: string,
+  }
+
+  record invocation {
+    metadata: call-metadata,
+    input-json: string,
+    config-json: string,
+    deadline-at-ms: u64,
+  }
+
+  record outcome {
+    value-json: string,
+    content: string,
+    is-error: bool,
+  }
+
+  record page {
+    items-json: string,
+    next-cursor: option<string>,
+  }
+}
+
+interface context {
+  use types.{call-metadata, log-level};
+
+  metadata: func() -> call-metadata;
+  cancelled: func() -> bool;
+  log: func(level: log-level, message: string);
+}
+
+interface environment {
+  use types.{extension-error};
+
+  invoke: func(
+    operation-id: string,
+    descriptor-json: string,
+    bundle: option<list<u8>>,
+    input-json: string,
+    deadline-at-ms: u64,
+  ) -> result<string, extension-error>;
+}
+
+interface journal {
+  use types.{extension-error, page};
+
+  read: func(after-seq: option<u64>, limit: u32) -> result<page, extension-error>;
+}
+
+interface storage {
+  use types.{extension-error, page};
+
+  list-objects: func(prefix: option<string>, cursor: option<string>, limit: u32) -> result<page, extension-error>;
+  stat: func(key: string) -> result<string, extension-error>;
+  read: func(key: string, offset: u64, length: u32) -> result<list<u8>, extension-error>;
+  write: func(key: string, bytes: list<u8>) -> result<string, extension-error>;
+  delete: func(key: string) -> result<_, extension-error>;
+}
+
+interface children {
+  use types.{extension-error, page};
+
+  spawn: func(request-json: string) -> result<string, extension-error>;
+  send: func(child-id: string, request-json: string) -> result<string, extension-error>;
+  inspect: func(child-id: string) -> result<string, extension-error>;
+  wait: func(child-id: string, timeout-ms: u64) -> result<string, extension-error>;
+  events: func(child-id: string, after-seq: option<u64>, limit: u32) -> result<page, extension-error>;
+  manage: func(child-id: string, action: string) -> result<string, extension-error>;
+  list-children: func(cursor: option<string>, limit: u32) -> result<page, extension-error>;
+}
+
+interface parent {
+  use types.{extension-error, page};
+
+  metadata: func() -> result<string, extension-error>;
+  inspect: func() -> result<string, extension-error>;
+  events: func(after-seq: option<u64>, limit: u32) -> result<page, extension-error>;
+  send: func(request-json: string) -> result<string, extension-error>;
+}
+
+world tool {
+  import context;
+  import environment;
+  import journal;
+  import storage;
+  import children;
+  import parent;
+  use types.{extension-error, invocation, outcome};
+
+  export invoke: func(request: invocation) -> result<outcome, extension-error>;
+}

@@ -133,12 +133,63 @@ pub trait EngineServices: Send + Sync {
         doc: &HeadDoc,
     ) -> Result<Arc<std::collections::HashMap<String, crate::environment::ManagedBinding>>>;
 
+    async fn execute_child_capability(
+        self: Arc<Self>,
+        parent_id: &str,
+        operation_id: &str,
+        input: serde_json::Value,
+        cancel: CancellationToken,
+    ) -> CallOutcome;
+
+    async fn execute_tool_capability(
+        self: Arc<Self>,
+        session_id: &str,
+        environment: Option<&str>,
+        capability: &str,
+        operation_id: &str,
+        request: serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, crate::tools::ToolCapabilityFailure>;
+
     async fn reconcile_managed_unknown_environment(
         self: Arc<Self>,
         session_id: &str,
         tool_name: &str,
         st: &mut TurnState,
     ) -> Result<()>;
+}
+
+struct TurnToolCapabilities {
+    engine: Weak<dyn EngineServices>,
+    session_id: String,
+    environment: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl crate::tools::ToolCapabilityHandler for TurnToolCapabilities {
+    async fn call(
+        &self,
+        capability: &str,
+        operation_id: &str,
+        request: serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, crate::tools::ToolCapabilityFailure> {
+        let engine = self
+            .engine
+            .upgrade()
+            .ok_or_else(|| crate::tools::ToolCapabilityFailure {
+                code: "unavailable".into(),
+                message: "the session engine is unavailable".into(),
+                retryable: true,
+            })?;
+        engine
+            .execute_tool_capability(
+                &self.session_id,
+                self.environment.as_deref(),
+                capability,
+                operation_id,
+                request,
+            )
+            .await
+    }
 }
 
 /// The immutable turn context.
@@ -167,6 +218,7 @@ pub struct TurnRun {
     pub provider_total_timeout: std::time::Duration,
     pub compactor: Arc<dyn crate::compact::CompactionPort>,
     pub external_executor: Arc<dyn ToolExecutor>,
+    pub tool_registry: Option<Arc<dyn crate::tools::ToolRegistry>>,
     pub managed_bindings: Arc<HashMap<String, crate::environment::ManagedBinding>>,
     pub customer: Option<Arc<crate::customer::CustomerCoordinator>>,
     pub tenant_id: String,
@@ -2431,6 +2483,25 @@ impl TurnRun {
                         )
                     });
                 }
+                Some(ToolRoute::Intrinsic(capability)) if capability == "brain.subagents" => {
+                    let brain = self.engine.clone();
+                    let parent_id = self.session_id.clone();
+                    let cancel = self.cancel.clone();
+                    join.spawn(async move {
+                        let _permit = permit.acquire_owned().await;
+                        let outcome = match brain.upgrade() {
+                            Some(brain) => {
+                                brain
+                                    .execute_child_capability(&parent_id, &op_id, input, cancel)
+                                    .await
+                            }
+                            None => CallOutcome::failed(
+                                "ordinary child-session coordinator is unavailable",
+                            ),
+                        };
+                        (idx, DispatchedOutcome::from(outcome))
+                    });
+                }
                 Some(ToolRoute::Intrinsic(capability)) => {
                     join.spawn(async move {
                         let _permit = permit.acquire_owned().await;
@@ -2465,6 +2536,46 @@ impl TurnRun {
                         )
                         .await;
                         (idx, DispatchedOutcome::from(out))
+                    });
+                }
+                Some(ToolRoute::Component(selector)) => {
+                    let registry = self.tool_registry.clone();
+                    let capabilities: Arc<dyn crate::tools::ToolCapabilityHandler> =
+                        Arc::new(TurnToolCapabilities {
+                            engine: self.engine.clone(),
+                            session_id: self.session_id.clone(),
+                            environment: selector.environment.clone(),
+                        });
+                    let tenant_id = self.tenant_id.clone();
+                    let session_id = self.session_id.clone();
+                    let turn_id = self.turn_id.clone();
+                    let deadline_at_ms = crate::wall_ms().saturating_add(
+                        u64::try_from(self.customer_timeout.as_millis()).unwrap_or(u64::MAX),
+                    );
+                    join.spawn(async move {
+                        let _permit = permit.acquire_owned().await;
+                        let outcome = match registry {
+                            Some(registry) => registry
+                                .invoke(
+                                    &selector,
+                                    crate::tools::ComponentToolRequest {
+                                        tenant_id,
+                                        session_id,
+                                        turn_id,
+                                        call_id: op_id,
+                                        tool_name: name,
+                                        input,
+                                        deadline_at_ms,
+                                    },
+                                    capabilities,
+                                )
+                                .await
+                                .unwrap_or_else(|error| CallOutcome::failed(error.to_string())),
+                            None => CallOutcome::failed(
+                                "Tool component execution is unavailable in this Brain composition",
+                            ),
+                        };
+                        (idx, DispatchedOutcome::from(outcome))
                     });
                 }
                 Some(ToolRoute::Customer { registration, .. }) => {

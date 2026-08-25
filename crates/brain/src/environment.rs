@@ -21,6 +21,50 @@ use std::sync::Arc;
 
 pub type EnvironmentResult<T> = std::result::Result<T, EnvironmentError>;
 
+pub const COMPONENT_ENVIRONMENT_WORLD: &str = "aex:environment/environment@1.0.0";
+
+#[derive(Debug, Clone)]
+pub struct ComponentEnvironmentInvocation {
+    pub tenant_id: String,
+    pub session_id: String,
+    pub root_id: String,
+    pub parent_id: Option<String>,
+    pub environment_id: String,
+    pub policy: serde_json::Value,
+    pub operation_id: String,
+    pub descriptor_json: String,
+    pub bundle: Option<Vec<u8>>,
+    pub input_json: String,
+    pub deadline_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComponentEnvironmentRelease {
+    pub tenant_id: String,
+    pub session_id: String,
+    pub root_id: String,
+    pub parent_id: Option<String>,
+    pub environment_id: String,
+    pub policy: serde_json::Value,
+}
+
+#[async_trait]
+pub trait ComponentEnvironmentRegistry: Send + Sync {
+    fn admit(&self, component_digest: &str, world: &str, component: &[u8]) -> Result<()>;
+
+    async fn invoke(
+        &self,
+        declaration: &brain_protocol::session::ComponentEnvironmentConfig,
+        request: ComponentEnvironmentInvocation,
+    ) -> Result<String>;
+
+    async fn release(
+        &self,
+        declaration: &brain_protocol::session::ComponentEnvironmentConfig,
+        request: ComponentEnvironmentRelease,
+    ) -> Result<()>;
+}
+
 /// The mandatory operation receipt protocol implemented by every Environment.
 #[async_trait]
 pub trait EnvironmentPort: Send + Sync {

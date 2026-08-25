@@ -121,15 +121,357 @@ fn typed_create_result(mut value: serde_json::Value) -> serde_json::Result<Creat
         .as_object_mut()
         .expect("test create request is an object");
     object.remove("system_prompt");
+    let model_component = b"test model";
+    let model_digest = hex::encode(Sha256::digest(model_component));
+    if let Some(model) = object
+        .get_mut("model")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        model
+            .entry("component_digest")
+            .or_insert_with(|| json!(model_digest.clone()));
+        model
+            .entry("world")
+            .or_insert_with(|| json!("aex:model/model@1.0.0"));
+    }
+    let loop_component = b"test loop";
+    let loop_digest = hex::encode(Sha256::digest(loop_component));
     object.entry("agentloop").or_insert_with(|| {
-        let bundle = b"test loop";
         json!({
-            "source_bundle_sha256": hex::encode(Sha256::digest(bundle)),
-            "toolchain": "test-loop",
-            "bundle_base64": base64::engine::general_purpose::STANDARD.encode(bundle)
+            "component_digest": loop_digest.clone(),
+            "world": "aex:agentloop/agentloop@1.0.0"
         })
     });
+    object.entry("component_artifacts").or_insert_with(|| json!([
+        {
+            "component_digest": model_digest,
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component),
+            "bytes": model_component.len()
+        },
+        {
+            "component_digest": loop_digest,
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(loop_component),
+            "bytes": loop_component.len()
+        }
+    ]));
     serde_json::from_value(value)
+}
+
+#[tokio::test]
+async fn tenant_changefeed_is_partitioned_paginated_and_tenant_scoped() {
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-changefeed"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        crate::provider::fake::unscripted_factory(),
+    );
+    let tenant = TrustedPrincipal::new("tenant-a").unwrap();
+    let other = TrustedPrincipal::new("tenant-b").unwrap();
+    let create = || {
+        typed_create(json!({
+            "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+        }))
+    };
+    let mut expected = std::collections::HashSet::new();
+    for key in ["one", "two", "three"] {
+        let session = brain
+            .create_session_for(&tenant, create(), Some(key))
+            .await
+            .unwrap();
+        expected.insert(session.id.to_string());
+    }
+    brain
+        .create_session_for(&other, create(), Some("other"))
+        .await
+        .unwrap();
+
+    let (first, cursor, first_watermark) = brain
+        .list_changes_for(&tenant, 0, 0, 1, 2, None)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 2);
+    let cursor = cursor.expect("the remaining tenant session requires another page");
+    let (second, cursor, second_watermark) = brain
+        .list_changes_for(&tenant, 0, 0, 1, 2, Some(&cursor))
+        .await
+        .unwrap();
+    assert_eq!(second.len(), 1);
+    assert!(cursor.is_none());
+    assert!(first_watermark > 0);
+    assert!(second_watermark > 0);
+    let actual = first
+        .into_iter()
+        .chain(second)
+        .map(|session| session.id.to_string())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(actual, expected);
+
+    let (none, cursor, watermark) = brain
+        .list_changes_for(&tenant, u64::MAX, 0, 1, 100, None)
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+    assert!(cursor.is_none());
+    assert_eq!(watermark, u64::MAX);
+    assert!(
+        brain
+            .list_changes_for(&tenant, 0, 1, 1, 100, None)
+            .await
+            .is_err()
+    );
+}
+
+struct ReleaseTrackingEnvironment {
+    releases: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl crate::environment::ComponentEnvironmentRegistry for ReleaseTrackingEnvironment {
+    fn admit(&self, _component_digest: &str, _world: &str, _component: &[u8]) -> Result<()> {
+        Ok(())
+    }
+
+    async fn invoke(
+        &self,
+        _declaration: &brain_protocol::session::ComponentEnvironmentConfig,
+        _request: crate::environment::ComponentEnvironmentInvocation,
+    ) -> Result<String> {
+        Err(BrainError::Environment("unexpected test invocation".into()))
+    }
+
+    async fn release(
+        &self,
+        _declaration: &brain_protocol::session::ComponentEnvironmentConfig,
+        request: crate::environment::ComponentEnvironmentRelease,
+    ) -> Result<()> {
+        assert_eq!(request.session_id, request.root_id);
+        assert!(request.parent_id.is_none());
+        assert_eq!(request.environment_id, "workspace");
+        self.releases.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn ending_a_root_releases_each_component_environment() {
+    let releases = Arc::new(AtomicUsize::new(0));
+    let registry = Arc::new(ReleaseTrackingEnvironment {
+        releases: releases.clone(),
+    });
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-component-environment-release"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices {
+            component_environment_registry: Some(registry),
+            ..BrainServices::default()
+        },
+        crate::provider::fake::unscripted_factory(),
+    );
+    let component = b"test environment";
+    let digest = hex::encode(Sha256::digest(component));
+    let mut request = typed_create(json!({
+        "model": {"provider":"anthropic", "name":"model", "api_key":"key"},
+        "environments": {"workspace": {
+            "component_digest": digest,
+            "world": crate::environment::COMPONENT_ENVIRONMENT_WORLD,
+            "config": {}
+        }}
+    }));
+    request.component_artifacts.push(
+        serde_json::from_value(json!({
+            "component_digest": hex::encode(Sha256::digest(component)),
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(component),
+            "bytes": component.len()
+        }))
+        .unwrap(),
+    );
+    let created = brain.create_session(request, None).await.unwrap();
+    brain.end(created.id.as_str()).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while releases.load(Ordering::Relaxed) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("component Environment release");
+    assert_eq!(releases.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn suspending_a_root_releases_component_environments_until_resume() {
+    let releases = Arc::new(AtomicUsize::new(0));
+    let registry = Arc::new(ReleaseTrackingEnvironment {
+        releases: releases.clone(),
+    });
+    let journal = Journal::new_memory("brain-component-environment-suspend");
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices {
+            component_environment_registry: Some(registry),
+            ..BrainServices::default()
+        },
+        crate::provider::fake::unscripted_factory(),
+    );
+    let component = b"test environment";
+    let digest = hex::encode(Sha256::digest(component));
+    let mut request = typed_create(json!({
+        "model": {"provider":"anthropic", "name":"model", "api_key":"key"},
+        "environments": {"workspace": {
+            "component_digest": digest,
+            "world": crate::environment::COMPONENT_ENVIRONMENT_WORLD,
+            "config": {}
+        }}
+    }));
+    request.component_artifacts.push(
+        serde_json::from_value(json!({
+            "component_digest": hex::encode(Sha256::digest(component)),
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(component),
+            "bytes": component.len()
+        }))
+        .unwrap(),
+    );
+    let created = brain.create_session(request, None).await.unwrap();
+    let root_id = created.id.to_string();
+    let mut child = journal.get_head(&root_id).await.unwrap().doc;
+    let child_id = "ses_suspendchild000000000";
+    child.parent_id = Some(root_id.clone());
+    child.ancestor_ids = vec![root_id.clone()];
+    child.depth = 1;
+    child.create_key_hash = None;
+    child.create_request_hash = None;
+    journal
+        .create(
+            child_id,
+            &child,
+            &Record::State {
+                state: SessionLifecycle::Open,
+                turn: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        brain.suspend(child_id).await,
+        Err(BrainError::Invalid(message)) if message.contains("root session")
+    ));
+
+    let suspended = brain.suspend(created.id.as_str()).await.unwrap();
+    assert_eq!(suspended.state, session::SessionState::Suspended);
+    assert_eq!(releases.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        brain
+            .message(
+                created.id.as_str(),
+                MessageRequestContent::String("blocked".parse().unwrap()),
+            )
+            .await,
+        Err(BrainError::Invalid(message)) if message.contains("resume")
+    ));
+
+    let resumed = brain.resume(created.id.as_str()).await.unwrap();
+    assert_eq!(resumed.state, session::SessionState::Open);
+    assert_eq!(releases.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn durable_retention_is_renewable_and_shortening_is_explicit() {
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-retention-update"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        crate::provider::fake::unscripted_factory(),
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+    let initial = u64::try_from(created.retain_until.timestamp_millis()).unwrap();
+    let extended = initial + 60_000;
+    let renewed = brain
+        .update_retention(created.id.as_str(), extended, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        u64::try_from(renewed.retain_until.timestamp_millis()).unwrap(),
+        extended
+    );
+
+    let shortened = initial - 60_000;
+    assert!(matches!(
+        brain
+            .update_retention(created.id.as_str(), shortened, false)
+            .await,
+        Err(BrainError::Invalid(message)) if message.contains("allow_shorten")
+    ));
+    let updated = brain
+        .update_retention(created.id.as_str(), shortened, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        u64::try_from(updated.retain_until.timestamp_millis()).unwrap(),
+        shortened
+    );
+}
+
+#[tokio::test]
+async fn expired_durable_retention_reuses_the_recoverable_deletion_path() {
+    let journal = Journal::new_memory("brain-retention-expiry");
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            default_retention: Duration::from_millis(40),
+            max_retention: Duration::from_secs(1),
+            recovery_poll_interval: Duration::from_millis(5),
+            recovery_shards_per_poll: crate::journal::RECOVERY_SHARDS,
+            ..BrainConfig::default()
+        },
+        journal,
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        crate::provider::fake::unscripted_factory(),
+    );
+    brain.start_recovery_worker();
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if brain
+                .deletion_status(created.id.as_str())
+                .await
+                .is_ok_and(|status| status.state == DeletionState::Succeeded)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("expired session reaches the durable deletion tombstone");
+    assert!(matches!(
+        brain.get(created.id.as_str()).await,
+        Err(BrainError::NoSuchSession(_))
+    ));
 }
 
 #[test]
@@ -170,6 +512,14 @@ fn process_environment_policy_uses_exact_defaults_and_bounds() {
     assert_eq!(cfg.max_concurrent_creates, DEFAULT_MAX_CONCURRENT_CREATES);
     assert_eq!(cfg.max_event_followers, DEFAULT_MAX_EVENT_FOLLOWERS);
     assert_eq!(cfg.max_resident_sessions, DEFAULT_MAX_RESIDENT_SESSIONS);
+    assert_eq!(
+        cfg.default_retention,
+        Duration::from_secs(DEFAULT_RETENTION_SECONDS)
+    );
+    assert_eq!(
+        cfg.max_retention,
+        Duration::from_secs(MAX_RETENTION_SECONDS)
+    );
     assert_eq!(
         cfg.storage_max_tenant_bytes,
         DEFAULT_STORAGE_MAX_TENANT_BYTES
@@ -336,6 +686,13 @@ fn process_environment_policy_rejects_cross_field_and_string_drift() {
     assert!(load(&[(OUTBOUND_ALLOW_PRIVATE_ENV, "TRUE")]).is_err());
     assert!(
         load(&[
+            (DEFAULT_RETENTION_SECONDS_ENV, "120"),
+            (MAX_RETENTION_SECONDS_ENV, "60"),
+        ])
+        .is_err()
+    );
+    assert!(
+        load(&[
             (STORAGE_MAX_OBJECT_BYTES_ENV, "2"),
             (STORAGE_MAX_SESSION_BYTES_ENV, "1"),
         ])
@@ -367,8 +724,8 @@ fn process_environment_policy_rejects_cross_field_and_string_drift() {
         load(&[
             (EXTERNAL_EXECUTOR_URL_ENV, "http://127.0.0.1:1234/tools"),
             (
-                EXTERNAL_EXECUTOR_CAPABILITIES_ENV,
-                "brain.output,brain.output"
+                EXTERNAL_EXECUTOR_POLICIES_ENV,
+                r#"[{"capability":"brain.output","scope":"root","completion":"return_direct","effect":"replay_safe","max_input_bytes":1024},{"capability":"brain.output","scope":"all","completion":"continue","effect":"replay_safe","max_input_bytes":1024}]"#
             ),
         ])
         .is_err()
@@ -376,7 +733,10 @@ fn process_environment_policy_rejects_cross_field_and_string_drift() {
     load(&[
         (EXTERNAL_EXECUTOR_URL_ENV, "http://127.0.0.1:1234/tools"),
         (EXTERNAL_EXECUTOR_TOKEN_ENV, "valid-token"),
-        (EXTERNAL_EXECUTOR_CAPABILITIES_ENV, "brain.output,brain.web"),
+        (
+            EXTERNAL_EXECUTOR_POLICIES_ENV,
+            r#"[{"capability":"brain.output","scope":"root","completion":"return_direct","effect":"replay_safe","max_input_bytes":1024},{"capability":"brain.web","scope":"all","completion":"continue","effect":"replay_safe","max_input_bytes":8192}]"#,
+        ),
     ])
     .unwrap();
 }
@@ -1946,24 +2306,6 @@ impl ToolExecutor for RecoveryExecutor {
 }
 
 #[test]
-fn base_urls_resolve_and_compatible_requires_one() {
-    assert_eq!(
-        resolve_base_url(&ApiProvider::Anthropic, None).unwrap(),
-        "https://api.anthropic.com"
-    );
-    assert_eq!(
-        resolve_base_url(&ApiProvider::Deepseek, None).unwrap(),
-        "https://api.deepseek.com"
-    );
-    assert!(resolve_base_url(&ApiProvider::OpenaiCompatible, None).is_err());
-    assert!(resolve_base_url(&ApiProvider::Openai, Some("http://insecure")).is_err());
-    assert_eq!(
-        resolve_base_url(&ApiProvider::Openai, Some("https://proxy.example/")).unwrap(),
-        "https://proxy.example"
-    );
-}
-
-#[test]
 fn child_fork_excludes_spawning_tool_use_and_partial_sibling_results() {
     let prompt = Message::user_text("delegate the focused task");
     let spawning = Message::assistant(vec![
@@ -2242,6 +2584,7 @@ fn prefix_rebuild_is_deterministic() {
         agentloop: None,
         system_prompt: Some("sp".into()),
         provider: "anthropic".into(),
+        model_component: None,
         model: "claude-x".into(),
         base_url: Some("https://api.anthropic.com".into()),
         max_output_tokens: Some(2048),
@@ -2256,7 +2599,6 @@ fn prefix_rebuild_is_deterministic() {
         storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
         storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
         storage_transfer_ttl_ms: crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
-        retired_additional_sandbox_limit: 0,
         max_child_depth: 4,
         max_direct_children: 32,
         max_descendants: 256,
@@ -2288,21 +2630,12 @@ fn prefix_rebuild_is_deterministic() {
                     "input_schema":{"type":"object"},
                     "output_schema":{"type":"string"}
                 },
-                "executor":{"kind":"engine", "capability":"brain.test.delegate"}
+                "executor":{"kind":"engine", "capability":"brain.subagents"}
             }
         ])).unwrap(),
         environments: HashMap::new(),
         managed_bundles: vec![],
-        official_capabilities: HashMap::from([(
-            "brain.test.delegate".into(),
-            crate::config::ServerToolPolicy {
-                capability: "brain.test.delegate".into(),
-                scope: brain_protocol::session::ExternalToolScope::All,
-                completion: brain_protocol::session::ExternalToolCompletion::Continue,
-                effect: brain_protocol::session::ExternalToolEffect::ReplaySafe,
-                max_input_bytes: 1024,
-            },
-        )]),
+        official_capabilities: HashMap::new(),
         environment_enabled: true,
         shape: "1gb".into(),
         sync_interval_seconds: 600,
@@ -2314,29 +2647,6 @@ fn prefix_rebuild_is_deterministic() {
     assert_eq!(a.digest(), b.digest());
     assert_eq!(da, db);
     assert_eq!(a.tools.len(), 2);
-
-    let mut openai = p.clone();
-    openai.provider = "openai".into();
-    openai.model = "gpt-5.4".into();
-    openai.reasoning_effort = Some("high".into());
-    let (openai, _) = build_prefix(&openai, 512).unwrap();
-    let rendered = crate::provider::openai::OpenAiChat::render_base(&openai);
-    assert_eq!(rendered["max_completion_tokens"], 2_048);
-    assert_eq!(rendered["reasoning_effort"], "high");
-    assert!(!rendered.contains_key("max_tokens"));
-
-    let mut unsupported = p;
-    unsupported.reasoning_effort = Some("high".into());
-    let error = build_prefix(&unsupported, 512).unwrap_err();
-    assert!(matches!(error, BrainError::Invalid(_)));
-    assert!(error.to_string().contains("reasoning_effort"));
-}
-
-#[test]
-fn dialects_route_by_provider() {
-    assert_eq!(dialect_of("anthropic"), Dialect::AnthropicMessages);
-    assert_eq!(dialect_of("deepseek"), Dialect::OpenAiChat);
-    assert_eq!(dialect_of("openai"), Dialect::OpenAiChat);
 }
 
 #[test]
@@ -2399,6 +2709,7 @@ fn pending_volatile_scan_routes_by_the_seal() {
         },
     ];
     let prefix = PrefixDoc {
+        model_component: None,
         agentloop: None,
         system_prompt: None,
         provider: "anthropic".into(),
@@ -2416,7 +2727,6 @@ fn pending_volatile_scan_routes_by_the_seal() {
         storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
         storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
         storage_transfer_ttl_ms: crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
-        retired_additional_sandbox_limit: 0,
         max_child_depth: 4,
         max_direct_children: 32,
         max_descendants: 256,
@@ -2433,7 +2743,7 @@ fn pending_volatile_scan_routes_by_the_seal() {
                     "contract_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "input_schema":{"type":"object"}, "output_schema":{"type":"string"}
                 },
-                "executor":{"kind":"engine", "capability":"brain.test.delegate"}
+                "executor":{"kind":"engine", "capability":"brain.subagents"}
             },
             {
                 "definition": {
@@ -2471,6 +2781,7 @@ fn pending_volatile_scan_routes_by_the_seal() {
 #[test]
 fn pending_external_scan_recovers_only_unanswered_sealed_calls() {
     let prefix = PrefixDoc {
+        model_component: None,
         agentloop: None,
         system_prompt: None,
         provider: "anthropic".into(),
@@ -2488,7 +2799,6 @@ fn pending_external_scan_recovers_only_unanswered_sealed_calls() {
         storage_max_object_bytes: crate::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
         storage_max_session_bytes: crate::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
         storage_transfer_ttl_ms: crate::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
-        retired_additional_sandbox_limit: 0,
         max_child_depth: 4,
         max_direct_children: 32,
         max_descendants: 256,
@@ -4360,14 +4670,17 @@ async fn loop_bundles_are_verified_before_registry_admission() {
         base64::engine::general_purpose::STANDARD.encode(bundle)
     };
     let digest = hex::encode(Sha256::digest(bundle));
+    let model_component = b"test model";
+    let model_digest = hex::encode(Sha256::digest(model_component));
     let wrong_digest = brain
         .create_session(
-            serde_json::from_value(json!({"model": model, "agentloop": {
-                "source_bundle_sha256": "0".repeat(64),
-                "toolchain": "loopchain-1",
-                "bundle_base64": encoded,
-            }}))
-            .unwrap(),
+            typed_create(json!({"model": model, "agentloop": {
+                "component_digest": "0".repeat(64),
+                "world": "aex:agentloop/agentloop@1.0.0"
+            }, "component_artifacts": [
+                {"component_digest": model_digest, "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component), "bytes": model_component.len()},
+                {"component_digest": "0".repeat(64), "component_base64": encoded, "bytes": bundle.len()}
+            ]})),
             None,
         )
         .await;
@@ -4377,12 +4690,13 @@ async fn loop_bundles_are_verified_before_registry_admission() {
     );
     let custom = brain
         .create_session(
-            serde_json::from_value(json!({"model": model, "agentloop": {
-                "source_bundle_sha256": digest,
-                "toolchain": "loopchain-1",
-                "bundle_base64": encoded,
-            }}))
-            .unwrap(),
+            typed_create(json!({"model": model, "agentloop": {
+                "component_digest": digest,
+                "world": "aex:agentloop/agentloop@1.0.0"
+            }, "component_artifacts": [
+                {"component_digest": model_digest, "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component), "bytes": model_component.len()},
+                {"component_digest": digest, "component_base64": encoded, "bytes": bundle.len()}
+            ]})),
             None,
         )
         .await;
@@ -4390,6 +4704,97 @@ async fn loop_bundles_are_verified_before_registry_admission() {
         matches!(&custom, Err(BrainError::Invalid(message)) if message.contains("not enabled")),
         "a composition that cannot admit the loop refuses create: {custom:?}"
     );
+}
+
+#[tokio::test]
+async fn tool_components_are_verified_and_admitted_before_session_commit() {
+    struct TestToolRegistry(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl crate::tools::ToolRegistry for TestToolRegistry {
+        fn admit(
+            &self,
+            component_digest: &str,
+            world: &str,
+            component: &[u8],
+            config: &serde_json::Map<String, serde_json::Value>,
+            grants: &[String],
+            environment: Option<&str>,
+        ) -> Result<crate::journal::ToolSelectorDoc> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(world, crate::tools::TOOL_WORLD);
+            assert_eq!(component_digest, hex::encode(Sha256::digest(component)));
+            assert_eq!(config["mode"], "echo");
+            assert_eq!(grants, ["journal"]);
+            assert_eq!(environment, None);
+            Ok(crate::journal::ToolSelectorDoc {
+                component_digest: component_digest.into(),
+                component_bytes: component.len() as u64,
+                world: world.into(),
+                config: config.clone(),
+                grants: grants.to_vec(),
+                environment: None,
+            })
+        }
+
+        async fn invoke(
+            &self,
+            _selector: &crate::journal::ToolSelectorDoc,
+            _request: crate::tools::ComponentToolRequest,
+            _capabilities: Arc<dyn crate::tools::ToolCapabilityHandler>,
+        ) -> Result<CallOutcome> {
+            unreachable!("create only admits the component")
+        }
+    }
+
+    let registry = Arc::new(TestToolRegistry(AtomicUsize::new(0)));
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("tool-component-admission"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices {
+            tool_registry: Some(registry.clone()),
+            ..BrainServices::default()
+        },
+        Arc::new(move |_| provider.clone()),
+    );
+    let tool_component = b"test tool";
+    let tool_digest = hex::encode(Sha256::digest(tool_component));
+    let mut request = serde_json::to_value(typed_create(json!({
+        "model": {"provider":"anthropic", "name":"tool-test", "api_key":"sk-test"},
+        "tools": {"items": [{
+            "definition": {
+                "name": "echo",
+                "contract_digest": "a".repeat(64),
+                "input_schema": {"type":"object"},
+                "output_schema": {"type":"object"}
+            },
+            "executor": {
+                "kind": "component",
+                "component_digest": tool_digest,
+                "world": "aex:tool/tool@1.0.0",
+                "config": {"mode":"echo"},
+                "grants": ["journal"]
+            }
+        }]}
+    })))
+    .unwrap();
+    request["component_artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "component_digest": tool_digest,
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(tool_component),
+            "bytes": tool_component.len()
+        }));
+    brain
+        .create_session(serde_json::from_value(request).unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(registry.0.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -4402,16 +4807,18 @@ async fn a_composition_registry_resolves_a_sealed_loop() {
         ) -> Result<Arc<dyn crate::agentloop::Agentloop>> {
             Ok(Arc::new(crate::agentloop::SequentialAgentloop))
         }
-        fn admit_custom(
+        fn admit(
             &self,
-            source_bundle_sha256: &str,
-            toolchain: &str,
-            bundle: &[u8],
+            component_digest: &str,
+            world: &str,
+            component: &[u8],
+            config: &serde_json::Map<String, serde_json::Value>,
         ) -> Result<crate::journal::AgentloopSelectorDoc> {
             Ok(crate::journal::AgentloopSelectorDoc {
-                source_bundle_sha256: source_bundle_sha256.into(),
-                source_bundle_bytes: bundle.len() as u64,
-                toolchain: toolchain.into(),
+                component_digest: component_digest.into(),
+                component_bytes: component.len() as u64,
+                world: world.into(),
+                config: config.clone(),
             })
         }
     }
@@ -4431,24 +4838,35 @@ async fn a_composition_registry_resolves_a_sealed_loop() {
         Arc::new(move |_| provider.clone() as Arc<dyn crate::provider::Provider>),
     );
     let bundle = b"test loop";
+    let model_component = b"test model";
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create(json!({
                 "model": {"provider":"anthropic", "name":"registry-test", "api_key":"sk-test"},
+                "component_artifacts": [
+                    {
+                        "component_digest": hex::encode(Sha256::digest(model_component)),
+                        "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component),
+                        "bytes": model_component.len()
+                    },
+                    {
+                        "component_digest": hex::encode(Sha256::digest(bundle)),
+                        "component_base64": base64::engine::general_purpose::STANDARD.encode(bundle),
+                        "bytes": bundle.len()
+                    }
+                ],
                 "agentloop": {
-                    "source_bundle_sha256": hex::encode(Sha256::digest(bundle)),
-                    "toolchain": "test-loop",
-                    "bundle_base64": base64::engine::general_purpose::STANDARD.encode(bundle)
+                    "component_digest": hex::encode(Sha256::digest(bundle)),
+                    "world": "aex:agentloop/agentloop@1.0.0"
                 }
-            }))
-            .unwrap(),
+            })),
             None,
         )
         .await
         .unwrap();
     assert_eq!(
-        serde_json::to_value(&created).unwrap()["agentloop"]["toolchain"],
-        "test-loop",
+        serde_json::to_value(&created).unwrap()["agentloop"]["world"],
+        "aex:agentloop/agentloop@1.0.0",
         "the registry's admitted identity seals"
     );
     let session_id = created.id.to_string();
@@ -4753,6 +5171,92 @@ async fn run_one_turn(brain: &Arc<Brain>, journal: &Journal, session_id: &str) {
     panic!("the turn never reached a terminal");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_spawned_child_whose_first_turn_spawns_again_never_deadlocks() {
+    // The r4 dev wedge: a child session starts with its first turn already active, and
+    // that turn is driven during actor hydration. When the child's model answered with a
+    // subagents spawn, the intrinsic delivered a command to the child's own actor — which
+    // was busy driving the turn — and the tree deadlocked; END then queued forever behind
+    // it. The spawn intrinsic now creates the grandchild directly, no self-delivery.
+    let journal = Journal::new_memory("brain-child-self-spawn");
+    let fake = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
+    fake.script([
+        // Only the child's turn consumes scripts: round one spawns a grandchild with a
+        // mid-turn fork of the child itself, round two answers.
+        Scripted::tool(
+            "subagents",
+            json!({
+                "action": "spawn_agent", "task_name": "grandchild", "message": "grand prompt",
+                "fork_turns": "1"
+            }),
+        ),
+        Scripted::Text("child done".into()),
+        Scripted::Text("grandchild done".into()),
+    ]);
+    let provider = fake.clone();
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            idle_discard: Duration::from_secs(300),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices::default(),
+        Arc::new(move |_| provider.clone() as Arc<dyn Provider>),
+    );
+    let created = brain
+        .create_session(
+            typed_create_result(json!({
+                "model": {"provider":"anthropic","name":"m","api_key":"sk-test"},
+                "tools": {"items": [{
+                    "definition": {
+                        "name":"subagents", "description":"children",
+                        "contract_digest": "d".repeat(64),
+                        "input_schema": {"type":"object","additionalProperties":true},
+                        "output_schema": {"type":"object","additionalProperties":true}
+                    },
+                    "executor": {"kind":"engine", "capability":"brain.subagents"}
+                }]}
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let root_id = created.id.to_string();
+    let child = brain
+        .create_child(&root_id, "run".into(), Some("child".into()), None, None)
+        .await
+        .unwrap();
+    let child_id = serde_json::to_value(&child).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let settled = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let head = journal.get_head(&child_id).await.unwrap();
+            if head.doc.turn.is_none() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        settled.is_ok(),
+        "the child's first turn deadlocked on its own spawn delivery"
+    );
+    let (grandchildren, _) = brain.list_children(&child_id, None, 10).await.unwrap();
+    assert_eq!(grandchildren.len(), 1, "the grandchild exists");
+    let records = journal.read_records(&child_id, 0).await.unwrap();
+    let failure = records.iter().find_map(|entry| match &entry.record {
+        Record::TurnFailed { code, message, .. } => Some(format!("{code}: {message}")),
+        _ => None,
+    });
+    assert!(failure.is_none(), "child turn failed: {}", failure.unwrap());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_later_turn_still_sees_earlier_turns_verbatim() {
     // The r4 continuation canary regression: per-turn summary marks replaced real history
@@ -4856,7 +5360,7 @@ async fn gateway_style_model_names_cross_the_loop_contract() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn self_compaction_summarizes_installs_a_mark_and_continues() {
-    // The reference loop owns compaction: tool rounds accumulate past the sealed context
+    // The aex loop owns compaction: tool rounds accumulate past the sealed context
     // window mid-turn, the loop summarizes everything but a recent tail through the
     // sealed model (twice here, the first continuation still over budget), and the
     // turn completes. This drives the policy through the whole kernel.
@@ -5866,16 +6370,18 @@ async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
             }))
         }
 
-        fn admit_custom(
+        fn admit(
             &self,
-            source_bundle_sha256: &str,
-            toolchain: &str,
-            bundle: &[u8],
+            component_digest: &str,
+            world: &str,
+            component: &[u8],
+            config: &serde_json::Map<String, serde_json::Value>,
         ) -> Result<crate::journal::AgentloopSelectorDoc> {
             Ok(crate::journal::AgentloopSelectorDoc {
-                source_bundle_sha256: source_bundle_sha256.into(),
-                source_bundle_bytes: bundle.len() as u64,
-                toolchain: toolchain.into(),
+                component_digest: component_digest.into(),
+                component_bytes: component.len() as u64,
+                world: world.into(),
+                config: config.clone(),
             })
         }
     }

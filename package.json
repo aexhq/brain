@@ -1,0 +1,12 @@
+{
+  "name": "brain-monorepo",
+  "private": true,
+  "workspaces": ["packages/brain", "packages/agentloop"],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "build:components": "node crates/brain-component-host/guest/build.mjs",
+    "test": "npm test --workspaces --if-present",
+    "package-smoke": "node tools/package-smoke.mjs"
+  },
+  "engines": { "node": ">=22" }
+}

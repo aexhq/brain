@@ -15,6 +15,7 @@ pub mod agentloop;
 pub mod compact;
 pub mod config;
 pub mod customer;
+pub mod customer_component;
 pub mod events;
 
 pub mod environment;

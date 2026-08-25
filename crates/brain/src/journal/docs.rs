@@ -68,6 +68,8 @@ impl TurnStopReason {
 #[serde(rename_all = "snake_case")]
 pub enum SessionLifecycle {
     Open,
+    Suspending,
+    Suspended,
     Ending,
     Ended,
     Deleting,
@@ -79,6 +81,8 @@ impl SessionLifecycle {
     pub fn as_str(self) -> &'static str {
         match self {
             SessionLifecycle::Open => "open",
+            SessionLifecycle::Suspending => "suspending",
+            SessionLifecycle::Suspended => "suspended",
             SessionLifecycle::Ending => "ending",
             SessionLifecycle::Ended => "ended",
             SessionLifecycle::Deleting => "deleting",
@@ -94,6 +98,8 @@ impl std::str::FromStr for SessionLifecycle {
     fn from_str(value: &str) -> Result<Self> {
         Ok(match value {
             "open" => SessionLifecycle::Open,
+            "suspending" => SessionLifecycle::Suspending,
+            "suspended" => SessionLifecycle::Suspended,
             "ending" => SessionLifecycle::Ending,
             "ended" => SessionLifecycle::Ended,
             "deleting" => SessionLifecycle::Deleting,
@@ -292,6 +298,7 @@ pub struct HeadDoc {
     pub context: Option<ContextPointerDoc>,
     pub turns: u64,
     pub created_ms: u64,
+    pub retain_until_ms: u64,
     pub updated_ms: u64,
     /// Durable wake-up anchor for background recovery. It is present only while work or cleanup
     /// can make progress without another customer request.
@@ -379,6 +386,7 @@ pub struct ControlDoc {
     pub context: Option<ContextPointerDoc>,
     pub turns: u64,
     pub created_ms: u64,
+    pub retain_until_ms: u64,
     pub updated_ms: u64,
     pub recovery_due_ms: Option<u64>,
     pub recovery_attempt: u32,
@@ -521,6 +529,7 @@ impl HeadDoc {
             context,
             turns,
             created_ms,
+            retain_until_ms,
             updated_ms,
             recovery_due_ms,
             recovery_attempt,
@@ -563,6 +572,7 @@ impl HeadDoc {
             context: context.clone(),
             turns: *turns,
             created_ms: *created_ms,
+            retain_until_ms: *retain_until_ms,
             updated_ms: *updated_ms,
             recovery_due_ms: *recovery_due_ms,
             recovery_attempt: *recovery_attempt,
@@ -610,6 +620,7 @@ impl HeadDoc {
             context: _,
             turns: _,
             created_ms: _,
+            retain_until_ms: _,
             updated_ms: _,
             recovery_due_ms: _,
             recovery_attempt: _,
@@ -661,6 +672,7 @@ impl HeadDoc {
             context,
             turns,
             created_ms,
+            retain_until_ms,
             updated_ms,
             recovery_due_ms,
             recovery_attempt,
@@ -705,6 +717,7 @@ impl HeadDoc {
             context,
             turns,
             created_ms,
+            retain_until_ms,
             updated_ms,
             recovery_due_ms,
             recovery_attempt,
@@ -740,7 +753,8 @@ impl HeadDoc {
     ///
     /// Active turns remain due while their lease is held; a crashed owner therefore cannot hide
     /// work by claiming it. Storage upload reservations sleep until their expiry unless staging
-    /// cleanup is already pending. Quiescent sessions omit the index keys entirely.
+    /// cleanup is already pending. Quiescent sessions remain indexed at their finite retention
+    /// deadline so expired durable state is reclaimed without customer traffic.
     pub fn with_recovery_projection(&self, now_ms: u64) -> Self {
         let mut projected = self.clone();
         let lease_safe_due = now_ms.saturating_add(LEASE_MS + STEAL_GRACE_MS);
@@ -776,7 +790,7 @@ impl HeadDoc {
                 _ => None,
             }
         });
-        let due = if matches!(self.state.as_str(), "ending" | "deleting")
+        let work_due = if matches!(self.state.as_str(), "suspending" | "ending" | "deleting")
             || self.turn.is_some()
             || self.active_phase.is_some()
             || self.storage_delete.is_some()
@@ -790,8 +804,16 @@ impl HeadDoc {
                 (left, right) => left.or(right),
             }
         };
-        projected.recovery_due_ms = due;
-        if due.is_none() {
+        // Before expiry, retention competes with ordinary work. Once expired work is already
+        // active, that work owns its lease-safe/backoff deadline; repeatedly forcing the stale
+        // retention instant would hot-loop a failing cleanup.
+        let retention_due =
+            (self.retain_until_ms > now_ms || work_due.is_none()).then_some(self.retain_until_ms);
+        projected.recovery_due_ms = match (work_due, retention_due) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        };
+        if work_due.is_none() && self.retain_until_ms > now_ms {
             projected.recovery_attempt = 0;
         }
         projected
@@ -873,6 +895,9 @@ pub struct PrefixDoc {
     #[serde(default)]
     pub system_prompt: Option<String>,
     pub provider: String,
+    /// Sealed Model component identity. Provider-specific behavior lives behind this selector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_component: Option<ModelSelectorDoc>,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
@@ -895,14 +920,6 @@ pub struct PrefixDoc {
     pub storage_max_object_bytes: u64,
     pub storage_max_session_bytes: u64,
     pub storage_transfer_ttl_ms: u64,
-    /// Accepted only while reading CONFIG records written before named environments.
-    #[doc(hidden)]
-    #[serde(
-        default,
-        rename = "max_additional_sandboxes_per_root",
-        skip_serializing
-    )]
-    pub retired_additional_sandbox_limit: u32,
     /// Canonical normalized session outbound ceiling. Omission at the public API is sealed as
     /// deny-all; every Tool/target policy may only narrow this value.
     #[serde(default = "default_network_ceiling")]
@@ -955,9 +972,34 @@ pub struct PrefixDoc {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentloopSelectorDoc {
-    pub source_bundle_sha256: String,
-    pub source_bundle_bytes: u64,
-    pub toolchain: String,
+    pub component_digest: String,
+    pub component_bytes: u64,
+    pub world: String,
+    pub config: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Which Model component a session sealed at create. Children inherit the parent's selector.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelSelectorDoc {
+    pub component_digest: String,
+    pub component_bytes: u64,
+    pub world: String,
+    pub provider: String,
+    pub config: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Which Tool component and kernel imports one immutable model-visible Tool declaration uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolSelectorDoc {
+    pub component_digest: String,
+    pub component_bytes: u64,
+    pub world: String,
+    pub config: serde_json::Map<String, serde_json::Value>,
+    pub grants: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
 }
 
 fn default_customer_submit_retries() -> u32 {
@@ -1126,9 +1168,12 @@ pub struct SessionSummary {
     pub turns: u64,
     pub last_seq: u64,
     pub created_ms: u64,
+    pub retain_until_ms: u64,
     pub updated_ms: u64,
     pub last_message_ms: Option<u64>,
     pub provider: String,
+    pub model_component_digest: Option<String>,
+    pub model_world: Option<String>,
     pub model: String,
     pub context_window_tokens: u32,
     pub shape: String,
@@ -1155,9 +1200,20 @@ impl SessionSummary {
             turns: doc.turns,
             last_seq: doc.last_seq,
             created_ms: doc.created_ms,
+            retain_until_ms: doc.retain_until_ms,
             updated_ms: doc.updated_ms,
             last_message_ms: doc.last_message_ms,
             provider: doc.prefix.provider.clone(),
+            model_component_digest: doc
+                .prefix
+                .model_component
+                .as_ref()
+                .map(|selector| selector.component_digest.clone()),
+            model_world: doc
+                .prefix
+                .model_component
+                .as_ref()
+                .map(|selector| selector.world.clone()),
             model: doc.prefix.model.clone(),
             context_window_tokens: doc.prefix.context_window_tokens,
             shape: doc.prefix.shape.clone(),

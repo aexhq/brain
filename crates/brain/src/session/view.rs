@@ -1,16 +1,5 @@
 use super::*;
 
-pub fn provider_name(p: &ApiProvider) -> &'static str {
-    match p {
-        ApiProvider::Openai => "openai",
-        ApiProvider::Anthropic => "anthropic",
-        ApiProvider::Deepseek => "deepseek",
-        ApiProvider::Moonshot => "moonshot",
-        ApiProvider::Xai => "xai",
-        ApiProvider::OpenaiCompatible => "openai_compatible",
-    }
-}
-
 /// Canonical public file path. The URL surface is deliberately narrower than environment tool paths:
 /// only absolute POSIX paths beneath `/workspace` are accepted.
 pub fn normalize_workspace_path(path: &str) -> Result<String> {
@@ -49,29 +38,6 @@ pub fn normalize_workspace_path(path: &str) -> Result<String> {
     })
 }
 
-/// Certified: openai, anthropic. Available uncertified: the rest (they speak one of the two
-/// dialects). `openai_compatible` requires an explicit base_url.
-pub fn resolve_base_url(p: &ApiProvider, base_url: Option<&str>) -> Result<String> {
-    if let Some(u) = base_url {
-        if !u.starts_with("https://") {
-            return Err(BrainError::Invalid("model.base_url must be https".into()));
-        }
-        return Ok(u.trim_end_matches('/').to_string());
-    }
-    Ok(match p {
-        ApiProvider::Openai => "https://api.openai.com".into(),
-        ApiProvider::Anthropic => "https://api.anthropic.com".into(),
-        ApiProvider::Deepseek => "https://api.deepseek.com".into(),
-        ApiProvider::Moonshot => "https://api.moonshot.ai".into(),
-        ApiProvider::Xai => "https://api.x.ai".into(),
-        ApiProvider::OpenaiCompatible => {
-            return Err(BrainError::Invalid(
-                "model.base_url is required for provider openai_compatible".into(),
-            ));
-        }
-    })
-}
-
 pub fn dialect_of(provider: &str) -> Dialect {
     match provider {
         "anthropic" => Dialect::AnthropicMessages,
@@ -85,15 +51,14 @@ pub fn build_prefix(
     p: &PrefixDoc,
     max_rounds: u32,
 ) -> Result<(crate::Shared<crate::config::SealedPrefix>, Dialect)> {
-    let dialect = dialect_of(&p.provider);
-    if dialect == Dialect::AnthropicMessages && p.reasoning_effort.is_some() {
-        return Err(BrainError::Invalid(
-            "model.reasoning_effort is not supported by the Anthropic MVP profile".into(),
-        ));
-    }
+    // Components receive Brain's neutral message projection; the internal dialect field remains
+    // only until the legacy provider codecs are deleted.
+    let dialect = Dialect::OpenAiChat;
     let mut decls = crate::tools::resolve(&p.tools)?;
     for decl in &mut decls {
-        if let crate::config::ToolRoute::Intrinsic(capability) = &decl.route {
+        if let crate::config::ToolRoute::Intrinsic(capability) = &decl.route
+            && !crate::tools::is_direct_engine_capability(capability)
+        {
             let policy = p
                 .official_capabilities
                 .get(capability)
@@ -120,7 +85,7 @@ pub fn build_prefix(
         max_tokens: u32::try_from(p.max_output_tokens.unwrap_or(4096)).map_err(|_| {
             BrainError::Journal("sealed max_output_tokens exceeds the canonical u32 bound".into())
         })?,
-        output_token_parameter: output_token_parameter(&p.provider),
+        output_token_parameter: OutputTokenParameter::MaxTokens,
         temperature: p.temperature.map(|t| t as f32),
         reasoning_effort: p.reasoning_effort.clone(),
         stop_sequences: Vec::new(),
@@ -162,14 +127,15 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
         .as_ref()
         .map(|selector| -> Result<session::AgentloopInfo> {
             Ok(session::AgentloopInfo {
-                source_bundle_sha256: selector
-                    .source_bundle_sha256
+                component_digest: selector
+                    .component_digest
                     .parse()
-                    .map_err(|_| corrupt("agentloop bundle digest"))?,
-                toolchain: selector
-                    .toolchain
+                    .map_err(|_| corrupt("agentloop component digest"))?,
+                world: selector
+                    .world
                     .parse()
-                    .map_err(|_| corrupt("agentloop toolchain"))?,
+                    .map_err(|_| corrupt("agentloop world"))?,
+                config: selector.config.clone(),
             })
         })
         .transpose()?;
@@ -198,6 +164,7 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
             .as_deref()
             .map(|id| id.parse().map_err(|_| corrupt("parent session id")))
             .transpose()?,
+        retain_until: crate::events::ts(doc.retain_until_ms),
         root_id: doc
             .root_id
             .parse()
@@ -221,18 +188,25 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
                 )
             })
             .collect(),
-        model: session::ModelInfo {
-            base_url: doc.prefix.base_url.clone(),
-            context_window_tokens: i64::from(doc.prefix.context_window_tokens),
-            name: doc.prefix.model.clone(),
-            provider: match doc.prefix.provider.as_str() {
-                "openai" => ApiProvider::Openai,
-                "anthropic" => ApiProvider::Anthropic,
-                "deepseek" => ApiProvider::Deepseek,
-                "moonshot" => ApiProvider::Moonshot,
-                "xai" => ApiProvider::Xai,
-                _ => ApiProvider::OpenaiCompatible,
-            },
+        model: {
+            let selector = doc.prefix.model_component.as_ref().ok_or_else(|| {
+                BrainError::Journal("stored session has no Model component selector".into())
+            })?;
+            session::ModelInfo {
+                base_url: doc.prefix.base_url.clone(),
+                component_digest: selector
+                    .component_digest
+                    .parse()
+                    .map_err(|_| corrupt("Model component digest"))?,
+                context_window_tokens: i64::from(doc.prefix.context_window_tokens),
+                name: doc.prefix.model.clone(),
+                provider: doc
+                    .prefix
+                    .provider
+                    .parse()
+                    .map_err(|_| corrupt("provider"))?,
+                world: selector.world.clone(),
+            }
         },
         name: doc
             .child_name
@@ -292,6 +266,7 @@ pub(super) fn session_doc_summary(
             .as_deref()
             .map(|id| id.parse().map_err(|_| corrupt("parent id")))
             .transpose()?,
+        retain_until: crate::events::ts(summary.retain_until_ms),
         root_id: summary.root_id.parse().map_err(|_| corrupt("root id"))?,
         depth: i64::from(summary.depth),
         last_seq: summary.last_seq,
@@ -313,16 +288,19 @@ pub(super) fn session_doc_summary(
             .collect(),
         model: session::ModelInfo {
             base_url: summary.base_url.clone(),
+            component_digest: summary
+                .model_component_digest
+                .as_deref()
+                .ok_or_else(|| corrupt("Model component digest"))?
+                .parse()
+                .map_err(|_| corrupt("Model component digest"))?,
             context_window_tokens: i64::from(summary.context_window_tokens),
             name: summary.model.clone(),
-            provider: match summary.provider.as_str() {
-                "openai" => ApiProvider::Openai,
-                "anthropic" => ApiProvider::Anthropic,
-                "deepseek" => ApiProvider::Deepseek,
-                "moonshot" => ApiProvider::Moonshot,
-                "xai" => ApiProvider::Xai,
-                _ => ApiProvider::OpenaiCompatible,
-            },
+            provider: summary.provider.parse().map_err(|_| corrupt("provider"))?,
+            world: summary
+                .model_world
+                .clone()
+                .ok_or_else(|| corrupt("Model world"))?,
         },
         name: summary
             .child_name

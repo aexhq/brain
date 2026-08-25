@@ -128,16 +128,18 @@ impl AgentloopRegistry for BenchAgentloopRegistry {
         Ok(Arc::new(SequentialAgentloop))
     }
 
-    fn admit_custom(
+    fn admit(
         &self,
-        source_bundle_sha256: &str,
-        toolchain: &str,
-        bundle: &[u8],
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        config: &serde_json::Map<String, Value>,
     ) -> brain::Result<AgentloopSelectorDoc> {
         Ok(AgentloopSelectorDoc {
-            source_bundle_sha256: source_bundle_sha256.into(),
-            source_bundle_bytes: bundle.len() as u64,
-            toolchain: toolchain.into(),
+            component_digest: component_digest.into(),
+            component_bytes: component.len() as u64,
+            world: world.into(),
+            config: config.clone(),
         })
     }
 }
@@ -351,14 +353,20 @@ impl Api {
             .bearer_auth(TOKEN)
             .headers(self.tenant_headers())
             .json(&json!({
+                "component_artifacts": [{
+                    "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                    "component_base64": "eA==",
+                    "bytes": 1
+                }],
                 "agentloop": {
-                    "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-                    "toolchain": "brain-bench",
-                    "bundle_base64": "eA=="
+                    "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                    "world": "aex:agentloop/agentloop@1.0.0"
                 },
                 // Keep semantic compaction out of the turn-throughput instrument. Its own
                 // correctness and wire-budget gates live in Brain's compaction test suite.
                 "model": {
+                    "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+                    "world": "aex:model/model@1.0.0",
                     "provider": "anthropic",
                     "name": "bench",
                     "api_key": "sk-bench",

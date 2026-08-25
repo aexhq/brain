@@ -1,7 +1,7 @@
 FROM rust:1.97.1-bookworm AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --locked --release -p brain-server --bin brain
+RUN cargo build --locked --release -p brain-server --bin brain --bin brain-component-host
 
 FROM debian:bookworm-slim
 # Local mode executes managed Tool bundles through the host node runtime (and bash for shell
@@ -15,5 +15,6 @@ RUN apt-get update \
     && apt-get purge -y curl gnupg \
     && rm -rf /var/lib/apt/lists/* /usr/lib/node_modules/npm /usr/bin/npm /usr/bin/npx
 COPY --from=build /src/target/release/brain /usr/local/bin/brain
+COPY --from=build /src/target/release/brain-component-host /usr/local/bin/brain-component-host
 EXPOSE 3210
 ENTRYPOINT ["/usr/local/bin/brain"]

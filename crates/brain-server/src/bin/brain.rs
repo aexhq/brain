@@ -1,5 +1,5 @@
-//! Brain's neutral server entry point. Production is the default and fails closed because hosted
-//! adapters are injected by the product composition. `local` is explicit and durable.
+//! Brain's neutral server entry point. Production composes AWS durability and the four component
+//! hosts; `local` is explicit and durable.
 
 use brain::journal::Journal;
 use brain::keys::{KeyCustody, blob_from_b64};
@@ -10,17 +10,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,hyper=warn".into()),
-        )
-        .init();
-    tokio::runtime::Runtime::new()?.block_on(run())
+    let telemetry = brain_observability::install("brain")?;
+    let result = tokio::runtime::Runtime::new()?.block_on(run());
+    telemetry.shutdown()?;
+    result
 }
 
-/// The two runtime compositions. Production is the default when omitted and fails closed
-/// because hosted adapters are injected by the product composition, never here.
+/// The two runtime compositions. Production is the default when omitted.
 #[derive(Debug, Clone, Copy)]
 enum BrainMode {
     Production,
@@ -41,14 +37,38 @@ async fn run() -> anyhow::Result<()> {
     let address: std::net::SocketAddr = std::env::var("BRAIN_LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:3210".into())
         .parse()?;
-    let data =
-        PathBuf::from(std::env::var("BRAIN_DATA_DIR").unwrap_or_else(|_| "./brain-data".into()));
+    let data = PathBuf::from(match (mode, std::env::var("BRAIN_DATA_DIR")) {
+        (_, Ok(value)) if !value.is_empty() => value,
+        (BrainMode::Local, Err(_)) => "./brain-data".into(),
+        (BrainMode::Production, Err(_)) => anyhow::bail!("BRAIN_DATA_DIR is not set"),
+        (_, Ok(_)) => anyhow::bail!("BRAIN_DATA_DIR cannot be empty"),
+    });
     std::fs::create_dir_all(&data)?;
-    let token = operator_token(&data)?;
+    let token = match mode {
+        BrainMode::Production => required("BRAIN_API_TOKEN")?,
+        BrainMode::Local => operator_token(&data)?,
+    };
     let brain = match mode {
-        BrainMode::Production => anyhow::bail!(
-            "the neutral brain-server has no production adapters; start the hosted composition or set BRAIN_MODE=local explicitly"
-        ),
+        BrainMode::Production => {
+            let cfg = BrainConfig::from_env().map_err(|error| anyhow::anyhow!("{error}"))?;
+            let persistence = brain_aws::AwsPersistenceConfig::from_env()
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            let (customer_delivery, customer_transport) =
+                aws_customer_environment(&persistence.region).await?;
+            brain_server::compose_aws(brain_server::AwsOptions {
+                data_dir: data.clone(),
+                cfg,
+                persistence,
+                environment_capabilities: environment_capabilities()?,
+                customer_delivery,
+                customer_transport,
+                loophost: Some(brain_server::LoophostOptions {
+                    component_host: component_host_path()?,
+                    workers: component_workers()?,
+                }),
+            })
+            .await?
+        }
         BrainMode::Local => {
             tracing::warn!(data = %data.display(), "LOCAL MODE: durable SQLite/custody with unsandboxed host Tool execution; network policy is not enforced");
             let cfg = BrainConfig::from_env().map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -63,9 +83,8 @@ async fn run() -> anyhow::Result<()> {
                 ),
             };
             let loophost = Some(brain_server::LoophostOptions {
-                toolchain_dir: std::env::var("BRAIN_LOOPHOST_TOOLCHAIN_DIR")
-                    .map_err(|_| anyhow::anyhow!("BRAIN_LOOPHOST_TOOLCHAIN_DIR is required"))?
-                    .into(),
+                component_host: component_host_path()?,
+                workers: component_workers()?,
             });
             let brain = brain_server::compose_local(brain_server::LocalOptions {
                 data_dir: data.clone(),
@@ -73,8 +92,10 @@ async fn run() -> anyhow::Result<()> {
                 advertised_address: address.to_string(),
                 transport_urls,
                 provider_factory: None,
+                environment_capabilities: environment_capabilities()?,
                 loophost,
-            })?;
+            })
+            .await?;
             audit_local(&brain.journal, &brain.custody).await?;
             brain
         }
@@ -83,11 +104,102 @@ async fn run() -> anyhow::Result<()> {
         AppState {
             brain,
             token,
-            tenancy: brain_server::api::Tenancy::Implicit("local".into()),
+            tenancy: match mode {
+                BrainMode::Production => brain_server::api::Tenancy::Required,
+                BrainMode::Local => brain_server::api::Tenancy::Implicit("local".into()),
+            },
         },
         address,
     )
     .await
+}
+
+async fn aws_customer_environment(
+    region: &str,
+) -> anyhow::Result<(
+    Option<Arc<dyn brain::customer::CustomerEnvironmentDeliveryPort>>,
+    Option<brain::customer::CustomerTransportConfig>,
+)> {
+    const WEBSOCKET: &str = "BRAIN_CUSTOMER_ENVIRONMENT_WEBSOCKET_URL";
+    const OBSERVATION: &str = "BRAIN_CUSTOMER_ENVIRONMENT_OBSERVATION_BASE_URL";
+    const CALLBACK: &str = "BRAIN_CUSTOMER_ENVIRONMENT_CALLBACK_URL";
+    let websocket = std::env::var(WEBSOCKET).ok();
+    let observation = std::env::var(OBSERVATION).ok();
+    let callback = std::env::var(CALLBACK).ok();
+    match (websocket, observation, callback) {
+        (None, None, None) => Ok((None, None)),
+        (Some(websocket), Some(observation), Some(callback))
+            if !websocket.is_empty() && !observation.is_empty() && !callback.is_empty() =>
+        {
+            let transport = brain::customer::CustomerTransportConfig::new(websocket, observation)?;
+            let delivery =
+                brain_aws::gateway::ApiGatewayCustomerDelivery::new(region, &callback).await?;
+            Ok((Some(Arc::new(delivery)), Some(transport)))
+        }
+        _ => anyhow::bail!(
+            "set non-empty {WEBSOCKET}, {OBSERVATION}, and {CALLBACK} together or omit all three"
+        ),
+    }
+}
+
+fn required(name: &str) -> anyhow::Result<String> {
+    let value = std::env::var(name).map_err(|_| anyhow::anyhow!("{name} is not set"))?;
+    if value.is_empty() {
+        anyhow::bail!("{name} cannot be empty");
+    }
+    Ok(value)
+}
+
+fn environment_capabilities()
+-> anyhow::Result<Option<Arc<dyn brain_component_host::CapabilityHandler>>> {
+    let endpoint = std::env::var("BRAIN_ENVIRONMENT_DISPATCH_URL").ok();
+    let token = std::env::var("BRAIN_ENVIRONMENT_DISPATCH_TOKEN").ok();
+    let timeout = std::env::var("BRAIN_ENVIRONMENT_DISPATCH_TIMEOUT_MS")
+        .unwrap_or_else(|_| "30000".into())
+        .parse::<u64>()?;
+    if !(100..=900_000).contains(&timeout) {
+        anyhow::bail!("BRAIN_ENVIRONMENT_DISPATCH_TIMEOUT_MS must be 100 through 900000");
+    }
+    match endpoint {
+        Some(endpoint) if !endpoint.is_empty() => Ok(Some(Arc::new(
+            brain_environment_host::HttpEnvironmentCapabilities::new(
+                endpoint,
+                token,
+                std::time::Duration::from_millis(timeout),
+            )?,
+        ))),
+        Some(_) => anyhow::bail!("BRAIN_ENVIRONMENT_DISPATCH_URL cannot be empty"),
+        None if token.is_some() => anyhow::bail!(
+            "BRAIN_ENVIRONMENT_DISPATCH_TOKEN requires BRAIN_ENVIRONMENT_DISPATCH_URL"
+        ),
+        None => Ok(None),
+    }
+}
+
+fn component_host_path() -> anyhow::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("BRAIN_COMPONENT_HOST_BIN") {
+        return Ok(path.into());
+    }
+    let executable = std::env::current_exe()?;
+    let name = if cfg!(windows) {
+        "brain-component-host.exe"
+    } else {
+        "brain-component-host"
+    };
+    Ok(executable
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Brain executable has no parent directory"))?
+        .join(name))
+}
+
+fn component_workers() -> anyhow::Result<usize> {
+    let workers = std::env::var("BRAIN_COMPONENT_WORKERS")
+        .unwrap_or_else(|_| "4".into())
+        .parse::<usize>()?;
+    if !(1..=64).contains(&workers) {
+        anyhow::bail!("BRAIN_COMPONENT_WORKERS must be 1 through 64");
+    }
+    Ok(workers)
 }
 
 async fn audit_local(journal: &Journal, custody: &Arc<dyn KeyCustody>) -> anyhow::Result<()> {

@@ -794,11 +794,7 @@ impl JournalStore for MemoryStore {
 
 #[doc(hidden)]
 pub fn child_admission_open(doc: &HeadDoc) -> bool {
-    !doc.ended
-        && !matches!(
-            doc.state.as_str(),
-            "ending" | "ended" | "deleting" | "deleted" | "failed"
-        )
+    !doc.ended && doc.state == SessionLifecycle::Open
 }
 
 /// Build the one-record, constant-size END projection from a strong HEAD snapshot. Adapters use
