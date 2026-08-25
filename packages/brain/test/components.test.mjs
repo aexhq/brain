@@ -7,6 +7,7 @@ import {
   componentContracts,
   defineComponent,
   prepareComponent,
+  prepareComponents,
 } from "../dist/index.js";
 
 test("component factories are declarative and wire preparation seals the bytes", async () => {
@@ -52,4 +53,16 @@ test("Tool context grants are explicit, unique, and Tool-only", () => {
 test("component config rejects values that cannot cross the JSON boundary", () => {
   assert.throws(() => component("model", new Uint8Array([1]), { value: 1n }), /JSON serializable/u);
   assert.throws(() => component("model", new Uint8Array([1]), undefined), /JSON serializable/u);
+});
+
+test("component preparation deduplicates artifacts without merging bindings", async () => {
+  const bytes = new Uint8Array([1, 2, 3]);
+  const prepared = await prepareComponents([
+    component("tool", bytes, { name: "read" }, { grants: ["environment"] }),
+    component("tool", bytes, { name: "write" }, { grants: ["environment"] }),
+  ]);
+  assert.equal(prepared.artifacts.length, 1);
+  assert.equal(prepared.bindings.length, 2);
+  assert.equal(prepared.bindings[0].component_digest, prepared.bindings[1].component_digest);
+  assert.notDeepEqual(prepared.bindings[0].config, prepared.bindings[1].config);
 });

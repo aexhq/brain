@@ -44,6 +44,19 @@ export interface WireComponent {
   metadata: ComponentMetadata;
 }
 
+export interface WireComponentArtifact {
+  component_digest: string;
+  component_base64: string;
+  bytes: number;
+}
+
+export type WireComponentBinding = Omit<WireComponent, "component_base64" | "bytes">;
+
+export interface PreparedComponents {
+  artifacts: WireComponentArtifact[];
+  bindings: WireComponentBinding[];
+}
+
 const GRANTS = new Set<ToolContextGrant>([
   "environment",
   "journal",
@@ -114,6 +127,27 @@ export async function prepareComponent(value: ComponentExtension): Promise<WireC
     grants: [...value.grants],
     metadata: { ...value.metadata },
   };
+}
+
+export async function prepareComponents(
+  values: readonly ComponentExtension[],
+): Promise<PreparedComponents> {
+  const prepared = await Promise.all(values.map((value) => prepareComponent(value)));
+  const artifacts = new Map<string, WireComponentArtifact>();
+  const bindings = prepared.map(({ component_base64, bytes, ...binding }) => {
+    const prior = artifacts.get(binding.component_digest);
+    if (prior === undefined) {
+      artifacts.set(binding.component_digest, {
+        component_digest: binding.component_digest,
+        component_base64,
+        bytes,
+      });
+    } else if (prior.bytes !== bytes || prior.component_base64 !== component_base64) {
+      throw new TypeError(`Brain component digest collision ${binding.component_digest}`);
+    }
+    return binding;
+  });
+  return { artifacts: [...artifacts.values()], bindings };
 }
 
 function assertComponent(value: ComponentExtension): void {
