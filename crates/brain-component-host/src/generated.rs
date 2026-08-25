@@ -12,7 +12,7 @@ pub const TOOL_WIT: &str = include_str!("../../../contracts/tool/v1/tool.wit");
 
 pub const ENVIRONMENT_WORLD: &str = "aex:environment/environment@1.0.0";
 pub const ENVIRONMENT_CONTRACT_DIGEST: &str =
-    "8c00534afab60b5d95c2f9931bac7a27191657ffe6d193e6a7fa8bcd2a20aa1b";
+    "d10faaed398fb2c3ffd73dd3820981945dad41b7088247d96907e89f0153256a";
 pub const ENVIRONMENT_WIT: &str = include_str!("../../../contracts/environment/v1/environment.wit");
 
 pub const MODEL_WORLD: &str = "aex:model/model@1.0.0";

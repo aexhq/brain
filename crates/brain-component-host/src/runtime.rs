@@ -239,6 +239,20 @@ impl environment::aex::environment::host::Host for State {
     ) {
     }
 
+    async fn dispatch(
+        &mut self,
+        _operation_id: String,
+        _action: String,
+        _request_json: String,
+        _deadline_at_ms: u64,
+    ) -> Result<String, environment::aex::environment::types::ExtensionError> {
+        Err(environment::aex::environment::types::ExtensionError {
+            code: "driver_denied".into(),
+            message: "the deterministic host grants no Environment driver".into(),
+            retryable: false,
+        })
+    }
+
     async fn http(
         &mut self,
         _request: environment::aex::environment::types::HttpRequest,

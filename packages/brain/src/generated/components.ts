@@ -3,7 +3,7 @@
 export const componentContracts = {
   agentloop: { world: "aex:agentloop/agentloop@1.0.0", digest: "f50e756f5a363a3e686b504116a0ef64e3de83be30c2422595d1217fb23b3ff7" },
   tool: { world: "aex:tool/tool@1.0.0", digest: "c1434ba34caaedaedc9594e85be6ee0926475ecf2820a25d0e5522ec7d9f55c5" },
-  environment: { world: "aex:environment/environment@1.0.0", digest: "8c00534afab60b5d95c2f9931bac7a27191657ffe6d193e6a7fa8bcd2a20aa1b" },
+  environment: { world: "aex:environment/environment@1.0.0", digest: "d10faaed398fb2c3ffd73dd3820981945dad41b7088247d96907e89f0153256a" },
   model: { world: "aex:model/model@1.0.0", digest: "2c076c1b50c970dd95d178e4b91f6aff6f6559399b5f7a38f69f2b3290366123" },
 } as const;
 

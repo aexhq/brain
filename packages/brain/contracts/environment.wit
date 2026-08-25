@@ -77,6 +77,7 @@ interface host {
 
   cancelled: func() -> bool;
   log: func(level: log-level, message: string);
+  dispatch: func(operation-id: string, action: string, request-json: string, deadline-at-ms: u64) -> result<string, extension-error>;
   http: func(request: http-request) -> result<http-response, extension-error>;
 }
 
