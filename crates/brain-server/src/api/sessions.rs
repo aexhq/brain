@@ -329,6 +329,24 @@ pub(super) async fn cancel_turn(
     Ok(Json(state.brain.cancel(&id).await.map_err(map_err)?))
 }
 
+pub(super) async fn suspend_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<session::Session>, Failure> {
+    authorize_session(&state, &headers, &id).await?;
+    Ok(Json(state.brain.suspend(&id).await.map_err(map_err)?))
+}
+
+pub(super) async fn resume_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<session::Session>, Failure> {
+    authorize_session(&state, &headers, &id).await?;
+    Ok(Json(state.brain.resume(&id).await.map_err(map_err)?))
+}
+
 pub(super) async fn end_session(
     State(state): State<AppState>,
     headers: HeaderMap,

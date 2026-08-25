@@ -458,6 +458,24 @@ export class Session implements SessionSummary {
     return this;
   }
 
+  async suspend(options: Pick<RequestOptions, "signal"> = {}): Promise<this> {
+    this.#data = await this.#transport.json<SessionData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.id)}/suspend`,
+      { signal: options.signal },
+    );
+    return this;
+  }
+
+  async resume(options: Pick<RequestOptions, "signal"> = {}): Promise<this> {
+    this.#data = await this.#transport.json<SessionData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.id)}/resume`,
+      { signal: options.signal },
+    );
+    return this;
+  }
+
   async end(options: Pick<RequestOptions, "signal"> = {}): Promise<this> {
     this.#data = await this.#transport.json<SessionData>(
       "POST",

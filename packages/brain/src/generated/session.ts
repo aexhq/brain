@@ -50,7 +50,8 @@ export type Sha256Hex = string;
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "SessionState".
  */
-export type SessionState = "open" | "ending" | "ended" | "deleting" | "deleted" | "failed";
+export type SessionState =
+  "open" | "suspending" | "suspended" | "ending" | "ended" | "deleting" | "deleted" | "failed";
 /**
  * Current-turn activity, independent from session lifecycle.
  *

@@ -142,6 +142,36 @@ paths:
               schema: { $ref: "schemas.json#/$defs/MessageAccepted" }
         default: { $ref: "#/components/responses/Error" }
 
+  /v1/sessions/{session_id}/suspend:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [sessions]
+      operationId: suspendSession
+      summary: Release live Environment capacity while retaining the durable root session
+      responses:
+        "200":
+          description: Suspended
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
+  /v1/sessions/{session_id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [sessions]
+      operationId: resumeSession
+      summary: Reopen a suspended durable root session without eagerly allocating an Environment
+      responses:
+        "200":
+          description: Open
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
   /v1/sessions/{session_id}/events:
     parameters:
       - $ref: "#/components/parameters/SessionId"

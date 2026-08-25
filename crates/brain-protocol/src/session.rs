@@ -6191,6 +6191,8 @@ impl ::std::convert::TryFrom<::std::string::String> for SessionObject {
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"enum\": ["]
 #[doc = "    \"open\","]
+#[doc = "    \"suspending\","]
+#[doc = "    \"suspended\","]
 #[doc = "    \"ending\","]
 #[doc = "    \"ended\","]
 #[doc = "    \"deleting\","]
@@ -6215,6 +6217,10 @@ impl ::std::convert::TryFrom<::std::string::String> for SessionObject {
 pub enum SessionState {
     #[serde(rename = "open")]
     Open,
+    #[serde(rename = "suspending")]
+    Suspending,
+    #[serde(rename = "suspended")]
+    Suspended,
     #[serde(rename = "ending")]
     Ending,
     #[serde(rename = "ended")]
@@ -6230,6 +6236,8 @@ impl ::std::fmt::Display for SessionState {
     fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         match *self {
             Self::Open => f.write_str("open"),
+            Self::Suspending => f.write_str("suspending"),
+            Self::Suspended => f.write_str("suspended"),
             Self::Ending => f.write_str("ending"),
             Self::Ended => f.write_str("ended"),
             Self::Deleting => f.write_str("deleting"),
@@ -6243,6 +6251,8 @@ impl ::std::str::FromStr for SessionState {
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         match value {
             "open" => Ok(Self::Open),
+            "suspending" => Ok(Self::Suspending),
+            "suspended" => Ok(Self::Suspended),
             "ending" => Ok(Self::Ending),
             "ended" => Ok(Self::Ended),
             "deleting" => Ok(Self::Deleting),

@@ -345,6 +345,8 @@ pub fn session_state(s: crate::journal::SessionLifecycle) -> session::SessionSta
     use crate::journal::SessionLifecycle;
     match s {
         SessionLifecycle::Open => session::SessionState::Open,
+        SessionLifecycle::Suspending => session::SessionState::Suspending,
+        SessionLifecycle::Suspended => session::SessionState::Suspended,
         SessionLifecycle::Ending => session::SessionState::Ending,
         SessionLifecycle::Ended => session::SessionState::Ended,
         SessionLifecycle::Deleting => session::SessionState::Deleting,

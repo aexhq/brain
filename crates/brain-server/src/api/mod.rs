@@ -85,6 +85,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/sessions/{id}/events", get(stream_events))
         .route("/v1/sessions/{id}/cancel", post(cancel_turn))
+        .route("/v1/sessions/{id}/suspend", post(suspend_session))
+        .route("/v1/sessions/{id}/resume", post(resume_session))
         .route("/v1/sessions/{id}/end", post(end_session))
         .route(
             "/v1/sessions/{id}/environments/{environment}",

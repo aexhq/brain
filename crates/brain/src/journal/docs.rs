@@ -68,6 +68,8 @@ impl TurnStopReason {
 #[serde(rename_all = "snake_case")]
 pub enum SessionLifecycle {
     Open,
+    Suspending,
+    Suspended,
     Ending,
     Ended,
     Deleting,
@@ -79,6 +81,8 @@ impl SessionLifecycle {
     pub fn as_str(self) -> &'static str {
         match self {
             SessionLifecycle::Open => "open",
+            SessionLifecycle::Suspending => "suspending",
+            SessionLifecycle::Suspended => "suspended",
             SessionLifecycle::Ending => "ending",
             SessionLifecycle::Ended => "ended",
             SessionLifecycle::Deleting => "deleting",
@@ -94,6 +98,8 @@ impl std::str::FromStr for SessionLifecycle {
     fn from_str(value: &str) -> Result<Self> {
         Ok(match value {
             "open" => SessionLifecycle::Open,
+            "suspending" => SessionLifecycle::Suspending,
+            "suspended" => SessionLifecycle::Suspended,
             "ending" => SessionLifecycle::Ending,
             "ended" => SessionLifecycle::Ended,
             "deleting" => SessionLifecycle::Deleting,
@@ -776,7 +782,7 @@ impl HeadDoc {
                 _ => None,
             }
         });
-        let due = if matches!(self.state.as_str(), "ending" | "deleting")
+        let due = if matches!(self.state.as_str(), "suspending" | "ending" | "deleting")
             || self.turn.is_some()
             || self.active_phase.is_some()
             || self.storage_delete.is_some()

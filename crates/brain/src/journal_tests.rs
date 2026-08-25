@@ -2318,6 +2318,8 @@ fn enum_string_encodings_agree() {
     }
     check!(
         SessionLifecycle::Open,
+        SessionLifecycle::Suspending,
+        SessionLifecycle::Suspended,
         SessionLifecycle::Ending,
         SessionLifecycle::Ended,
         SessionLifecycle::Deleting,

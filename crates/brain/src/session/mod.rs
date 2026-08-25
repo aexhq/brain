@@ -579,6 +579,12 @@ enum Command {
     Cancel {
         reply: oneshot::Sender<Result<HeadDoc>>,
     },
+    Suspend {
+        reply: oneshot::Sender<Result<HeadDoc>>,
+    },
+    Resume {
+        reply: oneshot::Sender<Result<HeadDoc>>,
+    },
     End {
         reply: oneshot::Sender<Result<HeadDoc>>,
     },
@@ -2083,6 +2089,20 @@ impl Brain {
     pub async fn cancel(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
         let doc = self
             .deliver(session_id, |reply| Command::Cancel { reply })
+            .await??;
+        session_doc(session_id, &doc)
+    }
+
+    pub async fn suspend(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
+        let doc = self
+            .deliver(session_id, |reply| Command::Suspend { reply })
+            .await??;
+        session_doc(session_id, &doc)
+    }
+
+    pub async fn resume(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
+        let doc = self
+            .deliver(session_id, |reply| Command::Resume { reply })
             .await??;
         session_doc(session_id, &doc)
     }
@@ -4530,6 +4550,23 @@ async fn actor(
                         tracing::warn!(session = %session_id, error = %error, "background session deletion will retry");
                     }
                     return;
+                } else if r.st.head.state == SessionLifecycle::Suspending {
+                    resident = Some(r);
+                    match Box::pin(continue_suspend_session(&brain, &session_id, &mut resident))
+                        .await
+                    {
+                        Ok(()) => {
+                            if try_discard_resident(&brain, &session_id, &mut resident).await {
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(session = %session_id, error = %error, "background session suspension will retry");
+                            if brain.journal.defer_recovery(&session_id).await.is_ok() {
+                                return;
+                            }
+                        }
+                    }
                 } else if r.st.head.state == SessionLifecycle::Ending {
                     resident = Some(r);
                     match continue_end_session(&brain, &session_id, &mut resident).await {
@@ -4716,6 +4753,30 @@ async fn actor(
                             },
                         };
                         let _ = reply.send(Ok(doc));
+                    }
+                    Command::Suspend { reply } => {
+                        if running.is_some() {
+                            let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
+                            continue;
+                        }
+                        let result =
+                            Box::pin(suspend_session(&brain, &session_id, &mut resident)).await;
+                        let failed = result.is_err();
+                        let _ = reply.send(result);
+                        if failed {
+                            if brain.journal.defer_recovery(&session_id).await.is_ok() {
+                                break;
+                            }
+                        }
+                    }
+                    Command::Resume { reply } => {
+                        if running.is_some() {
+                            let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
+                            continue;
+                        }
+                        let result =
+                            Box::pin(resume_session(&brain, &session_id, &mut resident)).await;
+                        let _ = reply.send(result);
                     }
                     Command::End { reply } => {
                         match begin_end_session(&brain, &session_id, &mut resident).await {
@@ -5841,7 +5902,7 @@ async fn materialize_environment_resident(
             "environment materialization must be driven by the root actor".into(),
         ));
     }
-    if r.st.head.ended || matches!(r.st.head.state.as_str(), "ending" | "ended" | "deleting") {
+    if r.st.head.ended || r.st.head.state != SessionLifecycle::Open {
         return Err(BrainError::SessionDeleted(session_id.to_owned()));
     }
     let declaration =
@@ -6063,6 +6124,14 @@ async fn admit(
                 .map(|f| f.message.clone())
                 .unwrap_or_default(),
         ));
+    }
+    if r.st.head.state != SessionLifecycle::Open {
+        return Err(match r.st.head.state {
+            SessionLifecycle::Suspending | SessionLifecycle::Suspended => BrainError::Invalid(
+                "session is suspended; resume it before sending a message".into(),
+            ),
+            _ => BrainError::SessionDeleted(session_id.to_owned()),
+        });
     }
     let turn_id = crate::mint_id("trn", 24);
     let user_seq = r.st.take_seq();
@@ -6840,7 +6909,7 @@ async fn continue_end_session(
     // Root environments belong to the whole tree. Ending a child never releases state shared
     // with its parent or siblings.
     if r.st.head.root_id == session_id {
-        dematerialize_environments_for_end(brain, session_id, r).await?;
+        release_live_environments(brain, session_id, r).await?;
     }
     r.st.head.state = SessionLifecycle::Ended;
     r.st.head.active_phase = None;
@@ -6855,7 +6924,7 @@ async fn continue_end_session(
     Ok(true)
 }
 
-async fn dematerialize_environments_for_end(
+async fn release_live_environments(
     brain: &Arc<Brain>,
     session_id: &str,
     resident: &mut Resident,
@@ -6922,6 +6991,192 @@ async fn dematerialize_environments_for_end(
     }
     release_component_environments(brain, session_id, &resident.st.head).await?;
     Ok(())
+}
+
+async fn suspend_session(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+) -> Result<HeadDoc> {
+    let r = ensure_resident(brain, session_id, resident).await?;
+    if r.st.head.root_id != session_id {
+        return Err(BrainError::Invalid(
+            "only a root session can suspend its shared Environment tree".into(),
+        ));
+    }
+    match r.st.head.state {
+        SessionLifecycle::Suspended => return Ok(r.st.head.clone()),
+        SessionLifecycle::Open => {
+            if r.st.head.turn.is_some() || r.st.head.active_phase.is_some() {
+                return Err(BrainError::TurnInFlight(session_id.to_owned()));
+            }
+            if Box::pin(tree_has_active_turn(brain, session_id)).await? {
+                return Err(BrainError::TurnInFlight(session_id.to_owned()));
+            }
+            r.st.head.state = SessionLifecycle::Suspending;
+            let seq = r.st.take_seq();
+            commit(
+                brain,
+                session_id,
+                &mut r.st,
+                vec![(
+                    seq,
+                    Record::State {
+                        state: SessionLifecycle::Suspending,
+                        turn: None,
+                    },
+                )],
+            )
+            .await?;
+            if Box::pin(tree_has_active_turn(brain, session_id)).await? {
+                r.st.head.state = SessionLifecycle::Open;
+                let seq = r.st.take_seq();
+                commit(
+                    brain,
+                    session_id,
+                    &mut r.st,
+                    vec![(
+                        seq,
+                        Record::State {
+                            state: SessionLifecycle::Open,
+                            turn: None,
+                        },
+                    )],
+                )
+                .await?;
+                return Err(BrainError::TurnInFlight(session_id.to_owned()));
+            }
+        }
+        SessionLifecycle::Suspending => {}
+        SessionLifecycle::Failed => {
+            return Err(BrainError::SessionFailed(
+                r.st.head
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.message.clone())
+                    .unwrap_or_default(),
+            ));
+        }
+        _ => return Err(BrainError::SessionDeleted(session_id.to_owned())),
+    }
+    continue_suspend_session(brain, session_id, resident).await?;
+    Ok(ensure_resident(brain, session_id, resident)
+        .await?
+        .st
+        .head
+        .clone())
+}
+
+async fn tree_has_active_turn(brain: &Arc<Brain>, root_id: &str) -> Result<bool> {
+    let mut parents = vec![root_id.to_owned()];
+    while let Some(parent_id) = parents.pop() {
+        let mut cursor = None;
+        loop {
+            let page = brain
+                .journal
+                .list_child_page(&crate::journal::ChildListQuery {
+                    parent_id: &parent_id,
+                    limit: 100,
+                    cursor: cursor.as_deref(),
+                })
+                .await?;
+            for child in page.sessions {
+                let head = brain.journal.get_head(&child.session_id).await?;
+                if head.doc.turn.is_some() || head.doc.active_phase.is_some() {
+                    return Ok(true);
+                }
+                parents.push(child.session_id);
+            }
+            let Some(next) = page.next_cursor else {
+                break;
+            };
+            cursor = Some(next);
+        }
+    }
+    Ok(false)
+}
+
+async fn continue_suspend_session(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+) -> Result<()> {
+    let r = ensure_resident(brain, session_id, resident).await?;
+    if r.st.head.state == SessionLifecycle::Suspended {
+        return Ok(());
+    }
+    if r.st.head.state != SessionLifecycle::Suspending {
+        return Err(BrainError::Invalid(
+            "session is not awaiting suspension".into(),
+        ));
+    }
+    if Box::pin(tree_has_active_turn(brain, session_id)).await? {
+        return Err(BrainError::TurnInFlight(session_id.to_owned()));
+    }
+    release_live_environments(brain, session_id, r).await?;
+    r.st.head.state = SessionLifecycle::Suspended;
+    let seq = r.st.take_seq();
+    commit(
+        brain,
+        session_id,
+        &mut r.st,
+        vec![(
+            seq,
+            Record::State {
+                state: SessionLifecycle::Suspended,
+                turn: None,
+            },
+        )],
+    )
+    .await
+}
+
+async fn resume_session(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+) -> Result<HeadDoc> {
+    let r = ensure_resident(brain, session_id, resident).await?;
+    if r.st.head.root_id != session_id {
+        return Err(BrainError::Invalid(
+            "only a root session can resume its shared Environment tree".into(),
+        ));
+    }
+    match r.st.head.state {
+        SessionLifecycle::Open => return Ok(r.st.head.clone()),
+        SessionLifecycle::Suspended => {}
+        SessionLifecycle::Suspending => {
+            return Err(BrainError::Invalid(
+                "session suspension has not completed".into(),
+            ));
+        }
+        SessionLifecycle::Failed => {
+            return Err(BrainError::SessionFailed(
+                r.st.head
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.message.clone())
+                    .unwrap_or_default(),
+            ));
+        }
+        _ => return Err(BrainError::SessionDeleted(session_id.to_owned())),
+    }
+    r.st.head.state = SessionLifecycle::Open;
+    let seq = r.st.take_seq();
+    commit(
+        brain,
+        session_id,
+        &mut r.st,
+        vec![(
+            seq,
+            Record::State {
+                state: SessionLifecycle::Open,
+                turn: None,
+            },
+        )],
+    )
+    .await?;
+    Ok(r.st.head.clone())
 }
 
 async fn release_component_environments(

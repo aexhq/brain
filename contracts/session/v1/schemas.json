@@ -42,6 +42,8 @@
       "type": "string",
       "enum": [
         "open",
+        "suspending",
+        "suspended",
         "ending",
         "ended",
         "deleting",
