@@ -77,14 +77,39 @@ fn typed_create_result(mut value: serde_json::Value) -> serde_json::Result<Creat
         .as_object_mut()
         .expect("test create request is an object");
     object.remove("system_prompt");
+    let model_component = b"test model";
+    let model_digest = hex::encode(Sha256::digest(model_component));
+    if let Some(model) = object
+        .get_mut("model")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        model
+            .entry("component_digest")
+            .or_insert_with(|| json!(model_digest.clone()));
+        model
+            .entry("world")
+            .or_insert_with(|| json!("aex:model/model@1.0.0"));
+    }
+    let loop_component = b"test loop";
+    let loop_digest = hex::encode(Sha256::digest(loop_component));
     object.entry("agentloop").or_insert_with(|| {
-        let bundle = b"test loop";
         json!({
-            "component_digest": hex::encode(Sha256::digest(bundle)),
-            "world": "aex:agentloop/agentloop@1.0.0",
-            "component_base64": base64::engine::general_purpose::STANDARD.encode(bundle)
+            "component_digest": loop_digest.clone(),
+            "world": "aex:agentloop/agentloop@1.0.0"
         })
     });
+    object.entry("component_artifacts").or_insert_with(|| json!([
+        {
+            "component_digest": model_digest,
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component),
+            "bytes": model_component.len()
+        },
+        {
+            "component_digest": loop_digest,
+            "component_base64": base64::engine::general_purpose::STANDARD.encode(loop_component),
+            "bytes": loop_component.len()
+        }
+    ]));
     serde_json::from_value(value)
 }
 
@@ -1901,24 +1926,6 @@ impl ToolExecutor for RecoveryExecutor {
 }
 
 #[test]
-fn base_urls_resolve_and_compatible_requires_one() {
-    assert_eq!(
-        resolve_base_url(&ApiProvider::Anthropic, None).unwrap(),
-        "https://api.anthropic.com"
-    );
-    assert_eq!(
-        resolve_base_url(&ApiProvider::Deepseek, None).unwrap(),
-        "https://api.deepseek.com"
-    );
-    assert!(resolve_base_url(&ApiProvider::OpenaiCompatible, None).is_err());
-    assert!(resolve_base_url(&ApiProvider::Openai, Some("http://insecure")).is_err());
-    assert_eq!(
-        resolve_base_url(&ApiProvider::Openai, Some("https://proxy.example/")).unwrap(),
-        "https://proxy.example"
-    );
-}
-
-#[test]
 fn child_fork_excludes_spawning_tool_use_and_partial_sibling_results() {
     let prompt = Message::user_text("delegate the focused task");
     let spawning = Message::assistant(vec![
@@ -2197,6 +2204,7 @@ fn prefix_rebuild_is_deterministic() {
         agentloop: None,
         system_prompt: Some("sp".into()),
         provider: "anthropic".into(),
+        model_component: None,
         model: "claude-x".into(),
         base_url: Some("https://api.anthropic.com".into()),
         max_output_tokens: Some(2048),
@@ -2259,29 +2267,6 @@ fn prefix_rebuild_is_deterministic() {
     assert_eq!(a.digest(), b.digest());
     assert_eq!(da, db);
     assert_eq!(a.tools.len(), 2);
-
-    let mut openai = p.clone();
-    openai.provider = "openai".into();
-    openai.model = "gpt-5.4".into();
-    openai.reasoning_effort = Some("high".into());
-    let (openai, _) = build_prefix(&openai, 512).unwrap();
-    let rendered = crate::provider::openai::OpenAiChat::render_base(&openai);
-    assert_eq!(rendered["max_completion_tokens"], 2_048);
-    assert_eq!(rendered["reasoning_effort"], "high");
-    assert!(!rendered.contains_key("max_tokens"));
-
-    let mut unsupported = p;
-    unsupported.reasoning_effort = Some("high".into());
-    let error = build_prefix(&unsupported, 512).unwrap_err();
-    assert!(matches!(error, BrainError::Invalid(_)));
-    assert!(error.to_string().contains("reasoning_effort"));
-}
-
-#[test]
-fn dialects_route_by_provider() {
-    assert_eq!(dialect_of("anthropic"), Dialect::AnthropicMessages);
-    assert_eq!(dialect_of("deepseek"), Dialect::OpenAiChat);
-    assert_eq!(dialect_of("openai"), Dialect::OpenAiChat);
 }
 
 #[test]
@@ -2344,6 +2329,7 @@ fn pending_volatile_scan_routes_by_the_seal() {
         },
     ];
     let prefix = PrefixDoc {
+        model_component: None,
         agentloop: None,
         system_prompt: None,
         provider: "anthropic".into(),
@@ -2415,6 +2401,7 @@ fn pending_volatile_scan_routes_by_the_seal() {
 #[test]
 fn pending_external_scan_recovers_only_unanswered_sealed_calls() {
     let prefix = PrefixDoc {
+        model_component: None,
         agentloop: None,
         system_prompt: None,
         provider: "anthropic".into(),
@@ -4186,14 +4173,17 @@ async fn loop_bundles_are_verified_before_registry_admission() {
         base64::engine::general_purpose::STANDARD.encode(bundle)
     };
     let digest = hex::encode(Sha256::digest(bundle));
+    let model_component = b"test model";
+    let model_digest = hex::encode(Sha256::digest(model_component));
     let wrong_digest = brain
         .create_session(
-            serde_json::from_value(json!({"model": model, "agentloop": {
+            typed_create(json!({"model": model, "agentloop": {
                 "component_digest": "0".repeat(64),
-                "world": "aex:agentloop/agentloop@1.0.0",
-                "component_base64": encoded,
-            }}))
-            .unwrap(),
+                "world": "aex:agentloop/agentloop@1.0.0"
+            }, "component_artifacts": [
+                {"component_digest": model_digest, "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component), "bytes": model_component.len()},
+                {"component_digest": "0".repeat(64), "component_base64": encoded, "bytes": bundle.len()}
+            ]})),
             None,
         )
         .await;
@@ -4203,12 +4193,13 @@ async fn loop_bundles_are_verified_before_registry_admission() {
     );
     let custom = brain
         .create_session(
-            serde_json::from_value(json!({"model": model, "agentloop": {
+            typed_create(json!({"model": model, "agentloop": {
                 "component_digest": digest,
-                "world": "aex:agentloop/agentloop@1.0.0",
-                "component_base64": encoded,
-            }}))
-            .unwrap(),
+                "world": "aex:agentloop/agentloop@1.0.0"
+            }, "component_artifacts": [
+                {"component_digest": model_digest, "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component), "bytes": model_component.len()},
+                {"component_digest": digest, "component_base64": encoded, "bytes": bundle.len()}
+            ]})),
             None,
         )
         .await;
@@ -4259,17 +4250,28 @@ async fn a_composition_registry_resolves_a_sealed_loop() {
         Arc::new(move |_| provider.clone() as Arc<dyn crate::provider::Provider>),
     );
     let bundle = b"test loop";
+    let model_component = b"test model";
     let created = brain
         .create_session(
-            serde_json::from_value(json!({
+            typed_create(json!({
                 "model": {"provider":"anthropic", "name":"registry-test", "api_key":"sk-test"},
+                "component_artifacts": [
+                    {
+                        "component_digest": hex::encode(Sha256::digest(model_component)),
+                        "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component),
+                        "bytes": model_component.len()
+                    },
+                    {
+                        "component_digest": hex::encode(Sha256::digest(bundle)),
+                        "component_base64": base64::engine::general_purpose::STANDARD.encode(bundle),
+                        "bytes": bundle.len()
+                    }
+                ],
                 "agentloop": {
                     "component_digest": hex::encode(Sha256::digest(bundle)),
-                    "world": "aex:agentloop/agentloop@1.0.0",
-                    "component_base64": base64::engine::general_purpose::STANDARD.encode(bundle)
+                    "world": "aex:agentloop/agentloop@1.0.0"
                 }
-            }))
-            .unwrap(),
+            })),
             None,
         )
         .await

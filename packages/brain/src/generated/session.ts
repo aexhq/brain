@@ -59,13 +59,12 @@ export type SessionState = "open" | "ending" | "ended" | "deleting" | "deleted" 
  */
 export type SessionTurnState = "idle" | "running";
 /**
- * openai and anthropic are certified; the rest are available uncertified.
+ * Model-component provenance label used in usage projections. It is descriptive, not a Brain execution selector.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "Provider".
  */
-export type Provider =
-  "openai" | "anthropic" | "deepseek" | "moonshot" | "xai" | "openai_compatible";
+export type Provider = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ToolName".
@@ -429,10 +428,29 @@ export interface BrainSessionAPIV1Types {
   [k: string]: unknown | undefined;
 }
 /**
+ * Create-time-only precompiled Wasm component bytes. Bindings reference this immutable artifact by digest; duplicate payloads are forbidden.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "ComponentArtifact".
+ */
+export interface ComponentArtifact {
+  component_digest: Sha256Hex;
+  component_base64: string;
+  bytes: number;
+}
+/**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ModelConfig".
  */
 export interface ModelConfig {
+  component_digest: Sha256Hex;
+  world: "aex:model/model@1.0.0";
+  /**
+   * Immutable provider-specific options from the Model component factory.
+   */
+  config?: {
+    [k: string]: unknown | undefined;
+  };
   provider: Provider;
   /**
    * Provider model id, e.g. "claude-sonnet-5" or "gpt-5".
@@ -443,7 +461,7 @@ export interface ModelConfig {
    */
   api_key: string;
   /**
-   * Override the provider endpoint (required for openai_compatible).
+   * Optional caller override passed to the Model component.
    */
   base_url?: string;
   max_output_tokens?: number;
@@ -453,17 +471,19 @@ export interface ModelConfig {
   context_window_tokens?: number;
   temperature?: number;
   /**
-   * Sealed into supported OpenAI-family Chat profiles. The Anthropic MVP profile rejects this field before any external effect instead of silently dropping it.
+   * Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly.
    */
   reasoning_effort?: "low" | "medium" | "high";
 }
 /**
- * ModelConfig without the key.
+ * The sealed Model component identity and model selection, without credentials.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ModelInfo".
  */
 export interface ModelInfo {
+  component_digest: Sha256Hex;
+  world: "aex:model/model@1.0.0";
   provider: Provider;
   name: string;
   base_url?: string;
@@ -880,7 +900,7 @@ export interface CustomerClientConfig {
   submit_retries?: number;
 }
 /**
- * One precompiled Agentloop component and immutable JSON configuration. Brain verifies the component digest and canonical world before sealing it; no server-side source compilation exists.
+ * One precompiled Agentloop binding and immutable JSON configuration. Its bytes are supplied once through component_artifacts.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "AgentloopConfig".
@@ -888,10 +908,6 @@ export interface CustomerClientConfig {
 export interface AgentloopConfig {
   component_digest: Sha256Hex;
   world: "aex:agentloop/agentloop@1.0.0";
-  /**
-   * The precompiled Wasm component, base64 (32 MiB decoded maximum). Create-time-only and staged outside the journal.
-   */
-  component_base64: string;
   /**
    * Immutable package configuration passed to every activation.
    */
@@ -916,6 +932,13 @@ export interface ChildLimits {
  */
 export interface CreateSessionRequest {
   model: ModelConfig;
+  /**
+   * Unique component payloads referenced by the session's Model, Agentloop, Tool, and Environment bindings.
+   *
+   * @minItems 1
+   * @maxItems 64
+   */
+  component_artifacts: [ComponentArtifact, ...ComponentArtifact[]];
   tools?: ToolsConfig;
   environments?: EnvironmentsConfig;
   /**

@@ -1603,6 +1603,7 @@ mod tests {
             last_message_ms: None,
             ended: false,
             prefix: PrefixDoc {
+                model_component: None,
                 agentloop: None,
                 system_prompt: Some("test".into()),
                 provider: "openai".into(),

@@ -1,15 +1,18 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use brain::config::{Dialect, ProviderKey, SealedPrefix};
+use brain::journal::ModelSelectorDoc;
 use brain::message::{Message, StopReason, Usage};
-use brain::provider::{ModelRequest, Provider, ProviderEvent};
+use brain::provider::{ModelRegistry, ModelRequest, Provider, ProviderEvent};
 use brain::{BrainError, Result};
 use brain_component_host::{
     CapabilityCall, CapabilityFailure, CapabilityHandler, CapabilityRouter, ComponentSource,
-    WorkerPool, WorkerRequest, model,
+    MODEL_WORLD, WorkerPool, WorkerRequest, component_digest, model,
 };
 use futures_util::stream::{BoxStream, StreamExt};
 use serde_json::{Value, json};
@@ -18,6 +21,7 @@ use tokio::sync::Mutex;
 use crate::Outbound;
 
 static NEXT_MODEL_INSTANCE: AtomicU64 = AtomicU64::new(1);
+static STAGING_NONCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub struct ComponentProvider {
@@ -60,6 +64,160 @@ impl ComponentProvider {
             component,
             config,
             http: Arc::new(ModelHttpCapabilities::new(outbound)),
+        })
+    }
+}
+
+pub struct ComponentModelRegistry {
+    store_dir: PathBuf,
+    pool: Arc<WorkerPool>,
+    router: Arc<CapabilityRouter>,
+    outbound: Outbound,
+    providers: StdMutex<HashMap<String, Arc<ComponentProvider>>>,
+}
+
+impl ComponentModelRegistry {
+    pub fn new(
+        store_dir: impl Into<PathBuf>,
+        pool: Arc<WorkerPool>,
+        router: Arc<CapabilityRouter>,
+        outbound: Outbound,
+    ) -> std::io::Result<Self> {
+        let store_dir = store_dir.into();
+        std::fs::create_dir_all(&store_dir)?;
+        Ok(Self {
+            store_dir,
+            pool,
+            router,
+            outbound,
+            providers: StdMutex::new(HashMap::new()),
+        })
+    }
+
+    fn path(&self, digest: &str) -> PathBuf {
+        self.store_dir.join(format!("{digest}.wasm"))
+    }
+
+    fn store(&self, digest: &str, bytes: &[u8]) -> Result<()> {
+        let target = self.path(digest);
+        if target.exists() {
+            let existing = std::fs::read(&target)
+                .map_err(|error| BrainError::Protocol(format!("Model store read: {error}")))?;
+            if component_digest(&existing) != digest {
+                return Err(BrainError::Protocol(format!(
+                    "Model store entry {digest} has different bytes"
+                )));
+            }
+            return Ok(());
+        }
+        let staged = target.with_extension(format!(
+            "staging-{}-{}",
+            std::process::id(),
+            STAGING_NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&staged, bytes)
+            .and_then(|()| std::fs::rename(&staged, &target))
+            .map_err(|error| BrainError::Protocol(format!("Model store write: {error}")))
+    }
+}
+
+impl ModelRegistry for ComponentModelRegistry {
+    fn resolve(&self, selector: &ModelSelectorDoc) -> Result<Arc<dyn Provider>> {
+        if selector.world != MODEL_WORLD {
+            return Err(BrainError::Invalid(format!(
+                "Model world {:?} is not supported; expected {MODEL_WORLD:?}",
+                selector.world
+            )));
+        }
+        let config_json = serde_json::to_string(&selector.config)
+            .map_err(|error| BrainError::Protocol(format!("Model config: {error}")))?;
+        let cache_key = format!(
+            "{}:{}",
+            selector.component_digest,
+            component_digest(config_json.as_bytes())
+        );
+        if let Some(provider) = self
+            .providers
+            .lock()
+            .expect("Model providers")
+            .get(&cache_key)
+        {
+            return Ok(provider.clone());
+        }
+        let path = self.path(&selector.component_digest);
+        if !path.is_file() {
+            return Err(BrainError::Invalid(format!(
+                "Model component {} is absent from this Brain store",
+                selector.component_digest
+            )));
+        }
+        let provider = Arc::new(ComponentProvider::new(
+            Dialect::OpenAiChat,
+            self.pool.clone(),
+            self.router.clone(),
+            ComponentSource {
+                path,
+                sha256: selector.component_digest.clone(),
+            },
+            Value::Object(selector.config.clone()),
+            self.outbound.clone(),
+        )?);
+        self.providers
+            .lock()
+            .expect("Model providers")
+            .insert(cache_key, provider.clone());
+        Ok(provider)
+    }
+
+    fn admit(
+        &self,
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        provider: &str,
+        config: &serde_json::Map<String, Value>,
+    ) -> Result<ModelSelectorDoc> {
+        if world != MODEL_WORLD {
+            return Err(BrainError::Invalid(format!(
+                "Model world {world:?} is not supported; expected {MODEL_WORLD:?}"
+            )));
+        }
+        self.store(component_digest, component)?;
+        Ok(ModelSelectorDoc {
+            component_digest: component_digest.into(),
+            component_bytes: component.len() as u64,
+            world: world.into(),
+            provider: provider.into(),
+            config: config.clone(),
+        })
+    }
+}
+
+pub async fn registry_with_component_store(
+    store_dir: &Path,
+    component_host: &Path,
+    workers: usize,
+    outbound: Outbound,
+) -> anyhow::Result<Arc<dyn ModelRegistry>> {
+    let router = CapabilityRouter::new(Arc::new(RejectCapabilities));
+    let pool = WorkerPool::with_capabilities(component_host, workers, router.clone()).await?;
+    Ok(Arc::new(ComponentModelRegistry::new(
+        store_dir, pool, router, outbound,
+    )?))
+}
+
+struct RejectCapabilities;
+
+#[async_trait]
+impl CapabilityHandler for RejectCapabilities {
+    async fn call(&self, call: CapabilityCall) -> std::result::Result<Value, CapabilityFailure> {
+        Err(CapabilityFailure {
+            code: "capability_unbound".into(),
+            message: format!(
+                "no kernel capability handler is bound for {} instance {:?}",
+                call.world, call.instance_id
+            ),
+            retryable: true,
         })
     }
 }

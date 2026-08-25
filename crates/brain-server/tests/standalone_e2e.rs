@@ -3,16 +3,12 @@
 //! interleaved sessions prove workspace, journal, provider-key, and managed-secret isolation.
 
 use base64::Engine as _;
-use brain::config::Dialect;
-use brain::provider::Provider;
-use brain::provider::fake::{FakeProvider, Scripted};
 use brain::session::BrainConfig;
 use brain_standalone::durable_local_parts;
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const OPERATOR_TOKEN: &str = "standalone-e2e-operator";
@@ -82,6 +78,13 @@ fn create_body(
             .join("../brain-component-host/guest/dist/agentloop.component.wasm"),
     )
     .expect("run npm run build:components before the standalone gate");
+    let model_component = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../brain-component-host/guest/dist/model.component.wasm"),
+    )
+    .expect("run npm run build:components before the standalone gate");
+    let loop_digest = hex::encode(Sha256::digest(&loop_component));
+    let model_digest = hex::encode(Sha256::digest(&model_component));
     let manifest = json!({
         "profile":"computer/v1",
         "target":"linux-amd64",
@@ -97,11 +100,33 @@ fn create_body(
     });
     let manifest_digest = brain_protocol::contract::canonical_digest(&manifest).unwrap();
     json!({
-        "model": {"provider":provider, "name":model, "api_key":api_key},
+        "component_artifacts": [
+            {
+                "component_digest": loop_digest,
+                "component_base64": base64::engine::general_purpose::STANDARD.encode(&loop_component),
+                "bytes": loop_component.len(),
+            },
+            {
+                "component_digest": model_digest,
+                "component_base64": base64::engine::general_purpose::STANDARD.encode(&model_component),
+                "bytes": model_component.len(),
+            }
+        ],
+        "model": {
+            "component_digest": model_digest,
+            "world": "aex:model/model@1.0.0",
+            "config": {
+                "toolName": "workspace_probe",
+                "toolInput": {"value": if provider == "anthropic" { ALPHA_VALUE } else { BETA_VALUE }},
+                "finalText": if provider == "anthropic" { "ALPHA_PUBLIC_RESULT" } else { "BETA_PUBLIC_RESULT" },
+            },
+            "provider":provider,
+            "name":model,
+            "api_key":api_key
+        },
         "agentloop": {
-            "component_digest": hex::encode(Sha256::digest(&loop_component)),
+            "component_digest": loop_digest,
             "world": "aex:agentloop/agentloop@1.0.0",
-            "component_base64": base64::engine::general_purpose::STANDARD.encode(loop_component),
             "config": {"fixture":"sequential"},
         },
         "tools": {"items":[{
@@ -220,7 +245,7 @@ async fn finite_replay(http: &Client, base: &str, session_id: &str) -> String {
 }
 
 async fn wait_for_turn(http: &Client, base: &str, session_id: &str) -> String {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let replay = finite_replay(http, base, session_id).await;
         assert!(!replay.contains("event: turn.failed"), "{replay}");
@@ -365,18 +390,6 @@ fn assert_no_plaintext_secrets(root: &Path) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
     let temp = TempDir::new();
-    let alpha = Arc::new(FakeProvider::new(Dialect::AnthropicMessages));
-    let beta = Arc::new(FakeProvider::new(Dialect::OpenAiChat));
-    alpha.script([
-        Scripted::tool("workspace_probe", json!({"value":ALPHA_VALUE})),
-        Scripted::Text("ALPHA_PUBLIC_RESULT".into()),
-    ]);
-    beta.script([
-        Scripted::tool("workspace_probe", json!({"value":BETA_VALUE})),
-        Scripted::Text("BETA_PUBLIC_RESULT".into()),
-    ]);
-    let alpha_factory = alpha.clone();
-    let beta_factory = beta.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind local HTTP");
@@ -391,10 +404,7 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
         },
         advertised_address: address.to_string(),
         transport_urls: None,
-        provider_factory: Some(Arc::new(move |dialect| match dialect {
-            Dialect::AnthropicMessages => alpha_factory.clone() as Arc<dyn Provider>,
-            Dialect::OpenAiChat => beta_factory.clone() as Arc<dyn Provider>,
-        })),
+        provider_factory: None,
         loophost: Some(brain_server::LoophostOptions {
             component_host: PathBuf::from(env!("CARGO_BIN_EXE_brain-component-host")),
             workers: 2,
@@ -521,8 +531,6 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
             );
         }
     }
-    alpha.assert_drained(2, "standalone alpha").unwrap();
-    beta.assert_drained(2, "standalone beta").unwrap();
 
     // The Node runner, not the test process, created both files in distinct physical workspaces.
     let workspace_values = walkdir::WalkDir::new(temp.0.join("local-environment/workspaces"))

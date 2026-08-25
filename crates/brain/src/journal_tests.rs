@@ -326,6 +326,7 @@ fn head_doc_round_trips() {
         last_message_ms: None,
         ended: false,
         prefix: PrefixDoc {
+            model_component: None,
             agentloop: None,
             system_prompt: Some("sp".into()),
             provider: "anthropic".into(),
@@ -411,6 +412,7 @@ fn head_doc() -> HeadDoc {
         last_message_ms: None,
         ended: false,
         prefix: PrefixDoc {
+            model_component: None,
             agentloop: None,
             system_prompt: None,
             provider: "anthropic".into(),

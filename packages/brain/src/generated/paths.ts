@@ -940,13 +940,14 @@ export type components = {
          * @enum {string}
          */
         SessionTurnState: "idle" | "running";
-        /**
-         * @description openai and anthropic are certified; the rest are available uncertified.
-         * @enum {string}
-         */
-        Provider: "openai" | "anthropic" | "deepseek" | "moonshot" | "xai" | "openai_compatible";
-        /** @description ModelConfig without the key. */
+        Sha256Hex: string;
+        /** @description Model-component provenance label used in usage projections. It is descriptive, not a Brain execution selector. */
+        Provider: string;
+        /** @description The sealed Model component identity and model selection, without credentials. */
         ModelInfo: {
+            component_digest: components["schemas"]["Sha256Hex"];
+            /** @constant */
+            world: "aex:model/model@1.0.0";
             provider: components["schemas"]["Provider"];
             name: string;
             /** Format: uri */
@@ -973,7 +974,6 @@ export type components = {
             message: string;
             at: components["schemas"]["Timestamp"];
         };
-        Sha256Hex: string;
         /** @description The sealed agentloop identity of a session. */
         AgentloopInfo: {
             component_digest: components["schemas"]["Sha256Hex"];
@@ -1027,6 +1027,16 @@ export type components = {
             next_cursor?: string;
         };
         ModelConfig: {
+            component_digest: components["schemas"]["Sha256Hex"];
+            /** @constant */
+            world: "aex:model/model@1.0.0";
+            /**
+             * @description Immutable provider-specific options from the Model component factory.
+             * @default {}
+             */
+            config?: {
+                [key: string]: unknown;
+            };
             provider: components["schemas"]["Provider"];
             /** @description Provider model id, e.g. "claude-sonnet-5" or "gpt-5". */
             name: string;
@@ -1034,7 +1044,7 @@ export type components = {
             api_key: string;
             /**
              * Format: uri
-             * @description Override the provider endpoint (required for openai_compatible).
+             * @description Optional caller override passed to the Model component.
              */
             base_url?: string;
             max_output_tokens?: number;
@@ -1042,10 +1052,16 @@ export type components = {
             context_window_tokens?: number;
             temperature?: number;
             /**
-             * @description Sealed into supported OpenAI-family Chat profiles. The Anthropic MVP profile rejects this field before any external effect instead of silently dropping it.
+             * @description Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly.
              * @enum {string}
              */
             reasoning_effort?: "low" | "medium" | "high";
+        };
+        /** @description Create-time-only precompiled Wasm component bytes. Bindings reference this immutable artifact by digest; duplicate payloads are forbidden. */
+        ComponentArtifact: {
+            component_digest: components["schemas"]["Sha256Hex"];
+            component_base64: string;
+            bytes: number;
         };
         ToolName: string;
         /** @description The model-visible half of one Tool. Array order is preserved exactly in the immutable model prefix. */
@@ -1180,13 +1196,11 @@ export type components = {
             /** @default 1 */
             submit_retries?: number;
         };
-        /** @description One precompiled Agentloop component and immutable JSON configuration. Brain verifies the component digest and canonical world before sealing it; no server-side source compilation exists. */
+        /** @description One precompiled Agentloop binding and immutable JSON configuration. Its bytes are supplied once through component_artifacts. */
         AgentloopConfig: {
             component_digest: components["schemas"]["Sha256Hex"];
             /** @constant */
             world: "aex:agentloop/agentloop@1.0.0";
-            /** @description The precompiled Wasm component, base64 (32 MiB decoded maximum). Create-time-only and staged outside the journal. */
-            component_base64: string;
             /**
              * @description Immutable package configuration passed to every activation.
              * @default {}
@@ -1206,6 +1220,8 @@ export type components = {
         /** @description Everything here except metadata is part of the immutable prefix: it cannot change for the life of the session. */
         CreateSessionRequest: {
             model: components["schemas"]["ModelConfig"];
+            /** @description Unique component payloads referenced by the session's Model, Agentloop, Tool, and Environment bindings. */
+            component_artifacts: components["schemas"]["ComponentArtifact"][];
             tools?: components["schemas"]["ToolsConfig"];
             environments?: components["schemas"]["EnvironmentsConfig"];
             /** @description Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal. */

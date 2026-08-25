@@ -2,11 +2,11 @@ import type {
   CreateSessionRequest,
   Event,
   MessageAccepted,
-  Provider,
   Session as SessionData,
   SessionList as SessionListData,
   SessionState,
 } from "./generated/session.js";
+import { prepareComponents, type ComponentExtension } from "./components.js";
 
 import {
   AbortError,
@@ -25,7 +25,9 @@ import { SessionChildren, SessionSandbox, SessionStorage } from "./resources.js"
 export type SessionInput = string;
 
 export interface ModelOptions {
-  provider: Provider;
+  component: ComponentExtension<"model">;
+  /** Usage-projection provenance. Defaults to the component's metadata name. */
+  provider?: string;
   name: string;
   apiKey: string;
   baseUrl?: string;
@@ -36,6 +38,7 @@ export interface ModelOptions {
 
 export interface CreateSessionOptions {
   model: ModelOptions;
+  agentloop: ComponentExtension<"agentloop">;
   /** Omitted or empty grants no tools. A non-empty list is the exact grant. */
   tools?: readonly Tool[];
   systemPrompt?: string;
@@ -80,7 +83,9 @@ export interface SessionList {
 }
 
 export interface ModelSummary {
-  provider: Provider;
+  provider: string;
+  componentDigest: string;
+  world: string;
   name: string;
   baseUrl?: string;
 }
@@ -110,10 +115,23 @@ export class Sessions {
   async create(options: CreateSessionOptions, request: RequestOptions = {}): Promise<Session> {
     if (this.#closed) throw new SessionError("Brain client is closed");
     const compiledTools = await compileTools(options.tools);
+    const components = await prepareComponents([options.model.component, options.agentloop]);
+    const modelComponent = components.bindings[0];
+    const agentloop = components.bindings[1];
+    if (modelComponent === undefined || agentloop === undefined) {
+      throw new TypeError("Session Model and Agentloop components are required");
+    }
+    const provider = options.model.provider ?? options.model.component.metadata.name;
+    if (provider === undefined) {
+      throw new TypeError("Model provider provenance requires model.provider or component metadata.name");
+    }
     await this.#ensureCustomerEnvironment(compiledTools.clientRegistrations, request.signal);
     const body = {
       model: {
-        provider: options.model.provider,
+        component_digest: modelComponent.component_digest,
+        world: modelComponent.world,
+        config: modelComponent.config,
+        provider,
         name: options.model.name,
         api_key: options.model.apiKey,
         ...(options.model.baseUrl === undefined ? {} : { base_url: options.model.baseUrl }),
@@ -125,6 +143,12 @@ export class Sessions {
           ? {}
           : { reasoning_effort: options.model.reasoningEffort }),
       },
+      agentloop: {
+        component_digest: agentloop.component_digest,
+        world: agentloop.world,
+        config: agentloop.config,
+      },
+      component_artifacts: components.artifacts,
       tools: {
         items: compiledTools.items,
       },
@@ -287,6 +311,8 @@ export class Session implements SessionSummary {
   get model(): ModelSummary {
     return {
       provider: this.#data.model.provider,
+      componentDigest: this.#data.model.component_digest,
+      world: this.#data.model.world,
       name: this.#data.model.name,
       ...(this.#data.model.base_url === undefined ? {} : { baseUrl: this.#data.model.base_url }),
     };

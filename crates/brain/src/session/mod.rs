@@ -34,9 +34,7 @@ use crate::{BrainError, Result};
 use base64::Engine;
 use brain_protocol::environment::TerminalOutcome;
 use brain_protocol::session::ToolOutcome;
-use brain_protocol::session::{
-    self, CreateSessionRequest, MessageRequestContent, Provider as ApiProvider,
-};
+use brain_protocol::session::{self, CreateSessionRequest, MessageRequestContent};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -72,6 +70,8 @@ pub struct Brain {
     pub external_executor: Arc<dyn ToolExecutor>,
     /// Resolves each session's sealed selector to the loop implementation driving its turns.
     pub agentloop_registry: Arc<dyn crate::agentloop::AgentloopRegistry>,
+    /// Resolves each session's sealed selector to its Model component.
+    pub model_registry: Arc<dyn crate::provider::ModelRegistry>,
     /// Durable per-session object storage. Hosted composition supplies this adapter; `None` means
     /// the storage resource is unavailable, never an in-memory production fallback.
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
@@ -84,7 +84,6 @@ pub struct Brain {
     /// absolute socket and observation callback URLs.
     pub customer: Option<Arc<crate::customer::CustomerCoordinator>>,
     pub compactor: Arc<dyn crate::compact::CompactionPort>,
-    provider_factory: ProviderFactory,
     turn_permits: Arc<Semaphore>,
     create_permits: Arc<Semaphore>,
     sessions: Mutex<HashMap<String, mpsc::Sender<Command>>>,
@@ -177,6 +176,8 @@ pub struct BrainServices {
     pub compactor: Option<Arc<dyn crate::compact::CompactionPort>>,
     /// Selector-to-loop resolution. Compositions must supply it explicitly.
     pub agentloop_registry: Option<Arc<dyn crate::agentloop::AgentloopRegistry>>,
+    /// Selector-to-Model resolution. Production compositions must supply it explicitly.
+    pub model_registry: Option<Arc<dyn crate::provider::ModelRegistry>>,
 }
 
 fn hash_create_key(key: &str) -> String {
@@ -634,15 +635,20 @@ impl Brain {
         #[cfg(test)]
         let agentloop_registry =
             agentloop_registry.or_else(|| Some(Arc::new(crate::agentloop::TestAgentloopRegistry)));
+        let model_registry = services.model_registry.unwrap_or_else(|| {
+            Arc::new(FactoryModelRegistry {
+                factory: provider_factory.clone(),
+            })
+        });
         Arc::new(Self {
             agentloop_registry: agentloop_registry
                 .expect("BrainServices.agentloop_registry is required"),
+            model_registry,
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
             create_permits: Arc::new(Semaphore::new(cfg.max_concurrent_creates)),
             journal,
             custody,
-            provider_factory,
             hub: Arc::new(EventHub::with_max_followers(cfg.max_event_followers)),
             sessions: Mutex::new(HashMap::new()),
             draining: AtomicBool::new(false),
@@ -1017,16 +1023,20 @@ impl Brain {
         }
 
         // Validate and resolve the sealed configuration.
-        let provider = provider_name(&req.model.provider);
-        let base_url = resolve_base_url(
-            &req.model.provider,
-            req.model.base_url.as_ref().map(|value| value.as_str()),
-        )?;
-        let checked_base = self.outbound.check_url(&base_url)?;
-        if checked_base.query().is_some() {
-            return Err(BrainError::Invalid(
-                "model.base_url must not contain a query".into(),
-            ));
+        let provider = req.model.provider.as_str();
+        let base_url = req
+            .model
+            .base_url
+            .as_ref()
+            .map(|value| value.as_str().trim_end_matches('/').to_owned())
+            .unwrap_or_default();
+        if !base_url.is_empty() {
+            let checked_base = self.outbound.check_url(&base_url)?;
+            if checked_base.query().is_some() {
+                return Err(BrainError::Invalid(
+                    "model.base_url must not contain a query".into(),
+                ));
+            }
         }
         if req.model.api_key.is_empty() {
             return Err(BrainError::Invalid(
@@ -1039,6 +1049,47 @@ impl Brain {
             .ok_or_else(|| {
                 BrainError::Invalid("model.api_key is not a valid HTTP header value".into())
             })?;
+        let mut component_artifacts = HashMap::with_capacity(req.component_artifacts.len());
+        for (index, artifact) in req.component_artifacts.iter().enumerate() {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(artifact.component_base64.as_bytes())
+                .map_err(|_| {
+                    BrainError::Invalid(format!(
+                        "component_artifacts[{index}].component_base64 is not valid base64"
+                    ))
+                })?;
+            if bytes.len() != artifact.bytes.get() as usize {
+                return Err(BrainError::Invalid(format!(
+                    "component_artifacts[{index}].bytes does not match decoded content"
+                )));
+            }
+            let digest = hex::encode(Sha256::digest(&bytes));
+            if digest != artifact.component_digest.as_str() {
+                return Err(BrainError::Invalid(format!(
+                    "component_artifacts[{index}] digest is {digest}, not the declared {}",
+                    artifact.component_digest.as_str()
+                )));
+            }
+            if component_artifacts.insert(digest, bytes).is_some() {
+                return Err(BrainError::Invalid(format!(
+                    "component_artifacts[{index}] repeats a component digest"
+                )));
+            }
+        }
+        let model_digest = req.model.component_digest.as_str();
+        let model_component = component_artifacts.get(model_digest).ok_or_else(|| {
+            BrainError::Invalid(format!(
+                "Model component {model_digest} has no supplied artifact"
+            ))
+        })?;
+        let model_selector = self.model_registry.admit(
+            model_digest,
+            &req.model.world,
+            model_component,
+            provider,
+            &req.model.config,
+        )?;
+        self.model_registry.resolve(&model_selector)?;
         if req.metadata.len() > 16 {
             return Err(BrainError::Invalid("metadata: at most 16 pairs".into()));
         }
@@ -1356,37 +1407,34 @@ impl Brain {
         let brain_protocol::session::AgentloopConfig {
             component_digest,
             world,
-            component_base64,
             config,
         } = &req.agentloop;
-        use base64::Engine as _;
-        let component = base64::engine::general_purpose::STANDARD
-            .decode(component_base64.as_str())
-            .map_err(|_| {
-                BrainError::Invalid("agentloop.component_base64 is not valid base64".into())
-            })?;
-        if component.is_empty() || component.len() > 32 * 1024 * 1024 {
-            return Err(BrainError::Invalid(
-                "agentloop component must be between 1 byte and 32 MiB".into(),
-            ));
-        }
-        let digest = hex::encode(Sha256::digest(&component));
-        if digest != component_digest.as_str() {
-            return Err(BrainError::Invalid(format!(
-                "agentloop component digest is {digest}, not the declared {}",
-                component_digest.as_str()
-            )));
-        }
+        let digest = component_digest.as_str();
+        let component = component_artifacts.get(digest).ok_or_else(|| {
+            BrainError::Invalid(format!(
+                "Agentloop component {digest} has no supplied artifact"
+            ))
+        })?;
         let agentloop_selector =
             self.agentloop_registry
-                .admit(&digest, world.as_str(), &component, config)?;
+                .admit(digest, world.as_str(), component, config)?;
         self.agentloop_registry.resolve(&agentloop_selector)?;
+        let referenced_components = HashSet::from([model_digest, digest]);
+        if let Some(unused) = component_artifacts
+            .keys()
+            .find(|candidate| !referenced_components.contains(candidate.as_str()))
+        {
+            return Err(BrainError::Invalid(format!(
+                "unreferenced component artifact {unused}"
+            )));
+        }
 
         let now = crate::wall_ms();
         let mut prefix = PrefixDoc {
             agentloop: Some(agentloop_selector),
             system_prompt: None,
             provider: provider.to_string(),
+            model_component: Some(model_selector),
             model: req.model.name.to_string(),
             base_url: Some(base_url),
             max_output_tokens: req.model.max_output_tokens.map(|n| n.get()),
@@ -3205,6 +3253,33 @@ impl Brain {
 
     pub async fn head(&self, session_id: &str) -> Result<Head> {
         self.journal.get_head(session_id).await
+    }
+}
+
+struct FactoryModelRegistry {
+    factory: ProviderFactory,
+}
+
+impl crate::provider::ModelRegistry for FactoryModelRegistry {
+    fn resolve(&self, selector: &crate::journal::ModelSelectorDoc) -> Result<Arc<dyn Provider>> {
+        Ok((self.factory)(dialect_of(&selector.provider)))
+    }
+
+    fn admit(
+        &self,
+        component_digest: &str,
+        world: &str,
+        component: &[u8],
+        provider: &str,
+        config: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::journal::ModelSelectorDoc> {
+        Ok(crate::journal::ModelSelectorDoc {
+            component_digest: component_digest.into(),
+            component_bytes: component.len() as u64,
+            world: world.into(),
+            provider: provider.into(),
+            config: config.clone(),
+        })
     }
 }
 
@@ -5459,7 +5534,7 @@ fn turn_run(
     cancel: CancellationToken,
     message: Option<crate::turn::AdmittedMessage>,
 ) -> Result<TurnRun> {
-    let (prefix, dialect) = build_prefix(&r.st.head.prefix, brain.cfg.default_max_rounds)?;
+    let (prefix, _) = build_prefix(&r.st.head.prefix, brain.cfg.default_max_rounds)?;
     let base_url = r.st.head.prefix.base_url.clone().unwrap_or_default();
     let session = SessionConfig::new(prefix.clone(), r.key.clone(), base_url);
     Ok(TurnRun {
@@ -5479,7 +5554,11 @@ fn turn_run(
         turn_id: turn_id.to_string(),
         prefix,
         session,
-        provider: (brain.provider_factory)(dialect),
+        provider: brain.model_registry.resolve(
+            r.st.head.prefix.model_component.as_ref().ok_or_else(|| {
+                BrainError::Journal("session has no sealed Model component".into())
+            })?,
+        )?,
         provider_name: r.st.head.prefix.provider.clone(),
         journal: brain.journal.clone(),
         hub: brain.hub.clone(),
@@ -6965,17 +7044,6 @@ pub(crate) async fn write_storage_inline_state(
 // ---------------------------------------------------------------------------------------------
 // Mapping helpers
 // ---------------------------------------------------------------------------------------------
-
-/// Explicit Chat-Completions compatibility profile. OpenAI and generic compatible endpoints
-/// opt into the current OpenAI field; the named legacy-compatible providers retain the field
-/// their published Chat APIs specify. This choice is sealed into the request digest.
-fn output_token_parameter(provider: &str) -> OutputTokenParameter {
-    match provider {
-        "deepseek" | "moonshot" | "xai" | "anthropic" => OutputTokenParameter::MaxTokens,
-        "openai" | "openai_compatible" => OutputTokenParameter::MaxCompletionTokens,
-        _ => OutputTokenParameter::MaxCompletionTokens,
-    }
-}
 
 fn default_system_prompt() -> String {
     "You are an autonomous engineering agent running in an isolated Linux workspace \

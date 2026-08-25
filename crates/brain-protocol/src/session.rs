@@ -102,26 +102,19 @@ impl<'de> ::serde::Deserialize<'de> for AgentId {
             })
     }
 }
-#[doc = "One precompiled Agentloop component and immutable JSON configuration. Brain verifies the component digest and canonical world before sealing it; no server-side source compilation exists."]
+#[doc = "One precompiled Agentloop binding and immutable JSON configuration. Its bytes are supplied once through component_artifacts."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"One precompiled Agentloop component and immutable JSON configuration. Brain verifies the component digest and canonical world before sealing it; no server-side source compilation exists.\","]
+#[doc = "  \"description\": \"One precompiled Agentloop binding and immutable JSON configuration. Its bytes are supplied once through component_artifacts.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
-#[doc = "    \"component_base64\","]
 #[doc = "    \"component_digest\","]
 #[doc = "    \"world\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
-#[doc = "    \"component_base64\": {"]
-#[doc = "      \"description\": \"The precompiled Wasm component, base64 (32 MiB decoded maximum). Create-time-only and staged outside the journal.\","]
-#[doc = "      \"writeOnly\": true,"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"maxLength\": 44739244"]
-#[doc = "    },"]
 #[doc = "    \"component_digest\": {"]
 #[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
 #[doc = "    },"]
@@ -143,83 +136,11 @@ impl<'de> ::serde::Deserialize<'de> for AgentId {
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct AgentloopConfig {
-    #[doc = "The precompiled Wasm component, base64 (32 MiB decoded maximum). Create-time-only and staged outside the journal."]
-    pub component_base64: AgentloopConfigComponentBase64,
     pub component_digest: Sha256Hex,
     #[doc = "Immutable package configuration passed to every activation."]
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
     pub config: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
     pub world: ::std::string::String,
-}
-#[doc = "The precompiled Wasm component, base64 (32 MiB decoded maximum). Create-time-only and staged outside the journal."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"description\": \"The precompiled Wasm component, base64 (32 MiB decoded maximum). Create-time-only and staged outside the journal.\","]
-#[doc = "  \"writeOnly\": true,"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 44739244"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct AgentloopConfigComponentBase64(::std::string::String);
-impl ::std::ops::Deref for AgentloopConfigComponentBase64 {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<AgentloopConfigComponentBase64> for ::std::string::String {
-    fn from(value: AgentloopConfigComponentBase64) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for AgentloopConfigComponentBase64 {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 44739244usize {
-            return Err("longer than 44739244 characters".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for AgentloopConfigComponentBase64 {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for AgentloopConfigComponentBase64 {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for AgentloopConfigComponentBase64 {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for AgentloopConfigComponentBase64 {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
 }
 #[doc = "The sealed agentloop identity of a session."]
 #[doc = r""]
@@ -551,6 +472,114 @@ impl ::std::default::Default for ChildLimits {
         }
     }
 }
+#[doc = "Create-time-only precompiled Wasm component bytes. Bindings reference this immutable artifact by digest; duplicate payloads are forbidden."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"Create-time-only precompiled Wasm component bytes. Bindings reference this immutable artifact by digest; duplicate payloads are forbidden.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"bytes\","]
+#[doc = "    \"component_base64\","]
+#[doc = "    \"component_digest\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"bytes\": {"]
+#[doc = "      \"type\": \"integer\","]
+#[doc = "      \"maximum\": 33554432.0,"]
+#[doc = "      \"minimum\": 1.0"]
+#[doc = "    },"]
+#[doc = "    \"component_base64\": {"]
+#[doc = "      \"writeOnly\": true,"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 44739244"]
+#[doc = "    },"]
+#[doc = "    \"component_digest\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentArtifact {
+    pub bytes: ::std::num::NonZeroU64,
+    pub component_base64: ComponentArtifactComponentBase64,
+    pub component_digest: Sha256Hex,
+}
+#[doc = "`ComponentArtifactComponentBase64`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"writeOnly\": true,"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 44739244"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct ComponentArtifactComponentBase64(::std::string::String);
+impl ::std::ops::Deref for ComponentArtifactComponentBase64 {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<ComponentArtifactComponentBase64> for ::std::string::String {
+    fn from(value: ComponentArtifactComponentBase64) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for ComponentArtifactComponentBase64 {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 44739244usize {
+            return Err("longer than 44739244 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for ComponentArtifactComponentBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for ComponentArtifactComponentBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ComponentArtifactComponentBase64 {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for ComponentArtifactComponentBase64 {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
+    }
+}
 #[doc = "`ContentPart`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -835,6 +864,7 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"agentloop\","]
+#[doc = "    \"component_artifacts\","]
 #[doc = "    \"model\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
@@ -846,6 +876,16 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[doc = "    },"]
 #[doc = "    \"client\": {"]
 #[doc = "      \"$ref\": \"#/$defs/CustomerClientConfig\""]
+#[doc = "    },"]
+#[doc = "    \"component_artifacts\": {"]
+#[doc = "      \"description\": \"Unique component payloads referenced by the session's Model, Agentloop, Tool, and Environment bindings.\","]
+#[doc = "      \"writeOnly\": true,"]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"$ref\": \"#/$defs/ComponentArtifact\""]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 64,"]
+#[doc = "      \"minItems\": 1"]
 #[doc = "    },"]
 #[doc = "    \"environments\": {"]
 #[doc = "      \"$ref\": \"#/$defs/EnvironmentsConfig\""]
@@ -922,6 +962,8 @@ pub struct CreateSessionRequest {
     pub children: ::std::option::Option<ChildLimits>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub client: ::std::option::Option<CustomerClientConfig>,
+    #[doc = "Unique component payloads referenced by the session's Model, Agentloop, Tool, and Environment bindings."]
+    pub component_artifacts: ::std::vec::Vec<ComponentArtifact>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub environments: ::std::option::Option<EnvironmentsConfig>,
     #[serde(
@@ -4091,8 +4133,10 @@ impl<'de> ::serde::Deserialize<'de> for ModelAttemptId {
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"api_key\","]
+#[doc = "    \"component_digest\","]
 #[doc = "    \"name\","]
-#[doc = "    \"provider\""]
+#[doc = "    \"provider\","]
+#[doc = "    \"world\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"api_key\": {"]
@@ -4103,10 +4147,19 @@ impl<'de> ::serde::Deserialize<'de> for ModelAttemptId {
 #[doc = "      \"minLength\": 1"]
 #[doc = "    },"]
 #[doc = "    \"base_url\": {"]
-#[doc = "      \"description\": \"Override the provider endpoint (required for openai_compatible).\","]
+#[doc = "      \"description\": \"Optional caller override passed to the Model component.\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"uri\","]
 #[doc = "      \"maxLength\": 2048"]
+#[doc = "    },"]
+#[doc = "    \"component_digest\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "    },"]
+#[doc = "    \"config\": {"]
+#[doc = "      \"description\": \"Immutable provider-specific options from the Model component factory.\","]
+#[doc = "      \"default\": {},"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"context_window_tokens\": {"]
 #[doc = "      \"description\": \"Immutable model context window. Omission seals the conservative neutral default of 32768 tokens; custom model names are never guessed from a mutable catalog.\","]
@@ -4129,7 +4182,7 @@ impl<'de> ::serde::Deserialize<'de> for ModelAttemptId {
 #[doc = "      \"$ref\": \"#/$defs/Provider\""]
 #[doc = "    },"]
 #[doc = "    \"reasoning_effort\": {"]
-#[doc = "      \"description\": \"Sealed into supported OpenAI-family Chat profiles. The Anthropic MVP profile rejects this field before any external effect instead of silently dropping it.\","]
+#[doc = "      \"description\": \"Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly.\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"enum\": ["]
 #[doc = "        \"low\","]
@@ -4141,6 +4194,10 @@ impl<'de> ::serde::Deserialize<'de> for ModelAttemptId {
 #[doc = "      \"type\": \"number\","]
 #[doc = "      \"maximum\": 2.0,"]
 #[doc = "      \"minimum\": 0.0"]
+#[doc = "    },"]
+#[doc = "    \"world\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"aex:model/model@1.0.0\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"additionalProperties\": false"]
@@ -4152,9 +4209,13 @@ impl<'de> ::serde::Deserialize<'de> for ModelAttemptId {
 pub struct ModelConfig {
     #[doc = "BYOK. Encrypted per session, never returned, never logged."]
     pub api_key: ModelConfigApiKey,
-    #[doc = "Override the provider endpoint (required for openai_compatible)."]
+    #[doc = "Optional caller override passed to the Model component."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub base_url: ::std::option::Option<ModelConfigBaseUrl>,
+    pub component_digest: Sha256Hex,
+    #[doc = "Immutable provider-specific options from the Model component factory."]
+    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    pub config: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
     #[doc = "Immutable model context window. Omission seals the conservative neutral default of 32768 tokens; custom model names are never guessed from a mutable catalog."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub context_window_tokens: ::std::option::Option<i64>,
@@ -4163,11 +4224,12 @@ pub struct ModelConfig {
     #[doc = "Provider model id, e.g. \"claude-sonnet-5\" or \"gpt-5\"."]
     pub name: ModelConfigName,
     pub provider: Provider,
-    #[doc = "Sealed into supported OpenAI-family Chat profiles. The Anthropic MVP profile rejects this field before any external effect instead of silently dropping it."]
+    #[doc = "Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub reasoning_effort: ::std::option::Option<ModelConfigReasoningEffort>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub temperature: ::std::option::Option<f64>,
+    pub world: ::std::string::String,
 }
 #[doc = "BYOK. Encrypted per session, never returned, never logged."]
 #[doc = r""]
@@ -4243,13 +4305,13 @@ impl<'de> ::serde::Deserialize<'de> for ModelConfigApiKey {
             })
     }
 }
-#[doc = "Override the provider endpoint (required for openai_compatible)."]
+#[doc = "Optional caller override passed to the Model component."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Override the provider endpoint (required for openai_compatible).\","]
+#[doc = "  \"description\": \"Optional caller override passed to the Model component.\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"format\": \"uri\","]
 #[doc = "  \"maxLength\": 2048"]
@@ -4386,13 +4448,13 @@ impl<'de> ::serde::Deserialize<'de> for ModelConfigName {
             })
     }
 }
-#[doc = "Sealed into supported OpenAI-family Chat profiles. The Anthropic MVP profile rejects this field before any external effect instead of silently dropping it."]
+#[doc = "Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Sealed into supported OpenAI-family Chat profiles. The Anthropic MVP profile rejects this field before any external effect instead of silently dropping it.\","]
+#[doc = "  \"description\": \"Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly.\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"enum\": ["]
 #[doc = "    \"low\","]
@@ -4464,23 +4526,28 @@ impl ::std::convert::TryFrom<::std::string::String> for ModelConfigReasoningEffo
         value.parse()
     }
 }
-#[doc = "ModelConfig without the key."]
+#[doc = "The sealed Model component identity and model selection, without credentials."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"ModelConfig without the key.\","]
+#[doc = "  \"description\": \"The sealed Model component identity and model selection, without credentials.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
+#[doc = "    \"component_digest\","]
 #[doc = "    \"context_window_tokens\","]
 #[doc = "    \"name\","]
-#[doc = "    \"provider\""]
+#[doc = "    \"provider\","]
+#[doc = "    \"world\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"base_url\": {"]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"uri\""]
+#[doc = "    },"]
+#[doc = "    \"component_digest\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
 #[doc = "    },"]
 #[doc = "    \"context_window_tokens\": {"]
 #[doc = "      \"description\": \"Effective immutable context window used for request admission and semantic compaction.\","]
@@ -4493,6 +4560,10 @@ impl ::std::convert::TryFrom<::std::string::String> for ModelConfigReasoningEffo
 #[doc = "    },"]
 #[doc = "    \"provider\": {"]
 #[doc = "      \"$ref\": \"#/$defs/Provider\""]
+#[doc = "    },"]
+#[doc = "    \"world\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"aex:model/model@1.0.0\""]
 #[doc = "    }"]
 #[doc = "  }"]
 #[doc = "}"]
@@ -4502,10 +4573,12 @@ impl ::std::convert::TryFrom<::std::string::String> for ModelConfigReasoningEffo
 pub struct ModelInfo {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub base_url: ::std::option::Option<::std::string::String>,
+    pub component_digest: Sha256Hex,
     #[doc = "Effective immutable context window used for request admission and semantic compaction."]
     pub context_window_tokens: i64,
     pub name: ::std::string::String,
     pub provider: Provider,
+    pub world: ::std::string::String,
 }
 #[doc = "`NetworkDestination`"]
 #[doc = r""]
@@ -4918,75 +4991,49 @@ impl<'de> ::serde::Deserialize<'de> for NetworkPolicyDenyItem {
             })
     }
 }
-#[doc = "openai and anthropic are certified; the rest are available uncertified."]
+#[doc = "Model-component provenance label used in usage projections. It is descriptive, not a Brain execution selector."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"openai and anthropic are certified; the rest are available uncertified.\","]
+#[doc = "  \"description\": \"Model-component provenance label used in usage projections. It is descriptive, not a Brain execution selector.\","]
 #[doc = "  \"type\": \"string\","]
-#[doc = "  \"enum\": ["]
-#[doc = "    \"openai\","]
-#[doc = "    \"anthropic\","]
-#[doc = "    \"deepseek\","]
-#[doc = "    \"moonshot\","]
-#[doc = "    \"xai\","]
-#[doc = "    \"openai_compatible\""]
-#[doc = "  ]"]
+#[doc = "  \"maxLength\": 128,"]
+#[doc = "  \"minLength\": 1,"]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9_.:-]+$\""]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
-#[derive(
-    :: serde :: Deserialize,
-    :: serde :: Serialize,
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    Ord,
-    PartialEq,
-    PartialOrd,
-)]
-pub enum Provider {
-    #[serde(rename = "openai")]
-    Openai,
-    #[serde(rename = "anthropic")]
-    Anthropic,
-    #[serde(rename = "deepseek")]
-    Deepseek,
-    #[serde(rename = "moonshot")]
-    Moonshot,
-    #[serde(rename = "xai")]
-    Xai,
-    #[serde(rename = "openai_compatible")]
-    OpenaiCompatible,
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct Provider(::std::string::String);
+impl ::std::ops::Deref for Provider {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
 }
-impl ::std::fmt::Display for Provider {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-        match *self {
-            Self::Openai => f.write_str("openai"),
-            Self::Anthropic => f.write_str("anthropic"),
-            Self::Deepseek => f.write_str("deepseek"),
-            Self::Moonshot => f.write_str("moonshot"),
-            Self::Xai => f.write_str("xai"),
-            Self::OpenaiCompatible => f.write_str("openai_compatible"),
-        }
+impl ::std::convert::From<Provider> for ::std::string::String {
+    fn from(value: Provider) -> Self {
+        value.0
     }
 }
 impl ::std::str::FromStr for Provider {
     type Err = self::error::ConversionError;
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        match value {
-            "openai" => Ok(Self::Openai),
-            "anthropic" => Ok(Self::Anthropic),
-            "deepseek" => Ok(Self::Deepseek),
-            "moonshot" => Ok(Self::Moonshot),
-            "xai" => Ok(Self::Xai),
-            "openai_compatible" => Ok(Self::OpenaiCompatible),
-            _ => Err("invalid value".into()),
+        if value.chars().count() > 128usize {
+            return Err("longer than 128 characters".into());
         }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^[A-Za-z0-9_.:-]+$").unwrap());
+        if PATTERN.find(value).is_none() {
+            return Err("doesn't match pattern \"^[A-Za-z0-9_.:-]+$\"".into());
+        }
+        Ok(Self(value.to_string()))
     }
 }
 impl ::std::convert::TryFrom<&str> for Provider {
@@ -5009,6 +5056,18 @@ impl ::std::convert::TryFrom<::std::string::String> for Provider {
         value: ::std::string::String,
     ) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for Provider {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
     }
 }
 #[doc = "Raw provider counters for one model call. A counter the provider did not send is absent here — never reported as 0."]

@@ -101,6 +101,7 @@ pub async fn compose(
         custody,
         executor,
         brain::session::BrainServices {
+            model_registry: None,
             session_storage: Some(storage.clone()),
             bundle_storage: Some(storage),
             environments: ports.environments,

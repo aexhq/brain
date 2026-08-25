@@ -58,27 +58,62 @@
       ],
       "description": "Current-turn activity, independent from session lifecycle."
     },
+    "ComponentArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component_digest",
+        "component_base64",
+        "bytes"
+      ],
+      "properties": {
+        "component_digest": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "component_base64": {
+          "type": "string",
+          "maxLength": 44739244,
+          "writeOnly": true
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432
+        }
+      },
+      "description": "Create-time-only precompiled Wasm component bytes. Bindings reference this immutable artifact by digest; duplicate payloads are forbidden."
+    },
     "Provider": {
       "type": "string",
-      "enum": [
-        "openai",
-        "anthropic",
-        "deepseek",
-        "moonshot",
-        "xai",
-        "openai_compatible"
-      ],
-      "description": "openai and anthropic are certified; the rest are available uncertified."
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Model-component provenance label used in usage projections. It is descriptive, not a Brain execution selector."
     },
     "ModelConfig": {
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "component_digest",
+        "world",
         "provider",
         "name",
         "api_key"
       ],
       "properties": {
+        "component_digest": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "world": {
+          "type": "string",
+          "const": "aex:model/model@1.0.0"
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {},
+          "description": "Immutable provider-specific options from the Model component factory."
+        },
         "provider": {
           "$ref": "#/$defs/Provider"
         },
@@ -99,7 +134,7 @@
           "type": "string",
           "maxLength": 2048,
           "format": "uri",
-          "description": "Override the provider endpoint (required for openai_compatible)."
+          "description": "Optional caller override passed to the Model component."
         },
         "max_output_tokens": {
           "type": "integer",
@@ -124,19 +159,28 @@
             "medium",
             "high"
           ],
-          "description": "Sealed into supported OpenAI-family Chat profiles. The Anthropic MVP profile rejects this field before any external effect instead of silently dropping it."
+          "description": "Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly."
         }
       }
     },
     "ModelInfo": {
       "type": "object",
       "required": [
+        "component_digest",
+        "world",
         "provider",
         "name",
         "context_window_tokens"
       ],
-      "description": "ModelConfig without the key.",
+      "description": "The sealed Model component identity and model selection, without credentials.",
       "properties": {
+        "component_digest": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "world": {
+          "type": "string",
+          "const": "aex:model/model@1.0.0"
+        },
         "provider": {
           "$ref": "#/$defs/Provider"
         },
@@ -803,10 +847,9 @@
       "additionalProperties": false,
       "required": [
         "component_digest",
-        "world",
-        "component_base64"
+        "world"
       ],
-      "description": "One precompiled Agentloop component and immutable JSON configuration. Brain verifies the component digest and canonical world before sealing it; no server-side source compilation exists.",
+      "description": "One precompiled Agentloop binding and immutable JSON configuration. Its bytes are supplied once through component_artifacts.",
       "properties": {
         "component_digest": {
           "$ref": "#/$defs/Sha256Hex"
@@ -814,12 +857,6 @@
         "world": {
           "type": "string",
           "const": "aex:agentloop/agentloop@1.0.0"
-        },
-        "component_base64": {
-          "type": "string",
-          "maxLength": 44739244,
-          "writeOnly": true,
-          "description": "The precompiled Wasm component, base64 (32 MiB decoded maximum). Create-time-only and staged outside the journal."
         },
         "config": {
           "type": "object",
@@ -928,12 +965,23 @@
       "additionalProperties": false,
       "required": [
         "model",
-        "agentloop"
+        "agentloop",
+        "component_artifacts"
       ],
       "description": "Everything here except metadata is part of the immutable prefix: it cannot change for the life of the session.",
       "properties": {
         "model": {
           "$ref": "#/$defs/ModelConfig"
+        },
+        "component_artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/ComponentArtifact"
+          },
+          "writeOnly": true,
+          "description": "Unique component payloads referenced by the session's Model, Agentloop, Tool, and Environment bindings."
         },
         "tools": {
           "$ref": "#/$defs/ToolsConfig"
