@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
 use brain_component_host::{
-    ComponentRuntime, ComponentSource, WorkerPool, WorkerRequest, agentloop, component_digest,
-    environment, model, tool,
+    CapabilityCall, CapabilityFailure, CapabilityHandler, ComponentRuntime, ComponentSource,
+    WorkerPool, WorkerRequest, agentloop, component_digest, environment, model, tool,
 };
+use serde_json::Value;
+use std::sync::Arc;
 
 fn component_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -135,7 +137,75 @@ async fn bounded_worker_pool_executes_in_separate_processes() {
             config_json: "{}".into(),
             deadline_at_ms: u64::MAX,
         },
+        grants: Vec::new(),
     };
     let response = pool.call(request).await.unwrap();
     assert_eq!(response["value_json"], r#"{"process":true}"#);
+}
+
+struct EchoEnvironment;
+
+#[async_trait::async_trait]
+impl CapabilityHandler for EchoEnvironment {
+    async fn call(&self, call: CapabilityCall) -> Result<Value, CapabilityFailure> {
+        assert_eq!(call.capability, "tool.environment.invoke");
+        Ok(Value::String(
+            call.request["input_json"]
+                .as_str()
+                .expect("input JSON")
+                .to_owned(),
+        ))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn worker_relays_only_granted_component_capabilities() {
+    let pool = WorkerPool::with_capabilities(
+        env!("CARGO_BIN_EXE_component-host"),
+        1,
+        Arc::new(EchoEnvironment),
+    )
+    .await
+    .unwrap();
+    let path = component_path("tool");
+    let bytes = std::fs::read(&path).unwrap();
+    let request = || WorkerRequest::Tool {
+        component: ComponentSource {
+            path: path.clone(),
+            sha256: component_digest(&bytes),
+        },
+        request: tool::aex::tool::types::Invocation {
+            metadata: tool::aex::tool::types::CallMetadata {
+                tenant_id: "tenant_1".into(),
+                session_id: "ses_1".into(),
+                turn_id: "turn_1".into(),
+                call_id: "call_relay".into(),
+                tool_name: "echo".into(),
+            },
+            input_json: r#"{"relayed":true}"#.into(),
+            config_json: r#"{"useEnvironment":true}"#.into(),
+            deadline_at_ms: u64::MAX,
+        },
+        grants: vec!["environment".into()],
+    };
+    let response = pool.call(request()).await.unwrap();
+    assert_eq!(response["value_json"], r#"{"relayed":true}"#);
+
+    let denied = match request() {
+        WorkerRequest::Tool {
+            component, request, ..
+        } => WorkerRequest::Tool {
+            component,
+            request,
+            grants: Vec::new(),
+        },
+        _ => unreachable!(),
+    };
+    assert!(
+        pool.call(denied)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not granted environment")
+    );
 }
