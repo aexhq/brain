@@ -3703,6 +3703,8 @@ impl Brain {
                         crate::environment::ComponentEnvironmentInvocation {
                             tenant_id: head.doc.tenant_id.clone(),
                             session_id: session_id.to_owned(),
+                            root_id: head.doc.root_id.clone(),
+                            parent_id: head.doc.parent_id.clone(),
                             environment_id: environment_id.to_owned(),
                             operation_id: operation_id.to_owned(),
                             descriptor_json: required_tool_capability_string(

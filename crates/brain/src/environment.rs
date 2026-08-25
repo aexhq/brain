@@ -27,6 +27,8 @@ pub const COMPONENT_ENVIRONMENT_WORLD: &str = "aex:environment/environment@1.0.0
 pub struct ComponentEnvironmentInvocation {
     pub tenant_id: String,
     pub session_id: String,
+    pub root_id: String,
+    pub parent_id: Option<String>,
     pub environment_id: String,
     pub operation_id: String,
     pub descriptor_json: String,

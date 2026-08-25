@@ -70,6 +70,8 @@ async fn four_worlds_execute_without_ambient_authority() {
             environment::aex::environment::types::ResolveRequest {
                 tenant_id: "tenant_1".into(),
                 session_id: "ses_1".into(),
+                root_id: "ses_1".into(),
+                parent_id: None,
                 environment_id: "workspace".into(),
                 config_json: "{}".into(),
                 authority_json: "{}".into(),
@@ -271,6 +273,8 @@ async fn worker_keeps_environment_and_model_lifecycles_resident() {
             request: environment::aex::environment::types::ResolveRequest {
                 tenant_id: "tenant-1".into(),
                 session_id: "session-1".into(),
+                root_id: "session-1".into(),
+                parent_id: None,
                 environment_id: "workspace".into(),
                 config_json: "{}".into(),
                 authority_json: "{}".into(),

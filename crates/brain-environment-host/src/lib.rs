@@ -109,6 +109,8 @@ impl ComponentEnvironmentRegistry for WasmEnvironmentRegistry {
                 request: environment::aex::environment::types::ResolveRequest {
                     tenant_id: request.tenant_id,
                     session_id: request.session_id,
+                    root_id: request.root_id,
+                    parent_id: request.parent_id,
                     environment_id: request.environment_id,
                     config_json: serde_json::to_string(&declaration.config)?,
                     authority_json: "{}".into(),

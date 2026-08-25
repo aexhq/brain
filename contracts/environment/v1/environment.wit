@@ -42,6 +42,8 @@ interface types {
   record resolve-request {
     tenant-id: string,
     session-id: string,
+    root-id: string,
+    parent-id: option<string>,
     environment-id: string,
     config-json: string,
     authority-json: string,
