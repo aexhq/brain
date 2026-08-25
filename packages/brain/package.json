@@ -31,10 +31,12 @@
       "types": "./dist/generated/session.d.ts",
       "import": "./dist/generated/session.js"
     },
+    "./contracts/*": "./contracts/*.wit",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "contracts",
     "schemas",
     "README.md"
   ],

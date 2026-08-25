@@ -95,6 +95,7 @@ export { buildToolModule } from "./builder.js";
 export type { PreparedBundle } from "./builder.js";
 export type * as session from "./generated/session.js";
 export * from "./generated/components.js";
+export * from "./components.js";
 
 const DEFAULT_BRAIN_URL = "http://127.0.0.1:3210";
 

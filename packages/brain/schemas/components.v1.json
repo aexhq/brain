@@ -4,7 +4,7 @@
     {
       "kind": "agentloop",
       "world": "aex:agentloop/agentloop@1.0.0",
-      "digest": "b2d04fdd74f8051992298f0535d412da4b7cfa7982d05d6ce54e2e6ba1f9447b",
+      "digest": "f50e756f5a363a3e686b504116a0ef64e3de83be30c2422595d1217fb23b3ff7",
       "path": "contracts/agentloop/v1/agentloop.wit"
     },
     {

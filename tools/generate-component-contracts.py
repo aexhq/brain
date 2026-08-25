@@ -19,6 +19,7 @@ CONTRACTS = {
 RUST_OUTPUT = ROOT / "crates/brain-component-host/src/generated.rs"
 TYPESCRIPT_OUTPUT = ROOT / "packages/brain/src/generated/components.ts"
 MANIFEST_OUTPUT = ROOT / "packages/brain/schemas/components.v1.json"
+PACKAGE_CONTRACTS = ROOT / "packages/brain/contracts"
 
 
 def normalized_bytes(path: pathlib.Path) -> bytes:
@@ -82,6 +83,9 @@ def main() -> int:
     for item in items:
         path = CONTRACTS[item["kind"]].with_suffix(".digest")
         path.write_text(item["digest"] + "\n", encoding="ascii")
+        package_path = PACKAGE_CONTRACTS / f'{item["kind"]}.wit'
+        package_path.parent.mkdir(parents=True, exist_ok=True)
+        package_path.write_bytes(normalized_bytes(CONTRACTS[item["kind"]]))
     RUST_OUTPUT.write_text(rust_view(items), encoding="utf-8", newline="\n")
     TYPESCRIPT_OUTPUT.write_text(typescript_view(items), encoding="utf-8", newline="\n")
     MANIFEST_OUTPUT.write_text(

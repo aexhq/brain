@@ -33,6 +33,7 @@ async fn four_worlds_execute_without_ambient_authority() {
                 session_id: "ses_1".into(),
                 kind: "message".into(),
                 payload_json: r#"{"message":"hello"}"#.into(),
+                config_json: "{}".into(),
                 deadline_at_ms: u64::MAX,
             },
         )
