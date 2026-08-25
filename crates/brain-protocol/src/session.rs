@@ -580,6 +580,44 @@ impl<'de> ::serde::Deserialize<'de> for ComponentArtifactComponentBase64 {
             })
     }
 }
+#[doc = "A precompiled Environment component binding and immutable JSON configuration."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"A precompiled Environment component binding and immutable JSON configuration.\","]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"component_digest\","]
+#[doc = "    \"world\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"component_digest\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "    },"]
+#[doc = "    \"config\": {"]
+#[doc = "      \"default\": {},"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
+#[doc = "    },"]
+#[doc = "    \"world\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"aex:environment/environment@1.0.0\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentEnvironmentConfig {
+    pub component_digest: Sha256Hex,
+    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
+    pub config: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    pub world: ::std::string::String,
+}
 #[doc = "`ContentPart`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -1382,119 +1420,38 @@ impl<'de> ::serde::Deserialize<'de> for CustomerClientConfigId {
             })
     }
 }
-#[doc = "`EnvironmentConfig`"]
+#[doc = "Environment binding. The legacy arm remains only until the generic component adapter passes the existing managed-runtime gates."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"type\": \"object\","]
-#[doc = "  \"required\": ["]
-#[doc = "    \"configuration\","]
-#[doc = "    \"extension\","]
-#[doc = "    \"profile\","]
-#[doc = "    \"protocol\""]
-#[doc = "  ],"]
-#[doc = "  \"properties\": {"]
-#[doc = "    \"configuration\": {"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"additionalProperties\": true"]
+#[doc = "  \"description\": \"Environment binding. The legacy arm remains only until the generic component adapter passes the existing managed-runtime gates.\","]
+#[doc = "  \"oneOf\": ["]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/ComponentEnvironmentConfig\""]
 #[doc = "    },"]
-#[doc = "    \"extension\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"maxLength\": 256,"]
-#[doc = "      \"minLength\": 1"]
-#[doc = "    },"]
-#[doc = "    \"profile\": {"]
-#[doc = "      \"$ref\": \"#/$defs/EnvironmentProfile\""]
-#[doc = "    },"]
-#[doc = "    \"protocol\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"const\": \"environment/v1\""]
+#[doc = "    {"]
+#[doc = "      \"$ref\": \"#/$defs/LegacyEnvironmentConfig\""]
 #[doc = "    }"]
-#[doc = "  },"]
-#[doc = "  \"additionalProperties\": false"]
+#[doc = "  ]"]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct EnvironmentConfig {
-    pub configuration: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-    pub extension: EnvironmentConfigExtension,
-    pub profile: EnvironmentProfile,
-    pub protocol: ::std::string::String,
+#[serde(untagged)]
+pub enum EnvironmentConfig {
+    ComponentEnvironmentConfig(ComponentEnvironmentConfig),
+    LegacyEnvironmentConfig(LegacyEnvironmentConfig),
 }
-#[doc = "`EnvironmentConfigExtension`"]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 256,"]
-#[doc = "  \"minLength\": 1"]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct EnvironmentConfigExtension(::std::string::String);
-impl ::std::ops::Deref for EnvironmentConfigExtension {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
+impl ::std::convert::From<ComponentEnvironmentConfig> for EnvironmentConfig {
+    fn from(value: ComponentEnvironmentConfig) -> Self {
+        Self::ComponentEnvironmentConfig(value)
     }
 }
-impl ::std::convert::From<EnvironmentConfigExtension> for ::std::string::String {
-    fn from(value: EnvironmentConfigExtension) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for EnvironmentConfigExtension {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 256usize {
-            return Err("longer than 256 characters".into());
-        }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for EnvironmentConfigExtension {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for EnvironmentConfigExtension {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for EnvironmentConfigExtension {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for EnvironmentConfigExtension {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
+impl ::std::convert::From<LegacyEnvironmentConfig> for EnvironmentConfig {
+    fn from(value: LegacyEnvironmentConfig) -> Self {
+        Self::LegacyEnvironmentConfig(value)
     }
 }
 #[doc = "`EnvironmentName`"]
@@ -3860,6 +3817,121 @@ impl ::std::convert::TryFrom<::std::string::String> for ExternalToolScope {
         value: ::std::string::String,
     ) -> ::std::result::Result<Self, self::error::ConversionError> {
         value.parse()
+    }
+}
+#[doc = "`LegacyEnvironmentConfig`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"configuration\","]
+#[doc = "    \"extension\","]
+#[doc = "    \"profile\","]
+#[doc = "    \"protocol\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"configuration\": {"]
+#[doc = "      \"type\": \"object\","]
+#[doc = "      \"additionalProperties\": true"]
+#[doc = "    },"]
+#[doc = "    \"extension\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"maxLength\": 256,"]
+#[doc = "      \"minLength\": 1"]
+#[doc = "    },"]
+#[doc = "    \"profile\": {"]
+#[doc = "      \"$ref\": \"#/$defs/EnvironmentProfile\""]
+#[doc = "    },"]
+#[doc = "    \"protocol\": {"]
+#[doc = "      \"type\": \"string\","]
+#[doc = "      \"const\": \"environment/v1\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyEnvironmentConfig {
+    pub configuration: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    pub extension: LegacyEnvironmentConfigExtension,
+    pub profile: EnvironmentProfile,
+    pub protocol: ::std::string::String,
+}
+#[doc = "`LegacyEnvironmentConfigExtension`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"maxLength\": 256,"]
+#[doc = "  \"minLength\": 1"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(transparent)]
+pub struct LegacyEnvironmentConfigExtension(::std::string::String);
+impl ::std::ops::Deref for LegacyEnvironmentConfigExtension {
+    type Target = ::std::string::String;
+    fn deref(&self) -> &::std::string::String {
+        &self.0
+    }
+}
+impl ::std::convert::From<LegacyEnvironmentConfigExtension> for ::std::string::String {
+    fn from(value: LegacyEnvironmentConfigExtension) -> Self {
+        value.0
+    }
+}
+impl ::std::str::FromStr for LegacyEnvironmentConfigExtension {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        if value.chars().count() > 256usize {
+            return Err("longer than 256 characters".into());
+        }
+        if value.chars().count() < 1usize {
+            return Err("shorter than 1 characters".into());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+impl ::std::convert::TryFrom<&str> for LegacyEnvironmentConfigExtension {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for LegacyEnvironmentConfigExtension {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for LegacyEnvironmentConfigExtension {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl<'de> ::serde::Deserialize<'de> for LegacyEnvironmentConfigExtension {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: ::serde::Deserializer<'de>,
+    {
+        ::std::string::String::deserialize(deserializer)?
+            .parse()
+            .map_err(|e: self::error::ConversionError| {
+                <D::Error as ::serde::de::Error>::custom(e.to_string())
+            })
     }
 }
 #[doc = "The turn was admitted and journaled. Follow it on GET /events?after=<seq-1>."]

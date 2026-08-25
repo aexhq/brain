@@ -75,6 +75,9 @@ pub struct Brain {
     /// Admits and invokes precompiled Tool components. It may be absent only when no component
     /// Tool is declared.
     pub tool_registry: Option<Arc<dyn crate::tools::ToolRegistry>>,
+    /// Admits and invokes generic precompiled Environment components.
+    pub component_environment_registry:
+        Option<Arc<dyn crate::environment::ComponentEnvironmentRegistry>>,
     /// Durable per-session object storage. Hosted composition supplies this adapter; `None` means
     /// the storage resource is unavailable, never an in-memory production fallback.
     pub session_storage: Option<Arc<dyn crate::storage::SessionStoragePort>>,
@@ -183,6 +186,9 @@ pub struct BrainServices {
     pub model_registry: Option<Arc<dyn crate::provider::ModelRegistry>>,
     /// Precompiled Tool component admission and invocation.
     pub tool_registry: Option<Arc<dyn crate::tools::ToolRegistry>>,
+    /// Precompiled Environment component admission and invocation.
+    pub component_environment_registry:
+        Option<Arc<dyn crate::environment::ComponentEnvironmentRegistry>>,
 }
 
 fn hash_create_key(key: &str) -> String {
@@ -360,6 +366,7 @@ fn sealed_managed_binding(
     descriptor: &brain_protocol::environment::BundleDescriptor,
     declaration: &brain_protocol::session::EnvironmentConfig,
 ) -> Result<brain_protocol::environment::SealedBinding> {
+    let declaration = legacy_environment(declaration)?;
     let network = sealed_sandbox_network(doc)?;
     let resources = managed_environment_resources()?;
     let policy_digest = brain_protocol::contract::canonical_digest(&serde_json::json!({
@@ -391,6 +398,32 @@ fn sealed_managed_binding(
         "session_id": session_id,
     }))
     .map_err(BrainError::from)
+}
+
+fn legacy_environment(
+    declaration: &brain_protocol::session::EnvironmentConfig,
+) -> Result<&brain_protocol::session::LegacyEnvironmentConfig> {
+    match declaration {
+        brain_protocol::session::EnvironmentConfig::LegacyEnvironmentConfig(declaration) => {
+            Ok(declaration)
+        }
+        brain_protocol::session::EnvironmentConfig::ComponentEnvironmentConfig(_) => Err(
+            BrainError::Invalid("a legacy managed Tool cannot use a component Environment".into()),
+        ),
+    }
+}
+
+fn component_environment(
+    declaration: &brain_protocol::session::EnvironmentConfig,
+) -> Result<&brain_protocol::session::ComponentEnvironmentConfig> {
+    match declaration {
+        brain_protocol::session::EnvironmentConfig::ComponentEnvironmentConfig(declaration) => {
+            Ok(declaration)
+        }
+        brain_protocol::session::EnvironmentConfig::LegacyEnvironmentConfig(_) => Err(
+            BrainError::Invalid("a component Tool cannot use a legacy Environment".into()),
+        ),
+    }
 }
 
 pub(crate) fn environment_target(
@@ -650,6 +683,7 @@ impl Brain {
                 .expect("BrainServices.agentloop_registry is required"),
             model_registry,
             tool_registry: services.tool_registry,
+            component_environment_registry: services.component_environment_registry,
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
             turn_permits: Arc::new(Semaphore::new(cfg.max_concurrent_turns)),
             create_permits: Arc::new(Semaphore::new(cfg.max_concurrent_creates)),
@@ -845,7 +879,7 @@ impl Brain {
             })?;
             let adapter = self
                 .environments
-                .resolve(declaration.extension.as_str())?
+                .resolve(legacy_environment(declaration)?.extension.as_str())?
                 .clone();
             let binding = sealed_managed_binding(session_id, doc, descriptor, declaration)?;
             let resolved = adapter
@@ -1226,7 +1260,40 @@ impl Brain {
             .flat_map(|environments| environments.iter())
             .map(|(name, environment)| (name.as_str().to_owned(), environment.clone()))
             .collect();
+        let mut referenced_environment_components = HashSet::new();
+        for (name, declaration) in &environments {
+            let brain_protocol::session::EnvironmentConfig::ComponentEnvironmentConfig(declaration) =
+                declaration
+            else {
+                continue;
+            };
+            let registry = self.component_environment_registry.as_ref().ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "environment {name:?} requires component execution, which is unavailable in this Brain composition"
+                ))
+            })?;
+            let digest = declaration.component_digest.as_str();
+            let component = component_artifacts.get(digest).ok_or_else(|| {
+                BrainError::Invalid(format!(
+                    "Environment component {digest} has no supplied artifact"
+                ))
+            })?;
+            registry.admit(digest, &declaration.world, component)?;
+            referenced_environment_components.insert(digest.to_owned());
+        }
         for decl in &decls {
+            if let crate::config::ToolRoute::Component(selector) = &decl.route {
+                if let Some(environment_name) = selector.environment.as_deref() {
+                    let environment = environments.get(environment_name).ok_or_else(|| {
+                        BrainError::Invalid(format!(
+                            "tool {} is bound to undeclared environment {environment_name:?}",
+                            decl.name
+                        ))
+                    })?;
+                    component_environment(environment)?;
+                }
+                continue;
+            }
             let (environment_name, expected_profile) = match &decl.route {
                 crate::config::ToolRoute::Environment(seal) => {
                     (seal.environment.as_str(), "computer")
@@ -1242,6 +1309,7 @@ impl Brain {
                     decl.name
                 ))
             })?;
+            let environment = legacy_environment(environment)?;
             let actual_profile = match environment.profile.kind {
                 brain_protocol::session::EnvironmentProfileKind::Computer => "computer",
                 brain_protocol::session::EnvironmentProfileKind::Callbacks => "callbacks",
@@ -1452,6 +1520,7 @@ impl Brain {
         self.agentloop_registry.resolve(&agentloop_selector)?;
         let mut referenced_components = HashSet::from([model_digest, digest]);
         referenced_components.extend(referenced_tool_components.iter().map(String::as_str));
+        referenced_components.extend(referenced_environment_components.iter().map(String::as_str));
         if let Some(unused) = component_artifacts
             .keys()
             .find(|candidate| !referenced_components.contains(candidate.as_str()))
@@ -2123,7 +2192,7 @@ impl Brain {
                 ))
             })?;
         self.environments
-            .resolve(declaration.extension.as_str())
+            .resolve(legacy_environment(declaration)?.extension.as_str())
             .cloned()
     }
 
@@ -3529,9 +3598,65 @@ impl Brain {
                 )
                 .await
             }
-            "tool.environment.invoke" => Err(BrainError::Invalid(format!(
-                "Environment {environment:?} is not yet backed by a generic component"
-            ))),
+            "tool.environment.invoke" => {
+                let environment_id = environment.ok_or_else(|| {
+                    BrainError::Invalid("Tool Environment binding is absent".into())
+                })?;
+                let declaration = head
+                    .doc
+                    .prefix
+                    .environments
+                    .get(environment_id)
+                    .ok_or_else(|| {
+                        BrainError::Invalid(format!(
+                            "session has no environment named {environment_id:?}"
+                        ))
+                    })?;
+                let declaration = component_environment(declaration)?;
+                let registry = self
+                    .component_environment_registry
+                    .as_ref()
+                    .ok_or_else(|| {
+                        BrainError::EnvironmentUnavailable(
+                            "component Environment execution is unavailable".into(),
+                        )
+                    })?;
+                let deadline_at_ms = required_tool_capability_string(&request, "deadline_at_ms")?
+                    .parse::<u64>()
+                    .map_err(|_| BrainError::Invalid("Environment deadline is invalid".into()))?;
+                let bundle = request
+                    .get("bundle_base64")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|encoded| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(encoded)
+                            .map_err(|_| {
+                                BrainError::Invalid("Environment bundle is invalid base64".into())
+                            })
+                    })
+                    .transpose()?;
+                let result = registry
+                    .invoke(
+                        declaration,
+                        crate::environment::ComponentEnvironmentInvocation {
+                            tenant_id: head.doc.tenant_id.clone(),
+                            session_id: session_id.to_owned(),
+                            environment_id: environment_id.to_owned(),
+                            operation_id: operation_id.to_owned(),
+                            descriptor_json: required_tool_capability_string(
+                                &request,
+                                "descriptor_json",
+                            )?
+                            .to_owned(),
+                            bundle,
+                            input_json: required_tool_capability_string(&request, "input_json")?
+                                .to_owned(),
+                            deadline_at_ms,
+                        },
+                    )
+                    .await?;
+                Ok(serde_json::Value::String(result))
+            }
             _ => Err(BrainError::Invalid(format!(
                 "unknown Tool capability {capability:?}"
             ))),
@@ -5643,6 +5768,7 @@ async fn materialize_environment_resident(
                     "session has no environment named {environment_name:?}"
                 ))
             })?;
+    let declaration = legacy_environment(declaration)?;
     if declaration.profile.kind != brain_protocol::session::EnvironmentProfileKind::Computer {
         return Err(BrainError::Invalid(format!(
             "environment {environment_name:?} is not a computer environment"
@@ -6874,6 +7000,7 @@ async fn continue_delete_session(
                 .prefix
                 .environments
                 .values()
+                .filter_map(|environment| legacy_environment(environment).ok())
                 .filter(|environment| {
                     environment.profile.kind
                         == brain_protocol::session::EnvironmentProfileKind::Computer

@@ -15,12 +15,14 @@ export type {
   ListSessionsOptions,
   ModelOptions,
   ModelSummary,
+  ComponentToolConfig,
   NetworkDestination,
   NetworkPolicy,
   RequestOptions,
   SessionInput,
   SessionList,
   SessionSummary,
+  SessionTool,
 } from "./session.js";
 export type { EventOptions } from "./transport.js";
 export type { JsonRequestOptions, SessionTransport } from "./transport.js";

@@ -176,6 +176,13 @@ export type NetworkDestination =
       protocol: "tcp";
     };
 /**
+ * Environment binding. The legacy arm remains only until the generic component adapter passes the existing managed-runtime gates.
+ *
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "EnvironmentConfig".
+ */
+export type EnvironmentConfig = ComponentEnvironmentConfig | LegacyEnvironmentConfig;
+/**
  * Immutable direct outbound ceiling. Omission means none.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
@@ -578,10 +585,23 @@ export interface EnvironmentProfile {
   recovery: "retained" | "connection" | "replay_safe";
 }
 /**
+ * A precompiled Environment component binding and immutable JSON configuration.
+ *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "EnvironmentConfig".
+ * via the `definition` "ComponentEnvironmentConfig".
  */
-export interface EnvironmentConfig {
+export interface ComponentEnvironmentConfig {
+  component_digest: Sha256Hex;
+  world: "aex:environment/environment@1.0.0";
+  config?: {
+    [k: string]: unknown | undefined;
+  };
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "LegacyEnvironmentConfig".
+ */
+export interface LegacyEnvironmentConfig {
   extension: string;
   protocol: "environment/v1";
   profile: EnvironmentProfile;

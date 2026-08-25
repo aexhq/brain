@@ -407,7 +407,27 @@
         }
       }
     },
-    "EnvironmentConfig": {
+    "ComponentEnvironmentConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component_digest", "world"],
+      "description": "A precompiled Environment component binding and immutable JSON configuration.",
+      "properties": {
+        "component_digest": {
+          "$ref": "#/$defs/Sha256Hex"
+        },
+        "world": {
+          "type": "string",
+          "const": "aex:environment/environment@1.0.0"
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        }
+      }
+    },
+    "LegacyEnvironmentConfig": {
       "type": "object",
       "additionalProperties": false,
       "required": ["extension", "protocol", "profile", "configuration"],
@@ -429,6 +449,13 @@
           "additionalProperties": true
         }
       }
+    },
+    "EnvironmentConfig": {
+      "oneOf": [
+        { "$ref": "#/$defs/ComponentEnvironmentConfig" },
+        { "$ref": "#/$defs/LegacyEnvironmentConfig" }
+      ],
+      "description": "Environment binding. The legacy arm remains only until the generic component adapter passes the existing managed-runtime gates."
     },
     "EnvironmentsConfig": {
       "type": "object",

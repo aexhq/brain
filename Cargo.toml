@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-component-host", "crates/brain-loophost", "crates/brain-providers", "crates/brain-standalone", "crates/brain-server", "crates/brain-toolhost"]
+members = ["crates/brain-protocol", "crates/brain", "crates/brain-aws", "crates/brain-bench", "crates/brain-component-host", "crates/brain-environment-host", "crates/brain-loophost", "crates/brain-providers", "crates/brain-standalone", "crates/brain-server", "crates/brain-toolhost"]
 resolver = "2"
 
 [workspace.package]
@@ -17,6 +17,7 @@ brain-server = { path = "crates/brain-server" }
 brain-standalone = { path = "crates/brain-standalone" }
 brain-loophost = { path = "crates/brain-loophost" }
 brain-toolhost = { path = "crates/brain-toolhost" }
+brain-environment-host = { path = "crates/brain-environment-host" }
 
 anyhow = "1"
 aes-gcm = "0.10"

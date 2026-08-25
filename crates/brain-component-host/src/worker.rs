@@ -154,16 +154,121 @@ enum WorkerFrame {
 struct ResidentAgentloop {
     digest: String,
     instance: AgentloopInstance,
+    last_used: std::time::Instant,
 }
 
 struct ResidentEnvironment {
     digest: String,
     instance: EnvironmentInstance,
+    last_used: std::time::Instant,
 }
 
 struct ResidentModel {
     digest: String,
     instance: ModelInstance,
+    last_used: std::time::Instant,
+}
+
+trait ResidentEntry {
+    fn last_used(&self) -> std::time::Instant;
+}
+
+impl ResidentEntry for ResidentAgentloop {
+    fn last_used(&self) -> std::time::Instant {
+        self.last_used
+    }
+}
+
+impl ResidentEntry for ResidentEnvironment {
+    fn last_used(&self) -> std::time::Instant {
+        self.last_used
+    }
+}
+
+impl ResidentEntry for ResidentModel {
+    fn last_used(&self) -> std::time::Instant {
+        self.last_used
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ResidentPolicy {
+    idle: Duration,
+    cap: usize,
+}
+
+impl ResidentPolicy {
+    fn from_env() -> anyhow::Result<Self> {
+        let idle_ms = strict_worker_option(
+            "BRAIN_COMPONENT_INSTANCE_IDLE_MS",
+            300_000,
+            1_000,
+            3_600_000,
+        )?;
+        let cap = strict_worker_option("BRAIN_COMPONENT_INSTANCE_CAP", 256, 1, 4_096)?;
+        Ok(Self {
+            idle: Duration::from_millis(idle_ms as u64),
+            cap,
+        })
+    }
+}
+
+fn strict_worker_option(
+    name: &str,
+    default: usize,
+    min: usize,
+    max: usize,
+) -> anyhow::Result<usize> {
+    let Some(raw) = std::env::var_os(name) else {
+        return Ok(default);
+    };
+    let raw = raw
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("{name} is not UTF-8"))?;
+    let value = raw
+        .parse::<usize>()
+        .map_err(|_| anyhow::anyhow!("{name} must be an integer"))?;
+    if !(min..=max).contains(&value) {
+        anyhow::bail!("{name} must be between {min} and {max}");
+    }
+    Ok(value)
+}
+
+fn sweep_residents<T: ResidentEntry>(map: &mut HashMap<String, T>, policy: ResidentPolicy) {
+    let now = std::time::Instant::now();
+    map.retain(|_, resident| now.duration_since(resident.last_used()) < policy.idle);
+    while map.len() > policy.cap {
+        let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, resident)| resident.last_used())
+            .map(|(id, _)| id.clone())
+        else {
+            break;
+        };
+        map.remove(&oldest);
+    }
+}
+
+fn environment_instance<'a>(
+    environments: &'a mut HashMap<String, ResidentEnvironment>,
+    instance_id: &str,
+) -> anyhow::Result<&'a mut EnvironmentInstance> {
+    let resident = environments
+        .get_mut(instance_id)
+        .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?;
+    resident.last_used = std::time::Instant::now();
+    Ok(&mut resident.instance)
+}
+
+fn model_instance<'a>(
+    models: &'a mut HashMap<String, ResidentModel>,
+    instance_id: &str,
+) -> anyhow::Result<&'a mut ModelInstance> {
+    let resident = models
+        .get_mut(instance_id)
+        .ok_or_else(|| anyhow::anyhow!("Model instance is not resident"))?;
+    resident.last_used = std::time::Instant::now();
+    Ok(&mut resident.instance)
 }
 
 async fn execute(
@@ -171,8 +276,12 @@ async fn execute(
     agentloops: &mut HashMap<String, ResidentAgentloop>,
     environments: &mut HashMap<String, ResidentEnvironment>,
     models: &mut HashMap<String, ResidentModel>,
+    policy: ResidentPolicy,
     request: WorkerRequest,
 ) -> anyhow::Result<Value> {
+    sweep_residents(agentloops, policy);
+    sweep_residents(environments, policy);
+    sweep_residents(models, policy);
     match request {
         WorkerRequest::Agentloop {
             instance_id,
@@ -181,6 +290,7 @@ async fn execute(
         } => {
             let bytes = read_component(&component)?;
             if let Some(resident) = agentloops.get_mut(&instance_id) {
+                resident.last_used = std::time::Instant::now();
                 if resident.digest != component.sha256 {
                     anyhow::bail!("Agentloop instance is sealed to a different component digest");
                 }
@@ -197,8 +307,10 @@ async fn execute(
                 ResidentAgentloop {
                     digest: component.sha256,
                     instance,
+                    last_used: std::time::Instant::now(),
                 },
             );
+            sweep_residents(agentloops, policy);
             Ok(serde_json::to_value(result)?)
         }
         WorkerRequest::Tool {
@@ -232,6 +344,7 @@ async fn execute(
         } => {
             let bytes = read_component(&component)?;
             if let Some(resident) = environments.get_mut(&instance_id) {
+                resident.last_used = std::time::Instant::now();
                 if resident.digest != component.sha256 {
                     anyhow::bail!("Environment instance is sealed to a different component digest");
                 }
@@ -248,8 +361,10 @@ async fn execute(
                 ResidentEnvironment {
                     digest: component.sha256,
                     instance,
+                    last_used: std::time::Instant::now(),
                 },
             );
+            sweep_residents(environments, policy);
             Ok(serde_json::to_value(result)?)
         }
         WorkerRequest::EnvironmentSubmit {
@@ -257,10 +372,7 @@ async fn execute(
             binding_json,
             operation,
         } => Ok(serde_json::to_value(
-            environments
-                .get_mut(&instance_id)
-                .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?
-                .instance
+            environment_instance(environments, &instance_id)?
                 .submit(&binding_json, &operation)
                 .await?,
         )?),
@@ -270,10 +382,7 @@ async fn execute(
             provider_operation_id,
             cursor,
         } => Ok(serde_json::to_value(
-            environments
-                .get_mut(&instance_id)
-                .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?
-                .instance
+            environment_instance(environments, &instance_id)?
                 .observe(&binding_json, &provider_operation_id, cursor.as_deref())
                 .await?,
         )?),
@@ -282,10 +391,7 @@ async fn execute(
             binding_json,
             provider_operation_id,
         } => {
-            environments
-                .get_mut(&instance_id)
-                .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?
-                .instance
+            environment_instance(environments, &instance_id)?
                 .cancel(&binding_json, &provider_operation_id)
                 .await?;
             Ok(Value::Null)
@@ -296,10 +402,7 @@ async fn execute(
             provider_operation_id,
             terminal_json,
         } => {
-            environments
-                .get_mut(&instance_id)
-                .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?
-                .instance
+            environment_instance(environments, &instance_id)?
                 .acknowledge(&binding_json, &provider_operation_id, &terminal_json)
                 .await?;
             Ok(Value::Null)
@@ -327,6 +430,7 @@ async fn execute(
         } => {
             let bytes = read_component(&component)?;
             if let Some(resident) = models.get_mut(&instance_id) {
+                resident.last_used = std::time::Instant::now();
                 if resident.digest != component.sha256 {
                     anyhow::bail!("Model instance is sealed to a different component digest");
                 }
@@ -343,8 +447,10 @@ async fn execute(
                 ResidentModel {
                     digest: component.sha256,
                     instance,
+                    last_used: std::time::Instant::now(),
                 },
             );
+            sweep_residents(models, policy);
             Ok(serde_json::to_value(result)?)
         }
         WorkerRequest::ModelObserve {
@@ -352,10 +458,7 @@ async fn execute(
             provider_operation_id,
             cursor,
         } => Ok(serde_json::to_value(
-            models
-                .get_mut(&instance_id)
-                .ok_or_else(|| anyhow::anyhow!("Model instance is not resident"))?
-                .instance
+            model_instance(models, &instance_id)?
                 .observe(&provider_operation_id, cursor.as_deref())
                 .await?,
         )?),
@@ -363,10 +466,7 @@ async fn execute(
             instance_id,
             provider_operation_id,
         } => {
-            models
-                .get_mut(&instance_id)
-                .ok_or_else(|| anyhow::anyhow!("Model instance is not resident"))?
-                .instance
+            model_instance(models, &instance_id)?
                 .cancel(&provider_operation_id)
                 .await?;
             Ok(Value::Null)
@@ -435,6 +535,7 @@ pub async fn run_worker() -> anyhow::Result<()> {
     let mut agentloops = HashMap::new();
     let mut environments = HashMap::new();
     let mut models = HashMap::new();
+    let policy = ResidentPolicy::from_env()?;
     loop {
         let mut line = String::new();
         let bytes = input.lock().await.read_line(&mut line).await?;
@@ -457,6 +558,7 @@ pub async fn run_worker() -> anyhow::Result<()> {
                 &mut agentloops,
                 &mut environments,
                 &mut models,
+                policy,
                 *request,
             )
             .await

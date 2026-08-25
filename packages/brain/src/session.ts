@@ -5,6 +5,7 @@ import type {
   Session as SessionData,
   SessionList as SessionListData,
   SessionState,
+  ToolDefinition,
 } from "./generated/session.js";
 import { prepareComponents, type ComponentExtension } from "./components.js";
 
@@ -40,7 +41,9 @@ export interface CreateSessionOptions {
   model: ModelOptions;
   agentloop: ComponentExtension<"agentloop">;
   /** Omitted or empty grants no tools. A non-empty list is the exact grant. */
-  tools?: readonly Tool[];
+  tools?: readonly SessionTool[];
+  /** Logical Environment components. A Tool environment grant is inferred only with one entry. */
+  environments?: Readonly<Record<string, ComponentExtension<"environment">>>;
   systemPrompt?: string;
   /** Write-only values for environment names declared by managed Tools. */
   secrets?: Record<string, string>;
@@ -54,6 +57,12 @@ export interface CreateSessionOptions {
   };
   metadata?: Record<string, string>;
 }
+
+export type ComponentToolConfig = Readonly<Record<string, unknown>> & {
+  readonly definition: ToolDefinition;
+};
+
+export type SessionTool = Tool | ComponentExtension<"tool", ComponentToolConfig>;
 
 export type NetworkDestination =
   | { host: string; ports: [443]; protocol: "tls" }
@@ -114,8 +123,17 @@ export class Sessions {
 
   async create(options: CreateSessionOptions, request: RequestOptions = {}): Promise<Session> {
     if (this.#closed) throw new SessionError("Brain client is closed");
-    const compiledTools = await compileTools(options.tools);
-    const components = await prepareComponents([options.model.component, options.agentloop]);
+    const selections = options.tools ?? [];
+    const componentTools = selections.filter(isComponentTool);
+    const legacyTools = selections.filter((value): value is Tool => !isComponentTool(value));
+    const compiledTools = await compileTools(legacyTools);
+    const environments = Object.entries(options.environments ?? {});
+    const components = await prepareComponents([
+      options.model.component,
+      options.agentloop,
+      ...componentTools,
+      ...environments.map(([, environment]) => environment),
+    ]);
     const modelComponent = components.bindings[0];
     const agentloop = components.bindings[1];
     if (modelComponent === undefined || agentloop === undefined) {
@@ -125,6 +143,40 @@ export class Sessions {
     if (provider === undefined) {
       throw new TypeError("Model provider provenance requires model.provider or component metadata.name");
     }
+    const componentToolBindings = components.bindings.slice(2, 2 + componentTools.length);
+    const environmentBindings = components.bindings.slice(2 + componentTools.length);
+    let legacyIndex = 0;
+    let componentIndex = 0;
+    const toolItems = selections.map((selection) => {
+      if (!isComponentTool(selection)) return compiledTools.items[legacyIndex++];
+      const binding = componentToolBindings[componentIndex++];
+      if (binding === undefined) throw new TypeError("Tool component binding is missing");
+      const definition = componentToolDefinition(selection);
+      const needsEnvironment = binding.grants.includes("environment");
+      if (needsEnvironment && environments.length !== 1) {
+        throw new TypeError("A Tool with the environment grant requires exactly one declared Environment");
+      }
+      return {
+        definition,
+        executor: {
+          kind: "component" as const,
+          component_digest: binding.component_digest,
+          world: binding.world,
+          config: binding.config,
+          grants: binding.grants,
+          ...(needsEnvironment ? { environment: environments[0]![0] } : {}),
+        },
+      };
+    });
+    const environmentConfig = Object.fromEntries(environments.map(([name], index) => {
+      const binding = environmentBindings[index];
+      if (binding === undefined) throw new TypeError(`Environment component binding ${name} is missing`);
+      return [name, {
+        component_digest: binding.component_digest,
+        world: binding.world,
+        config: binding.config,
+      }];
+    }));
     await this.#ensureCustomerEnvironment(compiledTools.clientRegistrations, request.signal);
     const body = {
       model: {
@@ -150,8 +202,9 @@ export class Sessions {
       },
       component_artifacts: components.artifacts,
       tools: {
-        items: compiledTools.items,
+        items: toolItems,
       },
+      ...(environments.length === 0 ? {} : { environments: environmentConfig }),
       ...(compiledTools.bundles.length === 0 ? {} : { tool_bundles: compiledTools.bundles }),
       ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
       ...(options.systemPrompt === undefined ? {} : { system_prompt: options.systemPrompt }),
@@ -267,6 +320,22 @@ export class Sessions {
     const environment = await waitWithSignal(this.#customerEnvironment, signal);
     await waitWithSignal(environment.register(registrations), signal);
   }
+}
+
+function isComponentTool(value: SessionTool): value is ComponentExtension<"tool", ComponentToolConfig> {
+  return value.kind === "brain.component";
+}
+
+function componentToolDefinition(value: ComponentExtension<"tool", ComponentToolConfig>): ToolDefinition {
+  const config = value.config;
+  if (config === null || typeof config !== "object" || Array.isArray(config)) {
+    throw new TypeError("Tool component config must be an object containing definition");
+  }
+  const definition = config.definition;
+  if (definition === null || typeof definition !== "object" || Array.isArray(definition)) {
+    throw new TypeError("Tool component config.definition is required");
+  }
+  return definition;
 }
 
 function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {

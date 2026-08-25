@@ -1138,6 +1138,16 @@ export type components = {
             /** @description The exact ordered native Tool grant. Omitted or empty means no native tools. */
             items?: components["schemas"]["ToolConfig"][];
         };
+        /** @description A precompiled Environment component binding and immutable JSON configuration. */
+        ComponentEnvironmentConfig: {
+            component_digest: components["schemas"]["Sha256Hex"];
+            /** @constant */
+            world: "aex:environment/environment@1.0.0";
+            /** @default {} */
+            config?: {
+                [key: string]: unknown;
+            };
+        };
         EnvironmentProfile: {
             /** @enum {string} */
             kind: "computer" | "callbacks";
@@ -1148,7 +1158,7 @@ export type components = {
             /** @enum {string} */
             recovery: "retained" | "connection" | "replay_safe";
         };
-        EnvironmentConfig: {
+        LegacyEnvironmentConfig: {
             extension: string;
             /** @constant */
             protocol: "environment/v1";
@@ -1157,6 +1167,8 @@ export type components = {
                 [key: string]: unknown;
             };
         };
+        /** @description Environment binding. The legacy arm remains only until the generic component adapter passes the existing managed-runtime gates. */
+        EnvironmentConfig: components["schemas"]["ComponentEnvironmentConfig"] | components["schemas"]["LegacyEnvironmentConfig"];
         EnvironmentsConfig: {
             [key: string]: components["schemas"]["EnvironmentConfig"];
         };

@@ -78,6 +78,14 @@ pub async fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> 
         loophost.workers,
     )
     .await?;
+    #[cfg(feature = "loophost")]
+    let component_environment_registry = brain_environment_host::registry_with_component_store(
+        &options.data_dir.join("environments"),
+        &loophost.component_host,
+        loophost.workers,
+        Arc::new(brain_environment_host::RejectEnvironmentCapabilities),
+    )
+    .await?;
     #[cfg(not(feature = "loophost"))]
     return Err(anyhow::anyhow!(
         "brain-server requires the loophost feature"
@@ -103,6 +111,7 @@ pub async fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> 
             agentloop_registry: loop_services.agentloop_registry,
             model_registry: Some(model_registry),
             tool_registry: Some(tool_registry),
+            component_environment_registry: Some(component_environment_registry),
             ..BrainServices::default()
         },
         options

@@ -941,6 +941,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-environment-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "brain",
+ "brain-component-host",
+ "brain-protocol",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "brain-loophost"
 version = "0.1.0"
 dependencies = [
@@ -1010,6 +1023,7 @@ dependencies = [
  "base64",
  "brain",
  "brain-component-host",
+ "brain-environment-host",
  "brain-loophost",
  "brain-protocol",
  "brain-providers",
