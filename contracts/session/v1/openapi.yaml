@@ -19,6 +19,7 @@ tags:
   - name: sandbox
   - name: storage
   - name: customer-environment
+  - name: changes
 
 paths:
   /v1/sessions:
@@ -62,6 +63,34 @@ paths:
               schema: { $ref: "schemas.json#/$defs/SessionList" }
         default: { $ref: "#/components/responses/Error" }
 
+  /v1/session-changes:
+    get:
+      tags: [changes]
+      operationId: listSessionChanges
+      summary: List one stable tenant changefeed partition after an overlapping millisecond watermark
+      parameters:
+        - name: after_ms
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: partition
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 255, default: 0 }
+        - name: partitions
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 256, default: 1 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+      responses:
+        "200":
+          description: At-least-once session high-water observations
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/SessionChangeFeed" }
+        default: { $ref: "#/components/responses/Error" }
   /v1/sessions/{session_id}:
     parameters:
       - $ref: "#/components/parameters/SessionId"

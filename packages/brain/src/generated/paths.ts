@@ -19,6 +19,23 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/v1/session-changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List one stable tenant changefeed partition after an overlapping millisecond watermark */
+        get: operations["listSessionChanges"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{session_id}": {
         parameters: {
             query?: never;
@@ -1268,6 +1285,27 @@ export type components = {
                 [key: string]: string;
             };
         };
+        SessionChange: {
+            /** @description Stable deduplication identity for this session high-water observation. */
+            id: string;
+            session_id: components["schemas"]["SessionId"];
+            root_id: components["schemas"]["SessionId"];
+            parent_id?: components["schemas"]["SessionId"];
+            last_seq: number;
+            state: components["schemas"]["SessionState"];
+            updated_at: components["schemas"]["Timestamp"];
+        };
+        SessionChangeFeed: {
+            /** @enum {string} */
+            object: "session.change.list";
+            partition: number;
+            partitions: number;
+            /** @description Largest updated timestamp in this page, or the requested lower bound when empty. Consumers retain overlap because delivery is at least once. */
+            watermark_ms: number;
+            data: components["schemas"]["SessionChange"][];
+            has_more: boolean;
+            next_cursor?: string;
+        };
         ContentPart: {
             /** @enum {string} */
             type: "text";
@@ -1822,6 +1860,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Session"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listSessionChanges: {
+        parameters: {
+            query?: {
+                after_ms?: number;
+                partition?: number;
+                partitions?: number;
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description At-least-once session high-water observations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionChangeFeed"];
                 };
             };
             default: components["responses"]["Error"];

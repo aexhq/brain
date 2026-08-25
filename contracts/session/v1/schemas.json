@@ -812,6 +812,91 @@
         }
       }
     },
+    "SessionChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "session_id",
+        "root_id",
+        "last_seq",
+        "state",
+        "updated_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Stable deduplication identity for this session high-water observation."
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "root_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "parent_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "last_seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "$ref": "#/$defs/SessionState"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      }
+    },
+    "SessionChangeFeed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "object",
+        "partition",
+        "partitions",
+        "watermark_ms",
+        "data",
+        "has_more"
+      ],
+      "properties": {
+        "object": {
+          "type": "string",
+          "enum": ["session.change.list"]
+        },
+        "partition": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "partitions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "watermark_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Largest updated timestamp in this page, or the requested lower bound when empty. Consumers retain overlap because delivery is at least once."
+        },
+        "data": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/SessionChange"
+          }
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "next_cursor": {
+          "type": "string"
+        }
+      }
+    },
     "NetworkPolicy": {
       "oneOf": [
         {

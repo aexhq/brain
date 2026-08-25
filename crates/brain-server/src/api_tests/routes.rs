@@ -37,7 +37,7 @@ fn every_public_router_path_is_documented_and_every_documented_path_is_live() {
         }
     }
 
-    assert_eq!(router_paths.len(), 37, "public route inventory changed");
+    assert_eq!(router_paths.len(), 38, "public route inventory changed");
     assert_eq!(router_paths, openapi_paths);
 }
 

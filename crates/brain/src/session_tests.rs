@@ -113,6 +113,72 @@ fn typed_create_result(mut value: serde_json::Value) -> serde_json::Result<Creat
     serde_json::from_value(value)
 }
 
+#[tokio::test]
+async fn tenant_changefeed_is_partitioned_paginated_and_tenant_scoped() {
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-changefeed"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        crate::provider::fake::unscripted_factory(),
+    );
+    let tenant = TrustedPrincipal::new("tenant-a").unwrap();
+    let other = TrustedPrincipal::new("tenant-b").unwrap();
+    let create = || {
+        typed_create(json!({
+            "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+        }))
+    };
+    let mut expected = std::collections::HashSet::new();
+    for key in ["one", "two", "three"] {
+        let session = brain
+            .create_session_for(&tenant, create(), Some(key))
+            .await
+            .unwrap();
+        expected.insert(session.id.to_string());
+    }
+    brain
+        .create_session_for(&other, create(), Some("other"))
+        .await
+        .unwrap();
+
+    let (first, cursor, first_watermark) = brain
+        .list_changes_for(&tenant, 0, 0, 1, 2, None)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 2);
+    let cursor = cursor.expect("the remaining tenant session requires another page");
+    let (second, cursor, second_watermark) = brain
+        .list_changes_for(&tenant, 0, 0, 1, 2, Some(&cursor))
+        .await
+        .unwrap();
+    assert_eq!(second.len(), 1);
+    assert!(cursor.is_none());
+    assert!(first_watermark > 0);
+    assert!(second_watermark > 0);
+    let actual = first
+        .into_iter()
+        .chain(second)
+        .map(|session| session.id.to_string())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(actual, expected);
+
+    let (none, cursor, watermark) = brain
+        .list_changes_for(&tenant, u64::MAX, 0, 1, 100, None)
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+    assert!(cursor.is_none());
+    assert_eq!(watermark, u64::MAX);
+    assert!(
+        brain
+            .list_changes_for(&tenant, 0, 1, 1, 100, None)
+            .await
+            .is_err()
+    );
+}
+
 #[test]
 fn journal_retention_config_rejects_malformed_and_inconsistent_policy() {
     assert_eq!(parse_strict_env_u64("TEST_LIMIT", None, 17).unwrap(), 17);

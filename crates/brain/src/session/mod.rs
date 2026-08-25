@@ -3352,9 +3352,71 @@ impl Brain {
         ))
     }
 
+    pub async fn list_changes_for(
+        self: &Arc<Self>,
+        principal: &TrustedPrincipal,
+        after_ms: u64,
+        partition: u16,
+        partitions: u16,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<session::Session>, Option<String>, u64)> {
+        if partitions == 0 || partitions > 256 || partition >= partitions {
+            return Err(BrainError::Invalid(
+                "changefeed partition must be lower than a partitions value from 1 through 256"
+                    .into(),
+            ));
+        }
+        let limit = limit.clamp(1, 100);
+        let mut cursor = cursor.map(str::to_owned);
+        let mut changes = Vec::with_capacity(limit);
+        let mut watermark_ms = after_ms;
+        loop {
+            let remaining = limit - changes.len();
+            let page = self
+                .journal
+                .list_session_page(&crate::journal::SessionListQuery {
+                    tenant_id: principal.as_str(),
+                    state: None,
+                    limit: remaining,
+                    cursor: cursor.as_deref(),
+                })
+                .await?;
+            let mut reached_lower_bound = false;
+            for summary in &page.sessions {
+                if summary.updated_ms <= after_ms {
+                    reached_lower_bound = true;
+                    break;
+                }
+                if change_partition(&summary.session_id, partitions) != partition {
+                    continue;
+                }
+                watermark_ms = watermark_ms.max(summary.updated_ms);
+                changes.push(crate::session::view::session_doc_summary(summary)?);
+                if changes.len() == limit {
+                    return Ok((changes, page.next_cursor, watermark_ms));
+                }
+            }
+            if reached_lower_bound {
+                return Ok((changes, None, watermark_ms));
+            }
+            let Some(next) = page.next_cursor else {
+                return Ok((changes, None, watermark_ms));
+            };
+            cursor = Some(next);
+        }
+    }
+
     pub async fn head(&self, session_id: &str) -> Result<Head> {
         self.journal.get_head(session_id).await
     }
+}
+
+fn change_partition(session_id: &str, partitions: u16) -> u16 {
+    use sha2::{Digest as _, Sha256};
+
+    let digest = Sha256::digest(session_id.as_bytes());
+    u16::from_be_bytes([digest[0], digest[1]]) % partitions
 }
 
 struct FactoryModelRegistry {

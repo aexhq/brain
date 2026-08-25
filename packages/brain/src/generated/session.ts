@@ -953,6 +953,41 @@ export interface SessionList {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "SessionChange".
+ */
+export interface SessionChange {
+  /**
+   * Stable deduplication identity for this session high-water observation.
+   */
+  id: string;
+  session_id: SessionId;
+  root_id: SessionId;
+  parent_id?: SessionId;
+  last_seq: number;
+  state: SessionState;
+  updated_at: Timestamp;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "SessionChangeFeed".
+ */
+export interface SessionChangeFeed {
+  object: "session.change.list";
+  partition: number;
+  partitions: number;
+  /**
+   * Largest updated timestamp in this page, or the requested lower bound when empty. Consumers retain overlap because delivery is at least once.
+   */
+  watermark_ms: number;
+  /**
+   * @maxItems 100
+   */
+  data: SessionChange[];
+  has_more: boolean;
+  next_cursor?: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "CustomerClientConfig".
  */
 export interface CustomerClientConfig {

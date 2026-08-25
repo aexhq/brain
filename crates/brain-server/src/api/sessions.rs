@@ -78,6 +78,92 @@ pub(super) async fn list_sessions(
     }))
 }
 
+#[derive(Deserialize)]
+pub(super) struct ChangeQuery {
+    #[serde(default)]
+    after_ms: u64,
+    #[serde(default)]
+    partition: u16,
+    #[serde(default = "default_partitions")]
+    partitions: u16,
+    cursor: Option<String>,
+    #[serde(default = "default_change_limit")]
+    limit: usize,
+}
+
+fn default_partitions() -> u16 {
+    1
+}
+
+fn default_change_limit() -> usize {
+    100
+}
+
+pub(super) async fn list_session_changes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ChangeQuery>,
+) -> Result<Json<session::SessionChangeFeed>, Failure> {
+    if query.partitions == 0
+        || query.partitions > 256
+        || query.partition >= query.partitions
+        || query.limit == 0
+        || query.limit > 100
+    {
+        return Err(Failure(
+            StatusCode::BAD_REQUEST,
+            api_code("invalid_request"),
+            "changefeed requires limit 1 through 100 and partition lower than partitions 1 through 256"
+                .into(),
+        ));
+    }
+    let principal = auth(&state, &headers)?;
+    let (sessions, next_cursor, watermark_ms) = state
+        .brain
+        .list_changes_for(
+            &principal,
+            query.after_ms,
+            query.partition,
+            query.partitions,
+            query.limit,
+            query.cursor.as_deref(),
+        )
+        .await
+        .map_err(map_err)?;
+    let data = sessions
+        .into_iter()
+        .map(|item| {
+            let id = format!(
+                "{}:{}:{}",
+                item.id.as_str(),
+                item.last_seq,
+                item.updated_at.to_rfc3339()
+            )
+            .parse()
+            .expect("bounded session change identity");
+            session::SessionChange {
+                id,
+                last_seq: item.last_seq,
+                parent_id: item.parent_id,
+                root_id: item.root_id,
+                session_id: item.id,
+                state: item.state,
+                updated_at: item.updated_at,
+            }
+        })
+        .collect();
+    Ok(Json(session::SessionChangeFeed {
+        data,
+        has_more: next_cursor.is_some(),
+        next_cursor,
+        object: session::SessionChangeFeedObject::SessionChangeList,
+        partition: u8::try_from(query.partition).expect("partition was bounded to 255"),
+        partitions: NonZeroU64::new(u64::from(query.partitions))
+            .expect("partitions was validated as positive"),
+        watermark_ms,
+    }))
+}
+
 pub(super) async fn get_session(
     State(state): State<AppState>,
     headers: HeaderMap,

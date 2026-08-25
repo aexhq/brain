@@ -74,6 +74,7 @@ pub fn router(state: AppState) -> Router {
         ));
     let operator = Router::new()
         .route("/v1/sessions", get(list_sessions))
+        .route("/v1/session-changes", get(list_session_changes))
         .route("/v1/sessions/{id}", get(get_session).delete(delete_session))
         .route("/v1/sessions/{id}/deletion", get(get_deletion_status))
         .route(
