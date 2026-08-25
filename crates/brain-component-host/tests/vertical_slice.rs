@@ -209,3 +209,157 @@ async fn worker_relays_only_granted_component_capabilities() {
             .contains("not granted environment")
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn worker_keeps_and_releases_agentloop_instances() {
+    let pool = WorkerPool::new(env!("CARGO_BIN_EXE_component-host"), 2)
+        .await
+        .unwrap();
+    let path = component_path("agentloop");
+    let bytes = std::fs::read(&path).unwrap();
+    let request = || WorkerRequest::Agentloop {
+        instance_id: "session-1".into(),
+        component: ComponentSource {
+            path: path.clone(),
+            sha256: component_digest(&bytes),
+        },
+        request: agentloop::aex::agentloop::types::Activation {
+            operation_id: "activation".into(),
+            session_id: "session-1".into(),
+            kind: "message".into(),
+            payload_json: "{}".into(),
+            config_json: r#"{"track":true}"#.into(),
+            deadline_at_ms: u64::MAX,
+        },
+    };
+    assert_eq!(
+        pool.call(request()).await.unwrap()["payload_json"],
+        r#"{"activations":1}"#
+    );
+    assert_eq!(
+        pool.call(request()).await.unwrap()["payload_json"],
+        r#"{"activations":2}"#
+    );
+    pool.call(WorkerRequest::Release {
+        world: "agentloop".into(),
+        instance_id: "session-1".into(),
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        pool.call(request()).await.unwrap()["payload_json"],
+        r#"{"activations":1}"#
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn worker_keeps_environment_and_model_lifecycles_resident() {
+    let pool = WorkerPool::new(env!("CARGO_BIN_EXE_component-host"), 1)
+        .await
+        .unwrap();
+    let environment_path = component_path("environment");
+    let environment_bytes = std::fs::read(&environment_path).unwrap();
+    let resolved = pool
+        .call(WorkerRequest::EnvironmentResolve {
+            instance_id: "environment-1".into(),
+            component: ComponentSource {
+                path: environment_path,
+                sha256: component_digest(&environment_bytes),
+            },
+            request: environment::aex::environment::types::ResolveRequest {
+                tenant_id: "tenant-1".into(),
+                session_id: "session-1".into(),
+                environment_id: "workspace".into(),
+                config_json: "{}".into(),
+                authority_json: "{}".into(),
+            },
+        })
+        .await
+        .unwrap();
+    let binding = resolved["binding_json"].as_str().unwrap().to_owned();
+    let submitted = pool
+        .call(WorkerRequest::EnvironmentSubmit {
+            instance_id: "environment-1".into(),
+            binding_json: binding.clone(),
+            operation: environment::aex::environment::types::Operation {
+                operation_id: "operation-1".into(),
+                kind: "invoke".into(),
+                descriptor_json: "{}".into(),
+                bundle: None,
+                input_json: "{}".into(),
+                deadline_at_ms: u64::MAX,
+            },
+        })
+        .await
+        .unwrap();
+    let provider_id = submitted["provider_operation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let observed = pool
+        .call(WorkerRequest::EnvironmentObserve {
+            instance_id: "environment-1".into(),
+            binding_json: binding.clone(),
+            provider_operation_id: provider_id.clone(),
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    let terminal = observed["terminal_json"].as_str().unwrap().to_owned();
+    pool.call(WorkerRequest::EnvironmentAcknowledge {
+        instance_id: "environment-1".into(),
+        binding_json: binding.clone(),
+        provider_operation_id: provider_id,
+        terminal_json: terminal,
+    })
+    .await
+    .unwrap();
+    pool.call(WorkerRequest::EnvironmentRelease {
+        instance_id: "environment-1".into(),
+        binding_json: binding,
+    })
+    .await
+    .unwrap();
+
+    let model_path = component_path("model");
+    let model_bytes = std::fs::read(&model_path).unwrap();
+    let started = pool
+        .call(WorkerRequest::ModelStart {
+            instance_id: "model-1".into(),
+            component: ComponentSource {
+                path: model_path,
+                sha256: component_digest(&model_bytes),
+            },
+            request: model::aex::model::types::Request {
+                operation_id: "model-operation-1".into(),
+                model: "test".into(),
+                messages_json: "[]".into(),
+                tools_json: "[]".into(),
+                response_format_json: None,
+                generation_json: "{}".into(),
+                provider_options_json: "{}".into(),
+                deadline_at_ms: u64::MAX,
+            },
+        })
+        .await
+        .unwrap();
+    let provider_id = started["provider_operation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let observed = pool
+        .call(WorkerRequest::ModelObserve {
+            instance_id: "model-1".into(),
+            provider_operation_id: provider_id.clone(),
+            cursor: None,
+        })
+        .await
+        .unwrap();
+    pool.call(WorkerRequest::ModelAcknowledge {
+        instance_id: "model-1".into(),
+        provider_operation_id: provider_id,
+        terminal_json: observed["terminal_json"].as_str().unwrap().to_owned(),
+    })
+    .await
+    .unwrap();
+}

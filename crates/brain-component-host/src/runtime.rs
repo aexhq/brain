@@ -642,6 +642,146 @@ pub struct ComponentRuntime {
     capabilities: Arc<dyn CapabilityHandler>,
 }
 
+pub struct AgentloopInstance {
+    store: Store<State>,
+    bindings: agentloop::Agentloop,
+}
+
+pub struct EnvironmentInstance {
+    store: Store<State>,
+    bindings: environment::Environment,
+}
+
+pub struct ModelInstance {
+    store: Store<State>,
+    bindings: model::Model,
+}
+
+impl ModelInstance {
+    pub async fn start(
+        &mut self,
+        request: &model::aex::model::types::Request,
+    ) -> anyhow::Result<model::aex::model::types::Started> {
+        wt(self.bindings.call_start(&mut self.store, request).await)?
+            .map_err(|error| anyhow::anyhow!(error.message))
+    }
+
+    pub async fn observe(
+        &mut self,
+        provider_operation_id: &str,
+        cursor: Option<&str>,
+    ) -> anyhow::Result<model::aex::model::types::Observation> {
+        wt(self
+            .bindings
+            .call_observe(&mut self.store, provider_operation_id, cursor)
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
+    }
+
+    pub async fn cancel(&mut self, provider_operation_id: &str) -> anyhow::Result<()> {
+        wt(self
+            .bindings
+            .call_cancel(&mut self.store, provider_operation_id)
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
+    }
+
+    pub async fn acknowledge(
+        &mut self,
+        provider_operation_id: &str,
+        terminal_json: &str,
+    ) -> anyhow::Result<()> {
+        wt(self
+            .bindings
+            .call_acknowledge(&mut self.store, provider_operation_id, terminal_json)
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
+    }
+}
+
+impl EnvironmentInstance {
+    pub async fn resolve(
+        &mut self,
+        request: &environment::aex::environment::types::ResolveRequest,
+    ) -> anyhow::Result<environment::aex::environment::types::Resolved> {
+        wt(self.bindings.call_resolve(&mut self.store, request).await)?
+            .map_err(|error| anyhow::anyhow!(error.message))
+    }
+
+    pub async fn submit(
+        &mut self,
+        binding_json: &str,
+        operation: &environment::aex::environment::types::Operation,
+    ) -> anyhow::Result<environment::aex::environment::types::Submitted> {
+        wt(self
+            .bindings
+            .call_submit(&mut self.store, binding_json, operation)
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
+    }
+
+    pub async fn observe(
+        &mut self,
+        binding_json: &str,
+        provider_operation_id: &str,
+        cursor: Option<&str>,
+    ) -> anyhow::Result<environment::aex::environment::types::Observation> {
+        wt(self
+            .bindings
+            .call_observe(&mut self.store, binding_json, provider_operation_id, cursor)
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
+    }
+
+    pub async fn cancel(
+        &mut self,
+        binding_json: &str,
+        provider_operation_id: &str,
+    ) -> anyhow::Result<()> {
+        wt(self
+            .bindings
+            .call_cancel(&mut self.store, binding_json, provider_operation_id)
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
+    }
+
+    pub async fn acknowledge(
+        &mut self,
+        binding_json: &str,
+        provider_operation_id: &str,
+        terminal_json: &str,
+    ) -> anyhow::Result<()> {
+        wt(self
+            .bindings
+            .call_acknowledge(
+                &mut self.store,
+                binding_json,
+                provider_operation_id,
+                terminal_json,
+            )
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
+    }
+
+    pub async fn release(&mut self, binding_json: &str) -> anyhow::Result<()> {
+        wt(self
+            .bindings
+            .call_release(&mut self.store, binding_json)
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
+    }
+}
+
+impl AgentloopInstance {
+    pub async fn activate(
+        &mut self,
+        request: &agentloop::aex::agentloop::types::Activation,
+    ) -> anyhow::Result<agentloop::aex::agentloop::types::ActivationResult> {
+        wt(self.bindings.call_activate(&mut self.store, request).await)?
+            .map_err(|error| anyhow::anyhow!(error.message))
+    }
+}
+
 impl ComponentRuntime {
     pub fn new() -> anyhow::Result<Arc<Self>> {
         Self::with_capabilities(Arc::new(DenyCapabilities))
@@ -699,6 +839,13 @@ impl ComponentRuntime {
         bytes: &[u8],
         request: agentloop::aex::agentloop::types::Activation,
     ) -> anyhow::Result<agentloop::aex::agentloop::types::ActivationResult> {
+        self.instantiate_agentloop(bytes)
+            .await?
+            .activate(&request)
+            .await
+    }
+
+    pub async fn instantiate_agentloop(&self, bytes: &[u8]) -> anyhow::Result<AgentloopInstance> {
         let component = self.component(bytes)?;
         let mut linker = Linker::new(&self.engine);
         wt(wasmtime_wasi::p2::add_to_linker_async(&mut linker))?;
@@ -710,8 +857,7 @@ impl ComponentRuntime {
         let mut store = self.store();
         let bindings =
             wt(agentloop::Agentloop::instantiate_async(&mut store, &component, &linker).await)?;
-        wt(bindings.call_activate(&mut store, &request).await)?
-            .map_err(|error| anyhow::anyhow!(error.message))
+        Ok(AgentloopInstance { store, bindings })
     }
 
     pub async fn invoke_tool(
@@ -750,6 +896,16 @@ impl ComponentRuntime {
         bytes: &[u8],
         request: environment::aex::environment::types::ResolveRequest,
     ) -> anyhow::Result<environment::aex::environment::types::Resolved> {
+        self.instantiate_environment(bytes)
+            .await?
+            .resolve(&request)
+            .await
+    }
+
+    pub async fn instantiate_environment(
+        &self,
+        bytes: &[u8],
+    ) -> anyhow::Result<EnvironmentInstance> {
         let component = self.component(bytes)?;
         let mut linker = Linker::new(&self.engine);
         wt(wasmtime_wasi::p2::add_to_linker_async(&mut linker))?;
@@ -760,8 +916,7 @@ impl ComponentRuntime {
         let mut store = self.store();
         let bindings =
             wt(environment::Environment::instantiate_async(&mut store, &component, &linker).await)?;
-        wt(bindings.call_resolve(&mut store, &request).await)?
-            .map_err(|error| anyhow::anyhow!(error.message))
+        Ok(EnvironmentInstance { store, bindings })
     }
 
     pub async fn exercise_environment(
@@ -770,48 +925,28 @@ impl ComponentRuntime {
         request: environment::aex::environment::types::ResolveRequest,
         operation: environment::aex::environment::types::Operation,
     ) -> anyhow::Result<environment::aex::environment::types::Observation> {
-        let component = self.component(bytes)?;
-        let mut linker = Linker::new(&self.engine);
-        wt(wasmtime_wasi::p2::add_to_linker_async(&mut linker))?;
-        wt(environment::Environment::add_to_linker::<
-            State,
-            HasSelf<State>,
-        >(&mut linker, |state| state))?;
-        let mut store = self.store();
-        let bindings =
-            wt(environment::Environment::instantiate_async(&mut store, &component, &linker).await)?;
-        let resolved = wt(bindings.call_resolve(&mut store, &request).await)?
-            .map_err(|error| anyhow::anyhow!(error.message))?;
-        let submitted = wt(bindings
-            .call_submit(&mut store, &resolved.binding_json, &operation)
-            .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-        let observation = wt(bindings
-            .call_observe(
-                &mut store,
+        let mut instance = self.instantiate_environment(bytes).await?;
+        let resolved = instance.resolve(&request).await?;
+        let submitted = instance.submit(&resolved.binding_json, &operation).await?;
+        let observation = instance
+            .observe(
                 &resolved.binding_json,
                 &submitted.provider_operation_id,
                 None,
             )
-            .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))?;
+            .await?;
         let terminal = observation
             .terminal_json
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("deterministic Environment returned no terminal"))?;
-        wt(bindings
-            .call_acknowledge(
-                &mut store,
+        instance
+            .acknowledge(
                 &resolved.binding_json,
                 &submitted.provider_operation_id,
                 terminal,
             )
-            .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-        wt(bindings
-            .call_release(&mut store, &resolved.binding_json)
-            .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))?;
+            .await?;
+        instance.release(&resolved.binding_json).await?;
         Ok(observation)
     }
 
@@ -820,6 +955,10 @@ impl ComponentRuntime {
         bytes: &[u8],
         request: model::aex::model::types::Request,
     ) -> anyhow::Result<model::aex::model::types::Started> {
+        self.instantiate_model(bytes).await?.start(&request).await
+    }
+
+    pub async fn instantiate_model(&self, bytes: &[u8]) -> anyhow::Result<ModelInstance> {
         let component = self.component(bytes)?;
         let mut linker = Linker::new(&self.engine);
         wt(wasmtime_wasi::p2::add_to_linker_async(&mut linker))?;
@@ -829,8 +968,7 @@ impl ComponentRuntime {
         ))?;
         let mut store = self.store();
         let bindings = wt(model::Model::instantiate_async(&mut store, &component, &linker).await)?;
-        wt(bindings.call_start(&mut store, &request).await)?
-            .map_err(|error| anyhow::anyhow!(error.message))
+        Ok(ModelInstance { store, bindings })
     }
 
     pub async fn exercise_model(
@@ -838,29 +976,18 @@ impl ComponentRuntime {
         bytes: &[u8],
         request: model::aex::model::types::Request,
     ) -> anyhow::Result<model::aex::model::types::Observation> {
-        let component = self.component(bytes)?;
-        let mut linker = Linker::new(&self.engine);
-        wt(wasmtime_wasi::p2::add_to_linker_async(&mut linker))?;
-        wt(model::Model::add_to_linker::<State, HasSelf<State>>(
-            &mut linker,
-            |state| state,
-        ))?;
-        let mut store = self.store();
-        let bindings = wt(model::Model::instantiate_async(&mut store, &component, &linker).await)?;
-        let started = wt(bindings.call_start(&mut store, &request).await)?
-            .map_err(|error| anyhow::anyhow!(error.message))?;
-        let observation = wt(bindings
-            .call_observe(&mut store, &started.provider_operation_id, None)
-            .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))?;
+        let mut instance = self.instantiate_model(bytes).await?;
+        let started = instance.start(&request).await?;
+        let observation = instance
+            .observe(&started.provider_operation_id, None)
+            .await?;
         let terminal = observation
             .terminal_json
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("deterministic Model returned no terminal"))?;
-        wt(bindings
-            .call_acknowledge(&mut store, &started.provider_operation_id, terminal)
-            .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))?;
+        instance
+            .acknowledge(&started.provider_operation_id, terminal)
+            .await?;
         Ok(observation)
     }
 }

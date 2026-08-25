@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -11,13 +12,14 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 use crate::{
-    CapabilityCall, CapabilityFailure, CapabilityHandler, ComponentRuntime, DenyCapabilities,
-    agentloop, component_digest, environment, model, tool,
+    AgentloopInstance, CapabilityCall, CapabilityFailure, CapabilityHandler, ComponentRuntime,
+    DenyCapabilities, EnvironmentInstance, ModelInstance, agentloop, component_digest, environment,
+    model, tool,
 };
 
 const MAX_COMPONENT_BYTES: u64 = 32 << 20;
 const MAX_FRAME_BYTES: usize = 16 << 20;
-const WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(35);
+const WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Serialize, Deserialize)]
 pub struct ComponentSource {
@@ -29,6 +31,7 @@ pub struct ComponentSource {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkerRequest {
     Agentloop {
+        instance_id: String,
         component: ComponentSource,
         request: agentloop::aex::agentloop::types::Activation,
     },
@@ -42,10 +45,84 @@ pub enum WorkerRequest {
         resolve: environment::aex::environment::types::ResolveRequest,
         operation: environment::aex::environment::types::Operation,
     },
+    EnvironmentResolve {
+        instance_id: String,
+        component: ComponentSource,
+        request: environment::aex::environment::types::ResolveRequest,
+    },
+    EnvironmentSubmit {
+        instance_id: String,
+        binding_json: String,
+        operation: environment::aex::environment::types::Operation,
+    },
+    EnvironmentObserve {
+        instance_id: String,
+        binding_json: String,
+        provider_operation_id: String,
+        cursor: Option<String>,
+    },
+    EnvironmentCancel {
+        instance_id: String,
+        binding_json: String,
+        provider_operation_id: String,
+    },
+    EnvironmentAcknowledge {
+        instance_id: String,
+        binding_json: String,
+        provider_operation_id: String,
+        terminal_json: String,
+    },
+    EnvironmentRelease {
+        instance_id: String,
+        binding_json: String,
+    },
     Model {
         component: ComponentSource,
         request: model::aex::model::types::Request,
     },
+    ModelStart {
+        instance_id: String,
+        component: ComponentSource,
+        request: model::aex::model::types::Request,
+    },
+    ModelObserve {
+        instance_id: String,
+        provider_operation_id: String,
+        cursor: Option<String>,
+    },
+    ModelCancel {
+        instance_id: String,
+        provider_operation_id: String,
+    },
+    ModelAcknowledge {
+        instance_id: String,
+        provider_operation_id: String,
+        terminal_json: String,
+    },
+    Release {
+        world: String,
+        instance_id: String,
+    },
+}
+
+impl WorkerRequest {
+    fn affinity(&self) -> Option<&str> {
+        match self {
+            Self::Agentloop { instance_id, .. }
+            | Self::EnvironmentResolve { instance_id, .. }
+            | Self::EnvironmentSubmit { instance_id, .. }
+            | Self::EnvironmentObserve { instance_id, .. }
+            | Self::EnvironmentCancel { instance_id, .. }
+            | Self::EnvironmentAcknowledge { instance_id, .. }
+            | Self::EnvironmentRelease { instance_id, .. }
+            | Self::ModelStart { instance_id, .. }
+            | Self::ModelObserve { instance_id, .. }
+            | Self::ModelCancel { instance_id, .. }
+            | Self::ModelAcknowledge { instance_id, .. }
+            | Self::Release { instance_id, .. } => Some(instance_id),
+            Self::Tool { .. } | Self::Environment { .. } | Self::Model { .. } => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -74,13 +151,53 @@ enum WorkerFrame {
     },
 }
 
-async fn execute(runtime: &ComponentRuntime, request: WorkerRequest) -> anyhow::Result<Value> {
+struct ResidentAgentloop {
+    digest: String,
+    instance: AgentloopInstance,
+}
+
+struct ResidentEnvironment {
+    digest: String,
+    instance: EnvironmentInstance,
+}
+
+struct ResidentModel {
+    digest: String,
+    instance: ModelInstance,
+}
+
+async fn execute(
+    runtime: &ComponentRuntime,
+    agentloops: &mut HashMap<String, ResidentAgentloop>,
+    environments: &mut HashMap<String, ResidentEnvironment>,
+    models: &mut HashMap<String, ResidentModel>,
+    request: WorkerRequest,
+) -> anyhow::Result<Value> {
     match request {
-        WorkerRequest::Agentloop { component, request } => {
+        WorkerRequest::Agentloop {
+            instance_id,
+            component,
+            request,
+        } => {
             let bytes = read_component(&component)?;
-            Ok(serde_json::to_value(
-                runtime.invoke_agentloop(&bytes, request).await?,
-            )?)
+            if let Some(resident) = agentloops.get_mut(&instance_id) {
+                if resident.digest != component.sha256 {
+                    anyhow::bail!("Agentloop instance is sealed to a different component digest");
+                }
+                return Ok(serde_json::to_value(
+                    resident.instance.activate(&request).await?,
+                )?);
+            }
+            let mut instance = runtime.instantiate_agentloop(&bytes).await?;
+            let result = instance.activate(&request).await?;
+            agentloops.insert(
+                instance_id,
+                ResidentAgentloop {
+                    digest: component.sha256,
+                    instance,
+                },
+            );
+            Ok(serde_json::to_value(result)?)
         }
         WorkerRequest::Tool {
             component,
@@ -106,11 +223,176 @@ async fn execute(runtime: &ComponentRuntime, request: WorkerRequest) -> anyhow::
                     .await?,
             )?)
         }
+        WorkerRequest::EnvironmentResolve {
+            instance_id,
+            component,
+            request,
+        } => {
+            let bytes = read_component(&component)?;
+            if let Some(resident) = environments.get_mut(&instance_id) {
+                if resident.digest != component.sha256 {
+                    anyhow::bail!("Environment instance is sealed to a different component digest");
+                }
+                return Ok(serde_json::to_value(
+                    resident.instance.resolve(&request).await?,
+                )?);
+            }
+            let mut instance = runtime.instantiate_environment(&bytes).await?;
+            let result = instance.resolve(&request).await?;
+            environments.insert(
+                instance_id,
+                ResidentEnvironment {
+                    digest: component.sha256,
+                    instance,
+                },
+            );
+            Ok(serde_json::to_value(result)?)
+        }
+        WorkerRequest::EnvironmentSubmit {
+            instance_id,
+            binding_json,
+            operation,
+        } => Ok(serde_json::to_value(
+            environments
+                .get_mut(&instance_id)
+                .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?
+                .instance
+                .submit(&binding_json, &operation)
+                .await?,
+        )?),
+        WorkerRequest::EnvironmentObserve {
+            instance_id,
+            binding_json,
+            provider_operation_id,
+            cursor,
+        } => Ok(serde_json::to_value(
+            environments
+                .get_mut(&instance_id)
+                .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?
+                .instance
+                .observe(&binding_json, &provider_operation_id, cursor.as_deref())
+                .await?,
+        )?),
+        WorkerRequest::EnvironmentCancel {
+            instance_id,
+            binding_json,
+            provider_operation_id,
+        } => {
+            environments
+                .get_mut(&instance_id)
+                .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?
+                .instance
+                .cancel(&binding_json, &provider_operation_id)
+                .await?;
+            Ok(Value::Null)
+        }
+        WorkerRequest::EnvironmentAcknowledge {
+            instance_id,
+            binding_json,
+            provider_operation_id,
+            terminal_json,
+        } => {
+            environments
+                .get_mut(&instance_id)
+                .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?
+                .instance
+                .acknowledge(&binding_json, &provider_operation_id, &terminal_json)
+                .await?;
+            Ok(Value::Null)
+        }
+        WorkerRequest::EnvironmentRelease {
+            instance_id,
+            binding_json,
+        } => {
+            let mut resident = environments
+                .remove(&instance_id)
+                .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?;
+            resident.instance.release(&binding_json).await?;
+            Ok(Value::Null)
+        }
         WorkerRequest::Model { component, request } => {
             let bytes = read_component(&component)?;
             Ok(serde_json::to_value(
                 runtime.exercise_model(&bytes, request).await?,
             )?)
+        }
+        WorkerRequest::ModelStart {
+            instance_id,
+            component,
+            request,
+        } => {
+            let bytes = read_component(&component)?;
+            if let Some(resident) = models.get_mut(&instance_id) {
+                if resident.digest != component.sha256 {
+                    anyhow::bail!("Model instance is sealed to a different component digest");
+                }
+                return Ok(serde_json::to_value(
+                    resident.instance.start(&request).await?,
+                )?);
+            }
+            let mut instance = runtime.instantiate_model(&bytes).await?;
+            let result = instance.start(&request).await?;
+            models.insert(
+                instance_id,
+                ResidentModel {
+                    digest: component.sha256,
+                    instance,
+                },
+            );
+            Ok(serde_json::to_value(result)?)
+        }
+        WorkerRequest::ModelObserve {
+            instance_id,
+            provider_operation_id,
+            cursor,
+        } => Ok(serde_json::to_value(
+            models
+                .get_mut(&instance_id)
+                .ok_or_else(|| anyhow::anyhow!("Model instance is not resident"))?
+                .instance
+                .observe(&provider_operation_id, cursor.as_deref())
+                .await?,
+        )?),
+        WorkerRequest::ModelCancel {
+            instance_id,
+            provider_operation_id,
+        } => {
+            models
+                .get_mut(&instance_id)
+                .ok_or_else(|| anyhow::anyhow!("Model instance is not resident"))?
+                .instance
+                .cancel(&provider_operation_id)
+                .await?;
+            Ok(Value::Null)
+        }
+        WorkerRequest::ModelAcknowledge {
+            instance_id,
+            provider_operation_id,
+            terminal_json,
+        } => {
+            let mut resident = models
+                .remove(&instance_id)
+                .ok_or_else(|| anyhow::anyhow!("Model instance is not resident"))?;
+            resident
+                .instance
+                .acknowledge(&provider_operation_id, &terminal_json)
+                .await?;
+            Ok(Value::Null)
+        }
+        WorkerRequest::Release { world, instance_id } => {
+            match world.as_str() {
+                "agentloop" => {
+                    agentloops.remove(&instance_id);
+                }
+                "environment" => {
+                    environments.remove(&instance_id);
+                }
+                "model" => {
+                    models.remove(&instance_id);
+                }
+                _ => anyhow::bail!("unknown resident component world {world}"),
+            }
+            Ok(Value::Null)
         }
     }
 }
@@ -144,6 +426,9 @@ pub async fn run_worker() -> anyhow::Result<()> {
         next_id: AtomicU64::new(1),
     });
     let runtime = ComponentRuntime::with_capabilities(broker)?;
+    let mut agentloops = HashMap::new();
+    let mut environments = HashMap::new();
+    let mut models = HashMap::new();
     loop {
         let mut line = String::new();
         let bytes = input.lock().await.read_line(&mut line).await?;
@@ -161,9 +446,15 @@ pub async fn run_worker() -> anyhow::Result<()> {
         };
         let response = WorkerFrame::Response {
             id,
-            result: execute(&runtime, *request)
-                .await
-                .map_err(|error| error.to_string()),
+            result: execute(
+                &runtime,
+                &mut agentloops,
+                &mut environments,
+                &mut models,
+                *request,
+            )
+            .await
+            .map_err(|error| error.to_string()),
         };
         let mut encoded = serde_json::to_vec(&response)?;
         if encoded.len() + 1 > MAX_FRAME_BYTES {
@@ -283,7 +574,14 @@ impl WorkerPool {
     }
 
     pub async fn call(&self, request: WorkerRequest) -> anyhow::Result<Value> {
-        let index = self.next_worker.fetch_add(1, Ordering::Relaxed) % self.workers.len();
+        let index = request.affinity().map_or_else(
+            || self.next_worker.fetch_add(1, Ordering::Relaxed) % self.workers.len(),
+            |affinity| {
+                let digest = component_digest(affinity.as_bytes());
+                usize::from_str_radix(&digest[..8], 16).expect("SHA-256 prefix is hexadecimal")
+                    % self.workers.len()
+            },
+        );
         let id = self.next_request.fetch_add(1, Ordering::Relaxed);
         let mut worker = self.workers[index].lock().await;
         let result = tokio::time::timeout(
