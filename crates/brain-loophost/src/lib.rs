@@ -15,6 +15,7 @@
 //! A kernel error latched while servicing a ctx op always fails the turn, whatever the guest
 //! returns afterwards: a loop cannot mask kernel failures.
 
+pub mod component;
 pub mod daemon;
 pub mod registry;
 pub mod remote;

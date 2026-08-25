@@ -188,7 +188,9 @@ async fn execute(
                     resident.instance.activate(&request).await?,
                 )?);
             }
-            let mut instance = runtime.instantiate_agentloop(&bytes).await?;
+            let mut instance = runtime
+                .instantiate_agentloop_scoped(&bytes, Some(instance_id.clone()))
+                .await?;
             let result = instance.activate(&request).await?;
             agentloops.insert(
                 instance_id,
@@ -237,7 +239,9 @@ async fn execute(
                     resident.instance.resolve(&request).await?,
                 )?);
             }
-            let mut instance = runtime.instantiate_environment(&bytes).await?;
+            let mut instance = runtime
+                .instantiate_environment_scoped(&bytes, Some(instance_id.clone()))
+                .await?;
             let result = instance.resolve(&request).await?;
             environments.insert(
                 instance_id,
@@ -330,7 +334,9 @@ async fn execute(
                     resident.instance.start(&request).await?,
                 )?);
             }
-            let mut instance = runtime.instantiate_model(&bytes).await?;
+            let mut instance = runtime
+                .instantiate_model_scoped(&bytes, Some(instance_id.clone()))
+                .await?;
             let result = instance.start(&request).await?;
             models.insert(
                 instance_id,

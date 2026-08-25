@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 brain = { workspace = true }
+brain-component-host = { path = "../brain-component-host" }
 brain-protocol = { workspace = true }
 
 anyhow = { workspace = true }

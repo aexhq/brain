@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use wasmtime::component::{Component, HasSelf, Linker};
@@ -20,6 +21,8 @@ const MEMORY_LIMIT_BYTES: usize = 256 << 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityCall {
+    pub world: String,
+    pub instance_id: Option<String>,
     pub capability: String,
     pub operation_id: String,
     pub request: Value,
@@ -35,6 +38,82 @@ pub struct CapabilityFailure {
 #[async_trait]
 pub trait CapabilityHandler: Send + Sync + 'static {
     async fn call(&self, request: CapabilityCall) -> Result<Value, CapabilityFailure>;
+}
+
+type CapabilityRouteKey = (String, String);
+type CapabilityRoute = (u64, Arc<dyn CapabilityHandler>);
+
+pub struct CapabilityRouter {
+    fallback: Arc<dyn CapabilityHandler>,
+    routes: RwLock<HashMap<CapabilityRouteKey, CapabilityRoute>>,
+    next_token: AtomicU64,
+}
+
+impl CapabilityRouter {
+    pub fn new(fallback: Arc<dyn CapabilityHandler>) -> Arc<Self> {
+        Arc::new(Self {
+            fallback,
+            routes: RwLock::new(HashMap::new()),
+            next_token: AtomicU64::new(1),
+        })
+    }
+
+    pub fn bind(
+        self: &Arc<Self>,
+        world: impl Into<String>,
+        instance_id: impl Into<String>,
+        handler: Arc<dyn CapabilityHandler>,
+    ) -> anyhow::Result<CapabilityBinding> {
+        let world = world.into();
+        let instance_id = instance_id.into();
+        let key = (world.clone(), instance_id.clone());
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        let mut routes = self.routes.write().expect("capability routes");
+        if routes.contains_key(&key) {
+            anyhow::bail!("capabilities are already bound for {world} instance {instance_id}");
+        }
+        routes.insert(key, (token, handler));
+        Ok(CapabilityBinding {
+            router: self.clone(),
+            world,
+            instance_id,
+            token,
+        })
+    }
+}
+
+#[async_trait]
+impl CapabilityHandler for CapabilityRouter {
+    async fn call(&self, request: CapabilityCall) -> Result<Value, CapabilityFailure> {
+        let handler = request.instance_id.as_ref().and_then(|instance_id| {
+            self.routes
+                .read()
+                .expect("capability routes")
+                .get(&(request.world.clone(), instance_id.clone()))
+                .map(|(_, handler)| handler.clone())
+        });
+        match handler {
+            Some(handler) => handler.call(request).await,
+            None => self.fallback.call(request).await,
+        }
+    }
+}
+
+pub struct CapabilityBinding {
+    router: Arc<CapabilityRouter>,
+    world: String,
+    instance_id: String,
+    token: u64,
+}
+
+impl Drop for CapabilityBinding {
+    fn drop(&mut self) {
+        let mut routes = self.router.routes.write().expect("capability routes");
+        let key = (self.world.clone(), self.instance_id.clone());
+        if routes.get(&key).map(|(token, _)| *token) == Some(self.token) {
+            routes.remove(&key);
+        }
+    }
 }
 
 pub(crate) struct DenyCapabilities;
@@ -60,13 +139,19 @@ struct State {
     limits: StoreLimits,
     cancelled: bool,
     capabilities: Arc<dyn CapabilityHandler>,
+    world: &'static str,
+    instance_id: Option<String>,
     tool_metadata: Option<tool::aex::tool::types::CallMetadata>,
     tool_grants: HashSet<String>,
     tool_capability_sequence: u64,
 }
 
 impl State {
-    fn new(capabilities: Arc<dyn CapabilityHandler>) -> Self {
+    fn new(
+        capabilities: Arc<dyn CapabilityHandler>,
+        world: &'static str,
+        instance_id: Option<String>,
+    ) -> Self {
         Self {
             wasi: WasiCtxBuilder::new().build(),
             table: ResourceTable::new(),
@@ -75,6 +160,8 @@ impl State {
                 .build(),
             cancelled: false,
             capabilities,
+            world,
+            instance_id,
             tool_metadata: None,
             tool_grants: HashSet::new(),
             tool_capability_sequence: 0,
@@ -86,7 +173,7 @@ impl State {
         metadata: tool::aex::tool::types::CallMetadata,
         grants: &[String],
     ) -> Self {
-        let mut state = Self::new(capabilities);
+        let mut state = Self::new(capabilities, "tool", Some(metadata.session_id.clone()));
         state.tool_metadata = Some(metadata);
         state.tool_grants.extend(grants.iter().cloned());
         state
@@ -100,6 +187,8 @@ impl State {
     ) -> Result<Value, CapabilityFailure> {
         self.capabilities
             .call(CapabilityCall {
+                world: self.world.into(),
+                instance_id: self.instance_id.clone(),
                 capability: capability.into(),
                 operation_id,
                 request,
@@ -849,10 +938,6 @@ impl ComponentRuntime {
         }))
     }
 
-    fn store(&self) -> Store<State> {
-        self.store_with(State::new(self.capabilities.clone()))
-    }
-
     fn store_with(&self, state: State) -> Store<State> {
         let mut store = Store::new(&self.engine, state);
         store.limiter(|state| &mut state.limits);
@@ -885,6 +970,14 @@ impl ComponentRuntime {
     }
 
     pub async fn instantiate_agentloop(&self, bytes: &[u8]) -> anyhow::Result<AgentloopInstance> {
+        self.instantiate_agentloop_scoped(bytes, None).await
+    }
+
+    pub async fn instantiate_agentloop_scoped(
+        &self,
+        bytes: &[u8],
+        instance_id: Option<String>,
+    ) -> anyhow::Result<AgentloopInstance> {
         let component = self.component(bytes)?;
         let mut linker = Linker::new(&self.engine);
         wt(wasmtime_wasi::p2::add_to_linker_async(&mut linker))?;
@@ -893,7 +986,11 @@ impl ComponentRuntime {
                 state
             }),
         )?;
-        let mut store = self.store();
+        let mut store = self.store_with(State::new(
+            self.capabilities.clone(),
+            "agentloop",
+            instance_id,
+        ));
         let bindings =
             wt(agentloop::Agentloop::instantiate_async(&mut store, &component, &linker).await)?;
         Ok(AgentloopInstance { store, bindings })
@@ -945,6 +1042,14 @@ impl ComponentRuntime {
         &self,
         bytes: &[u8],
     ) -> anyhow::Result<EnvironmentInstance> {
+        self.instantiate_environment_scoped(bytes, None).await
+    }
+
+    pub async fn instantiate_environment_scoped(
+        &self,
+        bytes: &[u8],
+        instance_id: Option<String>,
+    ) -> anyhow::Result<EnvironmentInstance> {
         let component = self.component(bytes)?;
         let mut linker = Linker::new(&self.engine);
         wt(wasmtime_wasi::p2::add_to_linker_async(&mut linker))?;
@@ -952,7 +1057,11 @@ impl ComponentRuntime {
             State,
             HasSelf<State>,
         >(&mut linker, |state| state))?;
-        let mut store = self.store();
+        let mut store = self.store_with(State::new(
+            self.capabilities.clone(),
+            "environment",
+            instance_id,
+        ));
         let bindings =
             wt(environment::Environment::instantiate_async(&mut store, &component, &linker).await)?;
         Ok(EnvironmentInstance { store, bindings })
@@ -998,6 +1107,14 @@ impl ComponentRuntime {
     }
 
     pub async fn instantiate_model(&self, bytes: &[u8]) -> anyhow::Result<ModelInstance> {
+        self.instantiate_model_scoped(bytes, None).await
+    }
+
+    pub async fn instantiate_model_scoped(
+        &self,
+        bytes: &[u8],
+        instance_id: Option<String>,
+    ) -> anyhow::Result<ModelInstance> {
         let component = self.component(bytes)?;
         let mut linker = Linker::new(&self.engine);
         wt(wasmtime_wasi::p2::add_to_linker_async(&mut linker))?;
@@ -1005,7 +1122,8 @@ impl ComponentRuntime {
             &mut linker,
             |state| state,
         ))?;
-        let mut store = self.store();
+        let mut store =
+            self.store_with(State::new(self.capabilities.clone(), "model", instance_id));
         let bindings = wt(model::Model::instantiate_async(&mut store, &component, &linker).await)?;
         Ok(ModelInstance { store, bindings })
     }
