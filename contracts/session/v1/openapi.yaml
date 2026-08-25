@@ -19,7 +19,10 @@ tags:
   - name: sandbox
   - name: storage
   - name: customer-environment
+<<<<<<< HEAD
   - name: changes
+=======
+>>>>>>> origin/main
 
 paths:
   /v1/sessions:

@@ -97,6 +97,7 @@ pub(super) struct CustomerGrantResponse {
     observation_token: String,
 }
 
+<<<<<<< HEAD
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CustomerEnvironmentDispatchRequest {
@@ -134,6 +135,8 @@ pub(super) async fn customer_environment_dispatch(
         .map_err(map_err)
 }
 
+=======
+>>>>>>> origin/main
 pub(super) async fn customer_environment_grant(
     State(state): State<AppState>,
     headers: HeaderMap,

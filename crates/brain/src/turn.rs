@@ -133,6 +133,7 @@ pub trait EngineServices: Send + Sync {
         doc: &HeadDoc,
     ) -> Result<Arc<std::collections::HashMap<String, crate::environment::ManagedBinding>>>;
 
+<<<<<<< HEAD
     async fn execute_child_capability(
         self: Arc<Self>,
         parent_id: &str,
@@ -150,6 +151,8 @@ pub trait EngineServices: Send + Sync {
         request: serde_json::Value,
     ) -> std::result::Result<serde_json::Value, crate::tools::ToolCapabilityFailure>;
 
+=======
+>>>>>>> origin/main
     async fn reconcile_managed_unknown_environment(
         self: Arc<Self>,
         session_id: &str,
@@ -218,7 +221,10 @@ pub struct TurnRun {
     pub provider_total_timeout: std::time::Duration,
     pub compactor: Arc<dyn crate::compact::CompactionPort>,
     pub external_executor: Arc<dyn ToolExecutor>,
+<<<<<<< HEAD
     pub tool_registry: Option<Arc<dyn crate::tools::ToolRegistry>>,
+=======
+>>>>>>> origin/main
     pub managed_bindings: Arc<HashMap<String, crate::environment::ManagedBinding>>,
     pub customer: Option<Arc<crate::customer::CustomerCoordinator>>,
     pub tenant_id: String,
@@ -314,6 +320,13 @@ impl crate::agentloop::TurnCtx for LoopTurnCtx<'_> {
             return Ok(Err(crate::agentloop::op_error(
                 AgentloopErrorCode::TurnAlreadyTerminal,
                 "the turn already has a terminal; the activation should return",
+                false,
+            )));
+        }
+        if self.run.cancel.is_cancelled() {
+            return Ok(Err(crate::agentloop::op_error(
+                AgentloopErrorCode::Aborted,
+                "the turn was cancelled",
                 false,
             )));
         }
@@ -982,6 +995,12 @@ impl LoopTurnCtx<'_> {
                 stop_reason: TurnStopReason::EndTurn,
             });
             self.terminal_committed = true;
+        } else if self.run.cancel.is_cancelled() {
+            return Ok(Err(crate::agentloop::op_error(
+                al::AgentloopErrorCode::Aborted,
+                "the turn was cancelled",
+                false,
+            )));
         }
         let views = calls
             .iter()
@@ -1231,7 +1250,17 @@ impl TurnRun {
         rounds: u64,
         tool_calls: u64,
     ) -> Result<TurnReport> {
-        let report = self.run_work_from(st, rounds, tool_calls).await?;
+        let report = match self.run_work_from(st, rounds, tool_calls).await {
+            Ok(report) => report,
+            Err(_) if self.cancel.is_cancelled() => TurnReport {
+                stop_reason: TurnStopReason::Cancelled,
+                rounds: st.head.active_rounds,
+                tool_calls: st.head.active_tool_calls,
+                terminal_committed: false,
+                result: None,
+            },
+            Err(error) => return Err(error),
+        };
         if report.terminal_committed {
             return Ok(report);
         }
@@ -2460,6 +2489,7 @@ impl TurnRun {
                         )
                     });
                 }
+<<<<<<< HEAD
                 Some(ToolRoute::Intrinsic(capability)) if capability == "brain.subagents" => {
                     let brain = self.engine.clone();
                     let parent_id = self.session_id.clone();
@@ -2479,6 +2509,8 @@ impl TurnRun {
                         (idx, DispatchedOutcome::from(outcome))
                     });
                 }
+=======
+>>>>>>> origin/main
                 Some(ToolRoute::Intrinsic(capability)) => {
                     join.spawn(async move {
                         let _permit = permit.acquire_owned().await;
@@ -2515,6 +2547,7 @@ impl TurnRun {
                         (idx, DispatchedOutcome::from(out))
                     });
                 }
+<<<<<<< HEAD
                 Some(ToolRoute::Component(selector)) => {
                     let registry = self.tool_registry.clone();
                     let capabilities: Arc<dyn crate::tools::ToolCapabilityHandler> =
@@ -2555,6 +2588,8 @@ impl TurnRun {
                         (idx, DispatchedOutcome::from(outcome))
                     });
                 }
+=======
+>>>>>>> origin/main
                 Some(ToolRoute::Customer { registration, .. }) => {
                     let customer = self.customer.clone();
                     let cancel = self.cancel.clone();

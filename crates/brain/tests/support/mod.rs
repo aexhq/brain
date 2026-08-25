@@ -13,6 +13,7 @@ impl AgentloopRegistry for TestRegistry {
         Ok(Arc::new(SequentialAgentloop))
     }
 
+<<<<<<< HEAD
     fn admit(
         &self,
         component_digest: &str,
@@ -25,6 +26,18 @@ impl AgentloopRegistry for TestRegistry {
             component_bytes: component.len() as u64,
             world: world.into(),
             config: config.clone(),
+=======
+    fn admit_custom(
+        &self,
+        source_bundle_sha256: &str,
+        toolchain: &str,
+        bundle: &[u8],
+    ) -> brain::Result<AgentloopSelectorDoc> {
+        Ok(AgentloopSelectorDoc {
+            source_bundle_sha256: source_bundle_sha256.into(),
+            source_bundle_bytes: bundle.len() as u64,
+            toolchain: toolchain.into(),
+>>>>>>> origin/main
         })
     }
 }
@@ -41,6 +54,7 @@ pub fn services() -> BrainServices {
 }
 
 pub fn loop_config() -> Value {
+<<<<<<< HEAD
     let bundle = b"integration test loop";
     json!({
         "component_digest": hex::encode(Sha256::digest(bundle)),
@@ -76,3 +90,13 @@ pub fn component_artifacts() -> Value {
         }
     ])
 }
+=======
+    use base64::Engine as _;
+    let bundle = b"integration test loop";
+    json!({
+        "source_bundle_sha256": hex::encode(Sha256::digest(bundle)),
+        "toolchain": "test-loop",
+        "bundle_base64": base64::engine::general_purpose::STANDARD.encode(bundle),
+    })
+}
+>>>>>>> origin/main

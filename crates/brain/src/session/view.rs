@@ -1,5 +1,19 @@
 use super::*;
 
+<<<<<<< HEAD
+=======
+pub fn provider_name(p: &ApiProvider) -> &'static str {
+    match p {
+        ApiProvider::Openai => "openai",
+        ApiProvider::Anthropic => "anthropic",
+        ApiProvider::Deepseek => "deepseek",
+        ApiProvider::Moonshot => "moonshot",
+        ApiProvider::Xai => "xai",
+        ApiProvider::OpenaiCompatible => "openai_compatible",
+    }
+}
+
+>>>>>>> origin/main
 /// Canonical public file path. The URL surface is deliberately narrower than environment tool paths:
 /// only absolute POSIX paths beneath `/workspace` are accepted.
 pub fn normalize_workspace_path(path: &str) -> Result<String> {
@@ -56,9 +70,7 @@ pub fn build_prefix(
     let dialect = Dialect::OpenAiChat;
     let mut decls = crate::tools::resolve(&p.tools)?;
     for decl in &mut decls {
-        if let crate::config::ToolRoute::Intrinsic(capability) = &decl.route
-            && !crate::tools::is_direct_engine_capability(capability)
-        {
+        if let crate::config::ToolRoute::Intrinsic(capability) = &decl.route {
             let policy = p
                 .official_capabilities
                 .get(capability)
@@ -127,6 +139,7 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
         .as_ref()
         .map(|selector| -> Result<session::AgentloopInfo> {
             Ok(session::AgentloopInfo {
+<<<<<<< HEAD
                 component_digest: selector
                     .component_digest
                     .parse()
@@ -136,6 +149,16 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
                     .parse()
                     .map_err(|_| corrupt("agentloop world"))?,
                 config: selector.config.clone(),
+=======
+                source_bundle_sha256: selector
+                    .source_bundle_sha256
+                    .parse()
+                    .map_err(|_| corrupt("agentloop bundle digest"))?,
+                toolchain: selector
+                    .toolchain
+                    .parse()
+                    .map_err(|_| corrupt("agentloop toolchain"))?,
+>>>>>>> origin/main
             })
         })
         .transpose()?;

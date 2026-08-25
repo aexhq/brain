@@ -196,7 +196,7 @@ pub fn external_tool_request_wire_bytes(
     Ok(serde_json::to_vec(request)?.len())
 }
 
-/// Whether the full request fits the one neutral Brain/Aex executor-ingress ceiling.
+/// Whether the full request fits the executor-ingress ceiling.
 pub fn external_tool_request_wire_fits(request: &ExternalToolCallRequest) -> bool {
     external_tool_request_wire_bytes(request)
         .is_ok_and(|bytes| bytes <= crate::MAX_EXTERNAL_TOOL_REQUEST_BYTES)

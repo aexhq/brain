@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 pub type EnvironmentResult<T> = std::result::Result<T, EnvironmentError>;
 
+<<<<<<< HEAD
 pub const COMPONENT_ENVIRONMENT_WORLD: &str = "aex:environment/environment@1.0.0";
 
 #[derive(Debug, Clone)]
@@ -65,6 +66,8 @@ pub trait ComponentEnvironmentRegistry: Send + Sync {
     ) -> Result<()>;
 }
 
+=======
+>>>>>>> origin/main
 /// The mandatory operation receipt protocol implemented by every Environment.
 #[async_trait]
 pub trait EnvironmentPort: Send + Sync {

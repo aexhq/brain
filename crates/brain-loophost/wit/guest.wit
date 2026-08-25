@@ -2,8 +2,8 @@ package loophost:abi;
 
 // The guest ABI is deliberately two strings wide: payloads are JSON, versioned inside the
 // payload, so the ABI never churns as the op vocabulary evolves (design ledger B2). The public
-// wire semantics live in contracts/agentloop/v1 — every guest, the official aex component
-// included, speaks the contract only. One host-internal op rides the same envelope:
+// wire semantics live in contracts/agentloop/v1 — every imported loop speaks the contract
+// only. One host-internal op rides the same envelope:
 // `engine.session_start`, the read-only residency hydration any guest may fetch.
 interface host {
   call: func(payload: string) -> string;

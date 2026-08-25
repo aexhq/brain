@@ -1622,6 +1622,10 @@ mod tests {
                 storage_max_object_bytes: brain::storage::DEFAULT_MAX_STORAGE_OBJECT_BYTES,
                 storage_max_session_bytes: brain::storage::DEFAULT_MAX_SESSION_STORAGE_BYTES,
                 storage_transfer_ttl_ms: brain::storage::DEFAULT_STORAGE_TRANSFER_TTL_MS,
+<<<<<<< HEAD
+=======
+                retired_additional_sandbox_limit: 0,
+>>>>>>> origin/main
                 max_child_depth: 4,
                 max_direct_children: 32,
                 max_descendants: 256,

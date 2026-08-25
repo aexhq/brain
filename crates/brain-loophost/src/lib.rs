@@ -404,6 +404,10 @@ pub(crate) fn resolve_verdict(
             ActivationResultOutcome::Completed => Err(BrainError::Agentloop(
                 "the message activation completed without turn_finish or turn_fail".into(),
             )),
+            ActivationResultOutcome::Aborted => Ok(LoopVerdict {
+                stop_reason: brain::journal::TurnStopReason::Cancelled,
+                terminal_committed: false,
+            }),
             outcome => Err(BrainError::Agentloop(format!(
                 "the activation ended {outcome}: {}",
                 result
@@ -455,9 +459,8 @@ async fn serve_local_activation(
     }
 }
 
-/// A `session_start` activation's return: any clean return is acceptance (the engine-mode aex
-/// guest answers with its legacy verdict shape), but a contract loop reporting failed/aborted
-/// fails the turn.
+/// A `session_start` activation's return: any clean return is acceptance, but a contract loop
+/// reporting failed or aborted fails the turn.
 pub(crate) fn check_session_start(returned: &str) -> Result<(), BrainError> {
     use brain_protocol::agentloop::{ActivationResult, ActivationResultOutcome};
     if let Ok(result) = serde_json::from_str::<ActivationResult>(returned)
@@ -490,9 +493,8 @@ pub struct WasmAgentloop {
 }
 
 impl WasmAgentloop {
-    /// Every guest — the official aex component, seeded officials and customer uploads
-    /// alike — speaks `contracts/agentloop/v1` plus the read-only `engine.session_start`
-    /// hydration.
+    /// Every imported loop speaks `contracts/agentloop/v1` plus the read-only
+    /// `engine.session_start` hydration.
     pub fn from_component_file(path: &Path) -> anyhow::Result<Self> {
         Ok(Self {
             instances: SessionInstances::new(WasmLoopEngine::from_component_file(path)?),
@@ -567,3 +569,37 @@ impl Agentloop for WasmAgentloop {
         }
     }
 }
+<<<<<<< HEAD
+=======
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EmptyCtx;
+
+    #[async_trait]
+    impl TurnCtx for EmptyCtx {}
+
+    #[test]
+    fn an_aborted_activation_maps_to_a_cancelled_turn() {
+        let returned = serde_json::json!({
+            "activation_id": "act-cancelled",
+            "outcome": "aborted",
+            "error": {
+                "code": "aborted",
+                "message": "the turn was cancelled",
+                "retryable": false
+            }
+        })
+        .to_string();
+
+        let verdict = resolve_verdict(&returned, &EmptyCtx).expect("cancelled verdict");
+        assert_eq!(
+            verdict.stop_reason,
+            brain::journal::TurnStopReason::Cancelled
+        );
+        assert!(!verdict.terminal_committed);
+    }
+}
+>>>>>>> origin/main

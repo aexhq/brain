@@ -316,6 +316,7 @@ fn credential_debug_is_redacted_without_changing_wire_serialization() {
         },
         "secrets": {"TOKEN": ENV_SECRET},
         "agentloop": {
+<<<<<<< HEAD
             "component_digest": "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa",
             "world": "aex:agentloop/agentloop@1.0.0",
         },
@@ -331,6 +332,12 @@ fn credential_debug_is_redacted_without_changing_wire_serialization() {
                 "bytes": 1,
             },
         ],
+=======
+            "source_bundle_sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+            "toolchain": "loop-toolchain-1",
+            "bundle_base64": "eA==",
+        },
+>>>>>>> origin/main
     });
     let create: session::CreateSessionRequest =
         serde_json::from_value(create_value.clone()).unwrap();

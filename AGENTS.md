@@ -1,13 +1,13 @@
 # Working in this repository
 
-- Brain owns the neutral session API, Brain-to-Hand protocol, and public Hand composition ports.
+- Brain owns the neutral session API and public environment composition ports.
   Change schemas and generated views together; never hand-edit generated contract files (CI
   regenerates and diffs them).
-- `hands` and downstream products consume immutable Brain tags or revisions. Brain must not depend
-  on a Hands implementation crate or product-specific runtime.
+- Downstream products and extensions consume immutable Brain tags or revisions. Brain must not
+  depend on an environment implementation crate or product-specific runtime.
 - Journal every decision before its external effect. Seal the session prefix for its lifetime,
   preserve absent usage counters as absent, record tool intents before dispatch, and record results
-  before releasing Hand state. Redelivery of the same operation ID and digest to the same
+  before releasing environment state. Redelivery of the same operation ID and digest to the same
   recoverable binding is required; never replay an ambiguously lost operation to a replacement
   physical target or customer process.
 - Keep the `brain` core independent of cloud SDKs. Put storage, custody, and runtime behaviour behind

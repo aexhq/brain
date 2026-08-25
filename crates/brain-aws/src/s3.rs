@@ -234,6 +234,7 @@ impl BundleStoragePort for S3SessionStorage {
         &self,
         root_id: &str,
         bundle_digest: &str,
+        media_type: &str,
         bytes: &[u8],
     ) -> Result<brain_protocol::environment::ObjectReference> {
         validate_bundle_digest(bundle_digest)?;
@@ -254,14 +255,14 @@ impl BundleStoragePort for S3SessionStorage {
             .bucket(&self.bucket)
             .key(&key)
             .body(ByteStream::from(bytes.to_vec()))
-            .content_type("application/javascript+esm")
+            .content_type(media_type)
             .metadata("sha256", bundle_digest)
             .send()
             .await
             .map_err(|error| s3_error("store immutable Tool bundle", error))?;
         self.delete_exact_versions(&key, Some(current_version_id(written.version_id())))
             .await?;
-        bundle_object_reference(bundle_digest, bytes.len() as u64)
+        bundle_object_reference(bundle_digest, media_type, bytes.len() as u64)
     }
 
     async fn prepare_bundle_fetch(
@@ -361,13 +362,14 @@ fn validate_bundle_digest(bundle_digest: &str) -> Result<()> {
 
 fn bundle_object_reference(
     bundle_digest: &str,
+    media_type: &str,
     bytes: u64,
 ) -> Result<brain_protocol::environment::ObjectReference> {
     serde_json::from_value(serde_json::json!({
         "object_id": format!("bundle_{bundle_digest}"),
         "bytes": bytes,
         "sha256": bundle_digest,
-        "media_type": "application/javascript+esm",
+        "media_type": media_type,
     }))
     .map_err(BrainError::from)
 }
@@ -848,5 +850,14 @@ mod tests {
         assert!(validate_sha256(&"A".repeat(64)).is_err());
         validate_transfer_id("xfer_12345678").unwrap();
         assert!(validate_transfer_id("../escape").is_err());
+    }
+
+    #[test]
+    fn bundle_references_preserve_the_declared_media_type() {
+        let object = bundle_object_reference(&"a".repeat(64), "application/x-xz", 42).unwrap();
+        assert_eq!(
+            object.media_type.as_deref().map(String::as_str),
+            Some("application/x-xz")
+        );
     }
 }

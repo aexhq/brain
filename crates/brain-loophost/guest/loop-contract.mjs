@@ -1,7 +1,7 @@
 // A contract-mode probe loop: drives its turn entirely through `contracts/agentloop/v1` ctx
 // ops (loop-composed model requests, loop-directed dispatch, durable kv/journal state) and
 // echoes what the kernel delivered back out as loop events so tests can assert on the public
-// stream. This is the shape the H2 loop SDK generates; the official aex loop stays engine-mode.
+// stream. External authoring SDKs generate this same contract vocabulary.
 import { call } from "loophost:abi/host";
 
 let opCounter = 0;

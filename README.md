@@ -1,5 +1,6 @@
 <h1 align="center">Brain</h1>
 
+<<<<<<< HEAD
 <p align="center"><strong>A minimal and extensible kernel for AI workloads.</strong></p>
 <p align="center">
   <a href="https://aex.dev">Aex</a> ·
@@ -7,21 +8,28 @@
   <a href="https://github.com/aexhq/environments">Environments</a> ·
   <a href="https://discord.gg/Qk2YnHMHVb">Discord</a>
 </p>
+=======
+<p align="center"><strong>A minimal, extensible kernel for agents</strong></p>
+
+> This repo is in heavy early development, interfaces and contracts might change
+>>>>>>> origin/main
 
 ## What it is
 Brain is minimal server that manages a set of primitives and environments for running agent sessions.
-The term _Brain_ is originated from Anthropic engineering blog [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents) and minimalistic concept is inspired by [Pi Agent Harness](https://github.com/earendil-works/pi).
+The term _Brain_ is originated from Anthropic engineering blog [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents) 
+Brain is inspired by [Pi Agent Harness](https://github.com/earendil-works/pi), we believe modern framework should be minimal and open for extension so everyone can build upon it.
 
-## TypeScript client
+## Architecture
+### Brain and hands
+Brain is where agent session, agent loop and tools are managed, it invokes tools but actual execution belong to the hand (environment such as sandbox, browser etc), it outlives the hands, therefore it could manage multiple hands, resilient to sandbox failures and offer higher level of flexibility.
 
-```sh
-npm install @aexhq/brain zod
-```
+### Environment-neutral
+Brain does not assume the environment or tools the agent is working with This mean you could define one tool to be executed within your app running on client side while having another tool in the same agent session to execute some script in a sandbox  
 
-```ts
-import { Brain, tool } from "@aexhq/brain";
-import { z } from "zod";
+### Language-neutral
+Brain does not assume the language you are working with, you could write one tool in rust and another tool in node.
 
+<<<<<<< HEAD
 const echo = tool(
   z.object({ text: z.string() }),
   async function echo({ text }) {
@@ -64,6 +72,10 @@ Omitting `tools` exposes no model tools.
 | [`@aexhq/brain-tools`](packages/brain-tools) | Portable Tool values selected by an application |
 
 Environments implement Brain's public ports. Brain never imports a Environments implementation.
+=======
+### Agent-neutral
+Brain is not an agent, but you can easily build an agent with it. This allow you to run your favorite agent runtime like pi/codex/opencode as agentloop.
+>>>>>>> origin/main
 
 ## Run standalone
 
@@ -74,6 +86,7 @@ cargo run --release -p brain-server --bin brain
 ```
 
 Brain binds `127.0.0.1:3210` by default. Set `BRAIN_API_TOKEN`, or read the generated mode-0600
+<<<<<<< HEAD
 token from `$BRAIN_DATA_DIR/operator.token`. Local mode deliberately executes managed Tool bundles
 as unsandboxed host Node 22 subprocesses; use a hosted Environment for untrusted workloads.
 
@@ -104,6 +117,16 @@ process environment.
 
 Implement the public Environment, journal, custody, storage, or trusted-tool ports your environment needs,
 then compose them with `Brain::with_parts_and_services`.
+=======
+token from `$BRAIN_DATA_DIR/operator.token`. Local mode deliberately executes prepared Tool
+artifacts as unsandboxed host Node 22 subprocesses; use an isolated environment extension for
+untrusted workloads.
+
+## Embed Brain
+
+Implement the public environment, journal, custody, storage, or trusted-tool ports required by the
+composition, then supply them to `Brain::with_parts_and_services`.
+>>>>>>> origin/main
 
 ## Verification
 
@@ -112,13 +135,9 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p brain-bench --release -- ci
-npm ci
-npm test
-npm run package-smoke
 ```
 
-The schemas, OpenAPI document, protocol semantics, examples, generators, and conformance fixtures
-in this repository are the source of truth. See [BENCHMARKS.md](BENCHMARKS.md) for the methodology
-and reference measurements.
+The schemas, OpenAPI document, protocol semantics, generators, and conformance fixtures in this
+repository are the source of truth. See [BENCHMARKS.md](BENCHMARKS.md) for benchmark methodology.
 
 Licensed under [Apache 2.0](LICENSE).
