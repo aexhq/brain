@@ -72,6 +72,7 @@ async fn run() -> anyhow::Result<()> {
                 advertised_address: address.to_string(),
                 transport_urls,
                 provider_factory: None,
+                environment_capabilities: environment_capabilities()?,
                 loophost,
             })
             .await?;
@@ -88,6 +89,32 @@ async fn run() -> anyhow::Result<()> {
         address,
     )
     .await
+}
+
+fn environment_capabilities()
+-> anyhow::Result<Option<Arc<dyn brain_component_host::CapabilityHandler>>> {
+    let endpoint = std::env::var("BRAIN_ENVIRONMENT_DISPATCH_URL").ok();
+    let token = std::env::var("BRAIN_ENVIRONMENT_DISPATCH_TOKEN").ok();
+    let timeout = std::env::var("BRAIN_ENVIRONMENT_DISPATCH_TIMEOUT_MS")
+        .unwrap_or_else(|_| "30000".into())
+        .parse::<u64>()?;
+    if !(100..=900_000).contains(&timeout) {
+        anyhow::bail!("BRAIN_ENVIRONMENT_DISPATCH_TIMEOUT_MS must be 100 through 900000");
+    }
+    match endpoint {
+        Some(endpoint) if !endpoint.is_empty() => Ok(Some(Arc::new(
+            brain_environment_host::HttpEnvironmentCapabilities::new(
+                endpoint,
+                token,
+                std::time::Duration::from_millis(timeout),
+            )?,
+        ))),
+        Some(_) => anyhow::bail!("BRAIN_ENVIRONMENT_DISPATCH_URL cannot be empty"),
+        None if token.is_some() => anyhow::bail!(
+            "BRAIN_ENVIRONMENT_DISPATCH_TOKEN requires BRAIN_ENVIRONMENT_DISPATCH_URL"
+        ),
+        None => Ok(None),
+    }
 }
 
 fn component_host_path() -> anyhow::Result<PathBuf> {

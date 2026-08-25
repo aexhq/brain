@@ -77,6 +77,11 @@ Brain binds `127.0.0.1:3210` by default. Set `BRAIN_API_TOKEN`, or read the gene
 token from `$BRAIN_DATA_DIR/operator.token`. Local mode deliberately executes managed Tool bundles
 as unsandboxed host Node 22 subprocesses; use a hosted Environment for untrusted workloads.
 
+Provider-backed Environment components use an optional same-host adapter configured with
+`BRAIN_ENVIRONMENT_DISPATCH_URL`, `BRAIN_ENVIRONMENT_DISPATCH_TOKEN`, and
+`BRAIN_ENVIRONMENT_DISPATCH_TIMEOUT_MS`. The URL must be a literal loopback HTTP address. If it is
+absent, Environment host operations fail closed; pure Environment components continue to work.
+
 ## Embed Brain
 
 Implement the public Environment, journal, custody, storage, or trusted-tool ports your environment needs,

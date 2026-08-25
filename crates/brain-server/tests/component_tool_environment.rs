@@ -65,6 +65,7 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
         advertised_address: "127.0.0.1:1".into(),
         transport_urls: None,
         provider_factory: None,
+        environment_capabilities: None,
         loophost: Some(brain_server::LoophostOptions {
             component_host: PathBuf::from(env!("CARGO_BIN_EXE_brain-component-host")),
             workers: 2,

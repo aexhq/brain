@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +13,12 @@ use brain_component_host::{
     CapabilityCall, CapabilityFailure, CapabilityHandler, CapabilityRouter, ComponentSource,
     ENVIRONMENT_WORLD, WorkerPool, WorkerRequest, component_digest, environment,
 };
+use futures_util::StreamExt;
+use serde::Serialize;
 use serde_json::Value;
+
+const MAX_DISPATCH_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+const MAX_DISPATCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 
 static STAGING_NONCE: AtomicU64 = AtomicU64::new(1);
 
@@ -229,5 +235,337 @@ impl CapabilityHandler for RejectEnvironmentCapabilities {
             ),
             retryable: false,
         })
+    }
+}
+
+#[derive(Clone)]
+pub struct HttpEnvironmentCapabilities {
+    client: reqwest::Client,
+    endpoint: reqwest::Url,
+    bearer: Option<String>,
+    timeout: Duration,
+}
+
+#[derive(Serialize)]
+struct DispatchRequest<'a> {
+    operation_id: &'a str,
+    action: &'a str,
+    request: &'a Value,
+    deadline_at_ms: &'a str,
+}
+
+impl HttpEnvironmentCapabilities {
+    pub fn new(
+        endpoint: impl Into<String>,
+        bearer: Option<String>,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let endpoint = endpoint.into().parse::<reqwest::Url>().map_err(|error| {
+            BrainError::Invalid(format!("Environment dispatch URL is invalid: {error}"))
+        })?;
+        if endpoint.scheme() != "http"
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return Err(BrainError::Invalid(
+                "Environment dispatch must be an http:// loopback URL without credentials, query, or fragment"
+                    .into(),
+            ));
+        }
+        let loopback = endpoint
+            .host_str()
+            .and_then(|host| host.trim_matches(['[', ']']).parse::<IpAddr>().ok())
+            .is_some_and(|ip| ip.is_loopback());
+        if !loopback {
+            return Err(BrainError::Invalid(
+                "Environment dispatch host must be a literal loopback address".into(),
+            ));
+        }
+        if timeout.is_zero() {
+            return Err(BrainError::Invalid(
+                "Environment dispatch timeout must be positive".into(),
+            ));
+        }
+        if bearer.as_ref().is_some_and(|token| {
+            reqwest::header::HeaderValue::try_from(format!("Bearer {token}")).is_err()
+        }) {
+            return Err(BrainError::Invalid(
+                "Environment dispatch token is not a valid HTTP bearer value".into(),
+            ));
+        }
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(timeout.min(Duration::from_secs(10)))
+            .pool_max_idle_per_host(16)
+            .build()
+            .map_err(|error| {
+                BrainError::Invalid(format!("Environment dispatch client: {error}"))
+            })?;
+        Ok(Self {
+            client,
+            endpoint,
+            bearer,
+            timeout,
+        })
+    }
+}
+
+impl std::fmt::Debug for HttpEnvironmentCapabilities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpEnvironmentCapabilities")
+            .field("endpoint", &self.endpoint)
+            .field("bearer", &self.bearer.as_ref().map(|_| "<redacted>"))
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl CapabilityHandler for HttpEnvironmentCapabilities {
+    async fn call(&self, call: CapabilityCall) -> std::result::Result<Value, CapabilityFailure> {
+        if call.capability != "environment.dispatch" || call.world != ENVIRONMENT_WORLD {
+            return Err(CapabilityFailure {
+                code: "capability_unbound".into(),
+                message: format!(
+                    "Environment host capability {} is not configured",
+                    call.capability
+                ),
+                retryable: false,
+            });
+        }
+        let action = call
+            .request
+            .get("action")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 64)
+            .ok_or_else(|| {
+                capability_failure(
+                    "invalid_request",
+                    "Environment dispatch action is invalid",
+                    false,
+                )
+            })?;
+        let request = call.request.get("request").ok_or_else(|| {
+            capability_failure(
+                "invalid_request",
+                "Environment dispatch request is missing",
+                false,
+            )
+        })?;
+        let deadline_at_ms = call
+            .request
+            .get("deadline_at_ms")
+            .and_then(Value::as_str)
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| {
+                capability_failure(
+                    "invalid_request",
+                    "Environment dispatch deadline is invalid",
+                    false,
+                )
+            })?;
+        let remaining_ms = deadline_at_ms.saturating_sub(brain::wall_ms());
+        if remaining_ms == 0 {
+            return Err(capability_failure(
+                "deadline_exceeded",
+                "Environment dispatch deadline elapsed",
+                true,
+            ));
+        }
+        let body = serde_json::to_vec(&DispatchRequest {
+            operation_id: &call.operation_id,
+            action,
+            request,
+            deadline_at_ms: call
+                .request
+                .get("deadline_at_ms")
+                .and_then(Value::as_str)
+                .expect("validated deadline"),
+        })
+        .map_err(|error| {
+            capability_failure(
+                "invalid_request",
+                &format!("Environment dispatch request: {error}"),
+                false,
+            )
+        })?;
+        if body.len() > MAX_DISPATCH_REQUEST_BYTES {
+            return Err(capability_failure(
+                "request_too_large",
+                "Environment dispatch request exceeds 2097152 bytes",
+                false,
+            ));
+        }
+        let mut request_builder = self
+            .client
+            .post(self.endpoint.clone())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body);
+        if let Some(bearer) = &self.bearer {
+            request_builder = request_builder.bearer_auth(bearer);
+        }
+        let timeout = self.timeout.min(Duration::from_millis(remaining_ms));
+        let response = tokio::time::timeout(timeout, request_builder.send())
+            .await
+            .map_err(|_| {
+                capability_failure("deadline_exceeded", "Environment dispatch timed out", true)
+            })?
+            .map_err(|_| {
+                capability_failure(
+                    "dispatch_unavailable",
+                    "Environment dispatch is unavailable",
+                    true,
+                )
+            })?;
+        let status = response.status();
+        if response
+            .content_length()
+            .is_some_and(|bytes| bytes > MAX_DISPATCH_RESPONSE_BYTES as u64)
+        {
+            return Err(capability_failure(
+                "response_too_large",
+                "Environment dispatch response exceeds 2097152 bytes",
+                false,
+            ));
+        }
+        let mut body = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| {
+                capability_failure(
+                    "dispatch_unavailable",
+                    "Environment dispatch response is unavailable",
+                    true,
+                )
+            })?;
+            if body.len().saturating_add(chunk.len()) > MAX_DISPATCH_RESPONSE_BYTES {
+                return Err(capability_failure(
+                    "response_too_large",
+                    "Environment dispatch response exceeds 2097152 bytes",
+                    false,
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        if !status.is_success() {
+            return Err(capability_failure(
+                "dispatch_failed",
+                &format!("Environment dispatch returned {status}"),
+                status.is_server_error(),
+            ));
+        }
+        serde_json::from_slice(&body).map_err(|_| {
+            capability_failure(
+                "invalid_response",
+                "Environment dispatch returned invalid JSON",
+                false,
+            )
+        })
+    }
+}
+
+fn capability_failure(code: &str, message: &str, retryable: bool) -> CapabilityFailure {
+    CapabilityFailure {
+        code: code.into(),
+        message: message.into(),
+        retryable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn dispatch_endpoint_is_literal_loopback_http() {
+        for endpoint in [
+            "https://127.0.0.1:8080/environment",
+            "http://localhost:8080/environment",
+            "http://10.0.0.1:8080/environment",
+            "http://user:secret@127.0.0.1:8080/environment",
+        ] {
+            assert!(
+                HttpEnvironmentCapabilities::new(endpoint, None, Duration::from_secs(1)).is_err()
+            );
+        }
+        assert!(
+            HttpEnvironmentCapabilities::new(
+                "http://[::1]:8080/environment",
+                None,
+                Duration::from_secs(1)
+            )
+            .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_forwards_the_generic_operation_and_redacts_failures() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            loop {
+                let mut chunk = [0_u8; 4096];
+                let count = socket.read(&mut chunk).await.unwrap();
+                received.extend_from_slice(&chunk[..count]);
+                if count == 0 || received.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&received);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .map(str::to_owned)
+                        })
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap();
+                    let header_end = received
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .unwrap()
+                        + 4;
+                    while received.len() < header_end + length {
+                        let count = socket.read(&mut chunk).await.unwrap();
+                        received.extend_from_slice(&chunk[..count]);
+                    }
+                    let body: Value =
+                        serde_json::from_slice(&received[header_end..header_end + length]).unwrap();
+                    assert_eq!(body["action"], "submit");
+                    assert_eq!(body["operation_id"], "op-1");
+                    assert_eq!(body["request"]["value"], 42);
+                    let response = br#"{"accepted":true}"#;
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n", response.len()).as_bytes()).await.unwrap();
+                    socket.write_all(response).await.unwrap();
+                    return;
+                }
+            }
+        });
+        let handler = HttpEnvironmentCapabilities::new(
+            format!("http://{address}/environment"),
+            Some("secret".into()),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let response = handler
+            .call(CapabilityCall {
+                world: ENVIRONMENT_WORLD.into(),
+                instance_id: Some("instance".into()),
+                capability: "environment.dispatch".into(),
+                operation_id: "op-1".into(),
+                request: serde_json::json!({
+                    "action": "submit",
+                    "request": {"value": 42},
+                    "deadline_at_ms": (brain::wall_ms() + 2_000).to_string(),
+                }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(response, serde_json::json!({"accepted": true}));
+        server.await.unwrap();
     }
 }

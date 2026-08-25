@@ -405,6 +405,7 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
         advertised_address: address.to_string(),
         transport_urls: None,
         provider_factory: None,
+        environment_capabilities: None,
         loophost: Some(brain_server::LoophostOptions {
             component_host: PathBuf::from(env!("CARGO_BIN_EXE_brain-component-host")),
             workers: 2,

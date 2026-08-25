@@ -949,6 +949,9 @@ dependencies = [
  "brain",
  "brain-component-host",
  "brain-protocol",
+ "futures-util",
+ "reqwest",
+ "serde",
  "serde_json",
  "tokio",
 ]

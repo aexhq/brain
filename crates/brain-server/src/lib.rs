@@ -26,6 +26,9 @@ pub struct LocalOptions {
     pub transport_urls: Option<(String, String)>,
     /// `None` composes the real providers.
     pub provider_factory: Option<ProviderFactory>,
+    /// Deployment-owned Environment host operations. Absence keeps provider-backed Environment
+    /// components fail-closed while deterministic components remain usable.
+    pub environment_capabilities: Option<Arc<dyn brain_component_host::CapabilityHandler>>,
     #[cfg(feature = "loophost")]
     pub loophost: Option<LoophostOptions>,
 }
@@ -83,7 +86,9 @@ pub async fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> 
         &options.data_dir.join("environments"),
         &loophost.component_host,
         loophost.workers,
-        Arc::new(brain_environment_host::RejectEnvironmentCapabilities),
+        options
+            .environment_capabilities
+            .unwrap_or_else(|| Arc::new(brain_environment_host::RejectEnvironmentCapabilities)),
     )
     .await?;
     #[cfg(not(feature = "loophost"))]
