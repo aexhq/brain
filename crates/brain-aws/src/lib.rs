@@ -21,6 +21,10 @@ pub struct AwsRuntimePorts {
     pub customer_delivery: Option<Arc<dyn brain::customer::CustomerEnvironmentDeliveryPort>>,
     pub customer_transport: Option<brain::customer::CustomerTransportConfig>,
     pub agentloop_registry: Option<Arc<dyn brain::agentloop::AgentloopRegistry>>,
+    pub model_registry: Option<Arc<dyn brain::provider::ModelRegistry>>,
+    pub tool_registry: Option<Arc<dyn brain::tools::ToolRegistry>>,
+    pub component_environment_registry:
+        Option<Arc<dyn brain::environment::ComponentEnvironmentRegistry>>,
     /// Overrides the live providers; the hosted default is the guarded transport with private
     /// addresses denied.
     pub provider_factory: Option<brain::session::ProviderFactory>,
@@ -101,9 +105,9 @@ pub async fn compose(
         custody,
         executor,
         brain::session::BrainServices {
-            model_registry: None,
-            tool_registry: None,
-            component_environment_registry: None,
+            model_registry: ports.model_registry,
+            tool_registry: ports.tool_registry,
+            component_environment_registry: ports.component_environment_registry,
             session_storage: Some(storage.clone()),
             bundle_storage: Some(storage),
             environments: ports.environments,

@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 brain = { workspace = true }
+brain-aws = { workspace = true }
 brain-component-host = { path = "../brain-component-host" }
 brain-environment-host = { workspace = true }
 brain-loophost = { workspace = true, optional = true }

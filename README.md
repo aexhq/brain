@@ -82,6 +82,12 @@ Provider-backed Environment components use an optional same-host adapter configu
 `BRAIN_ENVIRONMENT_DISPATCH_TIMEOUT_MS`. The URL must be a literal loopback HTTP address. If it is
 absent, Environment host operations fail closed; pure Environment components continue to work.
 
+Production mode uses Brain's AWS journal, custody, and session-storage adapters and requires
+`BRAIN_API_TOKEN`, `BRAIN_DATA_DIR`, `AWS_REGION`, `BRAIN_JOURNAL_TABLE`, `BRAIN_KMS_KEY_ID`, and
+`BRAIN_SESSION_STORAGE_BUCKET`. `BRAIN_DATA_DIR` must be persistent because it is the
+content-addressed store for admitted component binaries. Hosted requests require an explicit
+`x-brain-tenant-id`; no product-specific composition is embedded in the image.
+
 ## Embed Brain
 
 Implement the public Environment, journal, custody, storage, or trusted-tool ports your environment needs,

@@ -1,5 +1,5 @@
-//! Brain's neutral server entry point. Production is the default and fails closed because hosted
-//! adapters are injected by the product composition. `local` is explicit and durable.
+//! Brain's neutral server entry point. Production composes AWS durability and the four component
+//! hosts; `local` is explicit and durable.
 
 use brain::journal::Journal;
 use brain::keys::{KeyCustody, blob_from_b64};
@@ -19,8 +19,7 @@ fn main() -> anyhow::Result<()> {
     tokio::runtime::Runtime::new()?.block_on(run())
 }
 
-/// The two runtime compositions. Production is the default when omitted and fails closed
-/// because hosted adapters are injected by the product composition, never here.
+/// The two runtime compositions. Production is the default when omitted.
 #[derive(Debug, Clone, Copy)]
 enum BrainMode {
     Production,
@@ -41,14 +40,33 @@ async fn run() -> anyhow::Result<()> {
     let address: std::net::SocketAddr = std::env::var("BRAIN_LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:3210".into())
         .parse()?;
-    let data =
-        PathBuf::from(std::env::var("BRAIN_DATA_DIR").unwrap_or_else(|_| "./brain-data".into()));
+    let data = PathBuf::from(match (mode, std::env::var("BRAIN_DATA_DIR")) {
+        (_, Ok(value)) if !value.is_empty() => value,
+        (BrainMode::Local, Err(_)) => "./brain-data".into(),
+        (BrainMode::Production, Err(_)) => anyhow::bail!("BRAIN_DATA_DIR is not set"),
+        (_, Ok(_)) => anyhow::bail!("BRAIN_DATA_DIR cannot be empty"),
+    });
     std::fs::create_dir_all(&data)?;
-    let token = operator_token(&data)?;
+    let token = match mode {
+        BrainMode::Production => required("BRAIN_API_TOKEN")?,
+        BrainMode::Local => operator_token(&data)?,
+    };
     let brain = match mode {
-        BrainMode::Production => anyhow::bail!(
-            "the neutral brain-server has no production adapters; start the hosted composition or set BRAIN_MODE=local explicitly"
-        ),
+        BrainMode::Production => {
+            let cfg = BrainConfig::from_env().map_err(|error| anyhow::anyhow!("{error}"))?;
+            brain_server::compose_aws(brain_server::AwsOptions {
+                data_dir: data.clone(),
+                cfg,
+                persistence: brain_aws::AwsPersistenceConfig::from_env()
+                    .map_err(|error| anyhow::anyhow!("{error}"))?,
+                environment_capabilities: environment_capabilities()?,
+                loophost: Some(brain_server::LoophostOptions {
+                    component_host: component_host_path()?,
+                    workers: component_workers()?,
+                }),
+            })
+            .await?
+        }
         BrainMode::Local => {
             tracing::warn!(data = %data.display(), "LOCAL MODE: durable SQLite/custody with unsandboxed host Tool execution; network policy is not enforced");
             let cfg = BrainConfig::from_env().map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -84,11 +102,22 @@ async fn run() -> anyhow::Result<()> {
         AppState {
             brain,
             token,
-            tenancy: brain_server::api::Tenancy::Implicit("local".into()),
+            tenancy: match mode {
+                BrainMode::Production => brain_server::api::Tenancy::Required,
+                BrainMode::Local => brain_server::api::Tenancy::Implicit("local".into()),
+            },
         },
         address,
     )
     .await
+}
+
+fn required(name: &str) -> anyhow::Result<String> {
+    let value = std::env::var(name).map_err(|_| anyhow::anyhow!("{name} is not set"))?;
+    if value.is_empty() {
+        anyhow::bail!("{name} cannot be empty");
+    }
+    Ok(value)
 }
 
 fn environment_capabilities()
