@@ -336,6 +336,100 @@ async fn suspending_a_root_releases_component_environments_until_resume() {
     assert_eq!(releases.load(Ordering::Relaxed), 1);
 }
 
+#[tokio::test]
+async fn durable_retention_is_renewable_and_shortening_is_explicit() {
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-retention-update"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        crate::provider::fake::unscripted_factory(),
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+    let initial = u64::try_from(created.retain_until.timestamp_millis()).unwrap();
+    let extended = initial + 60_000;
+    let renewed = brain
+        .update_retention(created.id.as_str(), extended, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        u64::try_from(renewed.retain_until.timestamp_millis()).unwrap(),
+        extended
+    );
+
+    let shortened = initial - 60_000;
+    assert!(matches!(
+        brain
+            .update_retention(created.id.as_str(), shortened, false)
+            .await,
+        Err(BrainError::Invalid(message)) if message.contains("allow_shorten")
+    ));
+    let updated = brain
+        .update_retention(created.id.as_str(), shortened, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        u64::try_from(updated.retain_until.timestamp_millis()).unwrap(),
+        shortened
+    );
+}
+
+#[tokio::test]
+async fn expired_durable_retention_reuses_the_recoverable_deletion_path() {
+    let journal = Journal::new_memory("brain-retention-expiry");
+    let brain = Brain::with_parts_and_services(
+        BrainConfig {
+            default_retention: Duration::from_millis(40),
+            max_retention: Duration::from_secs(1),
+            recovery_poll_interval: Duration::from_millis(5),
+            recovery_shards_per_poll: crate::journal::RECOVERY_SHARDS,
+            ..BrainConfig::default()
+        },
+        journal,
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        crate::provider::fake::unscripted_factory(),
+    );
+    brain.start_recovery_worker();
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+            })),
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if brain
+                .deletion_status(created.id.as_str())
+                .await
+                .is_ok_and(|status| status.state == DeletionState::Succeeded)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("expired session reaches the durable deletion tombstone");
+    assert!(matches!(
+        brain.get(created.id.as_str()).await,
+        Err(BrainError::NoSuchSession(_))
+    ));
+}
+
 #[test]
 fn journal_retention_config_rejects_malformed_and_inconsistent_policy() {
     assert_eq!(parse_strict_env_u64("TEST_LIMIT", None, 17).unwrap(), 17);
@@ -374,6 +468,14 @@ fn process_environment_policy_uses_exact_defaults_and_bounds() {
     assert_eq!(cfg.max_concurrent_creates, DEFAULT_MAX_CONCURRENT_CREATES);
     assert_eq!(cfg.max_event_followers, DEFAULT_MAX_EVENT_FOLLOWERS);
     assert_eq!(cfg.max_resident_sessions, DEFAULT_MAX_RESIDENT_SESSIONS);
+    assert_eq!(
+        cfg.default_retention,
+        Duration::from_secs(DEFAULT_RETENTION_SECONDS)
+    );
+    assert_eq!(
+        cfg.max_retention,
+        Duration::from_secs(MAX_RETENTION_SECONDS)
+    );
     assert_eq!(
         cfg.storage_max_tenant_bytes,
         DEFAULT_STORAGE_MAX_TENANT_BYTES
@@ -538,6 +640,13 @@ fn process_environment_policy_rejects_cross_field_and_string_drift() {
 
     assert!(load(&[(MAX_TURNS_ENV, "0")]).is_err());
     assert!(load(&[(OUTBOUND_ALLOW_PRIVATE_ENV, "TRUE")]).is_err());
+    assert!(
+        load(&[
+            (DEFAULT_RETENTION_SECONDS_ENV, "120"),
+            (MAX_RETENTION_SECONDS_ENV, "60"),
+        ])
+        .is_err()
+    );
     assert!(
         load(&[
             (STORAGE_MAX_OBJECT_BYTES_ENV, "2"),

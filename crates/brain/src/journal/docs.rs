@@ -298,6 +298,7 @@ pub struct HeadDoc {
     pub context: Option<ContextPointerDoc>,
     pub turns: u64,
     pub created_ms: u64,
+    pub retain_until_ms: u64,
     pub updated_ms: u64,
     /// Durable wake-up anchor for background recovery. It is present only while work or cleanup
     /// can make progress without another customer request.
@@ -385,6 +386,7 @@ pub struct ControlDoc {
     pub context: Option<ContextPointerDoc>,
     pub turns: u64,
     pub created_ms: u64,
+    pub retain_until_ms: u64,
     pub updated_ms: u64,
     pub recovery_due_ms: Option<u64>,
     pub recovery_attempt: u32,
@@ -527,6 +529,7 @@ impl HeadDoc {
             context,
             turns,
             created_ms,
+            retain_until_ms,
             updated_ms,
             recovery_due_ms,
             recovery_attempt,
@@ -569,6 +572,7 @@ impl HeadDoc {
             context: context.clone(),
             turns: *turns,
             created_ms: *created_ms,
+            retain_until_ms: *retain_until_ms,
             updated_ms: *updated_ms,
             recovery_due_ms: *recovery_due_ms,
             recovery_attempt: *recovery_attempt,
@@ -616,6 +620,7 @@ impl HeadDoc {
             context: _,
             turns: _,
             created_ms: _,
+            retain_until_ms: _,
             updated_ms: _,
             recovery_due_ms: _,
             recovery_attempt: _,
@@ -667,6 +672,7 @@ impl HeadDoc {
             context,
             turns,
             created_ms,
+            retain_until_ms,
             updated_ms,
             recovery_due_ms,
             recovery_attempt,
@@ -711,6 +717,7 @@ impl HeadDoc {
             context,
             turns,
             created_ms,
+            retain_until_ms,
             updated_ms,
             recovery_due_ms,
             recovery_attempt,
@@ -746,7 +753,8 @@ impl HeadDoc {
     ///
     /// Active turns remain due while their lease is held; a crashed owner therefore cannot hide
     /// work by claiming it. Storage upload reservations sleep until their expiry unless staging
-    /// cleanup is already pending. Quiescent sessions omit the index keys entirely.
+    /// cleanup is already pending. Quiescent sessions remain indexed at their finite retention
+    /// deadline so expired durable state is reclaimed without customer traffic.
     pub fn with_recovery_projection(&self, now_ms: u64) -> Self {
         let mut projected = self.clone();
         let lease_safe_due = now_ms.saturating_add(LEASE_MS + STEAL_GRACE_MS);
@@ -782,7 +790,7 @@ impl HeadDoc {
                 _ => None,
             }
         });
-        let due = if matches!(self.state.as_str(), "suspending" | "ending" | "deleting")
+        let work_due = if matches!(self.state.as_str(), "suspending" | "ending" | "deleting")
             || self.turn.is_some()
             || self.active_phase.is_some()
             || self.storage_delete.is_some()
@@ -796,8 +804,16 @@ impl HeadDoc {
                 (left, right) => left.or(right),
             }
         };
-        projected.recovery_due_ms = due;
-        if due.is_none() {
+        // Before expiry, retention competes with ordinary work. Once expired work is already
+        // active, that work owns its lease-safe/backoff deadline; repeatedly forcing the stale
+        // retention instant would hot-loop a failing cleanup.
+        let retention_due =
+            (self.retain_until_ms > now_ms || work_due.is_none()).then_some(self.retain_until_ms);
+        projected.recovery_due_ms = match (work_due, retention_due) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        };
+        if work_due.is_none() && self.retain_until_ms > now_ms {
             projected.recovery_attempt = 0;
         }
         projected
@@ -1152,6 +1168,7 @@ pub struct SessionSummary {
     pub turns: u64,
     pub last_seq: u64,
     pub created_ms: u64,
+    pub retain_until_ms: u64,
     pub updated_ms: u64,
     pub last_message_ms: Option<u64>,
     pub provider: String,
@@ -1183,6 +1200,7 @@ impl SessionSummary {
             turns: doc.turns,
             last_seq: doc.last_seq,
             created_ms: doc.created_ms,
+            retain_until_ms: doc.retain_until_ms,
             updated_ms: doc.updated_ms,
             last_message_ms: doc.last_message_ms,
             provider: doc.prefix.provider.clone(),

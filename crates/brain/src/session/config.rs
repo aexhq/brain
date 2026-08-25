@@ -15,6 +15,8 @@ pub const MAX_CONCURRENT_CREATES_ENV: &str = "BRAIN_MAX_CONCURRENT_CREATES";
 pub const MAX_EVENT_FOLLOWERS_ENV: &str = "BRAIN_MAX_EVENT_FOLLOWERS";
 pub const MAX_RESIDENT_SESSIONS_ENV: &str = "BRAIN_MAX_RESIDENT_SESSIONS";
 pub const IDLE_DISCARD_SECONDS_ENV: &str = "BRAIN_IDLE_DISCARD_SECONDS";
+pub const DEFAULT_RETENTION_SECONDS_ENV: &str = "BRAIN_DEFAULT_RETENTION_SECONDS";
+pub const MAX_RETENTION_SECONDS_ENV: &str = "BRAIN_MAX_RETENTION_SECONDS";
 pub const OUTBOUND_ALLOW_PRIVATE_ENV: &str = "BRAIN_OUTBOUND_ALLOW_PRIVATE";
 pub const STORAGE_MAX_OBJECT_BYTES_ENV: &str = "BRAIN_STORAGE_MAX_OBJECT_BYTES";
 pub const STORAGE_MAX_SESSION_BYTES_ENV: &str = "BRAIN_STORAGE_MAX_SESSION_BYTES";
@@ -38,6 +40,7 @@ pub const DEFAULT_MAX_CONCURRENT_CREATES: usize = 4;
 pub const DEFAULT_MAX_EVENT_FOLLOWERS: usize = 64;
 pub const DEFAULT_MAX_RESIDENT_SESSIONS: usize = 128;
 pub const DEFAULT_IDLE_DISCARD_SECONDS: u64 = 900;
+pub const DEFAULT_RETENTION_SECONDS: u64 = 400 * 24 * 60 * 60;
 pub const DEFAULT_STORAGE_MAX_TENANT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 pub const DEFAULT_RECOVERY_POLL_MS: u64 = 1_000;
 pub const DEFAULT_RECOVERY_SHARDS_PER_POLL: usize = 4;
@@ -58,6 +61,8 @@ pub const MAX_CONCURRENT_CREATES: usize = 64;
 pub const MAX_EVENT_FOLLOWERS: usize = 1_024;
 pub const MAX_RESIDENT_SESSIONS: usize = 4_096;
 pub const MAX_IDLE_DISCARD_SECONDS: u64 = 24 * 60 * 60;
+pub const MIN_RETENTION_SECONDS: u64 = 60;
+pub const MAX_RETENTION_SECONDS: u64 = 10 * 365 * 24 * 60 * 60;
 pub const MAX_STORAGE_POLICY_BYTES: u64 = i64::MAX as u64;
 pub const MIN_STORAGE_TRANSFER_TTL_MS: u64 = 60_000;
 pub const MAX_STORAGE_TRANSFER_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -89,6 +94,10 @@ pub struct BrainConfig {
     pub max_resident_sessions: usize,
     /// Idle residency before the actor discards its fold and exits.
     pub idle_discard: Duration,
+    /// Default and absolute maximum durable session retention. Both are finite; a session may
+    /// renew within the moving deployment maximum through the public retention operation.
+    pub default_retention: Duration,
+    pub max_retention: Duration,
     pub context_soft_tokens: usize,
     pub context_hard_tokens: usize,
     pub context_tail_tokens: usize,
@@ -149,6 +158,8 @@ impl Default for BrainConfig {
             max_event_followers: DEFAULT_MAX_EVENT_FOLLOWERS,
             max_resident_sessions: DEFAULT_MAX_RESIDENT_SESSIONS,
             idle_discard: Duration::from_secs(DEFAULT_IDLE_DISCARD_SECONDS),
+            default_retention: Duration::from_secs(DEFAULT_RETENTION_SECONDS),
+            max_retention: Duration::from_secs(MAX_RETENTION_SECONDS),
             context_soft_tokens: DEFAULT_CONTEXT_SOFT_TOKENS,
             context_hard_tokens: DEFAULT_CONTEXT_HARD_TOKENS,
             context_tail_tokens: DEFAULT_CONTEXT_TAIL_TOKENS,
@@ -241,6 +252,20 @@ impl BrainConfig {
             DEFAULT_IDLE_DISCARD_SECONDS,
             1,
             MAX_IDLE_DISCARD_SECONDS,
+        )?);
+        cfg.default_retention = Duration::from_secs(parse_env_u64(
+            DEFAULT_RETENTION_SECONDS_ENV,
+            read(DEFAULT_RETENTION_SECONDS_ENV)?.as_deref(),
+            DEFAULT_RETENTION_SECONDS,
+            MIN_RETENTION_SECONDS,
+            MAX_RETENTION_SECONDS,
+        )?);
+        cfg.max_retention = Duration::from_secs(parse_env_u64(
+            MAX_RETENTION_SECONDS_ENV,
+            read(MAX_RETENTION_SECONDS_ENV)?.as_deref(),
+            MAX_RETENTION_SECONDS,
+            MIN_RETENTION_SECONDS,
+            MAX_RETENTION_SECONDS,
         )?);
         cfg.provider_header_timeout = Duration::from_millis(parse_env_u64(
             PROVIDER_HEADER_TIMEOUT_ENV,
@@ -421,6 +446,23 @@ impl BrainConfig {
             1,
             MAX_IDLE_DISCARD_SECONDS.saturating_mul(1_000),
         )?;
+        validate_timeout(
+            DEFAULT_RETENTION_SECONDS_ENV,
+            self.default_retention,
+            MIN_RETENTION_SECONDS.saturating_mul(1_000),
+            MAX_RETENTION_SECONDS.saturating_mul(1_000),
+        )?;
+        validate_timeout(
+            MAX_RETENTION_SECONDS_ENV,
+            self.max_retention,
+            MIN_RETENTION_SECONDS.saturating_mul(1_000),
+            MAX_RETENTION_SECONDS.saturating_mul(1_000),
+        )?;
+        if self.default_retention > self.max_retention {
+            return Err(BrainError::Invalid(format!(
+                "{DEFAULT_RETENTION_SECONDS_ENV} cannot exceed {MAX_RETENTION_SECONDS_ENV}"
+            )));
+        }
         if self.context_tail_tokens == 0
             || self.context_tail_tokens >= self.context_soft_tokens
             || self.context_soft_tokens >= self.context_hard_tokens

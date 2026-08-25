@@ -164,6 +164,7 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
             .as_deref()
             .map(|id| id.parse().map_err(|_| corrupt("parent session id")))
             .transpose()?,
+        retain_until: crate::events::ts(doc.retain_until_ms),
         root_id: doc
             .root_id
             .parse()
@@ -265,6 +266,7 @@ pub(super) fn session_doc_summary(
             .as_deref()
             .map(|id| id.parse().map_err(|_| corrupt("parent id")))
             .transpose()?,
+        retain_until: crate::events::ts(summary.retain_until_ms),
         root_id: summary.root_id.parse().map_err(|_| corrupt("root id"))?,
         depth: i64::from(summary.depth),
         last_seq: summary.last_seq,

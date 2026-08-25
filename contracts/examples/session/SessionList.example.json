@@ -22,6 +22,7 @@
         "upload_reserved_bytes": 0
       },
       "created_at": "2026-08-18T09:00:00Z",
+      "retain_until": "2027-09-22T09:00:00Z",
       "updated_at": "2026-08-18T09:42:10Z",
       "last_message_at": "2026-08-18T09:40:00Z",
       "turns": 4,

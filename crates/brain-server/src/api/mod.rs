@@ -26,7 +26,7 @@ use brain::session::{Brain, TrustedPrincipal};
 use brain::{BrainError, mint_id};
 use brain_protocol::session::{
     self, ApiError, ApiErrorCode, ApiErrorResponse, CreateSessionRequest, MessageAccepted,
-    MessageRequest, MessageRequestContent, SessionList,
+    MessageRequest, MessageRequestContent, RetentionUpdate, SessionList,
 };
 use futures_util::stream::Stream;
 use futures_util::{SinkExt, StreamExt};
@@ -87,6 +87,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions/{id}/cancel", post(cancel_turn))
         .route("/v1/sessions/{id}/suspend", post(suspend_session))
         .route("/v1/sessions/{id}/resume", post(resume_session))
+        .route(
+            "/v1/sessions/{id}/retention",
+            post(update_session_retention)
+                .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
+        )
         .route("/v1/sessions/{id}/end", post(end_session))
         .route(
             "/v1/sessions/{id}/environments/{environment}",

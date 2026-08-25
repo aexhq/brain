@@ -953,6 +953,10 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[doc = "      \"maximum\": 8.0,"]
 #[doc = "      \"minimum\": 0.0"]
 #[doc = "    },"]
+#[doc = "    \"retain_until\": {"]
+#[doc = "      \"description\": \"Requested durable-retention deadline, capped by the Brain deployment. Omission uses the deployment default.\","]
+#[doc = "      \"$ref\": \"#/$defs/Timestamp\""]
+#[doc = "    },"]
 #[doc = "    \"secrets\": {"]
 #[doc = "      \"description\": \"Write-only values for required managed Tool environment names; encrypted in custody.\","]
 #[doc = "      \"writeOnly\": true,"]
@@ -1017,6 +1021,9 @@ pub struct CreateSessionRequest {
     pub network: ::std::option::Option<NetworkPolicy>,
     #[serde(default = "defaults::default_u64::<i64, 1>")]
     pub provider_recovery_retries: i64,
+    #[doc = "Requested durable-retention deadline, capped by the Brain deployment. Omission uses the deployment default."]
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub retain_until: ::std::option::Option<Timestamp>,
     #[doc = "Write-only values for required managed Tool environment names; encrypted in custody."]
     #[serde(
         default,
@@ -5199,6 +5206,38 @@ impl ::std::default::Default for ProviderUsage {
         }
     }
 }
+#[doc = "`RetentionUpdate`"]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"type\": \"object\","]
+#[doc = "  \"required\": ["]
+#[doc = "    \"retain_until\""]
+#[doc = "  ],"]
+#[doc = "  \"properties\": {"]
+#[doc = "    \"allow_shorten\": {"]
+#[doc = "      \"description\": \"Must be true when moving the destructive deletion deadline earlier.\","]
+#[doc = "      \"default\": false,"]
+#[doc = "      \"type\": \"boolean\""]
+#[doc = "    },"]
+#[doc = "    \"retain_until\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Timestamp\""]
+#[doc = "    }"]
+#[doc = "  },"]
+#[doc = "  \"additionalProperties\": false"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct RetentionUpdate {
+    #[doc = "Must be true when moving the destructive deletion deadline earlier."]
+    #[serde(default)]
+    pub allow_shorten: bool,
+    pub retain_until: Timestamp,
+}
 #[doc = "`Session`"]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -5214,6 +5253,7 @@ impl ::std::default::Default for ProviderUsage {
 #[doc = "    \"metadata\","]
 #[doc = "    \"model\","]
 #[doc = "    \"object\","]
+#[doc = "    \"retain_until\","]
 #[doc = "    \"root_id\","]
 #[doc = "    \"shape\","]
 #[doc = "    \"state\","]
@@ -5286,6 +5326,10 @@ impl ::std::default::Default for ProviderUsage {
 #[doc = "    \"parent_id\": {"]
 #[doc = "      \"$ref\": \"#/$defs/SessionId\""]
 #[doc = "    },"]
+#[doc = "    \"retain_until\": {"]
+#[doc = "      \"description\": \"Finite renewable durable-retention deadline. Environment capacity has an independent shorter lifetime.\","]
+#[doc = "      \"$ref\": \"#/$defs/Timestamp\""]
+#[doc = "    },"]
 #[doc = "    \"root_id\": {"]
 #[doc = "      \"$ref\": \"#/$defs/SessionId\""]
 #[doc = "    },"]
@@ -5346,6 +5390,8 @@ pub struct Session {
     pub object: SessionObject,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub parent_id: ::std::option::Option<SessionId>,
+    #[doc = "Finite renewable durable-retention deadline. Environment capacity has an independent shorter lifetime."]
+    pub retain_until: Timestamp,
     pub root_id: SessionId,
     #[doc = "Authoritative immutable execution shape inherited by every child. The hosted alpha supports only 1gb."]
     pub shape: ::std::string::String,

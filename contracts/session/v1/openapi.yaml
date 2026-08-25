@@ -172,6 +172,26 @@ paths:
               schema: { $ref: "schemas.json#/$defs/Session" }
         default: { $ref: "#/components/responses/Error" }
 
+  /v1/sessions/{session_id}/retention:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [sessions]
+      operationId: updateSessionRetention
+      summary: Renew or explicitly shorten the finite durable-retention deadline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "schemas.json#/$defs/RetentionUpdate" }
+      responses:
+        "200":
+          description: Updated session
+          content:
+            application/json:
+              schema: { $ref: "schemas.json#/$defs/Session" }
+        default: { $ref: "#/components/responses/Error" }
+
   /v1/sessions/{session_id}/events:
     parameters:
       - $ref: "#/components/parameters/SessionId"

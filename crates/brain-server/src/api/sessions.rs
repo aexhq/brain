@@ -347,6 +347,29 @@ pub(super) async fn resume_session(
     Ok(Json(state.brain.resume(&id).await.map_err(map_err)?))
 }
 
+pub(super) async fn update_session_retention(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<RetentionUpdate>,
+) -> Result<Json<session::Session>, Failure> {
+    authorize_session(&state, &headers, &id).await?;
+    let retain_until_ms = u64::try_from(req.retain_until.timestamp_millis()).map_err(|_| {
+        Failure(
+            StatusCode::BAD_REQUEST,
+            api_code("invalid_request"),
+            "retain_until must be after the Unix epoch".into(),
+        )
+    })?;
+    Ok(Json(
+        state
+            .brain
+            .update_retention(&id, retain_until_ms, req.allow_shorten)
+            .await
+            .map_err(map_err)?,
+    ))
+}
+
 pub(super) async fn end_session(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -118,6 +118,25 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{session_id}/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Renew or explicitly shorten the finite durable-retention deadline */
+        post: operations["updateSessionRetention"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{session_id}/events": {
         parameters: {
             query?: never;
@@ -1063,6 +1082,8 @@ export type components = {
             model: components["schemas"]["ModelInfo"];
             storage: components["schemas"]["StorageInfo"];
             created_at: components["schemas"]["Timestamp"];
+            /** @description Finite renewable durable-retention deadline. Environment capacity has an independent shorter lifetime. */
+            retain_until: components["schemas"]["Timestamp"];
             updated_at: components["schemas"]["Timestamp"];
             last_message_at?: components["schemas"]["Timestamp"];
             turns: number;
@@ -1301,6 +1322,8 @@ export type components = {
         /** @description Everything here except metadata is part of the immutable prefix: it cannot change for the life of the session. */
         CreateSessionRequest: {
             model: components["schemas"]["ModelConfig"];
+            /** @description Requested durable-retention deadline, capped by the Brain deployment. Omission uses the deployment default. */
+            retain_until?: components["schemas"]["Timestamp"];
             /** @description Unique component payloads referenced by the session's Model, Agentloop, Tool, and Environment bindings. */
             component_artifacts: components["schemas"]["ComponentArtifact"][];
             tools?: components["schemas"]["ToolsConfig"];
@@ -1361,6 +1384,14 @@ export type components = {
             turn_id: components["schemas"]["TurnId"];
             /** @description Journal sequence of the turn.started event. */
             seq: number;
+        };
+        RetentionUpdate: {
+            retain_until: components["schemas"]["Timestamp"];
+            /**
+             * @description Must be true when moving the destructive deletion deadline earlier.
+             * @default false
+             */
+            allow_shorten?: boolean;
         };
         /** @description "root" for the session's root agent; subagents get brain-minted ids. */
         AgentId: string;
@@ -2041,6 +2072,33 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Open */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateSessionRetention: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetentionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Updated session */
             200: {
                 headers: {
                     [name: string]: unknown;

@@ -686,6 +686,7 @@
         "storage",
         "last_seq",
         "created_at",
+        "retain_until",
         "updated_at",
         "turns",
         "metadata"
@@ -750,6 +751,10 @@
         },
         "created_at": {
           "$ref": "#/$defs/Timestamp"
+        },
+        "retain_until": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Finite renewable durable-retention deadline. Environment capacity has an independent shorter lifetime."
         },
         "updated_at": {
           "$ref": "#/$defs/Timestamp"
@@ -1109,6 +1114,10 @@
         "model": {
           "$ref": "#/$defs/ModelConfig"
         },
+        "retain_until": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Requested durable-retention deadline, capped by the Brain deployment. Omission uses the deployment default."
+        },
         "component_artifacts": {
           "type": "array",
           "minItems": 1,
@@ -1186,6 +1195,19 @@
             "type": "string",
             "maxLength": 1024
           }
+        }
+      }
+    },
+    "RetentionUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retain_until"],
+      "properties": {
+        "retain_until": { "$ref": "#/$defs/Timestamp" },
+        "allow_shorten": {
+          "type": "boolean",
+          "default": false,
+          "description": "Must be true when moving the destructive deletion deadline earlier."
         }
       }
     },

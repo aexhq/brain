@@ -318,6 +318,7 @@ fn head_doc_round_trips() {
         context: None,
         turns: 0,
         created_ms: 1,
+        retain_until_ms: 1_000_000,
         updated_ms: 2,
         recovery_due_ms: None,
         recovery_attempt: 0,
@@ -404,6 +405,7 @@ fn head_doc() -> HeadDoc {
         context: None,
         turns: 0,
         created_ms: 1,
+        retain_until_ms: 1_000_000,
         updated_ms: 1,
         recovery_due_ms: None,
         recovery_attempt: 0,
@@ -858,8 +860,8 @@ async fn lease_renewal_preserves_scheduled_upload_expiry_and_idle_due_absence() 
             .unwrap()
             .doc
             .recovery_due_ms,
-        None,
-        "quiescent lease renewal must not create recovery work"
+        Some(1_000_000),
+        "quiescent lease renewal must preserve the finite retention deadline"
     );
 }
 
@@ -885,7 +887,7 @@ fn unacknowledged_customer_terminal_keeps_a_quiescent_session_recoverable() {
         acknowledged
             .with_recovery_projection(200_000)
             .recovery_due_ms,
-        None
+        Some(1_000_000)
     );
 }
 
@@ -904,8 +906,8 @@ fn accepted_end_remains_due_until_the_subtree_reaches_ended() {
     ended.state = SessionLifecycle::Ended;
     assert_eq!(
         ended.with_recovery_projection(200_000).recovery_due_ms,
-        None,
-        "a fully converged end must leave no recovery anchor"
+        Some(1_000_000),
+        "a fully converged end remains scheduled for finite retention cleanup"
     );
 }
 
@@ -942,7 +944,7 @@ async fn successful_quiescent_commit_returns_the_canonical_cleared_projection() 
         .commit("ses_projection", &mut lease, &[], &doc, head.last_seq)
         .await
         .unwrap();
-    assert_eq!(persisted.recovery_due_ms, None);
+    assert_eq!(persisted.recovery_due_ms, Some(1_000_000));
     journal
         .renew("ses_projection", &lease, false)
         .await
@@ -954,8 +956,8 @@ async fn successful_quiescent_commit_returns_the_canonical_cleared_projection() 
             .unwrap()
             .doc
             .recovery_due_ms,
-        None,
-        "a later heartbeat cannot resurrect the completed recovery row"
+        Some(1_000_000),
+        "a later heartbeat preserves the finite retention deadline"
     );
 }
 

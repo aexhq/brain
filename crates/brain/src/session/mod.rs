@@ -251,6 +251,31 @@ fn validate_create_request(req: &CreateSessionRequest) -> Result<()> {
     Ok(())
 }
 
+fn requested_retention_deadline(
+    requested: Option<&session::Timestamp>,
+    now_ms: u64,
+    default_retention: Duration,
+    max_retention: Duration,
+) -> Result<u64> {
+    let deadline = match requested {
+        Some(value) => u64::try_from(value.timestamp_millis())
+            .map_err(|_| BrainError::Invalid("retain_until must be after the Unix epoch".into()))?,
+        None => now_ms.saturating_add(default_retention.as_millis() as u64),
+    };
+    if deadline <= now_ms {
+        return Err(BrainError::Invalid(
+            "retain_until must be in the future when a session is created".into(),
+        ));
+    }
+    let maximum = now_ms.saturating_add(max_retention.as_millis() as u64);
+    if deadline > maximum {
+        return Err(BrainError::Invalid(
+            "retain_until exceeds the deployment retention maximum".into(),
+        ));
+    }
+    Ok(deadline)
+}
+
 fn validate_model_tool_projection<'a>(
     definitions: impl IntoIterator<Item = (&'a str, &'a str, &'a serde_json::Value)>,
 ) -> Result<()> {
@@ -583,6 +608,11 @@ enum Command {
         reply: oneshot::Sender<Result<HeadDoc>>,
     },
     Resume {
+        reply: oneshot::Sender<Result<HeadDoc>>,
+    },
+    UpdateRetention {
+        retain_until_ms: u64,
+        allow_shorten: bool,
         reply: oneshot::Sender<Result<HeadDoc>>,
     },
     End {
@@ -1542,6 +1572,12 @@ impl Brain {
         }
 
         let now = crate::wall_ms();
+        let retain_until_ms = requested_retention_deadline(
+            req.retain_until.as_ref(),
+            now,
+            self.cfg.default_retention,
+            self.cfg.max_retention,
+        )?;
         let mut prefix = PrefixDoc {
             agentloop: Some(agentloop_selector),
             system_prompt: None,
@@ -1708,6 +1744,7 @@ impl Brain {
             context: None,
             turns: 0,
             created_ms: now,
+            retain_until_ms,
             updated_ms: now,
             recovery_due_ms: None,
             recovery_attempt: 0,
@@ -2103,6 +2140,22 @@ impl Brain {
     pub async fn resume(self: &Arc<Self>, session_id: &str) -> Result<session::Session> {
         let doc = self
             .deliver(session_id, |reply| Command::Resume { reply })
+            .await??;
+        session_doc(session_id, &doc)
+    }
+
+    pub async fn update_retention(
+        self: &Arc<Self>,
+        session_id: &str,
+        retain_until_ms: u64,
+        allow_shorten: bool,
+    ) -> Result<session::Session> {
+        let doc = self
+            .deliver(session_id, |reply| Command::UpdateRetention {
+                retain_until_ms,
+                allow_shorten,
+                reply,
+            })
             .await??;
         session_doc(session_id, &doc)
     }
@@ -4542,75 +4595,10 @@ async fn actor(
     let mut resident: Option<Resident> = None;
     let mut running: Option<Running> = None;
     if startup != ActorStartup::Lazy {
-        match hydrate(&brain, &session_id).await {
-            Ok(r) => {
-                if r.st.head.state == SessionLifecycle::Deleting {
-                    resident = Some(r);
-                    if let Err(error) = delete_session(&brain, &session_id, &mut resident).await {
-                        tracing::warn!(session = %session_id, error = %error, "background session deletion will retry");
-                    }
-                    return;
-                } else if r.st.head.state == SessionLifecycle::Suspending {
-                    resident = Some(r);
-                    match Box::pin(continue_suspend_session(&brain, &session_id, &mut resident))
-                        .await
-                    {
-                        Ok(()) => {
-                            if try_discard_resident(&brain, &session_id, &mut resident).await {
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            tracing::warn!(session = %session_id, error = %error, "background session suspension will retry");
-                            if brain.journal.defer_recovery(&session_id).await.is_ok() {
-                                return;
-                            }
-                        }
-                    }
-                } else if r.st.head.state == SessionLifecycle::Ending {
-                    resident = Some(r);
-                    match continue_end_session(&brain, &session_id, &mut resident).await {
-                        Ok(true) => {
-                            // End is complete and quiescent. Keep serving if the narrow lease
-                            // release transiently fails; the ordinary idle path retries it.
-                            if try_discard_resident(&brain, &session_id, &mut resident).await {
-                                return;
-                            }
-                        }
-                        Ok(false) => {
-                            if brain.journal.defer_recovery(&session_id).await.is_ok() {
-                                return;
-                            }
-                        }
-                        Err(error) => {
-                            tracing::warn!(session = %session_id, error = %error, "background session end will retry");
-                            if brain.journal.defer_recovery(&session_id).await.is_ok() {
-                                return;
-                            }
-                        }
-                    }
-                } else {
-                    // Create may stage/prepare immutable code, but neither create nor background
-                    // recovery materializes a target. Only the first managed operation or explicit
-                    // environment materialization crosses that boundary.
-                    resident = Some(r);
-                }
-            }
-            Err(e) => {
-                if !matches!(&e, BrainError::Fenced) {
-                    tracing::warn!(session = %session_id, error = %e, "eager hydrate failed; durable recovery remains due");
-                    if let Err(backoff_error) = brain.journal.defer_recovery(&session_id).await
-                        && !matches!(&backoff_error, BrainError::Fenced)
-                    {
-                        tracing::warn!(session = %session_id, error = %backoff_error, "could not persist recovery backoff");
-                    }
-                }
-                // Do not leave a dead actor resident after a failed background claim/hydrate.
-                // Its inbox closes, the supervisor removes it, and the unchanged due key is
-                // retried after the prior lease expires.
-                return;
-            }
-        }
+        let Some(recovered) = Box::pin(recover_actor_startup(&brain, &session_id)).await else {
+            return;
+        };
+        resident = Some(recovered);
     }
 
     loop {
@@ -4980,6 +4968,22 @@ async fn actor(
                         }
                         break; // complete or durable state=deleting; recovery owns any retry
                     }
+                    Command::UpdateRetention { retain_until_ms, allow_shorten, reply } => {
+                        if running.is_some() {
+                            let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
+                            continue;
+                        }
+                        let out = Box::pin(update_session_retention(
+                            &brain,
+                            &session_id,
+                            &mut resident,
+                            retain_until_ms,
+                            allow_shorten,
+                        ))
+                        .await;
+                        discard_if_fenced(&out, &mut resident);
+                        let _ = reply.send(out);
+                    }
                     Command::PrepareStorageUpload { request, reply } => {
                         if running.is_some() {
                             let _ = reply.send(Err(BrainError::TurnInFlight(session_id.clone())));
@@ -5089,6 +5093,19 @@ async fn actor(
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
+            _ = sleep_until_retention_expiry(&resident), if resident.is_some() => {
+                if let Err(error) = Box::pin(expire_session(
+                    &brain,
+                    &session_id,
+                    &mut running,
+                    &mut resident,
+                ))
+                .await
+                {
+                    tracing::warn!(session = %session_id, error = %error, "expired session deletion will retry");
+                }
+                break;
+            }
             _ = brain.resident_pressure.notified(), if running.is_none() && can_discard_under_pressure(&resident) => {
                 // Cooperative pressure eviction: only the actor itself decides it is safe to
                 // release. Close after the lease release succeeds; commands already buffered
@@ -5116,6 +5133,71 @@ async fn actor(
         }
     }
     tracing::debug!(session = %session_id, "actor exited");
+}
+
+async fn recover_actor_startup(brain: &Arc<Brain>, session_id: &str) -> Option<Resident> {
+    let r = match hydrate(brain, session_id).await {
+        Ok(r) => r,
+        Err(error) => {
+            if !matches!(&error, BrainError::Fenced) {
+                tracing::warn!(session = %session_id, error = %error, "eager hydrate failed; durable recovery remains due");
+                if let Err(backoff_error) = brain.journal.defer_recovery(session_id).await
+                    && !matches!(&backoff_error, BrainError::Fenced)
+                {
+                    tracing::warn!(session = %session_id, error = %backoff_error, "could not persist recovery backoff");
+                }
+            }
+            return None;
+        }
+    };
+    let mut resident = Some(r);
+    let head = &resident.as_ref().expect("hydrated").st.head;
+    if head.retain_until_ms <= crate::wall_ms() || head.state == SessionLifecycle::Deleting {
+        let expired = head.retain_until_ms <= crate::wall_ms();
+        if let Err(error) =
+            delete_on_fresh_task(brain.clone(), session_id.to_owned(), resident.take()).await
+        {
+            let operation = if expired { "expired" } else { "background" };
+            tracing::warn!(session = %session_id, error = %error, operation, "session deletion will retry");
+        }
+        return None;
+    }
+    if head.state == SessionLifecycle::Suspending {
+        match Box::pin(continue_suspend_session(brain, session_id, &mut resident)).await {
+            Ok(()) => {
+                if try_discard_resident(brain, session_id, &mut resident).await {
+                    return None;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(session = %session_id, error = %error, "background session suspension will retry");
+                if brain.journal.defer_recovery(session_id).await.is_ok() {
+                    return None;
+                }
+            }
+        }
+    } else if head.state == SessionLifecycle::Ending {
+        match continue_end_session(brain, session_id, &mut resident).await {
+            Ok(true) => {
+                if try_discard_resident(brain, session_id, &mut resident).await {
+                    return None;
+                }
+            }
+            Ok(false) => {
+                if brain.journal.defer_recovery(session_id).await.is_ok() {
+                    return None;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(session = %session_id, error = %error, "background session end will retry");
+                if brain.journal.defer_recovery(session_id).await.is_ok() {
+                    return None;
+                }
+            }
+        }
+    }
+    // Create may stage immutable code, but recovery never materializes Environment capacity.
+    resident
 }
 
 async fn settle_running(
@@ -5197,6 +5279,42 @@ async fn settle_running(
             }
         }
     }
+}
+
+async fn expire_session(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    running: &mut Option<Running>,
+    resident: &mut Option<Resident>,
+) -> Result<()> {
+    if let Some(task) = running.take() {
+        task.cancel.cancel();
+        let key = task.key;
+        let managed_bindings = task.managed_bindings;
+        let root_secrets = task.root_secrets;
+        let message_replays = task.message_replays;
+        *resident = settle_running(
+            brain,
+            session_id,
+            key,
+            managed_bindings,
+            root_secrets,
+            message_replays,
+            task.handle.await,
+        )
+        .await;
+    }
+    delete_on_fresh_task(brain.clone(), session_id.to_owned(), resident.take()).await
+}
+
+async fn delete_on_fresh_task(
+    brain: Arc<Brain>,
+    session_id: String,
+    mut resident: Option<Resident>,
+) -> Result<()> {
+    tokio::spawn(async move { delete_session(&brain, &session_id, &mut resident).await })
+        .await
+        .map_err(|error| BrainError::Journal(format!("session deletion task failed: {error}")))?
 }
 
 async fn ensure_resident<'a>(
@@ -6436,6 +6554,7 @@ async fn create_child_session(
         context: None,
         turns: 1,
         created_ms: now,
+        retain_until_ms: parent.doc.retain_until_ms,
         updated_ms: now,
         recovery_due_ms: None,
         recovery_attempt: 0,
@@ -7179,6 +7298,50 @@ async fn resume_session(
     Ok(r.st.head.clone())
 }
 
+async fn update_session_retention(
+    brain: &Arc<Brain>,
+    session_id: &str,
+    resident: &mut Option<Resident>,
+    retain_until_ms: u64,
+    allow_shorten: bool,
+) -> Result<HeadDoc> {
+    let now_ms = crate::wall_ms();
+    let maximum = now_ms.saturating_add(brain.cfg.max_retention.as_millis() as u64);
+    if retain_until_ms > maximum {
+        return Err(BrainError::Invalid(
+            "retain_until exceeds the deployment retention maximum".into(),
+        ));
+    }
+    let r = ensure_resident(brain, session_id, resident).await?;
+    if matches!(
+        r.st.head.state,
+        SessionLifecycle::Deleting | SessionLifecycle::Deleted
+    ) || r.st.head.retain_until_ms <= now_ms
+    {
+        return Err(BrainError::SessionDeleted(session_id.to_owned()));
+    }
+    if retain_until_ms == r.st.head.retain_until_ms {
+        return Ok(r.st.head.clone());
+    }
+    if retain_until_ms < r.st.head.retain_until_ms && !allow_shorten {
+        return Err(BrainError::Invalid(
+            "allow_shorten must be true when moving retain_until earlier".into(),
+        ));
+    }
+    r.st.head.retain_until_ms = retain_until_ms;
+    let state = r.st.head.state;
+    let turn = r.st.head.turn.clone();
+    let seq = r.st.take_seq();
+    commit(
+        brain,
+        session_id,
+        &mut r.st,
+        vec![(seq, Record::State { state, turn })],
+    )
+    .await?;
+    Ok(r.st.head.clone())
+}
+
 async fn release_component_environments(
     brain: &Arc<Brain>,
     session_id: &str,
@@ -7510,6 +7673,17 @@ async fn sleep_until_storage_expiry(resident: &Option<Resident>) {
         .unwrap_or_else(|| crate::wall_ms().saturating_add(60_000));
     tokio::time::sleep(std::time::Duration::from_millis(
         expires_at_ms.saturating_sub(crate::wall_ms()),
+    ))
+    .await;
+}
+
+async fn sleep_until_retention_expiry(resident: &Option<Resident>) {
+    let retain_until_ms = resident.as_ref().map_or_else(
+        || crate::wall_ms().saturating_add(60_000),
+        |resident| resident.st.head.retain_until_ms,
+    );
+    tokio::time::sleep(Duration::from_millis(
+        retain_until_ms.saturating_sub(crate::wall_ms()),
     ))
     .await;
 }

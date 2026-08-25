@@ -1595,6 +1595,7 @@ mod tests {
             context: None,
             turns: 0,
             created_ms: 1,
+            retain_until_ms: 1_000_000,
             updated_ms: 1,
             recovery_due_ms: None,
             recovery_attempt: 0,

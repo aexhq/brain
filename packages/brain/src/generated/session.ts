@@ -901,6 +901,10 @@ export interface Session {
   model: ModelInfo;
   storage: StorageInfo;
   created_at: Timestamp;
+  /**
+   * RFC 3339, UTC.
+   */
+  retain_until: string;
   updated_at: Timestamp;
   last_message_at?: Timestamp;
   turns: number;
@@ -1024,6 +1028,10 @@ export interface ChildLimits {
 export interface CreateSessionRequest {
   model: ModelConfig;
   /**
+   * RFC 3339, UTC.
+   */
+  retain_until?: string;
+  /**
    * Unique component payloads referenced by the session's Model, Agentloop, Tool, and Environment bindings.
    *
    * @minItems 1
@@ -1058,6 +1066,17 @@ export interface CreateSessionRequest {
   metadata?: {
     [k: string]: string | undefined;
   };
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
+ * via the `definition` "RetentionUpdate".
+ */
+export interface RetentionUpdate {
+  retain_until: Timestamp;
+  /**
+   * Must be true when moving the destructive deletion deadline earlier.
+   */
+  allow_shorten?: boolean;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema

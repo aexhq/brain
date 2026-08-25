@@ -2,6 +2,7 @@ import type {
   CreateSessionRequest,
   Event,
   MessageAccepted,
+  RetentionUpdate,
   Session as SessionData,
   SessionList as SessionListData,
   SessionState,
@@ -56,6 +57,8 @@ export interface CreateSessionOptions {
     submitRetries?: number;
   };
   metadata?: Record<string, string>;
+  /** Finite durable-history deadline. Omit to use the Brain deployment default. */
+  retainUntil?: Date | string;
 }
 
 export type ComponentToolConfig = Readonly<Record<string, unknown>> & {
@@ -105,6 +108,7 @@ export interface SessionSummary {
   model: ModelSummary;
   createdAt: string;
   updatedAt: string;
+  retainUntil: string;
   metadata: Readonly<Record<string, string | undefined>>;
 }
 
@@ -209,6 +213,9 @@ export class Sessions {
       ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
       ...(options.systemPrompt === undefined ? {} : { system_prompt: options.systemPrompt }),
       ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+      ...(options.retainUntil === undefined
+        ? {}
+        : { retain_until: normalizeTimestamp(options.retainUntil, "retainUntil") }),
       ...(options.network === undefined ? {} : { network: options.network }),
       ...(options.providerRecoveryRetries === undefined
         ? {}
@@ -458,6 +465,10 @@ export class Session implements SessionSummary {
     return this;
   }
 
+  get retainUntil(): string {
+    return this.#data.retain_until;
+  }
+
   async suspend(options: Pick<RequestOptions, "signal"> = {}): Promise<this> {
     this.#data = await this.#transport.json<SessionData>(
       "POST",
@@ -472,6 +483,22 @@ export class Session implements SessionSummary {
       "POST",
       `/v1/sessions/${encodeURIComponent(this.id)}/resume`,
       { signal: options.signal },
+    );
+    return this;
+  }
+
+  async setRetention(
+    value: Date | string,
+    options: Pick<RequestOptions, "signal"> & { allowShorten?: boolean } = {},
+  ): Promise<this> {
+    const body: RetentionUpdate = {
+      retain_until: normalizeTimestamp(value, "retainUntil"),
+      allow_shorten: options.allowShorten ?? false,
+    };
+    this.#data = await this.#transport.json<SessionData>(
+      "POST",
+      `/v1/sessions/${encodeURIComponent(this.id)}/retention`,
+      { body, signal: options.signal },
     );
     return this;
   }
@@ -500,4 +527,10 @@ export class Session implements SessionSummary {
     const { turn_phase: _completedPhase, ...data } = this.#data;
     this.#data = { ...data, turn_state: "idle" };
   }
+}
+
+function normalizeTimestamp(value: Date | string, field: string): string {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(parsed.getTime())) throw new TypeError(`${field} must be a valid timestamp`);
+  return parsed.toISOString();
 }
