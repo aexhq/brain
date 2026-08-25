@@ -604,15 +604,15 @@ impl model::aex::model::host::Host for State {
 
     async fn log(&mut self, _level: model::aex::model::types::LogLevel, _message: String) {}
 
-    async fn http(
+    async fn http_start(
         &mut self,
+        operation_id: String,
         request: model::aex::model::types::HttpRequest,
-    ) -> Result<model::aex::model::types::HttpResponse, model::aex::model::types::ExtensionError>
+    ) -> Result<model::aex::model::types::HttpStarted, model::aex::model::types::ExtensionError>
     {
-        let operation_id = format!("http:{}", request.deadline_at_ms);
         let value = self
             .capability(
-                "model.http",
+                "model.http.start",
                 operation_id,
                 serde_json::to_value(request).expect("generated HTTP request serializes"),
             )
@@ -623,6 +623,45 @@ impl model::aex::model::host::Host for State {
             message: error.to_string(),
             retryable: false,
         })
+    }
+
+    async fn http_read(
+        &mut self,
+        request_id: String,
+        cursor: Option<String>,
+        max_bytes: u32,
+    ) -> Result<model::aex::model::types::HttpChunk, model::aex::model::types::ExtensionError> {
+        let value = self
+            .capability(
+                "model.http.read",
+                request_id.clone(),
+                serde_json::json!({
+                    "request_id": request_id,
+                    "cursor": cursor,
+                    "max_bytes": max_bytes,
+                }),
+            )
+            .await
+            .map_err(model_error)?;
+        serde_json::from_value(value).map_err(|error| model::aex::model::types::ExtensionError {
+            code: "invalid_response".into(),
+            message: error.to_string(),
+            retryable: false,
+        })
+    }
+
+    async fn http_cancel(
+        &mut self,
+        request_id: String,
+    ) -> Result<(), model::aex::model::types::ExtensionError> {
+        self.capability(
+            "model.http.cancel",
+            request_id.clone(),
+            serde_json::json!({ "request_id": request_id }),
+        )
+        .await
+        .map_err(model_error)?;
+        Ok(())
     }
 }
 

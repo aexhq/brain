@@ -17,5 +17,5 @@ pub const ENVIRONMENT_WIT: &str = include_str!("../../../contracts/environment/v
 
 pub const MODEL_WORLD: &str = "aex:model/model@1.0.0";
 pub const MODEL_CONTRACT_DIGEST: &str =
-    "2c076c1b50c970dd95d178e4b91f6aff6f6559399b5f7a38f69f2b3290366123";
+    "f5404825cf2efd4f8f756a47374e2be0dde6dec791c390663a54cd8029fe5376";
 pub const MODEL_WIT: &str = include_str!("../../../contracts/model/v1/model.wit");
