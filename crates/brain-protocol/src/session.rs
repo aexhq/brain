@@ -7719,7 +7719,7 @@ impl<'de> ::serde::Deserialize<'de> for ToolDefinitionDescription {
 #[doc = "      \"properties\": {"]
 #[doc = "        \"capability\": {"]
 #[doc = "          \"type\": \"string\","]
-#[doc = "          \"pattern\": \"^brain\\\\.[A-Za-z0-9_.:-]{1,120}$\""]
+#[doc = "          \"pattern\": \"^[A-Za-z0-9_.-]{1,128}$\""]
 #[doc = "        },"]
 #[doc = "        \"kind\": {"]
 #[doc = "          \"type\": \"string\","]
@@ -7840,7 +7840,7 @@ impl<'de> ::serde::Deserialize<'de> for ToolExecutorCallbackRegistration {
 #[doc = r" ```json"]
 #[doc = "{"]
 #[doc = "  \"type\": \"string\","]
-#[doc = "  \"pattern\": \"^brain\\\\.[A-Za-z0-9_.:-]{1,120}$\""]
+#[doc = "  \"pattern\": \"^[A-Za-z0-9_.-]{1,128}$\""]
 #[doc = "}"]
 #[doc = r" ```"]
 #[doc = r" </details>"]
@@ -7863,10 +7863,10 @@ impl ::std::str::FromStr for ToolExecutorCapability {
     fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
         static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
             ::std::sync::LazyLock::new(|| {
-                ::regress::Regex::new("^brain\\.[A-Za-z0-9_.:-]{1,120}$").unwrap()
+                ::regress::Regex::new("^[A-Za-z0-9_.-]{1,128}$").unwrap()
             });
         if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^brain\\.[A-Za-z0-9_.:-]{1,120}$\"".into());
+            return Err("doesn't match pattern \"^[A-Za-z0-9_.-]{1,128}$\"".into());
         }
         Ok(Self(value.to_string()))
     }

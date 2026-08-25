@@ -349,7 +349,7 @@
             },
             "capability": {
               "type": "string",
-              "pattern": "^brain\\.[A-Za-z0-9_.:-]{1,120}$"
+              "pattern": "^[A-Za-z0-9_.-]{1,128}$"
             }
           }
         }

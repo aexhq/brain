@@ -11,6 +11,17 @@ pub(super) async fn operator_auth_before_body(
     next.run(request).await
 }
 
+pub(super) async fn global_operator_auth_before_body(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Err(failure) = operator_auth(&state, request.headers()) {
+        return failure.into_response();
+    }
+    next.run(request).await
+}
+
 pub(super) async fn create_admission_before_body(
     State(state): State<AppState>,
     request: Request,
@@ -71,7 +82,7 @@ pub(super) async fn internal_observation_auth_before_body(
     request: Request,
     next: Next,
 ) -> Response {
-    if let Err(failure) = auth(&state, request.headers()) {
+    if let Err(failure) = operator_auth(&state, request.headers()) {
         return failure.into_response();
     }
     let grant_id = observation_grant_id(&request);
@@ -283,7 +294,7 @@ pub(super) async fn internal_customer_environment_observation(
     // Internal callers authenticate as the operator/service with Authorization. The scoped
     // customer observation grant is deliberately carried in a separate header so the two
     // authorities cannot be confused or substituted for one another.
-    auth(&state, &headers)?;
+    operator_auth(&state, &headers)?;
     let observation_token =
         observation_grant_header(&headers).ok_or_else(invalid_observation_grant)?;
     apply_customer_environment_observation(&state, &grant_id, observation_token, &body).await
@@ -350,7 +361,7 @@ pub(super) async fn customer_environment_gateway(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Failure> {
-    auth(&state, &headers)?;
+    operator_auth(&state, &headers)?;
     let connection_id = trusted_header(&headers, "x-brain-connection-id")?;
     let request_id = trusted_header(&headers, "x-brain-request-id")?;
     let route_key = trusted_header(&headers, "x-brain-route-key")?;

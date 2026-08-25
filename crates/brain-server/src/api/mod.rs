@@ -223,12 +223,6 @@ pub fn router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
         .route(
-            "/internal/v1/customer-environment/gateway",
-            post(customer_environment_gateway).layer(DefaultBodyLimit::max(
-                brain_protocol::MAX_CUSTOMER_WS_FRAME_BYTES,
-            )),
-        )
-        .route(
             "/internal/v1/customer-environment/dispatch",
             post(customer_environment_dispatch)
                 .layer(DefaultBodyLimit::max(INLINE_FILE_BODY_LIMIT_BYTES)),
@@ -237,6 +231,17 @@ pub fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             operator_auth_before_body,
+        ));
+    let customer_gateway = Router::new()
+        .route(
+            "/internal/v1/customer-environment/gateway",
+            post(customer_environment_gateway).layer(DefaultBodyLimit::max(
+                brain_protocol::MAX_CUSTOMER_WS_FRAME_BYTES,
+            )),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            global_operator_auth_before_body,
         ));
 
     let public_observation = Router::new()
@@ -269,6 +274,7 @@ pub fn router(state: AppState) -> Router {
             get(customer_environment_socket),
         )
         .merge(operator)
+        .merge(customer_gateway)
         .merge(public_observation)
         .merge(internal_observation)
         .layer(middleware::from_fn_with_state(
@@ -388,33 +394,37 @@ pub fn nodelay(
 }
 
 fn auth(state: &AppState, headers: &HeaderMap) -> Result<TrustedPrincipal, Failure> {
-    if bearer_token(headers) == Some(state.token.as_str()) {
-        let tenant_id = match (
-            headers
-                .get("x-brain-tenant-id")
-                .and_then(|value| value.to_str().ok()),
-            &state.tenancy,
-        ) {
-            (Some(tenant), _) => tenant,
-            (None, Tenancy::Required) => {
-                return Err(Failure(
-                    StatusCode::BAD_REQUEST,
-                    api_code("invalid_request"),
-                    "x-brain-tenant-id header is required by this composition".into(),
-                ));
-            }
-            (None, Tenancy::Implicit(tenant)) => tenant.as_str(),
-        };
-        let principal = TrustedPrincipal::new(tenant_id).map_err(map_err)?;
-        tracing::Span::current().record("tenant.id", principal.as_str());
-        Ok(principal)
-    } else {
-        Err(Failure(
+    operator_auth(state, headers)?;
+    let tenant_id = match (
+        headers
+            .get("x-brain-tenant-id")
+            .and_then(|value| value.to_str().ok()),
+        &state.tenancy,
+    ) {
+        (Some(tenant), _) => tenant,
+        (None, Tenancy::Required) => {
+            return Err(Failure(
+                StatusCode::BAD_REQUEST,
+                api_code("invalid_request"),
+                "x-brain-tenant-id header is required by this composition".into(),
+            ));
+        }
+        (None, Tenancy::Implicit(tenant)) => tenant.as_str(),
+    };
+    let principal = TrustedPrincipal::new(tenant_id).map_err(map_err)?;
+    tracing::Span::current().record("tenant.id", principal.as_str());
+    Ok(principal)
+}
+
+fn operator_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Failure> {
+    if bearer_token(headers) != Some(state.token.as_str()) {
+        return Err(Failure(
             StatusCode::UNAUTHORIZED,
             api_code("unauthorized"),
             "missing or invalid bearer token".into(),
-        ))
+        ));
     }
+    Ok(())
 }
 
 #[cfg(test)]

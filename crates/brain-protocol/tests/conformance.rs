@@ -159,6 +159,23 @@ fn remote_mcp_is_absent_from_the_single_current_contract() {
 }
 
 #[test]
+fn engine_capabilities_accept_composition_owned_identifiers() {
+    let mut request: Value = serde_json::from_str(include_str!(
+        "../../../contracts/examples/session/CreateSessionRequest.full.json"
+    ))
+    .unwrap();
+    request["tools"]["items"][0]["executor"]["capability"] = Value::String("aex.output".into());
+
+    validate(
+        brain_protocol::SESSION_SCHEMA_JSON,
+        "composition engine capability",
+        "CreateSessionRequest",
+        &request,
+    );
+    serde_json::from_value::<session::CreateSessionRequest>(request).unwrap();
+}
+
+#[test]
 fn session_examples_validate_and_round_trip() {
     for (name, type_name, value) in examples("session") {
         validate(
