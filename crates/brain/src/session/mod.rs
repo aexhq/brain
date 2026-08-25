@@ -5580,7 +5580,10 @@ async fn hydrate(brain: &Arc<Brain>, session_id: &str) -> Result<Resident> {
             .collect::<Vec<_>>();
         for environment in environments {
             let state = resident.st.head.environment_targets[&environment].state;
-            if state == brain_protocol::environment::SandboxState::Creating {
+            if state == brain_protocol::environment::SandboxState::Creating
+                && resident.st.head.state == SessionLifecycle::Open
+                && !resident.st.head.ended
+            {
                 materialize_environment_resident(brain, session_id, &mut resident, &environment)
                     .await?;
             } else {

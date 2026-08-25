@@ -4030,6 +4030,123 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
 }
 
 #[tokio::test]
+async fn ending_session_does_not_resume_a_creating_environment() {
+    let journal = Journal::new_memory("brain-ending-creating-environment");
+    let ports = Arc::new(UnknownManagedPorts::default());
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        journal.clone(),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(crate::adapter::DisabledToolExecutor),
+        BrainServices {
+            environments: test_environment_registry(
+                "test.managed",
+                ports.clone(),
+                ports.clone(),
+                Some(ports.clone()),
+            ),
+            ..BrainServices::default()
+        },
+        crate::provider::fake::unscripted_factory(),
+    );
+    let created = brain
+        .create_session(
+            typed_create(json!({
+                "model":{"provider":"anthropic","name":"ending-creating","api_key":"key"}
+            })),
+            Some("ending-creating-environment"),
+        )
+        .await
+        .expect("create ending environment recovery session");
+    let session_id = created.id.to_string();
+    let mut resident = hydrate(&brain, &session_id)
+        .await
+        .expect("claim ending environment recovery session");
+    resident.st.head.prefix.environments.insert(
+        "workspace".into(),
+        serde_json::from_value(json!({
+            "extension":"test.managed",
+            "protocol":"environment/v1",
+            "profile":{
+                "kind":"computer",
+                "platform":"linux-amd64",
+                "network":"allowlist",
+                "recovery":"retained"
+            },
+            "configuration":{}
+        }))
+        .expect("valid test environment declaration"),
+    );
+    let creating: brain_protocol::environment::SandboxStatus = serde_json::from_value(json!({
+        "state":"creating",
+        "target":environment_target(&session_id, "workspace").unwrap(),
+        "generation":"gen_endingcreating0000",
+        "target_ref":"tgt_endingcreating0000",
+        "changed_at_ms":crate::wall_ms(),
+        "expires_at_ms":null
+    }))
+    .expect("valid creating environment status");
+    resident
+        .st
+        .head
+        .environment_targets
+        .insert("workspace".into(), creating.clone());
+    resident.st.head.ended = true;
+    resident.st.head.state = SessionLifecycle::Ending;
+    let environment_seq = resident.st.take_seq();
+    let state_seq = resident.st.take_seq();
+    commit(
+        &brain,
+        &session_id,
+        &mut resident.st,
+        vec![
+            (
+                environment_seq,
+                Record::EnvironmentChanged {
+                    environment: "workspace".into(),
+                    status: creating,
+                },
+            ),
+            (
+                state_seq,
+                Record::State {
+                    state: SessionLifecycle::Ending,
+                    turn: None,
+                },
+            ),
+        ],
+    )
+    .await
+    .expect("commit interrupted materialization and end fence");
+    journal
+        .release(&session_id, &resident.st.lease)
+        .await
+        .expect("release simulated crash owner");
+    drop(resident);
+    let recovered = hydrate(&brain, &session_id)
+        .await
+        .expect("ending recovery does not resume materialization");
+    assert_eq!(recovered.st.head.state, SessionLifecycle::Ending);
+    assert_eq!(
+        recovered.st.head.environment_targets["workspace"].state,
+        brain_protocol::environment::SandboxState::Creating
+    );
+    assert_eq!(ports.dematerialize_calls.load(Ordering::Acquire), 0);
+
+    let mut resident = Some(recovered);
+    assert!(
+        continue_end_session(&brain, &session_id, &mut resident)
+            .await
+            .expect("ending cleanup dematerializes the interrupted generation")
+    );
+    assert_eq!(ports.dematerialize_calls.load(Ordering::Acquire), 1);
+    assert_eq!(
+        journal.get_head(&session_id).await.unwrap().doc.state,
+        SessionLifecycle::Ended
+    );
+}
+
+#[tokio::test]
 async fn deleting_managed_session_hydrates_without_repreparing_environment_definitions() {
     let journal = Journal::new_memory("brain-deleting-managed-hydrate");
     let brain = Brain::with_parts_and_services(
