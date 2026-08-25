@@ -11,8 +11,21 @@
 ## What it is
 Brain is a minimal session kernel that hosts four replaceable component kinds: Agentloop, Tool,
 Environment, and Model.
-The term _Brain_ is originated from Anthropic engineering blog [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents) and minimalistic concept is inspired by [Pi Agent Harness](https://github.com/earendil-works/pi).
+The term _Brain_ is originated from Anthropic engineering blog [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents) 
+Brain is inspired by [Pi Agent Harness](https://github.com/earendil-works/pi), we believe modern framework should be minimal and open for extension so everyone can build upon it.
 
+## Architecture
+### Brain and hands
+Brain is where agent session, agent loop and tools are managed, it invokes tools but actual execution belong to the hand (environment such as sandbox, browser etc), it outlives the hands, therefore it could manage multiple hands, resilient to sandbox failures and offer higher level of flexibility.
+
+### Environment-neutral
+Brain does not assume the environment or tools the agent is working with This mean you could define one tool to be executed within your app running on client side while having another tool in the same agent session to execute some script in a sandbox  
+
+### Language-neutral
+Brain does not assume the language you are working with, you could write one tool in rust and another tool in node.
+
+### Agent-neutral
+Brain is not an agent, but you can easily build an agent with it. This allow you to run your favorite agent runtime like pi/codex/opencode as agentloop.
 ## TypeScript client
 
 ```sh
