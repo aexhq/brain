@@ -62,7 +62,7 @@ jobs:
           components: rustfmt
       - name: cache cargo-typify
         id: typify-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-typify
           key: cargo-typify-0.7.0-${{ runner.os }}
@@ -103,7 +103,7 @@ jobs:
       - name: Configure the shared component compilation cache
         run: echo "BRAIN_COMPONENT_CACHE_DIR=$HOME/.cache/aex-brain-components" >> "$GITHUB_ENV"
       - name: Cache compiled components
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/aex-brain-components
           key: compiled-components-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/brain-component-host/guest/**') }}
@@ -142,7 +142,7 @@ jobs:
       # The guest components are a pure function of these inputs; a hit skips the npm
       # installs and componentization, which otherwise dominate this job.
       - name: cache loop guest components
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: crates/brain-loophost/guest/dist
           key: loop-guests-${{ runner.os }}-${{ hashFiles('crates/brain-loophost/guest/*.mjs', 'crates/brain-loophost/guest/package.json', 'crates/brain-loophost/guest/package-lock.json', 'crates/brain-loophost/wit/guest.wit', 'packages/agentloop/src/**', 'packages/agentloop/package.json', 'package-lock.json') }}
@@ -150,7 +150,7 @@ jobs:
       # a hit turns each multi-minute cranelift compile of a component into a fast deserialize.
       # restore-keys is safe — wasmtime revalidates every entry itself.
       - name: cache wasmtime compiled components
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/wasmtime
           key: wasmtime-components-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('crates/brain-loophost/guest/*.mjs', 'packages/agentloop/src/**', 'package-lock.json') }}
