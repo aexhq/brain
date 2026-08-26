@@ -1182,9 +1182,23 @@ pub struct SessionSummary {
     pub context_window_tokens: u32,
     pub shape: String,
     pub base_url: Option<String>,
+    /// Sorted sealed Environment names, so a listing can address the same resources as the full
+    /// session projection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environments: Vec<String>,
     pub metadata: HashMap<String, String>,
     pub session_storage_bytes: u64,
     pub storage_reserved_bytes: u64,
+}
+
+/// The sealed Environment names in one stable order, so listings, full projections and clients
+/// agree on what a session can address.
+pub fn sorted_environment_names(
+    environments: &HashMap<String, brain_protocol::session::EnvironmentConfig>,
+) -> Vec<String> {
+    let mut names = environments.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+    names
 }
 
 impl SessionSummary {
@@ -1222,6 +1236,7 @@ impl SessionSummary {
             context_window_tokens: doc.prefix.context_window_tokens,
             shape: doc.prefix.shape.clone(),
             base_url: doc.prefix.base_url.clone(),
+            environments: sorted_environment_names(&doc.prefix.environments),
             metadata: doc.prefix.metadata.clone(),
             session_storage_bytes: doc.session_storage_bytes,
             storage_reserved_bytes: doc.storage_reserved_bytes,

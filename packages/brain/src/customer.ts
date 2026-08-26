@@ -792,7 +792,7 @@ function registrationDescriptorBytes(registration: ClientRegistration): number {
 /** Domain-separated proof bound to one consumed connect grant. */
 export function deriveFrameProof(protocol: string): string {
   return createHash("sha256")
-    .update("aex.customer-environment.frame-proof\0", "utf8")
+    .update("brain.customer-environment.frame-proof\0", "utf8")
     .update(protocol, "utf8")
     .digest("hex");
 }

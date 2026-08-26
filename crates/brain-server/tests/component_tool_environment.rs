@@ -1,11 +1,13 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
 use brain::journal::Record;
 use brain::session::BrainConfig;
+use brain_environment_host::HttpEnvironmentCapabilities;
 use brain_protocol::session::CreateSessionRequest;
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
 struct TempDir(PathBuf);
@@ -44,6 +46,33 @@ fn artifact(bytes: &[u8]) -> serde_json::Value {
     })
 }
 
+/// Serves the Environment dispatch endpoint the way a deployment does, so the identity a real
+/// component run stamps is judged by the real `HttpEnvironmentCapabilities` guard rather than by a
+/// hand-built call. A refused dispatch is invisible to a turn: it surfaces only as a session end
+/// that retries forever, which is why only a live plane ever saw it.
+async fn dispatch_endpoint() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorder = seen.clone();
+    let app = axum::Router::new().route(
+        "/environment",
+        axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+            let recorder = recorder.clone();
+            async move {
+                recorder.lock().expect("recorded dispatches").push(body);
+                axum::Json(json!({"dispatched": "ok"}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind dispatch endpoint");
+    let address = listener.local_addr().expect("dispatch endpoint address");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{address}/environment"), seen)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn component_tool_calls_component_environment_through_the_session_kernel() {
     let temp = TempDir::new();
@@ -57,6 +86,11 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
     let environment_digest = hex::encode(Sha256::digest(&environment_component));
     let bundle = b"export default async function invoke(input) { return input; }";
     let bundle_digest = hex::encode(Sha256::digest(bundle));
+    let (endpoint, dispatched) = dispatch_endpoint().await;
+    let dispatch = Arc::new(
+        HttpEnvironmentCapabilities::new(endpoint, Some("token".into()), Duration::from_secs(30))
+            .expect("Environment dispatch capabilities"),
+    );
 
     let brain = brain_server::compose_local(brain_server::LocalOptions {
         data_dir: temp.0.clone(),
@@ -67,7 +101,7 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
         advertised_address: "127.0.0.1:1".into(),
         transport_urls: None,
         provider_factory: None,
-        environment_capabilities: None,
+        environment_capabilities: Some(dispatch.clone()),
         loophost: Some(brain_server::LoophostOptions {
             component_host: PathBuf::from(env!("CARGO_BIN_EXE_brain-component-host")),
             workers: 2,
@@ -130,7 +164,7 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
             "workspace": {
                 "component_digest": environment_digest,
                 "world": "aex:environment/environment@1.0.0",
-                "config": {}
+                "config": {"dispatch": true}
             }
         }
     }))
@@ -163,14 +197,23 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
                 ..
             } => serde_json::from_str::<serde_json::Value>(content).is_ok_and(|value| {
                 value["value"] == "environment-ok"
-                    && value["providerOperationId"]
-                        .as_str()
-                        .is_some_and(|id| id.ends_with(&format!(":{}", bundle.len())))
+                    && value["providerOperationId"].as_str().is_some_and(|id| {
+                        id.starts_with("ok:") && id.ends_with(&format!(":{}", bundle.len()))
+                    })
             }),
             _ => false,
         }),
-        "the sealed bundle must reach the Environment: {records:#?}"
+        "the sealed bundle and the dispatch response must reach the Environment: {records:#?}"
     );
+
+    {
+        let recorded = dispatched.lock().expect("recorded dispatches");
+        let call = recorded
+            .first()
+            .unwrap_or_else(|| panic!("the Environment never reached its dispatch: {records:#?}"));
+        assert_eq!(call["action"], "submit");
+        assert!(call["request"]["operation_id"].is_string());
+    }
 
     // The immutable bundle is the largest Tool payload; sealing it inline would put megabytes in
     // every session's CONFIG record, which is what the journal ceiling exists to refuse.

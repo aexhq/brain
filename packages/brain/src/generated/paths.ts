@@ -1036,6 +1036,7 @@ export type components = {
             /** @description Outstanding staged upload bytes held against the sealed session quota until staging cleanup completes. These bytes are not yet published session objects. */
             upload_reserved_bytes: number;
         };
+        EnvironmentName: string;
         /**
          * Format: date-time
          * @description RFC 3339, UTC.
@@ -1081,6 +1082,8 @@ export type components = {
             shape: "1gb";
             model: components["schemas"]["ModelInfo"];
             storage: components["schemas"]["StorageInfo"];
+            /** @description Sorted names of the Environments sealed into this session's prefix. Each names one addressable /v1/sessions/{session_id}/environments/{environment} resource; a session that declared none has an empty array. */
+            environments: components["schemas"]["EnvironmentName"][];
             created_at: components["schemas"]["Timestamp"];
             /** @description Finite renewable durable-retention deadline. Environment capacity has an independent shorter lifetime. */
             retain_until: components["schemas"]["Timestamp"];
@@ -1152,7 +1155,6 @@ export type components = {
             };
             contract_digest: components["schemas"]["Sha256Hex"];
         };
-        EnvironmentName: string;
         NetworkDestination: {
             host: string;
             ports: [

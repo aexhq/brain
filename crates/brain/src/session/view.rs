@@ -170,6 +170,9 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
             .parse()
             .map_err(|_| corrupt("root session id"))?,
         depth: i64::from(doc.depth),
+        environments: environment_names(crate::journal::sorted_environment_names(
+            &doc.prefix.environments,
+        ))?,
         last_seq: doc.last_seq,
         last_message_at: doc.last_message_ms.map(crate::events::ts),
         metadata: doc
@@ -269,6 +272,7 @@ pub(super) fn session_doc_summary(
         retain_until: crate::events::ts(summary.retain_until_ms),
         root_id: summary.root_id.parse().map_err(|_| corrupt("root id"))?,
         depth: i64::from(summary.depth),
+        environments: environment_names(summary.environments.clone())?,
         last_seq: summary.last_seq,
         last_message_at: summary.last_message_ms.map(crate::events::ts),
         metadata: summary
@@ -323,6 +327,17 @@ pub(super) fn session_doc_summary(
         turns: summary.turns,
         updated_at: crate::events::ts(summary.updated_ms),
     })
+}
+
+fn environment_names(names: Vec<String>) -> Result<Vec<session::EnvironmentName>> {
+    names
+        .into_iter()
+        .map(|name| {
+            name.parse().map_err(|_| {
+                BrainError::Journal("stored session has a corrupt Environment name".into())
+            })
+        })
+        .collect()
 }
 
 pub(super) fn public_context_fork(fork: &ContextForkDoc) -> session::ContextFork {

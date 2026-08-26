@@ -28,7 +28,8 @@
       "turns": 4,
       "metadata": {
         "customer_ref": "job-77"
-      }
+      },
+      "environments": []
     }
   ],
   "has_more": false

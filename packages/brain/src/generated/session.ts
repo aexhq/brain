@@ -894,6 +894,12 @@ export interface Session {
   shape: "1gb";
   model: ModelInfo;
   storage: StorageInfo;
+  /**
+   * Sorted names of the Environments sealed into this session's prefix. Each names one addressable /v1/sessions/{session_id}/environments/{environment} resource; a session that declared none has an empty array.
+   *
+   * @maxItems 32
+   */
+  environments: EnvironmentName[];
   created_at: Timestamp;
   /**
    * RFC 3339, UTC.

@@ -639,13 +639,13 @@ async fn execute(
         }
         WorkerRequest::Release { world, instance_id } => {
             match world.as_str() {
-                "agentloop" => {
+                crate::AGENTLOOP_COMPONENT => {
                     agentloops.remove(&instance_id);
                 }
-                "environment" => {
+                crate::ENVIRONMENT_COMPONENT => {
                     environments.remove(&instance_id);
                 }
-                "model" => {
+                crate::MODEL_COMPONENT => {
                     models.remove(&instance_id);
                 }
                 _ => anyhow::bail!("unknown resident component world {world}"),

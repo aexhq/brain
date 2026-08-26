@@ -675,7 +675,8 @@
         "retain_until",
         "updated_at",
         "turns",
-        "metadata"
+        "metadata",
+        "environments"
       ],
       "properties": {
         "id": {
@@ -734,6 +735,15 @@
         },
         "storage": {
           "$ref": "#/$defs/StorageInfo"
+        },
+        "environments": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "description": "Sorted names of the Environments sealed into this session's prefix. Each names one addressable /v1/sessions/{session_id}/environments/{environment} resource; a session that declared none has an empty array.",
+          "items": {
+            "$ref": "#/$defs/EnvironmentName"
+          }
         },
         "created_at": {
           "$ref": "#/$defs/Timestamp"
