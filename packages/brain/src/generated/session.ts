@@ -60,12 +60,12 @@ export type SessionState =
  */
 export type SessionTurnState = "idle" | "running";
 /**
- * Model-component provenance label used in usage projections. It is descriptive, not a Brain execution selector.
+ * Which request and response shape the model endpoint speaks.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
- * via the `definition` "Provider".
+ * via the `definition` "Dialect".
  */
-export type Provider = string;
+export type Dialect = "openai" | "anthropic";
 /**
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ToolName".
@@ -401,7 +401,6 @@ export type Event =
       session_id: SessionId;
       turn_id: TurnId;
       agent_id: AgentId;
-      provider: Provider;
       model: string;
       usage: ProviderUsage;
     }
@@ -495,27 +494,19 @@ export interface ComponentArtifact {
  * via the `definition` "ModelConfig".
  */
 export interface ModelConfig {
-  component_digest: Sha256Hex;
-  world: "aex:model/model@1.0.0";
+  dialect: Dialect;
   /**
-   * Immutable provider-specific options from the Model component factory.
+   * The endpoint speaking this dialect, up to and including any version segment.
    */
-  config?: {
-    [k: string]: unknown | undefined;
-  };
-  provider: Provider;
+  base_url: string;
   /**
-   * Provider model id, e.g. "claude-sonnet-5" or "gpt-5".
+   * The model id this endpoint serves, e.g. "claude-sonnet-5" or "gpt-5".
    */
   name: string;
   /**
    * BYOK. Encrypted per session, never returned, never logged.
    */
   api_key: string;
-  /**
-   * Optional caller override passed to the Model component.
-   */
-  base_url?: string;
   max_output_tokens?: number;
   /**
    * Immutable model context window. Omission seals the conservative neutral default of 32768 tokens; custom model names are never guessed from a mutable catalog.
@@ -523,22 +514,20 @@ export interface ModelConfig {
   context_window_tokens?: number;
   temperature?: number;
   /**
-   * Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly.
+   * Sealed into the OpenAI dialect. The Anthropic dialect rejects this field before any external effect instead of silently dropping it.
    */
   reasoning_effort?: "low" | "medium" | "high";
 }
 /**
- * The sealed Model component identity and model selection, without credentials.
+ * The sealed model selection, without the credential.
  *
  * This interface was referenced by `BrainSessionAPIV1Types`'s JSON-Schema
  * via the `definition` "ModelInfo".
  */
 export interface ModelInfo {
-  component_digest: Sha256Hex;
-  world: "aex:model/model@1.0.0";
-  provider: Provider;
+  dialect: Dialect;
+  base_url: string;
   name: string;
-  base_url?: string;
   /**
    * Effective immutable context window used for request admission and semantic compaction.
    */

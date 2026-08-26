@@ -85,45 +85,30 @@
       },
       "description": "Create-time-only precompiled Wasm component bytes. Bindings reference this immutable artifact by digest; duplicate payloads are forbidden."
     },
-    "Provider": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9_.:-]+$",
-      "description": "Model-component provenance label used in usage projections. It is descriptive, not a Brain execution selector."
-    },
     "ModelConfig": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "component_digest",
-        "world",
-        "provider",
+        "dialect",
+        "base_url",
         "name",
         "api_key"
       ],
       "properties": {
-        "component_digest": {
-          "$ref": "#/$defs/Sha256Hex"
+        "dialect": {
+          "$ref": "#/$defs/Dialect"
         },
-        "world": {
+        "base_url": {
           "type": "string",
-          "const": "aex:model/model@1.0.0"
-        },
-        "config": {
-          "type": "object",
-          "additionalProperties": true,
-          "default": {},
-          "description": "Immutable provider-specific options from the Model component factory."
-        },
-        "provider": {
-          "$ref": "#/$defs/Provider"
+          "maxLength": 2048,
+          "format": "uri",
+          "description": "The endpoint speaking this dialect, up to and including any version segment."
         },
         "name": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
-          "description": "Provider model id, e.g. \"claude-sonnet-5\" or \"gpt-5\"."
+          "description": "The model id this endpoint serves, e.g. \"claude-sonnet-5\" or \"gpt-5\"."
         },
         "api_key": {
           "type": "string",
@@ -131,12 +116,6 @@
           "maxLength": 4096,
           "writeOnly": true,
           "description": "BYOK. Encrypted per session, never returned, never logged."
-        },
-        "base_url": {
-          "type": "string",
-          "maxLength": 2048,
-          "format": "uri",
-          "description": "Optional caller override passed to the Model component."
         },
         "max_output_tokens": {
           "type": "integer",
@@ -161,37 +140,29 @@
             "medium",
             "high"
           ],
-          "description": "Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly."
+          "description": "Sealed into the OpenAI dialect. The Anthropic dialect rejects this field before any external effect instead of silently dropping it."
         }
       }
     },
     "ModelInfo": {
       "type": "object",
       "required": [
-        "component_digest",
-        "world",
-        "provider",
+        "dialect",
+        "base_url",
         "name",
         "context_window_tokens"
       ],
-      "description": "The sealed Model component identity and model selection, without credentials.",
+      "description": "The sealed model selection, without the credential.",
       "properties": {
-        "component_digest": {
-          "$ref": "#/$defs/Sha256Hex"
-        },
-        "world": {
-          "type": "string",
-          "const": "aex:model/model@1.0.0"
-        },
-        "provider": {
-          "$ref": "#/$defs/Provider"
-        },
-        "name": {
-          "type": "string"
+        "dialect": {
+          "$ref": "#/$defs/Dialect"
         },
         "base_url": {
           "type": "string",
           "format": "uri"
+        },
+        "name": {
+          "type": "string"
         },
         "context_window_tokens": {
           "type": "integer",
@@ -296,7 +267,13 @@
               "uniqueItems": true,
               "items": {
                 "type": "string",
-                "enum": ["environment", "journal", "storage", "children", "parent"]
+                "enum": [
+                  "environment",
+                  "journal",
+                  "storage",
+                  "children",
+                  "parent"
+                ]
               },
               "default": []
             },
@@ -376,47 +353,80 @@
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           }
         },
-        "workspace": { "type": "boolean" },
-        "processes": { "type": "boolean" },
+        "workspace": {
+          "type": "boolean"
+        },
+        "processes": {
+          "type": "boolean"
+        },
         "network": {
           "type": "array",
           "maxItems": 32,
-          "items": { "$ref": "#/$defs/NetworkDestination" }
+          "items": {
+            "$ref": "#/$defs/NetworkDestination"
+          }
         },
-        "streaming": { "type": "boolean" },
+        "streaming": {
+          "type": "boolean"
+        },
         "recovery": {
           "type": "string",
-          "enum": ["retained", "connection", "replay_safe"]
+          "enum": [
+            "retained",
+            "connection",
+            "replay_safe"
+          ]
         }
       }
     },
     "EnvironmentProfile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "network", "recovery"],
+      "required": [
+        "kind",
+        "network",
+        "recovery"
+      ],
       "properties": {
         "kind": {
           "type": "string",
-          "enum": ["computer", "callbacks"]
+          "enum": [
+            "computer",
+            "callbacks"
+          ]
         },
         "platform": {
           "type": "string",
-          "enum": ["linux-amd64", "linux-arm64"]
+          "enum": [
+            "linux-amd64",
+            "linux-arm64"
+          ]
         },
         "network": {
           "type": "string",
-          "enum": ["none", "allowlist", "unrestricted"]
+          "enum": [
+            "none",
+            "allowlist",
+            "unrestricted"
+          ]
         },
         "recovery": {
           "type": "string",
-          "enum": ["retained", "connection", "replay_safe"]
+          "enum": [
+            "retained",
+            "connection",
+            "replay_safe"
+          ]
         }
       }
     },
     "ComponentEnvironmentConfig": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["component_digest", "world"],
+      "required": [
+        "component_digest",
+        "world"
+      ],
       "description": "A precompiled Environment component binding and immutable JSON configuration.",
       "properties": {
         "component_digest": {
@@ -436,7 +446,12 @@
     "LegacyEnvironmentConfig": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["extension", "protocol", "profile", "configuration"],
+      "required": [
+        "extension",
+        "protocol",
+        "profile",
+        "configuration"
+      ],
       "properties": {
         "extension": {
           "type": "string",
@@ -458,8 +473,12 @@
     },
     "EnvironmentConfig": {
       "oneOf": [
-        { "$ref": "#/$defs/ComponentEnvironmentConfig" },
-        { "$ref": "#/$defs/LegacyEnvironmentConfig" }
+        {
+          "$ref": "#/$defs/ComponentEnvironmentConfig"
+        },
+        {
+          "$ref": "#/$defs/LegacyEnvironmentConfig"
+        }
       ],
       "description": "Environment binding. The legacy arm remains only until the generic component adapter passes the existing managed-runtime gates."
     },
@@ -516,7 +535,10 @@
         },
         "media_type": {
           "type": "string",
-          "enum": ["application/javascript+esm", "application/x-xz"]
+          "enum": [
+            "application/javascript+esm",
+            "application/x-xz"
+          ]
         }
       }
     },
@@ -541,7 +563,10 @@
         },
         "media_type": {
           "type": "string",
-          "enum": ["application/javascript+esm", "application/x-xz"]
+          "enum": [
+            "application/javascript+esm",
+            "application/x-xz"
+          ]
         },
         "mount_path": {
           "type": "string",
@@ -550,7 +575,10 @@
         },
         "unpack": {
           "type": "string",
-          "enum": ["file", "tar.xz"]
+          "enum": [
+            "file",
+            "tar.xz"
+          ]
         }
       }
     },
@@ -576,7 +604,10 @@
         },
         "target": {
           "type": "string",
-          "enum": ["linux-amd64", "linux-arm64"]
+          "enum": [
+            "linux-amd64",
+            "linux-arm64"
+          ]
         },
         "execute_path": {
           "type": "string",
@@ -584,7 +615,10 @@
           "maxLength": 4096
         },
         "setup_path": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "pattern": "^/[^\\u0000]+$",
           "maxLength": 4096
         },
@@ -848,7 +882,9 @@
       "properties": {
         "object": {
           "type": "string",
-          "enum": ["session.change.list"]
+          "enum": [
+            "session.change.list"
+          ]
         },
         "partition": {
           "type": "integer",
@@ -1197,9 +1233,13 @@
     "RetentionUpdate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["retain_until"],
+      "required": [
+        "retain_until"
+      ],
       "properties": {
-        "retain_until": { "$ref": "#/$defs/Timestamp" },
+        "retain_until": {
+          "$ref": "#/$defs/Timestamp"
+        },
         "allow_shorten": {
           "type": "boolean",
           "default": false,
@@ -1943,7 +1983,6 @@
             "session_id",
             "turn_id",
             "agent_id",
-            "provider",
             "model",
             "usage"
           ],
@@ -1969,9 +2008,6 @@
             },
             "agent_id": {
               "$ref": "#/$defs/AgentId"
-            },
-            "provider": {
-              "$ref": "#/$defs/Provider"
             },
             "model": {
               "type": "string"
@@ -2330,6 +2366,14 @@
           }
         }
       ]
+    },
+    "Dialect": {
+      "type": "string",
+      "enum": [
+        "openai",
+        "anthropic"
+      ],
+      "description": "Which request and response shape the model endpoint speaks."
     }
   }
 }

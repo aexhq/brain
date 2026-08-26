@@ -1014,18 +1014,17 @@ export type components = {
          * @enum {string}
          */
         SessionTurnState: "idle" | "running";
-        Sha256Hex: string;
-        /** @description Model-component provenance label used in usage projections. It is descriptive, not a Brain execution selector. */
-        Provider: string;
-        /** @description The sealed Model component identity and model selection, without credentials. */
+        /**
+         * @description Which request and response shape the model endpoint speaks.
+         * @enum {string}
+         */
+        Dialect: "openai" | "anthropic";
+        /** @description The sealed model selection, without the credential. */
         ModelInfo: {
-            component_digest: components["schemas"]["Sha256Hex"];
-            /** @constant */
-            world: "aex:model/model@1.0.0";
-            provider: components["schemas"]["Provider"];
-            name: string;
+            dialect: components["schemas"]["Dialect"];
             /** Format: uri */
-            base_url?: string;
+            base_url: string;
+            name: string;
             /** @description Effective immutable context window used for request admission and semantic compaction. */
             context_window_tokens: number;
         };
@@ -1049,6 +1048,7 @@ export type components = {
             message: string;
             at: components["schemas"]["Timestamp"];
         };
+        Sha256Hex: string;
         /** @description The sealed agentloop identity of a session. */
         AgentloopInfo: {
             component_digest: components["schemas"]["Sha256Hex"];
@@ -1106,32 +1106,22 @@ export type components = {
             next_cursor?: string;
         };
         ModelConfig: {
-            component_digest: components["schemas"]["Sha256Hex"];
-            /** @constant */
-            world: "aex:model/model@1.0.0";
+            dialect: components["schemas"]["Dialect"];
             /**
-             * @description Immutable provider-specific options from the Model component factory.
-             * @default {}
+             * Format: uri
+             * @description The endpoint speaking this dialect, up to and including any version segment.
              */
-            config?: {
-                [key: string]: unknown;
-            };
-            provider: components["schemas"]["Provider"];
-            /** @description Provider model id, e.g. "claude-sonnet-5" or "gpt-5". */
+            base_url: string;
+            /** @description The model id this endpoint serves, e.g. "claude-sonnet-5" or "gpt-5". */
             name: string;
             /** @description BYOK. Encrypted per session, never returned, never logged. */
             api_key: string;
-            /**
-             * Format: uri
-             * @description Optional caller override passed to the Model component.
-             */
-            base_url?: string;
             max_output_tokens?: number;
             /** @description Immutable model context window. Omission seals the conservative neutral default of 32768 tokens; custom model names are never guessed from a mutable catalog. */
             context_window_tokens?: number;
             temperature?: number;
             /**
-             * @description Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly.
+             * @description Sealed into the OpenAI dialect. The Anthropic dialect rejects this field before any external effect instead of silently dropping it.
              * @enum {string}
              */
             reasoning_effort?: "low" | "medium" | "high";
@@ -1545,7 +1535,6 @@ export type components = {
             session_id: components["schemas"]["SessionId"];
             turn_id: components["schemas"]["TurnId"];
             agent_id: components["schemas"]["AgentId"];
-            provider: components["schemas"]["Provider"];
             model: string;
             usage: components["schemas"]["ProviderUsage"];
         } | {

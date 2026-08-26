@@ -325,11 +325,10 @@ fn credential_debug_is_redacted_without_changing_wire_serialization() {
 
     let create_value = serde_json::json!({
         "model": {
-            "provider": "openai",
+            "dialect": "openai",
+            "base_url": "https://api.openai.com/v1",
             "name": "test-model",
             "api_key": API_SECRET,
-            "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-            "world": "aex:model/model@1.0.0",
         },
         "secrets": {"TOKEN": ENV_SECRET},
         "agentloop": {
@@ -337,11 +336,6 @@ fn credential_debug_is_redacted_without_changing_wire_serialization() {
             "world": "aex:agentloop/agentloop@1.0.0",
         },
         "component_artifacts": [
-            {
-                "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-                "component_base64": "eA==",
-                "bytes": 1,
-            },
             {
                 "component_digest": "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa",
                 "component_base64": "eQ==",

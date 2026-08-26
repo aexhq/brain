@@ -1427,6 +1427,79 @@ impl<'de> ::serde::Deserialize<'de> for CustomerClientConfigId {
             })
     }
 }
+#[doc = "Which request and response shape the model endpoint speaks."]
+#[doc = r""]
+#[doc = r" <details><summary>JSON schema</summary>"]
+#[doc = r""]
+#[doc = r" ```json"]
+#[doc = "{"]
+#[doc = "  \"description\": \"Which request and response shape the model endpoint speaks.\","]
+#[doc = "  \"type\": \"string\","]
+#[doc = "  \"enum\": ["]
+#[doc = "    \"openai\","]
+#[doc = "    \"anthropic\""]
+#[doc = "  ]"]
+#[doc = "}"]
+#[doc = r" ```"]
+#[doc = r" </details>"]
+#[derive(
+    :: serde :: Deserialize,
+    :: serde :: Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+)]
+pub enum Dialect {
+    #[serde(rename = "openai")]
+    Openai,
+    #[serde(rename = "anthropic")]
+    Anthropic,
+}
+impl ::std::fmt::Display for Dialect {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Openai => f.write_str("openai"),
+            Self::Anthropic => f.write_str("anthropic"),
+        }
+    }
+}
+impl ::std::str::FromStr for Dialect {
+    type Err = self::error::ConversionError;
+    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "openai" => Ok(Self::Openai),
+            "anthropic" => Ok(Self::Anthropic),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for Dialect {
+    type Error = self::error::ConversionError;
+    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<&::std::string::String> for Dialect {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for Dialect {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
 #[doc = "Environment binding. The legacy arm remains only until the generic component adapter passes the existing managed-runtime gates."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
@@ -2412,7 +2485,6 @@ impl ::std::convert::From<::std::collections::HashMap<EnvironmentName, Environme
 #[doc = "        \"agent_id\","]
 #[doc = "        \"at\","]
 #[doc = "        \"model\","]
-#[doc = "        \"provider\","]
 #[doc = "        \"seq\","]
 #[doc = "        \"session_id\","]
 #[doc = "        \"turn_id\","]
@@ -2428,9 +2500,6 @@ impl ::std::convert::From<::std::collections::HashMap<EnvironmentName, Environme
 #[doc = "        },"]
 #[doc = "        \"model\": {"]
 #[doc = "          \"type\": \"string\""]
-#[doc = "        },"]
-#[doc = "        \"provider\": {"]
-#[doc = "          \"$ref\": \"#/$defs/Provider\""]
 #[doc = "        },"]
 #[doc = "        \"seq\": {"]
 #[doc = "          \"type\": \"integer\","]
@@ -2821,7 +2890,6 @@ pub enum Event {
         agent_id: AgentId,
         at: Timestamp,
         model: ::std::string::String,
-        provider: Provider,
         seq: ::std::num::NonZeroU64,
         session_id: SessionId,
         turn_id: TurnId,
@@ -4212,10 +4280,9 @@ impl<'de> ::serde::Deserialize<'de> for ModelAttemptId {
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
 #[doc = "    \"api_key\","]
-#[doc = "    \"component_digest\","]
-#[doc = "    \"name\","]
-#[doc = "    \"provider\","]
-#[doc = "    \"world\""]
+#[doc = "    \"base_url\","]
+#[doc = "    \"dialect\","]
+#[doc = "    \"name\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"api_key\": {"]
@@ -4226,19 +4293,10 @@ impl<'de> ::serde::Deserialize<'de> for ModelAttemptId {
 #[doc = "      \"minLength\": 1"]
 #[doc = "    },"]
 #[doc = "    \"base_url\": {"]
-#[doc = "      \"description\": \"Optional caller override passed to the Model component.\","]
+#[doc = "      \"description\": \"The endpoint speaking this dialect, up to and including any version segment.\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"uri\","]
 #[doc = "      \"maxLength\": 2048"]
-#[doc = "    },"]
-#[doc = "    \"component_digest\": {"]
-#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
-#[doc = "    },"]
-#[doc = "    \"config\": {"]
-#[doc = "      \"description\": \"Immutable provider-specific options from the Model component factory.\","]
-#[doc = "      \"default\": {},"]
-#[doc = "      \"type\": \"object\","]
-#[doc = "      \"additionalProperties\": true"]
 #[doc = "    },"]
 #[doc = "    \"context_window_tokens\": {"]
 #[doc = "      \"description\": \"Immutable model context window. Omission seals the conservative neutral default of 32768 tokens; custom model names are never guessed from a mutable catalog.\","]
@@ -4246,22 +4304,22 @@ impl<'de> ::serde::Deserialize<'de> for ModelAttemptId {
 #[doc = "      \"maximum\": 2000000.0,"]
 #[doc = "      \"minimum\": 8192.0"]
 #[doc = "    },"]
+#[doc = "    \"dialect\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Dialect\""]
+#[doc = "    },"]
 #[doc = "    \"max_output_tokens\": {"]
 #[doc = "      \"type\": \"integer\","]
 #[doc = "      \"maximum\": 131072.0,"]
 #[doc = "      \"minimum\": 1.0"]
 #[doc = "    },"]
 #[doc = "    \"name\": {"]
-#[doc = "      \"description\": \"Provider model id, e.g. \\\"claude-sonnet-5\\\" or \\\"gpt-5\\\".\","]
+#[doc = "      \"description\": \"The model id this endpoint serves, e.g. \\\"claude-sonnet-5\\\" or \\\"gpt-5\\\".\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"maxLength\": 128,"]
 #[doc = "      \"minLength\": 1"]
 #[doc = "    },"]
-#[doc = "    \"provider\": {"]
-#[doc = "      \"$ref\": \"#/$defs/Provider\""]
-#[doc = "    },"]
 #[doc = "    \"reasoning_effort\": {"]
-#[doc = "      \"description\": \"Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly.\","]
+#[doc = "      \"description\": \"Sealed into the OpenAI dialect. The Anthropic dialect rejects this field before any external effect instead of silently dropping it.\","]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"enum\": ["]
 #[doc = "        \"low\","]
@@ -4273,10 +4331,6 @@ impl<'de> ::serde::Deserialize<'de> for ModelAttemptId {
 #[doc = "      \"type\": \"number\","]
 #[doc = "      \"maximum\": 2.0,"]
 #[doc = "      \"minimum\": 0.0"]
-#[doc = "    },"]
-#[doc = "    \"world\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"const\": \"aex:model/model@1.0.0\""]
 #[doc = "    }"]
 #[doc = "  },"]
 #[doc = "  \"additionalProperties\": false"]
@@ -4288,27 +4342,21 @@ impl<'de> ::serde::Deserialize<'de> for ModelAttemptId {
 pub struct ModelConfig {
     #[doc = "BYOK. Encrypted per session, never returned, never logged."]
     pub api_key: ModelConfigApiKey,
-    #[doc = "Optional caller override passed to the Model component."]
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub base_url: ::std::option::Option<ModelConfigBaseUrl>,
-    pub component_digest: Sha256Hex,
-    #[doc = "Immutable provider-specific options from the Model component factory."]
-    #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
-    pub config: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+    #[doc = "The endpoint speaking this dialect, up to and including any version segment."]
+    pub base_url: ModelConfigBaseUrl,
     #[doc = "Immutable model context window. Omission seals the conservative neutral default of 32768 tokens; custom model names are never guessed from a mutable catalog."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub context_window_tokens: ::std::option::Option<i64>,
+    pub dialect: Dialect,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub max_output_tokens: ::std::option::Option<::std::num::NonZeroU64>,
-    #[doc = "Provider model id, e.g. \"claude-sonnet-5\" or \"gpt-5\"."]
+    #[doc = "The model id this endpoint serves, e.g. \"claude-sonnet-5\" or \"gpt-5\"."]
     pub name: ModelConfigName,
-    pub provider: Provider,
-    #[doc = "Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly."]
+    #[doc = "Sealed into the OpenAI dialect. The Anthropic dialect rejects this field before any external effect instead of silently dropping it."]
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub reasoning_effort: ::std::option::Option<ModelConfigReasoningEffort>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub temperature: ::std::option::Option<f64>,
-    pub world: ::std::string::String,
 }
 #[doc = "BYOK. Encrypted per session, never returned, never logged."]
 #[doc = r""]
@@ -4384,13 +4432,13 @@ impl<'de> ::serde::Deserialize<'de> for ModelConfigApiKey {
             })
     }
 }
-#[doc = "Optional caller override passed to the Model component."]
+#[doc = "The endpoint speaking this dialect, up to and including any version segment."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Optional caller override passed to the Model component.\","]
+#[doc = "  \"description\": \"The endpoint speaking this dialect, up to and including any version segment.\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"format\": \"uri\","]
 #[doc = "  \"maxLength\": 2048"]
@@ -4454,13 +4502,13 @@ impl<'de> ::serde::Deserialize<'de> for ModelConfigBaseUrl {
             })
     }
 }
-#[doc = "Provider model id, e.g. \"claude-sonnet-5\" or \"gpt-5\"."]
+#[doc = "The model id this endpoint serves, e.g. \"claude-sonnet-5\" or \"gpt-5\"."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Provider model id, e.g. \\\"claude-sonnet-5\\\" or \\\"gpt-5\\\".\","]
+#[doc = "  \"description\": \"The model id this endpoint serves, e.g. \\\"claude-sonnet-5\\\" or \\\"gpt-5\\\".\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"maxLength\": 128,"]
 #[doc = "  \"minLength\": 1"]
@@ -4527,13 +4575,13 @@ impl<'de> ::serde::Deserialize<'de> for ModelConfigName {
             })
     }
 }
-#[doc = "Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly."]
+#[doc = "Sealed into the OpenAI dialect. The Anthropic dialect rejects this field before any external effect instead of silently dropping it."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"Neutral generation hint passed to the selected Model component, which must either implement or reject it explicitly.\","]
+#[doc = "  \"description\": \"Sealed into the OpenAI dialect. The Anthropic dialect rejects this field before any external effect instead of silently dropping it.\","]
 #[doc = "  \"type\": \"string\","]
 #[doc = "  \"enum\": ["]
 #[doc = "    \"low\","]
@@ -4605,28 +4653,24 @@ impl ::std::convert::TryFrom<::std::string::String> for ModelConfigReasoningEffo
         value.parse()
     }
 }
-#[doc = "The sealed Model component identity and model selection, without credentials."]
+#[doc = "The sealed model selection, without the credential."]
 #[doc = r""]
 #[doc = r" <details><summary>JSON schema</summary>"]
 #[doc = r""]
 #[doc = r" ```json"]
 #[doc = "{"]
-#[doc = "  \"description\": \"The sealed Model component identity and model selection, without credentials.\","]
+#[doc = "  \"description\": \"The sealed model selection, without the credential.\","]
 #[doc = "  \"type\": \"object\","]
 #[doc = "  \"required\": ["]
-#[doc = "    \"component_digest\","]
+#[doc = "    \"base_url\","]
 #[doc = "    \"context_window_tokens\","]
-#[doc = "    \"name\","]
-#[doc = "    \"provider\","]
-#[doc = "    \"world\""]
+#[doc = "    \"dialect\","]
+#[doc = "    \"name\""]
 #[doc = "  ],"]
 #[doc = "  \"properties\": {"]
 #[doc = "    \"base_url\": {"]
 #[doc = "      \"type\": \"string\","]
 #[doc = "      \"format\": \"uri\""]
-#[doc = "    },"]
-#[doc = "    \"component_digest\": {"]
-#[doc = "      \"$ref\": \"#/$defs/Sha256Hex\""]
 #[doc = "    },"]
 #[doc = "    \"context_window_tokens\": {"]
 #[doc = "      \"description\": \"Effective immutable context window used for request admission and semantic compaction.\","]
@@ -4634,15 +4678,11 @@ impl ::std::convert::TryFrom<::std::string::String> for ModelConfigReasoningEffo
 #[doc = "      \"maximum\": 2000000.0,"]
 #[doc = "      \"minimum\": 8192.0"]
 #[doc = "    },"]
+#[doc = "    \"dialect\": {"]
+#[doc = "      \"$ref\": \"#/$defs/Dialect\""]
+#[doc = "    },"]
 #[doc = "    \"name\": {"]
 #[doc = "      \"type\": \"string\""]
-#[doc = "    },"]
-#[doc = "    \"provider\": {"]
-#[doc = "      \"$ref\": \"#/$defs/Provider\""]
-#[doc = "    },"]
-#[doc = "    \"world\": {"]
-#[doc = "      \"type\": \"string\","]
-#[doc = "      \"const\": \"aex:model/model@1.0.0\""]
 #[doc = "    }"]
 #[doc = "  }"]
 #[doc = "}"]
@@ -4650,14 +4690,11 @@ impl ::std::convert::TryFrom<::std::string::String> for ModelConfigReasoningEffo
 #[doc = r" </details>"]
 #[derive(:: serde :: Deserialize, :: serde :: Serialize, Clone, Debug)]
 pub struct ModelInfo {
-    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-    pub base_url: ::std::option::Option<::std::string::String>,
-    pub component_digest: Sha256Hex,
+    pub base_url: ::std::string::String,
     #[doc = "Effective immutable context window used for request admission and semantic compaction."]
     pub context_window_tokens: i64,
+    pub dialect: Dialect,
     pub name: ::std::string::String,
-    pub provider: Provider,
-    pub world: ::std::string::String,
 }
 #[doc = "`NetworkDestination`"]
 #[doc = r""]
@@ -5059,85 +5096,6 @@ impl ::std::convert::TryFrom<::std::string::String> for NetworkPolicyDenyItem {
     }
 }
 impl<'de> ::serde::Deserialize<'de> for NetworkPolicyDenyItem {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: ::serde::Deserializer<'de>,
-    {
-        ::std::string::String::deserialize(deserializer)?
-            .parse()
-            .map_err(|e: self::error::ConversionError| {
-                <D::Error as ::serde::de::Error>::custom(e.to_string())
-            })
-    }
-}
-#[doc = "Model-component provenance label used in usage projections. It is descriptive, not a Brain execution selector."]
-#[doc = r""]
-#[doc = r" <details><summary>JSON schema</summary>"]
-#[doc = r""]
-#[doc = r" ```json"]
-#[doc = "{"]
-#[doc = "  \"description\": \"Model-component provenance label used in usage projections. It is descriptive, not a Brain execution selector.\","]
-#[doc = "  \"type\": \"string\","]
-#[doc = "  \"maxLength\": 128,"]
-#[doc = "  \"minLength\": 1,"]
-#[doc = "  \"pattern\": \"^[A-Za-z0-9_.:-]+$\""]
-#[doc = "}"]
-#[doc = r" ```"]
-#[doc = r" </details>"]
-#[derive(:: serde :: Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct Provider(::std::string::String);
-impl ::std::ops::Deref for Provider {
-    type Target = ::std::string::String;
-    fn deref(&self) -> &::std::string::String {
-        &self.0
-    }
-}
-impl ::std::convert::From<Provider> for ::std::string::String {
-    fn from(value: Provider) -> Self {
-        value.0
-    }
-}
-impl ::std::str::FromStr for Provider {
-    type Err = self::error::ConversionError;
-    fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        if value.chars().count() > 128usize {
-            return Err("longer than 128 characters".into());
-        }
-        if value.chars().count() < 1usize {
-            return Err("shorter than 1 characters".into());
-        }
-        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
-            ::std::sync::LazyLock::new(|| ::regress::Regex::new("^[A-Za-z0-9_.:-]+$").unwrap());
-        if PATTERN.find(value).is_none() {
-            return Err("doesn't match pattern \"^[A-Za-z0-9_.:-]+$\"".into());
-        }
-        Ok(Self(value.to_string()))
-    }
-}
-impl ::std::convert::TryFrom<&str> for Provider {
-    type Error = self::error::ConversionError;
-    fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<&::std::string::String> for Provider {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: &::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl ::std::convert::TryFrom<::std::string::String> for Provider {
-    type Error = self::error::ConversionError;
-    fn try_from(
-        value: ::std::string::String,
-    ) -> ::std::result::Result<Self, self::error::ConversionError> {
-        value.parse()
-    }
-}
-impl<'de> ::serde::Deserialize<'de> for Provider {
     fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
     where
         D: ::serde::Deserializer<'de>,

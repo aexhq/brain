@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate stable identities and public views from the four canonical WIT worlds."""
+"""Generate stable identities and public views from the three canonical WIT worlds."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ CONTRACTS = {
     "agentloop": ROOT / "contracts/agentloop/v1/agentloop.wit",
     "tool": ROOT / "contracts/tool/v1/tool.wit",
     "environment": ROOT / "contracts/environment/v1/environment.wit",
-    "model": ROOT / "contracts/model/v1/model.wit",
 }
 RUST_OUTPUT = ROOT / "crates/brain-component-host/src/generated.rs"
 TYPESCRIPT_OUTPUT = ROOT / "packages/brain/src/generated/components.ts"
