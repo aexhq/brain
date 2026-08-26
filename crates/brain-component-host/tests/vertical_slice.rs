@@ -465,7 +465,7 @@ async fn a_worker_that_stops_answering_is_stopped_with_a_named_reason() {
     assert!(
         error
             .to_string()
-            .starts_with("component worker did not answer a frame for request"),
+            .starts_with("component worker sent no frame for request"),
         "{error}"
     );
 }

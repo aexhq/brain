@@ -946,7 +946,7 @@ impl Worker {
             let bytes = bounded(
                 id,
                 frame_timeout,
-                "answer",
+                "sent no frame",
                 self.output.read_line(&mut line),
             )
             .await?;
@@ -984,8 +984,14 @@ impl Worker {
     }
 
     async fn send(&mut self, id: u64, frame: &[u8], frame_timeout: Duration) -> anyhow::Result<()> {
-        bounded(id, frame_timeout, "take", self.input.write_all(frame)).await?;
-        bounded(id, frame_timeout, "take", self.input.flush()).await
+        bounded(
+            id,
+            frame_timeout,
+            "accepted no frame",
+            self.input.write_all(frame),
+        )
+        .await?;
+        bounded(id, frame_timeout, "accepted no frame", self.input.flush()).await
     }
 }
 
@@ -994,13 +1000,13 @@ impl Worker {
 async fn bounded<T>(
     id: u64,
     frame_timeout: Duration,
-    verb: &str,
+    silence: &str,
     io: impl Future<Output = std::io::Result<T>>,
 ) -> anyhow::Result<T> {
     match tokio::time::timeout(frame_timeout, io).await {
         Ok(result) => Ok(result?),
         Err(_) => anyhow::bail!(
-            "component worker did not {verb} a frame for request {id} within {}s",
+            "component worker {silence} for request {id} within {}s",
             frame_timeout.as_secs()
         ),
     }
