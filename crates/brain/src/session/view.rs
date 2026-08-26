@@ -112,6 +112,27 @@ pub fn build_prefix(
     Ok((sealed, dialect))
 }
 
+/// A child session as the `children` capability addresses it. Five of that contract's seven
+/// functions take a `child-id`, but the session projection names the identity `id`, beside the
+/// caller's own `name` — so the handle a caller must supply was never a key it was given.
+pub fn child_doc(child: &session::Session) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(child)?;
+    let object = value.as_object_mut().ok_or_else(|| {
+        BrainError::Journal("a child session did not project as an object".into())
+    })?;
+    let id = object
+        .get("id")
+        .cloned()
+        .ok_or_else(|| BrainError::Journal("a child session projection has no id".into()))?;
+    object.insert("child_id".into(), id);
+    Ok(value)
+}
+
+/// The same handle, for a page of children.
+pub fn child_docs(children: &[session::Session]) -> Result<Vec<serde_json::Value>> {
+    children.iter().map(child_doc).collect()
+}
+
 /// Builds the contract Session document from the head. A sealed value that no longer parses
 /// as its contract type is journal corruption and errors loudly, naming the field — the REST
 /// read never substitutes placeholders or omits sealed identity.
