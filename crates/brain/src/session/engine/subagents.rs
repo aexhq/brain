@@ -38,7 +38,7 @@ impl Brain {
                         Some(operation_id),
                     )
                     .await?;
-                    Ok(serde_json::to_value(child)?)
+                    child_doc(&child)
                 }
                 Some("send_message" | "follow_up") => {
                     let child_id = required_child_string(&input, "child_id")?;
@@ -64,9 +64,7 @@ impl Brain {
                 }
                 Some("peek") => {
                     let child_id = required_child_string(&input, "child_id")?;
-                    Ok(serde_json::to_value(
-                        self.get_child(parent_id, &child_id).await?,
-                    )?)
+                    child_doc(&self.get_child(parent_id, &child_id).await?)
                 }
                 Some("wait") => {
                     let child_id = required_child_string(&input, "child_id")?;
@@ -81,7 +79,7 @@ impl Brain {
                         result = wait => result?,
                         _ = cancel.cancelled() => return Err(BrainError::Cancelled),
                     };
-                    Ok(serde_json::to_value(child)?)
+                    child_doc(&child)
                 }
                 Some("list_children") => {
                     let cursor = input.get("cursor").and_then(serde_json::Value::as_str);
@@ -94,18 +92,18 @@ impl Brain {
                     Ok(serde_json::json!({
                         "has_more": next_cursor.is_some(),
                         "next_cursor": next_cursor,
-                        "data": data,
+                        "data": child_docs(&data)?,
                     }))
                 }
                 Some("interrupt_agent") => {
                     let child_id = required_child_string(&input, "child_id")?;
                     self.get_child(parent_id, &child_id).await?;
-                    Ok(serde_json::to_value(self.cancel(&child_id).await?)?)
+                    child_doc(&self.cancel(&child_id).await?)
                 }
                 Some("end_agent") => {
                     let child_id = required_child_string(&input, "child_id")?;
                     self.get_child(parent_id, &child_id).await?;
-                    Ok(serde_json::to_value(self.end(&child_id).await?)?)
+                    child_doc(&self.end(&child_id).await?)
                 }
                 Some(other) => Err(BrainError::Invalid(format!(
                     "unknown subagents action {other:?}"
