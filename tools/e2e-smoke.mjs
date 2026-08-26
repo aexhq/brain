@@ -154,7 +154,13 @@ const startBrain = async (executorUrl) => {
       BRAIN_LISTEN: `127.0.0.1:${port}`,
       BRAIN_API_TOKEN: OPERATOR_TOKEN,
       BRAIN_COMPONENT_HOST_BIN: binary("brain-component-host"),
-      BRAIN_COMPONENT_WORKERS: "2",
+      // One worker per host: a single sequential session never needs two, and a second worker
+      // would compile and instantiate the same component again on a small CI runner.
+      BRAIN_COMPONENT_WORKERS: "1",
+      // The deadline exists for a network provider. Here the model is a Wasm component whose
+      // first activation carries engine work, which alone exceeds the 30-second default on a
+      // two-vCPU runner; the job timeout is what bounds a genuinely wedged turn.
+      BRAIN_PROVIDER_HEADER_TIMEOUT_MS: "300000",
       BRAIN_EXTERNAL_TOOL_EXECUTOR_URL: executorUrl,
       BRAIN_EXTERNAL_TOOL_EXECUTOR_TOKEN: EXECUTOR_TOKEN,
       BRAIN_EXTERNAL_TOOL_POLICIES_JSON: JSON.stringify([{
@@ -244,7 +250,7 @@ try {
     const refused = await client.sessions
       .create(composition(installed, UNSEALED_CAPABILITY, { finalText: ANSWER }))
       .then(() => undefined, (error) => error);
-    assert.ok(refused instanceof brain.BrainError, `an unsealed capability was admitted`);
+    assert.ok(refused instanceof brain.BrainError, "an unsealed capability was admitted");
     assert.equal(refused.status, 400);
     assert.equal(refused.code, "invalid_request");
   } finally {

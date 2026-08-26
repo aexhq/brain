@@ -171,6 +171,9 @@ jobs:
   # this machinery surfaces on a pull request instead of halfway through a release.
   e2e-smoke:
     runs-on: ubuntu-24.04
+    # A turn that never terminates is exactly what this gate looks for; bound it like the
+    # publish workflow does instead of holding a runner for the six-hour default.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - name: Configure the shared component compilation cache
