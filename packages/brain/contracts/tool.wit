@@ -56,7 +56,6 @@ interface environment {
   invoke: func(
     operation-id: string,
     descriptor-json: string,
-    bundle: option<list<u8>>,
     input-json: string,
     deadline-at-ms: u64,
   ) -> result<string, extension-error>;

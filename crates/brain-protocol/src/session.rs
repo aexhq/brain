@@ -972,7 +972,7 @@ impl<'de> ::serde::Deserialize<'de> for ContextForkSourceProjectionDigest {
 #[doc = "      }"]
 #[doc = "    },"]
 #[doc = "    \"tool_artifact_layers\": {"]
-#[doc = "      \"description\": \"Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles.\","]
+#[doc = "      \"description\": \"Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles or by a component Tool bundle_digest.\","]
 #[doc = "      \"type\": \"array\","]
 #[doc = "      \"items\": {"]
 #[doc = "        \"$ref\": \"#/$defs/ToolArtifactLayer\""]
@@ -1033,7 +1033,7 @@ pub struct CreateSessionRequest {
         CreateSessionRequestSecretsKey,
         CreateSessionRequestSecretsValue,
     >,
-    #[doc = "Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles."]
+    #[doc = "Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles or by a component Tool bundle_digest."]
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub tool_artifact_layers: ::std::vec::Vec<ToolArtifactLayer>,
     #[doc = "Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal."]
@@ -7642,6 +7642,10 @@ impl<'de> ::serde::Deserialize<'de> for ToolDefinitionDescription {
 #[doc = "        \"world\""]
 #[doc = "      ],"]
 #[doc = "      \"properties\": {"]
+#[doc = "        \"bundle_digest\": {"]
+#[doc = "          \"description\": \"Create-time-only tool_artifact_layers entry Brain hands to the bound Environment on every environment import call. Requires the environment grant.\","]
+#[doc = "          \"$ref\": \"#/$defs/Sha256Hex\""]
+#[doc = "        },"]
 #[doc = "        \"component_digest\": {"]
 #[doc = "          \"$ref\": \"#/$defs/Sha256Hex\""]
 #[doc = "        },"]
@@ -7738,6 +7742,9 @@ pub enum ToolExecutor {
     #[doc = "A precompiled Tool component binding. Imports are denied unless named in grants."]
     #[serde(rename = "component")]
     Component {
+        #[doc = "Create-time-only tool_artifact_layers entry Brain hands to the bound Environment on every environment import call. Requires the environment grant."]
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        bundle_digest: ::std::option::Option<Sha256Hex>,
         component_digest: Sha256Hex,
         #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
         config: ::serde_json::Map<::std::string::String, ::serde_json::Value>,

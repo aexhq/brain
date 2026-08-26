@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import * as z from "zod";
 
 import { buildToolModule, type PreparedBundle } from "./builder.js";
+import { MAX_TOOL_BUNDLE_BYTES } from "./limits.js";
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -266,7 +267,6 @@ export interface CompiledTools {
   readonly clientRegistrations: readonly ClientRegistration[];
 }
 
-export const MAX_TOOL_BUNDLE_BYTES = 4 * 1024 * 1024;
 export const MAX_SESSION_BUNDLE_BYTES = 16 * 1024 * 1024;
 const managedBundleCache = new WeakMap<Tool, Promise<{ checksum: string; bundle: PreparedBundle }>>();
 

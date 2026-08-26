@@ -303,6 +303,10 @@
             "environment": {
               "$ref": "#/$defs/EnvironmentName",
               "description": "Logical Environment available to the environment import. Required when that grant is present."
+            },
+            "bundle_digest": {
+              "$ref": "#/$defs/Sha256Hex",
+              "description": "Create-time-only tool_artifact_layers entry Brain hands to the bound Environment on every environment import call. Requires the environment grant."
             }
           }
         },
@@ -1131,7 +1135,7 @@
           "items": {
             "$ref": "#/$defs/ToolArtifactLayer"
           },
-          "description": "Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles."
+          "description": "Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles or by a component Tool bundle_digest."
         },
         "secrets": {
           "type": "object",

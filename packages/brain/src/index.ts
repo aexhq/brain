@@ -59,6 +59,8 @@ export {
   MAX_MANAGED_TOOL_INPUT_BYTES,
   MAX_MESSAGE_REQUEST_BYTES,
   MAX_PUBLIC_EVENT_BYTES,
+  MAX_SEALED_CONFIG_BYTES,
+  MAX_TOOL_BUNDLE_BYTES,
   MAX_TOOL_TERMINAL_INLINE_BYTES,
 } from "./limits.js";
 export type {
@@ -71,7 +73,6 @@ export type {
 } from "./customer.js";
 export {
   MAX_SESSION_BUNDLE_BYTES,
-  MAX_TOOL_BUNDLE_BYTES,
   compileTools,
   tool,
 } from "./tools.js";

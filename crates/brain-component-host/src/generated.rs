@@ -7,7 +7,7 @@ pub const AGENTLOOP_WIT: &str = include_str!("../../../contracts/agentloop/v1/ag
 
 pub const TOOL_WORLD: &str = "aex:tool/tool@1.0.0";
 pub const TOOL_CONTRACT_DIGEST: &str =
-    "9689fd1b51856654d87fe03cb77eaeb4d87a8fee36e9814c03cfc3695765a9d2";
+    "c393f26385d3e17632749313de01b15a827700eab592913a591b01795a5e99ff";
 pub const TOOL_WIT: &str = include_str!("../../../contracts/tool/v1/tool.wit");
 
 pub const ENVIRONMENT_WORLD: &str = "aex:environment/environment@1.0.0";

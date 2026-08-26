@@ -136,6 +136,10 @@ export type ToolExecutor =
        * Logical Environment available to the environment import. Required when that grant is present.
        */
       environment?: string;
+      /**
+       * Create-time-only tool_artifact_layers entry Brain hands to the bound Environment on every environment import call. Requires the environment grant.
+       */
+      bundle_digest?: string;
     }
   | {
       kind: "environment";
@@ -1037,7 +1041,7 @@ export interface CreateSessionRequest {
    */
   tool_bundles?: ToolBundle[];
   /**
-   * Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles.
+   * Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles or by a component Tool bundle_digest.
    *
    * @maxItems 256
    */

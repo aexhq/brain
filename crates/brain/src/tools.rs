@@ -42,17 +42,23 @@ pub trait ToolCapabilityHandler: Send + Sync {
     ) -> std::result::Result<Value, ToolCapabilityFailure>;
 }
 
+/// One create-time component Tool binding awaiting admission. `bundle` is the immutable
+/// Environment payload named by the binding's `bundle_digest`, already verified against its
+/// supplied artifact layer.
+pub struct ComponentToolAdmission<'a> {
+    pub component_digest: &'a str,
+    pub world: &'a str,
+    pub component: &'a [u8],
+    pub config: &'a serde_json::Map<String, Value>,
+    pub grants: &'a [String],
+    pub environment: Option<&'a str>,
+    pub bundle: Option<(&'a str, &'a [u8])>,
+}
+
 #[async_trait::async_trait]
 pub trait ToolRegistry: Send + Sync {
-    fn admit(
-        &self,
-        component_digest: &str,
-        world: &str,
-        component: &[u8],
-        config: &serde_json::Map<String, Value>,
-        grants: &[String],
-        environment: Option<&str>,
-    ) -> Result<crate::journal::ToolSelectorDoc>;
+    fn admit(&self, request: ComponentToolAdmission<'_>)
+    -> Result<crate::journal::ToolSelectorDoc>;
 
     async fn invoke(
         &self,
@@ -86,6 +92,7 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
     // can no longer deserialize as another; no per-arm kind re-checks remain.
     let (route, network_needs) = match &tool.executor {
         ToolExecutor::Component {
+            bundle_digest,
             component_digest,
             config,
             environment,
@@ -99,6 +106,11 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
                     "tool {name} must declare environment exactly when its environment grant is present"
                 )));
             }
+            if bundle_digest.is_some() && !has_environment {
+                return Err(BrainError::Invalid(format!(
+                    "tool {name} declares an Environment bundle without the environment grant"
+                )));
+            }
             (
                 ToolRoute::Component(crate::journal::ToolSelectorDoc {
                     component_digest: component_digest.to_string(),
@@ -109,6 +121,9 @@ fn resolve_one(tool: &ToolConfig) -> Result<ToolDecl> {
                     environment: environment
                         .as_ref()
                         .map(|environment| environment.as_str().to_owned()),
+                    bundle_digest: bundle_digest
+                        .as_ref()
+                        .map(|digest| digest.as_str().to_owned()),
                 }),
                 Vec::new(),
             )

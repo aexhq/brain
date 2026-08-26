@@ -4,10 +4,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use brain::adapter::CallOutcome;
 use brain::journal::ToolSelectorDoc;
 use brain::tools::{
-    ComponentToolRequest, TOOL_WORLD, ToolCapabilityFailure, ToolCapabilityHandler, ToolRegistry,
+    ComponentToolAdmission, ComponentToolRequest, TOOL_WORLD, ToolCapabilityFailure,
+    ToolCapabilityHandler, ToolRegistry,
 };
 use brain::{BrainError, Result};
 use brain_component_host::{
@@ -44,8 +46,13 @@ impl ComponentToolRegistry {
         self.store_dir.join(format!("{digest}.wasm"))
     }
 
-    fn store(&self, digest: &str, bytes: &[u8]) -> Result<()> {
-        let target = self.path(digest);
+    /// Immutable Environment bundle custody, content-addressed beside the component that names it.
+    /// Only the digest is sealed, so this is the one place the executed bytes can come from.
+    fn bundle_path(&self, digest: &str) -> PathBuf {
+        self.store_dir.join(format!("{digest}.bundle"))
+    }
+
+    fn store(&self, target: PathBuf, digest: &str, bytes: &[u8]) -> Result<()> {
         if target.exists() {
             let existing = std::fs::read(&target)
                 .map_err(|error| BrainError::Protocol(format!("Tool store read: {error}")))?;
@@ -69,15 +76,16 @@ impl ComponentToolRegistry {
 
 #[async_trait]
 impl ToolRegistry for ComponentToolRegistry {
-    fn admit(
-        &self,
-        component_digest: &str,
-        world: &str,
-        component: &[u8],
-        config: &serde_json::Map<String, Value>,
-        grants: &[String],
-        environment: Option<&str>,
-    ) -> Result<ToolSelectorDoc> {
+    fn admit(&self, request: ComponentToolAdmission<'_>) -> Result<ToolSelectorDoc> {
+        let ComponentToolAdmission {
+            component_digest,
+            world,
+            component,
+            config,
+            grants,
+            environment,
+            bundle,
+        } = request;
         if world != TOOL_WORLD {
             return Err(BrainError::Invalid(format!(
                 "Tool world {world:?} is not supported; expected {TOOL_WORLD:?}"
@@ -94,7 +102,15 @@ impl ToolRegistry for ComponentToolRegistry {
                     .into(),
             ));
         }
-        self.store(component_digest, component)?;
+        if let Some((digest, bytes)) = bundle {
+            if bytes.is_empty() || brain_component_host::component_digest(bytes) != digest {
+                return Err(BrainError::Invalid(
+                    "Tool Environment bundle bytes do not match their declared digest".into(),
+                ));
+            }
+            self.store(self.bundle_path(digest), digest, bytes)?;
+        }
+        self.store(self.path(component_digest), component_digest, component)?;
         Ok(ToolSelectorDoc {
             component_digest: component_digest.into(),
             component_bytes: component.len() as u64,
@@ -102,6 +118,7 @@ impl ToolRegistry for ComponentToolRegistry {
             config: config.clone(),
             grants: grants.to_vec(),
             environment: environment.map(str::to_owned),
+            bundle_digest: bundle.map(|(digest, _)| digest.to_owned()),
         })
     }
 
@@ -124,12 +141,31 @@ impl ToolRegistry for ComponentToolRegistry {
                 selector.component_digest
             )));
         }
+        let bundle = match &selector.bundle_digest {
+            None => None,
+            Some(digest) => {
+                let bytes = std::fs::read(self.bundle_path(digest)).map_err(|error| {
+                    BrainError::Journal(format!(
+                        "sealed Tool Environment bundle {digest} is unreadable in this Brain store: {error}"
+                    ))
+                })?;
+                if component_digest(&bytes) != digest.as_str() {
+                    return Err(BrainError::Journal(format!(
+                        "stored Tool Environment bundle {digest} has different bytes"
+                    )));
+                }
+                Some(base64::engine::general_purpose::STANDARD.encode(&bytes))
+            }
+        };
         let binding = self
             .router
             .bind(
                 "tool",
                 request.call_id.clone(),
-                Arc::new(ComponentCapabilities(capabilities)),
+                Arc::new(ComponentCapabilities {
+                    handler: capabilities,
+                    bundle_base64: bundle,
+                }),
             )
             .map_err(|error| BrainError::Transport(error.to_string()))?;
         let started = std::time::Instant::now();
@@ -178,13 +214,25 @@ impl ToolRegistry for ComponentToolRegistry {
     }
 }
 
-struct ComponentCapabilities(Arc<dyn ToolCapabilityHandler>);
+struct ComponentCapabilities {
+    handler: Arc<dyn ToolCapabilityHandler>,
+    bundle_base64: Option<String>,
+}
 
 #[async_trait]
 impl CapabilityHandler for ComponentCapabilities {
     async fn call(&self, call: CapabilityCall) -> std::result::Result<Value, CapabilityFailure> {
-        self.0
-            .call(&call.capability, &call.operation_id, call.request)
+        let mut request = call.request;
+        // The executed bundle comes from the seal, never from the guest, so a Tool component
+        // cannot run code that was not admitted at create.
+        if call.capability == "tool.environment.invoke"
+            && let Some(object) = request.as_object_mut()
+            && let Some(bundle) = &self.bundle_base64
+        {
+            object.insert("bundle_base64".into(), Value::String(bundle.clone()));
+        }
+        self.handler
+            .call(&call.capability, &call.operation_id, request)
             .await
             .map_err(|failure: ToolCapabilityFailure| CapabilityFailure {
                 code: failure.code,

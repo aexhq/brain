@@ -3,7 +3,7 @@ export function resolve(request) {
 }
 
 export function submit(_bindingJson, operation) {
-  return { providerOperationId: operation.operationId };
+  return { providerOperationId: `${operation.operationId}:${operation.bundle?.length ?? 0}` };
 }
 
 export function observe(_bindingJson, providerOperationId, cursor) {
