@@ -29,19 +29,19 @@ Brain is not an agent, but you can easily build an agent with it. This allow you
 ## TypeScript client
 
 ```sh
-npm install @aexhq/brain @aexhq/loop-pi @aexhq/model-openai
+npm install @aexhq/brain @aexhq/loop-pi
 ```
 
 ```ts
 import { Brain } from "@aexhq/brain";
 import { pi } from "@aexhq/loop-pi";
-import { openai } from "@aexhq/model-openai";
 
 const brain = new Brain({ token: process.env.BRAIN_TOKEN! });
 const session = await brain.sessions.create({
   model: {
-    component: openai(),
-    name: process.env.MODEL_NAME!,
+    dialect: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    name: "gpt-4.1-nano",
     apiKey: process.env.OPENAI_API_KEY!,
   },
   agentloop: pi(),
@@ -52,6 +52,11 @@ console.log(await session.send("Echo hello."));
 
 Omitting `tools` exposes no model tools. Components are ordinary immutable package values; the
 official packages use the same public contract as third-party components.
+
+Brain speaks two model dialects natively — the OpenAI and Anthropic request and response shapes —
+and knows nothing else about providers. A session wires the dialect and the endpoint that speaks
+it, so any endpoint of either shape works without a component, a registry or a catalog. Which
+provider names a platform resolves to an endpoint is that platform's policy, not Brain's.
 
 ## Components
 

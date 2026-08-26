@@ -22,8 +22,9 @@ export default echo;
 const brain = new Brain({ token: process.env.BRAIN_TOKEN! });
 const session = await brain.sessions.create({
   model: {
-    provider: "openai",
-    name: process.env.MODEL_NAME!,
+    dialect: "openai",
+    baseUrl: "https://api.openai.com/v1",
+    name: "gpt-4.1-nano",
     apiKey: process.env.OPENAI_API_KEY!,
   },
   tools: [echo],
@@ -31,6 +32,13 @@ const session = await brain.sessions.create({
 
 console.log(await session.send("Echo hello."));
 ```
+
+`model` is the whole model contract: the dialect the endpoint speaks, that endpoint, the
+credential and the model id. Brain has no notion of a provider, so any endpoint speaking the
+OpenAI or Anthropic shape works by pointing `baseUrl` at it — including a gateway, a proxy or a
+local server. `baseUrl` is the full API root, version segment included, and Brain appends only the
+operation path. `typed()` is exported here for component authors: it makes an export report its
+declared `extension-error` instead of trapping.
 
 `.server(import.meta.url)` bundles the function for Node 22 execution in the session Environment. Choose
 `.client()` with a stable `Brain({ client: { id } })` identity when the callback must remain in the

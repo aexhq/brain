@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { Brain, component } from "../dist/index.js";
 
-test("session creation uploads shared component bytes once and seals independent bindings", async () => {
+test("session creation wires the model dialect and uploads only component bytes", async () => {
   let body;
   const client = new Brain({
     token: "test-token",
@@ -26,9 +26,8 @@ test("session creation uploads shared component bytes once and seals independent
         shape: "1gb",
         storage: { session_storage_bytes: 0, upload_reserved_bytes: 0 },
         model: {
-          component_digest: "0".repeat(64),
-          world: "aex:model/model@1.0.0",
-          provider: "fixture",
+          dialect: "anthropic",
+          base_url: "https://api.anthropic.com/v1",
           name: "fixture-model",
           context_window_tokens: 32768,
         },
@@ -39,17 +38,18 @@ test("session creation uploads shared component bytes once and seals independent
 
   await client.sessions.create({
     model: {
-      component: component("model", bytes, { endpoint: "fixture" }, { metadata: { name: "fixture" } }),
+      dialect: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
       name: "fixture-model",
       apiKey: "secret",
     },
     agentloop: component("agentloop", bytes, { policy: "sequential" }),
   });
 
-  assert.equal(body.component_artifacts.length, 1);
-  assert.equal(body.model.component_digest, body.agentloop.component_digest);
-  assert.equal(body.model.provider, "fixture");
-  assert.deepEqual(body.model.config, { endpoint: "fixture" });
+  assert.equal(body.component_artifacts.length, 1, "only the Agentloop uploads bytes");
+  assert.equal(body.model.dialect, "anthropic");
+  assert.equal(body.model.base_url, "https://api.anthropic.com/v1");
+  assert.equal(body.model.component_digest, undefined, "a session binds no Model component");
   assert.deepEqual(body.agentloop.config, { policy: "sequential" });
 });
 
@@ -75,9 +75,8 @@ test("session creation binds ordinary Tool and Environment component values", as
         shape: "1gb",
         storage: { session_storage_bytes: 0, upload_reserved_bytes: 0 },
         model: {
-          component_digest: "0".repeat(64),
-          world: "aex:model/model@1.0.0",
-          provider: "fixture",
+          dialect: "anthropic",
+          base_url: "https://api.anthropic.com/v1",
           name: "fixture-model",
           context_window_tokens: 32768,
         },
@@ -94,7 +93,8 @@ test("session creation binds ordinary Tool and Environment component values", as
 
   await client.sessions.create({
     model: {
-      component: component("model", bytes, {}, { metadata: { name: "fixture" } }),
+      dialect: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
       name: "fixture-model",
       apiKey: "secret",
     },
@@ -108,7 +108,7 @@ test("session creation binds ordinary Tool and Environment component values", as
     definition,
     executor: {
       kind: "component",
-      component_digest: body.model.component_digest,
+      component_digest: body.agentloop.component_digest,
       world: "aex:tool/tool@1.0.0",
       config: { definition, mode: "echo" },
       grants: ["environment"],
@@ -116,7 +116,7 @@ test("session creation binds ordinary Tool and Environment component values", as
     },
   }]);
   assert.deepEqual(body.environments.workspace, {
-    component_digest: body.model.component_digest,
+    component_digest: body.agentloop.component_digest,
     world: "aex:environment/environment@1.0.0",
     config: { provider: "fixture" },
   });
@@ -144,9 +144,8 @@ test("a Tool Environment bundle rides a content-addressed layer, never the seale
         shape: "1gb",
         storage: { session_storage_bytes: 0, upload_reserved_bytes: 0 },
         model: {
-          component_digest: "0".repeat(64),
-          world: "aex:model/model@1.0.0",
-          provider: "fixture",
+          dialect: "anthropic",
+          base_url: "https://api.anthropic.com/v1",
           name: "fixture-model",
           context_window_tokens: 32768,
         },
@@ -165,7 +164,8 @@ test("a Tool Environment bundle rides a content-addressed layer, never the seale
 
   await client.sessions.create({
     model: {
-      component: component("model", bytes, {}, { metadata: { name: "fixture" } }),
+      dialect: "anthropic",
+      baseUrl: "https://api.anthropic.com/v1",
       name: "fixture-model",
       apiKey: "secret",
     },

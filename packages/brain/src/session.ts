@@ -26,14 +26,18 @@ import { SessionChildren, SessionSandbox, SessionStorage } from "./resources.js"
 
 export type SessionInput = string;
 
+/** The request and response shapes Brain speaks. Any endpoint speaking one of them works. */
+export type ModelDialect = "openai" | "anthropic";
+
 export interface ModelOptions {
-  component: ComponentExtension<"model">;
-  /** Usage-projection provenance. Defaults to the component's metadata name. */
-  provider?: string;
+  dialect: ModelDialect;
+  /** The endpoint speaking that dialect, up to and including any version segment. */
+  baseUrl: string;
   name: string;
   apiKey: string;
-  baseUrl?: string;
   maxOutputTokens?: number;
+  /** Immutable context capacity used for admission and compaction. */
+  contextWindowTokens?: number;
   temperature?: number;
   reasoningEffort?: "low" | "medium" | "high";
 }
@@ -95,11 +99,10 @@ export interface SessionList {
 }
 
 export interface ModelSummary {
-  provider: string;
-  componentDigest: string;
-  world: string;
+  dialect: ModelDialect;
+  baseUrl: string;
   name: string;
-  baseUrl?: string;
+  contextWindowTokens: number;
 }
 
 export interface SessionSummary {
@@ -133,22 +136,16 @@ export class Sessions {
     const compiledTools = await compileTools(legacyTools);
     const environments = Object.entries(options.environments ?? {});
     const components = await prepareComponents([
-      options.model.component,
       options.agentloop,
       ...componentTools,
       ...environments.map(([, environment]) => environment),
     ]);
-    const modelComponent = components.bindings[0];
-    const agentloop = components.bindings[1];
-    if (modelComponent === undefined || agentloop === undefined) {
-      throw new TypeError("Session Model and Agentloop components are required");
+    const agentloop = components.bindings[0];
+    if (agentloop === undefined) {
+      throw new TypeError("A session requires an Agentloop component");
     }
-    const provider = options.model.provider ?? options.model.component.metadata.name;
-    if (provider === undefined) {
-      throw new TypeError("Model provider provenance requires model.provider or component metadata.name");
-    }
-    const componentToolBindings = components.bindings.slice(2, 2 + componentTools.length);
-    const environmentBindings = components.bindings.slice(2 + componentTools.length);
+    const componentToolBindings = components.bindings.slice(1, 1 + componentTools.length);
+    const environmentBindings = components.bindings.slice(1 + componentTools.length);
     let legacyIndex = 0;
     let componentIndex = 0;
     const toolItems = selections.map((selection) => {
@@ -185,16 +182,16 @@ export class Sessions {
     await this.#ensureCustomerEnvironment(compiledTools.clientRegistrations, request.signal);
     const body = {
       model: {
-        component_digest: modelComponent.component_digest,
-        world: modelComponent.world,
-        config: modelComponent.config,
-        provider,
+        dialect: options.model.dialect,
+        base_url: options.model.baseUrl,
         name: options.model.name,
         api_key: options.model.apiKey,
-        ...(options.model.baseUrl === undefined ? {} : { base_url: options.model.baseUrl }),
         ...(options.model.maxOutputTokens === undefined
           ? {}
           : { max_output_tokens: options.model.maxOutputTokens }),
+        ...(options.model.contextWindowTokens === undefined
+          ? {}
+          : { context_window_tokens: options.model.contextWindowTokens }),
         ...(options.model.temperature === undefined ? {} : { temperature: options.model.temperature }),
         ...(options.model.reasoningEffort === undefined
           ? {}
@@ -401,11 +398,10 @@ export class Session implements SessionSummary {
 
   get model(): ModelSummary {
     return {
-      provider: this.#data.model.provider,
-      componentDigest: this.#data.model.component_digest,
-      world: this.#data.model.world,
+      dialect: this.#data.model.dialect,
+      baseUrl: this.#data.model.base_url,
       name: this.#data.model.name,
-      ...(this.#data.model.base_url === undefined ? {} : { baseUrl: this.#data.model.base_url }),
+      contextWindowTokens: this.#data.model.context_window_tokens,
     };
   }
 

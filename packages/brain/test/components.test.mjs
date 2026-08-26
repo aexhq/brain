@@ -45,14 +45,14 @@ test("Tool context grants are explicit, unique, and Tool-only", () => {
     /repeated/u,
   );
   assert.throws(
-    () => component("model", new Uint8Array([1]), {}, { grants: ["storage"] }),
+    () => component("environment", new Uint8Array([1]), {}, { grants: ["storage"] }),
     /cannot request/u,
   );
 });
 
 test("component config rejects values that cannot cross the JSON boundary", () => {
-  assert.throws(() => component("model", new Uint8Array([1]), { value: 1n }), /JSON serializable/u);
-  assert.throws(() => component("model", new Uint8Array([1]), undefined), /JSON serializable/u);
+  assert.throws(() => component("environment", new Uint8Array([1]), { value: 1n }), /JSON serializable/u);
+  assert.throws(() => component("environment", new Uint8Array([1]), undefined), /JSON serializable/u);
 });
 
 test("component preparation deduplicates artifacts without merging bindings", async () => {

@@ -13,6 +13,7 @@ export { Session, Sessions } from "./session.js";
 export type {
   CreateSessionOptions,
   ListSessionsOptions,
+  ModelDialect,
   ModelOptions,
   ModelSummary,
   ComponentToolConfig,
@@ -99,6 +100,7 @@ export type { PreparedBundle } from "./builder.js";
 export type * as session from "./generated/session.js";
 export * from "./generated/components.js";
 export * from "./components.js";
+export { typed } from "./guest.js";
 
 const DEFAULT_BRAIN_URL = "http://127.0.0.1:3210";
 
