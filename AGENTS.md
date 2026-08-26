@@ -15,9 +15,11 @@
 - `crates/brain-server/tests/standalone_e2e.rs` covers real HTTP, finite SSE, durable SQLite
   journal/storage reopen, and real Node managed-tool subprocesses with a scripted model provider.
   Hosted infrastructure and MicroVM gates belong downstream.
-- `tools/e2e-smoke.mjs` is the release gate for the published pair: it drives a composed session
-  through the installed `@aexhq/brain` archive and the built server. The tagged publish workflow
-  runs it against the exact staged versions between `stage` and `promote`, and promotion fails
-  closed without that evidence.
+- `tools/e2e-smoke.mjs` is the release gate for the published pair: through the installed
+  `@aexhq/brain` archive and the built server it drives a hosted engine capability and the full
+  four-component composition, a Tool running its sealed bundle in a bound component Environment,
+  then ends past a release the Environment refuses. The tagged publish workflow runs it against
+  the exact staged versions between `stage` and `promote`, and promotion fails closed without
+  that evidence.
 - Fail fast, keep comments self-contained, and use plain English.
 - Commit style: `area: imperative summary`.
