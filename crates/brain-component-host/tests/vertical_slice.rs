@@ -530,6 +530,11 @@ async fn a_nested_request_runs_while_the_parent_is_parked_in_its_own_ctx_op() {
     .await
     .unwrap();
     capabilities.pool.set(Arc::downgrade(&pool)).ok();
+    // Compile the component before the nested call is timed: this test is about the parent not
+    // blocking its child, not about how long a cold cranelift compile takes.
+    pool.call(agentloop_activation("ses_warm", r#"{"track":true}"#))
+        .await
+        .expect("warm the component");
     let returned = pool
         .call(agentloop_activation(
             "ses_parent",
