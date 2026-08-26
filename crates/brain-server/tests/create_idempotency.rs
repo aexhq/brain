@@ -19,9 +19,8 @@ fn component_artifacts() -> Value {
 
 fn model_config(name: &str) -> Value {
     json!({
-        "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-        "world": "aex:model/model@1.0.0",
-        "provider": "anthropic",
+        "dialect": "anthropic",
+        "base_url": "https://api.anthropic.com/v1",
         "name": name,
         "api_key": "sk-fake"
     })

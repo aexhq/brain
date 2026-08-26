@@ -1,6 +1,7 @@
-//! Canonical local-distribution gate: real HTTP and finite SSE over durable SQLite/storage, with
-//! only the provider scripted. Managed Tool code runs in the actual Node subprocess runner. Two
-//! interleaved sessions prove workspace, journal, provider-key, and managed-secret isolation.
+//! Canonical local-distribution gate: real HTTP and finite SSE over durable SQLite/storage,
+//! with the model endpoint scripted but spoken to over the wire in both dialects Brain supports.
+//! Managed Tool code runs in the actual Node subprocess runner. Two interleaved sessions prove
+//! workspace, journal, provider-key, and managed-secret isolation.
 
 use base64::Engine as _;
 use brain::session::BrainConfig;
@@ -66,7 +67,8 @@ export default {{
 }
 
 fn create_body(
-    provider: &str,
+    dialect: &str,
+    model_base_url: &str,
     model: &str,
     api_key: &str,
     managed_secret: &str,
@@ -78,13 +80,7 @@ fn create_body(
             .join("../brain-component-host/guest/dist/agentloop.component.wasm"),
     )
     .expect("run npm run build:components before the standalone gate");
-    let model_component = std::fs::read(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../brain-component-host/guest/dist/model.component.wasm"),
-    )
-    .expect("run npm run build:components before the standalone gate");
     let loop_digest = hex::encode(Sha256::digest(&loop_component));
-    let model_digest = hex::encode(Sha256::digest(&model_component));
     let manifest = json!({
         "profile":"computer/v1",
         "target":"linux-amd64",
@@ -105,24 +101,13 @@ fn create_body(
                 "component_digest": loop_digest,
                 "component_base64": base64::engine::general_purpose::STANDARD.encode(&loop_component),
                 "bytes": loop_component.len(),
-            },
-            {
-                "component_digest": model_digest,
-                "component_base64": base64::engine::general_purpose::STANDARD.encode(&model_component),
-                "bytes": model_component.len(),
             }
         ],
         "model": {
-            "component_digest": model_digest,
-            "world": "aex:model/model@1.0.0",
-            "config": {
-                "toolName": "workspace_probe",
-                "toolInput": {"value": if provider == "anthropic" { ALPHA_VALUE } else { BETA_VALUE }},
-                "finalText": if provider == "anthropic" { "ALPHA_PUBLIC_RESULT" } else { "BETA_PUBLIC_RESULT" },
-            },
-            "provider":provider,
-            "name":model,
-            "api_key":api_key
+            "dialect": dialect,
+            "base_url": model_base_url,
+            "name": model,
+            "api_key": api_key
         },
         "agentloop": {
             "component_digest": loop_digest,
@@ -387,6 +372,108 @@ fn assert_no_plaintext_secrets(root: &Path) {
     }
 }
 
+/// A scripted model endpoint speaking both dialects over real HTTP and finite SSE. The first
+/// round asks for the workspace tool; once the transcript carries that tool's result, the second
+/// round answers in text. It also asserts what every round must carry: the session's own
+/// credential, the sealed system prompt, and no null sampling fields.
+async fn scripted_model(request: axum::extract::Request) -> axum::response::Response {
+    use axum::body::Body;
+    use axum::http::{HeaderValue, StatusCode, header};
+
+    let anthropic = request.uri().path().ends_with("/messages");
+    let credential = if anthropic {
+        request
+            .headers()
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned()
+    } else {
+        request
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .trim_start_matches("Bearer ")
+            .to_owned()
+    };
+    assert!(
+        credential == ALPHA_KEY || credential == BETA_KEY,
+        "each session must present its own sealed credential, got {credential:?}"
+    );
+    let body = axum::body::to_bytes(request.into_body(), 8 * 1024 * 1024)
+        .await
+        .expect("model request body");
+    let body: Value = serde_json::from_slice(&body).expect("model request is JSON");
+    for absent in ["temperature", "reasoning_effort", "stop", "stop_sequences"] {
+        assert!(
+            body.get(absent).is_none(),
+            "an unset sampling field must stay absent, found {absent} in {body}"
+        );
+    }
+    let transcript = body.to_string();
+    let value = if transcript.contains(ALPHA_VALUE) {
+        ALPHA_VALUE
+    } else {
+        BETA_VALUE
+    };
+    let final_text = if value == ALPHA_VALUE {
+        "ALPHA_PUBLIC_RESULT"
+    } else {
+        "BETA_PUBLIC_RESULT"
+    };
+    let answered = transcript.contains("tool_result") || transcript.contains("\"role\":\"tool\"");
+
+    let frames = if anthropic {
+        assert!(
+            !body["system"].is_null(),
+            "the sealed system prompt must reach the request: {body}"
+        );
+        if answered {
+            format!(
+                "event: message_start\ndata: {}\n\nevent: content_block_delta\ndata: {}\n\nevent: message_delta\ndata: {}\n\n",
+                json!({"type":"message_start","message":{"usage":{"input_tokens":11}}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":final_text}}),
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}})
+            )
+        } else {
+            format!(
+                "event: message_start\ndata: {}\n\nevent: content_block_start\ndata: {}\n\nevent: content_block_delta\ndata: {}\n\nevent: message_delta\ndata: {}\n\n",
+                json!({"type":"message_start","message":{"usage":{"input_tokens":11}}}),
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-1","name":"workspace_probe"}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":json!({"value":value}).to_string()}}),
+                json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}})
+            )
+        }
+    } else {
+        assert_eq!(
+            body["messages"][0]["role"], "system",
+            "the sealed system prompt must lead the request: {body}"
+        );
+        if answered {
+            format!(
+                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                json!({"choices":[{"delta":{"content":final_text}}]}),
+                json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7}})
+            )
+        } else {
+            format!(
+                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"workspace_probe","arguments":json!({"value":value}).to_string()}}]}}]}),
+                json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":7}})
+            )
+        }
+    };
+
+    let mut response = axum::response::Response::new(Body::from(frames));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    response
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
     let temp = TempDir::new();
@@ -396,10 +483,25 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
     let address = listener.local_addr().unwrap();
     let base = format!("http://{address}");
     // The REAL shipped composition: the same compose_local the brain-server binary runs.
+    let model_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the scripted model endpoint");
+    let model_base = format!("http://{}/v1", model_listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(
+            model_listener,
+            axum::Router::new()
+                .route("/v1/messages", axum::routing::post(scripted_model))
+                .route("/v1/chat/completions", axum::routing::post(scripted_model)),
+        )
+        .await
+    });
     let brain = brain_server::compose_local(brain_server::LocalOptions {
         data_dir: temp.0.clone(),
         cfg: BrainConfig {
             idle_discard: Duration::from_secs(300),
+            // The scripted endpoint is loopback; production keeps this closed.
+            outbound_allow_private: true,
             ..BrainConfig::default()
         },
         advertised_address: address.to_string(),
@@ -436,6 +538,7 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
             &base,
             create_body(
                 "anthropic",
+                &model_base,
                 "standalone-alpha",
                 ALPHA_KEY,
                 ALPHA_SECRET,
@@ -449,6 +552,7 @@ async fn http_sse_journal_storage_and_node_tools_are_durable_and_isolated() {
             &base,
             create_body(
                 "openai",
+                &model_base,
                 "standalone-beta",
                 BETA_KEY,
                 BETA_SECRET,

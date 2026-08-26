@@ -13,7 +13,6 @@ const definitions = [
   { kind: "agentloop", source: "agentloop.mjs" },
   { kind: "tool", source: "tool.mjs" },
   { kind: "environment", source: "environment.mjs" },
-  { kind: "model", source: "model.mjs" },
 ];
 
 await mkdir(new URL("dist/", here), { recursive: true });

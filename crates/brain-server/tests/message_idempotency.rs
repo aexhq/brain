@@ -82,9 +82,8 @@ async fn message_key_replays_while_active_after_completion_and_after_cold_hydrat
                 "component_base64": "eA==", "bytes": 1
             }],
             "model": {
-                "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-                "world": "aex:model/model@1.0.0",
-                "provider": "anthropic", "name": "scripted", "api_key": "sk-fake"
+                "dialect": "anthropic",
+                "base_url": "https://api.anthropic.com/v1", "name": "scripted", "api_key": "sk-fake"
             },
             "agentloop": {
                 "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",

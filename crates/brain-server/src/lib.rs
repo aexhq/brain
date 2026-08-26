@@ -63,13 +63,6 @@ pub async fn compose_aws(options: AwsOptions) -> anyhow::Result<Arc<Brain>> {
         loophost.workers,
     )
     .await?;
-    let model_registry = brain_providers::component::registry_with_component_store(
-        &options.data_dir.join("models"),
-        &loophost.component_host,
-        loophost.workers,
-        brain_providers::Outbound::new(options.cfg.outbound_allow_private),
-    )
-    .await?;
     let tool_registry = brain_toolhost::registry_with_component_store(
         &options.data_dir.join("tools"),
         &loophost.component_host,
@@ -96,7 +89,6 @@ pub async fn compose_aws(options: AwsOptions) -> anyhow::Result<Arc<Brain>> {
             customer_delivery: options.customer_delivery,
             customer_transport: options.customer_transport,
             agentloop_registry: loop_services.agentloop_registry,
-            model_registry: Some(model_registry),
             tool_registry: Some(tool_registry),
             component_environment_registry: Some(component_environment_registry),
             provider_factory: None,
@@ -145,13 +137,6 @@ pub async fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> 
         loophost.workers,
     )
     .await?;
-    let model_registry = brain_providers::component::registry_with_component_store(
-        &options.data_dir.join("models"),
-        &loophost.component_host,
-        loophost.workers,
-        brain_providers::Outbound::new(allow_private),
-    )
-    .await?;
     let tool_registry = brain_toolhost::registry_with_component_store(
         &options.data_dir.join("tools"),
         &loophost.component_host,
@@ -186,7 +171,6 @@ pub async fn compose_local(options: LocalOptions) -> anyhow::Result<Arc<Brain>> 
             )])?,
             customer_transport: Some(customer_transport),
             agentloop_registry: loop_services.agentloop_registry,
-            model_registry: Some(model_registry),
             tool_registry: Some(tool_registry),
             component_environment_registry: Some(component_environment_registry),
             ..BrainServices::default()

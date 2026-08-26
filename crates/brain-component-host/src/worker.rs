@@ -15,8 +15,8 @@ use tracing::Instrument as _;
 
 use crate::{
     AgentloopInstance, CapabilityCall, CapabilityFailure, CapabilityHandler, ComponentFailure,
-    ComponentRuntime, DenyCapabilities, EnvironmentInstance, ModelInstance, agentloop,
-    component_digest, environment, model, tool,
+    ComponentRuntime, DenyCapabilities, EnvironmentInstance, agentloop, component_digest,
+    environment, tool,
 };
 
 const MAX_COMPONENT_BYTES: u64 = 32 << 20;
@@ -83,29 +83,6 @@ pub enum WorkerRequest {
         instance_id: String,
         binding_json: String,
     },
-    Model {
-        component: ComponentSource,
-        request: model::aex::model::types::Request,
-    },
-    ModelStart {
-        instance_id: String,
-        component: ComponentSource,
-        request: model::aex::model::types::Request,
-    },
-    ModelObserve {
-        instance_id: String,
-        provider_operation_id: String,
-        cursor: Option<String>,
-    },
-    ModelCancel {
-        instance_id: String,
-        provider_operation_id: String,
-    },
-    ModelAcknowledge {
-        instance_id: String,
-        provider_operation_id: String,
-        terminal_json: String,
-    },
     Release {
         world: String,
         instance_id: String,
@@ -122,12 +99,8 @@ impl WorkerRequest {
             | Self::EnvironmentCancel { instance_id, .. }
             | Self::EnvironmentAcknowledge { instance_id, .. }
             | Self::EnvironmentRelease { instance_id, .. }
-            | Self::ModelStart { instance_id, .. }
-            | Self::ModelObserve { instance_id, .. }
-            | Self::ModelCancel { instance_id, .. }
-            | Self::ModelAcknowledge { instance_id, .. }
             | Self::Release { instance_id, .. } => Some(instance_id),
-            Self::Tool { .. } | Self::Environment { .. } | Self::Model { .. } => None,
+            Self::Tool { .. } | Self::Environment { .. } => None,
         }
     }
 
@@ -204,52 +177,6 @@ impl WorkerRequest {
             Self::EnvironmentRelease { instance_id, .. } => {
                 ("release", "environment/v1", None, Some(instance_id), None)
             }
-            Self::Model { component, .. } => {
-                ("invoke", "model/v1", Some(&component.sha256), None, None)
-            }
-            Self::ModelStart {
-                instance_id,
-                component,
-                ..
-            } => (
-                "start",
-                "model/v1",
-                Some(&component.sha256),
-                Some(instance_id),
-                None,
-            ),
-            Self::ModelObserve {
-                instance_id,
-                provider_operation_id,
-                ..
-            } => (
-                "observe",
-                "model/v1",
-                None,
-                Some(instance_id),
-                Some(provider_operation_id),
-            ),
-            Self::ModelCancel {
-                instance_id,
-                provider_operation_id,
-            } => (
-                "cancel",
-                "model/v1",
-                None,
-                Some(instance_id),
-                Some(provider_operation_id),
-            ),
-            Self::ModelAcknowledge {
-                instance_id,
-                provider_operation_id,
-                ..
-            } => (
-                "acknowledge",
-                "model/v1",
-                None,
-                Some(instance_id),
-                Some(provider_operation_id),
-            ),
             Self::Release { world, instance_id } => {
                 ("release", world, None, Some(instance_id), None)
             }
@@ -366,12 +293,6 @@ struct ResidentEnvironment {
     last_used: std::time::Instant,
 }
 
-struct ResidentModel {
-    digest: String,
-    instance: ModelInstance,
-    last_used: std::time::Instant,
-}
-
 trait ResidentEntry {
     fn last_used(&self) -> std::time::Instant;
 }
@@ -383,12 +304,6 @@ impl ResidentEntry for ResidentAgentloop {
 }
 
 impl ResidentEntry for ResidentEnvironment {
-    fn last_used(&self) -> std::time::Instant {
-        self.last_used
-    }
-}
-
-impl ResidentEntry for ResidentModel {
     fn last_used(&self) -> std::time::Instant {
         self.last_used
     }
@@ -463,28 +378,15 @@ fn environment_instance<'a>(
     Ok(&mut resident.instance)
 }
 
-fn model_instance<'a>(
-    models: &'a mut HashMap<String, ResidentModel>,
-    instance_id: &str,
-) -> anyhow::Result<&'a mut ModelInstance> {
-    let resident = models
-        .get_mut(instance_id)
-        .ok_or_else(|| anyhow::anyhow!("Model instance is not resident"))?;
-    resident.last_used = std::time::Instant::now();
-    Ok(&mut resident.instance)
-}
-
 async fn execute(
     runtime: &ComponentRuntime,
     agentloops: &mut HashMap<String, ResidentAgentloop>,
     environments: &mut HashMap<String, ResidentEnvironment>,
-    models: &mut HashMap<String, ResidentModel>,
     policy: ResidentPolicy,
     request: WorkerRequest,
 ) -> anyhow::Result<Value> {
     sweep_residents(agentloops, policy);
     sweep_residents(environments, policy);
-    sweep_residents(models, policy);
     match request {
         WorkerRequest::Agentloop {
             instance_id,
@@ -620,74 +522,6 @@ async fn execute(
             resident.instance.release(&binding_json).await?;
             Ok(Value::Null)
         }
-        WorkerRequest::Model { component, request } => {
-            let bytes = read_component(&component)?;
-            Ok(serde_json::to_value(
-                runtime.exercise_model(&bytes, request).await?,
-            )?)
-        }
-        WorkerRequest::ModelStart {
-            instance_id,
-            component,
-            request,
-        } => {
-            let bytes = read_component(&component)?;
-            if let Some(resident) = models.get_mut(&instance_id) {
-                resident.last_used = std::time::Instant::now();
-                if resident.digest != component.sha256 {
-                    anyhow::bail!("Model instance is sealed to a different component digest");
-                }
-                return Ok(serde_json::to_value(
-                    resident.instance.start(&request).await?,
-                )?);
-            }
-            let mut instance = runtime
-                .instantiate_model_scoped(&bytes, Some(instance_id.clone()))
-                .await?;
-            let result = instance.start(&request).await?;
-            models.insert(
-                instance_id,
-                ResidentModel {
-                    digest: component.sha256,
-                    instance,
-                    last_used: std::time::Instant::now(),
-                },
-            );
-            sweep_residents(models, policy);
-            Ok(serde_json::to_value(result)?)
-        }
-        WorkerRequest::ModelObserve {
-            instance_id,
-            provider_operation_id,
-            cursor,
-        } => Ok(serde_json::to_value(
-            model_instance(models, &instance_id)?
-                .observe(&provider_operation_id, cursor.as_deref())
-                .await?,
-        )?),
-        WorkerRequest::ModelCancel {
-            instance_id,
-            provider_operation_id,
-        } => {
-            model_instance(models, &instance_id)?
-                .cancel(&provider_operation_id)
-                .await?;
-            Ok(Value::Null)
-        }
-        WorkerRequest::ModelAcknowledge {
-            instance_id,
-            provider_operation_id,
-            terminal_json,
-        } => {
-            let mut resident = models
-                .remove(&instance_id)
-                .ok_or_else(|| anyhow::anyhow!("Model instance is not resident"))?;
-            resident
-                .instance
-                .acknowledge(&provider_operation_id, &terminal_json)
-                .await?;
-            Ok(Value::Null)
-        }
         WorkerRequest::Release { world, instance_id } => {
             match world.as_str() {
                 crate::AGENTLOOP_COMPONENT => {
@@ -695,9 +529,6 @@ async fn execute(
                 }
                 crate::ENVIRONMENT_COMPONENT => {
                     environments.remove(&instance_id);
-                }
-                crate::MODEL_COMPONENT => {
-                    models.remove(&instance_id);
                 }
                 _ => anyhow::bail!("unknown resident component world {world}"),
             }
@@ -737,7 +568,6 @@ pub async fn run_worker() -> anyhow::Result<()> {
     let runtime = ComponentRuntime::with_capabilities(broker)?;
     let mut agentloops = HashMap::new();
     let mut environments = HashMap::new();
-    let mut models = HashMap::new();
     let policy = ResidentPolicy::from_env()?;
     loop {
         let mut line = String::new();
@@ -766,7 +596,6 @@ pub async fn run_worker() -> anyhow::Result<()> {
                 &runtime,
                 &mut agentloops,
                 &mut environments,
-                &mut models,
                 policy,
                 *request,
             )

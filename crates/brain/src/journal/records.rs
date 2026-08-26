@@ -103,7 +103,6 @@ pub enum Record {
     Usage {
         turn: String,
         agent: String,
-        provider: String,
         model: String,
         usage: Usage,
     },
@@ -317,7 +316,6 @@ pub enum Record {
         token_estimate: u64,
         context_generation: u64,
         summary_kind: String,
-        compactor_provider: String,
         compactor_model: String,
         retained_from_sequence: u64,
         created_at_ms: u64,

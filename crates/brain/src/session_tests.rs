@@ -121,18 +121,14 @@ fn typed_create_result(mut value: serde_json::Value) -> serde_json::Result<Creat
         .as_object_mut()
         .expect("test create request is an object");
     object.remove("system_prompt");
-    let model_component = b"test model";
-    let model_digest = hex::encode(Sha256::digest(model_component));
     if let Some(model) = object
         .get_mut("model")
         .and_then(serde_json::Value::as_object_mut)
     {
+        model.entry("dialect").or_insert_with(|| json!("openai"));
         model
-            .entry("component_digest")
-            .or_insert_with(|| json!(model_digest.clone()));
-        model
-            .entry("world")
-            .or_insert_with(|| json!("aex:model/model@1.0.0"));
+            .entry("base_url")
+            .or_insert_with(|| json!("https://api.example/v1"));
     }
     let loop_component = b"test loop";
     let loop_digest = hex::encode(Sha256::digest(loop_component));
@@ -143,11 +139,6 @@ fn typed_create_result(mut value: serde_json::Value) -> serde_json::Result<Creat
         })
     });
     object.entry("component_artifacts").or_insert_with(|| json!([
-        {
-            "component_digest": model_digest,
-            "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component),
-            "bytes": model_component.len()
-        },
         {
             "component_digest": loop_digest,
             "component_base64": base64::engine::general_purpose::STANDARD.encode(loop_component),
@@ -171,7 +162,7 @@ async fn tenant_changefeed_is_partitioned_paginated_and_tenant_scoped() {
     let other = TrustedPrincipal::new("tenant-b").unwrap();
     let create = || {
         typed_create(json!({
-            "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+            "model": {"dialect":"anthropic", "name":"model", "api_key":"key"}
         }))
     };
     let mut expected = std::collections::HashSet::new();
@@ -274,7 +265,7 @@ async fn ending_a_root_releases_each_component_environment() {
     let component = b"test environment";
     let digest = hex::encode(Sha256::digest(component));
     let mut request = typed_create(json!({
-        "model": {"provider":"anthropic", "name":"model", "api_key":"key"},
+        "model": {"dialect":"anthropic", "name":"model", "api_key":"key"},
         "environments": {"workspace": {
             "component_digest": digest,
             "world": crate::environment::COMPONENT_ENVIRONMENT_WORLD,
@@ -322,7 +313,7 @@ async fn suspending_a_root_releases_component_environments_until_resume() {
     let component = b"test environment";
     let digest = hex::encode(Sha256::digest(component));
     let mut request = typed_create(json!({
-        "model": {"provider":"anthropic", "name":"model", "api_key":"key"},
+        "model": {"dialect":"anthropic", "name":"model", "api_key":"key"},
         "environments": {"workspace": {
             "component_digest": digest,
             "world": crate::environment::COMPONENT_ENVIRONMENT_WORLD,
@@ -393,7 +384,7 @@ async fn durable_retention_is_renewable_and_shortening_is_explicit() {
     let created = brain
         .create_session(
             typed_create(json!({
-                "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+                "model": {"dialect":"anthropic", "name":"model", "api_key":"key"}
             })),
             None,
         )
@@ -448,7 +439,7 @@ async fn expired_durable_retention_reuses_the_recoverable_deletion_path() {
     let created = brain
         .create_session(
             typed_create(json!({
-                "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+                "model": {"dialect":"anthropic", "name":"model", "api_key":"key"}
             })),
             None,
         )
@@ -900,7 +891,7 @@ async fn end_returns_the_durable_fence_before_async_teardown_converges() {
     let created = brain
         .create_session(
             typed_create(json!({
-                "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+                "model": {"dialect":"anthropic", "name":"model", "api_key":"key"}
             })),
             Some("async-end"),
         )
@@ -962,7 +953,7 @@ async fn end_fences_before_a_cancellation_resistant_effect_and_recovery_never_re
         .create_session(
             typed_create(json!({
                 "model": {
-                    "provider":"anthropic", "name":"resistant-effect", "api_key":"key"
+                    "dialect":"anthropic", "name":"resistant-effect", "api_key":"key"
                 },
                 "tools": {"items": [{
                     "definition": {
@@ -1097,13 +1088,13 @@ async fn end_fences_before_a_cancellation_resistant_effect_and_recovery_never_re
 #[test]
 fn complete_create_contract_bounds_are_enforced_before_resolution() {
     let omitted = typed_create(json!({
-        "model": {"provider":"anthropic", "name":"model", "api_key":"key"}
+        "model": {"dialect":"anthropic", "name":"model", "api_key":"key"}
     }));
     validate_create_request(&omitted).expect("omitted values use schema defaults");
 
     let exact = typed_create(json!({
         "model": {
-            "provider":"anthropic", "name":"model", "api_key":"key",
+            "dialect":"anthropic", "name":"model", "api_key":"key",
             "max_output_tokens": brain_protocol::MAX_MODEL_OUTPUT_TOKENS,
             "context_window_tokens": brain_protocol::MAX_MODEL_CONTEXT_WINDOW_TOKENS,
             "temperature": 2.0
@@ -1120,39 +1111,39 @@ fn complete_create_contract_bounds_are_enforced_before_resolution() {
     for (label, value) in [
         (
             "provider_recovery_retries",
-            json!({"model":{"provider":"anthropic","name":"model","api_key":"key"},"provider_recovery_retries":9}),
+            json!({"model":{"dialect":"anthropic", "name":"model","api_key":"key"},"provider_recovery_retries":9}),
         ),
         (
             "client.submit_retries",
-            json!({"model":{"provider":"anthropic","name":"model","api_key":"key"},"client":{"id":"app","submit_retries":9}}),
+            json!({"model":{"dialect":"anthropic", "name":"model","api_key":"key"},"client":{"id":"app","submit_retries":9}}),
         ),
         (
             "children.max_depth",
-            json!({"model":{"provider":"anthropic","name":"model","api_key":"key"},"children":{"max_depth":9}}),
+            json!({"model":{"dialect":"anthropic", "name":"model","api_key":"key"},"children":{"max_depth":9}}),
         ),
         (
             "children.max_direct_children",
-            json!({"model":{"provider":"anthropic","name":"model","api_key":"key"},"children":{"max_direct_children":129}}),
+            json!({"model":{"dialect":"anthropic", "name":"model","api_key":"key"},"children":{"max_direct_children":129}}),
         ),
         (
             "children.max_descendants",
-            json!({"model":{"provider":"anthropic","name":"model","api_key":"key"},"children":{"max_descendants":1025}}),
+            json!({"model":{"dialect":"anthropic", "name":"model","api_key":"key"},"children":{"max_descendants":1025}}),
         ),
         (
             "model.max_output_tokens",
-            json!({"model":{"provider":"anthropic","name":"model","api_key":"key","max_output_tokens":u64::from(brain_protocol::MAX_MODEL_OUTPUT_TOKENS)+1}}),
+            json!({"model":{"dialect":"anthropic", "name":"model","api_key":"key","max_output_tokens":u64::from(brain_protocol::MAX_MODEL_OUTPUT_TOKENS)+1}}),
         ),
         (
             "model.context_window_tokens below minimum",
-            json!({"model":{"provider":"anthropic","name":"model","api_key":"key","context_window_tokens":i64::from(brain_protocol::MIN_MODEL_CONTEXT_WINDOW_TOKENS)-1}}),
+            json!({"model":{"dialect":"anthropic", "name":"model","api_key":"key","context_window_tokens":i64::from(brain_protocol::MIN_MODEL_CONTEXT_WINDOW_TOKENS)-1}}),
         ),
         (
             "model.context_window_tokens above maximum",
-            json!({"model":{"provider":"anthropic","name":"model","api_key":"key","context_window_tokens":i64::from(brain_protocol::MAX_MODEL_CONTEXT_WINDOW_TOKENS)+1}}),
+            json!({"model":{"dialect":"anthropic", "name":"model","api_key":"key","context_window_tokens":i64::from(brain_protocol::MAX_MODEL_CONTEXT_WINDOW_TOKENS)+1}}),
         ),
         (
             "model.temperature",
-            json!({"model":{"provider":"anthropic","name":"model","api_key":"key","temperature":2.01}}),
+            json!({"model":{"dialect":"anthropic", "name":"model","api_key":"key","temperature":2.01}}),
         ),
     ] {
         let request = typed_create(value);
@@ -1168,7 +1159,7 @@ fn complete_create_contract_bounds_are_enforced_before_resolution() {
         .map(|index| (format!("SECRET_{index}"), json!("value")))
         .collect::<serde_json::Map<_, _>>();
     let request = typed_create(json!({
-        "model":{"provider":"anthropic","name":"model","api_key":"key"},
+        "model":{"dialect":"anthropic", "name":"model","api_key":"key"},
         "secrets": secrets
     }));
     assert!(matches!(
@@ -1177,7 +1168,7 @@ fn complete_create_contract_bounds_are_enforced_before_resolution() {
     ));
 
     let exact_secret_document = typed_create(json!({
-        "model":{"provider":"anthropic","name":"model","api_key":"key"},
+        "model":{"dialect":"anthropic", "name":"model","api_key":"key"},
         "secrets":{"A":"é".repeat(2044)}
     }));
     assert_eq!(
@@ -1189,7 +1180,7 @@ fn complete_create_contract_bounds_are_enforced_before_resolution() {
     validate_create_request(&exact_secret_document)
         .expect("an exact-size custody document is accepted");
     let oversized_secret_document = typed_create(json!({
-        "model":{"provider":"anthropic","name":"model","api_key":"key"},
+        "model":{"dialect":"anthropic", "name":"model","api_key":"key"},
         "secrets":{"A":"é".repeat(2045)}
     }));
     assert!(matches!(
@@ -1218,8 +1209,7 @@ async fn context_capacity_rejects_before_custody_or_environment_effects() {
         .create_session(
             typed_create(json!({
                 "model": {
-                    "provider":"anthropic",
-                    "name":"unknown-small-model",
+                    "dialect":"anthropic", "name":"unknown-small-model",
                     "api_key":"key",
                     "max_output_tokens": brain_protocol::MAX_MODEL_OUTPUT_TOKENS
                 }
@@ -2157,7 +2147,7 @@ async fn direct_sandbox_transfers_stage_hidden_bytes_and_replay_only_exact_succe
     let session = brain
         .create_session(
             typed_create(json!({
-                "model":{"provider":"anthropic", "name":"direct-transfer", "api_key":"key"},
+                "model":{"dialect":"anthropic", "name":"direct-transfer", "api_key":"key"},
                 "environments":{"workspace":{"extension":"test.transfer","protocol":"environment/v1","profile":{"kind":"computer","platform":"linux-amd64","network":"none","recovery":"retained"},"configuration":{}}}
             })),
             Some("direct-sandbox-transfer"),
@@ -2381,8 +2371,7 @@ async fn descendants_share_one_root_scoped_custody_decryption_cell() {
         .create_session(
             typed_create(json!({
                 "model": {
-                    "provider":"anthropic",
-                    "name":"model",
+                    "dialect":"anthropic", "name":"model",
                     "api_key":"root-provider-secret"
                 }
             })),
@@ -2451,7 +2440,7 @@ async fn child_create_atomically_admits_prompt_and_rebuilds_exact_parent_fork() 
         .create_session(
             typed_create(json!({
                 "model": {
-                    "provider":"anthropic", "name":"child-fork-test", "api_key":"key"
+                    "dialect":"anthropic", "name":"child-fork-test", "api_key":"key"
                 }
             })),
             Some("child-fork-root"),
@@ -2583,10 +2572,9 @@ fn prefix_rebuild_is_deterministic() {
     let p = PrefixDoc {
         agentloop: None,
         system_prompt: Some("sp".into()),
-        provider: "anthropic".into(),
-        model_component: None,
+        dialect: crate::config::Dialect::AnthropicMessages,
         model: "claude-x".into(),
-        base_url: Some("https://api.anthropic.com".into()),
+        base_url: "https://api.anthropic.com".into(),
         max_output_tokens: Some(2048),
         context_window_tokens: 32 * 1024,
         context_soft_tokens: 18 * 1024,
@@ -2709,12 +2697,11 @@ fn pending_volatile_scan_routes_by_the_seal() {
         },
     ];
     let prefix = PrefixDoc {
-        model_component: None,
         agentloop: None,
         system_prompt: None,
-        provider: "anthropic".into(),
+        dialect: crate::config::Dialect::AnthropicMessages,
         model: "m".into(),
-        base_url: None,
+        base_url: "https://api.example/v1".into(),
         max_output_tokens: None,
         context_window_tokens: 32 * 1024,
         context_soft_tokens: 18 * 1024,
@@ -2781,12 +2768,11 @@ fn pending_volatile_scan_routes_by_the_seal() {
 #[test]
 fn pending_external_scan_recovers_only_unanswered_sealed_calls() {
     let prefix = PrefixDoc {
-        model_component: None,
         agentloop: None,
         system_prompt: None,
-        provider: "anthropic".into(),
+        dialect: crate::config::Dialect::AnthropicMessages,
         model: "m".into(),
-        base_url: None,
+        base_url: "https://api.example/v1".into(),
         max_output_tokens: None,
         context_window_tokens: 32 * 1024,
         context_soft_tokens: 18 * 1024,
@@ -2919,8 +2905,7 @@ async fn hydrate_replays_a_pending_replay_safe_external_call_with_the_same_id() 
         .create_session(
             typed_create_result(json!({
                 "model": {
-                    "provider": "anthropic",
-                    "name": "unused-during-terminal-recovery",
+                    "dialect":"anthropic", "name": "unused-during-terminal-recovery",
                     "api_key": "sk-test"
                 },
                 "tools": {
@@ -3127,7 +3112,7 @@ async fn customer_terminal_before_brain_crash_replays_without_reexecuting_the_ef
     let created = crashed
         .create_session(
             typed_create(json!({
-                "model":{"provider":"anthropic","name":"customer-recovery","api_key":"sk-test"},
+                "model":{"dialect":"anthropic", "name":"customer-recovery","api_key":"sk-test"},
                 "client":{"id":"app","submit_retries":1},
                 "environments":{"app":{
                     "extension":"test/app",
@@ -3413,7 +3398,7 @@ async fn journaled_customer_terminal_is_reacked_after_process_restart() {
     let created = crashed
         .create_session(
             typed_create(json!({
-                "model":{"provider":"anthropic","name":"unused","api_key":"sk-test"},
+                "model":{"dialect":"anthropic", "name":"unused","api_key":"sk-test"},
                 "client":{"id":"app"}
             })),
             None,
@@ -3557,7 +3542,7 @@ async fn assert_managed_submit_unknown_recovery(cancellation_requested: bool) {
     let created = brain
         .create_session(
             typed_create(json!({
-                "model":{"provider":"anthropic","name":"managed-unknown","api_key":"key"}
+                "model":{"dialect":"anthropic", "name":"managed-unknown","api_key":"key"}
             })),
             Some("managed-submit-unknown"),
         )
@@ -3837,7 +3822,7 @@ async fn ending_session_reconciles_stale_managed_intent_without_resubmission() {
     let created = brain
         .create_session(
             typed_create(json!({
-                "model":{"provider":"anthropic","name":"stale-managed","api_key":"key"}
+                "model":{"dialect":"anthropic", "name":"stale-managed","api_key":"key"}
             })),
             Some("stale-managed-ending"),
         )
@@ -4054,7 +4039,7 @@ async fn ending_session_does_not_resume_a_creating_environment() {
     let created = brain
         .create_session(
             typed_create(json!({
-                "model":{"provider":"anthropic","name":"ending-creating","api_key":"key"}
+                "model":{"dialect":"anthropic", "name":"ending-creating","api_key":"key"}
             })),
             Some("ending-creating-environment"),
         )
@@ -4162,7 +4147,7 @@ async fn deleting_managed_session_hydrates_without_repreparing_environment_defin
     let created = brain
         .create_session(
             typed_create(json!({
-                "model":{"provider":"anthropic","name":"deleting-managed","api_key":"key"}
+                "model":{"dialect":"anthropic", "name":"deleting-managed","api_key":"key"}
             })),
             Some("deleting-managed-hydrate"),
         )
@@ -4267,8 +4252,7 @@ async fn simulate_provider_only_crash(
         .create_session(
             typed_create_result(json!({
                 "model": {
-                    "provider": "anthropic",
-                    "name": "provider-recovery-test",
+                    "dialect":"anthropic", "name": "provider-recovery-test",
                     "api_key": "sk-test"
                 },
                 "provider_recovery_retries": retries
@@ -4305,7 +4289,7 @@ async fn simulate_provider_only_crash(
             &prefix,
             &history,
             &ProviderKey::new("sk-test"),
-            head.doc.prefix.base_url.as_deref().expect("base URL"),
+            &head.doc.prefix.base_url,
         )
         .expect("build crashed request");
     let request_digest = crate::turn::model_request_digest(&request);
@@ -4522,7 +4506,7 @@ async fn run_live_provider_case(
     let created = brain
         .create_session(
             typed_create_result(json!({
-                "model": {"provider":"anthropic", "name":"live-recovery", "api_key":"sk-test"},
+                "model": {"dialect":"anthropic", "name":"live-recovery", "api_key":"sk-test"},
                 "provider_recovery_retries": retries
             }))
             .unwrap(),
@@ -4664,7 +4648,7 @@ async fn loop_bundles_are_verified_before_registry_admission() {
         },
         Arc::new(move |_| provider.clone()),
     );
-    let model = json!({"provider":"anthropic", "name":"selector-test", "api_key":"sk-test"});
+    let model = json!({"dialect":"anthropic", "name":"selector-test", "api_key":"sk-test"});
 
     let bundle = b"export function activate() { return \"{}\" }";
     let encoded = {
@@ -4772,7 +4756,7 @@ async fn tool_components_are_verified_and_admitted_before_session_commit() {
     let tool_component = b"test tool";
     let tool_digest = hex::encode(Sha256::digest(tool_component));
     let mut request = serde_json::to_value(typed_create(json!({
-        "model": {"provider":"anthropic", "name":"tool-test", "api_key":"sk-test"},
+        "model": {"dialect":"anthropic", "name":"tool-test", "api_key":"sk-test"},
         "tools": {"items": [{
             "definition": {
                 "name": "echo",
@@ -4803,6 +4787,39 @@ async fn tool_components_are_verified_and_admitted_before_session_commit() {
         .await
         .unwrap();
     assert_eq!(registry.0.load(Ordering::Relaxed), 1);
+}
+
+/// Regression: the Anthropic dialect has no reasoning-effort parameter, so a session that asks
+/// for one is refused at create instead of having the option silently dropped on every request.
+#[tokio::test]
+async fn the_anthropic_dialect_refuses_a_reasoning_effort_it_cannot_send() {
+    let brain = Brain::with_parts_and_services(
+        BrainConfig::default(),
+        Journal::new_memory("brain-anthropic-effort"),
+        Arc::new(crate::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        BrainServices::default(),
+        crate::provider::fake::unscripted_factory(),
+    );
+    let error = brain
+        .create_session(
+            typed_create(json!({
+                "model": {
+                    "dialect": "anthropic",
+                    "base_url": "https://api.anthropic.com/v1",
+                    "name": "claude-sonnet-5",
+                    "api_key": "sk-test",
+                    "reasoning_effort": "high"
+                }
+            })),
+            None,
+        )
+        .await
+        .expect_err("a dialect that cannot send the option must refuse the session");
+    assert!(
+        format!("{error}").contains("reasoning_effort"),
+        "the refusal must name the field, got {error}"
+    );
 }
 
 #[tokio::test]
@@ -4846,17 +4863,11 @@ async fn a_composition_registry_resolves_a_sealed_loop() {
         Arc::new(move |_| provider.clone() as Arc<dyn crate::provider::Provider>),
     );
     let bundle = b"test loop";
-    let model_component = b"test model";
     let created = brain
         .create_session(
             typed_create(json!({
-                "model": {"provider":"anthropic", "name":"registry-test", "api_key":"sk-test"},
+                "model": {"dialect":"anthropic", "name":"registry-test", "api_key":"sk-test"},
                 "component_artifacts": [
-                    {
-                        "component_digest": hex::encode(Sha256::digest(model_component)),
-                        "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component),
-                        "bytes": model_component.len()
-                    },
                     {
                         "component_digest": hex::encode(Sha256::digest(bundle)),
                         "component_base64": base64::engine::general_purpose::STANDARD.encode(bundle),
@@ -4921,7 +4932,7 @@ async fn draining_refuses_new_work_while_admitted_turns_finish() {
     let created = brain
         .create_session(
             typed_create_result(json!({
-                "model": {"provider":"anthropic", "name":"drain-test", "api_key":"sk-test"}
+                "model": {"dialect":"anthropic", "name":"drain-test", "api_key":"sk-test"}
             }))
             .unwrap(),
             None,
@@ -4949,7 +4960,7 @@ async fn draining_refuses_new_work_while_admitted_turns_finish() {
     let refused_create = brain
         .create_session(
             typed_create_result(json!({
-                "model": {"provider":"anthropic", "name":"drain-test", "api_key":"sk-test"}
+                "model": {"dialect":"anthropic", "name":"drain-test", "api_key":"sk-test"}
             }))
             .unwrap(),
             None,
@@ -5142,7 +5153,7 @@ async fn compaction_session(journal: &Journal, fake: Arc<FakeProvider>) -> (Arc<
     let created = brain
         .create_session(
             typed_create_result(json!({
-                "model": {"provider":"anthropic", "name":"compact", "api_key":"sk-test",
+                "model": {"dialect":"anthropic", "name":"compact", "api_key":"sk-test",
                           "context_window_tokens": 8192, "max_output_tokens": 64},
                 "tools": {"items": [{
                     "definition": {
@@ -5216,7 +5227,7 @@ async fn a_spawned_child_whose_first_turn_spawns_again_never_deadlocks() {
     let created = brain
         .create_session(
             typed_create_result(json!({
-                "model": {"provider":"anthropic","name":"m","api_key":"sk-test"},
+                "model": {"dialect":"anthropic", "name":"m","api_key":"sk-test"},
                 "tools": {"items": [{
                     "definition": {
                         "name":"subagents", "description":"children",
@@ -5292,7 +5303,7 @@ async fn a_later_turn_still_sees_earlier_turns_verbatim() {
     let created = brain
         .create_session(
             typed_create_result(json!({
-                "model": {"provider":"anthropic","name":"m","api_key":"sk-test"}
+                "model": {"dialect":"anthropic", "name":"m","api_key":"sk-test"}
             }))
             .unwrap(),
             None,
@@ -5344,7 +5355,7 @@ async fn gateway_style_model_names_cross_the_loop_contract() {
     let created = brain
         .create_session(
             typed_create_result(json!({
-                "model": {"provider":"openai_compatible", "name":"openai/gpt-4.1-nano",
+                "model": {"dialect":"openai", "name":"openai/gpt-4.1-nano",
                           "api_key":"sk-test", "base_url":"https://gateway.example/v1"}
             }))
             .unwrap(),
@@ -5542,8 +5553,7 @@ async fn tenant_storage_quota_rejection_restores_the_live_actor_fold() {
     let create = || {
         typed_create_result(json!({
             "model": {
-                "provider": "anthropic",
-                "name": "storage-quota-test",
+                "dialect":"anthropic", "name": "storage-quota-test",
                 "api_key": "sk-test"
             }
         }))
@@ -5635,8 +5645,7 @@ async fn deep_ancestor_end_fence_discards_the_mutated_resident_before_retry() {
         .create_session(
             typed_create(json!({
                 "model": {
-                    "provider": "anthropic",
-                    "name": "ancestor-fence-test",
+                    "dialect":"anthropic", "name": "ancestor-fence-test",
                     "api_key": "sk-test"
                 }
             })),
@@ -5792,8 +5801,7 @@ async fn staged_overwrite_never_adopts_an_older_byte_identical_object() {
         .create_session(
             typed_create(json!({
                 "model": {
-                    "provider": "anthropic",
-                    "name": "staged-provenance-test",
+                    "dialect":"anthropic", "name": "staged-provenance-test",
                     "api_key": "sk-test"
                 }
             })),
@@ -5917,8 +5925,7 @@ async fn inline_overwrite_retry_reexecutes_after_pre_publication_crash() {
         .create_session(
             typed_create(json!({
                 "model": {
-                    "provider": "anthropic",
-                    "name": "inline-provenance-test",
+                    "dialect":"anthropic", "name": "inline-provenance-test",
                     "api_key": "sk-test"
                 }
             })),
@@ -6035,8 +6042,7 @@ async fn copied_upload_is_adopted_after_crash_and_expiry_without_customer_traffi
         .create_session(
             typed_create_result(json!({
                 "model": {
-                    "provider": "anthropic",
-                    "name": "storage-copy-crash-test",
+                    "dialect":"anthropic", "name": "storage-copy-crash-test",
                     "api_key": "sk-test"
                 }
             }))
@@ -6180,8 +6186,7 @@ async fn storage_upload_reservation_is_durable_bounded_and_retried_after_restart
         .create_session(
             typed_create_result(json!({
                 "model": {
-                    "provider": "anthropic",
-                    "name": "storage-test",
+                    "dialect":"anthropic", "name": "storage-test",
                     "api_key": "sk-test"
                 }
             }))
@@ -6424,7 +6429,7 @@ async fn cancellation_during_managed_submit_is_durable_before_cleanup() {
     let created = brain
         .create_session(
             typed_create(json!({
-                "model":{"provider":"anthropic","name":"managed-cancel","api_key":"key"}
+                "model":{"dialect":"anthropic", "name":"managed-cancel","api_key":"key"}
             })),
             Some("managed-submit-live-cancel"),
         )
@@ -6579,7 +6584,7 @@ async fn a_cancelled_submit_concludes_before_sandbox_reconciliation() {
     let created = brain
         .create_session(
             typed_create(json!({
-                "model":{"provider":"anthropic","name":"managed-cancel","api_key":"key"}
+                "model":{"dialect":"anthropic", "name":"managed-cancel","api_key":"key"}
             })),
             Some("managed-submit-cancel-mat"),
         )

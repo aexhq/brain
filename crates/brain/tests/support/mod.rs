@@ -49,11 +49,9 @@ pub fn loop_config() -> Value {
 }
 
 pub fn model_config() -> Value {
-    let component = b"integration test model";
     json!({
-        "component_digest": hex::encode(Sha256::digest(component)),
-        "world": "aex:model/model@1.0.0",
-        "provider": "anthropic",
+        "dialect": "anthropic",
+        "base_url": "https://api.anthropic.com/v1",
         "name": "scripted",
         "api_key": "sk-fake"
     })
@@ -62,17 +60,11 @@ pub fn model_config() -> Value {
 pub fn component_artifacts() -> Value {
     use base64::Engine as _;
     let loop_component = b"integration test loop";
-    let model_component = b"integration test model";
     json!([
         {
             "component_digest": hex::encode(Sha256::digest(loop_component)),
             "component_base64": base64::engine::general_purpose::STANDARD.encode(loop_component),
             "bytes": loop_component.len()
-        },
-        {
-            "component_digest": hex::encode(Sha256::digest(model_component)),
-            "component_base64": base64::engine::general_purpose::STANDARD.encode(model_component),
-            "bytes": model_component.len()
         }
     ])
 }

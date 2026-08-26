@@ -14,7 +14,7 @@ impl Anthropic {
     pub fn request(body: Value, key: &ProviderKey, base_url: &str) -> Result<ModelRequest> {
         Ok(ModelRequest {
             method: "POST",
-            url: format!("{}/v1/messages", base_url.trim_end_matches('/')),
+            url: format!("{}/messages", base_url.trim_end_matches('/')),
             headers: vec![
                 ("content-type".into(), "application/json".into()),
                 ("accept".into(), "text/event-stream".into()),
@@ -286,7 +286,9 @@ pub fn decode_stream(bytes: &[u8]) -> Result<Vec<ProviderEvent>> {
 mod tests {
     use super::*;
     use crate::config::Dialect;
+    use crate::config::OutputTokenParameter;
     use crate::config::{AgentDef, GenOpts, ToolDecl, ToolRoute};
+    use crate::message::Message;
     use std::sync::Arc;
 
     fn prefix() -> std::sync::Arc<SealedPrefix> {
@@ -307,8 +309,9 @@ mod tests {
     fn build_request_is_pure_and_well_formed() {
         let p = prefix();
         let h = vec![Message::user_text("hi")];
-        let r = Anthropic::build_request(&p, &h, &ProviderKey::new("sk-x"), "http://127.0.0.1:1")
-            .unwrap();
+        let r =
+            Anthropic::build_request(&p, &h, &ProviderKey::new("sk-x"), "http://127.0.0.1:1/v1")
+                .unwrap();
         assert_eq!(r.url, "http://127.0.0.1:1/v1/messages");
         let v: Value = serde_json::from_slice(&r.body).unwrap();
         assert_eq!(v["model"], "claude-test");
@@ -330,7 +333,7 @@ mod tests {
             &p,
             &[Message::user_text("hi")],
             &ProviderKey::new("sk-x"),
-            "http://127.0.0.1:1",
+            "http://127.0.0.1:1/v1",
         )
         .unwrap();
         let v: Value = serde_json::from_slice(&r.body).unwrap();
@@ -387,14 +390,14 @@ mod tests {
             &sealed,
             &history,
             &ProviderKey::new("sk-x"),
-            "http://127.0.0.1:1",
+            "http://127.0.0.1:1/v1",
         )
         .unwrap();
         let via_loop = Anthropic::build_request(
             &Arc::new(echoed),
             &history,
             &ProviderKey::new("sk-x"),
-            "http://127.0.0.1:1",
+            "http://127.0.0.1:1/v1",
         )
         .unwrap();
         assert_eq!(
@@ -447,5 +450,39 @@ mod tests {
     fn refusal_is_typed_and_an_absent_reason_stays_unknown() {
         assert_eq!(map_stop(Some("refusal")), StopReason::Refusal);
         assert_eq!(map_stop(None), StopReason::Unknown);
+    }
+
+    /// Regression: an unset sampling field stays absent, and the sealed instructions reach the
+    /// request as the system prompt rather than being dropped into the history.
+    #[test]
+    fn an_unset_sampling_field_stays_absent_and_the_sealed_prompt_is_the_system_field() {
+        let definition = AgentDef::new("be terse", "claude-test", Dialect::AnthropicMessages)
+            .sampling(GenOpts {
+                max_tokens: 4_096,
+                output_token_parameter: OutputTokenParameter::MaxTokens,
+                temperature: None,
+                reasoning_effort: None,
+                stop_sequences: Vec::new(),
+            });
+        let request = Anthropic::build_request(
+            &definition.seal(),
+            &[Message::user_text("hi")],
+            &ProviderKey::new("sk-x"),
+            "https://api.example/v1",
+        )
+        .unwrap();
+        assert_eq!(request.url, "https://api.example/v1/messages");
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        for absent in ["temperature", "stop_sequences", "reasoning_effort"] {
+            assert!(
+                body.get(absent).is_none(),
+                "{absent} must stay absent rather than serialize as null"
+            );
+        }
+        assert_eq!(body["max_tokens"], 4_096);
+        // Toolless rounds carry the sealed instructions as one cached system block.
+        assert_eq!(body["system"][0]["text"], "be terse");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["messages"][0]["content"][0]["text"], "hi");
     }
 }

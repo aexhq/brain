@@ -38,10 +38,11 @@ pub fn normalize_workspace_path(path: &str) -> Result<String> {
     })
 }
 
-pub fn dialect_of(provider: &str) -> Dialect {
-    match provider {
-        "anthropic" => Dialect::AnthropicMessages,
-        _ => Dialect::OpenAiChat,
+/// The public spelling of a sealed dialect.
+pub fn wire_dialect(dialect: Dialect) -> session::Dialect {
+    match dialect {
+        Dialect::AnthropicMessages => session::Dialect::Anthropic,
+        Dialect::OpenAiChat => session::Dialect::Openai,
     }
 }
 
@@ -51,9 +52,14 @@ pub fn build_prefix(
     p: &PrefixDoc,
     max_rounds: u32,
 ) -> Result<(crate::Shared<crate::config::SealedPrefix>, Dialect)> {
-    // Components receive Brain's neutral message projection; the internal dialect field remains
-    // only until the legacy provider codecs are deleted.
-    let dialect = Dialect::OpenAiChat;
+    let dialect = p.dialect;
+    // The Anthropic Messages API has no reasoning-effort parameter. Refuse the session rather
+    // than dropping a sealed generation option the caller asked for.
+    if dialect == Dialect::AnthropicMessages && p.reasoning_effort.is_some() {
+        return Err(BrainError::Invalid(
+            "model.reasoning_effort is not supported by the anthropic dialect".into(),
+        ));
+    }
     let mut decls = crate::tools::resolve(&p.tools)?;
     for decl in &mut decls {
         if let crate::config::ToolRoute::Intrinsic(capability) = &decl.route
@@ -85,7 +91,10 @@ pub fn build_prefix(
         max_tokens: u32::try_from(p.max_output_tokens.unwrap_or(4096)).map_err(|_| {
             BrainError::Journal("sealed max_output_tokens exceeds the canonical u32 bound".into())
         })?,
-        output_token_parameter: OutputTokenParameter::MaxTokens,
+        output_token_parameter: match dialect {
+            Dialect::AnthropicMessages => OutputTokenParameter::MaxTokens,
+            Dialect::OpenAiChat => OutputTokenParameter::MaxCompletionTokens,
+        },
         temperature: p.temperature.map(|t| t as f32),
         reasoning_effort: p.reasoning_effort.clone(),
         stop_sequences: Vec::new(),
@@ -212,25 +221,11 @@ pub fn session_doc(session_id: &str, doc: &HeadDoc) -> Result<session::Session> 
                 )
             })
             .collect(),
-        model: {
-            let selector = doc.prefix.model_component.as_ref().ok_or_else(|| {
-                BrainError::Journal("stored session has no Model component selector".into())
-            })?;
-            session::ModelInfo {
-                base_url: doc.prefix.base_url.clone(),
-                component_digest: selector
-                    .component_digest
-                    .parse()
-                    .map_err(|_| corrupt("Model component digest"))?,
-                context_window_tokens: i64::from(doc.prefix.context_window_tokens),
-                name: doc.prefix.model.clone(),
-                provider: doc
-                    .prefix
-                    .provider
-                    .parse()
-                    .map_err(|_| corrupt("provider"))?,
-                world: selector.world.clone(),
-            }
+        model: session::ModelInfo {
+            base_url: doc.prefix.base_url.clone(),
+            dialect: wire_dialect(doc.prefix.dialect),
+            context_window_tokens: i64::from(doc.prefix.context_window_tokens),
+            name: doc.prefix.model.clone(),
         },
         name: doc
             .child_name
@@ -313,19 +308,9 @@ pub(super) fn session_doc_summary(
             .collect(),
         model: session::ModelInfo {
             base_url: summary.base_url.clone(),
-            component_digest: summary
-                .model_component_digest
-                .as_deref()
-                .ok_or_else(|| corrupt("Model component digest"))?
-                .parse()
-                .map_err(|_| corrupt("Model component digest"))?,
+            dialect: wire_dialect(summary.dialect),
             context_window_tokens: i64::from(summary.context_window_tokens),
             name: summary.model.clone(),
-            provider: summary.provider.parse().map_err(|_| corrupt("provider"))?,
-            world: summary
-                .model_world
-                .clone()
-                .ok_or_else(|| corrupt("Model world"))?,
         },
         name: summary
             .child_name

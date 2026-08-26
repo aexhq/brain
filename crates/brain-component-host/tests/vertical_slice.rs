@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use brain_component_host::{
     CapabilityCall, CapabilityFailure, CapabilityHandler, ComponentRuntime, ComponentSource,
-    WorkerPool, WorkerRequest, agentloop, component_digest, environment, model, tool,
+    WorkerPool, WorkerRequest, agentloop, component_digest, environment, tool,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ fn component(name: &str) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn four_worlds_execute_without_ambient_authority() {
+async fn three_worlds_execute_without_ambient_authority() {
     let runtime = ComponentRuntime::new().unwrap();
 
     let activation = runtime
@@ -91,28 +91,6 @@ async fn four_worlds_execute_without_ambient_authority() {
         environment.state,
         environment::aex::environment::types::OperationState::Completed
     );
-
-    let model = runtime
-        .exercise_model(
-            &component("model"),
-            model::aex::model::types::Request {
-                operation_id: "model_op_1".into(),
-                model: "test".into(),
-                messages_json: "[]".into(),
-                tools_json: "[]".into(),
-                response_format_json: None,
-                generation_json: "{}".into(),
-                provider_options_json: "{}".into(),
-                deadline_at_ms: u64::MAX,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        model.state,
-        model::aex::model::types::AttemptState::Completed
-    );
-    assert_eq!(model.events.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -257,7 +235,7 @@ async fn worker_keeps_and_releases_agentloop_instances() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn worker_keeps_environment_and_model_lifecycles_resident() {
+async fn worker_keeps_environment_lifecycles_resident() {
     let pool = WorkerPool::new(env!("CARGO_BIN_EXE_component-host"), 1)
         .await
         .unwrap();
@@ -323,48 +301,6 @@ async fn worker_keeps_environment_and_model_lifecycles_resident() {
     pool.call(WorkerRequest::EnvironmentRelease {
         instance_id: "environment-1".into(),
         binding_json: binding,
-    })
-    .await
-    .unwrap();
-
-    let model_path = component_path("model");
-    let model_bytes = std::fs::read(&model_path).unwrap();
-    let started = pool
-        .call(WorkerRequest::ModelStart {
-            instance_id: "model-1".into(),
-            component: ComponentSource {
-                path: model_path,
-                sha256: component_digest(&model_bytes),
-            },
-            request: model::aex::model::types::Request {
-                operation_id: "model-operation-1".into(),
-                model: "test".into(),
-                messages_json: "[]".into(),
-                tools_json: "[]".into(),
-                response_format_json: None,
-                generation_json: "{}".into(),
-                provider_options_json: "{}".into(),
-                deadline_at_ms: u64::MAX,
-            },
-        })
-        .await
-        .unwrap();
-    let provider_id = started["provider_operation_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let observed = pool
-        .call(WorkerRequest::ModelObserve {
-            instance_id: "model-1".into(),
-            provider_operation_id: provider_id.clone(),
-            cursor: None,
-        })
-        .await
-        .unwrap();
-    pool.call(WorkerRequest::ModelAcknowledge {
-        instance_id: "model-1".into(),
-        provider_operation_id: provider_id,
-        terminal_json: observed["terminal_json"].as_str().unwrap().to_owned(),
     })
     .await
     .unwrap();

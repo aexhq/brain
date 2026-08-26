@@ -14,8 +14,3 @@ pub const ENVIRONMENT_WORLD: &str = "aex:environment/environment@1.0.0";
 pub const ENVIRONMENT_CONTRACT_DIGEST: &str =
     "a7eb96d260d7a2470ea335242a846bd3ee43457641aeccefab77428c3631df08";
 pub const ENVIRONMENT_WIT: &str = include_str!("../../../contracts/environment/v1/environment.wit");
-
-pub const MODEL_WORLD: &str = "aex:model/model@1.0.0";
-pub const MODEL_CONTRACT_DIGEST: &str =
-    "f5404825cf2efd4f8f756a47374e2be0dde6dec791c390663a54cd8029fe5376";
-pub const MODEL_WIT: &str = include_str!("../../../contracts/model/v1/model.wit");

@@ -71,8 +71,8 @@ pub struct Brain {
     pub external_executor: Arc<dyn ToolExecutor>,
     /// Resolves each session's sealed selector to the loop implementation driving its turns.
     pub agentloop_registry: Arc<dyn crate::agentloop::AgentloopRegistry>,
-    /// Resolves each session's sealed selector to its Model component.
-    pub model_registry: Arc<dyn crate::provider::ModelRegistry>,
+    /// Builds the live provider for a session's sealed dialect.
+    pub provider_factory: ProviderFactory,
     /// Admits and invokes precompiled Tool components. It may be absent only when no component
     /// Tool is declared.
     pub tool_registry: Option<Arc<dyn crate::tools::ToolRegistry>>,
@@ -197,8 +197,6 @@ pub struct BrainServices {
     pub compactor: Option<Arc<dyn crate::compact::CompactionPort>>,
     /// Selector-to-loop resolution. Compositions must supply it explicitly.
     pub agentloop_registry: Option<Arc<dyn crate::agentloop::AgentloopRegistry>>,
-    /// Selector-to-Model resolution. Production compositions must supply it explicitly.
-    pub model_registry: Option<Arc<dyn crate::provider::ModelRegistry>>,
     /// Precompiled Tool component admission and invocation.
     pub tool_registry: Option<Arc<dyn crate::tools::ToolRegistry>>,
     /// Precompiled Environment component admission and invocation.
@@ -724,18 +722,13 @@ impl Brain {
         #[cfg(test)]
         let agentloop_registry =
             agentloop_registry.or_else(|| Some(Arc::new(crate::agentloop::TestAgentloopRegistry)));
-        let model_registry = services.model_registry.unwrap_or_else(|| {
-            Arc::new(FactoryModelRegistry {
-                factory: provider_factory.clone(),
-            })
-        });
         let customer_component = customer.as_ref().map(|coordinator| {
             crate::customer_component::CustomerComponentDriver::new(coordinator.clone())
         });
         Arc::new(Self {
             agentloop_registry: agentloop_registry
                 .expect("BrainServices.agentloop_registry is required"),
-            model_registry,
+            provider_factory,
             tool_registry: services.tool_registry,
             component_environment_registry: services.component_environment_registry,
             model_permits: Arc::new(Semaphore::new(cfg.max_concurrent_model_rounds)),
@@ -1119,20 +1112,23 @@ impl Brain {
         }
 
         // Validate and resolve the sealed configuration.
-        let provider = req.model.provider.as_str();
-        let base_url = req
-            .model
-            .base_url
-            .as_ref()
-            .map(|value| value.as_str().trim_end_matches('/').to_owned())
-            .unwrap_or_default();
-        if !base_url.is_empty() {
-            let checked_base = self.outbound.check_url(&base_url)?;
-            if checked_base.query().is_some() {
-                return Err(BrainError::Invalid(
-                    "model.base_url must not contain a query".into(),
-                ));
-            }
+        let dialect = match req.model.dialect {
+            brain_protocol::session::Dialect::Anthropic => Dialect::AnthropicMessages,
+            brain_protocol::session::Dialect::Openai => Dialect::OpenAiChat,
+        };
+        // The Anthropic Messages API has no reasoning-effort parameter. Refuse at create rather
+        // than dropping a sealed generation option the caller asked for.
+        if dialect == Dialect::AnthropicMessages && req.model.reasoning_effort.is_some() {
+            return Err(BrainError::Invalid(
+                "model.reasoning_effort is not supported by the anthropic dialect".into(),
+            ));
+        }
+        let base_url = req.model.base_url.as_str().trim_end_matches('/').to_owned();
+        let checked_base = self.outbound.check_url(&base_url)?;
+        if checked_base.query().is_some() {
+            return Err(BrainError::Invalid(
+                "model.base_url must not contain a query".into(),
+            ));
         }
         if req.model.api_key.is_empty() {
             return Err(BrainError::Invalid(
@@ -1172,20 +1168,6 @@ impl Brain {
                 )));
             }
         }
-        let model_digest = req.model.component_digest.as_str();
-        let model_component = component_artifacts.get(model_digest).ok_or_else(|| {
-            BrainError::Invalid(format!(
-                "Model component {model_digest} has no supplied artifact"
-            ))
-        })?;
-        let model_selector = self.model_registry.admit(
-            model_digest,
-            &req.model.world,
-            model_component,
-            provider,
-            &req.model.config,
-        )?;
-        self.model_registry.resolve(&model_selector)?;
         if req.metadata.len() > 16 {
             return Err(BrainError::Invalid("metadata: at most 16 pairs".into()));
         }
@@ -1596,7 +1578,7 @@ impl Brain {
             self.agentloop_registry
                 .admit(digest, world.as_str(), component, config)?;
         self.agentloop_registry.resolve(&agentloop_selector)?;
-        let mut referenced_components = HashSet::from([model_digest, digest]);
+        let mut referenced_components = HashSet::from([digest]);
         referenced_components.extend(referenced_tool_components.iter().map(String::as_str));
         referenced_components.extend(referenced_environment_components.iter().map(String::as_str));
         if let Some(unused) = component_artifacts
@@ -1618,10 +1600,9 @@ impl Brain {
         let mut prefix = PrefixDoc {
             agentloop: Some(agentloop_selector),
             system_prompt: None,
-            provider: provider.to_string(),
-            model_component: Some(model_selector),
+            dialect,
             model: req.model.name.to_string(),
-            base_url: Some(base_url),
+            base_url,
             max_output_tokens: req.model.max_output_tokens.map(|n| n.get()),
             context_window_tokens: u32::try_from(req.model.context_window_tokens.unwrap_or(
                 i64::from(brain_protocol::DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS),
@@ -3540,33 +3521,6 @@ fn change_partition(session_id: &str, partitions: u16) -> u16 {
 
     let digest = Sha256::digest(session_id.as_bytes());
     u16::from_be_bytes([digest[0], digest[1]]) % partitions
-}
-
-struct FactoryModelRegistry {
-    factory: ProviderFactory,
-}
-
-impl crate::provider::ModelRegistry for FactoryModelRegistry {
-    fn resolve(&self, selector: &crate::journal::ModelSelectorDoc) -> Result<Arc<dyn Provider>> {
-        Ok((self.factory)(dialect_of(&selector.provider)))
-    }
-
-    fn admit(
-        &self,
-        component_digest: &str,
-        world: &str,
-        component: &[u8],
-        provider: &str,
-        config: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::journal::ModelSelectorDoc> {
-        Ok(crate::journal::ModelSelectorDoc {
-            component_digest: component_digest.into(),
-            component_bytes: component.len() as u64,
-            world: world.into(),
-            provider: provider.into(),
-            config: config.clone(),
-        })
-    }
 }
 
 fn secret_delivery_error(
@@ -6386,8 +6340,8 @@ fn turn_run(
     cancel: CancellationToken,
     message: Option<crate::turn::AdmittedMessage>,
 ) -> Result<TurnRun> {
-    let (prefix, _) = build_prefix(&r.st.head.prefix, brain.cfg.default_max_rounds)?;
-    let base_url = r.st.head.prefix.base_url.clone().unwrap_or_default();
+    let (prefix, dialect) = build_prefix(&r.st.head.prefix, brain.cfg.default_max_rounds)?;
+    let base_url = r.st.head.prefix.base_url.clone();
     let session = SessionConfig::new(prefix.clone(), r.key.clone(), base_url);
     Ok(TurnRun {
         engine: {
@@ -6406,12 +6360,7 @@ fn turn_run(
         turn_id: turn_id.to_string(),
         prefix,
         session,
-        provider: brain.model_registry.resolve(
-            r.st.head.prefix.model_component.as_ref().ok_or_else(|| {
-                BrainError::Journal("session has no sealed Model component".into())
-            })?,
-        )?,
-        provider_name: r.st.head.prefix.provider.clone(),
+        provider: (brain.provider_factory)(dialect),
         journal: brain.journal.clone(),
         hub: brain.hub.clone(),
         cancel,

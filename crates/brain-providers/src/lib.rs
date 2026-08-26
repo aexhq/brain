@@ -13,7 +13,6 @@ use brain::session::ProviderFactory;
 use brain::{BrainError, Result};
 use futures_util::stream::BoxStream;
 
-pub mod component;
 pub mod external;
 
 pub use external::HttpExternalToolExecutor;
@@ -269,6 +268,44 @@ mod tests {
         assert!(
             text.contains("SSRF guard"),
             "failure must be attributed to the guard, got: {text}"
+        );
+    }
+
+    /// Regression: a provider that refuses a request must surface its status and body, not a
+    /// bare transport failure, so a turn can report why it stopped and whether to retry.
+    #[test]
+    fn a_refused_request_reports_its_status_body_and_retry_hint() {
+        let error = BrainError::ProviderStatus {
+            status: 429,
+            body: "{\"error\":{\"message\":\"slow down\"}}".into(),
+            retry_after_ms: Some(7_000),
+        };
+        let text = format!("{error}");
+        assert!(text.contains("429"), "status must be legible, got {text}");
+        assert!(
+            text.contains("slow down"),
+            "body must be legible, got {text}"
+        );
+        match error {
+            BrainError::ProviderStatus { retry_after_ms, .. } => {
+                assert_eq!(retry_after_ms, Some(7_000));
+            }
+            other => panic!("expected a provider status error, got {other:?}"),
+        }
+    }
+
+    /// Regression: a stream that dies inside an SSE frame must leave the decoder holding those
+    /// bytes, which is what makes the round fail instead of looking like a clean end of stream.
+    #[test]
+    fn a_stream_that_dies_mid_frame_leaves_an_incomplete_frame_pending() {
+        let mut decoder = brain::provider::sse::SseDecoder::default();
+        let frames = decoder
+            .feed(b"data: {\"choices\":[{\"delta\"")
+            .expect("a partial frame is not itself an error");
+        assert!(frames.is_empty(), "an unterminated frame must not decode");
+        assert!(
+            decoder.pending() > 0,
+            "the truncated bytes must stay pending so EOF reports them"
         );
     }
 

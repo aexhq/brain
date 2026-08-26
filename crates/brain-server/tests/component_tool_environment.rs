@@ -85,15 +85,47 @@ async fn dispatch_endpoint() -> (String, Arc<Mutex<Vec<Value>>>) {
     (format!("http://{address}/environment"), seen)
 }
 
+/// One scripted Anthropic round-trip over real HTTP: ask for the Tool, then answer in text once
+/// the transcript carries its result.
+async fn scripted_model(request: axum::extract::Request) -> axum::response::Response {
+    use axum::body::Body;
+    use axum::http::{HeaderValue, header};
+
+    let body = axum::body::to_bytes(request.into_body(), 4 * 1024 * 1024)
+        .await
+        .expect("model request body");
+    let transcript = String::from_utf8_lossy(&body).into_owned();
+    let frames = if transcript.contains("tool_result") {
+        format!(
+            "event: message_start\ndata: {}\n\nevent: content_block_delta\ndata: {}\n\nevent: message_delta\ndata: {}\n\n",
+            json!({"type":"message_start","message":{"usage":{"input_tokens":5}}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"component environment completed"}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}})
+        )
+    } else {
+        format!(
+            "event: message_start\ndata: {}\n\nevent: content_block_start\ndata: {}\n\nevent: content_block_delta\ndata: {}\n\nevent: message_delta\ndata: {}\n\n",
+            json!({"type":"message_start","message":{"usage":{"input_tokens":5}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-1","name":"environment_echo"}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":json!({"message":"hello"}).to_string()}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}})
+        )
+    };
+    let mut response = axum::response::Response::new(Body::from(frames));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream"),
+    );
+    response
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn component_tool_calls_component_environment_through_the_session_kernel() {
     let temp = TempDir::new();
     let loop_component = fixture("agentloop");
-    let model_component = fixture("model");
     let tool_component = fixture("tool");
     let environment_component = fixture("environment");
     let loop_digest = hex::encode(Sha256::digest(&loop_component));
-    let model_digest = hex::encode(Sha256::digest(&model_component));
     let tool_digest = hex::encode(Sha256::digest(&tool_component));
     let environment_digest = hex::encode(Sha256::digest(&environment_component));
     let bundle = b"export default async function invoke(input) { return input; }";
@@ -104,10 +136,23 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
             .expect("Environment dispatch capabilities"),
     );
 
+    let model_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind the scripted model endpoint");
+    let model_base = format!("http://{}/v1", model_listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(
+            model_listener,
+            axum::Router::new().route("/v1/messages", axum::routing::post(scripted_model)),
+        )
+        .await
+    });
     let brain = brain_server::compose_local(brain_server::LocalOptions {
         data_dir: temp.0.clone(),
         cfg: BrainConfig {
             idle_discard: Duration::from_secs(300),
+            // The scripted endpoint is loopback; production keeps this closed.
+            outbound_allow_private: true,
             ..BrainConfig::default()
         },
         advertised_address: "127.0.0.1:1".into(),
@@ -125,21 +170,14 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
     let request: CreateSessionRequest = serde_json::from_value(json!({
         "component_artifacts": [
             artifact(&loop_component),
-            artifact(&model_component),
             artifact(&tool_component),
             artifact(&environment_component),
         ],
         "model": {
-            "component_digest": model_digest,
-            "world": "aex:model/model@1.0.0",
-            "provider": "fixture",
+            "dialect": "anthropic",
+            "base_url": model_base,
             "name": "fixture",
-            "api_key": "sk-fixture",
-            "config": {
-                "toolName": "environment_echo",
-                "toolInput": {"message":"hello"},
-                "finalText": "component environment completed"
-            }
+            "api_key": "sk-fixture"
         },
         "agentloop": {
             "component_digest": loop_digest,

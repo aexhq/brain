@@ -146,7 +146,6 @@ pub struct CompactionRequest {
 #[derive(Debug, Clone)]
 pub struct CompactionResult {
     pub summary: String,
-    pub provider: String,
     pub model: String,
     pub usage: crate::message::Usage,
 }
@@ -154,7 +153,6 @@ pub struct CompactionResult {
 pub struct CompactionModel<'a> {
     pub provider: Arc<dyn Provider>,
     pub session: &'a SessionConfig,
-    pub provider_name: &'a str,
     pub cancel: &'a tokio_util::sync::CancellationToken,
     pub header_timeout: std::time::Duration,
     pub idle_timeout: std::time::Duration,
@@ -262,7 +260,6 @@ impl CompactionPort for SameProviderCompactor {
         }
         Ok(CompactionResult {
             summary,
-            provider: model.provider_name.to_owned(),
             model: model.session.prefix.model.clone(),
             usage,
         })
@@ -303,7 +300,6 @@ fn build_compaction_wire(
 pub struct SemanticPlan {
     pub summary: String,
     pub summary_kind: String,
-    pub compactor_provider: String,
     pub compactor_model: String,
     pub tail: Vec<Message>,
     pub retained_messages: u64,
@@ -316,7 +312,6 @@ pub struct SemanticPlan {
 pub struct ContextPayload {
     pub summary: String,
     pub summary_kind: String,
-    pub compactor_provider: String,
     pub compactor_model: String,
     pub tail: Vec<Message>,
 }
@@ -586,7 +581,6 @@ pub fn finish_plan(
             .saturating_add(estimate_tokens(&plan.tail)) as u64,
         summary: result.summary,
         summary_kind: "semantic".into(),
-        compactor_provider: result.provider,
         compactor_model: result.model,
         retained_messages: plan.retained_messages,
         tail: plan.tail,
@@ -603,7 +597,6 @@ pub fn encode_payload(plan: &SemanticPlan) -> Result<EncodedPayload> {
     let bytes = serde_json::to_vec(&ContextPayload {
         summary: plan.summary.clone(),
         summary_kind: plan.summary_kind.clone(),
-        compactor_provider: plan.compactor_provider.clone(),
         compactor_model: plan.compactor_model.clone(),
         tail: plan.tail.clone(),
     })?;
@@ -905,7 +898,6 @@ mod tests {
             first,
             CompactionResult {
                 summary: "material decision id=decision-early path=/workspace/item-2.rs".into(),
-                provider: "fake".into(),
                 model: "compact-test".into(),
                 usage: crate::message::Usage::default(),
             },
@@ -931,7 +923,6 @@ mod tests {
             second_plan,
             CompactionResult {
                 summary: format!("{}\nnew progress preserved", first.summary),
-                provider: "fake".into(),
                 model: "compact-test".into(),
                 usage: crate::message::Usage::default(),
             },

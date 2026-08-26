@@ -365,9 +365,8 @@ impl Api {
                 // Keep semantic compaction out of the turn-throughput instrument. Its own
                 // correctness and wire-budget gates live in Brain's compaction test suite.
                 "model": {
-                    "component_digest": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
-                    "world": "aex:model/model@1.0.0",
-                    "provider": "anthropic",
+                    "dialect": "anthropic",
+                    "base_url": "https://api.anthropic.com/v1",
                     "name": "bench",
                     "api_key": "sk-bench",
                     "context_window_tokens": brain_protocol::MAX_MODEL_CONTEXT_WINDOW_TOKENS

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{agentloop, environment, model, tool};
+use crate::{agentloop, environment, tool};
 
 /// Epoch ticks are 10 ms; one exported call gets 30 s of contiguous guest execution. The slice
 /// bounds a guest that never yields, so it re-arms whenever the guest awaits a host capability
@@ -29,7 +29,6 @@ const MEMORY_LIMIT_BYTES: usize = 256 << 20;
 pub const AGENTLOOP_COMPONENT: &str = "agentloop";
 pub const TOOL_COMPONENT: &str = "tool";
 pub const ENVIRONMENT_COMPONENT: &str = "environment";
-pub const MODEL_COMPONENT: &str = "model";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityCall {
@@ -760,84 +759,6 @@ fn environment_error(
     }
 }
 
-impl model::aex::model::host::Host for State {
-    async fn cancelled(&mut self) -> bool {
-        self.cancelled
-    }
-
-    async fn log(&mut self, _level: model::aex::model::types::LogLevel, _message: String) {}
-
-    async fn http_start(
-        &mut self,
-        operation_id: String,
-        request: model::aex::model::types::HttpRequest,
-    ) -> Result<model::aex::model::types::HttpStarted, model::aex::model::types::ExtensionError>
-    {
-        let value = self
-            .capability(
-                "model.http.start",
-                operation_id,
-                serde_json::to_value(request).expect("generated HTTP request serializes"),
-            )
-            .await
-            .map_err(model_error)?;
-        serde_json::from_value(value).map_err(|error| model::aex::model::types::ExtensionError {
-            code: "invalid_response".into(),
-            message: error.to_string(),
-            retryable: false,
-        })
-    }
-
-    async fn http_read(
-        &mut self,
-        request_id: String,
-        cursor: Option<String>,
-        max_bytes: u32,
-    ) -> Result<model::aex::model::types::HttpChunk, model::aex::model::types::ExtensionError> {
-        let value = self
-            .capability(
-                "model.http.read",
-                request_id.clone(),
-                serde_json::json!({
-                    "request_id": request_id,
-                    "cursor": cursor,
-                    "max_bytes": max_bytes,
-                }),
-            )
-            .await
-            .map_err(model_error)?;
-        serde_json::from_value(value).map_err(|error| model::aex::model::types::ExtensionError {
-            code: "invalid_response".into(),
-            message: error.to_string(),
-            retryable: false,
-        })
-    }
-
-    async fn http_cancel(
-        &mut self,
-        request_id: String,
-    ) -> Result<(), model::aex::model::types::ExtensionError> {
-        self.capability(
-            "model.http.cancel",
-            request_id.clone(),
-            serde_json::json!({ "request_id": request_id }),
-        )
-        .await
-        .map_err(model_error)?;
-        Ok(())
-    }
-}
-
-impl model::aex::model::types::Host for State {}
-
-fn model_error(error: CapabilityFailure) -> model::aex::model::types::ExtensionError {
-    model::aex::model::types::ExtensionError {
-        code: error.code,
-        message: error.message,
-        retryable: error.retryable,
-    }
-}
-
 pub struct ComponentRuntime {
     engine: Engine,
     components: Mutex<HashMap<String, Component>>,
@@ -852,56 +773,6 @@ pub struct AgentloopInstance {
 pub struct EnvironmentInstance {
     store: Store<State>,
     bindings: environment::Environment,
-}
-
-pub struct ModelInstance {
-    store: Store<State>,
-    bindings: model::Model,
-}
-
-impl ModelInstance {
-    pub async fn start(
-        &mut self,
-        request: &model::aex::model::types::Request,
-    ) -> anyhow::Result<model::aex::model::types::Started> {
-        wt(self
-            .bindings
-            .call_start(armed(&mut self.store), request)
-            .await)?
-        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
-    }
-
-    pub async fn observe(
-        &mut self,
-        provider_operation_id: &str,
-        cursor: Option<&str>,
-    ) -> anyhow::Result<model::aex::model::types::Observation> {
-        wt(self
-            .bindings
-            .call_observe(armed(&mut self.store), provider_operation_id, cursor)
-            .await)?
-        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
-    }
-
-    pub async fn cancel(&mut self, provider_operation_id: &str) -> anyhow::Result<()> {
-        wt(self
-            .bindings
-            .call_cancel(armed(&mut self.store), provider_operation_id)
-            .await)?
-        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
-    }
-
-    pub async fn acknowledge(
-        &mut self,
-        provider_operation_id: &str,
-        terminal_json: &str,
-    ) -> anyhow::Result<()> {
-        wt(self
-            .bindings
-            .call_acknowledge(armed(&mut self.store), provider_operation_id, terminal_json)
-            .await)?
-        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
-    }
 }
 
 impl EnvironmentInstance {
@@ -1199,59 +1070,6 @@ impl ComponentRuntime {
             )
             .await?;
         instance.release(&resolved.binding_json).await?;
-        Ok(observation)
-    }
-
-    pub async fn start_model(
-        &self,
-        bytes: &[u8],
-        request: model::aex::model::types::Request,
-    ) -> anyhow::Result<model::aex::model::types::Started> {
-        self.instantiate_model(bytes).await?.start(&request).await
-    }
-
-    pub async fn instantiate_model(&self, bytes: &[u8]) -> anyhow::Result<ModelInstance> {
-        self.instantiate_model_scoped(bytes, None).await
-    }
-
-    pub async fn instantiate_model_scoped(
-        &self,
-        bytes: &[u8],
-        instance_id: Option<String>,
-    ) -> anyhow::Result<ModelInstance> {
-        let component = self.component(bytes)?;
-        let mut linker = Linker::new(&self.engine);
-        wt(wasmtime_wasi::p2::add_to_linker_async(&mut linker))?;
-        wt(model::Model::add_to_linker::<State, HasSelf<State>>(
-            &mut linker,
-            |state| state,
-        ))?;
-        let mut store = self.store_with(State::new(
-            self.capabilities.clone(),
-            MODEL_COMPONENT,
-            instance_id,
-        ));
-        let bindings = wt(model::Model::instantiate_async(&mut store, &component, &linker).await)?;
-        Ok(ModelInstance { store, bindings })
-    }
-
-    pub async fn exercise_model(
-        &self,
-        bytes: &[u8],
-        request: model::aex::model::types::Request,
-    ) -> anyhow::Result<model::aex::model::types::Observation> {
-        let mut instance = self.instantiate_model(bytes).await?;
-        let started = instance.start(&request).await?;
-        let observation = instance
-            .observe(&started.provider_operation_id, None)
-            .await?;
-        let terminal = observation
-            .terminal_json
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("deterministic Model returned no terminal"))?;
-        instance
-            .acknowledge(&started.provider_operation_id, terminal)
-            .await?;
         Ok(observation)
     }
 }

@@ -19,7 +19,7 @@ impl OpenAiChat {
     pub fn request(body: Value, key: &ProviderKey, base_url: &str) -> Result<ModelRequest> {
         Ok(ModelRequest {
             method: "POST",
-            url: format!("{}/v1/chat/completions", base_url.trim_end_matches('/')),
+            url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
             headers: vec![
                 ("content-type".into(), "application/json".into()),
                 ("accept".into(), "text/event-stream".into()),
@@ -447,6 +447,7 @@ mod tests {
     use super::*;
     use crate::config::Dialect;
     use crate::config::{AgentDef, GenOpts, OutputTokenParameter, ToolDecl, ToolRoute};
+    use crate::message::Message;
     use crate::provider::Accumulator;
 
     fn prefix() -> std::sync::Arc<SealedPrefix> {
@@ -668,5 +669,52 @@ mod tests {
             }
             other => panic!("expected Usage, got {other:?}"),
         }
+    }
+
+    /// Regression: a sampling field the caller never set must be absent, not null. A forwarded
+    /// null is a value, and providers answer it with `expected number, received null`.
+    #[test]
+    fn an_unset_sampling_field_stays_absent_and_the_sealed_prompt_leads_the_request() {
+        let definition =
+            AgentDef::new("be terse", "gpt-5.4", Dialect::OpenAiChat).sampling(GenOpts {
+                max_tokens: 4_096,
+                output_token_parameter: OutputTokenParameter::MaxCompletionTokens,
+                temperature: None,
+                reasoning_effort: None,
+                stop_sequences: Vec::new(),
+            });
+        let sealed = definition.seal();
+        let request = OpenAiChat::build_request(
+            &sealed,
+            &[Message::user_text("hi")],
+            &ProviderKey::new("sk-x"),
+            "https://api.example/v1",
+        )
+        .unwrap();
+        assert_eq!(request.url, "https://api.example/v1/chat/completions");
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        for absent in ["temperature", "reasoning_effort", "stop"] {
+            assert!(
+                body.get(absent).is_none(),
+                "{absent} must stay absent rather than serialize as null"
+            );
+        }
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "be terse");
+        assert_eq!(body["messages"][1]["content"], "hi");
+    }
+
+    /// Regression: reasoning effort reaches the provider only when a caller chose one.
+    #[test]
+    fn reasoning_effort_is_sent_only_when_it_was_chosen() {
+        let chosen = AgentDef::new("sys", "gpt-5.4", Dialect::OpenAiChat).sampling(GenOpts {
+            max_tokens: 4_096,
+            output_token_parameter: OutputTokenParameter::MaxCompletionTokens,
+            temperature: None,
+            reasoning_effort: Some("low".into()),
+            stop_sequences: Vec::new(),
+        });
+        let body = OpenAiChat::render_base(&chosen.seal());
+        assert_eq!(body["reasoning_effort"], "low");
     }
 }

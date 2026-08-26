@@ -65,11 +65,6 @@ pub fn tool_outcome(o: brain_protocol::environment::TerminalOutcome) -> ToolOutc
     }
 }
 
-fn provider_of(s: &str) -> session::Provider {
-    s.parse()
-        .expect("sealed provider provenance satisfies the public contract")
-}
-
 pub fn usage_of(u: &crate::message::Usage) -> ProviderUsage {
     ProviderUsage {
         input_tokens: u.input_tokens,
@@ -153,14 +148,12 @@ pub fn derive(session_id: &str, seq: u64, ts_ms: u64, record: &Record) -> Option
         Record::Usage {
             turn,
             agent,
-            provider,
             model,
             usage,
         } => Event::ModelUsage {
             agent_id: agent.parse().ok()?,
             at,
             model: model.clone(),
-            provider: provider_of(provider),
             seq,
             session_id: sid,
             turn_id: turn_of(turn)?,
@@ -603,7 +596,6 @@ mod tests {
             token_estimate: 1,
             context_generation: 1,
             summary_kind: "semantic".into(),
-            compactor_provider: "fake".into(),
             compactor_model: "fake".into(),
             retained_from_sequence: 1,
             created_at_ms: 0,

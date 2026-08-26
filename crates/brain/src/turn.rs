@@ -202,7 +202,6 @@ pub struct TurnRun {
     pub prefix: Shared<SealedPrefix>,
     pub session: SessionConfig,
     pub provider: Arc<dyn Provider>,
-    pub provider_name: String,
     pub journal: Journal,
     pub hub: Arc<EventHub>,
     pub cancel: CancellationToken,
@@ -862,7 +861,6 @@ impl LoopTurnCtx<'_> {
                 Record::Usage {
                     turn: self.run.turn_id.clone(),
                     agent: "root".into(),
-                    provider: self.run.provider_name.clone(),
                     model: self.run.prefix.model.clone(),
                     usage,
                 },
