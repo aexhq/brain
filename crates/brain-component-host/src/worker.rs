@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::Instrument as _;
 
 use crate::{
@@ -289,6 +289,7 @@ enum ParentFrame {
         request: Box<WorkerRequest>,
         #[serde(default)]
         trace_context: HashMap<String, String>,
+        heartbeat_ms: u64,
     },
     CapabilityResult {
         id: u64,
@@ -350,8 +351,13 @@ enum WorkerFrame {
     },
     Capability {
         id: u64,
+        request_id: u64,
         call: CapabilityCall,
     },
+    /// The worker is still there and still on this request. Reading a component of up to
+    /// 32 MiB, compiling it and instantiating it all happen before a request's first real
+    /// frame, and none of that is the worker falling silent.
+    Progress { request_id: u64 },
 }
 
 struct ResidentAgentloop {
@@ -372,25 +378,134 @@ struct ResidentModel {
     last_used: std::time::Instant,
 }
 
-trait ResidentEntry {
+trait Resident {
+    type Instance;
+
     fn last_used(&self) -> std::time::Instant;
+    fn touch(&mut self);
+    fn instance(&mut self) -> &mut Self::Instance;
 }
 
-impl ResidentEntry for ResidentAgentloop {
-    fn last_used(&self) -> std::time::Instant {
-        self.last_used
+macro_rules! resident {
+    ($resident:ty, $instance:ty) => {
+        impl Resident for $resident {
+            type Instance = $instance;
+
+            fn last_used(&self) -> std::time::Instant {
+                self.last_used
+            }
+
+            fn touch(&mut self) {
+                self.last_used = std::time::Instant::now();
+            }
+
+            fn instance(&mut self) -> &mut Self::Instance {
+                &mut self.instance
+            }
+        }
+    };
+}
+
+resident!(ResidentAgentloop, AgentloopInstance);
+resident!(ResidentEnvironment, EnvironmentInstance);
+resident!(ResidentModel, ModelInstance);
+
+/// One resident instance, behind its own lock. Requests for different instances run at the same
+/// time; two requests for the same instance still serialize, because a component instance is a
+/// single mutable store.
+type Slot<T> = Arc<Mutex<Option<T>>>;
+type Table<T> = std::sync::Mutex<HashMap<String, Slot<T>>>;
+
+#[derive(Default)]
+struct Residents {
+    agentloops: Table<ResidentAgentloop>,
+    environments: Table<ResidentEnvironment>,
+    models: Table<ResidentModel>,
+}
+
+impl Residents {
+    fn open<T>(table: &Table<T>, instance_id: &str) -> Slot<T> {
+        table
+            .lock()
+            .expect("resident instances")
+            .entry(instance_id.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    /// A slot the caller requires to exist already; `open` would silently create one.
+    fn existing<T>(table: &Table<T>, instance_id: &str, world: &str) -> anyhow::Result<Slot<T>> {
+        table
+            .lock()
+            .expect("resident instances")
+            .get(instance_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("{world} instance is not resident"))
+    }
+
+    fn remove<T>(table: &Table<T>, instance_id: &str) {
+        table
+            .lock()
+            .expect("resident instances")
+            .remove(instance_id);
+    }
+
+    fn environment(&self, instance_id: &str) -> anyhow::Result<Slot<ResidentEnvironment>> {
+        Self::existing(&self.environments, instance_id, "Environment")
+    }
+
+    fn model(&self, instance_id: &str) -> anyhow::Result<Slot<ResidentModel>> {
+        Self::existing(&self.models, instance_id, "Model")
+    }
+
+    fn sweep(&self, policy: ResidentPolicy) {
+        sweep_table(&self.agentloops, policy);
+        sweep_table(&self.environments, policy);
+        sweep_table(&self.models, policy);
     }
 }
 
-impl ResidentEntry for ResidentEnvironment {
-    fn last_used(&self) -> std::time::Instant {
-        self.last_used
-    }
+/// The instance inside a slot the caller already proved is in the table. A slot can still be
+/// empty: an instantiation that failed, or a lifecycle that already released it.
+fn live<'a, T: Resident>(
+    slot: &'a mut Option<T>,
+    world: &str,
+) -> anyhow::Result<&'a mut T::Instance> {
+    slot.as_mut()
+        .map(|resident| {
+            resident.touch();
+            resident.instance()
+        })
+        .ok_or_else(|| anyhow::anyhow!("{world} instance is not resident"))
 }
 
-impl ResidentEntry for ResidentModel {
-    fn last_used(&self) -> std::time::Instant {
-        self.last_used
+/// Evict idle instances and hold the table to its cap. A slot that is locked is serving a request
+/// right now, so it is neither idle nor evictable; an emptied slot is dropped so a failed
+/// instantiation leaves nothing behind. The slot locks are only ever tried, never awaited, while
+/// the table lock is held: a request that already holds a slot may still take the table.
+fn sweep_table<T: Resident>(table: &Table<T>, policy: ResidentPolicy) {
+    let now = std::time::Instant::now();
+    let mut table = table.lock().expect("resident instances");
+    table.retain(|_, slot| match slot.try_lock() {
+        Ok(guard) => guard
+            .as_ref()
+            .is_some_and(|resident| now.duration_since(resident.last_used()) < policy.idle),
+        Err(_) => true,
+    });
+    while table.len() > policy.cap {
+        let Some(oldest) = table
+            .iter()
+            .filter_map(|(id, slot)| {
+                let guard = slot.try_lock().ok()?;
+                let last_used = guard.as_ref()?.last_used();
+                Some((last_used, id.clone()))
+            })
+            .min_by_key(|(last_used, _)| *last_used)
+            .map(|(_, id)| id)
+        else {
+            break;
+        };
+        table.remove(&oldest);
     }
 }
 
@@ -437,54 +552,13 @@ fn strict_worker_option(
     Ok(value)
 }
 
-fn sweep_residents<T: ResidentEntry>(map: &mut HashMap<String, T>, policy: ResidentPolicy) {
-    let now = std::time::Instant::now();
-    map.retain(|_, resident| now.duration_since(resident.last_used()) < policy.idle);
-    while map.len() > policy.cap {
-        let Some(oldest) = map
-            .iter()
-            .min_by_key(|(_, resident)| resident.last_used())
-            .map(|(id, _)| id.clone())
-        else {
-            break;
-        };
-        map.remove(&oldest);
-    }
-}
-
-fn environment_instance<'a>(
-    environments: &'a mut HashMap<String, ResidentEnvironment>,
-    instance_id: &str,
-) -> anyhow::Result<&'a mut EnvironmentInstance> {
-    let resident = environments
-        .get_mut(instance_id)
-        .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?;
-    resident.last_used = std::time::Instant::now();
-    Ok(&mut resident.instance)
-}
-
-fn model_instance<'a>(
-    models: &'a mut HashMap<String, ResidentModel>,
-    instance_id: &str,
-) -> anyhow::Result<&'a mut ModelInstance> {
-    let resident = models
-        .get_mut(instance_id)
-        .ok_or_else(|| anyhow::anyhow!("Model instance is not resident"))?;
-    resident.last_used = std::time::Instant::now();
-    Ok(&mut resident.instance)
-}
-
 async fn execute(
     runtime: &ComponentRuntime,
-    agentloops: &mut HashMap<String, ResidentAgentloop>,
-    environments: &mut HashMap<String, ResidentEnvironment>,
-    models: &mut HashMap<String, ResidentModel>,
+    residents: &Residents,
     policy: ResidentPolicy,
     request: WorkerRequest,
 ) -> anyhow::Result<Value> {
-    sweep_residents(agentloops, policy);
-    sweep_residents(environments, policy);
-    sweep_residents(models, policy);
+    residents.sweep(policy);
     match request {
         WorkerRequest::Agentloop {
             instance_id,
@@ -492,7 +566,9 @@ async fn execute(
             request,
         } => {
             let bytes = read_component(&component)?;
-            if let Some(resident) = agentloops.get_mut(&instance_id) {
+            let slot = Residents::open(&residents.agentloops, &instance_id);
+            let mut resident = slot.lock().await;
+            if let Some(resident) = resident.as_mut() {
                 resident.last_used = std::time::Instant::now();
                 if resident.digest != component.sha256 {
                     anyhow::bail!("Agentloop instance is sealed to a different component digest");
@@ -505,15 +581,11 @@ async fn execute(
                 .instantiate_agentloop_scoped(&bytes, Some(instance_id.clone()))
                 .await?;
             let result = instance.activate(&request).await?;
-            agentloops.insert(
-                instance_id,
-                ResidentAgentloop {
-                    digest: component.sha256,
-                    instance,
-                    last_used: std::time::Instant::now(),
-                },
-            );
-            sweep_residents(agentloops, policy);
+            *resident = Some(ResidentAgentloop {
+                digest: component.sha256,
+                instance,
+                last_used: std::time::Instant::now(),
+            });
             Ok(serde_json::to_value(result)?)
         }
         WorkerRequest::Tool {
@@ -546,7 +618,9 @@ async fn execute(
             request,
         } => {
             let bytes = read_component(&component)?;
-            if let Some(resident) = environments.get_mut(&instance_id) {
+            let slot = Residents::open(&residents.environments, &instance_id);
+            let mut resident = slot.lock().await;
+            if let Some(resident) = resident.as_mut() {
                 resident.last_used = std::time::Instant::now();
                 if resident.digest != component.sha256 {
                     anyhow::bail!("Environment instance is sealed to a different component digest");
@@ -559,42 +633,48 @@ async fn execute(
                 .instantiate_environment_scoped(&bytes, Some(instance_id.clone()))
                 .await?;
             let result = instance.resolve(&request).await?;
-            environments.insert(
-                instance_id,
-                ResidentEnvironment {
-                    digest: component.sha256,
-                    instance,
-                    last_used: std::time::Instant::now(),
-                },
-            );
-            sweep_residents(environments, policy);
+            *resident = Some(ResidentEnvironment {
+                digest: component.sha256,
+                instance,
+                last_used: std::time::Instant::now(),
+            });
             Ok(serde_json::to_value(result)?)
         }
         WorkerRequest::EnvironmentSubmit {
             instance_id,
             binding_json,
             operation,
-        } => Ok(serde_json::to_value(
-            environment_instance(environments, &instance_id)?
-                .submit(&binding_json, &operation)
-                .await?,
-        )?),
+        } => {
+            let slot = residents.environment(&instance_id)?;
+            let mut resident = slot.lock().await;
+            Ok(serde_json::to_value(
+                live(&mut resident, "Environment")?
+                    .submit(&binding_json, &operation)
+                    .await?,
+            )?)
+        }
         WorkerRequest::EnvironmentObserve {
             instance_id,
             binding_json,
             provider_operation_id,
             cursor,
-        } => Ok(serde_json::to_value(
-            environment_instance(environments, &instance_id)?
-                .observe(&binding_json, &provider_operation_id, cursor.as_deref())
-                .await?,
-        )?),
+        } => {
+            let slot = residents.environment(&instance_id)?;
+            let mut resident = slot.lock().await;
+            Ok(serde_json::to_value(
+                live(&mut resident, "Environment")?
+                    .observe(&binding_json, &provider_operation_id, cursor.as_deref())
+                    .await?,
+            )?)
+        }
         WorkerRequest::EnvironmentCancel {
             instance_id,
             binding_json,
             provider_operation_id,
         } => {
-            environment_instance(environments, &instance_id)?
+            let slot = residents.environment(&instance_id)?;
+            let mut resident = slot.lock().await;
+            live(&mut resident, "Environment")?
                 .cancel(&binding_json, &provider_operation_id)
                 .await?;
             Ok(Value::Null)
@@ -605,7 +685,9 @@ async fn execute(
             provider_operation_id,
             terminal_json,
         } => {
-            environment_instance(environments, &instance_id)?
+            let slot = residents.environment(&instance_id)?;
+            let mut resident = slot.lock().await;
+            live(&mut resident, "Environment")?
                 .acknowledge(&binding_json, &provider_operation_id, &terminal_json)
                 .await?;
             Ok(Value::Null)
@@ -614,10 +696,13 @@ async fn execute(
             instance_id,
             binding_json,
         } => {
-            let mut resident = environments
-                .remove(&instance_id)
-                .ok_or_else(|| anyhow::anyhow!("Environment instance is not resident"))?;
-            resident.instance.release(&binding_json).await?;
+            let slot = residents.environment(&instance_id)?;
+            let mut resident = slot.lock().await;
+            live(&mut resident, "Environment")?
+                .release(&binding_json)
+                .await?;
+            *resident = None;
+            Residents::remove(&residents.environments, &instance_id);
             Ok(Value::Null)
         }
         WorkerRequest::Model { component, request } => {
@@ -632,7 +717,9 @@ async fn execute(
             request,
         } => {
             let bytes = read_component(&component)?;
-            if let Some(resident) = models.get_mut(&instance_id) {
+            let slot = Residents::open(&residents.models, &instance_id);
+            let mut resident = slot.lock().await;
+            if let Some(resident) = resident.as_mut() {
                 resident.last_used = std::time::Instant::now();
                 if resident.digest != component.sha256 {
                     anyhow::bail!("Model instance is sealed to a different component digest");
@@ -645,31 +732,33 @@ async fn execute(
                 .instantiate_model_scoped(&bytes, Some(instance_id.clone()))
                 .await?;
             let result = instance.start(&request).await?;
-            models.insert(
-                instance_id,
-                ResidentModel {
-                    digest: component.sha256,
-                    instance,
-                    last_used: std::time::Instant::now(),
-                },
-            );
-            sweep_residents(models, policy);
+            *resident = Some(ResidentModel {
+                digest: component.sha256,
+                instance,
+                last_used: std::time::Instant::now(),
+            });
             Ok(serde_json::to_value(result)?)
         }
         WorkerRequest::ModelObserve {
             instance_id,
             provider_operation_id,
             cursor,
-        } => Ok(serde_json::to_value(
-            model_instance(models, &instance_id)?
-                .observe(&provider_operation_id, cursor.as_deref())
-                .await?,
-        )?),
+        } => {
+            let slot = residents.model(&instance_id)?;
+            let mut resident = slot.lock().await;
+            Ok(serde_json::to_value(
+                live(&mut resident, "Model")?
+                    .observe(&provider_operation_id, cursor.as_deref())
+                    .await?,
+            )?)
+        }
         WorkerRequest::ModelCancel {
             instance_id,
             provider_operation_id,
         } => {
-            model_instance(models, &instance_id)?
+            let slot = residents.model(&instance_id)?;
+            let mut resident = slot.lock().await;
+            live(&mut resident, "Model")?
                 .cancel(&provider_operation_id)
                 .await?;
             Ok(Value::Null)
@@ -679,25 +768,25 @@ async fn execute(
             provider_operation_id,
             terminal_json,
         } => {
-            let mut resident = models
-                .remove(&instance_id)
-                .ok_or_else(|| anyhow::anyhow!("Model instance is not resident"))?;
-            resident
-                .instance
+            let slot = residents.model(&instance_id)?;
+            let mut resident = slot.lock().await;
+            live(&mut resident, "Model")?
                 .acknowledge(&provider_operation_id, &terminal_json)
                 .await?;
+            *resident = None;
+            Residents::remove(&residents.models, &instance_id);
             Ok(Value::Null)
         }
         WorkerRequest::Release { world, instance_id } => {
             match world.as_str() {
                 crate::AGENTLOOP_COMPONENT => {
-                    agentloops.remove(&instance_id);
+                    Residents::remove(&residents.agentloops, &instance_id);
                 }
                 crate::ENVIRONMENT_COMPONENT => {
-                    environments.remove(&instance_id);
+                    Residents::remove(&residents.environments, &instance_id);
                 }
                 crate::MODEL_COMPONENT => {
-                    models.remove(&instance_id);
+                    Residents::remove(&residents.models, &instance_id);
                 }
                 _ => anyhow::bail!("unknown resident component world {world}"),
             }
@@ -726,90 +815,127 @@ fn read_component(source: &ComponentSource) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+// The request a guest's capability call belongs to, so the frame the worker emits can name it
+// and the parent can bound each request on its own progress.
+tokio::task_local! {
+    static SERVING_REQUEST: u64;
+}
+
 pub async fn run_worker() -> anyhow::Result<()> {
-    let input = Arc::new(Mutex::new(BufReader::new(tokio::io::stdin())));
+    let mut input = BufReader::new(tokio::io::stdin());
     let output = Arc::new(Mutex::new(tokio::io::stdout()));
     let broker = Arc::new(WorkerCapabilityBroker {
-        input: input.clone(),
         output: output.clone(),
+        awaiting: std::sync::Mutex::new(HashMap::new()),
         next_id: AtomicU64::new(1),
     });
-    let runtime = ComponentRuntime::with_capabilities(broker)?;
-    let mut agentloops = HashMap::new();
-    let mut environments = HashMap::new();
-    let mut models = HashMap::new();
+    let runtime = ComponentRuntime::with_capabilities(broker.clone())?;
+    let residents = Arc::new(Residents::default());
     let policy = ResidentPolicy::from_env()?;
     loop {
         let mut line = String::new();
-        let bytes = input.lock().await.read_line(&mut line).await?;
+        let bytes = input.read_line(&mut line).await?;
         if bytes == 0 {
             return Ok(());
         }
         if bytes > MAX_FRAME_BYTES {
             anyhow::bail!("worker request exceeds the frame bound");
         }
-        let (id, request, trace_context) = match serde_json::from_str(&line)? {
+        match serde_json::from_str(&line)? {
             ParentFrame::Request {
                 id,
                 request,
                 trace_context,
-            } => (id, request, trace_context),
-            ParentFrame::CapabilityResult { .. } => {
-                anyhow::bail!("worker received a capability result outside an invocation")
+                heartbeat_ms,
+            } => {
+                let span = invocation_span(&request);
+                brain_observability::set_parent_from_trace(&span, &trace_context);
+                let runtime = runtime.clone();
+                let residents = residents.clone();
+                let output = output.clone();
+                let heartbeat = tokio::spawn(beat(output.clone(), id, heartbeat_ms));
+                // One task per request: a request parked in a capability leaves the worker free
+                // to serve the next one, which is what lets a subagent's child run while its
+                // parent waits on it.
+                tokio::spawn(SERVING_REQUEST.scope(id, async move {
+                    let result = execute(&runtime, &residents, policy, *request)
+                        .instrument(span)
+                        .await
+                        .map_err(|error| WorkerFailure::of(&error));
+                    let mut encoded =
+                        match serde_json::to_vec(&WorkerFrame::Response { id, result }) {
+                            Ok(encoded) if encoded.len() < MAX_FRAME_BYTES => encoded,
+                            _ => serde_json::to_vec(&WorkerFrame::Response {
+                                id,
+                                result: Err(WorkerFailure {
+                                    message: "worker response exceeds the frame bound".into(),
+                                    code: None,
+                                    retryable: true,
+                                }),
+                            })
+                            .expect("a bounded error response always encodes"),
+                        };
+                    encoded.push(b'\n');
+                    heartbeat.abort();
+                    let mut output = output.lock().await;
+                    let _ = output.write_all(&encoded).await;
+                    let _ = output.flush().await;
+                }));
             }
-        };
-        let span = invocation_span(&request);
-        brain_observability::set_parent_from_trace(&span, &trace_context);
-        let response = WorkerFrame::Response {
-            id,
-            result: execute(
-                &runtime,
-                &mut agentloops,
-                &mut environments,
-                &mut models,
-                policy,
-                *request,
-            )
-            .instrument(span)
-            .await
-            .map_err(|error| WorkerFailure::of(&error)),
-        };
-        let mut encoded = serde_json::to_vec(&response)?;
-        if encoded.len() + 1 > MAX_FRAME_BYTES {
-            encoded = serde_json::to_vec(&WorkerFrame::Response {
-                id,
-                result: Err(WorkerFailure {
-                    message: "worker response exceeds the frame bound".into(),
-                    code: None,
-                    retryable: true,
-                }),
-            })?;
+            ParentFrame::CapabilityResult { id, result } => broker.settle(id, result),
         }
-        encoded.push(b'\n');
+    }
+}
+
+/// Say the worker is still on this request until the caller aborts this.
+async fn beat(output: Arc<Mutex<tokio::io::Stdout>>, request_id: u64, every_ms: u64) {
+    let every = Duration::from_millis(every_ms.max(1));
+    let mut encoded = serde_json::to_vec(&WorkerFrame::Progress { request_id })
+        .expect("a progress frame encodes");
+    encoded.push(b'\n');
+    loop {
+        tokio::time::sleep(every).await;
         let mut output = output.lock().await;
-        output.write_all(&encoded).await?;
-        output.flush().await?;
+        if output.write_all(&encoded).await.is_err() || output.flush().await.is_err() {
+            return;
+        }
     }
 }
 
 struct WorkerCapabilityBroker {
-    input: Arc<Mutex<BufReader<tokio::io::Stdin>>>,
     output: Arc<Mutex<tokio::io::Stdout>>,
+    awaiting: std::sync::Mutex<HashMap<u64, oneshot::Sender<Result<Value, CapabilityFailure>>>>,
     next_id: AtomicU64,
+}
+
+impl WorkerCapabilityBroker {
+    fn settle(&self, id: u64, result: Result<Value, CapabilityFailure>) {
+        if let Some(reply) = self
+            .awaiting
+            .lock()
+            .expect("capability waiters")
+            .remove(&id)
+        {
+            let _ = reply.send(result);
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl CapabilityHandler for WorkerCapabilityBroker {
     async fn call(&self, call: CapabilityCall) -> Result<Value, CapabilityFailure> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut encoded =
-            serde_json::to_vec(&WorkerFrame::Capability { id, call }).map_err(|error| {
-                CapabilityFailure {
-                    code: "worker_protocol".into(),
-                    message: error.to_string(),
-                    retryable: true,
-                }
-            })?;
+        let request_id = SERVING_REQUEST.try_with(|request| *request).unwrap_or(0);
+        let mut encoded = serde_json::to_vec(&WorkerFrame::Capability {
+            id,
+            request_id,
+            call,
+        })
+        .map_err(|error| CapabilityFailure {
+            code: "worker_protocol".into(),
+            message: error.to_string(),
+            retryable: true,
+        })?;
         if encoded.len() + 1 > MAX_FRAME_BYTES {
             return Err(CapabilityFailure {
                 code: "worker_protocol".into(),
@@ -818,37 +944,21 @@ impl CapabilityHandler for WorkerCapabilityBroker {
             });
         }
         encoded.push(b'\n');
+        let (reply, response) = oneshot::channel();
+        self.awaiting
+            .lock()
+            .expect("capability waiters")
+            .insert(id, reply);
         {
             let mut output = self.output.lock().await;
             output.write_all(&encoded).await.map_err(worker_failure)?;
             output.flush().await.map_err(worker_failure)?;
         }
-        let mut line = String::new();
-        let bytes = self
-            .input
-            .lock()
-            .await
-            .read_line(&mut line)
-            .await
-            .map_err(worker_failure)?;
-        if bytes == 0 || bytes > MAX_FRAME_BYTES {
-            return Err(CapabilityFailure {
-                code: "worker_protocol".into(),
-                message: "capability response is absent or exceeds the frame bound".into(),
-                retryable: true,
-            });
-        }
-        match serde_json::from_str(&line).map_err(worker_failure)? {
-            ParentFrame::CapabilityResult {
-                id: response_id,
-                result,
-            } if response_id == id => result,
-            _ => Err(CapabilityFailure {
-                code: "worker_protocol".into(),
-                message: format!("capability response id does not match request {id}"),
-                retryable: true,
-            }),
-        }
+        response.await.map_err(|_| CapabilityFailure {
+            code: "worker_protocol".into(),
+            message: "the parent closed before answering this capability".into(),
+            retryable: true,
+        })?
     }
 }
 
@@ -862,7 +972,7 @@ fn worker_failure(error: impl std::fmt::Display) -> CapabilityFailure {
 
 pub struct WorkerPool {
     program: PathBuf,
-    workers: Vec<Mutex<Worker>>,
+    workers: Vec<Mutex<Arc<Worker>>>,
     next_worker: AtomicUsize,
     next_request: AtomicU64,
     capabilities: Arc<dyn CapabilityHandler>,
@@ -895,7 +1005,7 @@ impl WorkerPool {
         let program = program.as_ref().to_path_buf();
         let mut workers = Vec::with_capacity(size);
         for _ in 0..size {
-            workers.push(Mutex::new(Worker::spawn(&program)?));
+            workers.push(Mutex::new(Worker::spawn(&program, capabilities.clone())?));
         }
         Ok(Arc::new(Self {
             program,
@@ -917,30 +1027,44 @@ impl WorkerPool {
             },
         );
         let id = self.next_request.fetch_add(1, Ordering::Relaxed);
-        let mut worker = self.workers[index].lock().await;
-        match worker
-            .call(id, request, self.capabilities.as_ref(), self.frame_timeout)
-            .await
-        {
+        let worker = self.workers[index].lock().await.clone();
+        match worker.call(id, request, self.frame_timeout).await {
             Ok(result) => result.map_err(|failure| failure.into_error()),
             Err(error) => {
-                // A worker that stopped speaking the frame protocol is replaced; its resident
-                // instances rehydrate on the next activation.
-                *worker = Worker::spawn(&self.program)?;
+                // A worker that stopped speaking the frame protocol is replaced, and every other
+                // request riding it fails with it rather than waiting on a process that is gone.
+                let mut slot = self.workers[index].lock().await;
+                if Arc::ptr_eq(&slot, &worker) {
+                    *slot = Worker::spawn(&self.program, self.capabilities.clone())?;
+                }
                 Err(error)
             }
         }
     }
 }
 
+/// What a request learns about its own progress. The kernel owns how long a capability takes
+/// and bounds it itself, so a request with one outstanding is not a worker falling silent.
+enum RequestFrame {
+    Alive,
+    CapabilityStarted,
+    CapabilityFinished,
+    Done(Result<Value, WorkerFailure>),
+}
+
+/// One worker process. Requests are multiplexed over its pipes by id, so a request parked in a
+/// capability holds nothing that another request needs.
 struct Worker {
-    child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
+    child: Mutex<Child>,
+    stdin: Mutex<ChildStdin>,
+    inflight: std::sync::Mutex<Option<HashMap<u64, mpsc::UnboundedSender<RequestFrame>>>>,
 }
 
 impl Worker {
-    fn spawn(program: &Path) -> anyhow::Result<Self> {
+    fn spawn(
+        program: &Path,
+        capabilities: Arc<dyn CapabilityHandler>,
+    ) -> anyhow::Result<Arc<Self>> {
         let mut command = Command::new(program);
         command.env_clear();
         for (name, value) in std::env::vars_os() {
@@ -954,93 +1078,203 @@ impl Worker {
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()?;
-        let input = child
+        let stdin = child
             .stdin
             .take()
             .ok_or_else(|| anyhow::anyhow!("component worker stdin is unavailable"))?;
-        let output = child
+        let stdout = child
             .stdout
             .take()
             .ok_or_else(|| anyhow::anyhow!("component worker stdout is unavailable"))?;
-        Ok(Self {
-            child,
-            input,
-            output: BufReader::new(output),
-        })
+        let worker = Arc::new(Self {
+            child: Mutex::new(child),
+            stdin: Mutex::new(stdin),
+            inflight: std::sync::Mutex::new(Some(HashMap::new())),
+        });
+        // The reader holds a weak handle so the pool dropping the worker still closes the pipes
+        // and ends this task.
+        let reading = Arc::downgrade(&worker);
+        tokio::spawn(read_frames(reading, BufReader::new(stdout), capabilities));
+        Ok(worker)
     }
 
     async fn call(
-        &mut self,
+        &self,
         id: u64,
         request: WorkerRequest,
-        capabilities: &dyn CapabilityHandler,
         frame_timeout: Duration,
     ) -> anyhow::Result<Result<Value, WorkerFailure>> {
-        if self.child.try_wait()?.is_some() {
+        if self.child.lock().await.try_wait()?.is_some() {
             anyhow::bail!("component worker exited before request {id}");
         }
         let mut encoded = serde_json::to_vec(&ParentFrame::Request {
             id,
             request: Box::new(request),
             trace_context: brain_observability::inject_current_trace(),
+            // Three beats inside the bound: one lost to a scheduling hiccup is not silence.
+            heartbeat_ms: (frame_timeout.as_millis() as u64 / 3).max(1),
         })?;
         if encoded.len() + 1 > MAX_FRAME_BYTES {
             anyhow::bail!("component worker request exceeds the frame bound");
         }
         encoded.push(b'\n');
-        self.send(id, &encoded, frame_timeout).await?;
+        let (sender, mut frames) = mpsc::unbounded_channel();
+        self.register(id, sender)?;
+        let outcome = self
+            .exchange(id, &encoded, &mut frames, frame_timeout)
+            .await;
+        self.forget(id);
+        outcome
+    }
 
-        loop {
-            let mut line = String::new();
-            let bytes = bounded(
+    fn register(&self, id: u64, sender: mpsc::UnboundedSender<RequestFrame>) -> anyhow::Result<()> {
+        let mut inflight = self.inflight.lock().expect("in-flight requests");
+        let Some(inflight) = inflight.as_mut() else {
+            anyhow::bail!("component worker closed before request {id}");
+        };
+        inflight.insert(id, sender);
+        Ok(())
+    }
+
+    fn forget(&self, id: u64) {
+        if let Some(inflight) = self.inflight.lock().expect("in-flight requests").as_mut() {
+            inflight.remove(&id);
+        }
+    }
+
+    async fn exchange(
+        &self,
+        id: u64,
+        encoded: &[u8],
+        frames: &mut mpsc::UnboundedReceiver<RequestFrame>,
+        frame_timeout: Duration,
+    ) -> anyhow::Result<Result<Value, WorkerFailure>> {
+        {
+            let mut stdin = self.stdin.lock().await;
+            bounded(
                 id,
                 frame_timeout,
-                "sent no frame",
-                self.output.read_line(&mut line),
+                "accepted no frame",
+                stdin.write_all(encoded),
             )
             .await?;
-            if bytes == 0 {
-                anyhow::bail!("component worker closed before response {id}");
-            }
-            if bytes > MAX_FRAME_BYTES {
-                anyhow::bail!("component worker response exceeds the frame bound");
-            }
-            match serde_json::from_str(&line)? {
-                WorkerFrame::Response {
-                    id: response_id,
-                    result,
-                } if response_id == id => return Ok(result),
-                WorkerFrame::Capability {
-                    id: capability_id,
-                    call,
-                } => {
-                    // The kernel owns how long this takes and bounds it itself. The worker is
-                    // parked on stdin meanwhile, so none of it is the worker falling silent.
-                    let result = capabilities.call(call).await;
-                    let mut encoded = serde_json::to_vec(&ParentFrame::CapabilityResult {
-                        id: capability_id,
-                        result,
-                    })?;
-                    if encoded.len() + 1 > MAX_FRAME_BYTES {
-                        anyhow::bail!("component capability response exceeds the frame bound");
-                    }
-                    encoded.push(b'\n');
-                    self.send(id, &encoded, frame_timeout).await?;
+            bounded(id, frame_timeout, "accepted no frame", stdin.flush()).await?;
+        }
+        let mut serving = 0usize;
+        loop {
+            let frame = if serving == 0 {
+                match tokio::time::timeout(frame_timeout, frames.recv()).await {
+                    Ok(frame) => frame,
+                    Err(_) => anyhow::bail!(
+                        "component worker sent no frame for request {id} within {}s",
+                        frame_timeout.as_secs()
+                    ),
                 }
-                _ => anyhow::bail!("component worker response id does not match request {id}"),
+            } else {
+                frames.recv().await
+            };
+            match frame {
+                Some(RequestFrame::Alive) => {}
+                Some(RequestFrame::CapabilityStarted) => serving += 1,
+                Some(RequestFrame::CapabilityFinished) => serving = serving.saturating_sub(1),
+                Some(RequestFrame::Done(result)) => return Ok(result),
+                None => anyhow::bail!("component worker closed before response {id}"),
             }
         }
     }
 
-    async fn send(&mut self, id: u64, frame: &[u8], frame_timeout: Duration) -> anyhow::Result<()> {
-        bounded(
-            id,
-            frame_timeout,
-            "accepted no frame",
-            self.input.write_all(frame),
-        )
-        .await?;
-        bounded(id, frame_timeout, "accepted no frame", self.input.flush()).await
+    fn deliver(&self, id: u64, frame: RequestFrame) {
+        if let Some(inflight) = self.inflight.lock().expect("in-flight requests").as_ref()
+            && let Some(sender) = inflight.get(&id)
+        {
+            let _ = sender.send(frame);
+        }
+    }
+
+    /// The process is gone: every request riding it ends now, and no new one may join.
+    fn close(&self) {
+        let _ = self.inflight.lock().expect("in-flight requests").take();
+    }
+
+    async fn send(&self, frame: &ParentFrame) -> anyhow::Result<()> {
+        let mut encoded = serde_json::to_vec(frame)?;
+        if encoded.len() + 1 > MAX_FRAME_BYTES {
+            anyhow::bail!("component capability response exceeds the frame bound");
+        }
+        encoded.push(b'\n');
+        let mut stdin = self.stdin.lock().await;
+        stdin.write_all(&encoded).await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+}
+
+/// One capability the parent owes the worker, for as long as it owes it.
+struct Serving(Arc<Worker>, u64);
+
+impl Serving {
+    fn start(worker: Arc<Worker>, request_id: u64) -> Self {
+        worker.deliver(request_id, RequestFrame::CapabilityStarted);
+        Self(worker, request_id)
+    }
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.0.deliver(self.1, RequestFrame::CapabilityFinished);
+    }
+}
+
+/// Route every frame the worker emits to the request it names. Capability work runs in its own
+/// task so servicing one request never delays another's frames.
+async fn read_frames(
+    worker: std::sync::Weak<Worker>,
+    mut output: BufReader<ChildStdout>,
+    capabilities: Arc<dyn CapabilityHandler>,
+) {
+    loop {
+        let mut line = String::new();
+        let bytes = match output.read_line(&mut line).await {
+            Ok(bytes) => bytes,
+            Err(_) => break,
+        };
+        if bytes == 0 || bytes > MAX_FRAME_BYTES {
+            break;
+        }
+        let Some(worker) = worker.upgrade() else {
+            return;
+        };
+        match serde_json::from_str(&line) {
+            Ok(WorkerFrame::Response { id, result }) => {
+                worker.deliver(id, RequestFrame::Done(result));
+            }
+            Ok(WorkerFrame::Progress { request_id }) => {
+                worker.deliver(request_id, RequestFrame::Alive);
+            }
+            Ok(WorkerFrame::Capability {
+                id,
+                request_id,
+                call,
+            }) => {
+                // The kernel owns how long this takes and bounds it itself, so the request
+                // stops spending its own bound the moment this frame lands and starts again
+                // only when the debt is paid — including if paying it panics, which would
+                // otherwise leave the request waiting on nothing.
+                let serving = Serving::start(worker.clone(), request_id);
+                let capabilities = capabilities.clone();
+                tokio::spawn(async move {
+                    let result = capabilities.call(call).await;
+                    let _ = worker
+                        .send(&ParentFrame::CapabilityResult { id, result })
+                        .await;
+                    drop(serving);
+                });
+            }
+            Err(_) => break,
+        }
+    }
+    if let Some(worker) = worker.upgrade() {
+        worker.close();
     }
 }
 
