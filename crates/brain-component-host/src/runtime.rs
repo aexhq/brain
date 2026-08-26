@@ -16,6 +16,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{agentloop, environment, model, tool};
 
+/// Epoch ticks are 10 ms; one exported call gets 30 s of contiguous guest execution. The slice
+/// bounds a guest that never yields, so it re-arms whenever the guest awaits a host capability
+/// and again for every call into a resident instance.
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 const EPOCH_DEADLINE_TICKS: u64 = 3_000;
 const MEMORY_LIMIT_BYTES: usize = 256 << 20;
@@ -130,8 +133,22 @@ impl CapabilityHandler for DenyCapabilities {
     }
 }
 
+/// wasmtime renders a trap as a wasm backtrace and puts the reason in the cause chain, so a
+/// bare `to_string` reports hex frames and no reason at all. Lead with the reason.
 fn wt<T>(result: Result<T, wasmtime::Error>) -> anyhow::Result<T> {
-    result.map_err(|error| anyhow::anyhow!(error.to_string()))
+    result.map_err(|error| match error.chain().skip(1).last() {
+        Some(reason) => anyhow::anyhow!("{reason}: {error}"),
+        None => anyhow::anyhow!("{error}"),
+    })
+}
+
+/// Re-arm the guest CPU slice for one exported call on a resident instance. Wall-clock spent
+/// resident between calls is not guest execution and must not consume the slice.
+fn armed(store: &mut Store<State>) -> &mut Store<State> {
+    store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
+    let state = store.data_mut();
+    state.ops_at_last_deadline = state.ops_serviced;
+    store
 }
 
 struct State {
@@ -145,6 +162,10 @@ struct State {
     tool_metadata: Option<tool::aex::tool::types::CallMetadata>,
     tool_grants: HashSet<String>,
     tool_capability_sequence: u64,
+    /// Host capabilities serviced so far; the epoch-deadline callback re-arms the slice when
+    /// this moved, so awaiting the host never consumes guest CPU budget.
+    ops_serviced: u64,
+    ops_at_last_deadline: u64,
 }
 
 impl State {
@@ -166,6 +187,8 @@ impl State {
             tool_metadata: None,
             tool_grants: HashSet::new(),
             tool_capability_sequence: 0,
+            ops_serviced: 0,
+            ops_at_last_deadline: 0,
         }
     }
 
@@ -186,6 +209,7 @@ impl State {
         operation_id: String,
         request: Value,
     ) -> Result<Value, CapabilityFailure> {
+        self.ops_serviced += 1;
         self.capabilities
             .call(CapabilityCall {
                 world: self.world.into(),
@@ -806,8 +830,11 @@ impl ModelInstance {
         &mut self,
         request: &model::aex::model::types::Request,
     ) -> anyhow::Result<model::aex::model::types::Started> {
-        wt(self.bindings.call_start(&mut self.store, request).await)?
-            .map_err(|error| anyhow::anyhow!(error.message))
+        wt(self
+            .bindings
+            .call_start(armed(&mut self.store), request)
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
     }
 
     pub async fn observe(
@@ -817,7 +844,7 @@ impl ModelInstance {
     ) -> anyhow::Result<model::aex::model::types::Observation> {
         wt(self
             .bindings
-            .call_observe(&mut self.store, provider_operation_id, cursor)
+            .call_observe(armed(&mut self.store), provider_operation_id, cursor)
             .await)?
         .map_err(|error| anyhow::anyhow!(error.message))
     }
@@ -825,7 +852,7 @@ impl ModelInstance {
     pub async fn cancel(&mut self, provider_operation_id: &str) -> anyhow::Result<()> {
         wt(self
             .bindings
-            .call_cancel(&mut self.store, provider_operation_id)
+            .call_cancel(armed(&mut self.store), provider_operation_id)
             .await)?
         .map_err(|error| anyhow::anyhow!(error.message))
     }
@@ -837,7 +864,7 @@ impl ModelInstance {
     ) -> anyhow::Result<()> {
         wt(self
             .bindings
-            .call_acknowledge(&mut self.store, provider_operation_id, terminal_json)
+            .call_acknowledge(armed(&mut self.store), provider_operation_id, terminal_json)
             .await)?
         .map_err(|error| anyhow::anyhow!(error.message))
     }
@@ -848,8 +875,11 @@ impl EnvironmentInstance {
         &mut self,
         request: &environment::aex::environment::types::ResolveRequest,
     ) -> anyhow::Result<environment::aex::environment::types::Resolved> {
-        wt(self.bindings.call_resolve(&mut self.store, request).await)?
-            .map_err(|error| anyhow::anyhow!(error.message))
+        wt(self
+            .bindings
+            .call_resolve(armed(&mut self.store), request)
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
     }
 
     pub async fn submit(
@@ -859,7 +889,7 @@ impl EnvironmentInstance {
     ) -> anyhow::Result<environment::aex::environment::types::Submitted> {
         wt(self
             .bindings
-            .call_submit(&mut self.store, binding_json, operation)
+            .call_submit(armed(&mut self.store), binding_json, operation)
             .await)?
         .map_err(|error| anyhow::anyhow!(error.message))
     }
@@ -872,7 +902,12 @@ impl EnvironmentInstance {
     ) -> anyhow::Result<environment::aex::environment::types::Observation> {
         wt(self
             .bindings
-            .call_observe(&mut self.store, binding_json, provider_operation_id, cursor)
+            .call_observe(
+                armed(&mut self.store),
+                binding_json,
+                provider_operation_id,
+                cursor,
+            )
             .await)?
         .map_err(|error| anyhow::anyhow!(error.message))
     }
@@ -884,7 +919,7 @@ impl EnvironmentInstance {
     ) -> anyhow::Result<()> {
         wt(self
             .bindings
-            .call_cancel(&mut self.store, binding_json, provider_operation_id)
+            .call_cancel(armed(&mut self.store), binding_json, provider_operation_id)
             .await)?
         .map_err(|error| anyhow::anyhow!(error.message))
     }
@@ -898,7 +933,7 @@ impl EnvironmentInstance {
         wt(self
             .bindings
             .call_acknowledge(
-                &mut self.store,
+                armed(&mut self.store),
                 binding_json,
                 provider_operation_id,
                 terminal_json,
@@ -910,7 +945,7 @@ impl EnvironmentInstance {
     pub async fn release(&mut self, binding_json: &str) -> anyhow::Result<()> {
         wt(self
             .bindings
-            .call_release(&mut self.store, binding_json)
+            .call_release(armed(&mut self.store), binding_json)
             .await)?
         .map_err(|error| anyhow::anyhow!(error.message))
     }
@@ -921,8 +956,11 @@ impl AgentloopInstance {
         &mut self,
         request: &agentloop::aex::agentloop::types::Activation,
     ) -> anyhow::Result<agentloop::aex::agentloop::types::ActivationResult> {
-        wt(self.bindings.call_activate(&mut self.store, request).await)?
-            .map_err(|error| anyhow::anyhow!(error.message))
+        wt(self
+            .bindings
+            .call_activate(armed(&mut self.store), request)
+            .await)?
+        .map_err(|error| anyhow::anyhow!(error.message))
     }
 }
 
@@ -962,6 +1000,17 @@ impl ComponentRuntime {
     fn store_with(&self, state: State) -> Store<State> {
         let mut store = Store::new(&self.engine, state);
         store.limiter(|state| &mut state.limits);
+        store.epoch_deadline_callback(|mut context| {
+            let state = context.data_mut();
+            if state.ops_serviced == state.ops_at_last_deadline {
+                return Err(wasmtime::Error::msg(format!(
+                    "the component exceeded its {}s guest CPU slice",
+                    EPOCH_TICK.as_millis() as u64 * EPOCH_DEADLINE_TICKS / 1_000
+                )));
+            }
+            state.ops_at_last_deadline = state.ops_serviced;
+            Ok(wasmtime::UpdateDeadline::Continue(EPOCH_DEADLINE_TICKS))
+        });
         store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
         store
     }
@@ -1172,4 +1221,131 @@ impl ComponentRuntime {
 
 pub fn component_digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    fn agentloop_fixture() -> Vec<u8> {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("guest/dist/agentloop.component.wasm");
+        std::fs::read(&path).unwrap_or_else(|error| {
+            panic!(
+                "read {}: {error}; run `npm run build:components` first",
+                path.display()
+            )
+        })
+    }
+
+    fn activation(
+        operation_id: &str,
+        config_json: &str,
+    ) -> agentloop::aex::agentloop::types::Activation {
+        agentloop::aex::agentloop::types::Activation {
+            operation_id: operation_id.into(),
+            session_id: "ses_1".into(),
+            kind: "message".into(),
+            payload_json: r#"{"activation_id":"act_1","message":{"content":[]}}"#.into(),
+            config_json: config_json.into(),
+            deadline_at_ms: u64::MAX,
+        }
+    }
+
+    /// A resident instance's second turn must not inherit the first turn's expired slice: the
+    /// customer canary's `continuation` case failed for four releases with a bare wasm trap
+    /// because the deadline was armed once per store instead of once per activation.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_resident_instance_activates_again_after_its_slice_would_have_expired() {
+        let runtime = ComponentRuntime::new().unwrap();
+        let mut instance = runtime
+            .instantiate_agentloop_scoped(&agentloop_fixture(), Some("ses_1".into()))
+            .await
+            .unwrap();
+        instance
+            .activate(&activation("activation_1", r#"{"track":true}"#))
+            .await
+            .unwrap();
+        for _ in 0..=EPOCH_DEADLINE_TICKS {
+            runtime.engine.increment_epoch();
+        }
+        let second = instance
+            .activate(&activation("activation_2", r#"{"track":true}"#))
+            .await
+            .unwrap();
+        assert_eq!(second.payload_json, r#"{"activations":2}"#);
+    }
+
+    /// Waiting on the kernel is not guest execution: a turn whose model rounds outlast the
+    /// slice must still finish.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn awaiting_the_host_does_not_consume_the_guest_slice() {
+        struct AgeTheSlice {
+            engine: Mutex<Option<Engine>>,
+        }
+
+        #[async_trait]
+        impl CapabilityHandler for AgeTheSlice {
+            async fn call(&self, call: CapabilityCall) -> Result<Value, CapabilityFailure> {
+                let engine = self.engine.lock().expect("engine").clone().expect("engine");
+                for _ in 0..=EPOCH_DEADLINE_TICKS {
+                    engine.increment_epoch();
+                }
+                let request = &call.request["op"];
+                let result = if request["op"] == "model_stream" {
+                    serde_json::json!({ "message": { "content": [] } })
+                } else {
+                    Value::Null
+                };
+                Ok(Value::String(
+                    serde_json::json!({ "result": result }).to_string(),
+                ))
+            }
+        }
+
+        let capabilities = Arc::new(AgeTheSlice {
+            engine: Mutex::new(None),
+        });
+        let runtime = ComponentRuntime::with_capabilities(capabilities.clone()).unwrap();
+        *capabilities.engine.lock().expect("engine") = Some(runtime.engine.clone());
+        let mut instance = runtime
+            .instantiate_agentloop_scoped(&agentloop_fixture(), Some("ses_1".into()))
+            .await
+            .unwrap();
+        instance
+            .activate(&activation("activation_1", r#"{"fixture":"sequential"}"#))
+            .await
+            .unwrap();
+    }
+
+    /// The slice still bounds a guest that never yields, and says so instead of reporting bare
+    /// wasm frames.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_guest_that_never_yields_is_stopped_with_a_named_reason() {
+        let runtime = ComponentRuntime::new().unwrap();
+        let mut instance = runtime
+            .instantiate_agentloop_scoped(&agentloop_fixture(), Some("ses_1".into()))
+            .await
+            .unwrap();
+        let engine = runtime.engine.clone();
+        let spinning = Arc::new(AtomicBool::new(true));
+        let ticker = spinning.clone();
+        let bumper = std::thread::spawn(move || {
+            while ticker.load(Ordering::Relaxed) {
+                engine.increment_epoch();
+                std::thread::yield_now();
+            }
+        });
+        let error = instance
+            .activate(&activation("activation_1", r#"{"fixture":"spin"}"#))
+            .await
+            .unwrap_err();
+        spinning.store(false, Ordering::Relaxed);
+        bumper.join().expect("epoch ticker");
+        assert!(
+            error.to_string().starts_with("the component exceeded its"),
+            "{error}"
+        );
+    }
 }
