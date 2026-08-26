@@ -125,6 +125,27 @@ const verifyRegistrySignatures = () => {
   }
 };
 
+/**
+ * Promotion may only move `latest` onto versions the stage run already exercised end to end.
+ * Missing or mismatched evidence means the exact archives being promoted were never smoked.
+ */
+const assertStagedSmoke = () => {
+  const file = path.join(directory, "smoke.json");
+  if (!existsSync(file)) {
+    throw new Error("the stage run published no e2e smoke evidence for these versions");
+  }
+  const smoke = JSON.parse(readFileSync(file, "utf8"));
+  const identity = (item) => `${item?.name}@${item?.version} ${item?.integrity}`;
+  if (
+    smoke.schema !== 1 ||
+    smoke.source !== expectedCommit ||
+    smoke.packages?.length !== manifest.packages.length ||
+    !manifest.packages.every((item, index) => identity(smoke.packages[index]) === identity(item))
+  ) {
+    throw new Error("the staged e2e smoke did not cover exactly these release versions");
+  }
+};
+
 const verifyPublishedRelease = async () => {
   for (const item of manifest.packages) {
     assertRegistryObject(item);
@@ -179,6 +200,7 @@ if (operation === "stage") {
   if (!process.env.NODE_AUTH_TOKEN) {
     throw new Error("the protected npm-production environment has no NPM_DIST_TAG_TOKEN");
   }
+  assertStagedSmoke();
   // Validate every immutable object and its original OIDC provenance before moving any tag.
   for (const item of manifest.packages) {
     const staged = registryValue(`${item.name}@next`, "version");

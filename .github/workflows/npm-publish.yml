@@ -159,6 +159,65 @@ jobs:
         run: |
           echo "Staged exact versions under npm dist-tag \`next\`: \`$VERSIONS\`" >> "$GITHUB_STEP_SUMMARY"
 
+  # A published package and the built server otherwise meet for the first time in a tagged
+  # platform deployment, where a broken publish costs a whole release cycle to find.
+  smoke:
+    if: inputs.operation == 'stage'
+    needs: stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-npm-release
+      - name: Configure the shared component compilation cache
+        run: echo "BRAIN_COMPONENT_CACHE_DIR=$HOME/.cache/aex-brain-components" >> "$GITHUB_ENV"
+      - name: Restore compiled components
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/aex-brain-components
+          key: compiled-components-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/brain-component-host/guest/**') }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm ci --prefix crates/brain-loophost/guest
+      - run: npm run build:components
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+      # Read-only: this job builds two binaries, so saving would replace the full debug cache
+      # that the ordinary test matrix depends on with a much thinner one.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-debug
+          save-if: false
+      - run: cargo build -p brain-server --bin brain --bin brain-component-host
+      - name: Run the staged packages against the built server
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          set -euo pipefail
+          node tools/e2e-smoke.mjs \
+            "$RUNNER_TEMP/brain-npm-release/manifest.json" \
+            "$RUNNER_TEMP/brain-e2e-smoke/smoke.json" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: brain-e2e-smoke-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-e2e-smoke
+          if-no-files-found: error
+          retention-days: 30
+
   promote:
     if: inputs.operation == 'promote'
     needs: validate
@@ -172,6 +231,14 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-npm-release
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.stage_run_id }}
+      # Absent evidence fails this step, and publish.mjs re-checks that it names exactly the
+      # versions being promoted. A stage run that skipped the smoke can never promote.
+      - uses: actions/download-artifact@v7
+        with:
+          name: brain-e2e-smoke-${{ inputs.expected_commit }}
           path: ${{ runner.temp }}/brain-npm-release
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ inputs.stage_run_id }}
