@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -20,7 +21,12 @@ use crate::{
 
 const MAX_COMPONENT_BYTES: u64 = 32 << 20;
 const MAX_FRAME_BYTES: usize = 16 << 20;
-const WORKER_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long the parent waits for one worker to make progress on a request: to take a frame,
+/// and to answer with its next one. It is a liveness check on the worker process, the only
+/// thing the parent cannot otherwise observe. Work the parent performs on the request's behalf
+/// (a model round, a Tool dispatch, a child session's turn) happens between frames and is
+/// bounded by the kernel that owns it, so it must not be measured here.
+const WORKER_FRAME_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ComponentSource {
@@ -811,6 +817,7 @@ pub struct WorkerPool {
     next_worker: AtomicUsize,
     next_request: AtomicU64,
     capabilities: Arc<dyn CapabilityHandler>,
+    frame_timeout: Duration,
 }
 
 impl WorkerPool {
@@ -822,6 +829,16 @@ impl WorkerPool {
         program: impl AsRef<Path>,
         size: usize,
         capabilities: Arc<dyn CapabilityHandler>,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::with_frame_timeout(program, size, capabilities, WORKER_FRAME_TIMEOUT).await
+    }
+
+    /// The pool with an explicit worker-liveness bound; tests drive a short one.
+    pub async fn with_frame_timeout(
+        program: impl AsRef<Path>,
+        size: usize,
+        capabilities: Arc<dyn CapabilityHandler>,
+        frame_timeout: Duration,
     ) -> anyhow::Result<Arc<Self>> {
         if !(1..=64).contains(&size) {
             anyhow::bail!("component worker pool size must be between 1 and 64");
@@ -837,6 +854,7 @@ impl WorkerPool {
             next_worker: AtomicUsize::new(0),
             next_request: AtomicU64::new(1),
             capabilities,
+            frame_timeout,
         }))
     }
 
@@ -851,20 +869,16 @@ impl WorkerPool {
         );
         let id = self.next_request.fetch_add(1, Ordering::Relaxed);
         let mut worker = self.workers[index].lock().await;
-        let result = tokio::time::timeout(
-            WORKER_REQUEST_TIMEOUT,
-            worker.call(id, request, self.capabilities.as_ref()),
-        )
-        .await;
-        match result {
-            Ok(Ok(result)) => result.map_err(anyhow::Error::msg),
-            Ok(Err(error)) => {
+        match worker
+            .call(id, request, self.capabilities.as_ref(), self.frame_timeout)
+            .await
+        {
+            Ok(result) => result.map_err(anyhow::Error::msg),
+            Err(error) => {
+                // A worker that stopped speaking the frame protocol is replaced; its resident
+                // instances rehydrate on the next activation.
                 *worker = Worker::spawn(&self.program)?;
                 Err(error)
-            }
-            Err(_) => {
-                *worker = Worker::spawn(&self.program)?;
-                anyhow::bail!("component worker request {id} exceeded the wall-time bound")
             }
         }
     }
@@ -911,6 +925,7 @@ impl Worker {
         id: u64,
         request: WorkerRequest,
         capabilities: &dyn CapabilityHandler,
+        frame_timeout: Duration,
     ) -> anyhow::Result<Result<Value, String>> {
         if self.child.try_wait()?.is_some() {
             anyhow::bail!("component worker exited before request {id}");
@@ -924,12 +939,17 @@ impl Worker {
             anyhow::bail!("component worker request exceeds the frame bound");
         }
         encoded.push(b'\n');
-        self.input.write_all(&encoded).await?;
-        self.input.flush().await?;
+        self.send(id, &encoded, frame_timeout).await?;
 
         loop {
             let mut line = String::new();
-            let bytes = self.output.read_line(&mut line).await?;
+            let bytes = bounded(
+                id,
+                frame_timeout,
+                "sent no frame",
+                self.output.read_line(&mut line),
+            )
+            .await?;
             if bytes == 0 {
                 anyhow::bail!("component worker closed before response {id}");
             }
@@ -945,6 +965,8 @@ impl Worker {
                     id: capability_id,
                     call,
                 } => {
+                    // The kernel owns how long this takes and bounds it itself. The worker is
+                    // parked on stdin meanwhile, so none of it is the worker falling silent.
                     let result = capabilities.call(call).await;
                     let mut encoded = serde_json::to_vec(&ParentFrame::CapabilityResult {
                         id: capability_id,
@@ -954,12 +976,39 @@ impl Worker {
                         anyhow::bail!("component capability response exceeds the frame bound");
                     }
                     encoded.push(b'\n');
-                    self.input.write_all(&encoded).await?;
-                    self.input.flush().await?;
+                    self.send(id, &encoded, frame_timeout).await?;
                 }
                 _ => anyhow::bail!("component worker response id does not match request {id}"),
             }
         }
+    }
+
+    async fn send(&mut self, id: u64, frame: &[u8], frame_timeout: Duration) -> anyhow::Result<()> {
+        bounded(
+            id,
+            frame_timeout,
+            "accepted no frame",
+            self.input.write_all(frame),
+        )
+        .await?;
+        bounded(id, frame_timeout, "accepted no frame", self.input.flush()).await
+    }
+}
+
+/// One wait on the worker itself. Exceeding it means the worker stopped speaking the frame
+/// protocol, which is the condition [`WORKER_FRAME_TIMEOUT`] exists to catch.
+async fn bounded<T>(
+    id: u64,
+    frame_timeout: Duration,
+    silence: &str,
+    io: impl Future<Output = std::io::Result<T>>,
+) -> anyhow::Result<T> {
+    match tokio::time::timeout(frame_timeout, io).await {
+        Ok(result) => Ok(result?),
+        Err(_) => anyhow::bail!(
+            "component worker {silence} for request {id} within {}s",
+            frame_timeout.as_secs()
+        ),
     }
 }
 

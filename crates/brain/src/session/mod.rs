@@ -3878,7 +3878,9 @@ impl Brain {
                         Some(operation_id),
                     )
                     .await?;
-                Ok(serde_json::Value::String(serde_json::to_string(&child)?))
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &child_doc(&child)?,
+                )?))
             }
             "tool.children.send" => {
                 let child_id = required_tool_capability_string(&request, "child_id")?;
@@ -3900,7 +3902,7 @@ impl Brain {
             "tool.children.inspect" => {
                 let child_id = required_tool_capability_string(&request, "child_id")?;
                 Ok(serde_json::Value::String(serde_json::to_string(
-                    &self.get_child(parent_id, child_id).await?,
+                    &child_doc(&self.get_child(parent_id, child_id).await?)?,
                 )?))
             }
             "tool.children.wait" => {
@@ -3912,9 +3914,11 @@ impl Brain {
                     .unwrap_or(30_000)
                     .min(300_000);
                 Ok(serde_json::Value::String(serde_json::to_string(
-                    &self
-                        .wait_child(parent_id, child_id, Duration::from_millis(timeout_ms))
-                        .await?,
+                    &child_doc(
+                        &self
+                            .wait_child(parent_id, child_id, Duration::from_millis(timeout_ms))
+                            .await?,
+                    )?,
                 )?))
             }
             "tool.children.events" => {
@@ -3934,7 +3938,9 @@ impl Brain {
                         )));
                     }
                 };
-                Ok(serde_json::Value::String(serde_json::to_string(&child)?))
+                Ok(serde_json::Value::String(serde_json::to_string(
+                    &child_doc(&child)?,
+                )?))
             }
             "tool.children.list" => {
                 let cursor = request.get("cursor").and_then(serde_json::Value::as_str);
@@ -3944,7 +3950,7 @@ impl Brain {
                     .unwrap_or(32) as usize;
                 let (items, next_cursor) = self.list_children(parent_id, cursor, limit).await?;
                 Ok(serde_json::json!({
-                    "items_json": serde_json::to_string(&items)?,
+                    "items_json": serde_json::to_string(&child_docs(&items)?)?,
                     "next_cursor": next_cursor,
                 }))
             }
