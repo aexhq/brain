@@ -10,6 +10,10 @@ export function activate(request) {
     activations += 1;
     return { payloadJson: JSON.stringify({ activations }) };
   }
+  if (config.fixture === "spin") {
+    let n = 0;
+    for (;;) n = (n + 1) % 4294967296;
+  }
   if (config.fixture === "sequential") {
     const payload = JSON.parse(request.payloadJson);
     if (request.kind === "session_start") {
