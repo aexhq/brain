@@ -178,11 +178,6 @@ jobs:
           path: ${{ runner.temp }}/brain-npm-release
       - name: Configure the shared component compilation cache
         run: echo "BRAIN_COMPONENT_CACHE_DIR=$HOME/.cache/aex-brain-components" >> "$GITHUB_ENV"
-      - name: Restore compiled components
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/aex-brain-components
-          key: compiled-components-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/brain-component-host/guest/**') }}
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -200,6 +195,13 @@ jobs:
         with:
           shared-key: workspace-debug
           save-if: false
+      # componentize-js emits different bytes every build, so no compilation cache carries across
+      # runs. Compile the guests once here, outside the component host's per-request wall-time
+      # bound, exactly as the ordinary component-host job does before its own end-to-end gates.
+      - name: Warm the component compilation cache
+        run: >-
+          cargo test -p brain-component-host --test vertical_slice
+          four_worlds_execute_without_ambient_authority -- --exact
       - run: cargo build -p brain-server --bin brain --bin brain-component-host
       - name: Run the staged packages against the built server
         shell: bash
