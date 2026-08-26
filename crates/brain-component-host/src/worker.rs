@@ -431,6 +431,7 @@ struct Residents {
     agentloops: Table<ResidentAgentloop>,
     environments: Table<ResidentEnvironment>,
     models: Table<ResidentModel>,
+    reported: AtomicUsize,
 }
 
 impl Residents {
@@ -472,6 +473,28 @@ impl Residents {
         sweep_table(&self.agentloops, policy);
         sweep_table(&self.environments, policy);
         sweep_table(&self.models, policy);
+        self.report();
+    }
+
+    /// A resident instance is a whole JavaScript runtime, and residency is bounded by count and
+    /// idle time but never by bytes, so the only way to know what a worker is holding is to say
+    /// so. The hosted task publishes no per-process memory metric, which is what left a stalled
+    /// plane undiagnosable; this is the number that settles it.
+    fn report(&self) {
+        let agentloops = resident_count(&self.agentloops);
+        let environments = resident_count(&self.environments);
+        let models = resident_count(&self.models);
+        let resident = agentloops + environments + models;
+        if self.reported.swap(resident, Ordering::Relaxed) == resident {
+            return;
+        }
+        tracing::info!(
+            component.agentloops = agentloops,
+            component.environments = environments,
+            component.models = models,
+            component.resident_bytes = resident_bytes(),
+            "component worker residency"
+        );
     }
 }
 
@@ -487,6 +510,18 @@ fn live<'a, T: Resident>(
             resident.instance()
         })
         .ok_or_else(|| anyhow::anyhow!("{world} instance is not resident"))
+}
+
+fn resident_count<T>(table: &Table<T>) -> usize {
+    table.lock().expect("resident instances").len()
+}
+
+/// This process's resident set, as the kernel reports it. Linux only, which is where the
+/// hosted plane runs; elsewhere the field is absent rather than wrong.
+fn resident_bytes() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096)
 }
 
 /// Evict idle instances and hold the table to its cap. A slot that is locked is serving a request
