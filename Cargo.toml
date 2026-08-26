@@ -21,7 +21,7 @@ brain-environment-host = { path = "crates/brain-environment-host" }
 brain-observability = { path = "crates/brain-observability" }
 
 anyhow = "1"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 async-trait = "0.1"
 async-stream = "0.3"
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "credentials-process", "default-https-client", "rt-tokio", "sso"] }
