@@ -4716,19 +4716,24 @@ async fn tool_components_are_verified_and_admitted_before_session_commit() {
     impl crate::tools::ToolRegistry for TestToolRegistry {
         fn admit(
             &self,
-            component_digest: &str,
-            world: &str,
-            component: &[u8],
-            config: &serde_json::Map<String, serde_json::Value>,
-            grants: &[String],
-            environment: Option<&str>,
+            request: crate::tools::ComponentToolAdmission<'_>,
         ) -> Result<crate::journal::ToolSelectorDoc> {
+            let crate::tools::ComponentToolAdmission {
+                component_digest,
+                world,
+                component,
+                config,
+                grants,
+                environment,
+                bundle,
+            } = request;
             self.0.fetch_add(1, Ordering::Relaxed);
             assert_eq!(world, crate::tools::TOOL_WORLD);
             assert_eq!(component_digest, hex::encode(Sha256::digest(component)));
             assert_eq!(config["mode"], "echo");
             assert_eq!(grants, ["journal"]);
             assert_eq!(environment, None);
+            assert!(bundle.is_none());
             Ok(crate::journal::ToolSelectorDoc {
                 component_digest: component_digest.into(),
                 component_bytes: component.len() as u64,
@@ -4736,6 +4741,7 @@ async fn tool_components_are_verified_and_admitted_before_session_commit() {
                 config: config.clone(),
                 grants: grants.to_vec(),
                 environment: None,
+                bundle_digest: None,
             })
         }
 

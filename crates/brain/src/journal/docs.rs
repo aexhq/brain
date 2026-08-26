@@ -942,7 +942,7 @@ pub struct PrefixDoc {
     pub rendered_base_digest: String,
     pub prompt_cache_key: String,
     /// Exact native Tool definitions and execution seals, in cache-visible declaration order.
-    /// Bundle bytes live in internal root-scoped object custody and never appear here.
+    /// Bundle bytes live in content-addressed custody and never appear here.
     pub tools: Vec<brain_protocol::session::ToolConfig>,
     /// Logical environment declarations, keyed by the stable names used by every tool binding.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -1000,6 +1000,10 @@ pub struct ToolSelectorDoc {
     pub grants: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
+    /// Immutable Environment bundle this Tool executes. The bytes stay in content-addressed
+    /// custody; only this digest is sealed, so a Tool cannot swap the code it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_digest: Option<String>,
 }
 
 fn default_customer_submit_retries() -> u32 {

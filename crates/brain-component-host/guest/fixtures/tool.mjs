@@ -6,7 +6,6 @@ export function invoke(request) {
     const valueJson = invokeEnvironment(
       request.metadata.callId,
       "{}",
-      undefined,
       request.inputJson,
       request.deadlineAtMs,
     );

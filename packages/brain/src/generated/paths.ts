@@ -1189,6 +1189,8 @@ export type components = {
             grants?: ("environment" | "journal" | "storage" | "children" | "parent")[];
             /** @description Logical Environment available to the environment import. Required when that grant is present. */
             environment?: components["schemas"]["EnvironmentName"];
+            /** @description Create-time-only tool_artifact_layers entry Brain hands to the bound Environment on every environment import call. Requires the environment grant. */
+            bundle_digest?: components["schemas"]["Sha256Hex"];
         } | {
             /** @constant */
             kind: "environment";
@@ -1326,7 +1328,7 @@ export type components = {
             environments?: components["schemas"]["EnvironmentsConfig"];
             /** @description Bounded bundle payloads referenced by tools.items. Never part of the model prefix or journal. */
             tool_bundles?: components["schemas"]["ToolBundle"][];
-            /** @description Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles. */
+            /** @description Create-time-only content-addressed artifact-layer bytes referenced by tool_bundles or by a component Tool bundle_digest. */
             tool_artifact_layers?: components["schemas"]["ToolArtifactLayer"][];
             /** @description Write-only values for required managed Tool environment names; encrypted in custody. */
             secrets?: {

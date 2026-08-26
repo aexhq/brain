@@ -1194,6 +1194,36 @@ impl Brain {
             validate_custody_plaintext("secrets", &serde_json::to_string(&req.secrets)?)?;
         }
         let tool_items = tools_cfg.items.clone();
+        let mut component_bundle_checksums = HashSet::new();
+        let mut layer_payloads = HashMap::with_capacity(req.tool_artifact_layers.len());
+        for (index, layer) in req.tool_artifact_layers.iter().enumerate() {
+            let checksum = layer.checksum.to_string();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(layer.content_base64.as_bytes())
+                .map_err(|error| {
+                    BrainError::Invalid(format!(
+                        "tool_artifact_layers[{index}].content_base64: {error}"
+                    ))
+                })?;
+            if bytes.len() != layer.bytes.get() as usize {
+                return Err(BrainError::Invalid(format!(
+                    "tool_artifact_layers[{index}].bytes does not match decoded content"
+                )));
+            }
+            if hex::encode(Sha256::digest(&bytes)) != checksum {
+                return Err(BrainError::Invalid(format!(
+                    "tool_artifact_layers[{index}] checksum mismatch"
+                )));
+            }
+            if layer_payloads
+                .insert(checksum, (bytes, layer.media_type))
+                .is_some()
+            {
+                return Err(BrainError::Invalid(format!(
+                    "tool_artifact_layers[{index}] repeats a checksum"
+                )));
+            }
+        }
         let mut decls = crate::tools::resolve(&tool_items)?;
         let mut referenced_tool_components = HashSet::new();
         for decl in &mut decls {
@@ -1210,14 +1240,36 @@ impl Brain {
             let component = component_artifacts.get(&digest).ok_or_else(|| {
                 BrainError::Invalid(format!("Tool component {digest} has no supplied artifact"))
             })?;
-            *selector = registry.admit(
-                &digest,
-                &selector.world,
+            let bundle_digest = selector.bundle_digest.clone();
+            let bundle = match &bundle_digest {
+                None => None,
+                Some(bundle_digest) => {
+                    let (bytes, _) = layer_payloads.get(bundle_digest.as_str()).ok_or_else(|| {
+                        BrainError::Invalid(format!(
+                            "tool {} Environment bundle {bundle_digest} has no supplied artifact layer",
+                            decl.name
+                        ))
+                    })?;
+                    if bytes.len() > brain_protocol::MAX_TOOL_BUNDLE_BYTES {
+                        return Err(BrainError::Invalid(format!(
+                            "tool {} Environment bundle exceeds {} bytes",
+                            decl.name,
+                            brain_protocol::MAX_TOOL_BUNDLE_BYTES
+                        )));
+                    }
+                    component_bundle_checksums.insert(bundle_digest.clone());
+                    Some((bundle_digest.as_str(), bytes.as_slice()))
+                }
+            };
+            *selector = registry.admit(crate::tools::ComponentToolAdmission {
+                component_digest: &digest,
+                world: &selector.world,
                 component,
-                &selector.config,
-                &selector.grants,
-                selector.environment.as_deref(),
-            )?;
+                config: &selector.config,
+                grants: &selector.grants,
+                environment: selector.environment.as_deref(),
+                bundle,
+            })?;
             referenced_tool_components.insert(digest);
         }
         let has_customer_tools = decls
@@ -1410,35 +1462,6 @@ impl Brain {
         let mut total_bundle_bytes = 0usize;
         let mut bundle_checksums = HashSet::new();
         let mut layer_checksums = HashSet::new();
-        let mut layer_payloads = HashMap::with_capacity(req.tool_artifact_layers.len());
-        for (index, layer) in req.tool_artifact_layers.iter().enumerate() {
-            let checksum = layer.checksum.to_string();
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(layer.content_base64.as_bytes())
-                .map_err(|error| {
-                    BrainError::Invalid(format!(
-                        "tool_artifact_layers[{index}].content_base64: {error}"
-                    ))
-                })?;
-            if bytes.len() != layer.bytes.get() as usize {
-                return Err(BrainError::Invalid(format!(
-                    "tool_artifact_layers[{index}].bytes does not match decoded content"
-                )));
-            }
-            if hex::encode(Sha256::digest(&bytes)) != checksum {
-                return Err(BrainError::Invalid(format!(
-                    "tool_artifact_layers[{index}] checksum mismatch"
-                )));
-            }
-            if layer_payloads
-                .insert(checksum, (bytes, layer.media_type))
-                .is_some()
-            {
-                return Err(BrainError::Invalid(format!(
-                    "tool_artifact_layers[{index}] repeats a checksum"
-                )));
-            }
-        }
         for (index, bundle) in req.tool_bundles.iter().enumerate() {
             let checksum = bundle.checksum.to_string();
             if !bundle_checksums.insert(checksum.clone()) {
@@ -1524,10 +1547,9 @@ impl Brain {
                 layers: decoded_layers,
             });
         }
-        if let Some(unused) = layer_payloads
-            .keys()
-            .find(|checksum| !layer_checksums.contains(*checksum))
-        {
+        if let Some(unused) = layer_payloads.keys().find(|checksum| {
+            !layer_checksums.contains(*checksum) && !component_bundle_checksums.contains(*checksum)
+        }) {
             return Err(BrainError::Invalid(format!(
                 "unreferenced tool artifact layer {unused}"
             )));

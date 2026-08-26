@@ -55,6 +55,8 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
     let model_digest = hex::encode(Sha256::digest(&model_component));
     let tool_digest = hex::encode(Sha256::digest(&tool_component));
     let environment_digest = hex::encode(Sha256::digest(&environment_component));
+    let bundle = b"export default async function invoke(input) { return input; }";
+    let bundle_digest = hex::encode(Sha256::digest(bundle));
 
     let brain = brain_server::compose_local(brain_server::LocalOptions {
         data_dir: temp.0.clone(),
@@ -114,9 +116,16 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
                 "world": "aex:tool/tool@1.0.0",
                 "config": {"useEnvironment":true},
                 "grants": ["environment"],
-                "environment": "workspace"
+                "environment": "workspace",
+                "bundle_digest": bundle_digest
             }
         }]},
+        "tool_artifact_layers": [{
+            "checksum": bundle_digest,
+            "content_base64": base64::engine::general_purpose::STANDARD.encode(bundle),
+            "bytes": bundle.len(),
+            "media_type": "application/javascript+esm"
+        }],
         "environments": {
             "workspace": {
                 "component_digest": environment_digest,
@@ -152,10 +161,22 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
                 content,
                 is_error: false,
                 ..
-            } => serde_json::from_str::<serde_json::Value>(content)
-                .is_ok_and(|value| value["value"] == "environment-ok"),
+            } => serde_json::from_str::<serde_json::Value>(content).is_ok_and(|value| {
+                value["value"] == "environment-ok"
+                    && value["providerOperationId"]
+                        .as_str()
+                        .is_some_and(|id| id.ends_with(&format!(":{}", bundle.len())))
+            }),
             _ => false,
         }),
-        "records: {records:#?}"
+        "the sealed bundle must reach the Environment: {records:#?}"
     );
+
+    // The immutable bundle is the largest Tool payload; sealing it inline would put megabytes in
+    // every session's CONFIG record, which is what the journal ceiling exists to refuse.
+    let head = brain.journal.get_head(&session_id).await.unwrap();
+    let sealed = serde_json::to_string(&head.doc.prefix.tools).unwrap();
+    assert!(!sealed.contains(&base64::engine::general_purpose::STANDARD.encode(bundle)));
+    assert!(sealed.contains(&bundle_digest));
+    brain::journal::validate_config_doc(&head.doc).expect("the sealed configuration stays bounded");
 }

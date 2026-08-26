@@ -169,6 +169,7 @@ export class Sessions {
           config: binding.config,
           grants: binding.grants,
           ...(needsEnvironment ? { environment: environments[0]![0] } : {}),
+          ...(binding.bundle_digest === undefined ? {} : { bundle_digest: binding.bundle_digest }),
         },
       };
     });
@@ -210,6 +211,9 @@ export class Sessions {
       },
       ...(environments.length === 0 ? {} : { environments: environmentConfig }),
       ...(compiledTools.bundles.length === 0 ? {} : { tool_bundles: compiledTools.bundles }),
+      ...(components.toolArtifactLayers.length === 0
+        ? {}
+        : { tool_artifact_layers: components.toolArtifactLayers }),
       ...(options.secrets === undefined ? {} : { secrets: options.secrets }),
       ...(options.systemPrompt === undefined ? {} : { system_prompt: options.systemPrompt }),
       ...(options.metadata === undefined ? {} : { metadata: options.metadata }),

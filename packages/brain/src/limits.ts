@@ -5,6 +5,12 @@ export const MAX_MANAGED_TOOL_INPUT_BYTES = 192 * 1024;
 /** Maximum UTF-8 JSON bytes accepted by the Session create endpoint. */
 export const MAX_CREATE_SESSION_REQUEST_BYTES = 144 * 1024 * 1024;
 
+/** Maximum serialized bytes of one session's immutable sealed configuration journal record. */
+export const MAX_SEALED_CONFIG_BYTES = 256 * 1024;
+
+/** Maximum bytes of one immutable Tool bundle handed to an Environment. */
+export const MAX_TOOL_BUNDLE_BYTES = 4 * 1024 * 1024;
+
 /** Maximum encoded bytes for one customer-Environment WebSocket command frame. */
 export const MAX_CUSTOMER_WS_FRAME_BYTES = 24 * 1024;
 

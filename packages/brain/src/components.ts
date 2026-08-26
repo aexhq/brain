@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 
 import { componentContracts, type ComponentKind } from "./generated/components.js";
+import { MAX_TOOL_BUNDLE_BYTES } from "./limits.js";
 
 export const MAX_COMPONENT_BYTES = 32 * 1024 * 1024;
+const TOOL_ENVIRONMENT_BUNDLE_MEDIA_TYPE = "application/javascript+esm";
 
 export type ComponentAsset = URL | Uint8Array;
 export type SealedComponentAsset =
@@ -25,11 +27,17 @@ export interface ComponentExtension<Kind extends ComponentKind = ComponentKind, 
   readonly config: Config;
   readonly grants: readonly ToolContextGrant[];
   readonly metadata: Readonly<ComponentMetadata>;
+  readonly bundle?: SealedComponentAsset;
 }
 
 export interface ComponentOptions {
   readonly grants?: readonly ToolContextGrant[];
   readonly metadata?: ComponentMetadata;
+  /**
+   * Immutable ESM bundle the bound Environment executes for this Tool. It travels as a
+   * content-addressed create-time artifact layer, never inside the sealed component config.
+   */
+  readonly bundle?: ComponentAsset;
 }
 
 export interface WireComponent {
@@ -42,6 +50,7 @@ export interface WireComponent {
   config: unknown;
   grants: ToolContextGrant[];
   metadata: ComponentMetadata;
+  bundle?: WireToolArtifactLayer;
 }
 
 export interface WireComponentArtifact {
@@ -50,11 +59,22 @@ export interface WireComponentArtifact {
   bytes: number;
 }
 
-export type WireComponentBinding = Omit<WireComponent, "component_base64" | "bytes">;
+export interface WireToolArtifactLayer {
+  checksum: string;
+  content_base64: string;
+  bytes: number;
+  media_type: typeof TOOL_ENVIRONMENT_BUNDLE_MEDIA_TYPE;
+}
+
+export type WireComponentBinding = Omit<WireComponent, "component_base64" | "bytes" | "bundle"> & {
+  bundle_digest?: string;
+};
 
 export interface PreparedComponents {
   artifacts: WireComponentArtifact[];
   bindings: WireComponentBinding[];
+  /** Create-time-only bundle bytes referenced by `bundle_digest`, deduplicated by checksum. */
+  toolArtifactLayers: WireToolArtifactLayer[];
 }
 
 const GRANTS = new Set<ToolContextGrant>([
@@ -77,6 +97,7 @@ export function component<Kind extends ComponentKind, Config>(
   const sealedConfig = cloneJson(config, "component config");
   const grants = normalizeGrants(extension, options.grants ?? []);
   const metadata = normalizeMetadata(options.metadata ?? {});
+  const bundle = options.bundle === undefined ? undefined : sealBundle(grants, options.bundle);
   return Object.freeze({
     kind: "brain.component" as const,
     extension,
@@ -86,6 +107,7 @@ export function component<Kind extends ComponentKind, Config>(
     config: sealedConfig,
     grants,
     metadata,
+    ...(bundle === undefined ? {} : { bundle }),
   });
 }
 
@@ -95,6 +117,7 @@ export function defineComponent<Kind extends ComponentKind, Options, Config>(def
   readonly configure: (options: Options) => Config;
   readonly grants?: readonly ToolContextGrant[];
   readonly metadata?: ComponentMetadata;
+  readonly bundle?: ComponentAsset;
 }): (options: Options) => ComponentExtension<Kind, Config> {
   if (typeof definition.configure !== "function") {
     throw new TypeError("defineComponent requires a configure function");
@@ -106,6 +129,7 @@ export function defineComponent<Kind extends ComponentKind, Options, Config>(def
     {
       ...(definition.grants === undefined ? {} : { grants: definition.grants }),
       ...(definition.metadata === undefined ? {} : { metadata: definition.metadata }),
+      ...(definition.bundle === undefined ? {} : { bundle: definition.bundle }),
     },
   );
 }
@@ -115,6 +139,21 @@ export async function prepareComponent(value: ComponentExtension): Promise<WireC
   const bytes = await loadAsset(value.asset);
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_COMPONENT_BYTES) {
     throw new TypeError(`Brain component bytes must be between 1 and ${MAX_COMPONENT_BYTES}`);
+  }
+  let bundle: WireToolArtifactLayer | undefined;
+  if (value.bundle !== undefined) {
+    const bundleBytes = await loadAsset(value.bundle);
+    if (bundleBytes.byteLength === 0 || bundleBytes.byteLength > MAX_TOOL_BUNDLE_BYTES) {
+      throw new TypeError(
+        `Tool Environment bundle bytes must be between 1 and ${MAX_TOOL_BUNDLE_BYTES}`,
+      );
+    }
+    bundle = {
+      checksum: createHash("sha256").update(bundleBytes).digest("hex"),
+      content_base64: Buffer.from(bundleBytes).toString("base64"),
+      bytes: bundleBytes.byteLength,
+      media_type: TOOL_ENVIRONMENT_BUNDLE_MEDIA_TYPE,
+    };
   }
   return {
     kind: value.extension,
@@ -126,6 +165,7 @@ export async function prepareComponent(value: ComponentExtension): Promise<WireC
     config: value.config,
     grants: [...value.grants],
     metadata: { ...value.metadata },
+    ...(bundle === undefined ? {} : { bundle }),
   };
 }
 
@@ -134,7 +174,8 @@ export async function prepareComponents(
 ): Promise<PreparedComponents> {
   const prepared = await Promise.all(values.map((value) => prepareComponent(value)));
   const artifacts = new Map<string, WireComponentArtifact>();
-  const bindings = prepared.map(({ component_base64, bytes, ...binding }) => {
+  const layers = new Map<string, WireToolArtifactLayer>();
+  const bindings = prepared.map(({ component_base64, bytes, bundle, ...binding }) => {
     const prior = artifacts.get(binding.component_digest);
     if (prior === undefined) {
       artifacts.set(binding.component_digest, {
@@ -145,9 +186,20 @@ export async function prepareComponents(
     } else if (prior.bytes !== bytes || prior.component_base64 !== component_base64) {
       throw new TypeError(`Brain component digest collision ${binding.component_digest}`);
     }
-    return binding;
+    if (bundle === undefined) return binding;
+    const priorLayer = layers.get(bundle.checksum);
+    if (priorLayer === undefined) {
+      layers.set(bundle.checksum, bundle);
+    } else if (priorLayer.content_base64 !== bundle.content_base64) {
+      throw new TypeError(`Tool Environment bundle digest collision ${bundle.checksum}`);
+    }
+    return { ...binding, bundle_digest: bundle.checksum };
   });
-  return { artifacts: [...artifacts.values()], bindings };
+  return {
+    artifacts: [...artifacts.values()],
+    bindings,
+    toolArtifactLayers: [...layers.values()],
+  };
 }
 
 function assertComponent(value: ComponentExtension): void {
@@ -160,8 +212,26 @@ function assertComponent(value: ComponentExtension): void {
   }
   assertSealedAsset(value.asset);
   assertJson(value.config, "component config");
-  normalizeGrants(value.extension, value.grants);
+  const grants = normalizeGrants(value.extension, value.grants);
   normalizeMetadata(value.metadata);
+  if (value.bundle !== undefined) {
+    assertSealedAsset(value.bundle);
+    assertBundleGrant(grants);
+  }
+}
+
+function sealBundle(
+  grants: readonly ToolContextGrant[],
+  bundle: ComponentAsset,
+): SealedComponentAsset {
+  assertBundleGrant(grants);
+  return sealAsset(bundle);
+}
+
+function assertBundleGrant(grants: readonly ToolContextGrant[]): void {
+  if (!grants.includes("environment")) {
+    throw new TypeError("An Environment bundle requires the environment Tool context grant");
+  }
 }
 
 function sealAsset(asset: ComponentAsset): SealedComponentAsset {

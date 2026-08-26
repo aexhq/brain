@@ -324,7 +324,6 @@ impl tool::aex::tool::environment::Host for State {
         &mut self,
         operation_id: String,
         descriptor_json: String,
-        bundle: Option<Vec<u8>>,
         input_json: String,
         deadline_at_ms: u64,
     ) -> Result<String, tool::aex::tool::types::ExtensionError> {
@@ -340,7 +339,6 @@ impl tool::aex::tool::environment::Host for State {
                     "component_operation_id": operation_id,
                     "metadata": metadata,
                     "descriptor_json": descriptor_json,
-                    "bundle_base64": bundle.map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
                     "input_json": input_json,
                     "deadline_at_ms": deadline_at_ms.to_string(),
                 }),
