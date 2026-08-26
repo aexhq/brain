@@ -2,10 +2,13 @@ use std::path::PathBuf;
 
 use brain_component_host::{
     CapabilityCall, CapabilityFailure, CapabilityHandler, ComponentRuntime, ComponentSource,
-    WorkerPool, WorkerRequest, agentloop, component_digest, environment, model, tool,
+    WORKER_REQUEST_CAP, WorkerPool, WorkerRequest, agentloop, component_digest, environment, model,
+    tool,
 };
 use serde_json::Value;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 fn component_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -443,10 +446,12 @@ async fn a_request_waiting_on_the_kernel_outlives_the_worker_frame_bound() {
     assert_eq!(response["value_json"], r#"{"child":"done"}"#);
 }
 
-/// The bound still stops a worker that genuinely goes silent, and names why. The instance is
-/// resident first, so the only thing between the request and the missing frame is the guest.
+/// A worker that is busy is not a worker that has gone silent. Reading a component, compiling
+/// it and running a guest all take longer than the bound, and none of them are the worker
+/// failing to speak; the guest's own CPU slice is what stops a guest, and it says so. The
+/// instance is resident first, so the only thing left to be slow is the guest.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_worker_that_stops_answering_is_stopped_with_a_named_reason() {
+async fn a_busy_worker_is_not_mistaken_for_a_silent_one() {
     let pool = WorkerPool::with_frame_timeout(
         env!("CARGO_BIN_EXE_component-host"),
         1,
@@ -463,9 +468,7 @@ async fn a_worker_that_stops_answering_is_stopped_with_a_named_reason() {
         .await
         .unwrap_err();
     assert!(
-        error
-            .to_string()
-            .starts_with("component worker sent no frame for request"),
+        error.to_string().starts_with("the component exceeded its"),
         "{error}"
     );
 }
@@ -483,24 +486,26 @@ impl CapabilityHandler for DenyEverything {
     }
 }
 
-/// A ctx op that needs the same pool (a subagent's child turn) waits for a free worker. It is
-/// the kernel's own bound that releases it, so the parent always finishes: head-of-line blocking
-/// degrades the child, it never wedges the caller.
+/// A ctx op that needs the same worker (a subagent's child turn, pinned to it by affinity) must
+/// run while the parent's request is parked in that very op. Held exclusively, the parent could
+/// not observe the child it was waiting for, and `subagents` returned no child session at all.
 struct NestedChild {
-    pool: std::sync::OnceLock<Arc<WorkerPool>>,
+    pool: std::sync::OnceLock<std::sync::Weak<WorkerPool>>,
 }
 
 #[async_trait::async_trait]
 impl CapabilityHandler for NestedChild {
     async fn call(&self, call: CapabilityCall) -> Result<Value, CapabilityFailure> {
         if call.request["op"]["op"].as_str() == Some("model_stream") {
-            let pool = self.pool.get().expect("pool").clone();
+            let pool = self.pool.get().expect("pool").upgrade().expect("pool");
             let child = tokio::time::timeout(
                 TEST_FRAME_BOUND,
                 pool.call(agentloop_activation("ses_child", r#"{"track":true}"#)),
             )
-            .await;
-            assert!(child.is_err(), "the only worker is held by the parent");
+            .await
+            .expect("the child activation must not wait for the parent to finish")
+            .expect("the child activation runs on the same worker");
+            assert_eq!(child["payload_json"], r#"{"activations":1}"#);
             return Ok(Value::String(
                 serde_json::json!({"result":{"message":{"content":[],"stop_reason":"end_turn"}}})
                     .to_string(),
@@ -513,7 +518,7 @@ impl CapabilityHandler for NestedChild {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_nested_request_is_delayed_but_the_parent_still_completes() {
+async fn a_nested_request_runs_while_the_parent_is_parked_in_its_own_ctx_op() {
     let capabilities = Arc::new(NestedChild {
         pool: std::sync::OnceLock::new(),
     });
@@ -524,7 +529,7 @@ async fn a_nested_request_is_delayed_but_the_parent_still_completes() {
     )
     .await
     .unwrap();
-    capabilities.pool.set(pool.clone()).ok();
+    capabilities.pool.set(Arc::downgrade(&pool)).ok();
     let returned = pool
         .call(agentloop_activation(
             "ses_parent",
@@ -535,5 +540,199 @@ async fn a_nested_request_is_delayed_but_the_parent_still_completes() {
     assert_eq!(
         returned["payload_json"],
         r#"{"activation_id":"act_1","outcome":"completed"}"#
+    );
+}
+
+/// Frames are addressed, so walking away from a request cannot leave the pipe in a state the
+/// next request misreads. Unaddressed, a cancelled request desynchronized the conversation and
+/// the following one died on it — `component worker response id does not match request N`.
+#[tokio::test(flavor = "multi_thread")]
+async fn abandoning_a_request_does_not_corrupt_the_next_one() {
+    let pool = WorkerPool::with_frame_timeout(
+        env!("CARGO_BIN_EXE_component-host"),
+        1,
+        Arc::new(SlowKernel),
+        TEST_FRAME_BOUND,
+    )
+    .await
+    .unwrap();
+    let path = component_path("tool");
+    let bytes = std::fs::read(&path).unwrap();
+    let invoke = |call: &str| WorkerRequest::Tool {
+        component: ComponentSource {
+            path: path.clone(),
+            sha256: component_digest(&bytes),
+        },
+        request: tool::aex::tool::types::Invocation {
+            metadata: tool::aex::tool::types::CallMetadata {
+                tenant_id: "tenant_1".into(),
+                session_id: "ses_1".into(),
+                turn_id: "turn_1".into(),
+                call_id: call.into(),
+                tool_name: "subagents".into(),
+            },
+            input_json: r#"{"action":"spawn_agent"}"#.into(),
+            config_json: r#"{"useEnvironment":true}"#.into(),
+            deadline_at_ms: u64::MAX,
+        },
+        grants: vec!["environment".into()],
+    };
+    // Walk away while the worker is parked in a capability the kernel has not answered yet.
+    let abandoned =
+        tokio::time::timeout(TEST_FRAME_BOUND / 5, pool.call(invoke("call_abandoned"))).await;
+    assert!(abandoned.is_err(), "the request is still in the capability");
+    let next = pool.call(invoke("call_next")).await;
+    assert_eq!(
+        next.expect("the worker still speaks the frame protocol")["value_json"],
+        r#"{"child":"done"}"#
+    );
+}
+
+/// What the development plane did on the first deployment of multiplexing: a nested child
+/// re-entering the pool while another request on the same worker has its capability refused.
+struct NestedChildBesideARefusal {
+    pool: std::sync::OnceLock<std::sync::Weak<WorkerPool>>,
+}
+
+#[async_trait::async_trait]
+impl CapabilityHandler for NestedChildBesideARefusal {
+    async fn call(&self, call: CapabilityCall) -> Result<Value, CapabilityFailure> {
+        if call.capability == "tool.environment.invoke" {
+            return Err(CapabilityFailure {
+                code: "invalid_request".into(),
+                message: "the Environment driver refused this submit".into(),
+                retryable: false,
+            });
+        }
+        if call.request["op"]["op"].as_str() == Some("model_stream") {
+            let pool = self.pool.get().expect("pool").upgrade().expect("pool");
+            pool.call(agentloop_activation("ses_child", r#"{"track":true}"#))
+                .await
+                .expect("the child activation runs while the parent is parked");
+            return Ok(Value::String(
+                serde_json::json!({"result":{"message":{"content":[],"stop_reason":"end_turn"}}})
+                    .to_string(),
+            ));
+        }
+        Ok(Value::String(
+            serde_json::json!({ "result": Value::Null }).to_string(),
+        ))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_capability_does_not_disturb_a_nested_child_on_the_same_worker() {
+    let capabilities = Arc::new(NestedChildBesideARefusal {
+        pool: std::sync::OnceLock::new(),
+    });
+    let pool = WorkerPool::with_capabilities(
+        env!("CARGO_BIN_EXE_component-host"),
+        1,
+        capabilities.clone(),
+    )
+    .await
+    .unwrap();
+    capabilities.pool.set(Arc::downgrade(&pool)).ok();
+
+    let path = component_path("tool");
+    let bytes = std::fs::read(&path).unwrap();
+    let refused = pool.call(WorkerRequest::Tool {
+        component: ComponentSource {
+            path,
+            sha256: component_digest(&bytes),
+        },
+        request: tool::aex::tool::types::Invocation {
+            metadata: tool::aex::tool::types::CallMetadata {
+                tenant_id: "tenant_1".into(),
+                session_id: "ses_env".into(),
+                turn_id: "turn_1".into(),
+                call_id: "call_refused".into(),
+                tool_name: "computer".into(),
+            },
+            input_json: r#"{"action":"submit"}"#.into(),
+            config_json: r#"{"useEnvironment":true}"#.into(),
+            deadline_at_ms: u64::MAX,
+        },
+        grants: vec!["environment".into()],
+    });
+    let parent = pool.call(agentloop_activation(
+        "ses_parent",
+        r#"{"fixture":"sequential"}"#,
+    ));
+    let (parent, refused) = tokio::join!(parent, refused);
+    assert_eq!(
+        parent.expect("the parent activation completes")["payload_json"],
+        r#"{"activation_id":"act_1","outcome":"completed"}"#
+    );
+    assert!(
+        refused.is_err(),
+        "the refused capability must still fail its own request"
+    );
+}
+
+/// Counts how many requests one worker is asked to carry at the same moment.
+struct CountLive {
+    live: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl CapabilityHandler for CountLive {
+    async fn call(&self, call: CapabilityCall) -> Result<Value, CapabilityFailure> {
+        if call.request["op"]["op"].as_str() == Some("model_stream") {
+            let live = self.live.fetch_add(1, Ordering::Relaxed) + 1;
+            self.peak.fetch_max(live, Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            self.live.fetch_sub(1, Ordering::Relaxed);
+            return Ok(Value::String(
+                serde_json::json!({"result":{"message":{"content":[],"stop_reason":"end_turn"}}})
+                    .to_string(),
+            ));
+        }
+        Ok(Value::String(
+            serde_json::json!({ "result": Value::Null }).to_string(),
+        ))
+    }
+}
+
+/// Multiplexing removed the only bound on how much one worker process carries: it was measured
+/// holding 48 simultaneous activations and 1.03 GiB where it had held one, which is what took
+/// the development plane down. Concurrency is what the change is for, so the bound is a cap,
+/// not a return to one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_worker_carries_a_bounded_number_of_requests_at_once() {
+    let capabilities = Arc::new(CountLive {
+        live: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
+    });
+    let pool = WorkerPool::with_capabilities(
+        env!("CARGO_BIN_EXE_component-host"),
+        1,
+        capabilities.clone(),
+    )
+    .await
+    .unwrap();
+    let mut handles = Vec::new();
+    for n in 0..48 {
+        let pool = pool.clone();
+        handles.push(tokio::spawn(async move {
+            pool.call(agentloop_activation(
+                &format!("ses_{n}"),
+                r#"{"fixture":"sequential"}"#,
+            ))
+            .await
+        }));
+    }
+    for handle in handles {
+        handle.await.expect("task").expect("activation");
+    }
+    let peak = capabilities.peak.load(Ordering::Relaxed);
+    assert!(
+        peak > 1,
+        "the worker must still carry more than one at once"
+    );
+    assert!(
+        peak <= WORKER_REQUEST_CAP,
+        "one worker carried {peak} requests at once"
     );
 }
