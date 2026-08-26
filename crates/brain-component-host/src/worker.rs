@@ -14,9 +14,9 @@ use tokio::sync::Mutex;
 use tracing::Instrument as _;
 
 use crate::{
-    AgentloopInstance, CapabilityCall, CapabilityFailure, CapabilityHandler, ComponentRuntime,
-    DenyCapabilities, EnvironmentInstance, ModelInstance, agentloop, component_digest, environment,
-    model, tool,
+    AgentloopInstance, CapabilityCall, CapabilityFailure, CapabilityHandler, ComponentFailure,
+    ComponentRuntime, DenyCapabilities, EnvironmentInstance, ModelInstance, agentloop,
+    component_digest, environment, model, tool,
 };
 
 const MAX_COMPONENT_BYTES: u64 = 32 << 20;
@@ -296,12 +296,57 @@ enum ParentFrame {
     },
 }
 
+/// One worker failure as it crosses the process boundary. A component's declared `extension-error`
+/// keeps its code and its own retryability; anything else is an internal failure a retry may clear.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerFailure {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default = "retryable_by_default")]
+    pub retryable: bool,
+}
+
+fn retryable_by_default() -> bool {
+    true
+}
+
+impl WorkerFailure {
+    fn of(error: &anyhow::Error) -> Self {
+        match error.downcast_ref::<ComponentFailure>() {
+            Some(failure) => Self {
+                message: failure.message.clone(),
+                code: Some(failure.code.clone()),
+                retryable: failure.retryable,
+            },
+            None => Self {
+                message: error.to_string(),
+                code: None,
+                retryable: true,
+            },
+        }
+    }
+
+    fn into_error(self) -> anyhow::Error {
+        match self.code {
+            Some(code) => ComponentFailure::error(code, self.message, self.retryable),
+            None => anyhow::Error::msg(self.message),
+        }
+    }
+}
+
+impl std::fmt::Display for WorkerFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "frame", rename_all = "snake_case")]
 enum WorkerFrame {
     Response {
         id: u64,
-        result: Result<Value, String>,
+        result: Result<Value, WorkerFailure>,
     },
     Capability {
         id: u64,
@@ -727,13 +772,17 @@ pub async fn run_worker() -> anyhow::Result<()> {
             )
             .instrument(span)
             .await
-            .map_err(|error| error.to_string()),
+            .map_err(|error| WorkerFailure::of(&error)),
         };
         let mut encoded = serde_json::to_vec(&response)?;
         if encoded.len() + 1 > MAX_FRAME_BYTES {
             encoded = serde_json::to_vec(&WorkerFrame::Response {
                 id,
-                result: Err("worker response exceeds the frame bound".into()),
+                result: Err(WorkerFailure {
+                    message: "worker response exceeds the frame bound".into(),
+                    code: None,
+                    retryable: true,
+                }),
             })?;
         }
         encoded.push(b'\n');
@@ -873,7 +922,7 @@ impl WorkerPool {
             .call(id, request, self.capabilities.as_ref(), self.frame_timeout)
             .await
         {
-            Ok(result) => result.map_err(anyhow::Error::msg),
+            Ok(result) => result.map_err(|failure| failure.into_error()),
             Err(error) => {
                 // A worker that stopped speaking the frame protocol is replaced; its resident
                 // instances rehydrate on the next activation.
@@ -926,7 +975,7 @@ impl Worker {
         request: WorkerRequest,
         capabilities: &dyn CapabilityHandler,
         frame_timeout: Duration,
-    ) -> anyhow::Result<Result<Value, String>> {
+    ) -> anyhow::Result<Result<Value, WorkerFailure>> {
         if self.child.try_wait()?.is_some() {
             anyhow::bail!("component worker exited before request {id}");
         }

@@ -7419,7 +7419,7 @@ async fn release_component_environments(
             )
         })?;
     for (environment_id, declaration) in declarations {
-        registry
+        let released = registry
             .release(
                 &declaration,
                 crate::environment::ComponentEnvironmentRelease {
@@ -7427,11 +7427,24 @@ async fn release_component_environments(
                     session_id: session_id.to_owned(),
                     root_id: head.root_id.clone(),
                     parent_id: head.parent_id.clone(),
-                    environment_id,
+                    environment_id: environment_id.clone(),
                     policy: serde_json::json!({ "network": head.prefix.network }),
                 },
             )
-            .await?;
+            .await;
+        // A refusal the Environment declares permanent cannot be cleared by repeating it, and an
+        // end that waits on it is never retired: the session is swept forever, which holds the
+        // control plane's write lock and fails unrelated routes. Record it and finish the end.
+        match released {
+            Ok(()) => {}
+            Err(BrainError::EnvironmentRefused(reason)) => tracing::warn!(
+                session = session_id,
+                environment = environment_id,
+                reason,
+                "Environment refused its release; ending without it"
+            ),
+            Err(error) => return Err(error),
+        }
     }
     Ok(())
 }

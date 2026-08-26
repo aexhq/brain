@@ -58,8 +58,20 @@ async fn dispatch_endpoint() -> (String, Arc<Mutex<Vec<Value>>>) {
         axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
             let recorder = recorder.clone();
             async move {
+                let refuse = body["action"] == "release";
                 recorder.lock().expect("recorded dispatches").push(body);
-                axum::Json(json!({"dispatched": "ok"}))
+                if refuse {
+                    // A permanent content refusal, the shape that kept a live plane's sessions in
+                    // ending forever.
+                    return (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        axum::Json(json!({"error": "the relay refused this release"})),
+                    );
+                }
+                (
+                    axum::http::StatusCode::OK,
+                    axum::Json(json!({"dispatched": "ok"})),
+                )
             }
         }),
     );
@@ -214,6 +226,40 @@ async fn component_tool_calls_component_environment_through_the_session_kernel()
         assert_eq!(call["action"], "submit");
         assert!(call["request"]["operation_id"].is_string());
     }
+
+    // A release the Environment declares permanently impossible cannot be cleared by repeating it.
+    // An end that waits on one is never retired: the session is swept forever, which holds the
+    // control plane's write lock and fails unrelated routes. The end must finish, and the refusal
+    // must arrive with the endpoint's own reason rather than a bare status.
+    brain
+        .end(&session_id)
+        .await
+        .expect("end past a refused release");
+    let mut ended = false;
+    for _ in 0..3_000 {
+        if brain.journal.get_head(&session_id).await.unwrap().doc.state
+            == brain::journal::SessionLifecycle::Ended
+        {
+            ended = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    {
+        let recorded = dispatched.lock().expect("recorded dispatches");
+        let release = recorded
+            .iter()
+            .find(|call| call["action"] == "release")
+            .unwrap_or_else(|| {
+                let actions: Vec<_> = recorded.iter().map(|call| call["action"].clone()).collect();
+                panic!("the end never released the Environment; ended={ended} actions={actions:?}")
+            });
+        assert_eq!(release["request"]["released"], true);
+    }
+    assert!(
+        ended,
+        "a refused release must not leave the session ending forever"
+    );
 
     // The immutable bundle is the largest Tool payload; sealing it inline would put megabytes in
     // every session's CONFIG record, which is what the journal ceiling exists to refuse.

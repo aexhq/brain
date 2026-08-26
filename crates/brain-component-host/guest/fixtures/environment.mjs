@@ -35,4 +35,7 @@ export function cancel() {}
 
 export function acknowledge() {}
 
-export function release() {}
+export function release(bindingJson) {
+  if (JSON.parse(bindingJson).dispatch !== true) return;
+  dispatch("release", "release", JSON.stringify({ released: true }), 18446744073709551615n);
+}
