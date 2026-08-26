@@ -188,6 +188,12 @@ pub(super) fn map_err(e: BrainError) -> Failure {
             "the upstream provider request failed",
             false,
         ),
+        BrainError::EnvironmentRefused(_) => (
+            S::CONFLICT,
+            "environment_refused",
+            "the execution runtime refused the operation",
+            false,
+        ),
         BrainError::EnvironmentUnavailable(_) | BrainError::Environment(_) => (
             S::SERVICE_UNAVAILABLE,
             "environment_unavailable",

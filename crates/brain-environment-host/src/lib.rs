@@ -18,6 +18,8 @@ use serde_json::Value;
 
 const MAX_DISPATCH_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DISPATCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+/// Enough of a refused dispatch's body to name the reason without pasting a payload into a log.
+const MAX_DISPATCH_DETAIL_CHARS: usize = 512;
 
 static STAGING_NONCE: AtomicU64 = AtomicU64::new(1);
 
@@ -259,7 +261,15 @@ fn required_string<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
 }
 
 fn environment_transport(error: anyhow::Error) -> BrainError {
-    BrainError::Transport(format!("Environment component: {error}"))
+    // An Environment that declares a failure unretryable has judged that repeating the call cannot
+    // succeed. Reporting it as transport makes every caller wait on a retry that never lands.
+    match error.downcast_ref::<brain_component_host::ComponentFailure>() {
+        Some(failure) if !failure.retryable => BrainError::EnvironmentRefused(format!(
+            "Environment component: {} ({})",
+            failure.message, failure.code
+        )),
+        _ => BrainError::Transport(format!("Environment component: {error}")),
+    }
 }
 
 pub async fn registry_with_component_store(
@@ -502,9 +512,23 @@ impl CapabilityHandler for HttpEnvironmentCapabilities {
             body.extend_from_slice(&chunk);
         }
         if !status.is_success() {
+            // The endpoint names the refusal in its body. Dropping it leaves only a status, which
+            // is how a release refusal reached a live plane as an unexplained "400 Bad Request".
+            let detail = String::from_utf8_lossy(&body);
+            let detail = detail.trim();
             return Err(capability_failure(
                 "dispatch_failed",
-                &format!("Environment dispatch returned {status}"),
+                &if detail.is_empty() {
+                    format!("Environment dispatch returned {status}")
+                } else {
+                    format!(
+                        "Environment dispatch returned {status}: {}",
+                        detail
+                            .chars()
+                            .take(MAX_DISPATCH_DETAIL_CHARS)
+                            .collect::<String>()
+                    )
+                },
                 status.is_server_error(),
             ));
         }
@@ -550,6 +574,60 @@ mod tests {
                 Duration::from_secs(1)
             )
             .is_ok()
+        );
+    }
+
+    /// A refused dispatch reached a live plane as "400 Bad Request" and nothing else, three times
+    /// in one release. The endpoint names the reason in its body; the failure must carry it.
+    #[tokio::test]
+    async fn a_refused_dispatch_carries_the_endpoint_reason_and_is_not_retryable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut chunk = [0_u8; 4096];
+            let _ = socket.read(&mut chunk).await.unwrap();
+            let body = br#"{"error":"the relay refused this release"}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(body).await.unwrap();
+        });
+        let handler = HttpEnvironmentCapabilities::new(
+            format!("http://{address}/environment"),
+            None,
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let failure = handler
+            .call(CapabilityCall {
+                world: ENVIRONMENT_COMPONENT.into(),
+                instance_id: Some("instance".into()),
+                capability: "environment.dispatch".into(),
+                operation_id: "workspace".into(),
+                request: serde_json::json!({
+                    "action": "release",
+                    "request": {"binding": {"driver": "customer"}},
+                    "deadline_at_ms": (brain::wall_ms() + 2_000).to_string(),
+                }),
+            })
+            .await
+            .expect_err("a refused dispatch fails");
+        assert!(
+            failure.message.contains("the relay refused this release"),
+            "the refusal must name its reason: {}",
+            failure.message
+        );
+        assert!(
+            !failure.retryable,
+            "a client refusal cannot be cleared by repeating it"
         );
     }
 

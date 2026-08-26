@@ -178,6 +178,11 @@ pub enum BrainError {
     #[error("environment operation error: {0}")]
     Environment(String),
 
+    /// The Environment itself declared the operation permanently impossible. Retrying it cannot
+    /// succeed, so nothing may wait on a retry.
+    #[error("environment refused the operation: {0}")]
+    EnvironmentRefused(String),
+
     #[error("journal: {0}")]
     Journal(String),
 

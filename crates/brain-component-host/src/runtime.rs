@@ -40,6 +40,34 @@ pub struct CapabilityCall {
     pub request: Value,
 }
 
+/// A component export's declared `extension-error`. `retryable: false` is the component's own
+/// judgement that repeating the call cannot succeed; discarding it turned a permanent Environment
+/// refusal into a session end that retried for as long as the plane was up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentFailure {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl ComponentFailure {
+    pub fn error(code: String, message: String, retryable: bool) -> anyhow::Error {
+        anyhow::Error::new(Self {
+            code,
+            message,
+            retryable,
+        })
+    }
+}
+
+impl std::fmt::Display for ComponentFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ComponentFailure {}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityFailure {
     pub code: String,
@@ -840,7 +868,7 @@ impl ModelInstance {
             .bindings
             .call_start(armed(&mut self.store), request)
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 
     pub async fn observe(
@@ -852,7 +880,7 @@ impl ModelInstance {
             .bindings
             .call_observe(armed(&mut self.store), provider_operation_id, cursor)
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 
     pub async fn cancel(&mut self, provider_operation_id: &str) -> anyhow::Result<()> {
@@ -860,7 +888,7 @@ impl ModelInstance {
             .bindings
             .call_cancel(armed(&mut self.store), provider_operation_id)
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 
     pub async fn acknowledge(
@@ -872,7 +900,7 @@ impl ModelInstance {
             .bindings
             .call_acknowledge(armed(&mut self.store), provider_operation_id, terminal_json)
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 }
 
@@ -885,7 +913,7 @@ impl EnvironmentInstance {
             .bindings
             .call_resolve(armed(&mut self.store), request)
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 
     pub async fn submit(
@@ -897,7 +925,7 @@ impl EnvironmentInstance {
             .bindings
             .call_submit(armed(&mut self.store), binding_json, operation)
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 
     pub async fn observe(
@@ -915,7 +943,7 @@ impl EnvironmentInstance {
                 cursor,
             )
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 
     pub async fn cancel(
@@ -927,7 +955,7 @@ impl EnvironmentInstance {
             .bindings
             .call_cancel(armed(&mut self.store), binding_json, provider_operation_id)
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 
     pub async fn acknowledge(
@@ -945,7 +973,7 @@ impl EnvironmentInstance {
                 terminal_json,
             )
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 
     pub async fn release(&mut self, binding_json: &str) -> anyhow::Result<()> {
@@ -953,7 +981,7 @@ impl EnvironmentInstance {
             .bindings
             .call_release(armed(&mut self.store), binding_json)
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 }
 
@@ -966,7 +994,7 @@ impl AgentloopInstance {
             .bindings
             .call_activate(armed(&mut self.store), request)
             .await)?
-        .map_err(|error| anyhow::anyhow!(error.message))
+        .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 }
 
@@ -1100,7 +1128,7 @@ impl ComponentRuntime {
         ));
         let bindings = wt(tool::Tool::instantiate_async(&mut store, &component, &linker).await)?;
         wt(bindings.call_invoke(&mut store, &request).await)?
-            .map_err(|error| anyhow::anyhow!(error.message))
+            .map_err(|error| ComponentFailure::error(error.code, error.message, error.retryable))
     }
 
     pub async fn resolve_environment(
