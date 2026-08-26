@@ -5,13 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use brain::environment::{
-    COMPONENT_ENVIRONMENT_WORLD, ComponentEnvironmentInvocation, ComponentEnvironmentRegistry,
-};
+use brain::environment::{ComponentEnvironmentInvocation, ComponentEnvironmentRegistry};
 use brain::{BrainError, Result};
 use brain_component_host::{
     CapabilityCall, CapabilityFailure, CapabilityHandler, CapabilityRouter, ComponentSource,
-    ENVIRONMENT_WORLD, WorkerPool, WorkerRequest, component_digest, environment,
+    ENVIRONMENT_COMPONENT, ENVIRONMENT_WORLD, WorkerPool, WorkerRequest, component_digest,
+    environment,
 };
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -65,7 +64,7 @@ impl WasmEnvironmentRegistry {
 #[async_trait]
 impl ComponentEnvironmentRegistry for WasmEnvironmentRegistry {
     fn admit(&self, digest: &str, world: &str, component: &[u8]) -> Result<()> {
-        if world != COMPONENT_ENVIRONMENT_WORLD || world != ENVIRONMENT_WORLD {
+        if world != ENVIRONMENT_WORLD {
             return Err(BrainError::Invalid(format!(
                 "Environment world {world:?} is not supported; expected {ENVIRONMENT_WORLD:?}"
             )));
@@ -378,7 +377,7 @@ impl std::fmt::Debug for HttpEnvironmentCapabilities {
 #[async_trait]
 impl CapabilityHandler for HttpEnvironmentCapabilities {
     async fn call(&self, call: CapabilityCall) -> std::result::Result<Value, CapabilityFailure> {
-        if call.capability != "environment.dispatch" || call.world != ENVIRONMENT_WORLD {
+        if call.capability != "environment.dispatch" || call.world != ENVIRONMENT_COMPONENT {
             return Err(CapabilityFailure {
                 code: "capability_unbound".into(),
                 message: format!(
@@ -605,7 +604,7 @@ mod tests {
         .unwrap();
         let response = handler
             .call(CapabilityCall {
-                world: ENVIRONMENT_WORLD.into(),
+                world: ENVIRONMENT_COMPONENT.into(),
                 instance_id: Some("instance".into()),
                 capability: "environment.dispatch".into(),
                 operation_id: "op-1".into(),

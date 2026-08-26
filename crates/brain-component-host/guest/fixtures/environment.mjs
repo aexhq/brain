@@ -1,9 +1,25 @@
+import { dispatch } from "aex:environment/host@1.0.0";
+
 export function resolve(request) {
-  return { bindingJson: JSON.stringify({ environmentId: request.environmentId }) };
+  const config = JSON.parse(request.configJson);
+  return {
+    bindingJson: JSON.stringify({
+      environmentId: request.environmentId,
+      dispatch: config.dispatch === true,
+    }),
+  };
 }
 
-export function submit(_bindingJson, operation) {
-  return { providerOperationId: `${operation.operationId}:${operation.bundle?.length ?? 0}` };
+export function submit(bindingJson, operation) {
+  const suffix = `${operation.operationId}:${operation.bundle?.length ?? 0}`;
+  if (JSON.parse(bindingJson).dispatch !== true) return { providerOperationId: suffix };
+  const response = dispatch(
+    operation.operationId,
+    "submit",
+    JSON.stringify({ operation_id: operation.operationId }),
+    operation.deadlineAtMs,
+  );
+  return { providerOperationId: `${JSON.parse(response).dispatched}:${suffix}` };
 }
 
 export function observe(_bindingJson, providerOperationId, cursor) {

@@ -99,7 +99,7 @@ impl Agentloop for ComponentAgentloop {
         let binding = self
             .router
             .bind(
-                "agentloop",
+                brain_component_host::AGENTLOOP_COMPONENT,
                 session_id.clone(),
                 Arc::new(ChannelCapabilities { sender }),
             )

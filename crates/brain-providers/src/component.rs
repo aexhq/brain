@@ -282,7 +282,11 @@ impl Provider for ComponentProvider {
         );
         let binding = self
             .router
-            .bind("model", instance_id.clone(), self.http.clone())
+            .bind(
+                brain_component_host::MODEL_COMPONENT,
+                instance_id.clone(),
+                self.http.clone(),
+            )
             .map_err(|error| BrainError::Transport(error.to_string()))?;
         let started = self
             .pool

@@ -160,7 +160,7 @@ impl ToolRegistry for ComponentToolRegistry {
         let binding = self
             .router
             .bind(
-                "tool",
+                brain_component_host::TOOL_COMPONENT,
                 request.call_id.clone(),
                 Arc::new(ComponentCapabilities {
                     handler: capabilities,

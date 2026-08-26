@@ -5248,6 +5248,7 @@ pub struct RetentionUpdate {
 #[doc = "  \"required\": ["]
 #[doc = "    \"created_at\","]
 #[doc = "    \"depth\","]
+#[doc = "    \"environments\","]
 #[doc = "    \"id\","]
 #[doc = "    \"last_seq\","]
 #[doc = "    \"metadata\","]
@@ -5279,6 +5280,15 @@ pub struct RetentionUpdate {
 #[doc = "      \"type\": \"integer\","]
 #[doc = "      \"maximum\": 8.0,"]
 #[doc = "      \"minimum\": 0.0"]
+#[doc = "    },"]
+#[doc = "    \"environments\": {"]
+#[doc = "      \"description\": \"Sorted names of the Environments sealed into this session's prefix. Each names one addressable /v1/sessions/{session_id}/environments/{environment} resource; a session that declared none has an empty array.\","]
+#[doc = "      \"type\": \"array\","]
+#[doc = "      \"items\": {"]
+#[doc = "        \"$ref\": \"#/$defs/EnvironmentName\""]
+#[doc = "      },"]
+#[doc = "      \"maxItems\": 32,"]
+#[doc = "      \"uniqueItems\": true"]
 #[doc = "    },"]
 #[doc = "    \"failure\": {"]
 #[doc = "      \"$ref\": \"#/$defs/SessionFailure\""]
@@ -5374,6 +5384,8 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub current_turn: ::std::option::Option<TurnId>,
     pub depth: i64,
+    #[doc = "Sorted names of the Environments sealed into this session's prefix. Each names one addressable /v1/sessions/{session_id}/environments/{environment} resource; a session that declared none has an empty array."]
+    pub environments: Vec<EnvironmentName>,
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub failure: ::std::option::Option<SessionFailure>,
     pub id: SessionId,

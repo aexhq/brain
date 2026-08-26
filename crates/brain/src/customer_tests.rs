@@ -886,3 +886,18 @@ async fn direct_observations_cannot_exceed_the_reserved_envelope() {
         })
     ));
 }
+
+/// The frame proof crosses a language boundary: Brain's coordinator derives it in Rust and every
+/// client runner derives it again in TypeScript. Both derive the contract vector, so a one-sided
+/// change to the domain separator fails here instead of silently refusing every registration.
+#[test]
+fn frame_proof_matches_the_contract_vector() {
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../contracts/session/v1/customer-frame-proof.json"
+    ))
+    .expect("customer frame proof vector");
+    assert_eq!(
+        frame_proof(vector["protocol"].as_str().expect("vector protocol")),
+        vector["proof"].as_str().expect("vector proof")
+    );
+}

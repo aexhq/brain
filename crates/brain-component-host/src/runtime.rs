@@ -23,6 +23,14 @@ const EPOCH_TICK: Duration = Duration::from_millis(10);
 const EPOCH_DEADLINE_TICKS: u64 = 3_000;
 const MEMORY_LIMIT_BYTES: usize = 256 << 20;
 
+/// The WIT world *name* a running component was instantiated for. It is what `CapabilityCall::world`
+/// carries and what keys a capability route or a resident instance; it is not the versioned world
+/// id in `generated.rs`. Every crate that binds, routes or guards a capability uses these.
+pub const AGENTLOOP_COMPONENT: &str = "agentloop";
+pub const TOOL_COMPONENT: &str = "tool";
+pub const ENVIRONMENT_COMPONENT: &str = "environment";
+pub const MODEL_COMPONENT: &str = "model";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityCall {
     pub world: String,
@@ -197,7 +205,7 @@ impl State {
         metadata: tool::aex::tool::types::CallMetadata,
         grants: &[String],
     ) -> Self {
-        let mut state = Self::new(capabilities, "tool", Some(metadata.call_id.clone()));
+        let mut state = Self::new(capabilities, TOOL_COMPONENT, Some(metadata.call_id.clone()));
         state.tool_metadata = Some(metadata);
         state.tool_grants.extend(grants.iter().cloned());
         state
@@ -1056,7 +1064,7 @@ impl ComponentRuntime {
         )?;
         let mut store = self.store_with(State::new(
             self.capabilities.clone(),
-            "agentloop",
+            AGENTLOOP_COMPONENT,
             instance_id,
         ));
         let bindings =
@@ -1127,7 +1135,7 @@ impl ComponentRuntime {
         >(&mut linker, |state| state))?;
         let mut store = self.store_with(State::new(
             self.capabilities.clone(),
-            "environment",
+            ENVIRONMENT_COMPONENT,
             instance_id,
         ));
         let bindings =
@@ -1190,8 +1198,11 @@ impl ComponentRuntime {
             &mut linker,
             |state| state,
         ))?;
-        let mut store =
-            self.store_with(State::new(self.capabilities.clone(), "model", instance_id));
+        let mut store = self.store_with(State::new(
+            self.capabilities.clone(),
+            MODEL_COMPONENT,
+            instance_id,
+        ));
         let bindings = wt(model::Model::instantiate_async(&mut store, &component, &linker).await)?;
         Ok(ModelInstance { store, bindings })
     }

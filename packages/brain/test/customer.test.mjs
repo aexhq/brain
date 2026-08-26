@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { z } from "zod";
 
 import { CustomerEnvironment, compileTools, customerTerminalDigest, tool } from "../dist/index.js";
+import { deriveFrameProof } from "../dist/customer.js";
 
 class FakeSocket {
   listeners = new Map();
@@ -571,4 +573,15 @@ test("initial readiness keeps Node alive while the gateway is retrying", async (
     if (child.exitCode === null && child.signalCode === null) child.kill();
     await closed;
   }
+});
+
+// The frame proof crosses a language boundary: this runner derives it and Brain's coordinator
+// derives it again in Rust. Both derive the contract vector, so a one-sided change to the domain
+// separator fails here instead of silently refusing every registration.
+test("the customer frame proof matches the Brain-owned contract vector", () => {
+  const vector = JSON.parse(readFileSync(
+    new URL("../../../contracts/session/v1/customer-frame-proof.json", import.meta.url),
+    "utf8",
+  ));
+  assert.equal(deriveFrameProof(vector.protocol), vector.proof);
 });
