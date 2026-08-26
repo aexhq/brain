@@ -90,8 +90,16 @@ async fn a_tenanted_composition_refuses_requests_without_the_tenant_header() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+/// Global internal ingress: the API Gateway, an Environment driver's relay and the observation
+/// hop all reach Brain on the plane's behalf, never on one tenant's. The operator bearer
+/// authenticates the caller and the scoped payload — a consumed connect grant, an observation
+/// grant, an Environment binding — names the tenant, so requiring `x-brain-tenant-id` refuses a
+/// caller that has no tenant to give. That mistake reached a deployment three times in one
+/// release: the connect gateway, the observation hop and finally the release dispatch, which held
+/// every `app()` session in ending. Judge the whole family here so a fourth cannot be added
+/// quietly.
 #[tokio::test]
-async fn scoped_customer_ingress_does_not_require_a_tenant_header() {
+async fn global_internal_ingress_does_not_require_a_tenant_header() {
     let temp = TempDir::new("scoped-customer-ingress");
     let brain = Brain::in_memory_test(
         temp.0.clone(),
@@ -105,35 +113,75 @@ async fn scoped_customer_ingress_does_not_require_a_tenant_header() {
         tenancy: brain_server::api::Tenancy::Required,
     });
 
-    let gateway = Request::builder()
-        .method("POST")
-        .uri("/internal/v1/customer-environment/gateway")
-        .header(header::AUTHORIZATION, "Bearer operator-token")
-        .header("x-brain-connection-id", "connection-1")
-        .header("x-brain-request-id", "request-1")
-        .header("x-brain-route-key", "$connect")
-        .header("x-brain-source-ip", "192.0.2.10")
-        .header(
-            header::SEC_WEBSOCKET_PROTOCOL,
-            "environment-grant.valid-token",
-        )
-        .body(Body::empty())
-        .unwrap();
-    let gateway_response = app.clone().oneshot(gateway).await.unwrap();
-    assert_eq!(gateway_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let ingress = [
+        (
+            "connect gateway",
+            Request::builder()
+                .method("POST")
+                .uri("/internal/v1/customer-environment/gateway")
+                .header(header::AUTHORIZATION, "Bearer operator-token")
+                .header("x-brain-connection-id", "connection-1")
+                .header("x-brain-request-id", "request-1")
+                .header("x-brain-route-key", "$connect")
+                .header("x-brain-source-ip", "192.0.2.10")
+                .header(
+                    header::SEC_WEBSOCKET_PROTOCOL,
+                    "environment-grant.valid-token",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        ),
+        (
+            "observation hop",
+            Request::builder()
+                .method("POST")
+                .uri("/internal/v1/customer-environment/observations/grant-1")
+                .header(header::AUTHORIZATION, "Bearer operator-token")
+                .header("x-brain-observation-grant", "observation-token")
+                .body(Body::from("{}"))
+                .unwrap(),
+        ),
+        (
+            "Environment dispatch relay",
+            Request::builder()
+                .method("POST")
+                .uri("/internal/v1/customer-environment/dispatch")
+                .header(header::AUTHORIZATION, "Bearer operator-token")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "operation_id": "application",
+                        "action": "release",
+                        "request": {"binding": {"driver": "customer"}},
+                        "deadline_at_ms": (brain::wall_ms() + 60_000).to_string(),
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        ),
+    ];
+    for (label, request) in ingress {
+        let response = app.clone().oneshot(request).await.unwrap();
+        // This composition has no customer coordinator, so reaching the handler is the proof: a
+        // tenancy refusal is a 400 that never gets there.
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{label} must not be refused for a missing tenant header",
+        );
+    }
 
-    let observation = Request::builder()
+    // The boundary of the rule. Minting a grant takes the tenant as its input — no scoped payload
+    // can resolve it — so Control sends the header and this route is right to demand it.
+    let grants = Request::builder()
         .method("POST")
-        .uri("/internal/v1/customer-environment/observations/grant-1")
+        .uri("/internal/v1/customer-environment/grants")
         .header(header::AUTHORIZATION, "Bearer operator-token")
-        .header("x-brain-observation-grant", "observation-token")
-        .body(Body::from("{}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"client_id":"app.one"}"#))
         .unwrap();
-    let observation_response = app.oneshot(observation).await.unwrap();
-    assert_eq!(
-        observation_response.status(),
-        StatusCode::SERVICE_UNAVAILABLE
-    );
+    let grants_response = app.oneshot(grants).await.unwrap();
+    assert_eq!(grants_response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

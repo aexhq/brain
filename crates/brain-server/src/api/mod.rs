@@ -222,22 +222,25 @@ pub fn router(state: AppState) -> Router {
             post(customer_environment_grant)
                 .layer(DefaultBodyLimit::max(SMALL_JSON_BODY_LIMIT_BYTES)),
         )
-        .route(
-            "/internal/v1/customer-environment/dispatch",
-            post(customer_environment_dispatch)
-                .layer(DefaultBodyLimit::max(INLINE_FILE_BODY_LIMIT_BYTES)),
-        )
         .merge(create)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             operator_auth_before_body,
         ));
-    let customer_gateway = Router::new()
+    // Global internal ingress. The operator bearer authenticates the caller and the scoped payload
+    // — a consumed connect grant, an Environment binding — names the tenant. A tenant header does
+    // not belong on a route the gateway or an Environment driver reaches on the plane's behalf.
+    let internal_ingress = Router::new()
         .route(
             "/internal/v1/customer-environment/gateway",
             post(customer_environment_gateway).layer(DefaultBodyLimit::max(
                 brain_protocol::MAX_CUSTOMER_WS_FRAME_BYTES,
             )),
+        )
+        .route(
+            "/internal/v1/customer-environment/dispatch",
+            post(customer_environment_dispatch)
+                .layer(DefaultBodyLimit::max(INLINE_FILE_BODY_LIMIT_BYTES)),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -274,7 +277,7 @@ pub fn router(state: AppState) -> Router {
             get(customer_environment_socket),
         )
         .merge(operator)
-        .merge(customer_gateway)
+        .merge(internal_ingress)
         .merge(public_observation)
         .merge(internal_observation)
         .layer(middleware::from_fn_with_state(
