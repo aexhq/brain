@@ -672,3 +672,207 @@ async fn two_children_may_share_one_task_name() {
     }
     assert_ne!(ids[0], ids[1], "one label, two children");
 }
+
+/// The shape the customer canary drives and nothing had covered: one turn, two `subagents`
+/// calls, the second *waiting* on the child the first created. `wait` is the only action that
+/// parks the parent's turn on another session's progress, so it is the one that can deadlock.
+#[derive(Debug, Default)]
+struct WaitOnChildProvider;
+
+impl WaitOnChildProvider {
+    fn response(request: &Value) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
+        let messages = request["messages"]
+            .as_array()
+            .ok_or_else(|| BrainError::Protocol("scripted request has no messages".into()))?;
+        let text = messages
+            .iter()
+            .filter_map(|message| message["content"].as_array())
+            .flatten()
+            .filter(|block| block["type"] == "text")
+            .filter_map(|block| block["text"].as_str())
+            .next_back()
+            .unwrap_or_default();
+        let calls = messages
+            .iter()
+            .filter_map(|message| message["content"].as_array())
+            .flatten()
+            .filter(|block| block["type"] == "tool_use" && block["name"] == "subagents")
+            .count();
+        let handle = messages
+            .iter()
+            .filter_map(|message| message["content"].as_array())
+            .flatten()
+            .filter(|block| block["type"] == "tool_result")
+            .filter_map(|block| block["content"].as_str())
+            .filter_map(|content| serde_json::from_str::<Value>(content).ok())
+            .filter_map(|value| value["child_id"].as_str().map(str::to_owned))
+            .next_back();
+
+        let events = if text == "child prompt" {
+            vec![
+                ProviderEvent::TextDelta {
+                    index: 0,
+                    text: "child answer".into(),
+                },
+                ProviderEvent::MessageDone {
+                    stop_reason: StopReason::EndTurn,
+                    usage: zero_usage(),
+                },
+            ]
+        } else if calls == 0 {
+            subagents_call(
+                "provider-spawn",
+                json!({
+                    "action": "spawn_agent",
+                    "task_name": "child1",
+                    "message": "child prompt",
+                    "fork_turns": "all"
+                }),
+            )?
+        } else if calls == 1 {
+            subagents_call(
+                "provider-wait",
+                json!({
+                    "action": "wait",
+                    "timeout_ms": 30_000,
+                    "child_id": handle.ok_or_else(|| BrainError::Protocol(
+                        "spawn_agent returned no child_id to wait on".into()
+                    ))?
+                }),
+            )?
+        } else {
+            vec![
+                ProviderEvent::TextDelta {
+                    index: 0,
+                    text: "root answer".into(),
+                },
+                ProviderEvent::MessageDone {
+                    stop_reason: StopReason::EndTurn,
+                    usage: zero_usage(),
+                },
+            ]
+        };
+        Ok(Box::pin(futures_util::stream::iter(
+            events.into_iter().map(Ok),
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for WaitOnChildProvider {
+    fn dialect(&self) -> Dialect {
+        Dialect::AnthropicMessages
+    }
+
+    fn build_request(
+        &self,
+        prefix: &SealedPrefix,
+        history: &[Message],
+        key: &ProviderKey,
+        base_url: &str,
+    ) -> Result<ModelRequest> {
+        brain::provider::anthropic::Anthropic::build_request(prefix, history, key, base_url)
+    }
+
+    async fn stream(
+        &self,
+        request: ModelRequest,
+    ) -> Result<BoxStream<'static, Result<ProviderEvent>>> {
+        let body: Value = serde_json::from_slice(&request.body)?;
+        let child = request_blocks(&body)
+            .any(|block| block["type"] == "text" && block["text"] == "child prompt");
+        if child {
+            // The child must still be running when the parent asks to wait, or `wait` returns
+            // without ever parking and the test proves nothing.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Self::response(&body)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parent_waits_on_the_child_it_just_spawned() {
+    let _tmp = TempDir::new();
+    let journal = Journal::new_memory("subagents-wait-e2e");
+    let provider = Arc::new(WaitOnChildProvider);
+    let brain = Brain::with_parts_and_services(
+        // The parent parks its turn inside `wait` while the child needs a turn of its own, so
+        // the admission ceiling has to admit both or the parent is waiting on something it is
+        // itself preventing.
+        BrainConfig {
+            idle_discard: Duration::from_secs(60),
+            ..BrainConfig::default()
+        },
+        journal.clone(),
+        Arc::new(brain::keys::PlainCustody),
+        Arc::new(DisabledToolExecutor),
+        support::services(),
+        Arc::new(move |_| provider.clone() as Arc<dyn Provider>),
+    );
+    let root = brain
+        .create_session(every_action_request(), Some("subagents-wait-root"))
+        .await
+        .expect("create root");
+    let root_id = root.id.to_string();
+    brain
+        .message(
+            &root_id,
+            MessageRequestContent::String("root prompt".parse().expect("message")),
+        )
+        .await
+        .expect("start root turn");
+
+    // A wedge here is the reported failure: the second call never produces a result.
+    let finished = tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            if brain
+                .get(&root_id)
+                .await
+                .expect("session status")
+                .current_turn
+                .is_none()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let records = journal
+        .read_records(&root_id, 0)
+        .await
+        .expect("root journal");
+    let calls = records
+        .iter()
+        .filter(
+            |entry| matches!(&entry.record, Record::ToolCall { name, .. } if name == "subagents"),
+        )
+        .count();
+    let results = records
+        .iter()
+        .filter_map(|entry| match &entry.record {
+            Record::ToolResult {
+                name,
+                is_error,
+                content,
+                ..
+            } if name == "subagents" => Some((*is_error, content.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        finished.is_ok(),
+        "the turn never finished: {calls} subagents calls, {} results",
+        results.len()
+    );
+    assert_eq!(calls, 2, "spawn_agent then wait");
+    assert_eq!(results.len(), 2, "every subagents call produced a result");
+    for (is_error, content) in &results {
+        assert!(!is_error, "subagents failed: {content}");
+    }
+    let waited: Value = serde_json::from_str(&results[1].1).expect("wait result JSON");
+    assert!(
+        waited["current_turn"].is_null(),
+        "wait returned before the child finished its turn: {waited}"
+    );
+}
