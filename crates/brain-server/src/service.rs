@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    sync::{Arc, Mutex as StdMutex, Weak},
+};
 
 use async_trait::async_trait;
 use brain::{Kernel, KernelError, LoopExecutor};
@@ -21,17 +25,45 @@ pub struct ServerResources {
 #[derive(Clone)]
 pub struct ServerApi {
     resources: Arc<ServerResources>,
-    idempotency: Arc<Mutex<()>>,
-    session_locks: Arc<Mutex<HashMap<SessionId, Arc<Mutex<()>>>>>,
+    idempotency_locks: Arc<KeyedLocks<String>>,
+    session_locks: Arc<KeyedLocks<SessionId>>,
     ownership: Arc<dyn SessionOwnership>,
+}
+
+struct KeyedLocks<K> {
+    entries: StdMutex<HashMap<K, Weak<Mutex<()>>>>,
+}
+
+impl<K> Default for KeyedLocks<K> {
+    fn default() -> Self {
+        Self {
+            entries: StdMutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl<K: Clone + Eq + Hash> KeyedLocks<K> {
+    fn acquire(&self, key: K) -> Result<Arc<Mutex<()>>, ApiError> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| internal("keyed lock table is poisoned"))?;
+        entries.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = entries.get(&key).and_then(Weak::upgrade) {
+            return Ok(lock);
+        }
+        let lock = Arc::new(Mutex::new(()));
+        entries.insert(key, Arc::downgrade(&lock));
+        Ok(lock)
+    }
 }
 
 impl ServerApi {
     pub fn new(resources: ServerResources) -> Self {
         Self {
             resources: Arc::new(resources),
-            idempotency: Arc::new(Mutex::new(())),
-            session_locks: Arc::new(Mutex::new(HashMap::new())),
+            idempotency_locks: Arc::new(KeyedLocks::default()),
+            session_locks: Arc::new(KeyedLocks::default()),
             ownership: Arc::new(LocalSessionOwnership),
         }
     }
@@ -42,19 +74,23 @@ impl ServerApi {
     ) -> Self {
         Self {
             resources: Arc::new(resources),
-            idempotency: Arc::new(Mutex::new(())),
-            session_locks: Arc::new(Mutex::new(HashMap::new())),
+            idempotency_locks: Arc::new(KeyedLocks::default()),
+            session_locks: Arc::new(KeyedLocks::default()),
             ownership,
         }
     }
 
-    async fn session_lock(&self, session_id: &SessionId) -> Arc<Mutex<()>> {
-        self.session_locks
-            .lock()
-            .await
-            .entry(session_id.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+    fn session_lock(&self, session_id: &SessionId) -> Result<Arc<Mutex<()>>, ApiError> {
+        self.session_locks.acquire(session_id.clone())
+    }
+
+    fn idempotency_lock(
+        &self,
+        scope: &str,
+        idempotency_key: &str,
+    ) -> Result<Arc<Mutex<()>>, ApiError> {
+        self.idempotency_locks
+            .acquire(format!("{scope}\0{idempotency_key}"))
     }
 
     fn replay<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, ApiError> {
@@ -69,7 +105,8 @@ impl BrainApi for ServerApi {
         idempotency_key: String,
         package: Vec<u8>,
     ) -> Result<AgentloopAdmission, ApiError> {
-        let _guard = self.idempotency.lock().await;
+        let lock = self.idempotency_lock("admit_agentloop", &idempotency_key)?;
+        let _guard = lock.lock().await;
         if let Some(saved) = self
             .resources
             .kernel
@@ -128,7 +165,8 @@ impl BrainApi for ServerApi {
         idempotency_key: String,
         request: CreateSessionRequest,
     ) -> Result<Session, ApiError> {
-        let _guard = self.idempotency.lock().await;
+        let lock = self.idempotency_lock("create_session", &idempotency_key)?;
+        let _guard = lock.lock().await;
         if let Some(saved) = self
             .resources
             .kernel
@@ -215,7 +253,7 @@ impl BrainApi for ServerApi {
             .authorize_mutation(&session_id)
             .await
             .map_err(api_error)?;
-        let lock = self.session_lock(&session_id).await;
+        let lock = self.session_lock(&session_id)?;
         let _guard = lock.lock().await;
         let scope = format!("session:{session_id}:message");
         if let Some(saved) = self
@@ -268,7 +306,8 @@ impl BrainApi for ServerApi {
             .map_err(api_error)?;
         let request = (session_id.clone(), "cancel");
         let scope = format!("session:{session_id}:cancel");
-        let _guard = self.idempotency.lock().await;
+        let lock = self.idempotency_lock(&scope, &idempotency_key)?;
+        let _guard = lock.lock().await;
         if self
             .resources
             .kernel
@@ -300,7 +339,7 @@ impl BrainApi for ServerApi {
             .authorize_mutation(&session_id)
             .await
             .map_err(api_error)?;
-        let lock = self.session_lock(&session_id).await;
+        let lock = self.session_lock(&session_id)?;
         let _guard = lock.lock().await;
         let request = (session_id.clone(), "end");
         let scope = format!("session:{session_id}:end");
@@ -348,11 +387,10 @@ impl BrainApi for ServerApi {
             .authorize_mutation(&session_id)
             .await
             .map_err(api_error)?;
-        let lock = self.session_lock(&session_id).await;
+        let lock = self.session_lock(&session_id)?;
         let _guard = lock.lock().await;
         let request = (session_id.clone(), "delete");
         let scope = format!("session:{session_id}:delete");
-        let _idempotency = self.idempotency.lock().await;
         if self
             .resources
             .kernel
@@ -370,7 +408,6 @@ impl BrainApi for ServerApi {
             .kernel
             .idempotency_put(&scope, &idempotency_key, &request, &serde_json::json!({}))
             .map_err(api_error)?;
-        self.session_locks.lock().await.remove(&session_id);
         self.ownership
             .release(&session_id)
             .await
@@ -465,5 +502,24 @@ fn internal(message: impl Into<String>) -> ApiError {
         message: message.into(),
         retryable: false,
         details: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KeyedLocks;
+
+    #[test]
+    fn keyed_locks_share_live_keys_and_reclaim_stale_keys() {
+        let locks = KeyedLocks::default();
+        let first = locks.acquire("same").unwrap();
+        let replay = locks.acquire("same").unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &replay));
+        drop(first);
+        drop(replay);
+
+        let current = locks.acquire("current").unwrap();
+        assert_eq!(locks.entries.lock().unwrap().len(), 1);
+        assert_eq!(std::sync::Arc::strong_count(&current), 1);
     }
 }
