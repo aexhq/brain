@@ -23,7 +23,7 @@ async fn real_worker_admits_and_activates_the_typescript_diagnostic_loop() {
             digest,
             ActivationInput {
                 context: ContextEnvelope {
-                    protocol_version: "context/v1".into(),
+                    protocol_version: "agentloop/v1".into(),
                     items: Vec::new(),
                     state: None,
                 },
