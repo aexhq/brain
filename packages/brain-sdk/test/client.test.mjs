@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { z } from "zod";
-import { Brain, BrainError, activateBrain, brain, createEnvironmentHandler, environment, installExtensionIdentity, tool } from "../dist/index.js";
+import { Brain, BrainError, activateBrain, brain, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, tool } from "../dist/index.js";
 
 const simple = brain((author) => {
   const state = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
@@ -69,6 +69,17 @@ test("runs synchronous Brain hooks and persists validated state", () => {
   });
   assert.equal(result.decision.type, "model");
   assert.deepEqual(result.context.state.slots[0].messages, [{ role: "user", content: "hello" }]);
+});
+
+test("executes zero-configuration Tools from their serialized configuration", async () => {
+  assert.equal(await executeTool(read, {}, { path: "README.md" }, {
+    signal: AbortSignal.timeout(1_000),
+    deadlineMs: Date.now() + 1_000,
+  }), "README.md");
+  await assert.rejects(executeTool(read, { unexpected: true }, { path: "README.md" }, {
+    signal: AbortSignal.timeout(1_000),
+    deadlineMs: Date.now() + 1_000,
+  }), /does not accept options/u);
 });
 
 test("surfaces structured errors and rejects detached Environment calls", async () => {
