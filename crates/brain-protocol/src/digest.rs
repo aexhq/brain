@@ -40,6 +40,9 @@ mod tests {
     fn canonical_digest_ignores_object_key_order() {
         let left = serde_json::json!({"b": 2, "a": 1});
         let right = serde_json::json!({"a": 1, "b": 2});
-        assert_eq!(request_digest(&left).unwrap(), request_digest(&right).unwrap());
+        assert_eq!(
+            request_digest(&left).unwrap(),
+            request_digest(&right).unwrap()
+        );
     }
 }

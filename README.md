@@ -1,131 +1,191 @@
 <h1 align="center">Brain</h1>
 
-<p align="center"><strong>A minimal and extensible kernel for AI workloads.</strong></p>
+<p align="center"><strong>A minimal, durable, and extensible session engine for agents.</strong></p>
 <p align="center">
-  <a href="https://aex.dev">Aex</a> ·
-  <a href="contracts/session/v1/openapi.yaml">Session API</a> ·
+  <a href="contracts/session/v1/openapi.yaml">HTTP API</a> ·
   <a href="https://github.com/aexhq/extensions">Extensions</a> ·
   <a href="https://discord.gg/Qk2YnHMHVb">Discord</a>
 </p>
 
+> Brain is pre-launch. Contracts are replaced in place until the first stable release; old
+> development interfaces are not retained.
+
 ## What it is
-Brain is a minimal session kernel that hosts four replaceable component kinds: Agentloop, Tool,
-Environment, and Model.
-The term _Brain_ is originated from Anthropic engineering blog [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents) 
-Brain is inspired by [Pi Agent Harness](https://github.com/earendil-works/pi), we believe modern framework should be minimal and open for extension so everyone can build upon it.
+
+Brain is an independently runnable Linux server and an embeddable Rust session kernel. It keeps an
+ordered session journal on disk, holds active materialized context in memory, runs the selected
+Agentloop, calls remote language models, and dispatches Tools to their bound remote Environments.
+
+Brain owns reasoning and orchestration. Environments provide the hands: sandboxes, browsers,
+applications, user machines, and other places where Tools actually run.
 
 ## Architecture
-### Brain and hands
-Brain is where agent session, agent loop and tools are managed, it invokes tools but actual execution belong to the hand (environment such as sandbox, browser etc), it outlives the hands, therefore it could manage multiple hands, resilient to sandbox failures and offer higher level of flexibility.
+
+### Durable sessions, remote execution
+
+Every execution intent is committed to SQLite before Brain calls an Agentloop, model, or
+Environment. A terminal result or explicit ambiguous outcome is committed before the next
+transition. A restart reconstructs state from the journal; Brain never guesses whether an
+interrupted external effect happened.
 
 ### Environment-neutral
-Brain does not assume the environment or tools the agent is working with This mean you could define one tool to be executed within your app running on client side while having another tool in the same agent session to execute some script in a sandbox  
+
+A Tool is a model-visible definition plus a sealed binding to one logical Environment. Brain Server
+orchestrates setup, attachment, execution, cancellation, detachment, and teardown through a remote
+adapter. Tool code never executes inside Brain.
 
 ### Language-neutral
-Brain does not assume the language you are working with, you could write one tool in rust and another tool in node.
+
+Agentloops are portable WebAssembly Components. Authors use a language SDK and build command rather
+than writing WIT or choosing Wasmtime. Environment implementations use a versioned HTTP contract
+and may be written in any language.
 
 ### Agent-neutral
-Brain is not an agent, but you can easily build an agent with it. This allow you to run your favorite agent runtime like pi/codex/opencode as agentloop.
-## TypeScript client
 
-```sh
-npm install @aexhq/brain @aexhq/loop-pi @aexhq/model-openai
+Pi-, Codex-, OpenCode-, and custom-style Agentloops use the same isolated extension pipeline. There
+is no privileged native Agentloop path.
+
+```text
+TypeScript application
+        |
+        | @aexhq/brain over HTTP
+        v
++---------------------------- brain process ----------------------------+
+| brain-http -> brain-server -> brain session kernel                    |
+|                         |         |                                   |
+|                         |         +-> SQLite journal                  |
+|                         |         +-> in-memory context               |
+|                         |                                             |
+|                         +-> bounded Loophost worker                   |
+|                         |      +-> Agentloop Component                |
+|                         +-> shared model client -> remote model API   |
+|                         +-> Environment directory/cache               |
++--------------------------------------|--------------------------------+
+                                       v
+                         Environment adapter/provider
+                         setup / attach / call / execute
+                         cancel / detach / teardown
+                                       |
+                                       v
+                         Tool runtime, sandbox, browser,
+                         application, or user machine
 ```
 
-```ts
-import { Brain } from "@aexhq/brain";
-import { pi } from "@aexhq/loop-pi";
-import { openai } from "@aexhq/model-openai";
-
-const brain = new Brain({ token: process.env.BRAIN_TOKEN! });
-const session = await brain.sessions.create({
-  model: {
-    component: openai(),
-    name: process.env.MODEL_NAME!,
-    apiKey: process.env.OPENAI_API_KEY!,
-  },
-  agentloop: pi(),
-});
-
-console.log(await session.send("Echo hello."));
-```
-
-Omitting `tools` exposes no model tools. Components are ordinary immutable package values; the
-official packages use the same public contract as third-party components.
+A hosted deployment supplies a shared Environment directory and session placement. Process-local
+caches improve latency but do not decide Environment identity, authority, or teardown.
 
 ## Components
 
-| Component | Purpose |
+| Component | Responsibility |
 | --- | --- |
-| [`brain-protocol`](crates/brain-protocol) | Session API and Brain-to-Environment contracts |
-| [`brain`](crates/brain) | Session engine, component routing, recovery, and adapter ports |
-| [`brain-standalone`](crates/brain-standalone) | SQLite journal, encrypted local custody/storage, and an explicit local Environment |
-| [`brain-aws`](crates/brain-aws) | Neutral DynamoDB, KMS, and S3 adapters |
-| [`brain-server`](crates/brain-server) | Standalone server and development composition |
-| [`@aexhq/brain`](packages/brain) | TypeScript client, Tool API, customer Environment, schemas, and builder |
-| [`packages/agentloop`](packages/agentloop) | Private conformance fixture for the Agentloop host ABI |
+| `brain-protocol` | Canonical session, Agentloop, model, Tool, Environment, event, and error contracts |
+| `brain-telemetry` | Bounded, nonblocking logs, metrics, traces, and live event projections |
+| `brain-loophost` | Agentloop admission, Wasmtime compilation, worker isolation, and resource limits |
+| `brain` | Disk journal, context, operation identity, turn state machine, and execution ports |
+| `brain-http` | Versioned HTTP routing, transport validation, and error mapping |
+| `brain-server` | Runnable composition, shared resources, lifecycle, and Environment routing |
+| `@aexhq/brain` | TypeScript client for a caller-supplied Brain base URL |
+| `@aexhq/agentloop` | TypeScript Agentloop authoring and packaging, maintained in Extensions |
 
-Extensions implement Brain's public component worlds. Brain does not import an official
-implementation or require components to have been authored in JavaScript.
+There is no Toolhost, Envhost, Modelhost, cloud SDK, or second standalone runtime in this repository.
+
+## TypeScript example
+
+```ts
+import { readFile } from "node:fs/promises";
+import { Brain } from "@aexhq/brain";
+
+const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
+const admitted = await brain.admitAgentloop(
+  new Uint8Array(await readFile("./dist/loop.brain.json")),
+  crypto.randomUUID(),
+);
+
+const session = await brain.createSession({
+  agentloop_digest: admitted.digest,
+  model: { binding_id: "gateway", model: "openai/gpt-5-mini" },
+  presentation: {
+    system: "You are a concise coding assistant.",
+    tools: [{
+      name: "read",
+      description: "Read a file from the workspace.",
+      input_schema: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
+    }],
+  },
+  environments: [{
+    environment_id: "workspace-main",
+    configuration: { workspace: "main" },
+    lifecycle_policy: "shared",
+  }],
+  tool_bindings: [{
+    name: "read",
+    environment_id: "workspace-main",
+    remote_tool_id: "read",
+    grant: { paths: ["**"] },
+  }],
+}, crypto.randomUUID());
+
+await session.send("Read README.md and summarize it.", crypto.randomUUID());
+for await (const event of session.events()) console.log(event);
+```
+
+Omit both `presentation.tools` and `tool_bindings` for a session with no Tools.
 
 ## Run standalone
 
+Build both Linux binaries and provide a writable data directory and model credential:
+
 ```sh
-export BRAIN_MODE=local
+cargo build --release -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
 export BRAIN_DATA_DIR="$PWD/brain-data"
-cargo run --release -p brain-server --bin brain
+export BRAIN_LOOP_WORKER="$PWD/target/release/brain-loop-worker"
+export BRAIN_MODEL_API_KEY="..."
+export BRAIN_MODEL_BASE_URL="https://ai-gateway.vercel.sh/v1"
+./target/release/brain --listen 127.0.0.1:8080
 ```
 
-Brain binds `127.0.0.1:3210` by default. Set `BRAIN_API_TOKEN`, or read the generated mode-0600
-token from `$BRAIN_DATA_DIR/operator.token`. Local mode deliberately executes managed Tool bundles
-as unsandboxed host Node 22 subprocesses; use a hosted Environment for untrusted workloads.
+Set `BRAIN_ENVIRONMENT_BASE_URL` only when sessions use Tools. Standalone and hosted Brain use the
+same contracts and kernel; a hosted composition injects distributed routing and storage.
 
-Provider-backed Environment components use an optional same-host adapter configured with
-`BRAIN_ENVIRONMENT_DISPATCH_URL`, `BRAIN_ENVIRONMENT_DISPATCH_TOKEN`, and
-`BRAIN_ENVIRONMENT_DISPATCH_TIMEOUT_MS`. The URL must be a literal loopback HTTP address. If it is
-absent, Environment host operations fail closed; pure Environment components continue to work.
+## Embed a Brain session
 
-Production mode uses Brain's AWS journal, custody, and session-storage adapters and requires
-`BRAIN_API_TOKEN`, `BRAIN_DATA_DIR`, `AWS_REGION`, `BRAIN_JOURNAL_TABLE`, `BRAIN_KMS_KEY_ID`, and
-`BRAIN_SESSION_STORAGE_BUCKET`. `BRAIN_DATA_DIR` must be persistent because it is the
-content-addressed store for admitted component binaries. Hosted requests require an explicit
-`x-brain-tenant-id`; no product-specific composition is embedded in the image.
+The `brain` crate contains no HTTP or cloud policy. A Rust host supplies the same three execution
+ports used by Brain Server:
 
-A trusted HTTP Tool executor is configured with `BRAIN_EXTERNAL_TOOL_EXECUTOR_URL`, optional
-`BRAIN_EXTERNAL_TOOL_EXECUTOR_TOKEN`, and `BRAIN_EXTERNAL_TOOL_POLICIES_JSON`. The policy value is
-a bounded JSON array of `{ capability, scope, completion, effect, max_input_bytes }` objects; it is
-deployment configuration, never customer session input. Hosted application callbacks additionally
-set the three `BRAIN_CUSTOMER_ENVIRONMENT_{WEBSOCKET_URL,OBSERVATION_BASE_URL,CALLBACK_URL}` values
-together. The callback endpoint is an HTTPS AWS API Gateway Management endpoint.
+```rust,ignore
+let (telemetry, telemetry_worker) = brain_telemetry::telemetry_channel();
+tokio::spawn(telemetry_worker.run(telemetry_sink));
 
-Structured logs always go to stderr. Setting `OTEL_EXPORTER_OTLP_ENDPOINT` enables OTLP/HTTP trace,
-metric, and log export; `OTEL_EXPORTER_OTLP_PROTOCOL`, when present, must be `http/protobuf`.
-Component workers inherit only `OTEL_*` and `RUST_LOG`, while guest components retain no ambient
-process environment.
+let kernel = brain::Kernel::open(brain::KernelConfig {
+    data_dir,
+    max_decisions_per_turn: 128,
+    loop_executor,
+    model_executor,
+    tool_executor,
+}, telemetry)?;
 
-Set `BRAIN_COMPONENT_CACHE_DIR` to an absolute, Brain-owned directory to share Wasmtime's validated
-compiled-component cache across worker processes. The cache changes startup cost only; component
-bytes and digests remain the runtime identity.
+let session = kernel.create_session(sealed_session_config).await?;
+session.message(brain_protocol::MessageRequest {
+    content: serde_json::json!("Explain the current changes."),
+}).await?;
 
-## Embed Brain
-
-Implement the public Environment, journal, custody, storage, or trusted-tool ports your environment needs,
-then compose them with `Brain::with_parts_and_services`.
+for event in kernel.events(session.id(), 0, 1_000)?.events {
+    println!("{event:?}");
+}
+```
 
 ## Verification
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo run -p brain-bench --release -- ci
 npm ci
+npm run gen
 npm test
 npm run package-smoke
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
 ```
 
-The schemas, OpenAPI document, protocol semantics, examples, generators, and conformance fixtures
-in this repository are the source of truth. See [BENCHMARKS.md](BENCHMARKS.md) for the methodology
-and reference measurements.
+CI is the release gate. No test is skipped because its required runtime belongs in another job.
 
 Licensed under [Apache 2.0](LICENSE).

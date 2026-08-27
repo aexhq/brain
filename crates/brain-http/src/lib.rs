@@ -5,5 +5,5 @@ mod router;
 mod service;
 
 pub use error::HttpError;
-pub use router::router;
+pub use router::{router, router_with_bearer};
 pub use service::BrainApi;

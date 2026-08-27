@@ -41,8 +41,9 @@ try {
   writeFileSync(
     join(directory, "smoke.mjs"),
     `import assert from "node:assert/strict";\n` +
-      `import { Brain } from "@aexhq/brain";\n` +
-      `assert.equal(typeof Brain, "function");\n`,
+      `import { BrainClient } from "@aexhq/brain";\n` +
+      `const client = new BrainClient({ baseUrl: "http://127.0.0.1:8080" });\n` +
+      `assert.equal(typeof client.listSessions, "function");\n`,
   );
   run(["install", "--no-audit", "--no-fund"], directory);
   execFileSync(process.execPath, ["smoke.mjs"], { cwd: directory, stdio: "inherit" });

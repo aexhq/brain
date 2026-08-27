@@ -4,7 +4,11 @@ use crate::{AttachmentId, EnvironmentId, OperationId, SessionId, ToolInvocation,
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum LifecyclePolicy { Session, Shared, External }
+pub enum LifecyclePolicy {
+    Session,
+    Shared,
+    External,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentBinding {
@@ -13,6 +17,12 @@ pub struct EnvironmentBinding {
     pub adapter_binding: String,
     pub directory_generation: u64,
     pub lifecycle_policy: LifecyclePolicy,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EnvironmentAttachment {
+    pub binding: EnvironmentBinding,
+    pub attachment_id: AttachmentId,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -27,13 +37,41 @@ pub struct EnvironmentOperation<T> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EnvironmentCommand<T> {
+    pub contract: String,
+    pub binding: EnvironmentBinding,
+    pub operation: EnvironmentOperation<T>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EnvironmentResponse {
+    pub contract: String,
+    pub operation_id: OperationId,
+    pub request_digest: String,
+    pub receipt: EnvironmentReceipt,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentRequest {
-    Setup { configuration: serde_json::Value },
-    Attach { grants: serde_json::Value },
-    Call { name: String, input: serde_json::Value },
-    Execute { tool: ToolInvocation },
-    Cancel { target_operation_id: OperationId },
+    Setup {
+        configuration: serde_json::Value,
+    },
+    Attach {
+        grants: serde_json::Value,
+    },
+    Call {
+        name: String,
+        input: serde_json::Value,
+    },
+    Execute {
+        tool: ToolInvocation,
+        remote_tool_id: String,
+        grant: serde_json::Value,
+    },
+    Cancel {
+        target_operation_id: OperationId,
+    },
     Detach,
     Teardown,
 }
@@ -42,10 +80,25 @@ pub enum EnvironmentRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentReceipt {
     Accepted,
-    Progress { data: serde_json::Value },
-    Result { output: serde_json::Value },
-    ToolResult { result: ToolResult },
-    Failure { code: String, message: String, retryable: bool },
-    Conflict { expected_digest: String, actual_digest: String },
-    Ambiguous { message: String },
+    Progress {
+        data: serde_json::Value,
+    },
+    Result {
+        output: serde_json::Value,
+    },
+    ToolResult {
+        result: ToolResult,
+    },
+    Failure {
+        code: String,
+        message: String,
+        retryable: bool,
+    },
+    Conflict {
+        expected_digest: String,
+        actual_digest: String,
+    },
+    Ambiguous {
+        message: String,
+    },
 }

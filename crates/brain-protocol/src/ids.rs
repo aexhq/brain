@@ -9,17 +9,25 @@ macro_rules! id_type {
         pub struct $name(pub String);
 
         impl $name {
-            pub fn new(value: impl Into<String>) -> Self { Self(value.into()) }
-            pub fn as_str(&self) -> &str { &self.0 }
+            pub fn new(value: impl Into<String>) -> Self {
+                Self(value.into())
+            }
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
         }
 
         impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(formatter) }
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
         }
 
         impl FromStr for $name {
             type Err = std::convert::Infallible;
-            fn from_str(value: &str) -> Result<Self, Self::Err> { Ok(Self::new(value)) }
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Ok(Self::new(value))
+            }
         }
     };
 }

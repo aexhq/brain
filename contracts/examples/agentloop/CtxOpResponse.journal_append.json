@@ -1,8 +1,0 @@
-{
-  "op_id": "op-j-0009",
-  "result": {
-    "op": "journal_append",
-    "first_seq": 127,
-    "last_seq": 129
-  }
-}

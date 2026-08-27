@@ -1,10 +1,10 @@
 {
   "name": "brain-monorepo",
   "private": true,
-  "workspaces": ["packages/brain", "packages/agentloop"],
+  "workspaces": ["packages/brain-sdk"],
   "scripts": {
+    "gen": "python tools/generate-contracts.py && npm run gen -w packages/brain-sdk",
     "build": "npm run build --workspaces --if-present",
-    "build:components": "node crates/brain-component-host/guest/build.mjs",
     "test": "npm test --workspaces --if-present",
     "package-smoke": "node tools/package-smoke.mjs"
   },

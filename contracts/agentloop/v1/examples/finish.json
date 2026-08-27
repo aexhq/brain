@@ -1,0 +1,19 @@
+{
+  "contract": "agentloop/v1",
+  "input": {
+    "context": { "protocol_version": "agentloop/v1", "items": [] },
+    "observation": { "type": "session_started" },
+    "presentation": {
+      "bytes": [],
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "runtime": {
+      "logical_time_ms": 1,
+      "deterministic_seed": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    }
+  },
+  "output": {
+    "context": { "protocol_version": "agentloop/v1", "items": [] },
+    "decision": { "type": "finish" }
+  }
+}

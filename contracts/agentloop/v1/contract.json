@@ -1,716 +1,90 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/aexhq/brain/contracts/agentloop/v1/contract.json",
-  "title": "BrainAgentloopContract",
-  "description": "The single current, transport-neutral Brain to loop-host agentloop contract. An agentloop is capability-pure policy code driving a session's turns; Brain executes and journals every effect. The canonical schema digest is the compatibility identity; the wire carries no protocol version. Delivery is at-least-once: Brain and the loop host deduplicate ctx operations by (op_id, canonical request digest); reusing an op_id with a different digest is a permanent conflict. Loss of an activation mid-turn interrupts that turn honestly; the session survives and rehydrates from kv and the latest mark.",
+  "title": "Brain Agentloop v1",
   "$defs": {
-    "Digest": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
-    },
-    "ModelName": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 256,
-      "description": "A provider model identifier as the session sealed it. Unlike Identifier this admits gateway-style names with path separators (e.g. \"openai/gpt-4.1-nano\").",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
-    },
-    "Identifier": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 128,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-    },
-    "SessionId": {
-      "type": "string",
-      "pattern": "^ses_[A-Za-z0-9]{20,32}$"
-    },
-    "Timestamp": {
-      "type": "string",
-      "format": "date-time",
-      "maxLength": 40
-    },
-    "Seq": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "A journal sequence number of this session."
-    },
-    "JsonObject": {
-      "type": "object",
-      "additionalProperties": true,
-      "description": "An opaque bounded JSON object. Byte bounds are enforced at the execution boundary, not expressible in schema."
-    },
-    "AgentloopSelector": {
-      "description": "Which agent loop a session runs. Sealed at session creation; children inherit the parent's selector unless spawn supplies another loop. The sealed identity is (source_bundle_sha256, toolchain): componentization is non-deterministic, so the deterministic source bundle is the identity and composition tooling componentizes it, cached by this pair.",
+    "ContextEnvelope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source_bundle_sha256", "source_bundle_bytes", "toolchain"],
+      "required": ["protocol_version", "items"],
       "properties": {
-        "source_bundle_sha256": {
-          "$ref": "#/$defs/Digest",
-          "description": "SHA-256 of the deterministic source bundle."
+        "protocol_version": { "const": "agentloop/v1" },
+        "items": { "type": "array", "maxItems": 4096 },
+        "state": {}
+      }
+    },
+    "Observation": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "session_started" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "content"], "properties": { "type": { "const": "user_message" }, "content": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "response"], "properties": { "type": { "const": "model_completed" }, "response": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "results"], "properties": { "type": { "const": "tools_completed" }, "results": { "type": "array", "maxItems": 128 } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "event"], "properties": { "type": { "const": "emitted" }, "event": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "cancelled" } } }
+      ]
+    },
+    "ToolInvocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["call_id", "name", "input"],
+      "properties": {
+        "call_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "input": {}
+      }
+    },
+    "Decision": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type", "request"], "properties": { "type": { "const": "model" }, "request": { "type": "object" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "calls"], "properties": { "type": { "const": "tools" }, "calls": { "type": "array", "minItems": 1, "maxItems": 128, "items": { "$ref": "#/$defs/ToolInvocation" } } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "event"], "properties": { "type": { "const": "emit" }, "event": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "finish" }, "result": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "code", "message", "retryable"], "properties": { "type": { "const": "fail" }, "code": { "type": "string", "minLength": 1, "maxLength": 128 }, "message": { "type": "string", "minLength": 1, "maxLength": 4096 }, "retryable": { "type": "boolean" } } }
+      ]
+    },
+    "ActivationInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context", "observation", "presentation", "runtime"],
+      "properties": {
+        "context": { "$ref": "#/$defs/ContextEnvelope" },
+        "observation": { "$ref": "#/$defs/Observation" },
+        "presentation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bytes", "digest"],
+          "properties": {
+            "bytes": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+            "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
         },
-        "source_bundle_bytes": { "type": "integer", "minimum": 1, "maximum": 8388608 },
-        "toolchain": {
-          "$ref": "#/$defs/Identifier",
-          "description": "The pinned loop-toolchain identity (engine + componentizer + wasmtime config family) the composition builds and runs this bundle with."
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["logical_time_ms", "deterministic_seed"],
+          "properties": {
+            "logical_time_ms": { "type": "integer", "minimum": 0 },
+            "deterministic_seed": { "type": "array", "minItems": 32, "maxItems": 32, "items": { "type": "integer", "minimum": 0, "maximum": 255 } }
+          }
         }
       }
     },
-    "UsageView": {
+    "ActivationOutput": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["context", "decision"],
       "properties": {
-        "input_tokens": { "type": "integer", "minimum": 0 },
-        "output_tokens": { "type": "integer", "minimum": 0 },
-        "cache_read_tokens": { "type": "integer", "minimum": 0 },
-        "cache_write_tokens": { "type": "integer", "minimum": 0 },
-        "total_tokens": { "type": "integer", "minimum": 0 }
-      },
-      "description": "Provider-reported usage. Absent counters are absent, never zero."
-    },
-    "ModelStopReason": {
-      "type": "string",
-      "enum": ["end_turn", "tool_use", "max_tokens", "refusal"],
-      "description": "Why one model round stopped."
-    },
-    "TextContentView": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "text"],
-      "properties": {
-        "type": { "type": "string", "enum": ["text"] },
-        "text": { "type": "string", "maxLength": 196608 }
-      }
-    },
-    "ToolCallContentView": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "tool_call_id", "name", "input"],
-      "properties": {
-        "type": { "type": "string", "enum": ["tool_call"] },
-        "tool_call_id": { "$ref": "#/$defs/Identifier" },
-        "name": { "$ref": "#/$defs/Identifier" },
-        "input": { "$ref": "#/$defs/JsonObject" }
-      }
-    },
-    "ContentView": {
-      "description": "One content block. v1 is text and tool calls; richer media rides object references in a later additive revision.",
-      "oneOf": [
-        { "$ref": "#/$defs/TextContentView" },
-        { "$ref": "#/$defs/ToolCallContentView" }
-      ]
-    },
-    "AssistantMessageView": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["content", "stop_reason", "model"],
-      "properties": {
-        "content": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/ContentView" },
-          "maxItems": 64
-        },
-        "stop_reason": { "$ref": "#/$defs/ModelStopReason" },
-        "model": { "$ref": "#/$defs/ModelName" },
-        "usage": { "$ref": "#/$defs/UsageView" }
-      },
-      "description": "One folded model round. Token deltas stream Brain-to-application directly; the loop receives complete messages only."
-    },
-    "ModelMessage": {
-      "description": "One provider-visible message the loop composes. Presentation is loop policy; authority is not: Brain validates every named tool against the sealed grant.",
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["role", "content"],
-          "properties": {
-            "role": { "type": "string", "enum": ["user"] },
-            "content": { "type": "array", "items": { "$ref": "#/$defs/ContentView" }, "maxItems": 64 }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["role", "content"],
-          "properties": {
-            "role": { "type": "string", "enum": ["assistant"] },
-            "content": { "type": "array", "items": { "$ref": "#/$defs/ContentView" }, "maxItems": 64 }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["role", "tool_call_id", "name", "content"],
-          "properties": {
-            "role": { "type": "string", "enum": ["tool_result"] },
-            "tool_call_id": { "$ref": "#/$defs/Identifier" },
-            "name": { "$ref": "#/$defs/Identifier" },
-            "is_error": { "type": "boolean" },
-            "content": { "type": "array", "items": { "$ref": "#/$defs/TextContentView" }, "maxItems": 64 }
-          }
-        }
-      ]
-    },
-    "ToolPresentationView": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name", "input_schema"],
-      "properties": {
-        "name": {
-          "$ref": "#/$defs/Identifier",
-          "description": "Must name a tool in the session's sealed grant. An unsealed name fails the request; it is never routed."
-        },
-        "description": { "type": "string", "maxLength": 8192 },
-        "input_schema": { "$ref": "#/$defs/JsonObject" }
-      },
-      "description": "How the loop presents one sealed tool to the model on one request. Showing a subset, reordering, or rewording is loop policy; the executable binding stays sealed."
-    },
-    "ModelRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["messages"],
-      "properties": {
-        "system": { "type": "string", "maxLength": 131072 },
-        "messages": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/ModelMessage" },
-          "minItems": 1,
-          "maxItems": 4096
-        },
-        "tools": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/ToolPresentationView" },
-          "maxItems": 128,
-          "description": "Absent or empty means the sealed presentation verbatim, which also keeps the provider's frozen base segment and prompt-cache key. A non-empty list re-presents sealed tools by name and pays its own cache economics."
-        },
-        "max_tokens": { "type": "integer", "minimum": 1 },
-        "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
-        "reasoning_effort": {
-          "type": "string",
-          "enum": ["low", "medium", "high"]
-        },
-        "top_p": { "type": "number", "minimum": 0, "maximum": 1 },
-        "tool_choice": {
-          "type": "string",
-          "enum": ["none"],
-          "description": "Only the closing-round constraint: presented tools stay on the wire (tool-block histories require them) while the model is asked to answer in text. Absent means the provider default."
-        }
-      },
-      "description": "A composed provider request. Brain executes it against the session's sealed provider and model with custody, live retry and attempt recovery, and journals intent and result. The loop never selects a provider, model or credential."
-    },
-    "ToolCallRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["tool_call_id", "name", "input"],
-      "properties": {
-        "tool_call_id": { "$ref": "#/$defs/Identifier" },
-        "name": { "$ref": "#/$defs/Identifier" },
-        "input": { "$ref": "#/$defs/JsonObject" }
-      }
-    },
-    "ToolResultView": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["tool_call_id", "name", "is_error", "content"],
-      "properties": {
-        "tool_call_id": { "$ref": "#/$defs/Identifier" },
-        "name": { "$ref": "#/$defs/Identifier" },
-        "is_error": { "type": "boolean" },
-        "content": { "type": "array", "items": { "$ref": "#/$defs/TextContentView" }, "maxItems": 64 }
-      }
-    },
-    "LoopEntry": {
-      "description": "One loop-authored durable journal entry. Entries commit with the next kernel decision (or activation end, whichever comes first) and count against the tenant journal quota.",
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "data"],
-          "properties": {
-            "kind": { "type": "string", "enum": ["custom"] },
-            "data": { "$ref": "#/$defs/JsonObject" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "name", "data"],
-          "properties": {
-            "kind": { "type": "string", "enum": ["event"] },
-            "name": { "$ref": "#/$defs/Identifier" },
-            "data": { "$ref": "#/$defs/JsonObject" }
-          },
-          "description": "Application-visible: surfaces on the session event stream as loop.event."
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "covers_through_seq", "data"],
-          "properties": {
-            "kind": { "type": "string", "enum": ["mark"] },
-            "covers_through_seq": { "$ref": "#/$defs/Seq" },
-            "data": { "$ref": "#/$defs/JsonObject" }
-          },
-          "description": "The hydration floor: data carries the loop's compacted working context (chunked internally when large); the next session_start tail begins after covers_through_seq."
-        }
-      ]
-    },
-    "JournalEntryView": {
-      "description": "A versioned typed projection of one journal entry. Kernel records project to these stable views; the raw record encoding stays internal.",
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "seq", "at", "content"],
-          "properties": {
-            "type": { "type": "string", "enum": ["user_message"] },
-            "seq": { "$ref": "#/$defs/Seq" },
-            "at": { "$ref": "#/$defs/Timestamp" },
-            "content": { "type": "array", "items": { "$ref": "#/$defs/ContentView" }, "maxItems": 64 }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "seq", "at", "message"],
-          "properties": {
-            "type": { "type": "string", "enum": ["assistant_message"] },
-            "seq": { "$ref": "#/$defs/Seq" },
-            "at": { "$ref": "#/$defs/Timestamp" },
-            "message": { "$ref": "#/$defs/AssistantMessageView" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "seq", "at", "result"],
-          "properties": {
-            "type": { "type": "string", "enum": ["tool_result"] },
-            "seq": { "$ref": "#/$defs/Seq" },
-            "at": { "$ref": "#/$defs/Timestamp" },
-            "result": { "$ref": "#/$defs/ToolResultView" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "seq", "at", "data"],
-          "properties": {
-            "type": { "type": "string", "enum": ["loop_custom"] },
-            "seq": { "$ref": "#/$defs/Seq" },
-            "at": { "$ref": "#/$defs/Timestamp" },
-            "data": { "$ref": "#/$defs/JsonObject" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "seq", "at", "name", "data"],
-          "properties": {
-            "type": { "type": "string", "enum": ["loop_event"] },
-            "seq": { "$ref": "#/$defs/Seq" },
-            "at": { "$ref": "#/$defs/Timestamp" },
-            "name": { "$ref": "#/$defs/Identifier" },
-            "data": { "$ref": "#/$defs/JsonObject" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["type", "seq", "at", "covers_through_seq", "data"],
-          "properties": {
-            "type": { "type": "string", "enum": ["loop_mark"] },
-            "seq": { "$ref": "#/$defs/Seq" },
-            "at": { "$ref": "#/$defs/Timestamp" },
-            "covers_through_seq": { "$ref": "#/$defs/Seq" },
-            "data": { "$ref": "#/$defs/JsonObject" }
-          }
-        }
-      ]
-    },
-    "SessionContextView": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["session_id", "model", "limits"],
-      "properties": {
-        "session_id": { "$ref": "#/$defs/SessionId" },
-        "model": { "$ref": "#/$defs/ModelName" },
-        "limits": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["max_rounds_per_turn", "turn_wall_ms", "max_parallel_tools"],
-          "properties": {
-            "max_rounds_per_turn": { "type": "integer", "minimum": 1 },
-            "turn_wall_ms": { "type": "integer", "minimum": 1 },
-            "max_parallel_tools": { "type": "integer", "minimum": 1 }
-          },
-          "description": "Kernel-enforced authorization, not advisory policy. The kernel rejects work past these regardless of loop behavior."
-        },
-        "metadata": { "$ref": "#/$defs/JsonObject" }
-      }
-    },
-    "MarkView": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["seq", "covers_through_seq", "data"],
-      "properties": {
-        "seq": { "$ref": "#/$defs/Seq" },
-        "covers_through_seq": { "$ref": "#/$defs/Seq" },
-        "data": { "$ref": "#/$defs/JsonObject" }
-      }
-    },
-    "ActivationRequest": {
-      "description": "Brain invoking the loop. One activation per lifecycle point; the message activation drives one turn.",
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "activation_id", "session", "resumed", "kv", "tail"],
-          "properties": {
-            "kind": { "type": "string", "enum": ["session_start"] },
-            "activation_id": { "$ref": "#/$defs/Identifier" },
-            "session": { "$ref": "#/$defs/SessionContextView" },
-            "resumed": { "type": "boolean" },
-            "kv": { "$ref": "#/$defs/JsonObject" },
-            "latest_mark": { "$ref": "#/$defs/MarkView" },
-            "inherited": {
-              "type": "array",
-              "items": { "$ref": "#/$defs/ModelMessage" },
-              "maxItems": 512,
-              "description": "Sealed inherited context from a context fork, in order, preceding the tail. Delivered only on a child session's fresh hydration (no own context floor); the messages are parent history, not child journal entries, so they carry no seqs and are never covered by marks."
-            },
-            "tail": {
-              "type": "array",
-              "items": { "$ref": "#/$defs/JournalEntryView" },
-              "maxItems": 512,
-              "description": "Journal entries after the latest mark (bounded; truncated_tail is set when the bound cut it). The kernel's own checkpoint-plus-tail hydration shape, pushed as data."
-            },
-            "truncated_tail": { "type": "boolean" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "activation_id", "session", "message"],
-          "properties": {
-            "kind": { "type": "string", "enum": ["message"] },
-            "activation_id": { "$ref": "#/$defs/Identifier" },
-            "session": { "$ref": "#/$defs/SessionContextView" },
-            "message": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["seq", "at", "content"],
-              "properties": {
-                "seq": { "$ref": "#/$defs/Seq" },
-                "at": { "$ref": "#/$defs/Timestamp" },
-                "content": { "type": "array", "items": { "$ref": "#/$defs/ContentView" }, "maxItems": 64 }
-              }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "activation_id", "session"],
-          "properties": {
-            "kind": { "type": "string", "enum": ["session_end"] },
-            "activation_id": { "$ref": "#/$defs/Identifier" },
-            "session": { "$ref": "#/$defs/SessionContextView" }
-          },
-          "description": "Best-effort; the kernel does not wait on it beyond a short budget."
-        }
-      ]
-    },
-    "ActivationResult": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["activation_id", "outcome"],
-      "properties": {
-        "activation_id": { "$ref": "#/$defs/Identifier" },
-        "outcome": { "type": "string", "enum": ["completed", "failed", "aborted"] },
-        "error": { "$ref": "#/$defs/AgentloopError" }
-      },
-      "description": "How the activation itself ended. Turn outcomes travel through turn_finish/turn_fail ops; a message activation that ends without a terminal op is a loop defect and interrupts the turn."
-    },
-    "CtxOpRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["op_id", "activation_id", "op"],
-      "properties": {
-        "op_id": { "$ref": "#/$defs/Identifier" },
-        "activation_id": { "$ref": "#/$defs/Identifier" },
-        "op": { "$ref": "#/$defs/CtxOp" }
-      },
-      "description": "One loop-to-Brain capability call. Journaled before its effect where effectful; deduplicated by (op_id, canonical request digest)."
-    },
-    "CtxOp": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "request"],
-          "properties": {
-            "op": { "type": "string", "enum": ["model_stream"] },
-            "request": { "$ref": "#/$defs/ModelRequest" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "calls"],
-          "properties": {
-            "op": { "type": "string", "enum": ["tools_dispatch"] },
-            "calls": {
-              "type": "array",
-              "items": { "$ref": "#/$defs/ToolCallRequest" },
-              "minItems": 1,
-              "maxItems": 8
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "entries"],
-          "properties": {
-            "op": { "type": "string", "enum": ["journal_append"] },
-            "entries": {
-              "type": "array",
-              "items": { "$ref": "#/$defs/LoopEntry" },
-              "minItems": 1,
-              "maxItems": 64
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "keys"],
-          "properties": {
-            "op": { "type": "string", "enum": ["kv_get"] },
-            "keys": {
-              "type": "array",
-              "items": { "type": "string", "minLength": 1, "maxLength": 128 },
-              "minItems": 1,
-              "maxItems": 64
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "entries"],
-          "properties": {
-            "op": { "type": "string", "enum": ["kv_set"] },
-            "entries": {
-              "$ref": "#/$defs/JsonObject",
-              "description": "Key to JSON value; null deletes the key. Last writer wins per key."
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op"],
-          "properties": {
-            "op": { "type": "string", "enum": ["journal_read"] },
-            "after_seq": { "$ref": "#/$defs/Seq" },
-            "types": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "enum": ["user_message", "assistant_message", "tool_result", "loop_custom", "loop_event", "loop_mark"]
-              },
-              "minItems": 1,
-              "maxItems": 6
-            },
-            "limit": { "type": "integer", "minimum": 1, "maximum": 256 }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op"],
-          "properties": {
-            "op": { "type": "string", "enum": ["turn_finish"] },
-            "result": { "$ref": "#/$defs/JsonObject" },
-            "stop_reason": {
-              "type": "string",
-              "enum": ["end_turn", "max_rounds", "refusal"],
-              "description": "The loop's terminal claim for this turn; absent means end_turn. Cancelled and interrupted stay kernel-owned outcomes a loop cannot claim."
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "error"],
-          "properties": {
-            "op": { "type": "string", "enum": ["turn_fail"] },
-            "error": { "$ref": "#/$defs/AgentloopError" }
-          }
-        }
-      ]
-    },
-    "CtxOpResponse": {
-      "description": "Exactly one of result or error.",
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op_id", "result"],
-          "properties": {
-            "op_id": { "$ref": "#/$defs/Identifier" },
-            "result": { "$ref": "#/$defs/CtxOpResult" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op_id", "error"],
-          "properties": {
-            "op_id": { "$ref": "#/$defs/Identifier" },
-            "error": { "$ref": "#/$defs/AgentloopError" }
-          }
-        }
-      ]
-    },
-    "CtxOpResult": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "message"],
-          "properties": {
-            "op": { "type": "string", "enum": ["model_stream"] },
-            "message": { "$ref": "#/$defs/AssistantMessageView" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "results"],
-          "properties": {
-            "op": { "type": "string", "enum": ["tools_dispatch"] },
-            "results": {
-              "type": "array",
-              "items": { "$ref": "#/$defs/ToolResultView" },
-              "minItems": 1,
-              "maxItems": 8
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "first_seq", "last_seq"],
-          "properties": {
-            "op": { "type": "string", "enum": ["journal_append"] },
-            "first_seq": { "$ref": "#/$defs/Seq" },
-            "last_seq": { "$ref": "#/$defs/Seq" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "entries"],
-          "properties": {
-            "op": { "type": "string", "enum": ["kv_get"] },
-            "entries": { "$ref": "#/$defs/JsonObject" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op"],
-          "properties": {
-            "op": { "type": "string", "enum": ["kv_set"] }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op", "entries"],
-          "properties": {
-            "op": { "type": "string", "enum": ["journal_read"] },
-            "entries": {
-              "type": "array",
-              "items": { "$ref": "#/$defs/JournalEntryView" },
-              "maxItems": 256
-            },
-            "next_after_seq": { "$ref": "#/$defs/Seq" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op"],
-          "properties": {
-            "op": { "type": "string", "enum": ["turn_finish"] }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["op"],
-          "properties": {
-            "op": { "type": "string", "enum": ["turn_fail"] }
-          }
-        }
-      ]
-    },
-    "AgentloopErrorCode": {
-      "type": "string",
-      "enum": [
-        "invalid_request",
-        "unsealed_tool",
-        "turn_already_terminal",
-        "budget_exceeded",
-        "entry_too_large",
-        "kv_limit",
-        "provider_error",
-        "tool_error",
-        "aborted",
-        "internal"
-      ]
-    },
-    "AgentloopError": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["code", "message", "retryable"],
-      "properties": {
-        "code": { "$ref": "#/$defs/AgentloopErrorCode" },
-        "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "retryable": { "type": "boolean" },
-        "details": { "type": "object", "additionalProperties": true }
+        "context": { "$ref": "#/$defs/ContextEnvelope" },
+        "decision": { "$ref": "#/$defs/Decision" }
       }
     }
   },
-  "required": ["contract"],
+  "type": "object",
   "additionalProperties": false,
+  "required": ["contract", "input", "output"],
   "properties": {
-    "contract": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["activations", "ops"],
-      "properties": {
-        "activations": {
-          "const": ["session_start", "message", "session_end"]
-        },
-        "ops": {
-          "const": [
-            "model_stream",
-            "tools_dispatch",
-            "journal_append",
-            "kv_get",
-            "kv_set",
-            "journal_read",
-            "turn_finish",
-            "turn_fail"
-          ]
-        }
-      }
-    }
+    "contract": { "const": "agentloop/v1" },
+    "input": { "$ref": "#/$defs/ActivationInput" },
+    "output": { "$ref": "#/$defs/ActivationOutput" }
   }
 }

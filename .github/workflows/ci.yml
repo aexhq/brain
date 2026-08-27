@@ -1,25 +1,20 @@
 name: ci
+
 on:
   push:
     branches: [main]
   pull_request:
 
-# Superseded PR pushes stop competing with the live run for runners and cache budget;
-# main pushes always run to completion (image publish keys off their success).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every job here only reads the repository; none needs a writable GITHUB_TOKEN.
 permissions:
   contents: read
 
 jobs:
-  sdk:
-    strategy:
-      matrix:
-        os: [ubuntu-24.04, windows-2025, macos-15]
-    runs-on: ${{ matrix.os }}
+  contracts:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -27,15 +22,11 @@ jobs:
           node-version: "22.23.2"
           cache: npm
       - run: npm ci
-      # Generated contract artifacts must match their source schemas — a contract change
-      # without a regen ships stale published types (found by the 2026-08-22 audit).
-      - name: generated artifacts are fresh
-        if: runner.os == 'Linux'
-        run: |
-          npm run gen -w packages/brain
-          git diff --exit-code packages/brain
+      - run: npm run gen
+      - run: git diff --exit-code -- contracts crates/brain-protocol/src/generated.rs packages/brain-sdk/src/generated packages/brain-sdk/contracts
       - run: npm test
       - run: npm run package-smoke
+      - run: npm audit --audit-level=high
 
   lint:
     runs-on: ubuntu-24.04
@@ -48,160 +39,108 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: git diff --check
 
-  # The Rust generated views must match their source schemas, exactly like the TypeScript gate
-  # above: a schema change without a regen (or a environment-edit of a generated file) is invisible to
-  # every other job because the stale .rs files still compile.
-  protocol-gen:
+  rust-core:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.97.1"
-          components: rustfmt
-      - name: cache cargo-typify
-        id: typify-cache
-        uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: ~/.cargo/bin/cargo-typify
-          key: cargo-typify-0.7.0-${{ runner.os }}
-      - if: steps.typify-cache.outputs.cache-hit != 'true'
-        run: cargo install cargo-typify --locked --version 0.7.0
-      - name: generated protocol views are fresh
+          shared-key: workspace-debug
+      - run: cargo test -p brain-protocol -p brain-telemetry -p brain -p brain-http
+
+  rust-platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-targets
+
+  loophost:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: aexhq/extensions
+          path: extensions
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.2"
+          cache: npm
+      - name: Build the public TypeScript diagnostic Agentloop against this Brain
+        shell: bash
         run: |
-          python3 tools/generate-protocol.py all
-          python3 tools/generate-component-contracts.py
-          git diff --exit-code crates/brain-protocol/src crates/brain-component-host/src/generated.rs contracts packages/brain/src/generated/components.ts packages/brain/schemas/components.v1.json
-      - name: security postprocessor invariants hold
-        run: python3 tools/postprocess-generated.py --check
-
-  test:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
+          set -euo pipefail
+          brain_archive=$(npm pack --silent --workspace @aexhq/brain --pack-destination "$RUNNER_TEMP")
+          cp -R extensions/packages/agentloop "$RUNNER_TEMP/agentloop"
+          cd "$RUNNER_TEMP/agentloop"
+          npm pkg set "dependencies.@aexhq/brain=file:$RUNNER_TEMP/$brain_archive"
+          npm install --ignore-scripts
+          npm test
+          node dist/cli.js build test/fixtures/diagnostic-loop.mjs --out "$RUNNER_TEMP/diagnostic.brain.json"
+          npm audit --audit-level=high
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-debug
-      - run: cargo test --workspace --exclude brain-loophost --exclude brain-component-host --exclude brain-server
-      - name: Test Brain Server except the component-host integration
-        run: >-
-          cargo test -p brain-server --lib --bins
-          --test api_admission
-          --test create_idempotency
-          --test discard_race
-          --test external_e2e
-          --test message_idempotency
+      - name: Admit and activate through the real Linux worker process
+        env:
+          BRAIN_TEST_AGENTLOOP_PACKAGE: ${{ runner.temp }}/diagnostic.brain.json
+        run: cargo test -p brain-loophost --features integration-tests --test worker_process
 
-  test-component-host:
+  image-smoke:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Configure the shared component compilation cache
-        run: echo "BRAIN_COMPONENT_CACHE_DIR=$HOME/.cache/aex-brain-components" >> "$GITHUB_ENV"
-      - name: Cache compiled components
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/aex-brain-components
-          key: compiled-components-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/brain-component-host/guest/**') }}
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22.23.2"
-          cache: npm
-      - run: npm ci
-      - run: npm ci --prefix crates/brain-loophost/guest
-      - run: npm run build:components
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.97.1"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: workspace-debug
-      - name: Warm the shared component compilation cache
-        run: >-
-          cargo test -p brain-component-host --test vertical_slice
-          four_worlds_execute_without_ambient_authority -- --exact
-      - run: cargo test -p brain-component-host
-      - run: cargo test -p brain-server --test component_tool_environment
-      - run: cargo test -p brain-server --test standalone_e2e
+      - run: docker build -t brain:test .
+      - name: Start the release image and exercise health and auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name brain-test -p 18080:8080 \
+            -e BRAIN_API_TOKEN=test-token \
+            -e BRAIN_MODEL_API_KEY=test-model-key \
+            brain:test
+          trap 'docker logs brain-test; docker rm -f brain-test >/dev/null' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18080/health/ready >/dev/null; then break; fi
+            test "$attempt" -lt 60
+            sleep 1
+          done
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18080/v1/sessions)" = 401
+          curl --fail --silent -H 'authorization: Bearer test-token' http://127.0.0.1:18080/v1/sessions | jq -e '.sessions == []'
 
-  test-loophost:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22.23.2"
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            crates/brain-loophost/guest/package-lock.json
-      # The guest components are a pure function of these inputs; a hit skips the npm
-      # installs and componentization, which otherwise dominate this job.
-      - name: cache loop guest components
-        uses: actions/cache@v4
-        with:
-          path: crates/brain-loophost/guest/dist
-          key: loop-guests-${{ runner.os }}-${{ hashFiles('crates/brain-loophost/guest/*.mjs', 'crates/brain-loophost/guest/package.json', 'crates/brain-loophost/guest/package-lock.json', 'crates/brain-loophost/wit/guest.wit', 'packages/agentloop/src/**', 'packages/agentloop/package.json', 'package-lock.json') }}
-      # The engine's own compilation cache (self-validating, keyed by engine config + content):
-      # a hit turns each multi-minute cranelift compile of a component into a fast deserialize.
-      # restore-keys is safe — wasmtime revalidates every entry itself.
-      - name: cache wasmtime compiled components
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/wasmtime
-          key: wasmtime-components-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('crates/brain-loophost/guest/*.mjs', 'packages/agentloop/src/**', 'package-lock.json') }}
-          restore-keys: |
-            wasmtime-components-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-
-      - run: npm ci
-      - run: npm run build -w packages/agentloop
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.97.1"
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: workspace-debug
-      - run: cargo test -p brain-loophost
-
-  # The branch-protection gate. Splitting the old serial job into the parallel legs above must
-  # not silently weaken protection: this job keeps the required check name and fails unless
-  # every leg succeeded (`if: always()` because a skipped required check would satisfy GitHub).
   build-test:
     if: always()
-    needs: [lint, protocol-gen, test, test-component-host, test-loophost]
+    needs: [contracts, lint, rust-core, rust-platforms, loophost, image-smoke]
     runs-on: ubuntu-24.04
     steps:
-      - name: every gate passed
+      - name: Every release gate passed
+        env:
+          CONTRACTS: ${{ needs.contracts.result }}
+          LINT: ${{ needs.lint.result }}
+          CORE: ${{ needs.rust-core.result }}
+          PLATFORMS: ${{ needs.rust-platforms.result }}
+          LOOPHOST: ${{ needs.loophost.result }}
+          IMAGE: ${{ needs.image-smoke.result }}
         run: |
-          test "${{ needs.lint.result }}" = "success"
-          test "${{ needs.protocol-gen.result }}" = "success"
-          test "${{ needs.test.result }}" = "success"
-          test "${{ needs.test-component-host.result }}" = "success"
-          test "${{ needs.test-loophost.result }}" = "success"
-
-  benchmark-leakage:
-    # This release gate is deliberately independent from fmt/clippy/tests: release-mode density
-    # and leakage compilation has little reusable output in common with the debug quality gate,
-    # and serializing it there needlessly extends the whole PR critical path.
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.97.1"
-      - uses: Swatinem/rust-cache@v2
-      # Benchmark gates. Thresholds are backstops for a shared 2-vCPU runner (catch
-      # order-of-magnitude regressions like the Nagle 40ms/write stall); the published
-      # numbers come from the ARM target run recorded in BENCHMARKS.md.
-      - name: benchmark gates (density, reclaim, creep, turns/s, TTFT) + leakage
-        run: |
-          cargo run -p brain-bench --release -- ci \
-            --gate-max-turn-p99-ms 250 \
-            --gate-max-ttft-p99-ms 100 \
-            --gate-min-turns-per-sec 40 \
-            --gate-max-kib-per-session 256 \
-            --gate-min-reclaim-pct 50 \
-            --gate-max-creep-mib 8
+          test "$CONTRACTS" = success
+          test "$LINT" = success
+          test "$CORE" = success
+          test "$PLATFORMS" = success
+          test "$LOOPHOST" = success
+          test "$IMAGE" = success

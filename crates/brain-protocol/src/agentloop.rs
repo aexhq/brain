@@ -52,9 +52,22 @@ pub struct ActivationOutput {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Decision {
-    Model { request: ModelRequest },
-    Tools { calls: Vec<ToolInvocation> },
-    Emit { event: serde_json::Value },
-    Finish { #[serde(skip_serializing_if = "Option::is_none")] result: Option<serde_json::Value> },
-    Fail { code: String, message: String, retryable: bool },
+    Model {
+        request: ModelRequest,
+    },
+    Tools {
+        calls: Vec<ToolInvocation>,
+    },
+    Emit {
+        event: serde_json::Value,
+    },
+    Finish {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
+    },
+    Fail {
+        code: String,
+        message: String,
+        retryable: bool,
+    },
 }

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aexhq/brain/contracts/environment/v1/schemas.json",
+  "title": "Brain Environment v1",
+  "$defs": {
+    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "Digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "Binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment_id", "configuration_digest", "adapter_binding", "directory_generation", "lifecycle_policy"],
+      "properties": {
+        "environment_id": { "$ref": "#/$defs/Identifier" },
+        "configuration_digest": { "$ref": "#/$defs/Digest" },
+        "adapter_binding": { "type": "string", "minLength": 1, "maxLength": 65536 },
+        "directory_generation": { "type": "integer", "minimum": 1 },
+        "lifecycle_policy": { "enum": ["session", "shared", "external"] }
+      }
+    },
+    "OperationEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "request_digest", "environment_id", "session_id", "request"],
+      "properties": {
+        "operation_id": { "$ref": "#/$defs/Identifier" },
+        "request_digest": { "$ref": "#/$defs/Digest" },
+        "environment_id": { "$ref": "#/$defs/Identifier" },
+        "session_id": { "$ref": "#/$defs/Identifier" },
+        "attachment_id": { "$ref": "#/$defs/Identifier" },
+        "request": { "$ref": "#/$defs/Request" }
+      }
+    },
+    "Request": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type", "configuration"], "properties": { "type": { "const": "setup" }, "configuration": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "grants"], "properties": { "type": { "const": "attach" }, "grants": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "name", "input"], "properties": { "type": { "const": "call" }, "name": { "$ref": "#/$defs/Identifier" }, "input": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "tool", "remote_tool_id", "grant"], "properties": { "type": { "const": "execute" }, "tool": { "$ref": "#/$defs/ToolInvocation" }, "remote_tool_id": { "$ref": "#/$defs/Identifier" }, "grant": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "target_operation_id"], "properties": { "type": { "const": "cancel" }, "target_operation_id": { "$ref": "#/$defs/Identifier" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "detach" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "teardown" } } }
+      ]
+    },
+    "ToolInvocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["call_id", "name", "input"],
+      "properties": {
+        "call_id": { "$ref": "#/$defs/Identifier" },
+        "name": { "$ref": "#/$defs/Identifier" },
+        "input": {}
+      }
+    },
+    "Receipt": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "accepted" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "data"], "properties": { "type": { "const": "progress" }, "data": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "output"], "properties": { "type": { "const": "result" }, "output": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "result"], "properties": { "type": { "const": "tool_result" }, "result": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "code", "message", "retryable"], "properties": { "type": { "const": "failure" }, "code": { "$ref": "#/$defs/Identifier" }, "message": { "type": "string", "maxLength": 4096 }, "retryable": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "expected_digest", "actual_digest"], "properties": { "type": { "const": "conflict" }, "expected_digest": { "$ref": "#/$defs/Digest" }, "actual_digest": { "$ref": "#/$defs/Digest" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "message"], "properties": { "type": { "const": "ambiguous" }, "message": { "type": "string", "maxLength": 4096 } } }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "binding", "operation"],
+      "properties": {
+        "contract": { "const": "environment/v1" },
+        "binding": { "$ref": "#/$defs/Binding" },
+        "operation": { "$ref": "#/$defs/OperationEnvelope" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "operation_id", "request_digest", "receipt"],
+      "properties": {
+        "contract": { "const": "environment/v1" },
+        "operation_id": { "$ref": "#/$defs/Identifier" },
+        "request_digest": { "$ref": "#/$defs/Digest" },
+        "receipt": { "$ref": "#/$defs/Receipt" }
+      }
+    }
+  ]
+}

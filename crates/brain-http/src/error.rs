@@ -1,4 +1,8 @@
-use axum::{Json, http::StatusCode, response::{IntoResponse, Response}};
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use brain_protocol::ApiError;
 
 pub struct HttpError(pub ApiError);
@@ -10,6 +14,7 @@ impl IntoResponse for HttpError {
             "conflict" => StatusCode::CONFLICT,
             "overloaded" => StatusCode::SERVICE_UNAVAILABLE,
             "invalid_request" => StatusCode::BAD_REQUEST,
+            "unauthorized" => StatusCode::UNAUTHORIZED,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(self.0)).into_response()

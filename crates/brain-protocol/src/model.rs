@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelBinding {
     pub binding_id: String,
     pub model: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRequest {
     pub messages: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -17,17 +17,29 @@ pub(crate) struct BoundedQueue {
 
 impl BoundedQueue {
     pub fn new(max_records: usize, max_bytes: usize) -> Self {
-        Self { records: VecDeque::new(), bytes: 0, max_records, max_bytes }
+        Self {
+            records: VecDeque::new(),
+            bytes: 0,
+            max_records,
+            max_bytes,
+        }
     }
 
-    pub fn try_push(&mut self, record: TelemetryRecord) -> Result<usize, TelemetryRecord> {
+    pub fn try_push(&mut self, record: TelemetryRecord) -> Option<usize> {
         let bytes = record.encoded_len();
-        if bytes > self.max_bytes || self.records.len() >= self.max_records || self.bytes + bytes > self.max_bytes {
-            return Err(record);
+        if bytes > self.max_bytes
+            || self.records.len() >= self.max_records
+            || self.bytes + bytes > self.max_bytes
+        {
+            return None;
         }
         self.bytes += bytes;
-        self.records.push_back(QueuedRecord { record, bytes, enqueued_at: Instant::now() });
-        Ok(bytes)
+        self.records.push_back(QueuedRecord {
+            record,
+            bytes,
+            enqueued_at: Instant::now(),
+        });
+        Some(bytes)
     }
 
     pub fn pop(&mut self) -> Option<QueuedRecord> {

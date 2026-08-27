@@ -1,7 +1,0 @@
-{
-  "error": {
-    "code": "session_busy",
-    "message": "a turn is already running",
-    "request_id": "req_9y"
-  }
-}
