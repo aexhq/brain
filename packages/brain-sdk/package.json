@@ -1,6 +1,6 @@
 {
   "name": "@aexhq/brain",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "TypeScript SDK for an independently runnable Brain server",
   "license": "Apache-2.0",
   "repository": {

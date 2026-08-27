@@ -1,4 +1,4 @@
-name: publish npm packages
+name: release Brain
 
 on:
   workflow_dispatch:
@@ -27,6 +27,11 @@ on:
         type: string
         required: false
         default: ''
+      image_run_id:
+        description: Successful candidate-image workflow run for this commit (stage only)
+        type: string
+        required: false
+        default: ''
 
 concurrency:
   group: brain-npm-publish
@@ -52,6 +57,7 @@ jobs:
           SELECTED_COMMIT: ${{ github.sha }}
           SELECTED_REF: ${{ github.ref }}
           STAGE_RUN_ID: ${{ inputs.stage_run_id }}
+          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -63,6 +69,7 @@ jobs:
           git merge-base --is-ancestor "$EXPECTED_COMMIT" origin/main
           if [[ "$OPERATION" == promote ]]; then
             [[ "$STAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            test -z "$IMAGE_RUN_ID"
             stage_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STAGE_RUN_ID")
             test "$(jq -r .head_sha <<<"$stage_run")" = "$EXPECTED_COMMIT"
             test "$(jq -r .event <<<"$stage_run")" = workflow_dispatch
@@ -73,6 +80,15 @@ jobs:
               "$stage_path" == .github/workflows/npm-publish.yml@* ]]
           else
             test -z "$STAGE_RUN_ID"
+            [[ "$IMAGE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+            image_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$IMAGE_RUN_ID")
+            test "$(jq -r .head_sha <<<$image_run)" = "$EXPECTED_COMMIT"
+            test "$(jq -r .event <<<$image_run)" = workflow_run
+            test "$(jq -r .status <<<$image_run)" = completed
+            test "$(jq -r .conclusion <<<$image_run)" = success
+            image_path=$(jq -r .path <<<$image_run)
+            [[ "$image_path" == .github/workflows/image.yml || \
+              "$image_path" == .github/workflows/image.yml@* ]]
           fi
 
   prepare:
@@ -81,6 +97,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      actions: read
       contents: read
     outputs:
       versions: ${{ steps.pack.outputs.versions }}
@@ -120,6 +137,22 @@ jobs:
             echo
             node tools/npm-release.mjs markdown "$release_dir/manifest.json"
           } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/download-artifact@v7
+        with:
+          name: brain-image-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-npm-release
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.image_run_id }}
+      - name: Bind the candidate image to this release
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          jq -e --arg source "$EXPECTED_COMMIT" '
+            .schema == 1 and .source_sha == $source and
+            (.image | test("^ghcr\\.io/aexhq/brain$")) and
+            (.manifest_digest | test("^sha256:[0-9a-f]{64}$"))
+          ' "$RUNNER_TEMP/brain-npm-release/brain-image.json" >/dev/null
       - uses: actions/upload-artifact@v6
         with:
           name: brain-npm-release-${{ inputs.expected_commit }}
@@ -159,6 +192,136 @@ jobs:
         run: |
           echo "Staged exact versions under npm dist-tag \`next\`: \`$VERSIONS\`" >> "$GITHUB_STEP_SUMMARY"
 
+  e2e-sdk:
+    if: inputs.operation == 'stage'
+    needs: stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-release
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install the staged public SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk=$(jq -er '.packages[] | select(.name == "@aexhq/brain") | "\(.name)@\(.version)"' "$RUNNER_TEMP/brain-release/manifest.json")
+          test "$(npm view "$sdk" version)" = "${sdk##*@}"
+          mkdir "$RUNNER_TEMP/sdk-e2e"
+          cp tests/release/sdk.mjs "$RUNNER_TEMP/sdk-e2e/sdk.mjs"
+          cd "$RUNNER_TEMP/sdk-e2e"
+          npm init --yes >/dev/null
+          npm install --ignore-scripts --save-exact "$sdk" @aexhq/loop-pi@0.89.0
+          npm audit --audit-level=high
+      - name: Run the candidate image through the staged SDK
+        shell: bash
+        env:
+          BRAIN_API_TOKEN: release-sdk-token
+        run: |
+          set -euo pipefail
+          image=$(jq -er '"\(.image)@\(.manifest_digest)"' "$RUNNER_TEMP/brain-release/brain-image.json")
+          docker pull "$image" >/dev/null
+          docker run -d --name brain-sdk-e2e -p 18080:8080 -e BRAIN_API_TOKEN "$image"
+          trap 'docker logs brain-sdk-e2e; docker rm -f brain-sdk-e2e >/dev/null' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18080/health/ready >/dev/null; then break; fi
+            test "$attempt" -lt 60
+            sleep 1
+          done
+          BRAIN_BASE_URL=http://127.0.0.1:18080 node "$RUNNER_TEMP/sdk-e2e/sdk.mjs"
+
+  e2e-http:
+    if: inputs.operation == 'stage'
+    needs: stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-release
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Prepare the raw HTTP client and deployed journal shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/http-e2e" "$RUNNER_TEMP/http-data"
+          cp tests/release/http.mjs "$RUNNER_TEMP/http-e2e/http.mjs"
+          cd "$RUNNER_TEMP/http-e2e"
+          npm init --yes >/dev/null
+          npm install --ignore-scripts --save-exact @aexhq/loop-pi@0.89.0
+          npm audit --audit-level=high
+          python3 - "$RUNNER_TEMP/http-data/brain.sqlite3" <<'PY'
+          import sqlite3
+          import sys
+          connection = sqlite3.connect(sys.argv[1])
+          connection.execute("""CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY,
+            journal_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            through_sequence INTEGER NOT NULL,
+            configuration_json TEXT NOT NULL,
+            context_json TEXT NOT NULL,
+            presentation_digest TEXT NOT NULL,
+            metadata_json TEXT NOT NULL
+          )""")
+          connection.close()
+          PY
+          sudo chown -R 10001:10001 "$RUNNER_TEMP/http-data"
+      - name: Run the candidate image through raw HTTP after an in-place upgrade
+        shell: bash
+        env:
+          BRAIN_API_TOKEN: release-http-token
+        run: |
+          set -euo pipefail
+          image=$(jq -er '"\(.image)@\(.manifest_digest)"' "$RUNNER_TEMP/brain-release/brain-image.json")
+          docker pull "$image" >/dev/null
+          docker run -d --name brain-http-e2e -p 18081:8080 -e BRAIN_API_TOKEN \
+            -v "$RUNNER_TEMP/http-data:/var/lib/brain" "$image"
+          trap 'docker logs brain-http-e2e; docker rm -f brain-http-e2e >/dev/null' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18081/health/ready >/dev/null; then break; fi
+            test "$attempt" -lt 60
+            sleep 1
+          done
+          BRAIN_BASE_URL=http://127.0.0.1:18081 node "$RUNNER_TEMP/http-e2e/http.mjs"
+
+  stage-gate:
+    if: always() && inputs.operation == 'stage'
+    needs: [stage, e2e-sdk, e2e-http]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require both candidate interfaces
+        env:
+          STAGE: ${{ needs.stage.result }}
+          SDK: ${{ needs.e2e-sdk.result }}
+          HTTP: ${{ needs.e2e-http.result }}
+        run: |
+          test "$STAGE" = success
+          test "$SDK" = success
+          test "$HTTP" = success
+
   promote:
     if: inputs.operation == 'promote'
     needs: validate
@@ -195,3 +358,41 @@ jobs:
         run: |
           versions=$(node "$RUNNER_TEMP/brain-npm-release/npm-release.mjs" versions "$RUNNER_TEMP/brain-npm-release/manifest.json")
           echo "Promoted the same registry objects to npm dist-tag \`latest\`: \`$versions\`" >> "$GITHUB_STEP_SUMMARY"
+
+  promote-image:
+    if: inputs.operation == 'promote'
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: npm-production
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-release
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.stage_run_id }}
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote the tested manifest
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/brain-release/brain-image.json"
+          test "$(jq -er .source_sha "$manifest")" = "$EXPECTED_COMMIT"
+          image=$(jq -er .image "$manifest")
+          digest=$(jq -er .manifest_digest "$manifest")
+          docker buildx imagetools inspect "$image@$digest" >/dev/null
+          docker buildx imagetools create -t "$image:latest" "$image@$digest"
+          promoted=$(docker buildx imagetools inspect "$image:latest" --format '{{json .Manifest}}' | jq -er .digest)
+          test "$promoted" = "$digest"
+          echo "Promoted the tested image to \`$image:latest\` at \`$image@$digest\`." >> "$GITHUB_STEP_SUMMARY"

@@ -43,8 +43,7 @@ impl SqliteJournal {
                through_sequence INTEGER NOT NULL,
                configuration_json TEXT NOT NULL,
                context_json TEXT NOT NULL,
-               presentation_digest TEXT NOT NULL,
-               metadata_json TEXT NOT NULL DEFAULT 'null'
+               presentation_digest TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS records (
                session_id TEXT NOT NULL,
@@ -66,6 +65,22 @@ impl SqliteJournal {
              );",
             )
             .map_err(journal_error)?;
+        let has_retired_metadata = {
+            let mut statement = transaction
+                .prepare("PRAGMA table_info(sessions)")
+                .map_err(journal_error)?;
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(journal_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(journal_error)?;
+            columns.iter().any(|column| column == "metadata_json")
+        };
+        if has_retired_metadata {
+            transaction
+                .execute("ALTER TABLE sessions DROP COLUMN metadata_json", [])
+                .map_err(journal_error)?;
+        }
         let existing: Option<String> = transaction
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'journal_id'",
