@@ -1,0 +1,63 @@
+---
+title: Quickstart
+description: Run a Brain server and drive one session from TypeScript.
+---
+
+## Run a server
+
+```sh
+docker run --rm -p 8080:8080 -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
+```
+
+Or build it:
+
+```sh
+cargo build --release -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
+BRAIN_DATA_DIR="$PWD/brain-data" \
+BRAIN_LOOP_WORKER="$PWD/target/release/brain-loop-worker" \
+./target/release/brain --listen 127.0.0.1:8080
+```
+
+Brain listens on loopback and needs no token there. Set `BRAIN_API_TOKEN` to listen anywhere else —
+it refuses to start on a non-loopback address without one.
+
+## Drive a session
+
+```sh
+npm install @aexhq/brain @aexhq/loop-pi
+```
+
+```ts
+import { Brain } from "@aexhq/brain";
+import { pi } from "@aexhq/loop-pi";
+
+const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
+
+const session = await brain.createSession({
+  model: {
+    provider: "vercel-ai-gateway",
+    name: "openai/gpt-5-mini",
+    apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
+  },
+  agentLoop: pi(),
+  system: "Answer briefly and directly.",
+});
+
+await session.send("Explain what a session kernel does, in one sentence.");
+
+for await (const event of session.events()) {
+  console.log(event.sequence, event.type, event.data);
+}
+
+await session.end();
+await session.delete();
+```
+
+No `tools` means the model sees none. Add them once you have somewhere to run them — see
+[Tools](/brain/docs/concepts/tool) and [Environments](/brain/docs/concepts/environment).
+
+## Runnable versions
+
+The [`examples/`](https://github.com/aexhq/brain/tree/main/examples) directory in the repository has
+four working scripts: a basic session, reading event history from a cursor, the full lifecycle, and
+the same thing over raw HTTP with no SDK.

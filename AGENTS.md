@@ -14,4 +14,7 @@
 - Real Linux Loophost, image, HTTP, SQLite recovery, remote-model, and remote-Environment gates run
   in CI. Hosted directory, placement, and cloud infrastructure gates belong downstream.
 - Fail fast, keep comments self-contained, and use plain English.
+- Documentation lives in `docs/` and ships to aex.dev/brain/docs. Change behaviour and its page in
+  the same pull request. The API reference is generated from `contracts/session/v1/openapi.yaml`;
+  never write it by hand. Setup and verification commands live in `CONTRIBUTING.md`.
 - Commit style: `area: imperative summary`.

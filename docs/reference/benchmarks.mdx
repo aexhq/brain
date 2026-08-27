@@ -1,0 +1,43 @@
+---
+title: Benchmarks
+description: What is measured, what CI enforces, and why there are no current numbers yet.
+---
+
+<Callout type="warn">
+The benchmark harness is being rebuilt against the current kernel. There are no current published
+figures. The archive below was measured before the rebuild and should not be quoted as present-day
+performance.
+</Callout>
+
+## What the benchmark measures
+
+The engine, not a model. It drives the real HTTP and SSE paths with an instant scripted provider and
+an in-process echo environment, so no model latency reaches the numbers. First-byte and turn figures
+include HTTP, SSE, request construction, writing to the log, and dispatch.
+
+Density and reclaim measurements need Linux `/proc/*/smaps_rollup`. Other platforms run the portable
+latency and correctness arms only. The harness refuses to substitute RSS for private memory, because
+that would double-count shared pages.
+
+## What CI enforces today
+
+Every push bounds resident memory against a live server: after 10,000 requests it must stay under
+256 MiB and must not have grown by more than 16 MiB.
+
+That is a leak guard, not a benchmark. Latency, throughput, and the cross-session isolation test are
+being rebuilt.
+
+## Archive (not current)
+
+Measured 2026-08-18 on a c7g.xlarge, against the kernel as it stood before the architecture reset.
+
+| Measurement | Result |
+| --- | ---: |
+| First visible byte, one session | p50 1.4 ms · p99 2.2 ms |
+| Complete text turn, one session | p50 2.3 ms · p99 3.2 ms |
+| Throughput, 64 sessions | 2,002 turns/s · p99 58 ms |
+| Tool loop, 64 sessions | about 3,430 tool calls/s |
+| Resident session | 21–31 KiB private memory |
+
+The current record always lives in
+[BENCHMARKS.md](https://github.com/aexhq/brain/blob/main/BENCHMARKS.md).

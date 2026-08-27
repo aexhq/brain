@@ -1,0 +1,53 @@
+---
+title: Write an environment
+description: Implement seven operations over HTTP and tools can run anywhere.
+---
+
+An environment adapter answers the `environment/v1` contract. Any language that can serve HTTP will
+do.
+
+## The operations
+
+| Operation | When Brain calls it |
+| --- | --- |
+| `setup` | The environment needs to exist |
+| `attach` | A session begins using it |
+| `call` | A tool call needs a result |
+| `execute` | Longer work that is not a single call/response |
+| `cancel` | Work in flight should stop |
+| `detach` | A session is done with it |
+| `teardown` | The environment should stop existing |
+
+`setup` and `teardown` are about the environment's existence. `attach` and `detach` are about one
+session's use of it — which is how several sessions share one workspace.
+
+## Handling redelivery
+
+Every operation carries a stable operation identifier and a digest of its request. Store the
+identifier with the result. When the same identifier arrives again, return the stored result instead
+of doing the work twice. When the identifier is new but the work looks similar, do it — that is a
+different call.
+
+Brain never replays an ambiguous effect against a replacement target, so you do not have to guess
+whether a retry is safe.
+
+## Binding tools to it
+
+```ts
+const workspace = myEnvironment({ id: "workspace-main" });
+
+const session = await brain.createSession({
+  model: { /* ... */ },
+  agentLoop: pi(),
+  tools: [read().runIn(workspace), bash().runIn(workspace)],
+});
+```
+
+The identifier is the address. Use the same one from another process and you get the same
+environment, deliberately.
+
+## Start from an official one
+
+`@aexhq/env-app` is the thin language-neutral case: it hands tool calls to an HTTP runtime you
+write. `@aexhq/env-aws-microvm` is the full case, with real machine lifecycle. Both use the same
+public contract as yours.

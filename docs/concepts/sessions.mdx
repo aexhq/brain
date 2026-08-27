@@ -1,0 +1,46 @@
+---
+title: Sessions
+description: The log, turns, recovery, and reading events.
+---
+
+A session is a conversation plus everything Brain did on its behalf, recorded as an ordered log.
+
+## Writes land before effects
+
+Before Brain calls a model, activates the agent loop, or dispatches a tool call, it writes the
+intent to the log. Before the loop sees a result, that result is written too.
+
+This is what makes a crash survivable. Restart the process and Brain replays the log to work out
+what had already happened, what was in flight, and what to do about it. Nothing is inferred from
+memory that outlived nothing.
+
+## Turns
+
+A turn starts when you send a message and ends when the agent loop decides it is finished. In
+between, Brain and the loop alternate: the loop returns a decision, Brain performs it, the loop sees
+the result and decides again.
+
+`BRAIN_MAX_DECISIONS` bounds how many decisions one turn may take. The default is 128.
+
+## Reading events
+
+Events are the log, exposed. Read from a cursor and you get everything committed since:
+
+```ts
+let cursor = 0;
+for await (const event of session.events(cursor)) {
+  await handle(event);
+  cursor = event.sequence;
+  await saveCursor(cursor);
+}
+```
+
+This reads the durable log, so it is replayable and gap-free. The live stream on top of it is
+bounded and best-effort: under sustained pressure it drops rather than blocking a turn or growing
+without limit. If you need at-least-once delivery into your own systems, own the cursor and do the
+forwarding yourself — Brain is not a queue.
+
+## Lifecycle
+
+`cancel` stops work in flight. `end` closes the session to new messages. `delete` removes it and its
+log. They are separate on purpose: ending a session keeps its history readable.

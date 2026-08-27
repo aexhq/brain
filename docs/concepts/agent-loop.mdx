@@ -1,0 +1,41 @@
+---
+title: Agent loop
+description: The policy that decides what happens next, and what it is not allowed to do.
+---
+
+The agent loop is the policy. Brain hands it what just happened; it returns what to do next.
+
+```ts
+import { defineAgentloop } from "@aexhq/agentloop";
+
+export default defineAgentloop({
+  step(input) {
+    return { context: input.context, decision: { type: "finish" } };
+  },
+});
+```
+
+That is the whole interface. A decision is call the model, call a tool, or finish.
+
+## It cannot reach out
+
+The loop runs as a WebAssembly component with no host imports. No sockets, no filesystem, no
+environment variables, no secrets, no clock, no way to hold a resource between activations. Every
+effect it wants, it asks Brain for, and Brain performs.
+
+Two things follow. A loop from a stranger is safe to run. And any loop can be replayed against a
+recorded log and produce the same decisions, because there is no hidden input.
+
+## No privileged loop
+
+`@aexhq/loop-pi` and `@aexhq/loop-codex` are admitted the same way yours is. There is no built-in
+loop with a shortcut into the kernel — if the shipped ones can do it, so can yours.
+
+## Building one
+
+```sh
+brain-loop build loop.mjs --out loop.brain.json
+```
+
+The toolchain handles WIT, WebAssembly, and the ABI. You write a function. See
+[Write an agent loop](/brain/docs/guides/write-a-loop).

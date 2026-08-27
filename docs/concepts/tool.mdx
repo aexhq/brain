@@ -1,0 +1,35 @@
+---
+title: Tool
+description: What the model sees, and where the call actually goes.
+---
+
+A tool is two separate things that happen to share a name.
+
+**What the model sees** is presentation: a name, a description, and an input schema. This is the
+part that shapes behaviour, and it is stable for the life of the session.
+
+**Where the call goes** is a binding: one remote tool in one environment.
+
+```ts
+tools: [
+  read().runIn(workspace),
+  write().runIn(workspace),
+  bash().runIn(workspace),
+]
+```
+
+## Brain does not run tool code
+
+It logs the call and sends it to the bound environment. The environment owns the implementation, the
+resources, and the blast radius. A tool that hangs, crashes, or is hostile damages its own
+environment, not the process holding your sessions.
+
+That is also why a tool can be anything with an address: a sandbox VM, a browser tab, a service you
+already run, or a process on the user's own laptop.
+
+## Splitting presentation from execution
+
+Because the two halves are independent, the same `read` the model sees can be bound to a MicroVM in
+production and to a local directory in a test, with no change to what the model was told.
+
+Leave `tools` out and the model sees none.
