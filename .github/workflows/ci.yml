@@ -124,7 +124,7 @@ jobs:
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18080/v1/sessions)" = 401
           curl --fail --silent -H 'authorization: Bearer test-token' http://127.0.0.1:18080/v1/sessions | jq -e '.sessions == []'
 
-  resource-bounds:
+  benchmark-leakage:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -146,9 +146,9 @@ jobs:
           BRAIN_DATA_DIR="$data_dir" \
           BRAIN_API_TOKEN=test-token \
           BRAIN_LOOP_WORKER=target/release/brain-loop-worker \
-            target/release/brain >"$RUNNER_TEMP/brain-resource-bounds.log" 2>&1 &
+            target/release/brain >"$RUNNER_TEMP/brain-benchmark.log" 2>&1 &
           brain_pid=$!
-          trap 'kill "$brain_pid" 2>/dev/null || true; wait "$brain_pid" 2>/dev/null || true; cat "$RUNNER_TEMP/brain-resource-bounds.log"' EXIT
+          trap 'kill "$brain_pid" 2>/dev/null || true; wait "$brain_pid" 2>/dev/null || true; cat "$RUNNER_TEMP/brain-benchmark.log"' EXIT
           for attempt in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:18081/health/ready >/dev/null; then break; fi
             test "$attempt" -lt 60
@@ -168,7 +168,7 @@ jobs:
 
   build-test:
     if: always()
-    needs: [contracts, lint, rust-core, rust-platforms, loophost, image-smoke, resource-bounds]
+    needs: [contracts, lint, rust-core, rust-platforms, loophost, image-smoke, benchmark-leakage]
     runs-on: ubuntu-24.04
     steps:
       - name: Every release gate passed
@@ -179,7 +179,7 @@ jobs:
           PLATFORMS: ${{ needs.rust-platforms.result }}
           LOOPHOST: ${{ needs.loophost.result }}
           IMAGE: ${{ needs.image-smoke.result }}
-          RESOURCE_BOUNDS: ${{ needs.resource-bounds.result }}
+          RESOURCE_BOUNDS: ${{ needs.benchmark-leakage.result }}
         run: |
           test "$CONTRACTS" = success
           test "$LINT" = success

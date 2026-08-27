@@ -18,10 +18,11 @@ that would double-count shared pages.
 ## What CI enforces today
 
 Every push runs a resource bound against a live server: after 10,000 requests, resident memory must
-stay under 256 MiB and must not have grown by more than 16 MiB. See the `resource-bounds` job in
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+stay under 256 MiB and must not have grown by more than 16 MiB. See the `benchmark-leakage` job
+in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-That is a leak guard, not a benchmark. Latency, throughput, and the cross-session isolation test are
+That job is a leak guard, not a benchmark, and it no longer checks leakage between sessions either;
+the name is older than what it does. Latency, throughput, and the cross-session isolation test are
 being rebuilt — see the roadmap in the [README](README.md).
 
 ## Pre-rebuild archive (not current)
