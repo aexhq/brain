@@ -1,0 +1,38 @@
+---
+title: Configuration
+description: Every environment variable and flag the server reads.
+---
+
+Each option is a flag and an environment variable. Flags win.
+
+| Variable | Flag | Default | What it does |
+| --- | --- | --- | --- |
+| `BRAIN_LISTEN` | `--listen` | `127.0.0.1:8080` | Address to bind |
+| `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where the session log and local state live |
+| `BRAIN_LOOP_WORKER` | `--loop-worker` | `brain-loop-worker` | Path to the loop worker executable |
+| `BRAIN_API_TOKEN` | `--api-token` | none | Bearer token callers must present |
+| `BRAIN_MODEL_BASE_URL` | `--model-base-url` | `https://ai-gateway.vercel.sh/v1` | Model endpoint |
+| `BRAIN_ENVIRONMENT_BASE_URL` | `--environment-base-url` | empty | Default environment adapter endpoint |
+| `BRAIN_ENVIRONMENT_API_KEY` | `--environment-api-key` | none | Credential for that adapter |
+| `BRAIN_MAX_DECISIONS` | `--max-decisions` | `128` | Decision ceiling for one turn |
+
+## Listening beyond loopback
+
+Brain refuses to start on a non-loopback address without `BRAIN_API_TOKEN`. Binding `0.0.0.0` with
+no token is a mistake worth failing on rather than serving.
+
+## Docker
+
+The image sets `BRAIN_DATA_DIR=/var/lib/brain`, `BRAIN_LOOP_WORKER=/usr/local/bin/brain-loop-worker`,
+and `BRAIN_LISTEN=0.0.0.0:8080`, declares `/var/lib/brain` as a volume, and runs as uid 10001.
+
+```sh
+docker run --rm -p 8080:8080 -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
+```
+
+Immutable tags are `ghcr.io/aexhq/brain:sha-<commit>`. Pin those for deployments; `latest` is for
+people.
+
+## Health
+
+`GET /health/ready` answers when the server is serving.

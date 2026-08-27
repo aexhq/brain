@@ -1,0 +1,30 @@
+---
+title: Model
+description: Bindings, wire formats, and why the model is pinned.
+---
+
+A model binding is a provider, a model name, and a key:
+
+```ts
+model: {
+  provider: "vercel-ai-gateway",
+  name: "openai/gpt-5-mini",
+  apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
+}
+```
+
+Brain speaks the Anthropic and OpenAI wire formats natively, and talks to gateways that present
+either. `BRAIN_MODEL_BASE_URL` sets the endpoint; it defaults to the Vercel AI Gateway.
+
+## Pinned for the session
+
+The binding is fixed when the session is created and cannot change while it is alive. A turn cannot
+silently land on a different model than the one before it, and a replayed log means what it said
+when it was written.
+
+Change models by starting a new session.
+
+## Keys
+
+Keys are yours. Brain holds the binding for the session's lifetime and uses it to make calls; it
+never writes the key into the log or into an event.

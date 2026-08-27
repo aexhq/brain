@@ -1,0 +1,63 @@
+---
+title: Write an agent loop
+description: A function in, a portable component out.
+---
+
+## Install
+
+```sh
+npm install @aexhq/agentloop
+```
+
+## Write the function
+
+`step` receives what just happened and returns what to do next. It is ordinary synchronous code.
+
+```ts
+import { defineAgentloop } from "@aexhq/agentloop";
+
+export default defineAgentloop({
+  step(input) {
+    const last = input.observation;
+
+    if (last?.type === "message") {
+      return {
+        context: [...input.context, last],
+        decision: { type: "model" },
+      };
+    }
+
+    return { context: input.context, decision: { type: "finish" } };
+  },
+});
+```
+
+You return the next context along with the decision, so context management — what to keep, what to
+drop, when to compact — is yours to control rather than something the kernel does behind you.
+
+## Build it
+
+```sh
+brain-loop build loop.mjs --out loop.brain.json
+```
+
+The toolchain generates the WIT boundary and compiles to a WebAssembly component. You do not pick a
+Wasm runtime, write host imports, or hand-maintain an ABI.
+
+## Use it
+
+```ts
+const session = await brain.createSession({
+  model: { /* ... */ },
+  agentLoop: myLoop(),
+});
+```
+
+## What you cannot do
+
+No network, no filesystem, no environment variables, no secrets, no clock, no resource held between
+activations. If you need one of those, it is a tool call or a model call — return it as a decision
+and Brain performs it.
+
+This is a constraint worth keeping. It is what lets someone else run your loop without reading it
+first, and what makes a recorded session replay identically.

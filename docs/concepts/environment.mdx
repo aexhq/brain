@@ -1,0 +1,33 @@
+---
+title: Environment
+description: Where tool calls run, and the lifecycle Brain drives.
+---
+
+An environment is somewhere tool calls actually execute. Brain drives its lifecycle over the
+`environment/v1` HTTP contract:
+
+`setup` · `attach` · `call` · `execute` · `cancel` · `detach` · `teardown`
+
+The adapter implements them. Brain decides when they happen.
+
+## Addressed by name, not by connection
+
+An environment has a stable identity, and that identity is what resolves to a workspace — not
+whichever process happens to hold a socket. Two sessions on two servers can therefore share one
+environment on purpose, and a Brain instance restarting does not orphan or duplicate it.
+
+Connections are caches. They never decide identity, and they never decide teardown.
+
+## Replay is explicit
+
+Every operation carries a stable identifier and a digest of its request. When a redelivery arrives,
+the adapter can tell "this is the same call again" from "this is a new call that looks similar", and
+Brain never replays an ambiguous effect against a replacement target.
+
+## The official adapters
+
+`@aexhq/env-app` is a language-neutral HTTP environment — bring your own runtime.
+`@aexhq/env-aws-microvm` runs tools in an AWS MicroVM.
+
+Both use the public contract, so a third-party adapter is not a second-class one. See
+[Write an environment](/brain/docs/guides/write-an-environment).

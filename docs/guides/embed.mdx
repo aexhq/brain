@@ -1,0 +1,44 @@
+---
+title: Embed the kernel
+description: Run sessions inside a Rust service you already own.
+---
+
+Use the server when you want a process to talk to. Use the crate when another Rust service already
+owns startup, configuration, and deployment, and you want sessions inside it.
+
+```rust
+let kernel = brain::Kernel::open(
+    brain::KernelConfig {
+        data_dir,
+        max_decisions_per_turn: 128,
+        loop_executor,
+        model_executor,
+        tool_executor,
+    },
+    telemetry,
+)?;
+
+let session = kernel.create_session(sealed_session_config).await?;
+session
+    .message(brain_protocol::MessageRequest {
+        content: serde_json::json!("Explain the current changes."),
+    })
+    .await?;
+```
+
+## You supply the ports
+
+`loop_executor`, `model_executor`, and `tool_executor` are the same seams the server fills in. Fill
+them differently and you get a different deployment without forking the kernel: your own storage,
+your own transport, your own placement.
+
+## What the kernel keeps
+
+Writes still land before effects, and recovery still works the same way. The kernel does not become
+more permissive because it is embedded.
+
+## What stays yours
+
+When a session is admitted, when it is resident, when it is recovered, when it is evicted. Where
+environments live and how they are found. Everything about product policy. The kernel has opinions
+about correctness, not about your architecture.
