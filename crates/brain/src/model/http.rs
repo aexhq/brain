@@ -73,7 +73,7 @@ impl RemoteModelClient {
         if !presentation.system.is_empty() {
             messages.push(json!({"role":"system","content":presentation.system}));
         }
-        messages.extend(request.messages.clone());
+        messages.extend(request.messages.iter().map(provider_message));
         let tools: Vec<Value> = presentation.tools.iter().map(|tool| json!({
             "type":"function",
             "function":{"name":tool.name,"description":tool.description,"parameters":tool.input_schema}
@@ -93,6 +93,56 @@ impl RemoteModelClient {
             body["max_completion_tokens"] = json!(tokens);
         }
         body
+    }
+}
+
+fn provider_message(message: &Value) -> Value {
+    let Some(role) = message.get("role").and_then(Value::as_str) else {
+        return message.clone();
+    };
+    match role {
+        "assistant" => {
+            let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
+                return message.clone();
+            };
+            let mut encoded = message.clone();
+            encoded["tool_calls"] = Value::Array(
+                calls
+                    .iter()
+                    .map(|call| {
+                        let Some(call_id) = call.get("callId").and_then(Value::as_str) else {
+                            return call.clone();
+                        };
+                        let Some(name) = call.get("name").and_then(Value::as_str) else {
+                            return call.clone();
+                        };
+                        let input = call.get("input").cloned().unwrap_or(Value::Null);
+                        json!({
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": serde_json::to_string(&input).expect("JSON values serialize"),
+                            }
+                        })
+                    })
+                    .collect(),
+            );
+            encoded
+        }
+        "tool" => {
+            let mut encoded = message.clone();
+            if !encoded["content"].is_string() {
+                encoded["content"] = Value::String(
+                    serde_json::to_string(&encoded["content"]).expect("JSON values serialize"),
+                );
+            }
+            if let Some(object) = encoded.as_object_mut() {
+                object.remove("is_error");
+            }
+            encoded
+        }
+        _ => message.clone(),
     }
 }
 
@@ -257,6 +307,45 @@ mod tests {
         let calls: Vec<_> = calls.into_values().collect();
         assert_eq!(calls[0].id, "a");
         assert_eq!(calls[1].arguments, "{\"path\":\"x\"}");
+    }
+
+    #[test]
+    fn encodes_portable_tool_messages_for_the_provider() {
+        let body = RemoteModelClient::body(
+            &ModelBinding {
+                binding_id: "gateway".into(),
+                model: "test/model".into(),
+            },
+            &ModelPresentation {
+                system: String::new(),
+                tools: Vec::new(),
+                response_format: None,
+            },
+            &ModelRequest {
+                messages: vec![
+                    json!({
+                        "role":"assistant",
+                        "content":"",
+                        "tool_calls":[{"callId":"call_1","name":"bash","input":{"command":"true"}}]
+                    }),
+                    json!({
+                        "role":"tool",
+                        "tool_call_id":"call_1",
+                        "content":{"stdout":""},
+                        "is_error":false
+                    }),
+                ],
+                response_format: None,
+                max_output_tokens: None,
+            },
+        );
+        assert_eq!(body["messages"][0]["tool_calls"][0]["type"], "function");
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["arguments"],
+            r#"{"command":"true"}"#
+        );
+        assert_eq!(body["messages"][1]["content"], r#"{"stdout":""}"#);
+        assert!(body["messages"][1].get("is_error").is_none());
     }
 
     #[tokio::test]
