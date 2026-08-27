@@ -7,6 +7,14 @@ pub struct ModelBinding {
     pub model: String,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelSelection {
+    pub provider: String,
+    pub name: String,
+    pub api_key: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRequest {

@@ -1,29 +1,29 @@
 # `@aexhq/brain`
 
-The TypeScript client for any Brain server.
+The typed client and extension composition contract for any Brain server.
 
 ```ts
-import { BrainClient } from "@aexhq/brain";
+import { Brain } from "@aexhq/brain";
+import { awsMicroVm } from "@aexhq/env-aws-microvm";
+import { pi } from "@aexhq/loop-pi";
+import { bash, read } from "@aexhq/tools";
 
-const brain = new BrainClient({
-  baseUrl: "https://brain.example.com",
-  apiKey: process.env.BRAIN_API_TOKEN,
+const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
+const workspace = awsMicroVm({ region: "eu-west-2" });
+const session = await brain.createSession({
+  model: {
+    provider: "vercel-ai-gateway",
+    name: "openai/gpt-5-mini",
+    apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
+  },
+  agentLoop: pi(),
+  tools: [read().runIn(workspace), bash().runIn(workspace)],
 });
 
-const admission = await brain.admitAgentloop(packageBytes, crypto.randomUUID());
-const session = await brain.createSession({
-  agentloop_digest: admission.digest,
-  model: { binding_id: "gateway", model: "openai/gpt-5" },
-  presentation: { system: "You are helpful.", tools: [] },
-  environments: [],
-  tool_bindings: [],
-}, crypto.randomUUID());
-
-await session.send("Hello", crypto.randomUUID());
+await session.send("Read README.md and summarize it.");
 for await (const event of session.events()) console.log(event);
 ```
 
-Mutating operations require an idempotency key. The SDK exposes the key explicitly so callers can
-retry safely. `DurableEventBridge` is a small reference bridge for publishing committed events to a
-durable queue. It advances its caller-owned cursor only after the queue acknowledges an event, so
-retries deliver at least once.
+The SDK admits Agentloops, infers Environment requirements from Tools, and supplies operation keys.
+An explicit `idempotencyKey` remains available on mutating calls for durable caller retries.
+`DurableEventBridge` publishes journal events to a caller-owned queue with at-least-once delivery.

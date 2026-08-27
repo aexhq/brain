@@ -1,49 +1,31 @@
 <h1 align="center">Brain</h1>
 
-<p align="center"><strong>A minimal, durable, and extensible session engine for agents.</strong></p>
+<p align="center"><strong>A minimal and extensible kernel for AI workloads.</strong></p>
 <p align="center">
-  <a href="contracts/session/v1/openapi.yaml">HTTP API</a> ·
+  <a href="https://aex.dev">Aex</a> ·
+  <a href="contracts/session/v1/openapi.yaml">Session API</a> ·
   <a href="https://github.com/aexhq/extensions">Extensions</a> ·
   <a href="https://discord.gg/Qk2YnHMHVb">Discord</a>
 </p>
 
-> Brain is pre-launch. Contracts are replaced in place until the first stable release; old
-> development interfaces are not retained.
-
 ## What it is
-
-Brain is an independently runnable Linux server and an embeddable Rust session kernel. It keeps an
-ordered session journal on disk, holds active materialized context in memory, runs the selected
-Agentloop, calls remote language models, and dispatches Tools to their bound remote Environments.
-
-Brain owns reasoning and orchestration. Environments provide the hands: sandboxes, browsers,
-applications, user machines, and other places where Tools actually run.
+Brain is a minimal session kernel that hosts four replaceable component kinds: Agentloop, Tool,
+Environment, and Model.
+The term _Brain_ is originated from Anthropic engineering blog [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents)
+Brain is inspired by [Pi Agent Harness](https://github.com/earendil-works/pi), we believe modern framework should be minimal and open for extension so everyone can build upon it.
 
 ## Architecture
-
-### Durable sessions, remote execution
-
-Every execution intent is committed to SQLite before Brain calls an Agentloop, model, or
-Environment. A terminal result or explicit ambiguous outcome is committed before the next
-transition. A restart reconstructs state from the journal; Brain never guesses whether an
-interrupted external effect happened.
+### Brain and hands
+Brain is where agent session, agent loop and tools are managed, it invokes tools but actual execution belong to the hand (environment such as sandbox, browser etc), it outlives the hands, therefore it could manage multiple hands, resilient to sandbox failures and offer higher level of flexibility.
 
 ### Environment-neutral
-
-A Tool is a model-visible definition plus a sealed binding to one logical Environment. Brain Server
-orchestrates setup, attachment, execution, cancellation, detachment, and teardown through a remote
-adapter. Tool code never executes inside Brain.
+Brain does not assume the environment or tools the agent is working with This mean you could define one tool to be executed within your app running on client side while having another tool in the same agent session to execute some script in a sandbox
 
 ### Language-neutral
-
-Agentloops are portable WebAssembly Components. Authors use a language SDK and build command rather
-than writing WIT or choosing Wasmtime. Environment implementations use a versioned HTTP contract
-and may be written in any language.
+Brain does not assume the language you are working with, you could write one tool in rust and another tool in node.
 
 ### Agent-neutral
-
-Pi-, Codex-, OpenCode-, and custom-style Agentloops use the same isolated extension pipeline. There
-is no privileged native Agentloop path.
+Brain is not an agent, but you can easily build an agent with it. This allow you to run your favorite agent runtime like pi/codex/opencode as agentloop.
 
 ```text
 TypeScript application
@@ -58,7 +40,7 @@ TypeScript application
 |                         |                                             |
 |                         +-> bounded Loophost worker                   |
 |                         |      +-> Agentloop Component                |
-|                         +-> shared model client -> remote model API   |
+|                         +-> model binding -> remote model API         |
 |                         +-> Environment directory/cache               |
 +--------------------------------------|--------------------------------+
                                        v
@@ -71,121 +53,86 @@ TypeScript application
                          application, or user machine
 ```
 
-A hosted deployment supplies a shared Environment directory and session placement. Process-local
-caches improve latency but do not decide Environment identity, authority, or teardown.
+## TypeScript client
 
-## Components
-
-| Component | Responsibility |
-| --- | --- |
-| `brain-protocol` | Canonical session, Agentloop, model, Tool, Environment, event, and error contracts |
-| `brain-telemetry` | Bounded, nonblocking logs, metrics, traces, and live event projections |
-| `brain-loophost` | Agentloop admission, Wasmtime compilation, worker isolation, and resource limits |
-| `brain` | Disk journal, context, operation identity, turn state machine, and execution ports |
-| `brain-http` | Versioned HTTP routing, transport validation, and error mapping |
-| `brain-server` | Runnable composition, shared resources, lifecycle, and Environment routing |
-| `@aexhq/brain` | TypeScript client for a caller-supplied Brain base URL |
-| `@aexhq/agentloop` | TypeScript Agentloop authoring and packaging, maintained in Extensions |
-
-There is no Toolhost, Envhost, Modelhost, cloud SDK, or second standalone runtime in this repository.
-
-## TypeScript example
+```sh
+npm install @aexhq/brain @aexhq/loop-pi @aexhq/env-aws-microvm @aexhq/tools
+```
 
 ```ts
-import { readFile } from "node:fs/promises";
 import { Brain } from "@aexhq/brain";
+import { awsMicroVm } from "@aexhq/env-aws-microvm";
+import { pi } from "@aexhq/loop-pi";
+import { bash, read, write } from "@aexhq/tools";
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
-const admitted = await brain.admitAgentloop(
-  new Uint8Array(await readFile("./dist/loop.brain.json")),
-  crypto.randomUUID(),
-);
+const workspace = awsMicroVm({ region: "eu-west-2" });
 
 const session = await brain.createSession({
-  agentloop_digest: admitted.digest,
-  model: { binding_id: "gateway", model: "openai/gpt-5-mini" },
-  presentation: {
-    system: "You are a concise coding assistant.",
-    tools: [{
-      name: "read",
-      description: "Read a file from the workspace.",
-      input_schema: { type: "object", required: ["path"], properties: { path: { type: "string" } } },
-    }],
+  model: {
+    provider: "vercel-ai-gateway",
+    name: "openai/gpt-5-mini",
+    apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
   },
-  environments: [{
-    environment_id: "workspace-main",
-    configuration: { workspace: "main" },
-    lifecycle_policy: "shared",
-  }],
-  tool_bindings: [{
-    name: "read",
-    environment_id: "workspace-main",
-    remote_tool_id: "read",
-    grant: { paths: ["**"] },
-  }],
-}, crypto.randomUUID());
+  agentLoop: pi(),
+  tools: [read().runIn(workspace), write().runIn(workspace), bash().runIn(workspace)],
+});
 
-await session.send("Read README.md and summarize it.", crypto.randomUUID());
+await session.send("Read README.md and summarize it.");
 for await (const event of session.events()) console.log(event);
 ```
 
-Omit both `presentation.tools` and `tool_bindings` for a session with no Tools.
+Omitting `tools` exposes no model tools. Components are ordinary immutable package values; the
+official packages use the same public contract as third-party components.
 
 ## Run standalone
 
-Build both Linux binaries and provide a writable data directory and model credential:
-
 ```sh
 cargo build --release -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
-export BRAIN_DATA_DIR="$PWD/brain-data"
-export BRAIN_LOOP_WORKER="$PWD/target/release/brain-loop-worker"
-export BRAIN_MODEL_API_KEY="..."
-export BRAIN_MODEL_BASE_URL="https://ai-gateway.vercel.sh/v1"
+BRAIN_DATA_DIR="$PWD/brain-data" \
+BRAIN_LOOP_WORKER="$PWD/target/release/brain-loop-worker" \
 ./target/release/brain --listen 127.0.0.1:8080
 ```
 
-Set `BRAIN_ENVIRONMENT_BASE_URL` only when sessions use Tools. Standalone and hosted Brain use the
-same contracts and kernel; a hosted composition injects distributed routing and storage.
+## Embed Brain
 
-## Embed a Brain session
-
-The `brain` crate contains no HTTP or cloud policy. A Rust host supplies the same three execution
-ports used by Brain Server:
+Supply the Agentloop, Model, Tool, and telemetry ports, then open the same session kernel used by
+Brain Server:
 
 ```rust,ignore
-let (telemetry, telemetry_worker) = brain_telemetry::telemetry_channel();
-tokio::spawn(telemetry_worker.run(telemetry_sink));
-
-let kernel = brain::Kernel::open(brain::KernelConfig {
-    data_dir,
-    max_decisions_per_turn: 128,
-    loop_executor,
-    model_executor,
-    tool_executor,
-}, telemetry)?;
+let kernel = brain::Kernel::open(
+    brain::KernelConfig {
+        data_dir,
+        max_decisions_per_turn: 128,
+        loop_executor,
+        model_executor,
+        tool_executor,
+    },
+    telemetry,
+)?;
 
 let session = kernel.create_session(sealed_session_config).await?;
-session.message(brain_protocol::MessageRequest {
-    content: serde_json::json!("Explain the current changes."),
-}).await?;
-
-for event in kernel.events(session.id(), 0, 1_000)?.events {
-    println!("{event:?}");
-}
+session
+    .message(brain_protocol::MessageRequest {
+        content: serde_json::json!("Explain the current changes."),
+    })
+    .await?;
 ```
 
 ## Verification
 
 ```sh
-npm ci
-npm run gen
-npm test
-npm run package-smoke
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --all-targets
+cargo test --workspace
+cargo run -p brain-bench --release -- ci
+npm ci
+npm test
+npm run package-smoke
 ```
 
-CI is the release gate. No test is skipped because its required runtime belongs in another job.
+The schemas, OpenAPI document, protocol semantics, examples, generators, and conformance fixtures
+in this repository are the source of truth. See [BENCHMARKS.md](BENCHMARKS.md) for the methodology
+and reference measurements.
 
 Licensed under [Apache 2.0](LICENSE).

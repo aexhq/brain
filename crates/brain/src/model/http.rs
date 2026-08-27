@@ -6,6 +6,7 @@ use brain_protocol::{
 };
 use futures_util::StreamExt;
 use serde_json::{Value, json};
+use zeroize::Zeroizing;
 
 use crate::{KernelError, ModelExecutor, model::sse::SseDecoder};
 
@@ -21,7 +22,7 @@ pub struct RemoteModelConfig {
 pub struct RemoteModelClient {
     client: reqwest::Client,
     base_url: String,
-    api_key: String,
+    api_key: Zeroizing<String>,
 }
 
 impl RemoteModelClient {
@@ -60,7 +61,7 @@ impl RemoteModelClient {
         Ok(Self {
             client,
             base_url: config.base_url.trim_end_matches('/').to_owned(),
-            api_key: config.api_key,
+            api_key: Zeroizing::new(config.api_key),
         })
     }
 
@@ -160,7 +161,7 @@ impl ModelExecutor for RemoteModelClient {
         let response = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
+            .bearer_auth(self.api_key.as_str())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
             .header("x-idempotency-key", operation_id.as_str())

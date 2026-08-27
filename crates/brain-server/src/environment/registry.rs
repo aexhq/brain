@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use brain::{CreatingSession, Kernel, KernelError, SessionHandle};
 use brain_protocol::{
-    AttachmentId, CreateSessionRequest, EnvironmentAttachment, EnvironmentOperation,
-    EnvironmentReceipt, EnvironmentRequest, SealedSessionConfig, ToolBinding, request_digest,
+    AttachmentId, EnvironmentAttachment, EnvironmentOperation, EnvironmentReceipt,
+    EnvironmentRequest, ResolvedSessionRequest, SealedSessionConfig, ToolBinding, request_digest,
 };
 
 use super::{DirectoryEntry, EnvironmentAdapter, EnvironmentDirectory};
@@ -24,7 +24,7 @@ impl EnvironmentRegistry {
     pub async fn prepare_session(
         &self,
         mut creation: CreatingSession,
-        request: CreateSessionRequest,
+        request: ResolvedSessionRequest,
     ) -> Result<(SessionHandle, SealedSessionConfig), KernelError> {
         match self.prepare(&mut creation, request).await {
             Ok(sealed) => {
@@ -42,7 +42,7 @@ impl EnvironmentRegistry {
     async fn prepare(
         &self,
         creation: &mut CreatingSession,
-        request: CreateSessionRequest,
+        request: ResolvedSessionRequest,
     ) -> Result<SealedSessionConfig, KernelError> {
         let mut environments = Vec::with_capacity(request.environments.len());
         let mut attachments = std::collections::HashMap::new();
@@ -113,7 +113,6 @@ impl EnvironmentRegistry {
             presentation: request.presentation,
             environments,
             tool_bindings,
-            metadata: request.metadata,
         })
     }
 

@@ -79,6 +79,7 @@ jobs:
         with:
           node-version: "22.23.2"
           cache: npm
+      - run: npm ci
       - name: Build the public TypeScript diagnostic Agentloop against this Brain
         shell: bash
         run: |
@@ -113,7 +114,6 @@ jobs:
           set -euo pipefail
           docker run -d --name brain-test -p 18080:8080 \
             -e BRAIN_API_TOKEN=test-token \
-            -e BRAIN_MODEL_API_KEY=test-model-key \
             brain:test
           trap 'docker logs brain-test; docker rm -f brain-test >/dev/null' EXIT
           for attempt in $(seq 1 60); do
@@ -145,7 +145,6 @@ jobs:
           BRAIN_LISTEN=127.0.0.1:18081 \
           BRAIN_DATA_DIR="$data_dir" \
           BRAIN_API_TOKEN=test-token \
-          BRAIN_MODEL_API_KEY=test-model-key \
           BRAIN_LOOP_WORKER=target/release/brain-loop-worker \
             target/release/brain >"$RUNNER_TEMP/brain-benchmark.log" 2>&1 &
           brain_pid=$!

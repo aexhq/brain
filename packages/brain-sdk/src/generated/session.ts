@@ -54,11 +54,12 @@ export interface EnvironmentRequirement {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ModelBinding".
+ * via the `definition` "ModelSelection".
  */
-export interface ModelBinding {
-  binding_id: Identifier;
-  model: string;
+export interface ModelSelection {
+  provider: "vercel-ai-gateway";
+  name: string;
+  api_key: string;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -78,7 +79,7 @@ export interface ModelPresentation {
  */
 export interface CreateSessionRequest {
   agentloop_digest: Digest;
-  model: ModelBinding;
+  model: ModelSelection;
   presentation: ModelPresentation;
   /**
    * @maxItems 128
@@ -88,7 +89,6 @@ export interface CreateSessionRequest {
    * @maxItems 128
    */
   tool_bindings: RequestedToolBinding[];
-  metadata?: unknown;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -107,7 +107,6 @@ export interface Session {
   status: "creating" | "idle" | "running" | "ended" | "failed";
   through_sequence: number;
   presentation_digest: Digest;
-  metadata: unknown;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

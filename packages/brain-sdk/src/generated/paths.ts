@@ -189,14 +189,15 @@ export type components = {
             status: "creating" | "idle" | "running" | "ended" | "failed";
             through_sequence: number;
             presentation_digest: components["schemas"]["Digest"];
-            metadata: unknown;
         };
         SessionList: {
             sessions: components["schemas"]["Session"][];
         };
-        ModelBinding: {
-            binding_id: components["schemas"]["Identifier"];
-            model: string;
+        ModelSelection: {
+            /** @constant */
+            provider: "vercel-ai-gateway";
+            name: string;
+            api_key: string;
         };
         ToolDefinition: {
             name: components["schemas"]["Identifier"];
@@ -223,11 +224,10 @@ export type components = {
         };
         CreateSessionRequest: {
             agentloop_digest: components["schemas"]["Digest"];
-            model: components["schemas"]["ModelBinding"];
+            model: components["schemas"]["ModelSelection"];
             presentation: components["schemas"]["ModelPresentation"];
             environments: components["schemas"]["EnvironmentRequirement"][];
             tool_bindings: components["schemas"]["RequestedToolBinding"][];
-            metadata?: unknown;
         };
         MessageRequest: {
             content: unknown;

@@ -11,7 +11,7 @@ use std::{
 };
 
 use brain_protocol::{
-    CreateSessionRequest, EventPage, JournalId, MessageRequest, OperationId, SealedSessionConfig,
+    EventPage, JournalId, MessageRequest, OperationId, ResolvedSessionRequest, SealedSessionConfig,
     Session, SessionId, SessionStatus, operation_id, request_digest,
 };
 use brain_telemetry::TelemetryPublisher;
@@ -98,7 +98,6 @@ impl Kernel {
             configuration: serde_json::to_value(&request).map_err(json_error)?,
             context: serde_json::to_value(&context).map_err(json_error)?,
             presentation_digest: presentation.digest.clone(),
-            metadata: request.metadata.clone(),
         };
         self.inner.store.create_session(
             &row,
@@ -116,7 +115,7 @@ impl Kernel {
 
     pub fn begin_session(
         &self,
-        request: &CreateSessionRequest,
+        request: &ResolvedSessionRequest,
     ) -> Result<CreatingSession, KernelError> {
         validate_create_request(request)?;
         validate_requested_bindings(request)?;
@@ -132,7 +131,6 @@ impl Kernel {
             configuration: serde_json::to_value(request).map_err(json_error)?,
             context: serde_json::to_value(context).map_err(json_error)?,
             presentation_digest: presentation.digest,
-            metadata: request.metadata.clone(),
         };
         self.inner.store.create_session(
             &row,
@@ -463,11 +461,6 @@ impl CreatingSession {
 
     pub fn complete(mut self, sealed: SealedSessionConfig) -> Result<SessionHandle, KernelError> {
         validate_bindings(&sealed)?;
-        if sealed.metadata != self.row.metadata {
-            return Err(KernelError::InvalidState(
-                "sealed session metadata changed during creation".into(),
-            ));
-        }
         let configuration = serde_json::to_value(&sealed).map_err(json_error)?;
         let context = self.row.context.clone();
         let saved = self.kernel.inner.store.append(
@@ -595,7 +588,7 @@ fn validate_bindings(request: &SealedSessionConfig) -> Result<(), KernelError> {
     Ok(())
 }
 
-fn validate_requested_bindings(request: &CreateSessionRequest) -> Result<(), KernelError> {
+fn validate_requested_bindings(request: &ResolvedSessionRequest) -> Result<(), KernelError> {
     let mut definitions: Vec<&str> = request
         .presentation
         .tools
@@ -639,7 +632,7 @@ fn validate_requested_bindings(request: &CreateSessionRequest) -> Result<(), Ker
     Ok(())
 }
 
-fn validate_create_request(request: &CreateSessionRequest) -> Result<(), KernelError> {
+fn validate_create_request(request: &ResolvedSessionRequest) -> Result<(), KernelError> {
     if serde_json::to_vec(request).map_err(json_error)?.len() > 2 * 1024 * 1024 {
         return Err(KernelError::InvalidState(
             "session request exceeds 2 MiB".into(),
@@ -713,7 +706,6 @@ fn public_session(row: &SessionRow) -> Session {
         status: row.status.clone(),
         through_sequence: row.through_sequence,
         presentation_digest: row.presentation_digest.clone(),
-        metadata: row.metadata.clone(),
     }
 }
 

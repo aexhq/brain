@@ -10,16 +10,19 @@ use brain_http::BrainApi;
 use brain_loophost::WorkerPool;
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopDigest, ApiError, CreateSessionRequest,
-    EventPage, MessageRequest, Session, SessionId, SessionList,
+    EventPage, MessageRequest, ModelBinding, ResolvedSessionRequest, Session, SessionId,
+    SessionList,
 };
+use sha2::{Digest as _, Sha256};
 use tokio::sync::Mutex;
 
-use crate::{EnvironmentRegistry, LocalSessionOwnership, SessionOwnership};
+use crate::{EnvironmentRegistry, LocalSessionOwnership, ModelBindingStore, SessionOwnership};
 
 pub struct ServerResources {
     pub kernel: Kernel,
     pub loops: Arc<WorkerPool>,
     pub environments: Arc<EnvironmentRegistry>,
+    pub models: Arc<dyn ModelBindingStore>,
 }
 
 #[derive(Clone)]
@@ -186,22 +189,45 @@ impl BrainApi for ServerApi {
                 "session Agentloop has not been admitted",
             ));
         }
+        validate_model(&request)?;
+        let binding_id = model_binding_id(&idempotency_key);
+        self.resources
+            .models
+            .put(&binding_id, &request.model)
+            .map_err(api_error)?;
+        let resolved = ResolvedSessionRequest {
+            agentloop_digest: request.agentloop_digest.clone(),
+            model: ModelBinding {
+                binding_id: binding_id.clone(),
+                model: request.model.name.clone(),
+            },
+            presentation: request.presentation.clone(),
+            environments: request.environments.clone(),
+            tool_bindings: request.tool_bindings.clone(),
+        };
         let creation = self
             .resources
             .kernel
-            .begin_session(&request)
-            .map_err(api_error)?;
+            .begin_session(&resolved)
+            .map_err(|error| {
+                let _ = self.resources.models.delete(&binding_id);
+                api_error(error)
+            })?;
         let session_id = creation.session_id().clone();
         if let Err(error) = self.ownership.claim_new(creation.session_id()).await {
             creation
                 .fail("session_ownership_failed", &error.to_string())
+                .map_err(api_error)?;
+            self.resources
+                .models
+                .delete(&binding_id)
                 .map_err(api_error)?;
             return Err(api_error(error));
         }
         let prepared = self
             .resources
             .environments
-            .prepare_session(creation, request.clone())
+            .prepare_session(creation, resolved)
             .await;
         let (handle, _) = match prepared {
             Ok(prepared) => prepared,
@@ -209,6 +235,10 @@ impl BrainApi for ServerApi {
                 self.ownership
                     .release(&session_id)
                     .await
+                    .map_err(api_error)?;
+                self.resources
+                    .models
+                    .delete(&binding_id)
                     .map_err(api_error)?;
                 return Err(api_error(error));
             }
@@ -400,6 +430,17 @@ impl BrainApi for ServerApi {
         {
             return Ok(());
         }
+        let binding_id = self
+            .resources
+            .kernel
+            .sealed_config(&session_id)
+            .map_err(api_error)?
+            .model
+            .binding_id;
+        self.resources
+            .models
+            .delete(&binding_id)
+            .map_err(api_error)?;
         self.resources
             .kernel
             .delete_ended(&session_id)
@@ -445,6 +486,29 @@ fn valid_digest(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn validate_model(request: &CreateSessionRequest) -> Result<(), ApiError> {
+    if request.model.provider != "vercel-ai-gateway"
+        || request.model.name.len() > 256
+        || !request
+            .model
+            .name
+            .split_once('/')
+            .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty())
+        || request.model.api_key.is_empty()
+        || request.model.api_key.len() > 16 * 1024
+    {
+        return Err(ApiError::invalid_request("model selection is invalid"));
+    }
+    Ok(())
+}
+
+fn model_binding_id(idempotency_key: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"brain.model-binding.v1\0");
+    digest.update(idempotency_key.as_bytes());
+    format!("model_{}", hex::encode(digest.finalize()))
 }
 
 fn loop_error(message: String) -> ApiError {

@@ -39,13 +39,14 @@
         "lifecycle_policy": { "enum": ["session", "shared", "external"] }
       }
     },
-    "ModelBinding": {
+    "ModelSelection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["binding_id", "model"],
+      "required": ["provider", "name", "api_key"],
       "properties": {
-        "binding_id": { "$ref": "#/$defs/Identifier" },
-        "model": { "type": "string", "minLength": 1, "maxLength": 256 }
+        "provider": { "const": "vercel-ai-gateway" },
+        "name": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s][^\\s]*$", "maxLength": 256 },
+        "api_key": { "type": "string", "minLength": 1, "maxLength": 16384 }
       }
     },
     "ModelPresentation": {
@@ -64,11 +65,10 @@
       "required": ["agentloop_digest", "model", "presentation", "environments", "tool_bindings"],
       "properties": {
         "agentloop_digest": { "$ref": "#/$defs/AgentloopDigest" },
-        "model": { "$ref": "#/$defs/ModelBinding" },
+        "model": { "$ref": "#/$defs/ModelSelection" },
         "presentation": { "$ref": "#/$defs/ModelPresentation" },
         "environments": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/EnvironmentRequirement" } },
-        "tool_bindings": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/RequestedToolBinding" } },
-        "metadata": {}
+        "tool_bindings": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/RequestedToolBinding" } }
       }
     },
     "MessageRequest": {
@@ -80,14 +80,13 @@
     "Session": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session_id", "journal_id", "status", "through_sequence", "presentation_digest", "metadata"],
+      "required": ["session_id", "journal_id", "status", "through_sequence", "presentation_digest"],
       "properties": {
         "session_id": { "$ref": "#/$defs/SessionId" },
         "journal_id": { "$ref": "#/$defs/Identifier" },
         "status": { "enum": ["creating", "idle", "running", "ended", "failed"] },
         "through_sequence": { "type": "integer", "minimum": 0 },
-        "presentation_digest": { "$ref": "#/$defs/Digest" },
-        "metadata": {}
+        "presentation_digest": { "$ref": "#/$defs/Digest" }
       }
     },
     "SessionList": {

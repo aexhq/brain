@@ -14,7 +14,6 @@ pub struct SessionRow {
     pub configuration: serde_json::Value,
     pub context: serde_json::Value,
     pub presentation_digest: String,
-    pub metadata: serde_json::Value,
 }
 
 #[derive(Default)]
