@@ -2,8 +2,6 @@ export { BrainClient as Brain, BrainClient, SessionHandle } from "./client.js";
 export type { BrainOptions } from "./client.js";
 export { defineAgentLoop, defineEnvironment, defineTool } from "./extensions.js";
 export { BrainError } from "./errors.js";
-export { DurableEventBridge } from "./bridge.js";
-export type { EventCursorStore, EventQueue } from "./bridge.js";
 export type {
   AgentLoop,
   BoundTool,

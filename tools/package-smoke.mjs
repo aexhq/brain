@@ -41,10 +41,12 @@ try {
   writeFileSync(
     join(directory, "smoke.mjs"),
     `import assert from "node:assert/strict";\n` +
-      `import { Brain, defineAgentLoop } from "@aexhq/brain";\n` +
+      `import * as brainSdk from "@aexhq/brain";\n` +
+      `const { Brain, defineAgentLoop } = brainSdk;\n` +
       `const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });\n` +
       `assert.equal(typeof brain.createSession, "function");\n` +
-      `assert.equal(defineAgentLoop(new Uint8Array([1])).kind, "agent-loop");\n`,
+      `assert.equal(defineAgentLoop(new Uint8Array([1])).kind, "agent-loop");\n` +
+      `assert.equal("DurableEventBridge" in brainSdk, false);\n`,
   );
   run(["install", "--no-audit", "--no-fund"], directory);
   execFileSync(process.execPath, ["smoke.mjs"], { cwd: directory, stdio: "inherit" });
