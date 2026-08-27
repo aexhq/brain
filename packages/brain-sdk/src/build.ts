@@ -59,6 +59,7 @@ export async function build(options: BuildOptions = {}): Promise<readonly BuiltE
     await mkdir(join(out, "runtime"), { recursive: true });
     await writeFile(join(out, "runtime", "registry.json"), `${JSON.stringify(toolRegistry, null, 2)}\n`);
   }
+  await bundle({ entryPoints: [entry], outfile: sourcePath, bundle: true, format: "esm", platform: "node", target: "node22", legalComments: "none", external: ["@aexhq/brain"] });
   const imports = built.map(({ name, artifact }) => {
     const runtimeName = environmentRuntimeNames.get(name);
     const identityArguments = artifact !== undefined

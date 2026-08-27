@@ -52,9 +52,11 @@ try {
       `import * as brainSdk from "@aexhq/brain";\n` +
       `import { simple } from "./built/index.mjs";\n` +
       `const { Brain } = brainSdk;\n` +
+      `globalThis.fetch = async () => { throw new Error("validated Brain reached fetch"); };\n` +
       `const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });\n` +
       `assert.equal(typeof brain.sessions.create, "function");\n` +
       `assert.deepEqual(Object.keys(simple()), []);\n` +
+      `await assert.rejects(brain.sessions.create({ model: { provider: "vercel-ai-gateway", name: "openai/test", apiKey: "test" }, brain: simple() }), /validated Brain reached fetch/u);\n` +
       `assert.equal(typeof brainSdk.tool, "function");\n` +
       `assert.equal(typeof brainSdk.environment, "function");\n` +
       `assert.equal("DurableEventBridge" in brainSdk, false);\n`,
