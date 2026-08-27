@@ -139,7 +139,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release -p brain-server --bins
+          cargo build --release -p brain-server --bin brain \
+            -p brain-loophost --bin brain-loop-worker
           data_dir=$(mktemp -d)
           BRAIN_LISTEN=127.0.0.1:18081 \
           BRAIN_DATA_DIR="$data_dir" \
