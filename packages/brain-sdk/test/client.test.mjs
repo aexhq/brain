@@ -72,14 +72,13 @@ test("runs synchronous Brain hooks and persists validated state", () => {
 });
 
 test("executes zero-configuration Tools from their serialized configuration", async () => {
-  assert.equal(await executeTool(read, {}, { path: "README.md" }, {
+  const context = {
     signal: AbortSignal.timeout(1_000),
     deadlineMs: Date.now() + 1_000,
-  }), "README.md");
-  await assert.rejects(executeTool(read, { unexpected: true }, { path: "README.md" }, {
-    signal: AbortSignal.timeout(1_000),
-    deadlineMs: Date.now() + 1_000,
-  }), /does not accept options/u);
+  };
+  assert.equal(await executeTool(read, {}, { path: "README.md" }, context), "README.md");
+  assert.equal(await executeTool(read, undefined, { path: "README.md" }, context), "README.md");
+  await assert.rejects(executeTool(read, { unexpected: true }, { path: "README.md" }, context), /does not accept options/u);
 });
 
 test("surfaces structured errors and rejects detached Environment calls", async () => {
