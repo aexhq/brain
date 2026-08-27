@@ -139,12 +139,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release -p brain-server --bin brain
+          cargo build --release -p brain-server --bins
           data_dir=$(mktemp -d)
           BRAIN_LISTEN=127.0.0.1:18081 \
           BRAIN_DATA_DIR="$data_dir" \
           BRAIN_API_TOKEN=test-token \
           BRAIN_MODEL_API_KEY=test-model-key \
+          BRAIN_LOOP_WORKER=target/release/brain-loop-worker \
             target/release/brain >"$RUNNER_TEMP/brain-benchmark.log" 2>&1 &
           brain_pid=$!
           trap 'kill "$brain_pid" 2>/dev/null || true; wait "$brain_pid" 2>/dev/null || true; cat "$RUNNER_TEMP/brain-benchmark.log"' EXIT
