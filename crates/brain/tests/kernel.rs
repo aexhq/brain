@@ -441,7 +441,6 @@ fn request() -> SealedSessionConfig {
         },
         environments: Vec::new(),
         tool_bindings: Vec::new(),
-        metadata: serde_json::json!({}),
     }
 }
 
@@ -480,7 +479,6 @@ fn tool_request() -> SealedSessionConfig {
             remote_tool_id: "slow".into(),
             grant: serde_json::json!({}),
         }],
-        metadata: serde_json::json!({}),
     }
 }
 

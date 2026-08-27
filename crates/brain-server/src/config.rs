@@ -17,8 +17,6 @@ pub struct ServerConfig {
         default_value = "https://ai-gateway.vercel.sh/v1"
     )]
     pub model_base_url: String,
-    #[arg(long, env = "BRAIN_MODEL_API_KEY", hide_env_values = true)]
-    pub model_api_key: String,
     #[arg(long, env = "BRAIN_API_TOKEN", hide_env_values = true)]
     pub api_token: Option<String>,
     #[arg(long, env = "BRAIN_ENVIRONMENT_BASE_URL", default_value = "")]

@@ -79,7 +79,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let create = serde_json::json!({
         "agentloop_digest": digest,
-        "model": {"binding_id":"gateway","model":"test/model"},
+        "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "presentation": {"system":"","tools":[]},
         "environments": [],
         "tool_bindings": []
@@ -213,6 +213,5 @@ fn session() -> Session {
         status: SessionStatus::Idle,
         through_sequence: 1,
         presentation_digest: "a".repeat(64),
-        metadata: serde_json::json!({}),
     }
 }

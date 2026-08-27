@@ -526,7 +526,6 @@ impl SessionActor {
             status: self.row.status.clone(),
             through_sequence: self.row.through_sequence,
             presentation_digest: self.row.presentation_digest.clone(),
-            metadata: self.row.metadata.clone(),
         }
     }
 }

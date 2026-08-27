@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentloopDigest, EnvironmentAttachment, EnvironmentId, EventId, JournalId, LifecyclePolicy,
-    ModelBinding, RequestedToolBinding, SessionId, ToolBinding, ToolDefinition,
+    ModelBinding, ModelSelection, RequestedToolBinding, SessionId, ToolBinding, ToolDefinition,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -14,16 +14,24 @@ pub struct ModelPresentation {
     pub response_format: Option<serde_json::Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {
+    pub agentloop_digest: AgentloopDigest,
+    pub model: ModelSelection,
+    pub presentation: ModelPresentation,
+    pub environments: Vec<EnvironmentRequirement>,
+    pub tool_bindings: Vec<RequestedToolBinding>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedSessionRequest {
     pub agentloop_digest: AgentloopDigest,
     pub model: ModelBinding,
     pub presentation: ModelPresentation,
     pub environments: Vec<EnvironmentRequirement>,
     pub tool_bindings: Vec<RequestedToolBinding>,
-    #[serde(default)]
-    pub metadata: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -41,7 +49,6 @@ pub struct SealedSessionConfig {
     pub presentation: ModelPresentation,
     pub environments: Vec<EnvironmentAttachment>,
     pub tool_bindings: Vec<ToolBinding>,
-    pub metadata: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -67,7 +74,6 @@ pub struct Session {
     pub status: SessionStatus,
     pub through_sequence: u64,
     pub presentation_digest: String,
-    pub metadata: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

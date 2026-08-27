@@ -8,7 +8,7 @@ pub const ENVIRONMENT_SCHEMA_DIGEST: &str =
     "9b11fd1fee52a142b4546e9bc7fa4ededb8506975d9a69784b920b53d6f8c899";
 pub const SESSION_SCHEMA: &str = include_str!("../../../contracts/session/v1/schemas.json");
 pub const SESSION_SCHEMA_DIGEST: &str =
-    "f54fc98a0c07cf60a5681c3fa1f783ed10c57385bde4d13fb2666b1c9321589f";
+    "e63284f6a84a118bd1b3cd1501a6df14b76d4a20e2634d4864805e06b9ea9466";
 pub const AGENTLOOP_WIT: &str = include_str!("../../../contracts/agentloop/v1/agentloop.wit");
 pub const AGENTLOOP_WIT_DIGEST: &str =
     "7c7a3d47242ee008ad2a3c19d02ac33bda5dd526a62cf1a86cbccd91e17182cd";

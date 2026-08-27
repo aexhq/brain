@@ -1,12 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use brain::model::{RemoteModelClient, RemoteModelConfig};
 use brain::{Kernel, KernelConfig};
 use brain_loophost::{LoopLimits, WorkerPool};
 use brain_server::{
-    EnvironmentRegistry, HttpEnvironmentAdapter, InMemoryEnvironmentDirectory, ServerApi,
-    ServerConfig, ServerResources, ServerToolExecutor, WorkerLoopExecutor,
+    EnvironmentRegistry, HttpEnvironmentAdapter, InMemoryEnvironmentDirectory,
+    LocalModelBindingStore, ServerApi, ServerConfig, ServerModelExecutor, ServerResources,
+    ServerToolExecutor, WorkerLoopExecutor,
 };
 use brain_telemetry::{TelemetryRecord, TelemetrySink, telemetry_channel};
 use clap::Parser;
@@ -47,11 +47,14 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         .ready()
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
-    let model = Arc::new(RemoteModelClient::new(RemoteModelConfig {
-        base_url: config.model_base_url.clone(),
-        api_key: config.model_api_key.clone(),
-        timeout: Duration::from_secs(120),
-    })?);
+    let models = Arc::new(LocalModelBindingStore::open(
+        &config.data_dir.join("model-bindings"),
+    )?);
+    let model = Arc::new(ServerModelExecutor::new(
+        models.clone(),
+        config.model_base_url.clone(),
+        Duration::from_secs(120),
+    ));
     let http = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -81,13 +84,11 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         kernel,
         loops,
         environments,
+        models,
     }))
 }
 
 fn validate(config: &ServerConfig) -> anyhow::Result<()> {
-    if config.model_api_key.trim().is_empty() {
-        anyhow::bail!("BRAIN_MODEL_API_KEY is required");
-    }
     if config
         .api_token
         .as_deref()

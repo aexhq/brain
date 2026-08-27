@@ -41,9 +41,10 @@ try {
   writeFileSync(
     join(directory, "smoke.mjs"),
     `import assert from "node:assert/strict";\n` +
-      `import { BrainClient } from "@aexhq/brain";\n` +
-      `const client = new BrainClient({ baseUrl: "http://127.0.0.1:8080" });\n` +
-      `assert.equal(typeof client.listSessions, "function");\n`,
+      `import { Brain, defineAgentLoop } from "@aexhq/brain";\n` +
+      `const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });\n` +
+      `assert.equal(typeof brain.createSession, "function");\n` +
+      `assert.equal(defineAgentLoop(new Uint8Array([1])).kind, "agent-loop");\n`,
   );
   run(["install", "--no-audit", "--no-fund"], directory);
   execFileSync(process.execPath, ["smoke.mjs"], { cwd: directory, stdio: "inherit" });

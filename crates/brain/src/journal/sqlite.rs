@@ -44,7 +44,7 @@ impl SqliteJournal {
                configuration_json TEXT NOT NULL,
                context_json TEXT NOT NULL,
                presentation_digest TEXT NOT NULL,
-               metadata_json TEXT NOT NULL
+               metadata_json TEXT NOT NULL DEFAULT 'null'
              );
              CREATE TABLE IF NOT EXISTS records (
                session_id TEXT NOT NULL,
@@ -186,8 +186,8 @@ impl JournalStore for SqliteJournal {
             .map_err(|_| KernelError::Journal("journal mutex poisoned".into()))?;
         let transaction = connection.transaction().map_err(journal_error)?;
         transaction.execute(
-            "INSERT INTO sessions(session_id,journal_id,status,through_sequence,configuration_json,context_json,presentation_digest,metadata_json) VALUES(?1,?2,?3,1,?4,?5,?6,?7)",
-            params![row.session_id.as_str(), row.journal_id.as_str(), status_name(&row.status), encode(&row.configuration)?, encode(&row.context)?, row.presentation_digest, encode(&row.metadata)?],
+            "INSERT INTO sessions(session_id,journal_id,status,through_sequence,configuration_json,context_json,presentation_digest) VALUES(?1,?2,?3,1,?4,?5,?6)",
+            params![row.session_id.as_str(), row.journal_id.as_str(), status_name(&row.status), encode(&row.configuration)?, encode(&row.context)?, row.presentation_digest],
         ).map_err(journal_error)?;
         let saved = insert_record(&transaction, &row.session_id, 1, record)?;
         transaction.commit().map_err(journal_error)?;
@@ -271,7 +271,7 @@ impl JournalStore for SqliteJournal {
             .lock()
             .map_err(|_| KernelError::Journal("journal mutex poisoned".into()))?;
         connection.query_row(
-            "SELECT session_id,journal_id,status,through_sequence,configuration_json,context_json,presentation_digest,metadata_json FROM sessions WHERE session_id=?1",
+            "SELECT session_id,journal_id,status,through_sequence,configuration_json,context_json,presentation_digest FROM sessions WHERE session_id=?1",
             [session_id.as_str()], read_session,
         ).optional().map_err(journal_error)
     }
@@ -281,7 +281,7 @@ impl JournalStore for SqliteJournal {
             .connection
             .lock()
             .map_err(|_| KernelError::Journal("journal mutex poisoned".into()))?;
-        let mut statement = connection.prepare("SELECT session_id,journal_id,status,through_sequence,configuration_json,context_json,presentation_digest,metadata_json FROM sessions ORDER BY session_id").map_err(journal_error)?;
+        let mut statement = connection.prepare("SELECT session_id,journal_id,status,through_sequence,configuration_json,context_json,presentation_digest FROM sessions ORDER BY session_id").map_err(journal_error)?;
         statement
             .query_map([], read_session)
             .map_err(journal_error)?
@@ -449,7 +449,6 @@ fn read_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
     let status: String = row.get(2)?;
     let configuration: String = row.get(4)?;
     let context: String = row.get(5)?;
-    let metadata: String = row.get(7)?;
     Ok(SessionRow {
         session_id: SessionId::new(row.get::<_, String>(0)?),
         journal_id: JournalId::new(row.get::<_, String>(1)?),
@@ -458,7 +457,6 @@ fn read_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         configuration: decode(configuration)?,
         context: decode(context)?,
         presentation_digest: row.get(6)?,
-        metadata: decode(metadata)?,
     })
 }
 

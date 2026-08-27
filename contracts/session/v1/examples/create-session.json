@@ -1,8 +1,7 @@
 {
   "agentloop_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "model": { "binding_id": "model_gateway", "model": "openai/gpt-5-mini" },
+  "model": { "provider": "vercel-ai-gateway", "name": "openai/gpt-5-mini", "api_key": "example-provider-key" },
   "presentation": { "system": "Be useful.", "tools": [] },
   "environments": [],
-  "tool_bindings": [],
-  "metadata": { "example": true }
+  "tool_bindings": []
 }

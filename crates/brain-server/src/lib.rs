@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod environment;
+pub mod model_binding;
 mod service;
 mod session_ownership;
 pub mod tool_dispatcher;
@@ -11,6 +12,7 @@ pub use environment::{
     EnvironmentAdapter, EnvironmentDirectory, EnvironmentRegistry, HttpEnvironmentAdapter,
     InMemoryEnvironmentDirectory,
 };
+pub use model_binding::{LocalModelBindingStore, ModelBindingStore, ServerModelExecutor};
 pub use service::{ServerApi, ServerResources, WorkerLoopExecutor};
 pub use session_ownership::{LocalSessionOwnership, SessionOwnership};
 pub use tool_dispatcher::ServerToolExecutor;
