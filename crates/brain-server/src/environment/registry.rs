@@ -90,7 +90,17 @@ impl EnvironmentRegistry {
                         })?;
                 Ok(ToolBinding {
                     name: tool.name,
-                    environment_id: tool.environment_id,
+                    environment: environments
+                        .iter()
+                        .find(|environment| {
+                            environment.binding.environment_id == tool.environment_id
+                        })
+                        .map(|environment| environment.binding.clone())
+                        .ok_or_else(|| {
+                            KernelError::InvalidState(
+                                "Tool requested an unresolved Environment".into(),
+                            )
+                        })?,
                     attachment_id,
                     remote_tool_id: tool.remote_tool_id,
                     grant: tool.grant,
@@ -155,9 +165,10 @@ impl EnvironmentRegistry {
 
     pub async fn execute(
         &self,
+        binding: &brain_protocol::EnvironmentBinding,
         operation: &EnvironmentOperation<EnvironmentRequest>,
     ) -> Result<EnvironmentReceipt, KernelError> {
-        let entry = self.directory.get(&operation.environment_id).await?;
+        let entry = self.directory.get(binding).await?;
         self.adapter
             .send(&entry.endpoint, &entry.binding, operation)
             .await
@@ -170,10 +181,7 @@ impl EnvironmentRegistry {
         sealed: &SealedSessionConfig,
     ) -> Result<(), KernelError> {
         for attachment in sealed.environments.iter().rev() {
-            let entry = self
-                .directory
-                .get(&attachment.binding.environment_id)
-                .await?;
+            let entry = self.directory.get(&attachment.binding).await?;
             self.session_lifecycle(
                 kernel,
                 session_id,

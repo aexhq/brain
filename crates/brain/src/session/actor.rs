@@ -5,9 +5,9 @@ use std::sync::{
 use std::{future::Future, time::Duration};
 
 use brain_protocol::{
-    ActivationInput, ContextEnvelope, Decision, Event, EventId, MessageRequest, Observation,
-    Presentation, RuntimeEnvelope, SealedSessionConfig, Session, SessionStatus, ToolDispatch,
-    ToolResult, operation_id, request_digest,
+    ActivationInput, ContextEnvelope, Decision, EnvironmentRequest, Event, EventId, MessageRequest,
+    Observation, Presentation, RuntimeEnvelope, SealedSessionConfig, Session, SessionStatus,
+    ToolCancellation, ToolDispatch, ToolResult, operation_id, request_digest,
 };
 use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
 use futures_util::future::join_all;
@@ -243,7 +243,12 @@ impl SessionActor {
                             &self.row.journal_id,
                             self.row.through_sequence + offset as u64 + 1,
                         );
-                        let digest = request_digest(&invocation).map_err(digest_error)?;
+                        let digest = request_digest(&EnvironmentRequest::Execute {
+                            tool: invocation.clone(),
+                            remote_tool_id: binding.remote_tool_id.clone(),
+                            grant: binding.grant.clone(),
+                        })
+                        .map_err(digest_error)?;
                         let dispatch = ToolDispatch {
                             operation_id: operation_id.clone(),
                             request_digest: digest.clone(),
@@ -258,7 +263,7 @@ impl SessionActor {
                         dispatches.push(dispatch);
                     }
                     self.commit(intents, SessionUpdate::default())?;
-                    let futures = dispatches.into_iter().map(|dispatch| {
+                    let futures = dispatches.iter().cloned().map(|dispatch| {
                         let executor = self.tool_executor.clone();
                         async move {
                             let operation_id = dispatch.operation_id.clone();
@@ -269,7 +274,10 @@ impl SessionActor {
                     });
                     let completed = match self.interruptible(join_all(futures)).await {
                         Ok(completed) => completed,
-                        Err(()) => return self.cancel_turn(),
+                        Err(()) => {
+                            self.cancel_tools(&dispatches).await?;
+                            return self.cancel_turn();
+                        }
                     };
                     let mut terminal = Vec::with_capacity(completed.len());
                     let mut results = Vec::with_capacity(completed.len());
@@ -372,6 +380,72 @@ impl SessionActor {
 
     fn cancel_turn(&mut self) -> Result<Session, KernelError> {
         self.fail_turn("cancelled", "turn cancelled")
+    }
+
+    async fn cancel_tools(&mut self, dispatches: &[ToolDispatch]) -> Result<(), KernelError> {
+        let mut cancellations = Vec::with_capacity(dispatches.len());
+        let mut intents = Vec::with_capacity(dispatches.len());
+        for (offset, dispatch) in dispatches.iter().enumerate() {
+            let request = EnvironmentRequest::Cancel {
+                target_operation_id: dispatch.operation_id.clone(),
+            };
+            let cancellation = ToolCancellation {
+                operation_id: operation_id(
+                    &self.row.journal_id,
+                    self.row.through_sequence + offset as u64 + 1,
+                ),
+                request_digest: request_digest(&request).map_err(digest_error)?,
+                target_operation_id: dispatch.operation_id.clone(),
+                session_id: dispatch.session_id.clone(),
+                binding: dispatch.binding.clone(),
+            };
+            intents.push(AppendRecord::new(
+                "tool_cancel_intent",
+                serde_json::to_value(&cancellation).map_err(json_error)?,
+            ));
+            cancellations.push(cancellation);
+        }
+        self.commit(intents, SessionUpdate::default())?;
+        let cancellation_ids: Vec<_> = cancellations
+            .iter()
+            .map(|cancellation| cancellation.operation_id.clone())
+            .collect();
+        let futures = cancellations.into_iter().map(|cancellation| {
+            let executor = self.tool_executor.clone();
+            async move {
+                let operation_id = cancellation.operation_id.clone();
+                (operation_id, executor.cancel(cancellation).await)
+            }
+        });
+        let results = tokio::time::timeout(Duration::from_secs(5), join_all(futures)).await;
+        let records = match results {
+            Ok(results) => results
+                .into_iter()
+                .map(|(operation_id, result)| {
+                    AppendRecord::new(
+                        "tool_cancel_result",
+                        match result {
+                            Ok(()) => serde_json::json!({"operation_id":operation_id,"cancelled":true}),
+                            Err(error) => serde_json::json!({"operation_id":operation_id,"error":error.to_string()}),
+                        },
+                    )
+                })
+                .collect(),
+            Err(_) => cancellation_ids
+                .into_iter()
+                .map(|operation_id| {
+                    AppendRecord::new(
+                        "tool_cancel_ambiguous",
+                        serde_json::json!({
+                            "operation_id":operation_id,
+                            "error":"Environment cancellation deadline exceeded"
+                        }),
+                    )
+                })
+                .collect(),
+        };
+        self.commit(records, SessionUpdate::default())?;
+        Ok(())
     }
 
     async fn interruptible<T>(&self, future: impl Future<Output = T>) -> Result<T, ()> {

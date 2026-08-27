@@ -586,7 +586,7 @@ fn validate_bindings(request: &SealedSessionConfig) -> Result<(), KernelError> {
         || request
             .tool_bindings
             .iter()
-            .any(|binding| !environment_ids.contains(&binding.environment_id))
+            .any(|binding| !environment_ids.contains(&binding.environment.environment_id))
     {
         return Err(KernelError::InvalidState(
             "sealed Environment bindings are inconsistent".into(),

@@ -16,7 +16,7 @@ pub trait EnvironmentDirectory: Send + Sync + 'static {
         &self,
         requirement: &EnvironmentRequirement,
     ) -> Result<DirectoryEntry, KernelError>;
-    async fn get(&self, environment_id: &EnvironmentId) -> Result<DirectoryEntry, KernelError>;
+    async fn get(&self, binding: &EnvironmentBinding) -> Result<DirectoryEntry, KernelError>;
 }
 
 pub struct InMemoryEnvironmentDirectory {
@@ -74,12 +74,39 @@ impl EnvironmentDirectory for InMemoryEnvironmentDirectory {
         Ok(entry)
     }
 
-    async fn get(&self, environment_id: &EnvironmentId) -> Result<DirectoryEntry, KernelError> {
-        self.entries
-            .lock()
-            .map_err(|_| KernelError::InvalidState("Environment directory poisoned".into()))?
-            .get(environment_id)
-            .cloned()
-            .ok_or_else(|| KernelError::InvalidState("Environment is not registered".into()))
+    async fn get(&self, binding: &EnvironmentBinding) -> Result<DirectoryEntry, KernelError> {
+        if self.endpoint.trim().is_empty() {
+            return Err(KernelError::InvalidState(
+                "no Environment endpoint is configured".into(),
+            ));
+        }
+        Ok(DirectoryEntry {
+            binding: binding.clone(),
+            endpoint: self.endpoint.clone(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use brain_protocol::{EnvironmentId, LifecyclePolicy};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn reconstructs_a_sealed_binding_without_process_local_registration() {
+        let directory = InMemoryEnvironmentDirectory::new("https://environment.example");
+        let binding = EnvironmentBinding {
+            environment_id: EnvironmentId::new("shared-workspace"),
+            configuration_digest: "a".repeat(64),
+            adapter_binding: "sealed".into(),
+            directory_generation: 7,
+            lifecycle_policy: LifecyclePolicy::Shared,
+        };
+
+        let entry = directory.get(&binding).await.expect("sealed binding");
+
+        assert_eq!(entry.binding.adapter_binding, "sealed");
+        assert_eq!(entry.endpoint, "https://environment.example");
     }
 }
