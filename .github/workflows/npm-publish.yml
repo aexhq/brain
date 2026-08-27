@@ -220,10 +220,11 @@ jobs:
           sdk=$(jq -er '.packages[] | select(.name == "@aexhq/brain") | "\(.name)@\(.version)"' "$RUNNER_TEMP/brain-release/manifest.json")
           test "$(npm view "$sdk" version)" = "${sdk##*@}"
           mkdir "$RUNNER_TEMP/sdk-e2e"
-          cp tests/release/sdk.mjs "$RUNNER_TEMP/sdk-e2e/sdk.mjs"
+          cp tests/release/sdk.mjs tests/release/diagnostic-brain.mjs "$RUNNER_TEMP/sdk-e2e/"
           cd "$RUNNER_TEMP/sdk-e2e"
           npm init --yes >/dev/null
-          npm install --ignore-scripts --save-exact "$sdk" @aexhq/loop-pi@0.89.0
+          npm install --ignore-scripts --save-exact "$sdk" zod@4.4.3
+          npx brain build diagnostic-brain.mjs --out built
           npm audit --audit-level=high
       - name: Run the candidate image through the staged SDK
         shell: bash
@@ -267,10 +268,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/http-e2e" "$RUNNER_TEMP/http-data"
-          cp tests/release/http.mjs "$RUNNER_TEMP/http-e2e/http.mjs"
+          cp tests/release/http.mjs tests/release/diagnostic-brain.mjs "$RUNNER_TEMP/http-e2e/"
           cd "$RUNNER_TEMP/http-e2e"
           npm init --yes >/dev/null
-          npm install --ignore-scripts --save-exact @aexhq/loop-pi@0.89.0
+          sdk=$(jq -er '.packages[] | select(.name == "@aexhq/brain") | "\(.name)@\(.version)"' "$RUNNER_TEMP/brain-release/manifest.json")
+          npm install --ignore-scripts --save-exact "$sdk" zod@4.4.3
+          npx brain build diagnostic-brain.mjs --out built
           npm audit --audit-level=high
           python3 - "$RUNNER_TEMP/http-data/brain.sqlite3" <<'PY'
           import sqlite3
@@ -351,11 +354,11 @@ jobs:
           sdk=$(jq -er '.packages[] | select(.name == "@aexhq/brain") | "\(.name)@\(.version)"' "$RUNNER_TEMP/brain-release/manifest.json")
           test "$(npm view "$sdk" version)" = "${sdk##*@}"
           mkdir "$RUNNER_TEMP/contract-e2e"
-          cp "tests/release/$TEST_SCRIPT" tests/release/diagnostic-loop.mjs "$RUNNER_TEMP/contract-e2e/"
+          cp "tests/release/$TEST_SCRIPT" tests/release/diagnostic-brain.mjs "$RUNNER_TEMP/contract-e2e/"
           cd "$RUNNER_TEMP/contract-e2e"
           npm init --yes >/dev/null
-          npm install --ignore-scripts --save-exact "$sdk" @aexhq/agentloop@0.4.1
-          npx brain-loop build diagnostic-loop.mjs --out diagnostic.brain.json
+          npm install --ignore-scripts --save-exact "$sdk" zod@4.4.3
+          npx brain build diagnostic-brain.mjs --out built
           npm audit --audit-level=high
       - name: Run ${{ matrix.name }} against the candidate
         shell: bash

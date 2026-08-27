@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-import { pi } from "@aexhq/loop-pi";
 
 const apiKey = process.env.VERCEL_AI_GATEWAY_API_KEY;
 if (!apiKey) throw new Error("VERCEL_AI_GATEWAY_API_KEY is required");
@@ -30,16 +29,12 @@ async function request(method, path, body, contentType = "application/json") {
   return text ? JSON.parse(text) : undefined;
 }
 
-const artifact = pi().package;
-const packageBytes = artifact instanceof Uint8Array
-  ? artifact
-  : artifact.protocol === "file:"
-    ? new Uint8Array(await readFile(artifact))
-    : new Uint8Array(await (await fetch(artifact)).arrayBuffer());
+const packageBytes = new Uint8Array(await readFile(new URL("./dist/example.brain.json", import.meta.url)));
 
 const admission = await request("POST", "/v1/agentloops", packageBytes, "application/octet-stream");
 const session = await request("POST", "/v1/sessions", {
   agentloop_digest: admission.digest,
+  brain_configuration: {},
   model: {
     provider: "vercel-ai-gateway",
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",

@@ -29,6 +29,7 @@ fn main() -> Result<(), String> {
                 state: None,
             },
             observation: Observation::SessionStarted,
+            configuration: serde_json::json!({}),
             presentation: Presentation {
                 bytes: Vec::new(),
                 digest: "a".repeat(64),

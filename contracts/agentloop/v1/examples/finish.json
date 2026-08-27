@@ -3,6 +3,7 @@
   "input": {
     "context": { "protocol_version": "agentloop/v1", "items": [] },
     "observation": { "type": "session_started" },
+    "configuration": {},
     "presentation": {
       "bytes": [],
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

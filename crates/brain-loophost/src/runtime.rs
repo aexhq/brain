@@ -153,6 +153,8 @@ fn to_wit_input(
                 .map_err(|error| error.to_string())?,
         },
         observation,
+        configuration_json: serde_json::to_string(&input.configuration)
+            .map_err(|error| error.to_string())?,
         presentation: wit::Presentation {
             bytes: input.presentation.bytes,
             digest: input.presentation.digest,

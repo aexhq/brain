@@ -98,6 +98,32 @@ paths:
             application/json:
               schema: { $ref: './schemas.json#/$defs/Session' }
         default: { $ref: '#/components/responses/Error' }
+  /v1/sessions/{session_id}/environments/{environment_id}/calls/{name}:
+    post:
+      operationId: callEnvironment
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - name: environment_id
+          in: path
+          required: true
+          schema: { $ref: './schemas.json#/$defs/Identifier' }
+        - name: name
+          in: path
+          required: true
+          schema: { $ref: './schemas.json#/$defs/Identifier' }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: './schemas.json#/$defs/EnvironmentCallRequest' }
+      responses:
+        '200':
+          description: Environment method result
+          content:
+            application/json:
+              schema: { $ref: './schemas.json#/$defs/EnvironmentCallResult' }
+        default: { $ref: '#/components/responses/Error' }
   /v1/sessions/{session_id}/cancel:
     post:
       operationId: cancelSession

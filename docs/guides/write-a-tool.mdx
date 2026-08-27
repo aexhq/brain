@@ -1,0 +1,41 @@
+---
+title: Write a Tool extension
+description: Bundle an async function and its npm dependencies for an Environment.
+---
+
+```ts
+import { tool } from "@aexhq/brain";
+import Client from "@vendor/orders";
+import { z } from "zod";
+
+const options = z.object({ endpoint: z.url() });
+const input = z.object({ orderId: z.string() });
+const output = z.object({ status: z.string() });
+
+export const lookupOrder = tool(
+  { description: "Look up an order.", options, input, output },
+  (author) => {
+    let client: Client;
+
+    author.setup(async ({ options, signal }) => {
+      client = new Client({ endpoint: options.endpoint });
+      await client.ready({ signal });
+    });
+
+    author.run(async ({ orderId }, call) => client.lookup(orderId, { signal: call.signal }));
+  },
+);
+```
+
+Run `npx brain build`. The export name becomes the model-visible name, input and output cross the
+trust boundary through the Zod schemas, and reachable JavaScript dependencies are bundled into the
+Environment-side runtime. Native addons and install-time files are not portable and fail the build.
+
+Application code chooses placement explicitly:
+
+```ts
+lookupOrder({ endpoint }).useIn(environment)
+```
+
+Tool handlers are async. Cancellation aborts `call.signal`; `call.deadline`, `call.requestId`,
+`call.workspace`, and `call.progress()` are available when the selected Environment supports them.

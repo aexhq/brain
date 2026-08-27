@@ -17,6 +17,7 @@
       "type": "execute",
       "tool": { "call_id": "call_example", "name": "read", "input": { "path": "README.md" } },
       "remote_tool_id": "read",
+      "tool_configuration": {},
       "grant": { "paths": ["**"] }
     }
   }

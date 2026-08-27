@@ -1,21 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
+import { assertEnvironmentBindable, bindEnvironment, endEnvironment, inspectBoundTool, inspectBrain, inspectEnvironment } from "./extensions.js";
 import { BrainError } from "./errors.js";
 import type {
-  AgentloopAdmission,
-  BoundTool,
-  CreateSessionOptions,
-  OperationOptions,
-  SessionEvent,
-  SessionState,
-  WireCreateSessionRequest,
-  WireEnvironmentRequirement,
-  WireEventPage,
-  WireSession,
-  WireSessionList,
-  WireToolBinding,
-  WireToolDefinition,
+  AgentloopAdmission, BoundTool, BrainExtension, CreateSessionOptions, Environment, OperationOptions,
+  SessionEvent, SessionState, WireCreateSessionRequest, WireEnvironmentRequirement, WireEventPage,
+  WireSession, WireSessionList, WireToolBinding, WireToolDefinition,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -27,6 +18,7 @@ export interface BrainOptions {
 
 export class BrainClient {
   readonly baseUrl: string;
+  readonly sessions: Sessions;
   private readonly token?: string;
   private readonly timeoutMs: number;
   private readonly transport: typeof globalThis.fetch;
@@ -38,53 +30,19 @@ export class BrainClient {
     this.baseUrl = options.baseUrl.slice(0, end);
     if (this.baseUrl.length === 0) throw new TypeError("baseUrl is required");
     const url = new URL(this.baseUrl);
-    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
-      throw new TypeError("baseUrl must be HTTP(S) without credentials, query, or fragment");
-    }
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") throw new TypeError("baseUrl must be HTTP(S) without credentials, query, or fragment");
     if (options.token !== undefined && options.token.trim() === "") throw new TypeError("token cannot be empty");
-    if (!Number.isSafeInteger(options.timeoutMs ?? 30_000) || (options.timeoutMs ?? 30_000) < 1) {
-      throw new TypeError("timeoutMs must be a positive safe integer");
-    }
+    if (!Number.isSafeInteger(options.timeoutMs ?? 30_000) || (options.timeoutMs ?? 30_000) < 1) throw new TypeError("timeoutMs must be a positive safe integer");
     this.token = options.token;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.transport = options.fetch ?? globalThis.fetch;
+    this.sessions = new Sessions(this);
+    Object.freeze(this.sessions);
   }
 
-  async createSession(options: CreateSessionOptions, operation: OperationOptions = {}): Promise<SessionHandle> {
-    validateSessionOptions(options);
-    const digest = await this.admit(options.agentLoop);
-    const request = compileSession(options, digest);
-    const session = await this.request<WireSession>("POST", "/v1/sessions", request, keyOf(operation));
-    return new SessionHandle(this, toSessionState(session));
-  }
-
-  async getSession(sessionId: string): Promise<SessionHandle> {
-    const session = await this.request<WireSession>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}`);
-    return new SessionHandle(this, toSessionState(session));
-  }
-
-  async listSessions(): Promise<SessionState[]> {
-    const response = await this.request<WireSessionList>("GET", "/v1/sessions");
-    return response.sessions.map(toSessionState);
-  }
-
-  async sendMessage(sessionId: string, content: unknown, operation: OperationOptions = {}): Promise<SessionState> {
-    const session = await this.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/messages`, { content }, keyOf(operation));
-    return toSessionState(session);
-  }
-
-  async readEvents(sessionId: string, after = 0): Promise<{ events: SessionEvent[]; nextCursor: number }> {
-    const page = await this.request<WireEventPage>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`);
-    return {
-      events: page.events.map((event) => ({
-        id: event.event_id,
-        sequence: event.sequence,
-        recordedAt: new Date(event.recorded_at_ms),
-        type: event.event_type,
-        data: event.data,
-      })),
-      nextCursor: page.next_cursor,
-    };
+  async callEnvironment(sessionId: string, environmentId: string, name: string, input: unknown, operation: OperationOptions = {}): Promise<unknown> {
+    const response = await this.request<{ output: unknown }>("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/environments/${encodeURIComponent(environmentId)}/calls/${encodeURIComponent(name)}`, { input }, keyOf(operation));
+    return response.output;
   }
 
   async request<T>(method: string, path: string, body?: unknown, idempotencyKey?: string, contentType = "application/json"): Promise<T> {
@@ -93,8 +51,7 @@ export class BrainClient {
     if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
     if (idempotencyKey !== undefined) headers.set("idempotency-key", idempotencyKey);
     const response = await this.transport(`${this.baseUrl}${path}`, {
-      method,
-      headers,
+      method, headers,
       body: body === undefined ? undefined : body instanceof Uint8Array ? new Uint8Array(body).buffer : JSON.stringify(body),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
@@ -105,50 +62,71 @@ export class BrainClient {
     return (response.status === 204 ? undefined : await response.json()) as T;
   }
 
-  private admit(agentLoop: CreateSessionOptions["agentLoop"]): Promise<string> {
-    const cached = this.admitted.get(agentLoop);
+  async admit(extension: BrainExtension): Promise<string> {
+    const cached = this.admitted.get(extension);
     if (cached !== undefined) return cached;
-    const admission = this.loadAndAdmit(agentLoop.package);
-    this.admitted.set(agentLoop, admission);
+    const admission = this.loadAndAdmit(inspectBrain(extension).artifact);
+    this.admitted.set(extension, admission);
     return admission;
   }
 
   private async loadAndAdmit(artifact: URL | Uint8Array): Promise<string> {
-    const bytes = artifact instanceof Uint8Array
-      ? artifact
-      : artifact.protocol === "file:"
-        ? new Uint8Array(await readFile(artifact))
-        : new Uint8Array(await (await this.transport(artifact)).arrayBuffer());
-    if (bytes.byteLength === 0) throw new TypeError("AgentLoop package cannot be empty");
-    const idempotencyKey = `agent-loop-${createHash("sha256").update(bytes).digest("hex")}`;
+    const bytes = artifact instanceof Uint8Array ? artifact : artifact.protocol === "file:"
+      ? new Uint8Array(await readFile(artifact))
+      : new Uint8Array(await (await this.transport(artifact)).arrayBuffer());
+    if (bytes.byteLength === 0) throw new TypeError("Brain package cannot be empty");
+    const idempotencyKey = `brain-${createHash("sha256").update(bytes).digest("hex")}`;
     const admission = await this.request<AgentloopAdmission>("POST", "/v1/agentloops", bytes, idempotencyKey, "application/octet-stream");
-    if (admission.status !== "admitted") throw new BrainError(400, "agent_loop_rejected", admission.error?.message ?? "AgentLoop was rejected", false, admission.error?.details);
+    if (admission.status !== "admitted") throw new BrainError(400, "brain_rejected", admission.error?.message ?? "Brain was rejected", false, admission.error?.details);
     return admission.digest;
   }
 }
 
+export class Sessions {
+  constructor(private readonly client: BrainClient) {}
+
+  async create(options: CreateSessionOptions, operation: OperationOptions = {}): Promise<SessionHandle> {
+    validateSessionOptions(options);
+    const digest = await this.client.admit(options.brain);
+    const compiled = compileSession(options, digest);
+    for (const environment of compiled.environments.keys()) assertEnvironmentBindable(environment);
+    const session = await this.client.request<WireSession>("POST", "/v1/sessions", compiled.request, keyOf(operation));
+    for (const [environment, environmentId] of compiled.environments) bindEnvironment(environment, this.client, session.session_id, environmentId);
+    return new SessionHandle(this.client, toSessionState(session), [...compiled.environments.keys()]);
+  }
+
+  async get(sessionId: string): Promise<SessionHandle> {
+    const session = await this.client.request<WireSession>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}`);
+    return new SessionHandle(this.client, toSessionState(session), []);
+  }
+
+  async list(): Promise<SessionState[]> {
+    const response = await this.client.request<WireSessionList>("GET", "/v1/sessions");
+    return response.sessions.map(toSessionState);
+  }
+}
+
 export class SessionHandle {
-  constructor(private readonly client: BrainClient, public state: SessionState) {}
+  constructor(private readonly client: BrainClient, public state: SessionState, private readonly environments: readonly Environment[]) {}
   get id(): string { return this.state.id; }
 
   async send(content: unknown, operation: OperationOptions = {}): Promise<SessionState> {
-    return (this.state = await this.client.sendMessage(this.id, content, operation));
+    const session = await this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`, { content }, keyOf(operation));
+    return (this.state = toSessionState(session));
   }
 
   events(after = 0): AsyncIterable<SessionEvent> {
     const client = this.client;
     const sessionId = this.id;
-    return {
-      async *[Symbol.asyncIterator]() {
-        let cursor = after;
-        for (;;) {
-          const page = await client.readEvents(sessionId, cursor);
-          for (const event of page.events) yield event;
-          if (page.nextCursor === cursor) return;
-          cursor = page.nextCursor;
-        }
-      },
-    };
+    return { async *[Symbol.asyncIterator]() {
+      let cursor = after;
+      for (;;) {
+        const page = await client.request<WireEventPage>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`);
+        for (const event of page.events) yield { id: event.event_id, sequence: event.sequence, recordedAt: new Date(event.recorded_at_ms), type: event.event_type, data: event.data };
+        if (page.next_cursor === cursor) return;
+        cursor = page.next_cursor;
+      }
+    } };
   }
 
   async cancel(operation: OperationOptions = {}): Promise<void> {
@@ -157,74 +135,51 @@ export class SessionHandle {
 
   async end(operation: OperationOptions = {}): Promise<SessionState> {
     const session = await this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/end`, undefined, keyOf(operation));
+    this.endEnvironments();
     return (this.state = toSessionState(session));
   }
 
   async delete(operation: OperationOptions = {}): Promise<void> {
     await this.client.request("DELETE", `/v1/sessions/${encodeURIComponent(this.id)}`, undefined, keyOf(operation));
+    this.endEnvironments();
   }
+
+  private endEnvironments(): void { for (const environment of this.environments) endEnvironment(environment); }
 }
 
-function compileSession(options: CreateSessionOptions, agentloopDigest: string): WireCreateSessionRequest {
-  const environments = new Map<object, WireEnvironmentRequirement>();
+function compileSession(options: CreateSessionOptions, agentloopDigest: string): { readonly request: WireCreateSessionRequest; readonly environments: ReadonlyMap<Environment, string> } {
+  const environments = new Map<Environment, string>();
+  const requirements: WireEnvironmentRequirement[] = [];
   const definitions: WireToolDefinition[] = [];
   const bindings: WireToolBinding[] = [];
   const names = new Set<string>();
-  for (const bound of options.tools ?? []) {
-    validateBoundTool(bound);
-    if (names.has(bound.tool.definition.name)) throw new TypeError(`Tool name ${bound.tool.definition.name} is duplicated`);
-    names.add(bound.tool.definition.name);
-    let requirement = environments.get(bound.environment);
-    if (requirement === undefined) {
-      const lifecycle = bound.environment.lifecycle.type ?? "session";
-      const environmentId = lifecycle === "session"
-        ? `env_${environments.size + 1}`
-        : requiredEnvironmentId(bound.environment);
-      const created: WireEnvironmentRequirement = {
-        environment_id: environmentId,
-        configuration: structuredClone(bound.environment.configuration),
-        lifecycle_policy: lifecycle,
-      };
-      environments.set(bound.environment, created);
-      requirement = created;
+  for (const selected of options.tools ?? []) {
+    const bound = inspectBoundTool(selected as BoundTool);
+    if (names.has(bound.definition.name)) throw new TypeError(`Tool name ${bound.definition.name} is duplicated`);
+    names.add(bound.definition.name);
+    let environmentId = environments.get(bound.environment);
+    if (environmentId === undefined) {
+      environmentId = `env_${environments.size + 1}`;
+      environments.set(bound.environment, environmentId);
+      requirements.push({ environment_id: environmentId, configuration: structuredClone(inspectEnvironment(bound.environment).configuration), lifecycle_policy: "session" });
     }
-    const definition = bound.tool.definition;
-    definitions.push({
-      name: definition.name,
-      description: definition.description,
-      input_schema: structuredClone(definition.inputSchema),
-      ...(definition.outputSchema === undefined ? {} : { output_schema: structuredClone(definition.outputSchema) }),
-    });
-    bindings.push({
-      name: definition.name,
-      environment_id: requirement.environment_id,
-      remote_tool_id: bound.tool.remoteToolId,
-      grant: structuredClone(bound.grant),
-    });
+    definitions.push({ name: bound.definition.name, description: bound.definition.description, input_schema: structuredClone(bound.definition.inputSchema), ...(bound.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(bound.definition.outputSchema) }) });
+    bindings.push({ name: bound.definition.name, environment_id: environmentId, remote_tool_id: bound.implementationName, tool_configuration: structuredClone(bound.configuration), grant: {} });
   }
-  return {
+  const brain = inspectBrain(options.brain);
+  return { request: {
     agentloop_digest: agentloopDigest,
+    brain_configuration: structuredClone(brain.configuration),
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
-    presentation: {
-      system: options.system ?? "",
-      tools: definitions,
-      ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }),
-    },
-    environments: [...environments.values()],
+    presentation: { system: options.system ?? "", tools: definitions, ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }) },
+    environments: requirements,
     tool_bindings: bindings,
-  };
-}
-
-function requiredEnvironmentId(environment: BoundTool["environment"]): string {
-  if (environment.lifecycle.type === "shared" || environment.lifecycle.type === "external") {
-    return environment.lifecycle.id;
-  }
-  throw new TypeError("a shared or external Environment requires a stable id");
+  }, environments };
 }
 
 function validateSessionOptions(options: CreateSessionOptions): void {
   if (options === null || typeof options !== "object") throw new TypeError("session options are required");
-  if (options.agentLoop?.kind !== "agent-loop") throw new TypeError("agentLoop is required");
+  inspectBrain(options.brain);
   if (options.model?.provider !== "vercel-ai-gateway") throw new TypeError("unsupported model provider");
   if (!/^[^/\s]+\/[^/\s][^\s]*$/u.test(options.model.name)) throw new TypeError("model name must include its provider namespace");
   if (typeof options.model.apiKey !== "string" || options.model.apiKey.trim() === "") throw new TypeError("model apiKey is required");
@@ -232,26 +187,10 @@ function validateSessionOptions(options: CreateSessionOptions): void {
   if (options.system !== undefined && (typeof options.system !== "string" || options.system.length > 131_072)) throw new TypeError("system exceeds its contract bound");
 }
 
-function validateBoundTool(bound: BoundTool): void {
-  if (bound?.kind !== "bound-tool" || bound.tool?.kind !== "tool" || bound.environment?.kind !== "environment") {
-    throw new TypeError("tools must be configured with runIn");
-  }
-  if (bound.tool.environmentCapability !== bound.environment.capability) {
-    throw new TypeError(`Tool ${bound.tool.definition.name} cannot run in a ${bound.environment.capability} Environment`);
-  }
-}
-
 function keyOf(options: OperationOptions): string {
   if (options.idempotencyKey !== undefined && options.idempotencyKey.trim() === "") throw new TypeError("idempotencyKey cannot be empty");
   return options.idempotencyKey ?? randomUUID();
 }
-
 function toSessionState(session: WireSession): SessionState {
-  return Object.freeze({
-    id: session.session_id,
-    journalId: session.journal_id,
-    status: session.status,
-    throughSequence: session.through_sequence,
-    presentationDigest: session.presentation_digest,
-  });
+  return Object.freeze({ id: session.session_id, journalId: session.journal_id, status: session.status, throughSequence: session.through_sequence, presentationDigest: session.presentation_digest });
 }

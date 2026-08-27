@@ -83,6 +83,22 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{session_id}/environments/{environment_id}/calls/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["callEnvironment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{session_id}/cancel": {
         parameters: {
             query?: never;
@@ -220,10 +236,12 @@ export type components = {
             name: components["schemas"]["Identifier"];
             environment_id: components["schemas"]["Identifier"];
             remote_tool_id: components["schemas"]["Identifier"];
+            tool_configuration: unknown;
             grant: unknown;
         };
         CreateSessionRequest: {
             agentloop_digest: components["schemas"]["Digest"];
+            brain_configuration: unknown;
             model: components["schemas"]["ModelSelection"];
             presentation: components["schemas"]["ModelPresentation"];
             environments: components["schemas"]["EnvironmentRequirement"][];
@@ -231,6 +249,12 @@ export type components = {
         };
         MessageRequest: {
             content: unknown;
+        };
+        EnvironmentCallRequest: {
+            input: unknown;
+        };
+        EnvironmentCallResult: {
+            output: unknown;
         };
         Event: {
             event_id: components["schemas"]["Identifier"];
@@ -433,6 +457,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Session"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    callEnvironment: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                session_id: components["parameters"]["SessionId"];
+                environment_id: components["schemas"]["Identifier"];
+                name: components["schemas"]["Identifier"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvironmentCallRequest"];
+            };
+        };
+        responses: {
+            /** @description Environment method result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvironmentCallResult"];
                 };
             };
             default: components["responses"]["Error"];

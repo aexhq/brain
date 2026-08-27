@@ -1,63 +1,52 @@
 ---
-title: Write an agent loop
-description: A function in, a portable component out.
+title: Write a Brain extension
+description: Register synchronous hooks and build a portable Brain artifact.
 ---
 
-## Install
+Install Brain and Zod, then export a named definition from `src/index.ts`:
 
 ```sh
-npm install @aexhq/agentloop
+npm install @aexhq/brain zod
 ```
 
-## Write the function
-
-`step` receives what just happened and returns what to do next. It is ordinary synchronous code.
-
 ```ts
-import { defineAgentloop } from "@aexhq/agentloop";
+import { brain } from "@aexhq/brain";
+import { z } from "zod";
 
-export default defineAgentloop({
-  step(input) {
-    const last = input.observation;
+const options = z.object({ instructions: z.string().default("Be helpful.") });
+const state = z.object({ messages: z.array(z.unknown()) });
 
-    if (last?.type === "message") {
-      return {
-        context: [...input.context, last],
-        decision: { type: "model" },
-      };
-    }
+export const assistant = brain({ options }, (author) => {
+  const memory = author.state(state, () => ({ messages: [] }));
 
-    return { context: input.context, decision: { type: "finish" } };
-  },
+  author.on.message((message, turn) => {
+    memory.messages.push({ role: "user", content: message.content });
+    return turn.model({ messages: memory.messages });
+  });
+
+  author.on.model((completed, turn) => {
+    const text = completed.response.response.text;
+    memory.messages.push({ role: "assistant", content: text });
+    return turn.reply(text);
+  });
 });
 ```
 
-You return the next context along with the decision, so context management — what to keep, what to
-drop, when to compact — is yours to control rather than something the kernel does behind you.
-
-## Build it
+Build every named extension export with one command:
 
 ```sh
-brain-loop build loop.mjs --out loop.brain.json
+npx brain build
 ```
 
-The toolchain generates the WIT boundary and compiles to a WebAssembly component. You do not pick a
-Wasm runtime, write host imports, or hand-maintain an ABI.
-
-## Use it
+Applications import the generated factory and pass it under `brain`:
 
 ```ts
-const session = await brain.createSession({
-  model: { /* ... */ },
-  agentLoop: myLoop(),
+const session = await client.sessions.create({
+  brain: assistant({ instructions: "Answer briefly." }),
+  model,
 });
 ```
 
-## What you cannot do
-
-No network, no filesystem, no environment variables, no secrets, no clock, no resource held between
-activations. If you need one of those, it is a tool call or a model call — return it as a decision
-and Brain performs it.
-
-This is a constraint worth keeping. It is what lets someone else run your loop without reading it
-first, and what makes a recorded session replay identically.
+Registration and Brain handlers are synchronous. Return `turn.model`, `turn.tools`, `turn.emit`,
+`turn.reply`, `turn.done`, or `turn.fail`. Ordinary deterministic packages can be bundled. I/O and
+async work belong in Tools and Environments.

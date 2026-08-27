@@ -12,9 +12,9 @@ part that shapes behaviour, and it is stable for the life of the session.
 
 ```ts
 tools: [
-  read().runIn(workspace),
-  write().runIn(workspace),
-  bash().runIn(workspace),
+  read().useIn(workspace),
+  write().useIn(workspace),
+  bash().useIn(workspace),
 ]
 ```
 

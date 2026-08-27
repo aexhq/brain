@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use brain_protocol::{
-    AgentloopAdmission, AgentloopDigest, ApiError, CreateSessionRequest, EventPage, MessageRequest,
-    Session, SessionId, SessionList,
+    AgentloopAdmission, AgentloopDigest, ApiError, CreateSessionRequest, EnvironmentCallRequest,
+    EnvironmentCallResult, EnvironmentId, EventPage, MessageRequest, Session, SessionId,
+    SessionList,
 };
 
 #[async_trait]
@@ -25,6 +26,14 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         idempotency_key: String,
         request: MessageRequest,
     ) -> Result<Session, ApiError>;
+    async fn call_environment(
+        &self,
+        session_id: SessionId,
+        environment_id: EnvironmentId,
+        name: String,
+        idempotency_key: String,
+        request: EnvironmentCallRequest,
+    ) -> Result<EnvironmentCallResult, ApiError>;
     async fn events(
         &self,
         session_id: SessionId,

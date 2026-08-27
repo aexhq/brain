@@ -30,6 +30,7 @@ async fn real_worker_admits_and_activates_the_typescript_diagnostic_loop() {
                 observation: Observation::UserMessage {
                     content: serde_json::json!({"scenario":"tools"}),
                 },
+                configuration: serde_json::json!({}),
                 presentation: Presentation {
                     bytes: Vec::new(),
                     digest: "presentation".into(),
@@ -42,12 +43,12 @@ async fn real_worker_admits_and_activates_the_typescript_diagnostic_loop() {
         )
         .await
         .unwrap();
-    assert_eq!(output.context.state.unwrap()["activations"], 1);
+    assert_eq!(output.context.state.unwrap()["slots"][0]["activations"], 1);
     match output.decision {
-        Decision::Tools { calls } => {
-            assert_eq!(calls.len(), 2);
-            assert_eq!(calls[0].name, "diagnostic");
-        }
-        decision => panic!("expected parallel Tool decision, got {decision:?}"),
+        Decision::Finish { result } => assert_eq!(
+            result,
+            Some(serde_json::json!({"activations":1,"observation":"user_message"}))
+        ),
+        decision => panic!("expected terminal Brain decision, got {decision:?}"),
     }
 }

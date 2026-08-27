@@ -41,6 +41,7 @@ export interface RequestedToolBinding {
   name: Identifier;
   environment_id: Identifier;
   remote_tool_id: Identifier;
+  tool_configuration: unknown;
   grant: unknown;
 }
 /**
@@ -79,6 +80,7 @@ export interface ModelPresentation {
  */
 export interface CreateSessionRequest {
   agentloop_digest: Digest;
+  brain_configuration: unknown;
   model: ModelSelection;
   presentation: ModelPresentation;
   /**
@@ -96,6 +98,20 @@ export interface CreateSessionRequest {
  */
 export interface MessageRequest {
   content: unknown;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentCallRequest".
+ */
+export interface EnvironmentCallRequest {
+  input: unknown;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentCallResult".
+ */
+export interface EnvironmentCallResult {
+  output: unknown;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

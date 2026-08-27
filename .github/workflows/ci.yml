@@ -71,26 +71,18 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/checkout@v7
-        with:
-          repository: aexhq/extensions
-          path: extensions
       - uses: actions/setup-node@v7
         with:
           node-version: "22.23.2"
           cache: npm
       - run: npm ci
-      - name: Build the public TypeScript diagnostic Agentloop against this Brain
+      - name: Build the public TypeScript diagnostic Brain against this Brain
         shell: bash
         run: |
           set -euo pipefail
-          brain_archive=$(npm pack --silent --workspace @aexhq/brain --pack-destination "$RUNNER_TEMP")
-          cp -R extensions/packages/agentloop "$RUNNER_TEMP/agentloop"
-          cd "$RUNNER_TEMP/agentloop"
-          npm pkg set "dependencies.@aexhq/brain=file:$RUNNER_TEMP/$brain_archive"
-          npm install --ignore-scripts
-          npm test
-          node dist/cli.js build test/fixtures/diagnostic-loop.mjs --out "$RUNNER_TEMP/diagnostic.brain.json"
+          npm run build --workspace @aexhq/brain
+          node packages/brain-sdk/dist/cli.js build tests/release/diagnostic-brain.mjs --out "$RUNNER_TEMP/diagnostic"
+          cp "$RUNNER_TEMP/diagnostic/diagnostic.brain.json" "$RUNNER_TEMP/diagnostic.brain.json"
           npm audit --audit-level=high
       - uses: dtolnay/rust-toolchain@stable
         with:

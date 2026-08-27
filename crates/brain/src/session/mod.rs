@@ -89,7 +89,8 @@ impl Kernel {
         validate_bindings(&request)?;
         let session_id = SessionId::new(random_id("ses"));
         let journal_id = JournalId::new(random_id("jrn"));
-        let presentation = context::presentation(&request.presentation)?;
+        let presentation =
+            context::presentation(&request.presentation, &request.brain_configuration)?;
         let context = context::empty_context();
         let row = SessionRow {
             session_id: session_id.clone(),
@@ -122,7 +123,8 @@ impl Kernel {
         validate_requested_bindings(request)?;
         let session_id = SessionId::new(random_id("ses"));
         let journal_id = JournalId::new(random_id("jrn"));
-        let presentation = context::presentation(&request.presentation)?;
+        let presentation =
+            context::presentation(&request.presentation, &request.brain_configuration)?;
         let context = context::empty_context();
         let row = SessionRow {
             session_id,

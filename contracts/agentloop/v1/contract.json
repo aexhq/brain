@@ -45,10 +45,11 @@
     "ActivationInput": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["context", "observation", "presentation", "runtime"],
+      "required": ["context", "observation", "configuration", "presentation", "runtime"],
       "properties": {
         "context": { "$ref": "#/$defs/ContextEnvelope" },
         "observation": { "$ref": "#/$defs/Observation" },
+        "configuration": {},
         "presentation": {
           "type": "object",
           "additionalProperties": false,

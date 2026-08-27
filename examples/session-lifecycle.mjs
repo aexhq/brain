@@ -1,5 +1,5 @@
 import { Brain } from "@aexhq/brain";
-import { pi } from "@aexhq/loop-pi";
+import { example } from "./dist/index.mjs";
 
 const apiKey = process.env.VERCEL_AI_GATEWAY_API_KEY;
 if (!apiKey) throw new Error("VERCEL_AI_GATEWAY_API_KEY is required");
@@ -9,23 +9,23 @@ const brain = new Brain({
   ...(process.env.BRAIN_API_TOKEN ? { token: process.env.BRAIN_API_TOKEN } : {}),
 });
 
-const created = await brain.createSession({
+const created = await brain.sessions.create({
   model: {
     provider: "vercel-ai-gateway",
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
     apiKey,
   },
-  agentLoop: pi(),
+  brain: example(),
 });
 
 console.log("created", created.state);
-console.log("listed", (await brain.listSessions()).map(({ id, status }) => ({ id, status })));
+console.log("listed", (await brain.sessions.list()).map(({ id, status }) => ({ id, status })));
 
-const session = await brain.getSession(created.id);
+const session = await brain.sessions.get(created.id);
 console.log("reopened", session.state);
 
 await session.cancel();
 console.log("ended", await session.end());
 await session.delete();
 
-console.log("remaining", await brain.listSessions());
+console.log("remaining", await brain.sessions.list());

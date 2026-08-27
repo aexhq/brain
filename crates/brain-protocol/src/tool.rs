@@ -18,6 +18,7 @@ pub struct ToolBinding {
     pub environment: EnvironmentBinding,
     pub attachment_id: AttachmentId,
     pub remote_tool_id: String,
+    pub tool_configuration: serde_json::Value,
     pub grant: serde_json::Value,
 }
 
@@ -27,6 +28,7 @@ pub struct RequestedToolBinding {
     pub name: String,
     pub environment_id: EnvironmentId,
     pub remote_tool_id: String,
+    pub tool_configuration: serde_json::Value,
     pub grant: serde_json::Value,
 }
 

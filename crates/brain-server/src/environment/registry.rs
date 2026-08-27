@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use brain::{CreatingSession, Kernel, KernelError, SessionHandle};
 use brain_protocol::{
-    AttachmentId, EnvironmentAttachment, EnvironmentOperation, EnvironmentReceipt,
-    EnvironmentRequest, ResolvedSessionRequest, SealedSessionConfig, ToolBinding, request_digest,
+    AttachmentId, EnvironmentAttachment, EnvironmentCallResult, EnvironmentId,
+    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, ResolvedSessionRequest,
+    SealedSessionConfig, SessionId, ToolBinding, request_digest,
 };
 
 use super::{DirectoryEntry, EnvironmentAdapter, EnvironmentDirectory};
@@ -103,12 +104,14 @@ impl EnvironmentRegistry {
                         })?,
                     attachment_id,
                     remote_tool_id: tool.remote_tool_id,
+                    tool_configuration: tool.tool_configuration,
                     grant: tool.grant,
                 })
             })
             .collect::<Result<Vec<_>, KernelError>>()?;
         Ok(SealedSessionConfig {
             agentloop_digest: request.agentloop_digest,
+            brain_configuration: request.brain_configuration,
             model: request.model,
             presentation: request.presentation,
             environments,
@@ -171,6 +174,52 @@ impl EnvironmentRegistry {
         self.adapter
             .send(&entry.endpoint, &entry.binding, operation)
             .await
+    }
+
+    pub async fn call(
+        &self,
+        kernel: &Kernel,
+        session_id: &SessionId,
+        environment_id: &EnvironmentId,
+        name: String,
+        input: serde_json::Value,
+    ) -> Result<EnvironmentCallResult, KernelError> {
+        let sealed = kernel.sealed_config(session_id)?;
+        let attachment = sealed
+            .environments
+            .iter()
+            .find(|attachment| &attachment.binding.environment_id == environment_id)
+            .ok_or_else(|| {
+                KernelError::InvalidState("Environment is not attached to this session".into())
+            })?;
+        let entry = self.directory.get(&attachment.binding).await?;
+        let request = EnvironmentRequest::Call { name, input };
+        let (operation_id, request_digest) =
+            kernel.record_external_intent(session_id, "environment_call", &request)?;
+        let operation = EnvironmentOperation {
+            operation_id: operation_id.clone(),
+            request_digest,
+            environment_id: environment_id.clone(),
+            session_id: session_id.clone(),
+            attachment_id: Some(attachment.attachment_id.clone()),
+            request,
+        };
+        let receipt = self
+            .adapter
+            .send(&entry.endpoint, &entry.binding, &operation)
+            .await?;
+        kernel.record_external_result(session_id, "environment_call", &operation_id, &receipt)?;
+        match receipt {
+            EnvironmentReceipt::Result { output } => Ok(EnvironmentCallResult { output }),
+            EnvironmentReceipt::Failure { message, .. } => Err(KernelError::Executor(message)),
+            EnvironmentReceipt::Ambiguous { message } => Err(KernelError::Ambiguous(message)),
+            EnvironmentReceipt::Conflict { .. } => Err(KernelError::InvalidState(
+                "Environment rejected a call digest conflict".into(),
+            )),
+            _ => Err(KernelError::Executor(
+                "Environment returned a nonterminal call receipt".into(),
+            )),
+        }
     }
 
     pub async fn release_session(

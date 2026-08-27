@@ -12,10 +12,15 @@ pub fn empty_context() -> ContextEnvelope {
     }
 }
 
-pub fn presentation(value: &ModelPresentation) -> Result<Presentation, KernelError> {
+pub fn presentation(
+    value: &ModelPresentation,
+    brain_configuration: &serde_json::Value,
+) -> Result<Presentation, KernelError> {
+    let sealed =
+        serde_json::json!({ "brain_configuration": brain_configuration, "presentation": value });
     let bytes =
-        canonical_json(value).map_err(|error| KernelError::InvalidState(error.to_string()))?;
+        canonical_json(&sealed).map_err(|error| KernelError::InvalidState(error.to_string()))?;
     let digest =
-        request_digest(value).map_err(|error| KernelError::InvalidState(error.to_string()))?;
+        request_digest(&sealed).map_err(|error| KernelError::InvalidState(error.to_string()))?;
     Ok(Presentation { bytes, digest })
 }
