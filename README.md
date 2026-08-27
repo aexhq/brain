@@ -94,6 +94,20 @@ BRAIN_LOOP_WORKER="$PWD/target/release/brain-loop-worker" \
 ./target/release/brain --listen 127.0.0.1:8080
 ```
 
+## Run the examples locally
+
+On Linux, with the standalone server running, install the repository dependencies and provide a
+Vercel AI Gateway key:
+
+```sh
+npm ci
+export VERCEL_AI_GATEWAY_API_KEY="..."
+npm run example:basic
+```
+
+The [`examples/`](examples/) folder also covers event cursors, session lifecycle, and the raw HTTP
+API. See [`examples/README.md`](examples/README.md) for every command and optional setting.
+
 ## Embed Brain
 
 Supply the Agentloop, Model, Tool, and telemetry ports, then open the same session kernel used by

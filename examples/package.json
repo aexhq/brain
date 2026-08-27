@@ -1,0 +1,19 @@
+{
+  "name": "@aexhq/brain-examples",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "basic": "node basic-session.mjs",
+    "events": "node event-history.mjs",
+    "lifecycle": "node session-lifecycle.mjs",
+    "http": "node raw-http.mjs",
+    "test": "node --check basic-session.mjs && node --check event-history.mjs && node --check session-lifecycle.mjs && node --check raw-http.mjs"
+  },
+  "dependencies": {
+    "@aexhq/brain": "*",
+    "@aexhq/loop-pi": "0.89.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
