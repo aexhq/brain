@@ -205,7 +205,7 @@ function collectTool(setup: ToolSetup<unknown, unknown, unknown>): Pick<ToolSour
 
 export async function executeTool(factory: unknown, options: unknown, input: unknown, context: { readonly signal: AbortSignal; readonly deadlineMs: number; readonly requestId?: string; readonly workspace?: string; progress?(value: unknown): void }): Promise<unknown> {
   const source = sourceOf(factory as ExtensionFactory, "tool") as ToolSource;
-  const parsedOptions = source.contract.options === undefined ? requireNoOptions(options) : source.contract.options.parse(options);
+  const parsedOptions = source.contract.options === undefined ? requireEmptyConfiguration(options) : source.contract.options.parse(options);
   if (source.initialize !== undefined) {
     let initialized = initializedTools.get(source);
     if (initialized === undefined) {
@@ -574,7 +574,7 @@ function requireNoOptions(value: unknown): Record<string, never> {
   return Object.freeze({});
 }
 function requireEmptyConfiguration(value: unknown): Record<string, never> {
-  if (!plainObject(value) || Object.keys(value).length !== 0) throw new TypeError("this Brain extension does not accept options");
+  if (!plainObject(value) || Object.keys(value).length !== 0) throw new TypeError("this extension does not accept options");
   return Object.freeze({});
 }
 function validIdentifier(value: unknown): value is string { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value); }
