@@ -1,12 +1,16 @@
 {
   "name": "brain-monorepo",
   "private": true,
-  "workspaces": ["packages/brain-sdk"],
+  "workspaces": ["packages/brain-sdk", "examples"],
   "scripts": {
     "gen": "python tools/generate-contracts.py && npm run gen -w packages/brain-sdk",
     "build": "npm run build --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
-    "package-smoke": "node tools/package-smoke.mjs"
+    "package-smoke": "node tools/package-smoke.mjs",
+    "example:basic": "npm run basic -w examples",
+    "example:events": "npm run events -w examples",
+    "example:lifecycle": "npm run lifecycle -w examples",
+    "example:http": "npm run http -w examples"
   },
   "engines": { "node": ">=22" }
 }
