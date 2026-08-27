@@ -1,0 +1,50 @@
+use async_trait::async_trait;
+use brain_protocol::{
+    AgentloopAdmission, AgentloopDigest, ApiError, CreateSessionRequest, EventPage, MessageRequest,
+    Session, SessionId, SessionList,
+};
+
+#[async_trait]
+pub trait BrainApi: Clone + Send + Sync + 'static {
+    async fn admit_agentloop(
+        &self,
+        idempotency_key: String,
+        package: Vec<u8>,
+    ) -> Result<AgentloopAdmission, ApiError>;
+    async fn get_agentloop(&self, digest: AgentloopDigest) -> Result<AgentloopAdmission, ApiError>;
+    async fn create_session(
+        &self,
+        idempotency_key: String,
+        request: CreateSessionRequest,
+    ) -> Result<Session, ApiError>;
+    async fn get_session(&self, session_id: SessionId) -> Result<Session, ApiError>;
+    async fn list_sessions(&self) -> Result<SessionList, ApiError>;
+    async fn send_message(
+        &self,
+        session_id: SessionId,
+        idempotency_key: String,
+        request: MessageRequest,
+    ) -> Result<Session, ApiError>;
+    async fn events(
+        &self,
+        session_id: SessionId,
+        after: Option<u64>,
+    ) -> Result<EventPage, ApiError>;
+    async fn cancel_session(
+        &self,
+        session_id: SessionId,
+        idempotency_key: String,
+    ) -> Result<(), ApiError>;
+    async fn end_session(
+        &self,
+        session_id: SessionId,
+        idempotency_key: String,
+    ) -> Result<Session, ApiError>;
+    async fn delete_session(
+        &self,
+        session_id: SessionId,
+        idempotency_key: String,
+    ) -> Result<(), ApiError>;
+    async fn live(&self) -> bool;
+    async fn ready(&self) -> bool;
+}

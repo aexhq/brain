@@ -1,0 +1,47 @@
+{
+  "name": "@aexhq/brain",
+  "version": "0.6.0",
+  "description": "TypeScript SDK for an independently runnable Brain server",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aexhq/brain.git",
+    "directory": "packages/brain-sdk"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "tag": "next"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./contracts/agentloop.wit": "./contracts/agentloop.wit",
+    "./contracts/*": "./contracts/*.wit",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "contracts",
+    "README.md"
+  ],
+  "scripts": {
+    "gen": "node scripts/gen.mjs",
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test test/*.test.mjs",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "json-schema-to-typescript": "^15.0.4",
+    "openapi-typescript": "^7.9.1",
+    "typescript": "^5.9.2"
+  }
+}

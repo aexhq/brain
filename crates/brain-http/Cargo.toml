@@ -1,0 +1,21 @@
+[package]
+name = "brain-http"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Versioned Brain HTTP transport"
+publish = false
+
+[dependencies]
+brain-protocol = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }

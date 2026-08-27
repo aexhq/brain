@@ -1,20 +1,20 @@
 FROM rust:1.97.1-bookworm AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --locked --release -p brain-server --bin brain --bin brain-component-host
+RUN cargo build --locked --release -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
 
 FROM debian:bookworm-slim
-# Local mode executes managed Tool bundles through the host node runtime (and bash for shell
-# tools); pin the same node major the repository's JS toolchain uses. The runtime executes
-# prebuilt bundles with node alone: npm (and its vendored node-tar, the standing Trivy
-# CRITICAL) never belongs in the image.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && apt-get purge -y curl gnupg \
-    && rm -rf /var/lib/apt/lists/* /usr/lib/node_modules/npm /usr/bin/npm /usr/bin/npx
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home /var/lib/brain brain \
+    && install -d -o brain -g brain /var/lib/brain
 COPY --from=build /src/target/release/brain /usr/local/bin/brain
-COPY --from=build /src/target/release/brain-component-host /usr/local/bin/brain-component-host
-EXPOSE 3210
+COPY --from=build /src/target/release/brain-loop-worker /usr/local/bin/brain-loop-worker
+USER 10001:10001
+ENV BRAIN_DATA_DIR=/var/lib/brain \
+    BRAIN_LOOP_WORKER=/usr/local/bin/brain-loop-worker \
+    BRAIN_LISTEN=0.0.0.0:8080
+VOLUME ["/var/lib/brain"]
+EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/brain"]

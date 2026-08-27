@@ -1,1015 +1,168 @@
 openapi: 3.1.0
 info:
-  title: Brain session API
-  version: "1.0.0"
-  description: |
-    Durable model sessions with ordinary child sessions, explicit storage, and generation-fenced
-    sandboxes. BYOK: you bring the model key.
-
-    Auth: `Authorization: Bearer <api key>`. Errors: JSON `{"error": ApiError}`.
-    Component types are defined in `schemas.json` (single source, generated into Rust and TypeScript).
-servers:
-  - url: http://127.0.0.1:3210
-security:
-  - bearer: []
-tags:
-  - name: sessions
-  - name: turns
-  - name: children
-  - name: sandbox
-  - name: storage
-  - name: customer-environment
-  - name: changes
-
+  title: Brain HTTP API
+  version: 1.0.0
 paths:
+  /v1/agentloops:
+    post:
+      operationId: admitAgentloop
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary, maxLength: 33554432 }
+      responses:
+        '200':
+          description: Agentloop admitted
+          content:
+            application/json:
+              schema: { $ref: './schemas.json#/$defs/AgentloopAdmission' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/agentloops/{digest}:
+    get:
+      operationId: getAgentloop
+      parameters:
+        - name: digest
+          in: path
+          required: true
+          schema: { $ref: './schemas.json#/$defs/Digest' }
+      responses:
+        '200':
+          description: Admission status
+          content:
+            application/json:
+              schema: { $ref: './schemas.json#/$defs/AgentloopAdmission' }
+        default: { $ref: '#/components/responses/Error' }
   /v1/sessions:
     post:
-      tags: [sessions]
       operationId: createSession
-      summary: Create a session (seals model, prompt, tools, and execution policy)
       parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "schemas.json#/$defs/CreateSessionRequest" }
+            schema: { $ref: './schemas.json#/$defs/CreateSessionRequest' }
       responses:
-        "201":
-          description: Created
+        '200':
+          description: Created session
           content:
             application/json:
-              schema: { $ref: "schemas.json#/$defs/Session" }
-        default: { $ref: "#/components/responses/Error" }
+              schema: { $ref: './schemas.json#/$defs/Session' }
+        default: { $ref: '#/components/responses/Error' }
     get:
-      tags: [sessions]
       operationId: listSessions
-      summary: List sessions (newest first)
-      parameters:
-        - name: limit
-          in: query
-          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
-        - name: cursor
-          in: query
-          schema: { type: string }
-        - name: state
-          in: query
-          schema: { $ref: "schemas.json#/$defs/SessionState" }
       responses:
-        "200":
-          description: OK
+        '200':
+          description: Sessions
           content:
             application/json:
-              schema: { $ref: "schemas.json#/$defs/SessionList" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/session-changes:
-    get:
-      tags: [changes]
-      operationId: listSessionChanges
-      summary: List one stable tenant changefeed partition after an overlapping millisecond watermark
-      parameters:
-        - name: after_ms
-          in: query
-          schema: { type: integer, minimum: 0, default: 0 }
-        - name: partition
-          in: query
-          schema: { type: integer, minimum: 0, maximum: 255, default: 0 }
-        - name: partitions
-          in: query
-          schema: { type: integer, minimum: 1, maximum: 256, default: 1 }
-        - name: cursor
-          in: query
-          schema: { type: string }
-        - name: limit
-          in: query
-          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
-      responses:
-        "200":
-          description: At-least-once session high-water observations
-          content:
-            application/json:
-              schema: { $ref: "schemas.json#/$defs/SessionChangeFeed" }
-        default: { $ref: "#/components/responses/Error" }
+              schema: { $ref: './schemas.json#/$defs/SessionList' }
+        default: { $ref: '#/components/responses/Error' }
   /v1/sessions/{session_id}:
     parameters:
-      - $ref: "#/components/parameters/SessionId"
+      - $ref: '#/components/parameters/SessionId'
     get:
-      tags: [sessions]
       operationId: getSession
-      summary: Get a session
       responses:
-        "200":
-          description: OK
+        '200':
+          description: Session state
           content:
             application/json:
-              schema: { $ref: "schemas.json#/$defs/Session" }
-        default: { $ref: "#/components/responses/Error" }
+              schema: { $ref: './schemas.json#/$defs/Session' }
+        default: { $ref: '#/components/responses/Error' }
     delete:
-      tags: [sessions]
       operationId: deleteSession
-      summary: Start irreversible recursive deletion of the session tree
-      responses:
-        "202":
-          description: Deletion accepted; poll the Location response header
-        "204":
-          description: An earlier request already completed physical deletion
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/messages:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-    post:
-      tags: [turns]
-      operationId: sendMessage
-      summary: Send a user message; starts a turn
-      description: |
-        Returns 202 as soon as the turn is admitted and journaled. Follow progress on
-        `GET /events?after=<seq-1>`. 409 `session_busy` while a turn is running. Host products may
-        implement higher-level result semantics with ordinary sealed server tools.
       parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204': { description: Deleted }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/sessions/{session_id}/messages:
+    post:
+      operationId: sendMessage
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "schemas.json#/$defs/MessageRequest" }
+            schema: { $ref: './schemas.json#/$defs/MessageRequest' }
       responses:
-        "202":
-          description: Accepted
-          content:
-            application/json:
-              schema: { $ref: "schemas.json#/$defs/MessageAccepted" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/suspend:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-    post:
-      tags: [sessions]
-      operationId: suspendSession
-      summary: Release live Environment capacity while retaining the durable root session
-      responses:
-        "200":
-          description: Suspended
-          content:
-            application/json:
-              schema: { $ref: "schemas.json#/$defs/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/resume:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-    post:
-      tags: [sessions]
-      operationId: resumeSession
-      summary: Reopen a suspended durable root session without eagerly allocating an Environment
-      responses:
-        "200":
-          description: Open
-          content:
-            application/json:
-              schema: { $ref: "schemas.json#/$defs/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/retention:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-    post:
-      tags: [sessions]
-      operationId: updateSessionRetention
-      summary: Renew or explicitly shorten the finite durable-retention deadline
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "schemas.json#/$defs/RetentionUpdate" }
-      responses:
-        "200":
+        '200':
           description: Updated session
           content:
             application/json:
-              schema: { $ref: "schemas.json#/$defs/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/events:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-    get:
-      tags: [turns]
-      operationId: streamEvents
-      summary: Server-sent events for a session, replayable from the journal
-      description: |
-        `text/event-stream`. Each event is `id: <seq>`, `event: <type>`, `data: <Event JSON>`.
-        Pass `after` (or the `Last-Event-ID` header) to resume. With `follow=false` the stream
-        ends after the journal is drained; otherwise it stays open across turns until the session
-        is deleted.
+              schema: { $ref: './schemas.json#/$defs/Session' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/sessions/{session_id}/cancel:
+    post:
+      operationId: cancelSession
       parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204': { description: Cancellation requested }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/sessions/{session_id}/events:
+    get:
+      operationId: readSessionEvents
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
         - name: after
           in: query
-          schema: { type: integer, minimum: 0, default: 0 }
-        - name: follow
-          in: query
-          schema: { type: boolean, default: true }
-        - name: through
-          in: query
-          description: Exact strong high-water for a finite replay; valid only with follow=false
           schema: { type: integer, minimum: 0 }
       responses:
-        "200":
-          description: Event stream
+        '200':
+          description: Finite event page or SSE stream according to Accept
           content:
+            application/json:
+              schema: { $ref: './schemas.json#/$defs/EventPage' }
             text/event-stream:
-              schema: { $ref: "schemas.json#/$defs/Event" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/cancel:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-    post:
-      tags: [turns]
-      operationId: cancelTurn
-      summary: Cancel the running turn (in-flight tool calls are cancelled; background jobs keep running)
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: "schemas.json#/$defs/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
+              schema: { type: string }
+        default: { $ref: '#/components/responses/Error' }
   /v1/sessions/{session_id}/end:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
     post:
-      tags: [sessions]
       operationId: endSession
-      summary: Durably fence the session subtree and accept asynchronous teardown
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
-        "202":
-          description: The subtree admission fence is durable; the returned Session is ending
+        '200':
+          description: Ended session
           content:
             application/json:
-              schema: { $ref: "schemas.json#/$defs/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/deletion:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
+              schema: { $ref: './schemas.json#/$defs/Session' }
+        default: { $ref: '#/components/responses/Error' }
+  /health/live:
     get:
-      tags: [sessions]
-      operationId: getDeletionStatus
-      summary: Read the durable recursive-deletion tombstone or retry state
+      operationId: live
       responses:
-        "200": { $ref: "#/components/responses/DeletionStatus" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/environments/{environment}:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
+        '204': { description: Process is live }
+  /health/ready:
     get:
-      tags: [environments]
-      operationId: getEnvironment
+      operationId: ready
       responses:
-        "200": { $ref: "#/components/responses/SandboxStatus" }
-        default: { $ref: "#/components/responses/Error" }
-    post:
-      tags: [environments]
-      operationId: createEnvironment
-      summary: Idempotently materialize a declared environment
-      responses:
-        "200": { $ref: "#/components/responses/SandboxStatus" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/environments/{environment}/files/list:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-    post:
-      tags: [environments]
-      operationId: listSandboxFiles
-      requestBody: { $ref: "#/components/requestBodies/SandboxFileList" }
-      responses:
-        "200": { $ref: "#/components/responses/SandboxFileList" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/environments/{environment}/files/stat:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-    post:
-      tags: [environments]
-      operationId: statSandboxFile
-      requestBody: { $ref: "#/components/requestBodies/SandboxFilePath" }
-      responses:
-        "200": { $ref: "#/components/responses/SandboxFile" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/environments/{environment}/files/read-inline:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-    post:
-      tags: [environments]
-      operationId: readSandboxFileInline
-      requestBody: { $ref: "#/components/requestBodies/SandboxFileRead" }
-      responses:
-        "200": { $ref: "#/components/responses/SandboxFileContent" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/environments/{environment}/files/write-inline:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-      - $ref: "#/components/parameters/RequiredIdempotencyKey"
-    post:
-      tags: [environments]
-      operationId: writeSandboxFileInline
-      requestBody: { $ref: "#/components/requestBodies/SandboxFileWrite" }
-      responses:
-        "200": { $ref: "#/components/responses/SandboxFile" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/environments/{environment}/files/downloads:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-    post:
-      tags: [environments]
-      operationId: prepareSandboxFileDownload
-      summary: Prepare a short-lived generation-fenced direct download
-      description: >-
-        Process-local happy-path convenience. Brain does not automatically retry or recover this
-        transfer after restart, expiry, missing state, or an ambiguous response. Prepare a fresh
-        transfer after inspecting the file; use session storage plus copy for recovery-safe bytes.
-      requestBody: { $ref: "#/components/requestBodies/SandboxFilePath" }
-      responses:
-        "200": { $ref: "#/components/responses/StorageTransfer" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/environments/{environment}/files/uploads:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-    post:
-      tags: [environments]
-      operationId: prepareSandboxFileUpload
-      summary: Prepare a short-lived generation-fenced direct upload
-      description: >-
-        Process-local happy-path convenience. Brain does not automatically retry or recover this
-        transfer after restart, expiry, missing state, or an ambiguous response. Prepare a fresh
-        transfer after inspecting the file; use session storage plus copy for recovery-safe bytes.
-      requestBody: { $ref: "#/components/requestBodies/SandboxFileUpload" }
-      responses:
-        "200": { $ref: "#/components/responses/StorageTransfer" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/environments/{environment}/files/uploads/{transfer_id}/complete:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-      - $ref: "#/components/parameters/TransferId"
-    post:
-      tags: [environments]
-      operationId: completeSandboxFileUpload
-      summary: Import one prepared upload into its originally fenced generation and path
-      description: >-
-        Completion is not automatically retried. Unknown, expired, or ambiguous process-local
-        state returns a typed error and requires file inspection plus a fresh prepare.
-      responses:
-        "200": { $ref: "#/components/responses/SandboxFile" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/environments/{environment}/files/find:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-    post:
-      tags: [environments]
-      operationId: findSandboxFiles
-      requestBody: { $ref: "#/components/requestBodies/SandboxFileFind" }
-      responses:
-        "200": { $ref: "#/components/responses/SandboxFileList" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/environments/{environment}/files/grep:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-    post:
-      tags: [environments]
-      operationId: grepSandboxFiles
-      requestBody: { $ref: "#/components/requestBodies/SandboxFileGrep" }
-      responses:
-        "200": { $ref: "#/components/responses/SandboxFileList" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/children:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
-    get:
-      tags: [children]
-      operationId: listChildren
-      parameters:
-        - { name: cursor, in: query, schema: { type: string } }
-        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
-      responses:
-        "200": { $ref: "#/components/responses/SessionList" }
-        default: { $ref: "#/components/responses/Error" }
-    post:
-      tags: [children]
-      operationId: createChild
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
-      requestBody: { $ref: "#/components/requestBodies/CreateChild" }
-      responses:
-        "201": { $ref: "#/components/responses/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/children/{child_id}:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/ChildId"
-    get:
-      tags: [children]
-      operationId: getChild
-      responses:
-        "200": { $ref: "#/components/responses/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/children/{child_id}/messages:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/ChildId"
-      - $ref: "#/components/parameters/IdempotencyKey"
-    post:
-      tags: [children]
-      operationId: sendChildMessage
-      requestBody: { $ref: "#/components/requestBodies/ChildMessage" }
-      responses:
-        "202": { $ref: "#/components/responses/MessageAccepted" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/children/{child_id}/follow-up:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/ChildId"
-      - $ref: "#/components/parameters/IdempotencyKey"
-    post:
-      tags: [children]
-      operationId: followUpChild
-      requestBody: { $ref: "#/components/requestBodies/ChildMessage" }
-      responses:
-        "200": { $ref: "#/components/responses/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/children/{child_id}/wait:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/ChildId"
-    post:
-      tags: [children]
-      operationId: waitForChild
-      requestBody: { $ref: "#/components/requestBodies/WaitChild" }
-      responses:
-        "200": { $ref: "#/components/responses/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/children/{child_id}/interrupt:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/ChildId"
-    post:
-      tags: [children]
-      operationId: interruptChild
-      responses:
-        "200": { $ref: "#/components/responses/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/children/{child_id}/end:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/ChildId"
-    post:
-      tags: [children]
-      operationId: endChild
-      summary: Durably fence the child subtree and accept asynchronous teardown
-      responses:
-        "202": { $ref: "#/components/responses/Session" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/storage/list:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
-    post:
-      tags: [storage]
-      operationId: listStorage
-      requestBody: { $ref: "#/components/requestBodies/StorageList" }
-      responses:
-        "200": { $ref: "#/components/responses/StorageList" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/storage/stat:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
-    post:
-      tags: [storage]
-      operationId: statStorageObject
-      requestBody: { $ref: "#/components/requestBodies/StorageKey" }
-      responses:
-        "200": { $ref: "#/components/responses/StorageObject" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/storage/read-inline:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
-    post:
-      tags: [storage]
-      operationId: readStorageInline
-      requestBody: { $ref: "#/components/requestBodies/StorageRead" }
-      responses:
-        "200": { $ref: "#/components/responses/StorageContent" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/storage/write-inline:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
-    post:
-      tags: [storage]
-      operationId: writeStorageInline
-      requestBody: { $ref: "#/components/requestBodies/StorageWrite" }
-      responses:
-        "200": { $ref: "#/components/responses/StorageObject" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/storage/downloads:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
-    post:
-      tags: [storage]
-      operationId: prepareStorageDownload
-      requestBody: { $ref: "#/components/requestBodies/StorageKey" }
-      responses:
-        "200": { $ref: "#/components/responses/StorageTransfer" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/storage/uploads:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
-    post:
-      tags: [storage]
-      operationId: prepareStorageUpload
-      requestBody: { $ref: "#/components/requestBodies/StorageUpload" }
-      responses:
-        "200": { $ref: "#/components/responses/StorageTransfer" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/storage/uploads/{transfer_id}/complete:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/TransferId"
-    post:
-      tags: [storage]
-      operationId: completeStorageUpload
-      responses:
-        "200": { $ref: "#/components/responses/StorageObject" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/storage/delete:
-    parameters: [{ $ref: "#/components/parameters/SessionId" }]
-    post:
-      tags: [storage]
-      operationId: deleteStorageObject
-      requestBody: { $ref: "#/components/requestBodies/StorageKey" }
-      responses:
-        "204": { description: Deleted }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/storage/copy-from-environment/{environment}:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-      - $ref: "#/components/parameters/RequiredIdempotencyKey"
-    post:
-      tags: [storage, environments]
-      operationId: copyFromEnvironment
-      requestBody: { $ref: "#/components/requestBodies/StorageEnvironmentCopy" }
-      responses:
-        "200": { $ref: "#/components/responses/StorageObject" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/sessions/{session_id}/storage/copy-to-environment/{environment}:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - $ref: "#/components/parameters/EnvironmentName"
-      - $ref: "#/components/parameters/RequiredIdempotencyKey"
-    post:
-      tags: [storage, environments]
-      operationId: copyToEnvironment
-      requestBody: { $ref: "#/components/requestBodies/StorageEnvironmentCopy" }
-      responses:
-        "200": { $ref: "#/components/responses/SandboxFile" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/customer-environment/grants:
-    post:
-      tags: [customer-environment]
-      operationId: createCustomerEnvironmentGrant
-      requestBody: { $ref: "#/components/requestBodies/CustomerGrant" }
-      responses:
-        "200": { $ref: "#/components/responses/CustomerGrant" }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/customer-environment/socket:
-    get:
-      tags: [customer-environment]
-      operationId: connectCustomerEnvironment
-      security: []
-      parameters:
-        - name: Sec-WebSocket-Protocol
-          in: header
-          required: true
-          schema: { type: string, pattern: '^environment-grant\\.' }
-      responses:
-        "101": { description: WebSocket upgraded }
-        default: { $ref: "#/components/responses/Error" }
-
-  /v1/customer-environment/observations/{grant_id}:
-    post:
-      tags: [customer-environment]
-      operationId: observeCustomerEnvironmentOperation
-      security: [{ bearer: [] }]
-      parameters: [{ $ref: "#/components/parameters/GrantId" }]
-      requestBody: { $ref: "#/components/requestBodies/CustomerObservation" }
-      responses:
-        "204": { description: Observation applied }
-        default: { $ref: "#/components/responses/Error" }
-
+        '204': { description: Process is ready }
+        '503': { description: Required dependency is unavailable }
 components:
-  securitySchemes:
-    bearer:
-      type: http
-      scheme: bearer
   parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
     SessionId:
       name: session_id
       in: path
       required: true
-      schema: { $ref: "schemas.json#/$defs/SessionId" }
-    IdempotencyKey:
-      name: Idempotency-Key
-      in: header
-      required: false
-      description: Repeating the same logical request reuses its durable operation identity.
-      schema: { type: string, maxLength: 128 }
-    RequiredIdempotencyKey:
-      name: Idempotency-Key
-      in: header
-      required: true
-      description: Required exact-replay identity for an effectful operation.
-      schema: { type: string, minLength: 1, maxLength: 128 }
-    ChildId:
-      name: child_id
-      in: path
-      required: true
-      schema: { $ref: "schemas.json#/$defs/SessionId" }
-    EnvironmentName:
-      name: environment
-      in: path
-      required: true
-      schema: { type: string, pattern: "^[A-Za-z][A-Za-z0-9_-]{0,63}$" }
-    TransferId:
-      name: transfer_id
-      in: path
-      required: true
-      schema: { type: string, minLength: 1, maxLength: 128 }
-    GrantId:
-      name: grant_id
-      in: path
-      required: true
-      schema: { type: string, minLength: 1, maxLength: 128 }
-  requestBodies:
-    SandboxFilePath:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFilePathRequest" } } }
-    SandboxFileList:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileListRequest" } } }
-    SandboxFileRead:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileReadRequest" } } }
-    SandboxFileWrite:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileWriteRequest" } } }
-    SandboxFileUpload:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileUploadRequest" } } }
-    SandboxFileFind:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileFindRequest" } } }
-    SandboxFileGrep:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileGrepRequest" } } }
-    CreateChild:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/CreateChildRequest" } } }
-    ChildMessage:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/ChildMessageRequest" } } }
-    WaitChild:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/WaitChildRequest" } } }
-    StorageList:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageListRequest" } } }
-    StorageKey:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageKeyRequest" } } }
-    StorageRead:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageReadRequest" } } }
-    StorageWrite:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageWriteRequest" } } }
-    StorageUpload:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageUploadRequest" } } }
-    StorageEnvironmentCopy:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageEnvironmentCopyRequest" } } }
-    CustomerGrant:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/CustomerGrantRequest" } } }
-    CustomerObservation:
-      required: true
-      content: { application/json: { schema: { $ref: "#/components/schemas/CustomerObservation" } } }
+      schema: { $ref: './schemas.json#/$defs/SessionId' }
   responses:
     Error:
-      description: Error
+      description: Structured error
       content:
         application/json:
-          schema: { $ref: "schemas.json#/$defs/ApiErrorResponse" }
-    Session:
-      description: Ordinary Session projection
-      content: { application/json: { schema: { $ref: "schemas.json#/$defs/Session" } } }
-    SessionList:
-      description: Ordinary Session page
-      content: { application/json: { schema: { $ref: "schemas.json#/$defs/SessionList" } } }
-    MessageAccepted:
-      description: Turn admitted
-      content: { application/json: { schema: { $ref: "schemas.json#/$defs/MessageAccepted" } } }
-    DeletionStatus:
-      description: Durable deletion status
-      content: { application/json: { schema: { $ref: "#/components/schemas/DeletionStatus" } } }
-    SandboxStatus:
-      description: Generation-fenced environment lifecycle
-      content: { application/json: { schema: { $ref: "../../environment/contract.json#/definitions/SandboxStatus" } } }
-    SandboxFile:
-      description: Sandbox file metadata
-      content: { application/json: { schema: { $ref: "../../environment/contract.json#/definitions/FileEntry" } } }
-    SandboxFileContent:
-      description: Bounded inline sandbox file
-      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileContent" } } }
-    SandboxFileList:
-      description: Sandbox file page
-      content: { application/json: { schema: { $ref: "#/components/schemas/SandboxFileList" } } }
-    StorageObject:
-      description: Durable session-storage object
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageObject" } } }
-    StorageList:
-      description: Durable storage page
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageList" } } }
-    StorageContent:
-      description: Bounded inline durable object
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageContent" } } }
-    StorageTransfer:
-      description: Short-lived one-purpose transfer authority
-      content: { application/json: { schema: { $ref: "#/components/schemas/StorageTransfer" } } }
-    CustomerGrant:
-      description: Customer-Environment WebSocket and observation grants
-      content: { application/json: { schema: { $ref: "#/components/schemas/CustomerGrant" } } }
-  schemas:
-    DeletionStatus:
-      type: object
-      additionalProperties: false
-      required: [object, session_id, state, requested_at_ms, updated_at_ms, completed_at_ms]
-      properties:
-        object: { const: session.deletion }
-        session_id: { $ref: "schemas.json#/$defs/SessionId" }
-        state: { type: string, enum: [accepted, deleting, retrying, blocked, succeeded] }
-        requested_at_ms: { type: integer, minimum: 0 }
-        updated_at_ms: { type: integer, minimum: 0 }
-        completed_at_ms: { type: [integer, "null"], minimum: 0 }
-    SandboxFilePathRequest:
-      type: object
-      additionalProperties: false
-      required: [path, generation]
-      properties:
-        path: { type: string, minLength: 1, maxLength: 4096 }
-        generation: { type: string, minLength: 1, maxLength: 128 }
-    SandboxFileListRequest:
-      allOf:
-        - $ref: "#/components/schemas/SandboxFilePathRequest"
-        - type: object
-          properties:
-            cursor: { type: string, maxLength: 4096 }
-            limit: { type: integer, minimum: 1, maximum: 100, default: 100 }
-    SandboxFileReadRequest:
-      allOf:
-        - $ref: "#/components/schemas/SandboxFilePathRequest"
-        - type: object
-          properties:
-            max_bytes: { type: integer, minimum: 0, maximum: 1048576, default: 1048576 }
-    SandboxFileWriteRequest:
-      type: object
-      additionalProperties: false
-      required: [path, generation, content_base64]
-      properties:
-        path: { type: string, minLength: 1, maxLength: 4096 }
-        generation: { type: string, minLength: 1, maxLength: 128 }
-        content_base64: { type: string, maxLength: 1398108 }
-        overwrite: { type: boolean, default: false }
-    SandboxFileUploadRequest:
-      type: object
-      additionalProperties: false
-      required: [path, generation, bytes, sha256]
-      properties:
-        path: { type: string, minLength: 1, maxLength: 4096 }
-        generation: { type: string, minLength: 1, maxLength: 128 }
-        bytes: { type: integer, minimum: 0, maximum: 536870912 }
-        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
-        overwrite: { type: boolean, default: false }
-    SandboxFileFindRequest:
-      type: object
-      additionalProperties: false
-      required: [path, generation, glob]
-      properties:
-        path: { type: string, minLength: 1, maxLength: 4096 }
-        generation: { type: string, minLength: 1, maxLength: 128 }
-        glob: { type: string, minLength: 1, maxLength: 4096 }
-        cursor: { type: string, maxLength: 4096 }
-        limit: { type: integer, minimum: 1, maximum: 100, default: 100 }
-    SandboxFileGrepRequest:
-      type: object
-      additionalProperties: false
-      required: [path, generation, query]
-      properties:
-        path: { type: string, minLength: 1, maxLength: 4096 }
-        generation: { type: string, minLength: 1, maxLength: 128 }
-        query: { type: string, minLength: 1, maxLength: 4096 }
-        cursor: { type: string, maxLength: 4096 }
-        limit: { type: integer, minimum: 1, maximum: 100, default: 100 }
-    SandboxFileList:
-      type: object
-      additionalProperties: false
-      required: [data, has_more, generation]
-      properties:
-        data: { type: array, maxItems: 100, items: { $ref: "../../environment/contract.json#/definitions/FileEntry" } }
-        has_more: { type: boolean }
-        next_cursor: { type: string }
-        generation: { type: string, minLength: 1, maxLength: 128 }
-    SandboxFileContent:
-      type: object
-      additionalProperties: false
-      required: [entry, content_base64]
-      properties:
-        entry: { $ref: "../../environment/contract.json#/definitions/FileEntry" }
-        content_base64: { type: string, maxLength: 1398108 }
-    CreateChildRequest:
-      type: object
-      additionalProperties: false
-      required: [prompt]
-      properties:
-        prompt: { type: string, minLength: 1, maxLength: 196608 }
-        name: { type: string, minLength: 1, maxLength: 128 }
-        fork_turns:
-          oneOf:
-            - { type: string, enum: [all, none] }
-            - { type: string, pattern: '^[1-9][0-9]*$' }
-    ChildMessageRequest:
-      type: object
-      additionalProperties: false
-      required: [message]
-      properties:
-        message: { type: string, minLength: 1, maxLength: 196608 }
-    WaitChildRequest:
-      type: object
-      additionalProperties: false
-      properties:
-        timeout_ms: { type: integer, minimum: 0, maximum: 300000, default: 30000 }
-    StorageListRequest:
-      type: object
-      additionalProperties: false
-      properties:
-        prefix: { type: string, maxLength: 1024 }
-        cursor: { type: string, maxLength: 4096 }
-        limit: { type: integer, minimum: 1, maximum: 100, default: 100 }
-    StorageKeyRequest:
-      type: object
-      additionalProperties: false
-      required: [key]
-      properties:
-        key: { type: string, minLength: 1, maxLength: 1024 }
-    StorageReadRequest:
-      type: object
-      additionalProperties: false
-      required: [key]
-      properties:
-        key: { type: string, minLength: 1, maxLength: 1024 }
-        max_bytes: { type: integer, minimum: 0, maximum: 1048576, default: 1048576 }
-    StorageWriteRequest:
-      type: object
-      additionalProperties: false
-      required: [key, content_base64]
-      properties:
-        key: { type: string, minLength: 1, maxLength: 1024 }
-        content_base64: { type: string, maxLength: 1398108 }
-        content_type: { type: string, minLength: 1, maxLength: 255 }
-        overwrite: { type: boolean, default: false }
-    StorageUploadRequest:
-      type: object
-      additionalProperties: false
-      required: [key, bytes, sha256]
-      properties:
-        key: { type: string, minLength: 1, maxLength: 1024 }
-        bytes: { type: integer, minimum: 0, maximum: 536870912 }
-        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
-        content_type: { type: string, minLength: 1, maxLength: 255 }
-        overwrite: { type: boolean, default: false }
-    StorageEnvironmentCopyRequest:
-      type: object
-      additionalProperties: false
-      required: [key, path, environment_generation]
-      properties:
-        key: { type: string, minLength: 1, maxLength: 1024 }
-        path: { type: string, minLength: 1, maxLength: 4096 }
-        environment_generation: { type: string, minLength: 1, maxLength: 128 }
-        overwrite: { type: boolean, default: false }
-    StorageObject:
-      type: object
-      additionalProperties: false
-      required: [key, bytes, sha256, created_at, updated_at]
-      properties:
-        key: { type: string, minLength: 1, maxLength: 1024 }
-        bytes: { type: integer, minimum: 0 }
-        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
-        content_type: { type: string, minLength: 1, maxLength: 255 }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
-    StorageList:
-      type: object
-      additionalProperties: false
-      required: [data, has_more]
-      properties:
-        data: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/StorageObject" } }
-        has_more: { type: boolean }
-        next_cursor: { type: string, maxLength: 4096 }
-    StorageContent:
-      type: object
-      additionalProperties: false
-      required: [object, content_base64]
-      properties:
-        object: { $ref: "#/components/schemas/StorageObject" }
-        content_base64: { type: string, maxLength: 1398108 }
-    StorageTransfer:
-      type: object
-      additionalProperties: false
-      required: [transfer_id, method, url, headers, expires_at, max_bytes]
-      properties:
-        transfer_id: { type: string, minLength: 1, maxLength: 128 }
-        method: { type: string, enum: [GET, PUT] }
-        url: { type: string, minLength: 1, maxLength: 8192 }
-        headers: { type: object, maxProperties: 16, additionalProperties: { type: string, maxLength: 4096 } }
-        expires_at: { type: string, format: date-time }
-        max_bytes: { type: integer, minimum: 1 }
-    CustomerGrantRequest:
-      type: object
-      additionalProperties: false
-      required: [client_id]
-      properties:
-        client_id: { type: string, minLength: 1, maxLength: 128 }
-    CustomerGrant:
-      type: object
-      additionalProperties: false
-      required: [url, protocol, expires_at, grant_id, observation_url, observation_token]
-      properties:
-        url: { type: string, minLength: 1, maxLength: 8192 }
-        protocol: { type: string, minLength: 1, maxLength: 256 }
-        expires_at: { type: string, format: date-time }
-        grant_id: { type: string, minLength: 1, maxLength: 128 }
-        observation_url: { type: string, minLength: 1, maxLength: 8192 }
-        observation_token: { type: string, minLength: 1, maxLength: 256 }
-    CustomerObservation:
-      oneOf:
-        - type: object
-          additionalProperties: false
-          required: [type, epoch, operation_id, request_digest, replayed]
-          properties:
-            type: { const: receipt }
-            epoch: { type: integer, minimum: 0 }
-            operation_id: { type: string, minLength: 1, maxLength: 128 }
-            request_digest: { type: string, pattern: '^[0-9a-f]{64}$' }
-            replayed: { type: boolean }
-        - type: object
-          additionalProperties: false
-          required: [type, epoch, operation_id, request_digest, ok]
-          properties:
-            type: { const: terminal }
-            epoch: { type: integer, minimum: 0 }
-            operation_id: { type: string, minLength: 1, maxLength: 128 }
-            request_digest: { type: string, pattern: '^[0-9a-f]{64}$' }
-            ok: { type: boolean }
-            output: {}
-            error: { type: string, maxLength: 94208 }
+          schema: { $ref: './schemas.json#/$defs/ApiError' }

@@ -1,9 +1,0 @@
-{
-  "activation_id": "act-0002",
-  "outcome": "failed",
-  "error": {
-    "code": "internal",
-    "message": "guest trap: unreachable executed",
-    "retryable": false
-  }
-}

@@ -1,8 +1,0 @@
-{
-  "op_id": "op-m-0015",
-  "error": {
-    "code": "turn_already_terminal",
-    "message": "the turn ended with a return_direct tool; no further ops accepted",
-    "retryable": false
-  }
-}

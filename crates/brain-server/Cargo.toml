@@ -4,44 +4,28 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The standalone Brain server"
+description = "Individually runnable multi-session Brain server"
 publish = false
+autobins = false
+
+[[bin]]
+name = "brain"
+path = "src/main.rs"
 
 [dependencies]
 brain = { workspace = true }
-brain-aws = { workspace = true }
-brain-component-host = { path = "../brain-component-host" }
-brain-environment-host = { workspace = true }
-brain-loophost = { workspace = true, optional = true }
-brain-observability = { workspace = true }
-brain-providers = { workspace = true }
-brain-standalone = { workspace = true }
-brain-toolhost = { workspace = true }
-
+brain-http = { workspace = true }
+brain-loophost = { workspace = true }
+brain-protocol = { workspace = true }
+brain-telemetry = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-async-stream = { workspace = true }
 axum = { workspace = true }
-base64 = { workspace = true }
-brain-protocol = { workspace = true }
-futures-util = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_jcs = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 tracing = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = { workspace = true }
-
-[features]
-default = ["loophost"]
-loophost = ["dep:brain-loophost"]
-
-[dev-dependencies]
-regex = { workspace = true }
-tower = { workspace = true }
-reqwest = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-walkdir = { workspace = true }
+tracing-subscriber = { workspace = true }
