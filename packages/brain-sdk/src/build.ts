@@ -21,7 +21,7 @@ export async function build(options: BuildOptions = {}): Promise<readonly BuiltE
   await mkdir(out, { recursive: true });
   if (/\.(?:ts|tsx|mts|cts)$/u.test(entry)) await emitDeclarations(entry, out);
   const sourcePath = join(out, "source.mjs");
-  await bundle({ entryPoints: [entry], outfile: sourcePath, bundle: true, format: "esm", platform: "node", target: "node22", packages: "external", legalComments: "none" });
+  await bundle({ entryPoints: [entry], outfile: sourcePath, bundle: true, format: "esm", platform: "node", target: "node22", legalComments: "none" });
   const loaded = await import(`${pathToFileURL(sourcePath).href}?build=${Date.now()}`) as Record<string, unknown>;
   const definitions = Object.entries(loaded).filter((entry): entry is [string, Function & { [extensionSource]: { kind: "brain" | "tool" | "environment" } }] =>
     typeof entry[1] === "function" && (entry[1] as Function & { [extensionSource]?: unknown })[extensionSource] !== undefined,

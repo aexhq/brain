@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "brain build example-brain.mjs --out dist",
+    "build": "node ../packages/brain-sdk/dist/cli.js build example-brain.mjs --out dist",
     "basic": "node basic-session.mjs",
     "events": "node event-history.mjs",
     "lifecycle": "node session-lifecycle.mjs",
