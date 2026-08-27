@@ -42,7 +42,12 @@ def main() -> None:
     for name, path in {**JSON_CONTRACTS, **TEXT_CONTRACTS}.items():
         relative = pathlib.Path("../../../") / path.relative_to(ROOT)
         rust.append(f'pub const {name}: &str = include_str!("{relative.as_posix()}");')
-        rust.append(f'pub const {name}_DIGEST: &str = "{values[name]}";')
+        rust.extend(
+            [
+                f"pub const {name}_DIGEST: &str =",
+                f'    "{values[name]}";',
+            ]
+        )
     rust.append("")
     RUST_OUTPUT.write_text("\n".join(rust), encoding="utf-8", newline="\n")
 
