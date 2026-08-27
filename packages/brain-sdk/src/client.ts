@@ -15,7 +15,9 @@ export class BrainClient {
   private readonly transport: typeof globalThis.fetch;
 
   constructor(options: BrainOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/u, "");
+    let end = options.baseUrl.length;
+    while (end > 0 && options.baseUrl.charCodeAt(end - 1) === 47) end -= 1;
+    this.baseUrl = options.baseUrl.slice(0, end);
     if (this.baseUrl.length === 0) throw new TypeError("baseUrl is required");
     const url = new URL(this.baseUrl);
     if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
