@@ -205,7 +205,9 @@ function collectTool(setup: ToolSetup<unknown, unknown, unknown>): Pick<ToolSour
 
 export async function executeTool(factory: unknown, options: unknown, input: unknown, context: { readonly signal: AbortSignal; readonly deadlineMs: number; readonly requestId?: string; readonly workspace?: string; progress?(value: unknown): void }): Promise<unknown> {
   const source = sourceOf(factory as ExtensionFactory, "tool") as ToolSource;
-  const parsedOptions = source.contract.options === undefined ? requireEmptyConfiguration(options) : source.contract.options.parse(options);
+  const parsedOptions = source.contract.options === undefined
+    ? options === undefined ? Object.freeze({}) : requireEmptyConfiguration(options)
+    : source.contract.options.parse(options);
   if (source.initialize !== undefined) {
     let initialized = initializedTools.get(source);
     if (initialized === undefined) {
