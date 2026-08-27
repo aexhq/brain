@@ -38,7 +38,7 @@ const missingKey = await call("POST", "/v1/agentloops", {
 assert.equal(missingKey.response.status, 400);
 assert.equal(missingKey.result.code, "invalid_request");
 
-const packageBytes = await readFile(new URL("./diagnostic.brain.json", import.meta.url));
+const packageBytes = await readFile(new URL("./built/diagnostic.brain.json", import.meta.url));
 const admitted = await call("POST", "/v1/agentloops", {
   body: packageBytes,
   contentType: "application/octet-stream",
@@ -51,6 +51,7 @@ assert.deepEqual(admission.result, admitted.result);
 
 const createBody = {
   agentloop_digest: admitted.result.digest,
+  brain_configuration: {},
   model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", api_key: "release-smoke-key" },
   presentation: { system: "", tools: [] },
   environments: [],

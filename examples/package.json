@@ -3,15 +3,16 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "brain build example-brain.mjs --out dist",
     "basic": "node basic-session.mjs",
     "events": "node event-history.mjs",
     "lifecycle": "node session-lifecycle.mjs",
     "http": "node raw-http.mjs",
-    "test": "node --check basic-session.mjs && node --check event-history.mjs && node --check session-lifecycle.mjs && node --check raw-http.mjs"
+    "test": "npm run build && node --check basic-session.mjs && node --check event-history.mjs && node --check session-lifecycle.mjs && node --check raw-http.mjs"
   },
   "dependencies": {
     "@aexhq/brain": "*",
-    "@aexhq/loop-pi": "0.89.1"
+    "zod": "4.4.3"
   },
   "engines": {
     "node": ">=22"

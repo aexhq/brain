@@ -10,11 +10,12 @@ An environment is somewhere tool calls actually execute. Brain drives its lifecy
 
 The adapter implements them. Brain decides when they happen.
 
-## Addressed by name, not by connection
+## Addressed by object, not by connection
 
-An environment has a stable identity, and that identity is what resolves to a workspace — not
-whichever process happens to hold a socket. Two sessions on two servers can therefore share one
-environment on purpose, and a Brain instance restarting does not orphan or duplicate it.
+The exact Environment object used by `tool().useIn(environment)` identifies one logical attachment.
+Several Tools using the same object share it; calling the factory again creates another attachment.
+The generated private identity resolves to provider state rather than whichever process happens to
+hold a socket.
 
 Connections are caches. They never decide identity, and they never decide teardown.
 

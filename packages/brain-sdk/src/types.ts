@@ -1,44 +1,29 @@
+import type { z } from "zod";
+
+declare const brainExtensionBrand: unique symbol;
+declare const environmentBrand: unique symbol;
+declare const toolBrand: unique symbol;
+declare const boundToolBrand: unique symbol;
+
+export type Schema = z.ZodType;
+export type SchemaInput<Value extends Schema> = z.input<Value>;
+export type SchemaOutput<Value extends Schema> = z.output<Value>;
+
+export interface BrainExtension { readonly [brainExtensionBrand]: true }
+export interface Environment { readonly [environmentBrand]: true }
+export interface Tool<Input = unknown, Output = unknown> {
+  readonly [toolBrand]: true;
+  useIn(environment: Environment): BoundTool<Input, Output>;
+}
+export interface BoundTool<Input = unknown, Output = unknown> {
+  readonly [boundToolBrand]: { readonly input: Input; readonly output: Output };
+}
+
 export interface ToolDefinition {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly outputSchema?: Readonly<Record<string, unknown>>;
-}
-
-export type EnvironmentLifecycle =
-  | { readonly type?: "session"; readonly id?: never }
-  | { readonly type: "shared" | "external"; readonly id: string };
-
-export interface AgentLoop {
-  readonly kind: "agent-loop";
-  readonly package: URL | Uint8Array;
-}
-
-export interface Environment<Capability extends string = string> {
-  readonly kind: "environment";
-  readonly capability: Capability;
-  readonly configuration: unknown;
-  readonly lifecycle: EnvironmentLifecycle;
-}
-
-export interface ToolBindingOptions {
-  readonly grant?: unknown;
-}
-
-export interface Tool<Input = unknown, Output = unknown, CompatibleEnvironment extends Environment = Environment> {
-  readonly kind: "tool";
-  readonly environmentCapability: CompatibleEnvironment["capability"];
-  readonly definition: ToolDefinition;
-  readonly remoteToolId: string;
-  readonly defaultGrant: unknown;
-  runIn(environment: CompatibleEnvironment, options?: ToolBindingOptions): BoundTool<Input, Output>;
-}
-
-export interface BoundTool<Input = unknown, Output = unknown> {
-  readonly kind: "bound-tool";
-  readonly tool: Tool<Input, Output>;
-  readonly environment: Environment;
-  readonly grant: unknown;
 }
 
 export interface VercelAiGatewayModel {
@@ -49,15 +34,13 @@ export interface VercelAiGatewayModel {
 
 export interface CreateSessionOptions {
   readonly model: VercelAiGatewayModel;
-  readonly agentLoop: AgentLoop;
+  readonly brain: BrainExtension;
   readonly tools?: readonly BoundTool[];
   readonly system?: string;
   readonly responseFormat?: unknown;
 }
 
-export interface OperationOptions {
-  readonly idempotencyKey?: string;
-}
+export interface OperationOptions { readonly idempotencyKey?: string }
 
 export interface SessionState {
   readonly id: string;
@@ -87,28 +70,26 @@ export interface WireToolDefinition {
   input_schema: Record<string, unknown>;
   output_schema?: Record<string, unknown>;
 }
-
 export interface WireToolBinding {
   name: string;
   environment_id: string;
   remote_tool_id: string;
+  tool_configuration: unknown;
   grant: unknown;
 }
-
 export interface WireEnvironmentRequirement {
   environment_id: string;
   configuration: unknown;
-  lifecycle_policy: "session" | "shared" | "external";
+  lifecycle_policy: "session";
 }
-
 export interface WireCreateSessionRequest {
   agentloop_digest: string;
+  brain_configuration: unknown;
   model: { provider: "vercel-ai-gateway"; name: string; api_key: string };
   presentation: { system: string; tools: WireToolDefinition[]; response_format?: unknown };
   environments: WireEnvironmentRequirement[];
   tool_bindings: WireToolBinding[];
 }
-
 export interface WireSession {
   session_id: string;
   journal_id: string;
@@ -116,7 +97,6 @@ export interface WireSession {
   through_sequence: number;
   presentation_digest: string;
 }
-
 export interface WireEvent {
   event_id: string;
   sequence: number;
@@ -124,12 +104,5 @@ export interface WireEvent {
   event_type: string;
   data: unknown;
 }
-
-export interface WireEventPage {
-  events: WireEvent[];
-  next_cursor: number;
-}
-
-export interface WireSessionList {
-  sessions: WireSession[];
-}
+export interface WireEventPage { events: WireEvent[]; next_cursor: number }
+export interface WireSessionList { sessions: WireSession[] }

@@ -10,8 +10,8 @@ use brain_http::BrainApi;
 use brain_loophost::WorkerPool;
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopDigest, ApiError, CreateSessionRequest,
-    EventPage, MessageRequest, ModelBinding, ResolvedSessionRequest, Session, SessionId,
-    SessionList,
+    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage, MessageRequest,
+    ModelBinding, ResolvedSessionRequest, Session, SessionId, SessionList,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Mutex;
@@ -197,6 +197,7 @@ impl BrainApi for ServerApi {
             .map_err(api_error)?;
         let resolved = ResolvedSessionRequest {
             agentloop_digest: request.agentloop_digest.clone(),
+            brain_configuration: request.brain_configuration.clone(),
             model: ModelBinding {
                 binding_id: binding_id.clone(),
                 model: request.model.name.clone(),
@@ -312,6 +313,59 @@ impl BrainApi for ServerApi {
             )
             .map_err(api_error)?;
         Ok(session)
+    }
+
+    async fn call_environment(
+        &self,
+        session_id: SessionId,
+        environment_id: EnvironmentId,
+        name: String,
+        idempotency_key: String,
+        request: EnvironmentCallRequest,
+    ) -> Result<EnvironmentCallResult, ApiError> {
+        self.ownership
+            .authorize_mutation(&session_id)
+            .await
+            .map_err(api_error)?;
+        if !valid_identifier(&name) {
+            return Err(ApiError::invalid_request(
+                "Environment method name is invalid",
+            ));
+        }
+        let lock = self.session_lock(&session_id)?;
+        let _guard = lock.lock().await;
+        let scope = format!("session:{session_id}:environment:{environment_id}:call:{name}");
+        let call = (environment_id.clone(), name.clone(), request.clone());
+        if let Some(saved) = self
+            .resources
+            .kernel
+            .idempotency_get(&scope, &idempotency_key, &call)
+            .map_err(api_error)?
+        {
+            return Self::replay(saved);
+        }
+        let result = self
+            .resources
+            .environments
+            .call(
+                &self.resources.kernel,
+                &session_id,
+                &environment_id,
+                name,
+                request.input,
+            )
+            .await
+            .map_err(api_error)?;
+        self.resources
+            .kernel
+            .idempotency_put(
+                &scope,
+                &idempotency_key,
+                &call,
+                &serde_json::to_value(&result).map_err(|error| internal(error.to_string()))?,
+            )
+            .map_err(api_error)?;
+        Ok(result)
     }
 
     async fn events(
@@ -486,6 +540,14 @@ fn valid_digest(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+        })
 }
 
 fn validate_model(request: &CreateSessionRequest) -> Result<(), ApiError> {

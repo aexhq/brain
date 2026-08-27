@@ -9,8 +9,8 @@ use axum::{
     routing::{get, post},
 };
 use brain_protocol::{
-    AgentloopAdmission, AgentloopDigest, CreateSessionRequest, MessageRequest, Session, SessionId,
-    SessionList,
+    AgentloopAdmission, AgentloopDigest, CreateSessionRequest, EnvironmentCallRequest,
+    EnvironmentCallResult, EnvironmentId, MessageRequest, Session, SessionId, SessionList,
 };
 
 use crate::{BrainApi, HttpError};
@@ -70,6 +70,10 @@ fn protected_routes<A: BrainApi>(api: A) -> Router {
         .route(
             "/v1/sessions/{session_id}/messages",
             post(send_message::<A>),
+        )
+        .route(
+            "/v1/sessions/{session_id}/environments/{environment_id}/calls/{name}",
+            post(call_environment::<A>),
         )
         .route("/v1/sessions/{session_id}/events", get(events::<A>))
         .route(
@@ -172,6 +176,25 @@ async fn send_message<A: BrainApi>(
         api.send_message(session_id, idempotency_key(&headers)?, request)
             .await
             .map_err(HttpError)?,
+    ))
+}
+
+async fn call_environment<A: BrainApi>(
+    State(api): State<A>,
+    Path((session_id, environment_id, name)): Path<(SessionId, EnvironmentId, String)>,
+    headers: HeaderMap,
+    Json(request): Json<EnvironmentCallRequest>,
+) -> Result<Json<EnvironmentCallResult>, HttpError> {
+    Ok(Json(
+        api.call_environment(
+            session_id,
+            environment_id,
+            name,
+            idempotency_key(&headers)?,
+            request,
+        )
+        .await
+        .map_err(HttpError)?,
     ))
 }
 

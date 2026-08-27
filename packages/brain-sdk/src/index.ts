@@ -1,18 +1,32 @@
-export { BrainClient as Brain, BrainClient, SessionHandle } from "./client.js";
+export { BrainClient as Brain, BrainClient, SessionHandle, Sessions } from "./client.js";
 export type { BrainOptions } from "./client.js";
-export { defineAgentLoop, defineEnvironment, defineTool } from "./extensions.js";
+export { activateBrain, brain, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, tool } from "./extensions.js";
+export type {
+  BrainAction,
+  BrainAuthor,
+  BrainInput,
+  BrainTurn,
+  EnvironmentAuthor,
+  EnvironmentInstanceAuthor,
+  EnvironmentMethod,
+  EnvironmentStream,
+  ToolAuthor,
+  ToolCall,
+  ToolContract,
+} from "./extensions.js";
 export { BrainError } from "./errors.js";
 export type {
-  AgentLoop,
+  BrainExtension,
   BoundTool,
   CreateSessionOptions,
   Environment,
-  EnvironmentLifecycle,
   OperationOptions,
+  Schema,
+  SchemaInput,
+  SchemaOutput,
   SessionEvent,
   SessionState,
   Tool,
-  ToolBindingOptions,
   ToolDefinition,
   VercelAiGatewayModel,
 } from "./types.js";

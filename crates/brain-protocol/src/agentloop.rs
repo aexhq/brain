@@ -39,6 +39,7 @@ pub struct RuntimeEnvelope {
 pub struct ActivationInput {
     pub context: ContextEnvelope,
     pub observation: Observation,
+    pub configuration: serde_json::Value,
     pub presentation: Presentation,
     pub runtime: RuntimeEnvelope,
 }

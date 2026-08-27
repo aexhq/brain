@@ -29,6 +29,7 @@ interface types {
   record activation-input {
     context: context-envelope,
     observation: observation,
+    configuration-json: string,
     presentation: presentation,
     runtime: runtime-envelope,
   }

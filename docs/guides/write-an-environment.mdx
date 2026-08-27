@@ -1,53 +1,47 @@
 ---
-title: Write an environment
-description: Implement seven operations over HTTP and tools can run anywhere.
+title: Write an Environment extension
+description: Own a Tool runtime and expose provider-specific methods with one authoring shape.
 ---
 
-An environment adapter answers the `environment/v1` contract. Any language that can serve HTTP will
-do.
-
-## The operations
-
-| Operation | When Brain calls it |
-| --- | --- |
-| `setup` | The environment needs to exist |
-| `attach` | A session begins using it |
-| `call` | A tool call needs a result |
-| `execute` | Longer work that is not a single call/response |
-| `cancel` | Work in flight should stop |
-| `detach` | A session is done with it |
-| `teardown` | The environment should stop existing |
-
-`setup` and `teardown` are about the environment's existence. `attach` and `detach` are about one
-session's use of it — which is how several sessions share one workspace.
-
-## Handling redelivery
-
-Every operation carries a stable operation identifier and a digest of its request. Store the
-identifier with the result. When the same identifier arrives again, return the stored result instead
-of doing the work twice. When the identifier is new but the work looks similar, do it — that is a
-different call.
-
-Brain never replays an ambiguous effect against a replacement target, so you do not have to guess
-whether a retry is safe.
-
-## Binding tools to it
+An Environment owns somewhere Tools run. `open`, `run`, and `close` may be async and may use normal
+runtime libraries:
 
 ```ts
-const workspace = myEnvironment({ id: "workspace-main" });
+import { environment } from "@aexhq/brain";
+import { z } from "zod";
+import Provider from "@vendor/cloud-sdk";
 
-const session = await brain.createSession({
-  model: { /* ... */ },
-  agentLoop: pi(),
-  tools: [read().runIn(workspace), bash().runIn(workspace)],
+const options = z.object({ region: z.string() });
+
+export const cloudVm = environment({ options }, (author) => {
+  const vm = author.open(async ({ options, id }) => {
+    const provider = new Provider({ region: options.region });
+    return provider.getOrCreate({ id });
+  });
+
+  vm.run(async (request, context) => context.instance.execute(request, { signal: context.signal }));
+  vm.close(async ({ instance }) => instance.close());
+
+  return {
+    suspend: vm.method(async (_input, context) => context.instance.suspend()),
+  };
 });
 ```
 
-The identifier is the address. Use the same one from another process and you get the same
-environment, deliberately.
+Build it with `npx brain build`. The generated application object implements Brain's Environment
+interface and keeps its own methods:
 
-## Start from an official one
+```ts
+const vm = cloudVm({ region: "eu-west-2" });
+const session = await client.sessions.create({
+  brain: pi(),
+  model,
+  tools: [read().useIn(vm), bash().useIn(vm)],
+});
 
-`@aexhq/env-app` is the thin language-neutral case: it hands tool calls to an HTTP runtime you
-write. `@aexhq/env-aws-microvm` is the full case, with real machine lifecycle. Both use the same
-public contract as yours.
+await vm.suspend();
+```
+
+The exact Environment object identifies the attachment. A generated method fails before the
+session attaches and after it ends. Brain journals the call intent, routes it to that attachment,
+and records the terminal receipt.

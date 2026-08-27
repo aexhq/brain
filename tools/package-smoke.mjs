@@ -39,16 +39,25 @@ try {
     }, null, 2)}\n`,
   );
   writeFileSync(
+    join(directory, "extension.mjs"),
+    `import { brain } from "@aexhq/brain";\n` +
+      `export const simple = brain((author) => { author.on.message((_message, turn) => turn.done()); });\n`,
+  );
+  run(["install", "--no-audit", "--no-fund"], directory);
+  execFileSync(process.execPath, [join(directory, "node_modules/@aexhq/brain/dist/cli.js"), "build", "extension.mjs", "--out", "built"], { cwd: directory, stdio: "inherit" });
+  writeFileSync(
     join(directory, "smoke.mjs"),
     `import assert from "node:assert/strict";\n` +
       `import * as brainSdk from "@aexhq/brain";\n` +
-      `const { Brain, defineAgentLoop } = brainSdk;\n` +
+      `import { simple } from "./built/index.mjs";\n` +
+      `const { Brain } = brainSdk;\n` +
       `const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });\n` +
-      `assert.equal(typeof brain.createSession, "function");\n` +
-      `assert.equal(defineAgentLoop(new Uint8Array([1])).kind, "agent-loop");\n` +
+      `assert.equal(typeof brain.sessions.create, "function");\n` +
+      `assert.deepEqual(Object.keys(simple()), []);\n` +
+      `assert.equal(typeof brainSdk.tool, "function");\n` +
+      `assert.equal(typeof brainSdk.environment, "function");\n` +
       `assert.equal("DurableEventBridge" in brainSdk, false);\n`,
   );
-  run(["install", "--no-audit", "--no-fund"], directory);
   execFileSync(process.execPath, ["smoke.mjs"], { cwd: directory, stdio: "inherit" });
   process.stdout.write("packed Brain packages passed an empty-consumer smoke test\n");
 } finally {

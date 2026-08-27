@@ -35,7 +35,7 @@
         { "type": "object", "additionalProperties": false, "required": ["type", "configuration"], "properties": { "type": { "const": "setup" }, "configuration": {} } },
         { "type": "object", "additionalProperties": false, "required": ["type", "grants"], "properties": { "type": { "const": "attach" }, "grants": {} } },
         { "type": "object", "additionalProperties": false, "required": ["type", "name", "input"], "properties": { "type": { "const": "call" }, "name": { "$ref": "#/$defs/Identifier" }, "input": {} } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "tool", "remote_tool_id", "grant"], "properties": { "type": { "const": "execute" }, "tool": { "$ref": "#/$defs/ToolInvocation" }, "remote_tool_id": { "$ref": "#/$defs/Identifier" }, "grant": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "tool", "remote_tool_id", "tool_configuration", "grant"], "properties": { "type": { "const": "execute" }, "tool": { "$ref": "#/$defs/ToolInvocation" }, "remote_tool_id": { "$ref": "#/$defs/Identifier" }, "tool_configuration": {}, "grant": {} } },
         { "type": "object", "additionalProperties": false, "required": ["type", "target_operation_id"], "properties": { "type": { "const": "cancel" }, "target_operation_id": { "$ref": "#/$defs/Identifier" } } },
         { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "detach" } } },
         { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "teardown" } } }

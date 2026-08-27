@@ -58,8 +58,11 @@ impl SessionActor {
             .map_err(|error| KernelError::Journal(error.to_string()))?;
         let context = serde_json::from_value(row.context.clone())
             .map_err(|error| KernelError::Journal(error.to_string()))?;
-        let presentation_bytes = brain_protocol::canonical_json(&sealed.presentation)
-            .map_err(|error| KernelError::Journal(error.to_string()))?;
+        let presentation_bytes = brain_protocol::canonical_json(&serde_json::json!({
+            "brain_configuration": sealed.brain_configuration,
+            "presentation": sealed.presentation,
+        }))
+        .map_err(|error| KernelError::Journal(error.to_string()))?;
         Ok(Self {
             presentation: Presentation {
                 bytes: presentation_bytes,
@@ -131,6 +134,7 @@ impl SessionActor {
             let activation = ActivationInput {
                 context: self.context.clone(),
                 observation,
+                configuration: self.sealed.brain_configuration.clone(),
                 presentation: self.presentation.clone(),
                 runtime: RuntimeEnvelope {
                     logical_time_ms: self.row.through_sequence,
@@ -242,6 +246,7 @@ impl SessionActor {
                         let digest = request_digest(&EnvironmentRequest::Execute {
                             tool: invocation.clone(),
                             remote_tool_id: binding.remote_tool_id.clone(),
+                            tool_configuration: binding.tool_configuration.clone(),
                             grant: binding.grant.clone(),
                         })
                         .map_err(digest_error)?;

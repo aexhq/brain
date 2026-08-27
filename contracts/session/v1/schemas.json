@@ -21,11 +21,12 @@
     "RequestedToolBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "environment_id", "remote_tool_id", "grant"],
+      "required": ["name", "environment_id", "remote_tool_id", "tool_configuration", "grant"],
       "properties": {
         "name": { "$ref": "#/$defs/Identifier" },
         "environment_id": { "$ref": "#/$defs/Identifier" },
         "remote_tool_id": { "$ref": "#/$defs/Identifier" },
+        "tool_configuration": {},
         "grant": {}
       }
     },
@@ -62,9 +63,10 @@
     "CreateSessionRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["agentloop_digest", "model", "presentation", "environments", "tool_bindings"],
+      "required": ["agentloop_digest", "brain_configuration", "model", "presentation", "environments", "tool_bindings"],
       "properties": {
         "agentloop_digest": { "$ref": "#/$defs/AgentloopDigest" },
+        "brain_configuration": {},
         "model": { "$ref": "#/$defs/ModelSelection" },
         "presentation": { "$ref": "#/$defs/ModelPresentation" },
         "environments": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/EnvironmentRequirement" } },
@@ -76,6 +78,18 @@
       "additionalProperties": false,
       "required": ["content"],
       "properties": { "content": {} }
+    },
+    "EnvironmentCallRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input"],
+      "properties": { "input": {} }
+    },
+    "EnvironmentCallResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output"],
+      "properties": { "output": {} }
     },
     "Session": {
       "type": "object",

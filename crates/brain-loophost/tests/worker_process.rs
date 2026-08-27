@@ -30,6 +30,7 @@ async fn real_worker_admits_and_activates_the_typescript_diagnostic_loop() {
                 observation: Observation::UserMessage {
                     content: serde_json::json!({"scenario":"tools"}),
                 },
+                configuration: serde_json::json!({}),
                 presentation: Presentation {
                     bytes: Vec::new(),
                     digest: "presentation".into(),

@@ -32,6 +32,7 @@ impl ToolExecutor for ServerToolExecutor {
             request: EnvironmentRequest::Execute {
                 tool: dispatch.invocation,
                 remote_tool_id: dispatch.binding.remote_tool_id,
+                tool_configuration: dispatch.binding.tool_configuration,
                 grant: dispatch.binding.grant,
             },
         };

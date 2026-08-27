@@ -18,6 +18,7 @@ pub struct ModelPresentation {
 #[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {
     pub agentloop_digest: AgentloopDigest,
+    pub brain_configuration: serde_json::Value,
     pub model: ModelSelection,
     pub presentation: ModelPresentation,
     pub environments: Vec<EnvironmentRequirement>,
@@ -28,6 +29,7 @@ pub struct CreateSessionRequest {
 #[serde(deny_unknown_fields)]
 pub struct ResolvedSessionRequest {
     pub agentloop_digest: AgentloopDigest,
+    pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
     pub presentation: ModelPresentation,
     pub environments: Vec<EnvironmentRequirement>,
@@ -45,6 +47,7 @@ pub struct EnvironmentRequirement {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SealedSessionConfig {
     pub agentloop_digest: AgentloopDigest,
+    pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
     pub presentation: ModelPresentation,
     pub environments: Vec<EnvironmentAttachment>,

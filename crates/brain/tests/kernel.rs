@@ -149,6 +149,7 @@ impl ToolExecutor for SlowTools {
         let request = EnvironmentRequest::Execute {
             tool: dispatch.invocation.clone(),
             remote_tool_id: dispatch.binding.remote_tool_id.clone(),
+            tool_configuration: dispatch.binding.tool_configuration.clone(),
             grant: dispatch.binding.grant.clone(),
         };
         assert_eq!(dispatch.request_digest, request_digest(&request).unwrap());
@@ -491,6 +492,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
 fn request() -> SealedSessionConfig {
     SealedSessionConfig {
         agentloop_digest: AgentloopDigest::new("a".repeat(64)),
+        brain_configuration: serde_json::json!({}),
         model: ModelBinding {
             binding_id: "gateway".into(),
             model: "openai/test".into(),
@@ -515,6 +517,7 @@ fn tool_request() -> SealedSessionConfig {
     };
     SealedSessionConfig {
         agentloop_digest: AgentloopDigest::new("a".repeat(64)),
+        brain_configuration: serde_json::json!({}),
         model: ModelBinding {
             binding_id: "gateway".into(),
             model: "openai/test".into(),
@@ -538,6 +541,7 @@ fn tool_request() -> SealedSessionConfig {
             environment,
             attachment_id: AttachmentId::new("attachment"),
             remote_tool_id: "slow".into(),
+            tool_configuration: serde_json::json!({}),
             grant: serde_json::json!({}),
         }],
     }

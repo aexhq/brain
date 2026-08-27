@@ -117,7 +117,7 @@ TypeScript application
 | --- | --- |
 | `brain-protocol` | The session, loop, model, tool, environment, event, and error contracts |
 | `brain-telemetry` | Logs, traces, metrics, and the live event stream |
-| `brain-loophost` | Loads agent loops, compiles and caches Wasm, isolates workers, enforces limits |
+| `brain-loophost` | Loads Brain Components, compiles and caches Wasm, isolates workers, enforces limits |
 | `brain` | The session log, the context, the turn loop, recovery, and dispatch |
 | `brain-http` | HTTP and SSE routing, validation, error mapping |
 | `brain-server` | The runnable server, session lifecycle, environment adapters |
@@ -131,7 +131,7 @@ The schemas and OpenAPI document under [`contracts/`](contracts) are the source 
 | | | |
 | --- | --- | --- |
 | ✅ | Four-part kernel: agent loop, model, tool, environment | Shipped |
-| ✅ | WebAssembly agent loop pipeline (`@aexhq/agentloop`, `loop-pi`, `loop-codex`) | Shipped |
+| ✅ | Unified `brain`, `tool`, and `environment` authoring with `brain build` | Shipped |
 | ✅ | SQLite log, crash recovery, writing to disk before acting | Shipped |
 | ✅ | HTTP/SSE session API and the `@aexhq/brain` TypeScript SDK | Shipped |
 | ✅ | Remote environment contract with `env-app` and `env-aws-microvm` | Shipped |
@@ -153,26 +153,26 @@ The schemas and OpenAPI document under [`contracts/`](contracts) are the source 
 ### Drive a session from TypeScript
 
 ```sh
-npm install @aexhq/brain @aexhq/loop-pi @aexhq/env-aws-microvm @aexhq/tools
+npm install @aexhq/brain @aexhq/brain-pi @aexhq/env-aws-microvm @aexhq/tools
 ```
 
 ```ts
 import { Brain } from "@aexhq/brain";
 import { awsMicroVm } from "@aexhq/env-aws-microvm";
-import { pi } from "@aexhq/loop-pi";
+import { pi } from "@aexhq/brain-pi";
 import { bash, read, write } from "@aexhq/tools";
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
 const workspace = awsMicroVm({ region: "eu-west-2" });
 
-const session = await brain.createSession({
+const session = await brain.sessions.create({
   model: {
     provider: "vercel-ai-gateway",
     name: "openai/gpt-5-mini",
     apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
   },
-  agentLoop: pi(),
-  tools: [read().runIn(workspace), write().runIn(workspace), bash().runIn(workspace)],
+  brain: pi(),
+  tools: [read().useIn(workspace), write().useIn(workspace), bash().useIn(workspace)],
 });
 
 await session.send("Read README.md and summarize it.");

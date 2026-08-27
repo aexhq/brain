@@ -5,8 +5,9 @@ use axum::{
 };
 use brain_http::{BrainApi, router, router_with_bearer};
 use brain_protocol::{
-    AdmissionStatus, AgentloopAdmission, AgentloopDigest, ApiError, CreateSessionRequest, Event,
-    EventId, EventPage, MessageRequest, Session, SessionId, SessionList, SessionStatus,
+    AdmissionStatus, AgentloopAdmission, AgentloopDigest, ApiError, CreateSessionRequest,
+    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, Event, EventId, EventPage,
+    MessageRequest, Session, SessionId, SessionList, SessionStatus,
 };
 use tower::ServiceExt;
 
@@ -44,6 +45,18 @@ impl BrainApi for Api {
     ) -> Result<Session, ApiError> {
         Ok(session())
     }
+    async fn call_environment(
+        &self,
+        _: SessionId,
+        _: EnvironmentId,
+        _: String,
+        _: String,
+        request: EnvironmentCallRequest,
+    ) -> Result<EnvironmentCallResult, ApiError> {
+        Ok(EnvironmentCallResult {
+            output: request.input,
+        })
+    }
     async fn events(&self, _: SessionId, after: Option<u64>) -> Result<EventPage, ApiError> {
         Ok(EventPage {
             events: vec![Event {
@@ -79,6 +92,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let create = serde_json::json!({
         "agentloop_digest": digest,
+        "brain_configuration": {},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "presentation": {"system":"","tools":[]},
         "environments": [],
@@ -99,6 +113,12 @@ async fn exposes_every_v1_route_with_its_contract_status() {
             "POST",
             &format!("/v1/sessions/{id}/messages"),
             Some(br#"{"content":"hello"}"#.to_vec()),
+            Some("application/json"),
+        ),
+        request(
+            "POST",
+            &format!("/v1/sessions/{id}/environments/env_1/calls/suspend"),
+            Some(br#"{"input":null}"#.to_vec()),
             Some("application/json"),
         ),
         request("POST", &format!("/v1/sessions/{id}/cancel"), None, None),
@@ -135,6 +155,7 @@ async fn request_bodies_reject_unknown_fields() {
     let digest = "a".repeat(64);
     let create = serde_json::json!({
         "agentloop_digest": digest,
+        "brain_configuration": {},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "presentation": {"system":"","tools":[]},
         "environments": [],

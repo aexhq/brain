@@ -1,5 +1,5 @@
 import { Brain } from "@aexhq/brain";
-import { pi } from "@aexhq/loop-pi";
+import { example } from "./dist/index.mjs";
 
 const apiKey = process.env.VERCEL_AI_GATEWAY_API_KEY;
 if (!apiKey) throw new Error("VERCEL_AI_GATEWAY_API_KEY is required");
@@ -9,24 +9,25 @@ const brain = new Brain({
   ...(process.env.BRAIN_API_TOKEN ? { token: process.env.BRAIN_API_TOKEN } : {}),
 });
 
-const session = await brain.createSession({
+const session = await brain.sessions.create({
   model: {
     provider: "vercel-ai-gateway",
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
     apiKey,
   },
-  agentLoop: pi(),
+  brain: example(),
 });
 
 try {
   await session.send("Reply with FIRST.");
   await session.send("Reply with SECOND.");
 
-  const complete = await brain.readEvents(session.id);
-  const firstTurn = complete.events.find((event) => event.type === "turn_finished");
+  const complete = [];
+  for await (const event of session.events()) complete.push(event);
+  const firstTurn = complete.find((event) => event.type === "turn_finished");
   if (!firstTurn) throw new Error("the first turn did not finish");
 
-  console.log(`Journal through sequence ${complete.nextCursor}`);
+  console.log(`Journal through sequence ${complete.at(-1)?.sequence ?? 0}`);
   console.log(`Events after the first turn (${firstTurn.sequence}):`);
 
   for await (const event of session.events(firstTurn.sequence)) {

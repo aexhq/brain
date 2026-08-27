@@ -67,6 +67,7 @@ pub enum EnvironmentRequest {
     Execute {
         tool: ToolInvocation,
         remote_tool_id: String,
+        tool_configuration: serde_json::Value,
         grant: serde_json::Value,
     },
     Cancel {
@@ -101,4 +102,16 @@ pub enum EnvironmentReceipt {
     Ambiguous {
         message: String,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentCallRequest {
+    pub input: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentCallResult {
+    pub output: serde_json::Value,
 }

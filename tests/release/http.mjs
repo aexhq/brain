@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { pi } from "@aexhq/loop-pi";
 
 const baseUrl = process.env.BRAIN_BASE_URL;
 const token = process.env.BRAIN_API_TOKEN;
@@ -34,12 +33,13 @@ const request = async (method, path, body, contentType = "application/json") => 
 const admission = await request(
   "POST",
   "/v1/agentloops",
-  await readFile(pi().package),
+  await readFile(new URL("./built/diagnostic.brain.json", import.meta.url)),
   "application/octet-stream",
 );
 assert.equal(admission.status, "admitted");
 const session = await request("POST", "/v1/sessions", {
   agentloop_digest: admission.digest,
+  brain_configuration: {},
   model: {
     provider: "vercel-ai-gateway",
     name: "openai/gpt-5-mini",
