@@ -26,4 +26,3 @@ for await (const event of session.events()) console.log(event);
 
 The SDK admits Agentloops, infers Environment requirements from Tools, and supplies operation keys.
 An explicit `idempotencyKey` remains available on mutating calls for durable caller retries.
-`DurableEventBridge` publishes journal events to a caller-owned queue with at-least-once delivery.

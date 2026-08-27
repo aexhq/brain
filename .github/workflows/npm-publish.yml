@@ -307,20 +307,91 @@ jobs:
           done
           BRAIN_BASE_URL=http://127.0.0.1:18081 node "$RUNNER_TEMP/http-e2e/http.mjs"
 
+  e2e-contracts:
+    if: inputs.operation == 'stage'
+    needs: stage
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sdk-turns
+            script: sdk-turns.mjs
+            port: 18082
+          - name: sdk-events
+            script: sdk-events.mjs
+            port: 18083
+          - name: http-contract
+            script: http-contract.mjs
+            port: 18084
+    name: e2e-${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: brain-npm-release-${{ inputs.expected_commit }}
+          path: ${{ runner.temp }}/brain-release
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Build the diagnostic Agentloop with the staged SDK
+        shell: bash
+        env:
+          TEST_SCRIPT: ${{ matrix.script }}
+        run: |
+          set -euo pipefail
+          sdk=$(jq -er '.packages[] | select(.name == "@aexhq/brain") | "\(.name)@\(.version)"' "$RUNNER_TEMP/brain-release/manifest.json")
+          test "$(npm view "$sdk" version)" = "${sdk##*@}"
+          mkdir "$RUNNER_TEMP/contract-e2e"
+          cp "tests/release/$TEST_SCRIPT" tests/release/diagnostic-loop.mjs "$RUNNER_TEMP/contract-e2e/"
+          cd "$RUNNER_TEMP/contract-e2e"
+          npm init --yes >/dev/null
+          npm install --ignore-scripts --save-exact "$sdk" @aexhq/agentloop@0.4.1
+          npx brain-loop build diagnostic-loop.mjs --out diagnostic.brain.json
+          npm audit --audit-level=high
+      - name: Run ${{ matrix.name }} against the candidate
+        shell: bash
+        env:
+          BRAIN_API_TOKEN: release-contract-token
+          TEST_PORT: ${{ matrix.port }}
+          TEST_SCRIPT: ${{ matrix.script }}
+        run: |
+          set -euo pipefail
+          image=$(jq -er '"\(.image)@\(.manifest_digest)"' "$RUNNER_TEMP/brain-release/brain-image.json")
+          docker pull "$image" >/dev/null
+          docker run -d --name "brain-${{ matrix.name }}-e2e" -p "$TEST_PORT:8080" -e BRAIN_API_TOKEN "$image"
+          trap 'docker logs "brain-${{ matrix.name }}-e2e"; docker rm -f "brain-${{ matrix.name }}-e2e" >/dev/null' EXIT
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent "http://127.0.0.1:$TEST_PORT/health/ready" >/dev/null; then break; fi
+            test "$attempt" -lt 60
+            sleep 1
+          done
+          BRAIN_BASE_URL="http://127.0.0.1:$TEST_PORT" node "$RUNNER_TEMP/contract-e2e/$TEST_SCRIPT"
+
   stage-gate:
     if: always() && inputs.operation == 'stage'
-    needs: [stage, e2e-sdk, e2e-http]
+    needs: [stage, e2e-sdk, e2e-http, e2e-contracts]
     runs-on: ubuntu-24.04
     steps:
-      - name: Require both candidate interfaces
+      - name: Require every candidate interface
         env:
           STAGE: ${{ needs.stage.result }}
           SDK: ${{ needs.e2e-sdk.result }}
           HTTP: ${{ needs.e2e-http.result }}
+          CONTRACTS: ${{ needs.e2e-contracts.result }}
         run: |
           test "$STAGE" = success
           test "$SDK" = success
           test "$HTTP" = success
+          test "$CONTRACTS" = success
 
   promote:
     if: inputs.operation == 'promote'

@@ -20,7 +20,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     KernelError, context,
-    journal::{AppendRecord, JournalStore, SessionRow, SessionUpdate, SqliteJournal, event_page},
+    journal::{
+        AppendRecord, JournalStore, ObservedJournal, SessionRow, SessionUpdate, SqliteJournal,
+        event_page,
+    },
 };
 use actor::{SessionActor, SessionCommand};
 
@@ -34,7 +37,6 @@ pub struct Kernel {
 struct KernelInner {
     store: Arc<dyn JournalStore>,
     config: KernelConfig,
-    telemetry: TelemetryPublisher,
     sessions: Mutex<HashMap<SessionId, SessionRuntime>>,
 }
 
@@ -71,9 +73,8 @@ impl Kernel {
     ) -> Result<Self, KernelError> {
         let kernel = Self {
             inner: Arc::new(KernelInner {
-                store,
+                store: Arc::new(ObservedJournal::new(store, telemetry)),
                 config,
-                telemetry,
                 sessions: Mutex::new(HashMap::new()),
             }),
         };
@@ -393,7 +394,6 @@ impl Kernel {
             self.inner.config.loop_executor.clone(),
             self.inner.config.model_executor.clone(),
             self.inner.config.tool_executor.clone(),
-            self.inner.telemetry.clone(),
             self.inner.config.max_decisions_per_turn,
             receiver,
             cancelled.clone(),

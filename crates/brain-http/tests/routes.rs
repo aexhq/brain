@@ -131,6 +131,29 @@ async fn mutating_routes_fail_fast_without_an_idempotency_key() {
 }
 
 #[tokio::test]
+async fn request_bodies_reject_unknown_fields() {
+    let digest = "a".repeat(64);
+    let create = serde_json::json!({
+        "agentloop_digest": digest,
+        "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
+        "presentation": {"system":"","tools":[]},
+        "environments": [],
+        "tool_bindings": [],
+        "unknown": true
+    });
+    let response = router(Api)
+        .oneshot(request(
+            "POST",
+            "/v1/sessions",
+            Some(serde_json::to_vec(&create).unwrap()),
+            Some("application/json"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
 async fn bearer_auth_protects_api_routes_but_not_health() {
     let unauthorized = router_with_bearer(Api, "secret".into())
         .oneshot(request("GET", "/v1/sessions", None, None))

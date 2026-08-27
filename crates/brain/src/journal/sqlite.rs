@@ -204,7 +204,7 @@ impl JournalStore for SqliteJournal {
             "INSERT INTO sessions(session_id,journal_id,status,through_sequence,configuration_json,context_json,presentation_digest) VALUES(?1,?2,?3,1,?4,?5,?6)",
             params![row.session_id.as_str(), row.journal_id.as_str(), status_name(&row.status), encode(&row.configuration)?, encode(&row.context)?, row.presentation_digest],
         ).map_err(journal_error)?;
-        let saved = insert_record(&transaction, &row.session_id, 1, record)?;
+        let saved = insert_record(&transaction, &row.session_id, &row.journal_id, 1, record)?;
         transaction.commit().map_err(journal_error)?;
         Ok(saved)
     }
@@ -224,13 +224,14 @@ impl JournalStore for SqliteJournal {
             .lock()
             .map_err(|_| KernelError::Journal("journal mutex poisoned".into()))?;
         let transaction = connection.transaction().map_err(journal_error)?;
-        let through: u64 = transaction
+        let (through, journal_id): (u64, String) = transaction
             .query_row(
-                "SELECT through_sequence FROM sessions WHERE session_id=?1",
+                "SELECT through_sequence,journal_id FROM sessions WHERE session_id=?1",
                 [session_id.as_str()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(journal_error)?;
+        let journal_id = JournalId::new(journal_id);
         if through != expected_through {
             return Err(KernelError::InvalidState(format!(
                 "journal position changed: expected {expected_through}, found {through}"
@@ -241,6 +242,7 @@ impl JournalStore for SqliteJournal {
             saved.push(insert_record(
                 &transaction,
                 session_id,
+                &journal_id,
                 through + offset as u64 + 1,
                 record,
             )?);
@@ -314,6 +316,14 @@ impl JournalStore for SqliteJournal {
             .connection
             .lock()
             .map_err(|_| KernelError::Journal("journal mutex poisoned".into()))?;
+        let journal_id: String = connection
+            .query_row(
+                "SELECT journal_id FROM sessions WHERE session_id=?1",
+                [session_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(journal_error)?;
+        let journal_id = JournalId::new(journal_id);
         let mut statement = connection.prepare("SELECT sequence,schema_version,recorded_at_ms,kind,payload_json,checksum FROM records WHERE session_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3").map_err(journal_error)?;
         let rows = statement
             .query_map(params![session_id.as_str(), after, limit as u64], |row| {
@@ -327,6 +337,7 @@ impl JournalStore for SqliteJournal {
                 })?;
                 Ok(JournalRecord {
                     session_id: session_id.clone(),
+                    journal_id: journal_id.clone(),
                     sequence: row.get(0)?,
                     schema_version: row.get(1)?,
                     recorded_at_ms: row.get(2)?,
@@ -406,6 +417,7 @@ impl JournalStore for SqliteJournal {
 fn insert_record(
     transaction: &rusqlite::Transaction<'_>,
     session_id: &SessionId,
+    journal_id: &JournalId,
     sequence: u64,
     record: AppendRecord,
 ) -> Result<JournalRecord, KernelError> {
@@ -434,6 +446,7 @@ fn insert_record(
     Ok(JournalRecord {
         schema_version: SCHEMA_VERSION,
         session_id: session_id.clone(),
+        journal_id: journal_id.clone(),
         sequence,
         recorded_at_ms,
         kind: record.kind,

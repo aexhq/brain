@@ -1,4 +1,4 @@
-//! Bounded live telemetry. Durable session delivery reads the Brain journal instead.
+//! Bounded, best-effort live telemetry for Brain.
 
 mod metrics;
 mod publisher;
@@ -10,7 +10,7 @@ mod worker;
 
 pub use metrics::TelemetryMetrics;
 pub use publisher::{TelemetryPublisher, telemetry_channel};
-pub use record::{TelemetryKind, TelemetryRecord};
+pub use record::{DELIVERY_DROPPED_NAME, TelemetryKind, TelemetryRecord};
 pub use sink::TelemetrySink;
 pub use worker::TelemetryWorker;
 

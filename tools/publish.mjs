@@ -61,6 +61,18 @@ const assertRegistryObject = (item) => {
   }
 };
 
+const fetchProvenance = async (url, spec) => {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const response = await fetch(url, { redirect: "error" });
+    if (response.ok) return response.json();
+    if (response.status !== 404) {
+      throw new Error(`${spec} provenance endpoint returned ${response.status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  }
+  throw new Error(`${spec} provenance endpoint remained unavailable for 60 seconds`);
+};
+
 const assertOriginalProvenance = async (item) => {
   const spec = `${item.name}@${item.version}`;
   const metadata = registryValue(spec, "dist.attestations");
@@ -71,9 +83,7 @@ const assertOriginalProvenance = async (item) => {
   ) {
     throw new Error(`${spec} has no npm SLSA provenance attestation`);
   }
-  const response = await fetch(metadata.url, { redirect: "error" });
-  if (!response.ok) throw new Error(`${spec} provenance endpoint returned ${response.status}`);
-  const document = await response.json();
+  const document = await fetchProvenance(metadata.url, spec);
   const attestation = document.attestations?.find(
     ({ predicateType }) => predicateType === "https://slsa.dev/provenance/v1",
   );

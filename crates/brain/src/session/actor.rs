@@ -9,7 +9,6 @@ use brain_protocol::{
     Observation, Presentation, RuntimeEnvelope, SealedSessionConfig, Session, SessionStatus,
     ToolCancellation, ToolDispatch, ToolResult, operation_id, request_digest,
 };
-use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
 use futures_util::future::join_all;
 use tokio::sync::{mpsc, oneshot};
 
@@ -38,7 +37,6 @@ pub struct SessionActor {
     loop_executor: Arc<dyn LoopExecutor>,
     model_executor: Arc<dyn ModelExecutor>,
     tool_executor: Arc<dyn ToolExecutor>,
-    telemetry: TelemetryPublisher,
     max_decisions_per_turn: usize,
     receiver: mpsc::Receiver<SessionCommand>,
     cancel_requested: Arc<AtomicBool>,
@@ -52,7 +50,6 @@ impl SessionActor {
         loop_executor: Arc<dyn LoopExecutor>,
         model_executor: Arc<dyn ModelExecutor>,
         tool_executor: Arc<dyn ToolExecutor>,
-        telemetry: TelemetryPublisher,
         max_decisions_per_turn: usize,
         receiver: mpsc::Receiver<SessionCommand>,
         cancel_requested: Arc<AtomicBool>,
@@ -75,7 +72,6 @@ impl SessionActor {
             loop_executor,
             model_executor,
             tool_executor,
-            telemetry,
             max_decisions_per_turn,
             receiver,
             cancel_requested,
@@ -501,21 +497,6 @@ impl SessionActor {
             self.row.status = status;
         }
         self.row.context = serde_json::to_value(&self.context).map_err(json_error)?;
-        for record in &saved {
-            let payload = serde_json::to_vec(&record.payload).unwrap_or_default();
-            let _ = self.telemetry.try_publish(TelemetryRecord {
-                kind: TelemetryKind::Event,
-                name: record.kind.clone(),
-                payload,
-                session_id: Some(record.session_id.clone()),
-                journal_id: Some(self.row.journal_id.clone()),
-                event_id: Some(EventId::new(format!(
-                    "evt_{}_{}",
-                    record.session_id, record.sequence
-                ))),
-                operation_id: None,
-            });
-        }
         Ok(saved)
     }
 
