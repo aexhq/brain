@@ -155,6 +155,10 @@ jobs:
           verify_index "$release" "$amd" "$arm"
           digest=$(digest_of "$release")
 
+          # Moving tag for humans. The immutable sha- tag above stays the deploy identity.
+          docker buildx imagetools create -t "$IMAGE:latest" "$IMAGE@$digest"
+          test "$(digest_of "$IMAGE:latest")" = "$digest"
+
           package_api="/orgs/$PACKAGE_OWNER/packages/container/brain"
           visibility=$(gh api "$package_api" --jq .visibility 2>/dev/null || true)
           if [ "$visibility" != public ]; then
@@ -184,6 +188,8 @@ jobs:
             echo '### Brain image'
             echo
             echo "Immutable source tag: \`$release\`"
+            echo
+            echo "Moving tag: \`$IMAGE:latest\`"
             echo
             echo "Resolved deploy identity: \`$IMAGE@$digest\`"
             echo

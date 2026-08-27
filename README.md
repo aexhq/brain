@@ -149,4 +149,4 @@ The schemas, OpenAPI document, protocol semantics, examples, generators, and con
 in this repository are the source of truth. See [BENCHMARKS.md](BENCHMARKS.md) for the methodology
 and reference measurements.
 
-Licensed under [Apache 2.0](LICENSE).
+Licensed under [MIT](LICENSE).

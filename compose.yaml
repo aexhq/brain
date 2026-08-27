@@ -7,14 +7,11 @@ services:
     image: ${BRAIN_SERVER_IMAGE:-brain:local}
     restart: unless-stopped
     environment:
-      # Explicit durable local mode: SQLite WAL journal, persistent local custody and session
-      # object storage under BRAIN_DATA_DIR, Tool execution on this container's node runtime.
-      # Requested network policy is retained but reported not_enforced.
-      BRAIN_MODE: local
-      BRAIN_LISTEN: 0.0.0.0:3210
+      # SQLite log and local session storage under BRAIN_DATA_DIR.
+      BRAIN_LISTEN: 0.0.0.0:8080
       BRAIN_DATA_DIR: /var/lib/brain
     ports:
-      - 127.0.0.1:3210:3210
+      - 127.0.0.1:8080:8080
     volumes:
       - type: bind
         source: ${BRAIN_DATA_DIR:?set BRAIN_DATA_DIR to an absolute host path}

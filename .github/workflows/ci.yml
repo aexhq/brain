@@ -179,7 +179,7 @@ jobs:
           PLATFORMS: ${{ needs.rust-platforms.result }}
           LOOPHOST: ${{ needs.loophost.result }}
           IMAGE: ${{ needs.image-smoke.result }}
-          BENCHMARK: ${{ needs.benchmark-leakage.result }}
+          RESOURCE_BOUNDS: ${{ needs.benchmark-leakage.result }}
         run: |
           test "$CONTRACTS" = success
           test "$LINT" = success
@@ -187,4 +187,4 @@ jobs:
           test "$PLATFORMS" = success
           test "$LOOPHOST" = success
           test "$IMAGE" = success
-          test "$BENCHMARK" = success
+          test "$RESOURCE_BOUNDS" = success
