@@ -39,6 +39,7 @@ export interface Session {
 export interface SessionEvent {
   event_id: string;
   sequence: number;
+  recorded_at_ms: number;
   event_type: string;
   data: unknown;
 }

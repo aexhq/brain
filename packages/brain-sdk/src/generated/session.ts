@@ -123,6 +123,7 @@ export interface SessionList {
 export interface Event {
   event_id: Identifier;
   sequence: number;
+  recorded_at_ms: number;
   event_type: Identifier;
   data: unknown;
 }

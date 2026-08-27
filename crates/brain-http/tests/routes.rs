@@ -49,6 +49,7 @@ impl BrainApi for Api {
             events: vec![Event {
                 event_id: EventId::new("evt_test"),
                 sequence: after.unwrap_or(0) + 1,
+                recorded_at_ms: 1_787_846_400_000,
                 event_type: "test_event".into(),
                 data: serde_json::json!({"ok":true}),
             }],

@@ -223,14 +223,30 @@ async fn intent_precedes_model_effect_and_reopen_preserves_events() {
         .position(|kind| *kind == "model_result")
         .unwrap();
     assert!(intent < result);
+    assert!(
+        events
+            .events
+            .windows(2)
+            .all(|pair| pair[0].recorded_at_ms <= pair[1].recorded_at_ms)
+    );
+    let recorded_at_ms: Vec<_> = events
+        .events
+        .iter()
+        .map(|event| event.recorded_at_ms)
+        .collect();
     drop(handle);
     drop(kernel);
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
     let reopened = Kernel::open(config(), publisher).unwrap();
+    let reopened_events = reopened.events(&session_id, 0, 100).unwrap().events;
+    assert_eq!(reopened_events.len(), events.events.len());
     assert_eq!(
-        reopened.events(&session_id, 0, 100).unwrap().events.len(),
-        events.events.len()
+        reopened_events
+            .iter()
+            .map(|event| event.recorded_at_ms)
+            .collect::<Vec<_>>(),
+        recorded_at_ms
     );
     drop(reopened);
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;

@@ -1,4 +1,8 @@
-use std::{path::Path, sync::Mutex};
+use std::{
+    path::Path,
+    sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use brain_protocol::{JournalId, SessionId, SessionStatus, request_digest};
 use rand::RngCore;
@@ -9,7 +13,7 @@ use crate::{
     journal::{AppendRecord, JournalRecord, JournalStore, SessionRow, SessionUpdate},
 };
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 pub struct SqliteJournal {
     journal_id: JournalId,
@@ -46,6 +50,7 @@ impl SqliteJournal {
                session_id TEXT NOT NULL,
                sequence INTEGER NOT NULL,
                schema_version INTEGER NOT NULL,
+               recorded_at_ms INTEGER NOT NULL,
                kind TEXT NOT NULL,
                payload_json TEXT NOT NULL,
                checksum TEXT NOT NULL,
@@ -99,7 +104,7 @@ impl SqliteJournal {
             .lock()
             .map_err(|_| KernelError::Journal("journal mutex poisoned".into()))?;
         let mut statement = connection.prepare(
-            "SELECT session_id, sequence, schema_version, kind, payload_json, checksum FROM records ORDER BY session_id, sequence",
+            "SELECT session_id, sequence, schema_version, recorded_at_ms, kind, payload_json, checksum FROM records ORDER BY session_id, sequence",
         ).map_err(journal_error)?;
         let rows = statement
             .query_map([], |row| {
@@ -107,16 +112,24 @@ impl SqliteJournal {
                     row.get::<_, String>(0)?,
                     row.get::<_, u64>(1)?,
                     row.get::<_, u32>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get::<_, u64>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             })
             .map_err(journal_error)?;
         let mut positions = std::collections::HashMap::new();
         for row in rows {
-            let (session_id, sequence, schema_version, kind, payload_json, stored_checksum) =
-                row.map_err(journal_error)?;
+            let (
+                session_id,
+                sequence,
+                schema_version,
+                recorded_at_ms,
+                kind,
+                payload_json,
+                stored_checksum,
+            ) = row.map_err(journal_error)?;
             if schema_version != SCHEMA_VERSION {
                 return Err(KernelError::Journal(format!(
                     "unsupported journal schema {schema_version} at {session_id}:{sequence}"
@@ -124,7 +137,7 @@ impl SqliteJournal {
             }
             let payload: serde_json::Value = serde_json::from_str(&payload_json)
                 .map_err(|error| KernelError::Journal(error.to_string()))?;
-            let expected = checksum(&session_id, sequence, &kind, &payload)?;
+            let expected = checksum(&session_id, sequence, recorded_at_ms, &kind, &payload)?;
             if expected != stored_checksum {
                 return Err(KernelError::Journal(format!(
                     "journal checksum mismatch at {session_id}:{sequence}"
@@ -286,10 +299,10 @@ impl JournalStore for SqliteJournal {
             .connection
             .lock()
             .map_err(|_| KernelError::Journal("journal mutex poisoned".into()))?;
-        let mut statement = connection.prepare("SELECT sequence,schema_version,kind,payload_json,checksum FROM records WHERE session_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3").map_err(journal_error)?;
+        let mut statement = connection.prepare("SELECT sequence,schema_version,recorded_at_ms,kind,payload_json,checksum FROM records WHERE session_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3").map_err(journal_error)?;
         let rows = statement
             .query_map(params![session_id.as_str(), after, limit as u64], |row| {
-                let payload_json: String = row.get(3)?;
+                let payload_json: String = row.get(4)?;
                 let payload = serde_json::from_str(&payload_json).map_err(|error| {
                     rusqlite::Error::FromSqlConversionFailure(
                         payload_json.len(),
@@ -301,9 +314,10 @@ impl JournalStore for SqliteJournal {
                     session_id: session_id.clone(),
                     sequence: row.get(0)?,
                     schema_version: row.get(1)?,
-                    kind: row.get(2)?,
+                    recorded_at_ms: row.get(2)?,
+                    kind: row.get(3)?,
                     payload,
-                    checksum: row.get(4)?,
+                    checksum: row.get(5)?,
                 })
             })
             .map_err(journal_error)?;
@@ -380,12 +394,33 @@ fn insert_record(
     sequence: u64,
     record: AppendRecord,
 ) -> Result<JournalRecord, KernelError> {
-    let checksum = checksum(session_id.as_str(), sequence, &record.kind, &record.payload)?;
-    transaction.execute("INSERT INTO records(session_id,sequence,schema_version,kind,payload_json,checksum) VALUES(?1,?2,?3,?4,?5,?6)", params![session_id.as_str(), sequence, SCHEMA_VERSION, record.kind, encode(&record.payload)?, checksum]).map_err(journal_error)?;
+    let wall_time_ms: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| KernelError::Journal("system time is before the Unix epoch".into()))?
+        .as_millis()
+        .try_into()
+        .map_err(|_| KernelError::Journal("system time exceeds the journal range".into()))?;
+    let previous_recorded_at_ms = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(recorded_at_ms), 0) FROM records WHERE session_id=?1",
+            [session_id.as_str()],
+            |row| row.get::<_, u64>(0),
+        )
+        .map_err(journal_error)?;
+    let recorded_at_ms = wall_time_ms.max(previous_recorded_at_ms);
+    let checksum = checksum(
+        session_id.as_str(),
+        sequence,
+        recorded_at_ms,
+        &record.kind,
+        &record.payload,
+    )?;
+    transaction.execute("INSERT INTO records(session_id,sequence,schema_version,recorded_at_ms,kind,payload_json,checksum) VALUES(?1,?2,?3,?4,?5,?6,?7)", params![session_id.as_str(), sequence, SCHEMA_VERSION, recorded_at_ms, record.kind, encode(&record.payload)?, checksum]).map_err(journal_error)?;
     Ok(JournalRecord {
         schema_version: SCHEMA_VERSION,
         session_id: session_id.clone(),
         sequence,
+        recorded_at_ms,
         kind: record.kind,
         payload: record.payload,
         checksum,
@@ -395,11 +430,19 @@ fn insert_record(
 fn checksum(
     session_id: &str,
     sequence: u64,
+    recorded_at_ms: u64,
     kind: &str,
     payload: &serde_json::Value,
 ) -> Result<String, KernelError> {
-    request_digest(&(SCHEMA_VERSION, session_id, sequence, kind, payload))
-        .map_err(|error| KernelError::Journal(error.to_string()))
+    request_digest(&(
+        SCHEMA_VERSION,
+        session_id,
+        sequence,
+        recorded_at_ms,
+        kind,
+        payload,
+    ))
+    .map_err(|error| KernelError::Journal(error.to_string()))
 }
 
 fn read_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {

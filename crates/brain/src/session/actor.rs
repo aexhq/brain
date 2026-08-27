@@ -313,6 +313,7 @@ impl SessionActor {
                                 self.row.session_id, record.sequence
                             )),
                             sequence: record.sequence,
+                            recorded_at_ms: record.recorded_at_ms,
                             event_type: record.kind,
                             data: record.payload,
                         },

@@ -21,6 +21,7 @@ pub struct JournalRecord {
     pub schema_version: u32,
     pub session_id: SessionId,
     pub sequence: u64,
+    pub recorded_at_ms: u64,
     pub kind: String,
     pub payload: serde_json::Value,
     pub checksum: String,

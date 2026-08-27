@@ -99,10 +99,11 @@
     "Event": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["event_id", "sequence", "event_type", "data"],
+      "required": ["event_id", "sequence", "recorded_at_ms", "event_type", "data"],
       "properties": {
         "event_id": { "$ref": "#/$defs/Identifier" },
         "sequence": { "type": "integer", "minimum": 1 },
+        "recorded_at_ms": { "type": "integer", "minimum": 0 },
         "event_type": { "$ref": "#/$defs/Identifier" },
         "data": {}
       }

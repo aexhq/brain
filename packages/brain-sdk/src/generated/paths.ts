@@ -235,6 +235,7 @@ export type components = {
         Event: {
             event_id: components["schemas"]["Identifier"];
             sequence: number;
+            recorded_at_ms: number;
             event_type: components["schemas"]["Identifier"];
             data: unknown;
         };

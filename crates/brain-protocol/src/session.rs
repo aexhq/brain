@@ -74,6 +74,7 @@ pub struct Session {
 pub struct Event {
     pub event_id: EventId,
     pub sequence: u64,
+    pub recorded_at_ms: u64,
     pub event_type: String,
     pub data: serde_json::Value,
 }

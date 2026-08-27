@@ -13,6 +13,7 @@ pub fn event_page(records: Vec<JournalRecord>, after: u64) -> EventPage {
                 record.sequence
             )),
             sequence: record.sequence,
+            recorded_at_ms: record.recorded_at_ms,
             event_type: record.kind,
             data: record.payload,
         })
