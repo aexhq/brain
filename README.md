@@ -40,7 +40,7 @@ TypeScript application
 |                         |                                             |
 |                         +-> bounded Loophost worker                   |
 |                         |      +-> Agentloop Component                |
-|                         +-> shared model client -> remote model API   |
+|                         +-> model binding -> remote model API         |
 |                         +-> Environment directory/cache               |
 +--------------------------------------|--------------------------------+
                                        v

@@ -79,6 +79,7 @@ jobs:
         with:
           node-version: "22.23.2"
           cache: npm
+      - run: npm ci
       - name: Build the public TypeScript diagnostic Agentloop against this Brain
         shell: bash
         run: |
