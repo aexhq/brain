@@ -234,6 +234,11 @@ async fn intent_precedes_model_effect_and_reopen_preserves_events() {
         .iter()
         .map(|event| event.recorded_at_ms)
         .collect();
+    assert_eq!(
+        publisher.metrics().queued_records(),
+        events.events.len(),
+        "every committed event enters the bounded telemetry queue"
+    );
     drop(handle);
     drop(kernel);
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
