@@ -117,22 +117,14 @@ impl Kernel {
     }
 
     pub fn session(&self, session_id: &SessionId) -> Result<Session, KernelError> {
-        let row = self
-            .inner
+        self.inner
             .store
-            .session(session_id)?
-            .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
-        Ok(public_session(&row))
+            .session_summary(session_id)?
+            .ok_or_else(|| KernelError::InvalidState("session not found".into()))
     }
 
     pub fn sessions(&self) -> Result<Vec<Session>, KernelError> {
-        Ok(self
-            .inner
-            .store
-            .sessions()?
-            .iter()
-            .map(public_session)
-            .collect())
+        self.inner.store.session_summaries()
     }
 
     pub fn handle(&self, session_id: &SessionId) -> Result<SessionHandle, KernelError> {
@@ -153,7 +145,7 @@ impl Kernel {
         let row = self
             .inner
             .store
-            .session(session_id)?
+            .session_row(session_id)?
             .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
         self.spawn(row)
     }
@@ -192,7 +184,7 @@ impl Kernel {
         let row = self
             .inner
             .store
-            .session(session_id)?
+            .session_row(session_id)?
             .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
         serde_json::from_value(row.configuration)
             .map_err(|error| KernelError::Journal(error.to_string()))
@@ -212,7 +204,7 @@ impl Kernel {
         let row = self
             .inner
             .store
-            .session(session_id)?
+            .session_summary(session_id)?
             .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
         if !matches!(row.status, SessionStatus::Idle) {
             return Err(KernelError::InvalidState("session is not idle".into()));
@@ -242,7 +234,7 @@ impl Kernel {
         let row = self
             .inner
             .store
-            .session(session_id)?
+            .session_summary(session_id)?
             .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
         self.inner.store.append(
             session_id,
@@ -260,10 +252,10 @@ impl Kernel {
         let mut row = self
             .inner
             .store
-            .session(session_id)?
+            .session_summary(session_id)?
             .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
         if matches!(row.status, SessionStatus::Ended) {
-            return Ok(public_session(&row));
+            return Ok(row);
         }
         if !matches!(row.status, SessionStatus::Idle) {
             return Err(KernelError::InvalidState("session is not idle".into()));
@@ -285,7 +277,7 @@ impl Kernel {
             .lock()
             .map_err(|_| KernelError::InvalidState("session map poisoned".into()))?
             .remove(session_id);
-        Ok(public_session(&row))
+        Ok(row)
     }
 
     pub fn idempotency_get<T: serde::Serialize>(
@@ -300,7 +292,9 @@ impl Kernel {
     }
 
     fn recover_interrupted(&self) -> Result<(), KernelError> {
-        for row in self.inner.store.sessions()? {
+        // Summaries, not rows: recovery reads only status, id and sequence, and at
+        // startup there is one live row per session on disk to clone otherwise.
+        for row in self.inner.store.session_summaries()? {
             let classification = match row.status {
                 SessionStatus::Creating => Some("session_creation_interrupted"),
                 SessionStatus::Running => Some("operation_outcome_ambiguous"),
@@ -735,16 +729,6 @@ fn identity_valid(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn public_session(row: &SessionRow) -> Session {
-    Session {
-        session_id: row.session_id.clone(),
-        journal_id: row.journal_id.clone(),
-        status: row.status.clone(),
-        through_sequence: row.through_sequence,
-        presentation_identity: row.presentation_identity,
-    }
 }
 
 fn random_id(prefix: &str) -> String {

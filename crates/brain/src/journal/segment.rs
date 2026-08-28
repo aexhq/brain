@@ -12,7 +12,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use brain_protocol::{Identity, SessionId, SessionStatus};
+use brain_protocol::{Identity, JournalId, Session, SessionId, SessionStatus};
 
 use crate::{
     KernelError,
@@ -232,7 +232,7 @@ impl JournalStore for SegmentJournal {
         Ok(saved)
     }
 
-    fn session(&self, session_id: &SessionId) -> Result<Option<SessionRow>, KernelError> {
+    fn session_row(&self, session_id: &SessionId) -> Result<Option<SessionRow>, KernelError> {
         Ok(self
             .lock()?
             .sessions
@@ -240,15 +240,26 @@ impl JournalStore for SegmentJournal {
             .map(|tracked| tracked.row.clone()))
     }
 
-    fn sessions(&self) -> Result<Vec<SessionRow>, KernelError> {
-        let mut rows: Vec<SessionRow> = self
+    fn session_summary(&self, session_id: &SessionId) -> Result<Option<Session>, KernelError> {
+        Ok(self
+            .lock()?
+            .sessions
+            .get(session_id.as_str())
+            .map(|tracked| Session::from(&tracked.row)))
+    }
+
+    fn session_summaries(&self) -> Result<Vec<Session>, KernelError> {
+        // Summaries are built under the lock but copy only the five fields a caller can
+        // see. Cloning whole rows here copied every live configuration and conversation
+        // on every request that listed sessions.
+        let mut sessions: Vec<Session> = self
             .lock()?
             .sessions
             .values()
-            .map(|tracked| tracked.row.clone())
+            .map(|tracked| Session::from(&tracked.row))
             .collect();
-        rows.sort_by(|left, right| left.session_id.as_str().cmp(right.session_id.as_str()));
-        Ok(rows)
+        sessions.sort_by(|left, right| left.session_id.as_str().cmp(right.session_id.as_str()));
+        Ok(sessions)
     }
 
     fn records_after(
@@ -395,42 +406,50 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
 
     match frame.kind {
         SESSION_STATE => {
-            let payload = frame.payload()?;
+            // Decoded straight into its own shape and moved in. Building a `Value` and
+            // then cloning the context out of it materialised the context twice, and a
+            // session writes one of these per turn — so replay paid for every context it
+            // ever had, twice over, to keep the last.
+            let payload: StateFrame = frame.decode()?;
             let tracked = match state.sessions.entry(frame.session_id.to_string()) {
                 Entry::Occupied(occupied) => occupied.into_mut(),
-                Entry::Vacant(vacant) => vacant.insert(Tracked {
-                    row: SessionRow {
-                        session_id: SessionId::new(frame.session_id.to_string()),
-                        journal_id: serde_json::from_value(payload["journal_id"].clone())
-                            .map_err(json_error)?,
-                        // A frame that introduces a session always carries both; a
-                        // later one that only moves its status hits the arm above.
-                        presentation_identity: serde_json::from_value(
-                            payload["presentation_identity"].clone(),
-                        )
-                        .map_err(json_error)?,
-                        status: SessionStatus::Idle,
-                        through_sequence: 0,
-                        configuration: serde_json::Value::Null,
-                        context: serde_json::Value::Null,
-                    },
-                    locations: Vec::new(),
-                    state_segment: location.segment,
-                    last_recorded_at_ms: frame.recorded_at_ms,
-                }),
+                Entry::Vacant(vacant) => {
+                    // A frame that introduces a session always carries both; a later one
+                    // that only moves its status finds the session already here.
+                    let (Some(journal_id), Some(presentation_identity)) =
+                        (payload.journal_id, payload.presentation_identity)
+                    else {
+                        return Err(KernelError::Journal(
+                            "the first session state frame must name the journal and the presentation".into(),
+                        ));
+                    };
+                    vacant.insert(Tracked {
+                        row: SessionRow {
+                            session_id: SessionId::new(frame.session_id.to_string()),
+                            journal_id,
+                            presentation_identity,
+                            status: SessionStatus::Idle,
+                            through_sequence: 0,
+                            configuration: serde_json::Value::Null,
+                            context: serde_json::Value::Null,
+                        },
+                        locations: Vec::new(),
+                        state_segment: location.segment,
+                        last_recorded_at_ms: frame.recorded_at_ms,
+                    })
+                }
             };
-            if let Some(status) = payload.get("status") {
-                tracked.row.status = serde_json::from_value(status.clone()).map_err(json_error)?;
+            if let Some(status) = payload.status {
+                tracked.row.status = status;
             }
-            if let Some(context) = payload.get("context") {
-                tracked.row.context = context.clone();
+            if let Some(context) = payload.context {
+                tracked.row.context = context;
             }
-            if let Some(configuration) = payload.get("configuration") {
-                tracked.row.configuration = configuration.clone();
+            if let Some(configuration) = payload.configuration {
+                tracked.row.configuration = configuration;
             }
-            if let Some(identity) = payload.get("presentation_identity") {
-                tracked.row.presentation_identity =
-                    serde_json::from_value(identity.clone()).map_err(json_error)?;
+            if let Some(identity) = payload.presentation_identity {
+                tracked.row.presentation_identity = identity;
             }
             tracked.state_segment = location.segment;
         }
@@ -438,19 +457,12 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
             state.sessions.remove(frame.session_id);
         }
         IDEMPOTENCY => {
-            let payload = frame.payload()?;
-            let (Some(scope), Some(key)) = (payload["scope"].as_str(), payload["key"].as_str())
-            else {
-                return Err(KernelError::Journal(
-                    "idempotency frame is malformed".into(),
-                ));
-            };
+            let payload: IdempotencyFrame = frame.decode()?;
             state.idempotency.insert(
-                (scope.to_string(), key.to_string()),
+                (payload.scope, payload.key),
                 Stored {
-                    request: serde_json::from_value(payload["request"].clone())
-                        .map_err(json_error)?,
-                    response: payload["response"].clone(),
+                    request: payload.request,
+                    response: payload.response,
                     segment: location.segment,
                 },
             );
@@ -458,6 +470,26 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
         _ => {}
     }
     Ok(())
+}
+
+/// A `$session` frame carries only the fields the update that wrote it changed, so every
+/// one is optional. Decoding into this rather than a `Value` means the context is built
+/// once and moved, not built and then cloned.
+#[derive(serde::Deserialize)]
+struct StateFrame {
+    journal_id: Option<JournalId>,
+    presentation_identity: Option<Identity>,
+    status: Option<SessionStatus>,
+    context: Option<serde_json::Value>,
+    configuration: Option<serde_json::Value>,
+}
+
+#[derive(serde::Deserialize)]
+struct IdempotencyFrame {
+    scope: String,
+    key: String,
+    request: Identity,
+    response: serde_json::Value,
 }
 
 /// The oldest segment any surviving state still lives in. Everything below it is dead
@@ -490,8 +522,4 @@ fn not_found() -> KernelError {
 
 fn ended_first() -> KernelError {
     KernelError::InvalidState("session must exist and be ended before deletion".into())
-}
-
-fn json_error(error: serde_json::Error) -> KernelError {
-    KernelError::Journal(error.to_string())
 }

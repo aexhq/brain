@@ -45,7 +45,7 @@ pub struct SessionActor {
 impl SessionActor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        row: SessionRow,
+        mut row: SessionRow,
         store: Arc<dyn JournalStore>,
         loop_executor: Arc<dyn LoopExecutor>,
         model_executor: Arc<dyn ModelExecutor>,
@@ -54,9 +54,13 @@ impl SessionActor {
         receiver: mpsc::Receiver<SessionCommand>,
         cancel_requested: Arc<AtomicBool>,
     ) -> Result<Self, KernelError> {
-        let sealed: SealedSessionConfig = serde_json::from_value(row.configuration.clone())
-            .map_err(|error| KernelError::Journal(error.to_string()))?;
-        let context = serde_json::from_value(row.context.clone())
+        // The row is owned, and neither value is read again after this: `sealed` and
+        // `context` replace them. Cloning first deep-copied the whole configuration and
+        // the whole context on every rehydration.
+        let sealed: SealedSessionConfig =
+            serde_json::from_value(std::mem::take(&mut row.configuration))
+                .map_err(|error| KernelError::Journal(error.to_string()))?;
+        let context = serde_json::from_value(std::mem::take(&mut row.context))
             .map_err(|error| KernelError::Journal(error.to_string()))?;
         let presentation_bytes = brain_protocol::canonical_json(&serde_json::json!({
             "brain_configuration": sealed.brain_configuration,

@@ -80,7 +80,7 @@ fn reports_what_the_journal_costs() {
     let replay = at.elapsed().as_secs_f64() * 1e3;
     assert_eq!(
         reopened
-            .session(&session_id)
+            .session_row(&session_id)
             .unwrap()
             .unwrap()
             .through_sequence,

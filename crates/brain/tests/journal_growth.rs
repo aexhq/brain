@@ -64,6 +64,8 @@ impl LoopExecutor for GrowingLoop {
             "role": "assistant",
             "content": "x".repeat(ITEM_BYTES),
         }));
+        // A counter seeded at `DECISIONS - 1` finishes on its first activation of every
+        // turn, which is how the turn-axis test below gets one decision per turn.
         let decision = if activation + 1 < DECISIONS {
             Decision::Model {
                 request: ModelRequest {
@@ -227,7 +229,7 @@ async fn the_session_row_still_holds_the_final_context_after_the_turn() {
     // the row is the only thing rehydration reads, and `Decision::Finish` historically
     // relied on the per-decision write having already persisted it.
     let store = brain::SegmentJournal::open(&data_dir.join("journal")).unwrap();
-    let row = brain::JournalStore::session(&store, &session_id)
+    let row = brain::JournalStore::session_row(&store, &session_id)
         .unwrap()
         .unwrap();
     let items = row.context["items"].as_array().unwrap().len();
@@ -348,4 +350,77 @@ fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
         .unwrap()
         .complete(sealed)
         .unwrap()
+}
+
+/// The same defect on the other axis: turns, not decisions.
+///
+/// `finish_turn` writes a `$session` state frame carrying the whole context at the end
+/// of every turn, and the context grows across turns as the conversation accumulates. So
+/// a session that runs T turns, each adding C bytes, writes `C*T*(T+1)/2` bytes of
+/// journal — the sum of every intermediate context, not the final one. Unlike the
+/// decision axis, which the kernel caps at `BRAIN_MAX_DECISIONS`, nothing bounds T.
+///
+/// Every one of those bytes is also read back and parsed at every restart, so the same
+/// term shows up in cold start.
+///
+/// Measured at `TURNS = 64` on 2026-08-28: one 16 KiB item per turn produced 34,199,242
+/// bytes of journal for a 1 MiB context, 32.6x. The closed form predicts `(T+1)/2` =
+/// 32.5x, so what is being measured is the per-turn write and not overhead around it.
+///
+/// IGNORED because it fails today and describes work that is not done. It is the
+/// acceptance test for that work: remove the `#[ignore]` when the per-turn context write
+/// goes away, and it will hold the fix in place. See `PERF-REVIEW.md` finding X0.
+#[tokio::test]
+#[ignore = "records a known defect: the journal grows with the square of the turn count"]
+async fn a_session_does_not_journal_one_context_copy_per_turn() {
+    /// Turns in the measured session. Far below anything a real conversation reaches.
+    const TURNS: usize = 64;
+    /// The same constant-multiple bound the decision-axis test uses, for the same
+    /// reason: a fixed number of copies of the final context is fine, one per turn
+    /// is not.
+    const MAX_RATIO: u64 = 8;
+
+    let data_dir = temporary_directory();
+    let (publisher, _worker) = telemetry_channel();
+    let kernel = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 4,
+            loop_executor: Arc::new(GrowingLoop {
+                // One activation per turn, so the growth measured is turns.
+                activations: AtomicUsize::new(DECISIONS - 1),
+            }),
+            model_executor: Arc::new(TinyModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+    let handle = start(&kernel, request());
+    for _ in 0..TURNS {
+        handle
+            .message(MessageRequest {
+                content: serde_json::json!("go"),
+            })
+            .await
+            .unwrap();
+    }
+    drop(handle);
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let journal_bytes: u64 = fs::read_dir(data_dir.join("journal"))
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum();
+    let context_bytes = (TURNS * ITEM_BYTES) as u64;
+    let ratio = journal_bytes as f64 / context_bytes as f64;
+    let held = journal_bytes <= context_bytes * MAX_RATIO;
+    fs::remove_dir_all(data_dir).unwrap();
+    assert!(
+        held,
+        "a {TURNS}-turn session journalled {journal_bytes} bytes for a {context_bytes}-byte \
+         context ({ratio:.1}x, bound {MAX_RATIO}x): the kernel is writing the whole context \
+         once per turn, so the log grows with the square of the turn count"
+    );
 }

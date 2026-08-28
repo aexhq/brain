@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use brain_protocol::{Identity, SessionId};
+use brain_protocol::{Identity, Session, SessionId};
 use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
 
 use crate::{
@@ -59,12 +59,16 @@ impl JournalStore for ObservedJournal {
         Ok(saved)
     }
 
-    fn session(&self, session_id: &SessionId) -> Result<Option<SessionRow>, KernelError> {
-        self.inner.session(session_id)
+    fn session_row(&self, session_id: &SessionId) -> Result<Option<SessionRow>, KernelError> {
+        self.inner.session_row(session_id)
     }
 
-    fn sessions(&self) -> Result<Vec<SessionRow>, KernelError> {
-        self.inner.sessions()
+    fn session_summary(&self, session_id: &SessionId) -> Result<Option<Session>, KernelError> {
+        self.inner.session_summary(session_id)
+    }
+
+    fn session_summaries(&self) -> Result<Vec<Session>, KernelError> {
+        self.inner.session_summaries()
     }
 
     fn records_after(

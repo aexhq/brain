@@ -11,7 +11,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
 };
 use async_trait::async_trait;
-use brain::{KernelError, ModelExecutor, model::RemoteModelClient, model::RemoteModelConfig};
+use brain::{KernelError, ModelExecutor, model::ModelTransport, model::RemoteModelClient};
 use brain_protocol::{
     Identity, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelSelection,
     ModelStreamEvent, OperationId,
@@ -191,8 +191,9 @@ impl ModelBindingStore for LocalModelBindingStore {
 
 pub struct ServerModelExecutor {
     bindings: Arc<dyn ModelBindingStore>,
-    base_url: String,
-    timeout: Duration,
+    /// One connection pool for the process. The credential is the only part of a model
+    /// call that varies by session, and a credential is a header, not a client.
+    transport: Arc<ModelTransport>,
 }
 
 impl ServerModelExecutor {
@@ -200,12 +201,11 @@ impl ServerModelExecutor {
         bindings: Arc<dyn ModelBindingStore>,
         base_url: impl Into<String>,
         timeout: Duration,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, KernelError> {
+        Ok(Self {
             bindings,
-            base_url: base_url.into(),
-            timeout,
-        }
+            transport: Arc::new(ModelTransport::new(&base_url.into(), timeout)?),
+        })
     }
 }
 
@@ -229,11 +229,8 @@ impl ModelExecutor for ServerModelExecutor {
                 "model provider is unsupported".into(),
             ));
         }
-        let client = RemoteModelClient::new(RemoteModelConfig {
-            base_url: self.base_url.clone(),
-            api_key: credential.api_key.to_string(),
-            timeout: self.timeout,
-        })?;
+        let client =
+            RemoteModelClient::bound(self.transport.clone(), credential.api_key.to_string())?;
         client
             .execute(
                 operation_id,
