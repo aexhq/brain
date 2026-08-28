@@ -6,6 +6,9 @@ use brain_protocol::{
 mod http;
 mod sse;
 
+// Exported so the performance spikes can measure the shipped decoder rather than a copy.
+pub use sse::SseDecoder;
+
 pub use http::{ModelTransport, RemoteModelClient, RemoteModelConfig};
 
 use brain_protocol::Identity;
