@@ -64,7 +64,10 @@ impl Kernel {
     pub fn open(config: KernelConfig, telemetry: TelemetryPublisher) -> Result<Self, KernelError> {
         fs::create_dir_all(&config.data_dir)
             .map_err(|error| KernelError::Journal(error.to_string()))?;
-        let store = Arc::new(SegmentJournal::open(&config.data_dir.join("journal"))?);
+        let store = Arc::new(SegmentJournal::open(
+            &config.data_dir.join("journal"),
+            crate::journal::DEFAULT_IDEMPOTENCY_RETENTION,
+        )?);
         Self::with_store(config, store, telemetry)
     }
 

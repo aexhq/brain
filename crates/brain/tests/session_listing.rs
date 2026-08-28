@@ -63,7 +63,7 @@ const CONTEXT_BYTES: usize = 256 * 1024;
 const MAX_LISTING_BYTES: usize = CONTEXT_BYTES / 4;
 
 fn journal_with_sessions(directory: &Path) -> SegmentJournal {
-    let journal = SegmentJournal::open(directory).unwrap();
+    let journal = SegmentJournal::open(directory, brain::DEFAULT_IDEMPOTENCY_RETENTION).unwrap();
     let filler = serde_json::Value::String("x".repeat(CONTEXT_BYTES));
     for index in 0..SESSIONS {
         let row = SessionRow {

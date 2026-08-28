@@ -11,7 +11,10 @@ pub mod tool;
 
 pub use agentloop::LoopExecutor;
 pub use error::KernelError;
-pub use journal::{AppendRecord, JournalRecord, JournalStore, SegmentJournal, SessionUpdate};
+pub use journal::{
+    AppendRecord, DEFAULT_IDEMPOTENCY_RETENTION, JournalRecord, JournalStore, SegmentJournal,
+    SessionUpdate,
+};
 pub use model::ModelExecutor;
 pub use session::{CreatingSession, Kernel, KernelConfig, SessionHandle};
 pub use tool::ToolExecutor;

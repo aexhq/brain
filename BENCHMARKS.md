@@ -21,11 +21,13 @@ Every push runs a resource bound against a live server: after 10,000 requests, r
 stay under 256 MiB and must not have grown by more than 16 MiB. See the `benchmark-leakage` job
 in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-The same job bounds journal growth. A turn's context envelope grows with every decision, so
-anything written per decision costs the sum of every intermediate size; at the production ceiling
-of `BRAIN_MAX_DECISIONS=128` that is the difference between a megabyte of conversation and tens of
-megabytes of permanently retained journal. `crates/brain/tests/journal_growth.rs` holds a turn's
-journal, and one page of its event stream, to a small constant multiple of the final context.
+The same job bounds journal growth, on both axes. A context envelope grows with every decision
+*and* across every turn, so anything written per decision or per turn costs the sum of every
+intermediate size rather than the final one. On the decision axis the kernel caps it at
+`BRAIN_MAX_DECISIONS=128`; on the turn axis nothing caps it, and 64 turns holding a 1 MiB context
+once wrote 34 MB of journal — every byte of it read back at each restart.
+`crates/brain/tests/journal_growth.rs` holds both, and one page of the event stream, to a small
+constant multiple of the final context.
 
 ## What the journal costs
 

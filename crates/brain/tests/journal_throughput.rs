@@ -33,7 +33,7 @@ fn reports_what_the_journal_costs() {
             .unwrap()
             .as_nanos()
     ));
-    let store = SegmentJournal::open(&directory).unwrap();
+    let store = SegmentJournal::open(&directory, brain::DEFAULT_IDEMPOTENCY_RETENTION).unwrap();
 
     let session_id = SessionId::new("ses_throughput");
     store
@@ -76,7 +76,7 @@ fn reports_what_the_journal_costs() {
     drop(store);
 
     let at = Instant::now();
-    let reopened = SegmentJournal::open(&directory).unwrap();
+    let reopened = SegmentJournal::open(&directory, brain::DEFAULT_IDEMPOTENCY_RETENTION).unwrap();
     let replay = at.elapsed().as_secs_f64() * 1e3;
     assert_eq!(
         reopened
