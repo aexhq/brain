@@ -40,6 +40,19 @@ bounded and best-effort: under sustained pressure it drops rather than blocking 
 without limit. If you need at-least-once delivery into your own systems, own the cursor and do the
 forwarding yourself — Brain is not a queue.
 
+The live stream is the same endpoint asked for a different media type:
+
+```
+GET /v1/sessions/{id}/events?after={cursor}
+Accept: text/event-stream
+```
+
+It begins with the page `after` names and then carries records as they are appended, so opening it
+*before* sending a message is how you see that turn's first output. It ends when the session ends,
+and it ends if you fall too far behind — reconnect with the last `id` you saw and the log hands
+back exactly what you missed. `Accept: application/json` returns one page and is what
+`session.events()` uses.
+
 ## Lifecycle
 
 `cancel` stops work in flight. `end` closes the session to new messages. `delete` removes it and its
