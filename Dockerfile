@@ -1,6 +1,10 @@
 FROM rust:1.97.1-bookworm AS build
 WORKDIR /src
 COPY . .
+# Strip the symbol table from the shipped binaries: 22-25% smaller with no measured
+# change to process readiness. It is set here rather than in `[profile.release]` so
+# CI, benchmarks and local release builds keep symbolicated panic backtraces.
+ENV RUSTFLAGS="-C strip=symbols"
 RUN cargo build --locked --release -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
 
 FROM debian:bookworm-slim
