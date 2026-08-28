@@ -21,7 +21,13 @@ Every push runs a resource bound against a live server: after 10,000 requests, r
 stay under 256 MiB and must not have grown by more than 16 MiB. See the `benchmark-leakage` job
 in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-That job is a leak guard, not a benchmark, and it no longer checks leakage between sessions either;
+The same job bounds journal growth. A turn's context envelope grows with every decision, so
+anything written per decision costs the sum of every intermediate size; at the production ceiling
+of `BRAIN_MAX_DECISIONS=128` that is the difference between a megabyte of conversation and tens of
+megabytes of permanently retained journal. `crates/brain/tests/journal_growth.rs` holds a turn's
+journal, and one page of its event stream, to a small constant multiple of the final context.
+
+That job is a leak guard, not a benchmark, and it does not check leakage between sessions;
 the name is older than what it does. Latency, throughput, and the cross-session isolation test are
 being rebuilt — see the roadmap in the [README](README.md).
 
