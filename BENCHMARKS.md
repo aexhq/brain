@@ -29,7 +29,7 @@ journal, and one page of its event stream, to a small constant multiple of the f
 
 That job is a leak guard, not a benchmark, and it does not check leakage between sessions;
 the name is older than what it does. Latency, throughput, and the cross-session isolation test are
-being rebuilt — see the roadmap in the [README](README.md).
+being rebuilt — see **Status** in the [README](README.md).
 
 ## Pre-rebuild archive (not current)
 
