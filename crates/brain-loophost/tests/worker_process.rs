@@ -33,12 +33,9 @@ async fn real_worker_admits_and_activates_the_typescript_diagnostic_loop() {
                 configuration: serde_json::json!({}),
                 presentation: Presentation {
                     bytes: Vec::new(),
-                    digest: "presentation".into(),
+                    identity: brain_protocol::Identity::of(&"presentation").unwrap(),
                 },
-                runtime: RuntimeEnvelope {
-                    logical_time_ms: 1,
-                    deterministic_seed: vec![1, 2, 3],
-                },
+                runtime: RuntimeEnvelope::at(&brain_protocol::JournalId::new("jrn_test"), 1, 0),
             },
         )
         .await
