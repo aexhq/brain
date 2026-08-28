@@ -37,8 +37,14 @@ impl WorkerPool {
             worker_binary: worker_binary.into(),
             socket: run_dir.join("brain-loop-worker.sock"),
             packages: packages.into(),
+            // Admission, not execution: what runs at once is bounded inside the worker,
+            // where the instances actually live. This is how many callers may be in
+            // flight or waiting for one of those slots before the pool refuses.
             permits: Arc::new(Semaphore::new(
-                limits.queued_activations_per_worker.saturating_add(1),
+                limits
+                    .concurrent_activations_per_worker
+                    .saturating_add(limits.queued_activations_per_worker)
+                    .max(1),
             )),
             limits,
             state: Mutex::new(WorkerState::default()),
@@ -93,17 +99,22 @@ impl WorkerPool {
             .clone()
             .try_acquire_owned()
             .map_err(|_| "Loophost queue is full".to_owned())?;
-        let mut state = self.state.lock().await;
-        self.ensure_worker(&mut state).await?;
-        if !state.admitted.contains(&digest) {
-            let package = tokio::fs::read(package_path(&self.packages, &digest))
-                .await
-                .map_err(|_| "Agentloop digest is not admitted".to_owned())?;
-            let admitted = WorkerClient::new(&self.socket).admit(&package).await?;
-            if admitted != digest {
-                return Err("persisted Agentloop package changed digest".into());
+        // Everything that needs the worker's identity happens under the lock; the
+        // activation itself does not. Holding it across the call serialised every session
+        // in the process onto one activation at a time, whatever the permits allowed.
+        {
+            let mut state = self.state.lock().await;
+            self.ensure_worker(&mut state).await?;
+            if !state.admitted.contains(&digest) {
+                let package = tokio::fs::read(package_path(&self.packages, &digest))
+                    .await
+                    .map_err(|_| "Agentloop digest is not admitted".to_owned())?;
+                let admitted = WorkerClient::new(&self.socket).admit(&package).await?;
+                if admitted != digest {
+                    return Err("persisted Agentloop package changed digest".into());
+                }
+                state.admitted.insert(digest.clone());
             }
-            state.admitted.insert(digest.clone());
         }
         let client = WorkerClient::new(&self.socket);
         let call = client.activate(digest, input, self.limits.activation_input_bytes);
@@ -118,15 +129,22 @@ impl WorkerPool {
                 let output_bytes =
                     serde_json::to_vec(&output).map_err(|error| error.to_string())?;
                 if output_bytes.len() > self.limits.activation_output_bytes {
-                    self.stop_worker(&mut state).await;
+                    // The frame that carried it was already bounded on the way in, and
+                    // the instance that produced it is gone. Stopping the worker for this
+                    // would take every other session's warm component with it, which is
+                    // a far larger price than the violation.
                     return Err("Agentloop activation output exceeds the configured limit".into());
                 }
                 Ok(output)
             }
             Ok(Err(error)) => Err(error),
             Err(_) => {
+                // The guest's own epoch deadline fires before this, so reaching here
+                // means the worker itself is not answering. That is the case this is
+                // for, and restarting it is the only thing left.
+                let mut state = self.state.lock().await;
                 self.stop_worker(&mut state).await;
-                Err("Agentloop activation exceeded its wall-time limit".into())
+                Err("brain-loop-worker stopped answering".into())
             }
         }
     }
