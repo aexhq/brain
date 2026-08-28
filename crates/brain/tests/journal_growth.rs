@@ -229,7 +229,7 @@ async fn the_session_row_still_holds_the_final_context_after_the_turn() {
     // the row is the only thing rehydration reads, and `Decision::Finish` historically
     // relied on the per-decision write having already persisted it.
     let store = brain::SegmentJournal::open(&data_dir.join("journal")).unwrap();
-    let row = brain::JournalStore::session(&store, &session_id)
+    let row = brain::JournalStore::session_row(&store, &session_id)
         .unwrap()
         .unwrap();
     let items = row.context["items"].as_array().unwrap().len();

@@ -12,7 +12,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use brain_protocol::{Identity, JournalId, SessionId, SessionStatus};
+use brain_protocol::{Identity, JournalId, Session, SessionId, SessionStatus};
 
 use crate::{
     KernelError,
@@ -232,7 +232,7 @@ impl JournalStore for SegmentJournal {
         Ok(saved)
     }
 
-    fn session(&self, session_id: &SessionId) -> Result<Option<SessionRow>, KernelError> {
+    fn session_row(&self, session_id: &SessionId) -> Result<Option<SessionRow>, KernelError> {
         Ok(self
             .lock()?
             .sessions
@@ -240,15 +240,26 @@ impl JournalStore for SegmentJournal {
             .map(|tracked| tracked.row.clone()))
     }
 
-    fn sessions(&self) -> Result<Vec<SessionRow>, KernelError> {
-        let mut rows: Vec<SessionRow> = self
+    fn session_summary(&self, session_id: &SessionId) -> Result<Option<Session>, KernelError> {
+        Ok(self
+            .lock()?
+            .sessions
+            .get(session_id.as_str())
+            .map(|tracked| Session::from(&tracked.row)))
+    }
+
+    fn session_summaries(&self) -> Result<Vec<Session>, KernelError> {
+        // Summaries are built under the lock but copy only the five fields a caller can
+        // see. Cloning whole rows here copied every live configuration and conversation
+        // on every request that listed sessions.
+        let mut sessions: Vec<Session> = self
             .lock()?
             .sessions
             .values()
-            .map(|tracked| tracked.row.clone())
+            .map(|tracked| Session::from(&tracked.row))
             .collect();
-        rows.sort_by(|left, right| left.session_id.as_str().cmp(right.session_id.as_str()));
-        Ok(rows)
+        sessions.sort_by(|left, right| left.session_id.as_str().cmp(right.session_id.as_str()));
+        Ok(sessions)
     }
 
     fn records_after(
@@ -512,4 +523,3 @@ fn not_found() -> KernelError {
 fn ended_first() -> KernelError {
     KernelError::InvalidState("session must exist and be ended before deletion".into())
 }
-

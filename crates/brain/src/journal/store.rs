@@ -1,4 +1,4 @@
-use brain_protocol::{Identity, JournalId, SessionId, SessionStatus};
+use brain_protocol::{Identity, JournalId, Session, SessionId, SessionStatus};
 
 use crate::{
     KernelError,
@@ -14,6 +14,21 @@ pub struct SessionRow {
     pub configuration: serde_json::Value,
     pub context: serde_json::Value,
     pub presentation_identity: Identity,
+}
+
+/// What a caller outside the kernel is allowed to see about a session. Building one
+/// borrows the row rather than cloning it, so listing sessions never copies a
+/// conversation or a configuration.
+impl From<&SessionRow> for Session {
+    fn from(row: &SessionRow) -> Self {
+        Self {
+            session_id: row.session_id.clone(),
+            journal_id: row.journal_id.clone(),
+            status: row.status.clone(),
+            through_sequence: row.through_sequence,
+            presentation_identity: row.presentation_identity,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -36,8 +51,11 @@ pub trait JournalStore: Send + Sync + 'static {
         records: &[AppendRecord],
         update: SessionUpdate<'_>,
     ) -> Result<Vec<JournalRecord>, KernelError>;
-    fn session(&self, session_id: &SessionId) -> Result<Option<SessionRow>, KernelError>;
-    fn sessions(&self) -> Result<Vec<SessionRow>, KernelError>;
+    /// The whole row, including configuration and context. Only rehydrating a session
+    /// actor needs this; everything else wants a summary.
+    fn session_row(&self, session_id: &SessionId) -> Result<Option<SessionRow>, KernelError>;
+    fn session_summary(&self, session_id: &SessionId) -> Result<Option<Session>, KernelError>;
+    fn session_summaries(&self) -> Result<Vec<Session>, KernelError>;
     fn records_after(
         &self,
         session_id: &SessionId,

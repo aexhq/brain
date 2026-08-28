@@ -281,7 +281,7 @@ async fn restart_marks_an_inflight_turn_ambiguous_instead_of_guessing() {
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
     let store = SegmentJournal::open(&data_dir.join("journal")).unwrap();
-    let row = store.session(&session_id).unwrap().unwrap();
+    let row = store.session_row(&session_id).unwrap().unwrap();
     store
         .append(
             &session_id,
