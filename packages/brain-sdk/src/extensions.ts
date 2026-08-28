@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { BoundTool, BrainExtension, Environment, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition } from "./types.js";
+import type { BoundTool, BrainExtension, Environment, ModelMessage, ModelResponse, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition } from "./types.js";
 
 export const extensionSource = Symbol.for("@aexhq/brain/extension-source");
 
@@ -9,7 +9,7 @@ export interface BrainInput {
   readonly observation:
     | { readonly type: "session_started" }
     | { readonly type: "user_message"; readonly content: unknown }
-    | { readonly type: "model_completed"; readonly response: unknown }
+    | { readonly type: "model_completed"; readonly response: ModelResponse }
     | { readonly type: "tools_completed"; readonly results: readonly unknown[] }
     | { readonly type: "emitted"; readonly event: unknown }
     | { readonly type: "cancelled" };
@@ -18,8 +18,13 @@ export interface BrainInput {
 }
 
 export interface ToolCall { readonly callId: string; readonly name: string; readonly input: unknown }
+export interface ModelTurnRequest {
+  readonly messages: readonly ModelMessage[];
+  readonly response_format?: unknown;
+  readonly max_output_tokens?: number;
+}
 export type BrainAction =
-  | { readonly type: "model"; readonly request: { readonly messages: readonly unknown[]; readonly response_format?: unknown; readonly max_output_tokens?: number } }
+  | { readonly type: "model"; readonly request: ModelTurnRequest }
   | { readonly type: "tools"; readonly calls: readonly ToolCall[] }
   | { readonly type: "emit"; readonly event: unknown }
   | { readonly type: "reply"; readonly content: unknown }
@@ -29,7 +34,7 @@ export type BrainAction =
 export interface BrainTurn {
   readonly logicalTime: Date;
   readonly signal: AbortSignal;
-  model(request: { readonly messages: readonly unknown[]; readonly response_format?: unknown; readonly max_output_tokens?: number }): BrainAction;
+  model(request: ModelTurnRequest): BrainAction;
   tools(calls: readonly ToolCall[]): BrainAction;
   emit(event: unknown): BrainAction;
   reply(content: unknown): BrainAction;
@@ -43,7 +48,7 @@ export interface BrainAuthor<Options> {
   readonly on: {
     start(handler: BrainHandler<{ readonly type: "session_started" }>): void;
     message(handler: BrainHandler<{ readonly type: "user_message"; readonly content: unknown }>): void;
-    model(handler: BrainHandler<{ readonly type: "model_completed"; readonly response: unknown }>): void;
+    model(handler: BrainHandler<{ readonly type: "model_completed"; readonly response: ModelResponse }>): void;
     tools(handler: BrainHandler<{ readonly type: "tools_completed"; readonly results: readonly unknown[] }>): void;
     event(handler: BrainHandler<{ readonly type: "emitted"; readonly event: unknown }>): void;
     cancel(handler: BrainHandler<{ readonly type: "cancelled" }>): void;

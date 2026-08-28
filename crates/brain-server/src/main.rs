@@ -50,9 +50,19 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let models = Arc::new(LocalModelBindingStore::open(
         &config.data_dir.join("model-bindings"),
     )?);
+    let mut base_url_overrides = vec![(
+        "vercel-ai-gateway".to_owned(),
+        config.model_base_url.clone(),
+    )];
+    if let Some(url) = &config.openai_base_url {
+        base_url_overrides.push(("openai".to_owned(), url.clone()));
+    }
+    if let Some(url) = &config.anthropic_base_url {
+        base_url_overrides.push(("anthropic".to_owned(), url.clone()));
+    }
     let model = Arc::new(ServerModelExecutor::new(
         models.clone(),
-        config.model_base_url.clone(),
+        &base_url_overrides,
         Duration::from_secs(120),
     )?);
     let http = reqwest::Client::builder()

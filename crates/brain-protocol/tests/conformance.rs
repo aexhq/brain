@@ -100,3 +100,32 @@ fn rust_views_round_trip_contract_examples() {
     .unwrap();
     assert!(matches!(decision, Decision::Finish { result: None }));
 }
+
+#[test]
+fn model_selection_names_are_validated_per_provider() {
+    let selection = |provider: &str, name: &str| serde_json::json!({"provider": provider, "name": name, "api_key": "k"});
+    let validate = |value: &Value| {
+        let schema = read_json("contracts/session/v1/schemas.json");
+        let wrapper = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": schema["$defs"],
+            "$ref": "#/$defs/ModelSelection"
+        });
+        jsonschema::draft202012::new(&wrapper)
+            .unwrap()
+            .validate(value)
+            .is_ok()
+    };
+    assert!(validate(&selection(
+        "vercel-ai-gateway",
+        "openai/gpt-5-mini"
+    )));
+    assert!(
+        !validate(&selection("vercel-ai-gateway", "gpt-5-mini")),
+        "the gateway requires a provider namespace in the model name"
+    );
+    assert!(validate(&selection("openai", "gpt-5-mini")));
+    assert!(validate(&selection("anthropic", "claude-sonnet-4-5")));
+    assert!(!validate(&selection("anthropic", "claude sonnet")));
+    assert!(!validate(&selection("bedrock", "some-model")));
+}

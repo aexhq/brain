@@ -13,8 +13,18 @@ model: {
 }
 ```
 
-Brain speaks the Anthropic and OpenAI wire formats natively, and talks to gateways that present
-either. `BRAIN_MODEL_BASE_URL` sets the endpoint; it defaults to the Vercel AI Gateway.
+Three providers ship built in:
+
+| Provider | Wire dialect | Model names | Default endpoint |
+| --- | --- | --- | --- |
+| `vercel-ai-gateway` | OpenAI Chat Completions | namespaced, `openai/gpt-5-mini` | `https://ai-gateway.vercel.sh/v1` |
+| `openai` | OpenAI Chat Completions | bare, `gpt-5-mini` | `https://api.openai.com/v1` |
+| `anthropic` | Anthropic Messages | bare, `claude-sonnet-4-5` | `https://api.anthropic.com/v1` |
+
+Message history is provider-neutral -- one shape in your agent loop and in the journal, rendered
+into the provider's wire format at request build time. Endpoints can be overridden per provider:
+`BRAIN_MODEL_BASE_URL` (the gateway), `BRAIN_OPENAI_BASE_URL` (also the hook for any
+OpenAI-compatible server such as Ollama or vLLM), and `BRAIN_ANTHROPIC_BASE_URL`.
 
 ## Pinned for the session
 

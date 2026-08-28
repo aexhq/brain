@@ -7,7 +7,7 @@ import { Brain, BrainError, activateBrain, brain, createEnvironmentHandler, envi
 const simple = brain((author) => {
   const state = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
   author.on.message((message, turn) => {
-    state.messages.push({ role: "user", content: message.content });
+    state.messages.push({ role: "user", content: [{ type: "text", text: String(message.content) }] });
     return turn.model({ messages: state.messages });
   });
 });
@@ -68,7 +68,9 @@ test("runs synchronous Brain hooks and persists validated state", () => {
     runtime: { logicalTimeMs: 1n },
   });
   assert.equal(result.decision.type, "model");
-  assert.deepEqual(result.context.state.slots[0].messages, [{ role: "user", content: "hello" }]);
+  assert.deepEqual(result.context.state.slots[0].messages, [
+    { role: "user", content: [{ type: "text", text: "hello" }] },
+  ]);
 });
 
 test("executes zero-configuration Tools from their serialized configuration", async () => {
