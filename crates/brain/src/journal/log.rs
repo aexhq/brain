@@ -24,8 +24,9 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Condvar, Mutex, mpsc},
     thread::{self, JoinHandle},
+    time::Duration,
 };
 
 use crate::KernelError;
@@ -35,6 +36,28 @@ use crate::KernelError;
 const SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
 
 const HEADER_BYTES: usize = 12;
+
+/// How far the writer may fall behind before a caller waits for it.
+///
+/// Writing behind the caller turns disk latency into memory: with a deliberately slow
+/// writer, producers queued 250 MiB of frames in 218 ms and every byte stayed on the
+/// heap. Above this the append waits instead, so a stalled disk shows up as a slow turn
+/// rather than as a process that grows until it is killed. Large enough that a healthy
+/// disk never reaches it.
+const MAX_QUEUED_BYTES: u64 = 64 * 1024 * 1024;
+
+/// What the writer has been handed and has not yet put on disk, and whether it has
+/// failed. Shared with the writer thread, which is the only thing that subtracts.
+#[derive(Default)]
+struct Queue {
+    bytes: u64,
+    /// Set once. A write-behind log has no caller left to tell when a write fails, so
+    /// the failure is kept and every later append reports it: losing records silently is
+    /// the one outcome worth refusing.
+    failure: Option<String>,
+}
+
+type Backlog = Arc<(Mutex<Queue>, Condvar)>;
 
 /// Frames handed to the writer but not yet flushed, keyed by segment and offset.
 type Staged = Arc<Mutex<HashMap<(u64, u64), Arc<Vec<u8>>>>>;
@@ -106,6 +129,7 @@ pub(crate) struct SegmentLog {
     /// The writer flushes before it removes an entry, so a miss here means the bytes
     /// are on disk.
     pending: Staged,
+    backlog: Backlog,
     sender: Option<mpsc::Sender<Message>>,
     writer: Option<JoinHandle<()>>,
 }
@@ -122,8 +146,28 @@ impl SegmentLog {
     /// the last frame of a crashed process — is truncated away.
     pub(crate) fn open(
         directory: &Path,
+        visit_state: impl FnMut(&str, &[u8]) -> Result<(), KernelError>,
+        visit: impl FnMut(Frame<'_>, Location) -> Result<(), KernelError>,
+    ) -> Result<Self, KernelError> {
+        Self::open_inner(directory, visit_state, visit, Duration::ZERO)
+    }
+
+    /// A log whose writer sleeps before each frame, so a test can hold it behind and
+    /// watch what the queue does. Never used outside tests: a real writer is as fast as
+    /// the disk it is writing to.
+    #[cfg(test)]
+    pub(crate) fn open_behind(
+        directory: &Path,
+        writer_delay: Duration,
+    ) -> Result<Self, KernelError> {
+        Self::open_inner(directory, |_, _| Ok(()), |_, _| Ok(()), writer_delay)
+    }
+
+    fn open_inner(
+        directory: &Path,
         mut visit_state: impl FnMut(&str, &[u8]) -> Result<(), KernelError>,
         mut visit: impl FnMut(Frame<'_>, Location) -> Result<(), KernelError>,
+        writer_delay: Duration,
     ) -> Result<Self, KernelError> {
         fs::create_dir_all(directory).map_err(log_error)?;
         for (session_id, bytes) in read_states(directory)? {
@@ -176,16 +220,44 @@ impl SegmentLog {
         }
 
         let pending: Staged = Arc::default();
+        let backlog: Backlog = Arc::default();
         let (sender, receiver) = mpsc::channel::<Message>();
-        let writer = spawn_writer(directory.to_path_buf(), receiver, pending.clone());
+        let writer = spawn_writer(
+            directory.to_path_buf(),
+            receiver,
+            pending.clone(),
+            backlog.clone(),
+            writer_delay,
+        );
 
         Ok(Self {
             directory: directory.to_path_buf(),
             tail: Mutex::new(tail),
             pending,
+            backlog,
             sender: Some(sender),
             writer: Some(writer),
         })
+    }
+
+    /// Wait until the writer is far enough ahead to accept `bytes`, and refuse outright
+    /// if it has already failed. A frame larger than the whole allowance goes through
+    /// once the queue is empty rather than waiting for room that can never appear.
+    fn reserve(&self, bytes: u64) -> Result<(), KernelError> {
+        let (queue, room) = &*self.backlog;
+        let mut queue = queue.lock().map_err(|_| poisoned())?;
+        loop {
+            if let Some(failure) = &queue.failure {
+                return Err(KernelError::Journal(format!(
+                    "journal writer failed and the log is no longer being written: {failure}"
+                )));
+            }
+            if queue.bytes == 0 || queue.bytes + bytes <= MAX_QUEUED_BYTES {
+                queue.bytes += bytes;
+                return Ok(());
+            }
+            queue = room.wait(queue).map_err(|_| poisoned())?;
+        }
     }
 
     /// Assign a location, hand the bytes to the writer, and return. Does not block on
@@ -195,6 +267,7 @@ impl SegmentLog {
         // allocates a second buffer and copies the frame into it.
         let frame = Arc::new(encode(&append)?);
         let length = frame.len() as u64;
+        self.reserve(length)?;
 
         let mut tail = self.tail.lock().map_err(|_| poisoned())?;
         if tail.offset > 0 && tail.offset + length > SEGMENT_BYTES {
@@ -230,6 +303,7 @@ impl SegmentLog {
         check_session_id(session_id)?;
         let bytes =
             serde_json::to_vec(payload).map_err(|error| KernelError::Journal(error.to_string()))?;
+        self.reserve(bytes.len() as u64)?;
         self.send(Message::State {
             session_id: session_id.to_owned(),
             bytes: Some(bytes),
@@ -340,10 +414,14 @@ fn spawn_writer(
     directory: PathBuf,
     receiver: mpsc::Receiver<Message>,
     pending: Staged,
+    backlog: Backlog,
+    delay: Duration,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut open: Option<(u64, BufWriter<File>)> = None;
         let mut written: Vec<(u64, u64)> = Vec::new();
+        // Bytes this batch took off the queue, released once they are on the disk.
+        let mut drained = 0_u64;
         // The last state seen for each session in this batch. A session that finished
         // three turns while the disk was busy is written once, not three times.
         let mut states: HashMap<String, Option<Vec<u8>>> = HashMap::new();
@@ -352,28 +430,45 @@ fn spawn_writer(
             while let Some(message) = next.take() {
                 match message {
                     Message::State { session_id, bytes } => {
+                        drained += bytes.as_ref().map_or(0, |bytes| bytes.len() as u64);
+                        // A state superseded before it reached the disk is dropped, and
+                        // its allowance goes back with the one that replaced it.
                         states.insert(session_id, bytes);
                     }
                     Message::Frame { location, bytes } => {
+                        if !delay.is_zero() {
+                            thread::sleep(delay);
+                        }
+                        drained += bytes.len() as u64;
                         if open.as_ref().is_none_or(|(id, _)| *id != location.segment) {
                             if let Some((_, mut file)) = open.take() {
                                 let _ = file.flush();
                             }
-                            open = OpenOptions::new()
+                            match OpenOptions::new()
                                 .create(true)
                                 .append(true)
                                 .open(segment_path(&directory, location.segment))
-                                .ok()
-                                .map(|file| {
-                                    (location.segment, BufWriter::with_capacity(1 << 20, file))
-                                });
+                            {
+                                Ok(file) => {
+                                    open = Some((
+                                        location.segment,
+                                        BufWriter::with_capacity(1 << 20, file),
+                                    ));
+                                }
+                                Err(error) => {
+                                    open = None;
+                                    fail(&backlog, format!("cannot open a segment: {error}"));
+                                }
+                            }
                         }
-                        // If the segment could not be opened the frame stays staged in
-                        // `pending` and stays readable; there is no caller left to tell.
-                        if let Some((_, file)) = open.as_mut()
-                            && file.write_all(&bytes).is_ok()
-                        {
-                            written.push((location.segment, location.offset));
+                        match open.as_mut() {
+                            Some((_, file)) => match file.write_all(&bytes) {
+                                Ok(()) => written.push((location.segment, location.offset)),
+                                Err(error) => {
+                                    fail(&backlog, format!("cannot write a frame: {error}"))
+                                }
+                            },
+                            None => fail(&backlog, "the segment is not open".to_owned()),
                         }
                     }
                     Message::Reclaim(keep_from) => reclaim_segments(&directory, keep_from),
@@ -393,12 +488,34 @@ fn spawn_writer(
                     pending.remove(&key);
                 }
             }
+            release(&backlog, std::mem::take(&mut drained));
         }
         write_states(&directory, states.drain());
+        release(&backlog, drained);
         if let Some((_, mut file)) = open.take() {
             let _ = file.flush();
         }
     })
+}
+
+/// Hand back the queue allowance for bytes that have reached the disk, and wake whoever
+/// is waiting for room.
+fn release(backlog: &Backlog, bytes: u64) {
+    let (queue, room) = &**backlog;
+    if let Ok(mut queue) = queue.lock() {
+        queue.bytes = queue.bytes.saturating_sub(bytes);
+    }
+    room.notify_all();
+}
+
+/// Record the first failure and wake everyone waiting: a log that cannot be written is
+/// not going to drain, so waiting for room in it is waiting forever.
+fn fail(backlog: &Backlog, reason: String) {
+    let (queue, room) = &**backlog;
+    if let Ok(mut queue) = queue.lock() {
+        queue.failure.get_or_insert(reason);
+    }
+    room.notify_all();
 }
 
 /// Replace or delete each session's state file. A state is written to a temporary file
@@ -712,6 +829,85 @@ mod tests {
         let bytes = encode(&append("ses_test", 0, "session_state", &body)).unwrap();
         let (frame, _) = decode(&bytes).unwrap();
         assert!(!frame.is_sequenced());
+    }
+
+    /// Writing behind the caller turns disk latency into memory. With a slow writer,
+    /// producers queued 250 MiB of frames in 218 ms and every byte stayed on the heap.
+    /// Past the allowance the append waits, so a stalled disk is a slow turn rather than
+    /// a process that grows until it is killed.
+    #[test]
+    fn a_slow_writer_makes_appends_wait_instead_of_growing_the_queue() {
+        let directory = temporary();
+        // One millisecond per frame, which is roughly what the original spike used to
+        // hold the writer behind its producers.
+        let log = SegmentLog::open_behind(&directory, Duration::from_millis(1)).unwrap();
+        let body = serde_json::json!({ "filler": "x".repeat(64 * 1024) });
+
+        let mut peak = 0;
+        // Enough frames that an unbounded queue would hold several times the allowance.
+        for sequence in 1..=2_048 {
+            log.append(append("ses_test", sequence, "turn_finished", &body))
+                .unwrap();
+            peak = peak.max(log.backlog.0.lock().unwrap().bytes);
+            if peak > MAX_QUEUED_BYTES {
+                break;
+            }
+        }
+
+        assert!(
+            peak <= MAX_QUEUED_BYTES,
+            "the writer was allowed to fall {peak} bytes behind, past the              {MAX_QUEUED_BYTES}-byte allowance"
+        );
+        // And the allowance was actually reached, so the bound above is holding
+        // something back rather than being satisfied by a queue that never filled.
+        assert!(
+            peak > MAX_QUEUED_BYTES / 2,
+            "the queue only reached {peak} bytes, so this run never tested the bound"
+        );
+        drop(log);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A frame bigger than the whole allowance must go through rather than wait for room
+    /// that can never appear.
+    #[test]
+    fn a_frame_larger_than_the_allowance_is_still_written() {
+        let directory = temporary();
+        let log = SegmentLog::open_behind(&directory, Duration::ZERO).unwrap();
+        let body = serde_json::json!({
+            "filler": "x".repeat(MAX_QUEUED_BYTES as usize + 1),
+        });
+
+        let location = log
+            .append(append("ses_test", 1, "turn_finished", &body))
+            .unwrap();
+        assert!(u64::from(location.length) > MAX_QUEUED_BYTES);
+
+        drop(log);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A write-behind log has no caller left to tell when a write fails. Keeping the
+    /// failure and refusing every later append is the difference between a loud stop and
+    /// silently losing records.
+    #[test]
+    fn a_writer_failure_stops_the_log_rather_than_being_swallowed() {
+        let directory = temporary();
+        let log = SegmentLog::open_behind(&directory, Duration::ZERO).unwrap();
+        fail(&log.backlog, "the disk went away".to_owned());
+
+        let body = payload("turn_finished");
+        let error = log
+            .append(append("ses_test", 1, "turn_finished", &body))
+            .expect_err("an append after a writer failure must not report success");
+        assert!(
+            error.to_string().contains("the disk went away"),
+            "the failure must say what happened: {error}"
+        );
+        assert!(log.write_state("ses_test", &body).is_err());
+
+        drop(log);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
