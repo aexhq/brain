@@ -1,9 +1,13 @@
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
 use brain_protocol::{ActivationInput, ActivationOutput, AgentloopIdentity};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{AgentloopPackage, LoopLimits, WorkerClient};
+
+/// How long after a guest's own wall-clock bound the supervisor gives up on the worker
+/// itself. Covers the IPC round trip and anything an epoch cannot interrupt.
+const WORKER_BACKSTOP: Duration = Duration::from_secs(1);
 
 pub struct WorkerPool {
     worker_binary: PathBuf,
@@ -103,7 +107,13 @@ impl WorkerPool {
         }
         let client = WorkerClient::new(&self.socket);
         let call = client.activate(digest, input, self.limits.activation_input_bytes);
-        match tokio::time::timeout(self.limits.wall_time, call).await {
+        // The guest is stopped by its own epoch deadline at `wall_time`, which costs one
+        // instance. This timeout is the backstop for what an epoch cannot interrupt — a
+        // worker blocked in a host call, a crashed worker, a socket that never answers —
+        // and it stops the worker, taking every warm component with it. It must therefore
+        // be strictly later than the bound the guest enforces on itself, or it fires
+        // first and pays the expensive price for the cheap failure.
+        match tokio::time::timeout(self.limits.wall_time + WORKER_BACKSTOP, call).await {
             Ok(Ok(output)) => {
                 let output_bytes =
                     serde_json::to_vec(&output).map_err(|error| error.to_string())?;

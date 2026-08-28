@@ -33,3 +33,6 @@ wasmtime = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# Builds the smallest possible runaway guest for the epoch-deadline test. Already in the
+# lock file as a Wasmtime component dependency, so it costs no new crate.
+wasm-encoder = "0.254"
