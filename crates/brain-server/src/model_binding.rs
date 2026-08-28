@@ -1,8 +1,9 @@
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
@@ -23,6 +24,7 @@ use zeroize::Zeroizing;
 const KEY_BYTES: usize = 32;
 const NONCE_BYTES: usize = 12;
 
+#[derive(Clone)]
 pub struct ModelCredential {
     pub provider: String,
     pub api_key: Zeroizing<String>,
@@ -37,6 +39,20 @@ pub trait ModelBindingStore: Send + Sync + 'static {
 pub struct LocalModelBindingStore {
     connection: Mutex<Connection>,
     key: Zeroizing<[u8; KEY_BYTES]>,
+    /// Credentials already read from the database, so that a model call is not a
+    /// `synchronous = FULL` query plus an AES-GCM decrypt behind a process-global mutex
+    /// on a Tokio worker thread. Every decision of every turn takes this path.
+    ///
+    /// Safe to cache because a binding is sealed at creation: `put` on an existing
+    /// identity either matches the stored credential or fails, so an entry cannot go
+    /// stale. Misses are not cached, so a later `put` is still visible, and `delete`
+    /// evicts. The plaintext lives no longer than the master key already does — that key
+    /// is resident for the life of the process, so anything that can read this map could
+    /// already decrypt the table.
+    ///
+    /// Bounded by the number of rows: an entry only appears after a successful read, and
+    /// a row only appears through `put`.
+    cached: RwLock<HashMap<String, ModelCredential>>,
 }
 
 impl LocalModelBindingStore {
@@ -63,7 +79,25 @@ impl LocalModelBindingStore {
         Ok(Self {
             connection: Mutex::new(connection),
             key: Zeroizing::new(key),
+            cached: RwLock::new(HashMap::new()),
         })
+    }
+
+    fn cache_read(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, HashMap<String, ModelCredential>>, KernelError> {
+        self.cached
+            .read()
+            .map_err(|_| KernelError::Journal("model binding cache is poisoned".into()))
+    }
+
+    fn cache_write(
+        &self,
+    ) -> Result<std::sync::RwLockWriteGuard<'_, HashMap<String, ModelCredential>>, KernelError>
+    {
+        self.cached
+            .write()
+            .map_err(|_| KernelError::Journal("model binding cache is poisoned".into()))
     }
 
     fn decrypt(
@@ -152,31 +186,40 @@ impl ModelBindingStore for LocalModelBindingStore {
     }
 
     fn get(&self, binding_id: &str) -> Result<Option<ModelCredential>, KernelError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| KernelError::Journal("model binding mutex poisoned".into()))?;
-        let row = connection
-            .query_row(
-                "SELECT provider, nonce, ciphertext FROM model_bindings WHERE binding_id=?1",
-                [binding_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Vec<u8>>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(db_error)?;
-        row.map(|(provider, nonce, ciphertext)| {
-            self.decrypt(binding_id, provider, nonce, ciphertext)
-        })
-        .transpose()
+        if let Some(credential) = self.cache_read()?.get(binding_id) {
+            return Ok(Some(credential.clone()));
+        }
+        let row = {
+            let connection = self
+                .connection
+                .lock()
+                .map_err(|_| KernelError::Journal("model binding mutex poisoned".into()))?;
+            connection
+                .query_row(
+                    "SELECT provider, nonce, ciphertext FROM model_bindings WHERE binding_id=?1",
+                    [binding_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Vec<u8>>(1)?,
+                            row.get::<_, Vec<u8>>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(db_error)?
+        };
+        let Some((provider, nonce, ciphertext)) = row else {
+            return Ok(None);
+        };
+        let credential = self.decrypt(binding_id, provider, nonce, ciphertext)?;
+        self.cache_write()?
+            .insert(binding_id.to_owned(), credential.clone());
+        Ok(Some(credential))
     }
 
     fn delete(&self, binding_id: &str) -> Result<(), KernelError> {
+        self.cache_write()?.remove(binding_id);
         self.connection
             .lock()
             .map_err(|_| KernelError::Journal("model binding mutex poisoned".into()))?
@@ -313,6 +356,85 @@ mod tests {
             !database
                 .windows(selection.api_key.len())
                 .any(|window| window == selection.api_key.as_bytes())
+        );
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Deletes the row behind the store's back, so a `get` that still answers can only
+    /// have answered from memory. Every model decision takes this path, and it used to be
+    /// a `synchronous = FULL` query plus an AES-GCM decrypt under a process-global mutex.
+    #[test]
+    fn a_credential_is_read_from_the_database_once() {
+        let directory = temporary_directory();
+        let store = LocalModelBindingStore::open(&directory).unwrap();
+        let selection = ModelSelection {
+            provider: "vercel-ai-gateway".into(),
+            name: "openai/gpt-5-mini".into(),
+            api_key: "cached-secret".into(),
+        };
+        store.put("model_one", &selection).unwrap();
+        assert_eq!(
+            store.get("model_one").unwrap().unwrap().api_key.as_str(),
+            "cached-secret"
+        );
+
+        Connection::open(directory.join("bindings.sqlite3"))
+            .unwrap()
+            .execute("DELETE FROM model_bindings", [])
+            .unwrap();
+
+        let credential = store
+            .get("model_one")
+            .unwrap()
+            .expect("a cached credential must not need the row it came from");
+        assert_eq!(credential.api_key.as_str(), "cached-secret");
+
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn deleting_a_binding_forgets_its_credential() {
+        let directory = temporary_directory();
+        let store = LocalModelBindingStore::open(&directory).unwrap();
+        let selection = ModelSelection {
+            provider: "vercel-ai-gateway".into(),
+            name: "openai/gpt-5-mini".into(),
+            api_key: "revoked-secret".into(),
+        };
+        store.put("model_one", &selection).unwrap();
+        store.get("model_one").unwrap().unwrap();
+
+        store.delete("model_one").unwrap();
+
+        assert!(store.get("model_one").unwrap().is_none());
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A miss is not cached, so sealing a binding after something asked for it still
+    /// makes the credential visible.
+    #[test]
+    fn a_miss_does_not_hide_a_later_binding() {
+        let directory = temporary_directory();
+        let store = LocalModelBindingStore::open(&directory).unwrap();
+        assert!(store.get("model_one").unwrap().is_none());
+
+        store
+            .put(
+                "model_one",
+                &ModelSelection {
+                    provider: "vercel-ai-gateway".into(),
+                    name: "openai/gpt-5-mini".into(),
+                    api_key: "later-secret".into(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.get("model_one").unwrap().unwrap().api_key.as_str(),
+            "later-secret"
         );
         drop(store);
         fs::remove_dir_all(directory).unwrap();
