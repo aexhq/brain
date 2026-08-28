@@ -152,15 +152,12 @@ impl SegmentLog {
         Self::open_inner(directory, visit_state, visit, Duration::ZERO)
     }
 
-    /// A log whose writer sleeps before each frame, so a test can hold it behind and
-    /// watch what the queue does. Never used outside tests: a real writer is as fast as
-    /// the disk it is writing to.
+    /// A log whose writer stalls once, before its first frame, so a test can fill the
+    /// queue behind it and watch what happens rather than racing it. Never used outside
+    /// tests: a real writer is as fast as the disk it is writing to.
     #[cfg(test)]
-    pub(crate) fn open_behind(
-        directory: &Path,
-        writer_delay: Duration,
-    ) -> Result<Self, KernelError> {
-        Self::open_inner(directory, |_, _| Ok(()), |_, _| Ok(()), writer_delay)
+    pub(crate) fn open_stalled(directory: &Path, stall: Duration) -> Result<Self, KernelError> {
+        Self::open_inner(directory, |_, _| Ok(()), |_, _| Ok(()), stall)
     }
 
     fn open_inner(
@@ -415,9 +412,12 @@ fn spawn_writer(
     receiver: mpsc::Receiver<Message>,
     pending: Staged,
     backlog: Backlog,
-    delay: Duration,
+    stall: Duration,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
+        // Tests hold the writer here once, before it has written anything, so they can
+        // fill the queue behind it deterministically instead of racing it.
+        let mut stalled = stall.is_zero();
         let mut open: Option<(u64, BufWriter<File>)> = None;
         let mut written: Vec<(u64, u64)> = Vec::new();
         // Bytes this batch took off the queue, released once they are on the disk.
@@ -436,8 +436,9 @@ fn spawn_writer(
                         states.insert(session_id, bytes);
                     }
                     Message::Frame { location, bytes } => {
-                        if !delay.is_zero() {
-                            thread::sleep(delay);
+                        if !stalled {
+                            thread::sleep(stall);
+                            stalled = true;
                         }
                         drained += bytes.len() as u64;
                         if open.as_ref().is_none_or(|(id, _)| *id != location.segment) {
@@ -831,40 +832,59 @@ mod tests {
         assert!(!frame.is_sequenced());
     }
 
-    /// Writing behind the caller turns disk latency into memory. With a slow writer,
-    /// producers queued 250 MiB of frames in 218 ms and every byte stayed on the heap.
-    /// Past the allowance the append waits, so a stalled disk is a slow turn rather than
-    /// a process that grows until it is killed.
+    /// Writing behind the caller turns disk latency into memory. With a deliberately
+    /// slow writer, producers queued 250 MiB of frames in 218 ms and every byte stayed
+    /// on the heap. Past the allowance the append waits, so a stalled disk is a slow
+    /// turn rather than a process that grows until it is killed.
+    ///
+    /// The writer is held still rather than merely slowed, so what this measures is the
+    /// bound and not which of the two threads happens to be faster on the machine
+    /// running it.
     #[test]
-    fn a_slow_writer_makes_appends_wait_instead_of_growing_the_queue() {
-        let directory = temporary();
-        // One millisecond per frame, which is roughly what the original spike used to
-        // hold the writer behind its producers.
-        let log = SegmentLog::open_behind(&directory, Duration::from_millis(1)).unwrap();
-        let body = serde_json::json!({ "filler": "x".repeat(64 * 1024) });
+    fn a_stalled_writer_makes_appends_wait_instead_of_growing_the_queue() {
+        const STALL: Duration = Duration::from_secs(3);
+        const FRAME_BYTES: usize = 64 * 1024;
 
+        let directory = temporary();
+        let log = Arc::new(SegmentLog::open_stalled(&directory, STALL).unwrap());
+        let body = serde_json::json!({ "filler": "x".repeat(FRAME_BYTES) });
+
+        // Twice what the allowance can hold, so the producer must be made to wait.
+        let frames = 2 * (MAX_QUEUED_BYTES / FRAME_BYTES as u64);
+        let producer = {
+            let log = log.clone();
+            thread::spawn(move || {
+                for sequence in 1..=frames {
+                    log.append(append("ses_test", sequence, "turn_finished", &body))
+                        .unwrap();
+                }
+            })
+        };
+
+        // Watch the queue while the writer is still held, stopping as soon as it is
+        // full so a fast machine does not wait out the stall it no longer needs.
         let mut peak = 0;
-        // Enough frames that an unbounded queue would hold several times the allowance.
-        for sequence in 1..=2_048 {
-            log.append(append("ses_test", sequence, "turn_finished", &body))
-                .unwrap();
+        let watching = std::time::Instant::now();
+        while peak < MAX_QUEUED_BYTES && watching.elapsed() < STALL / 2 {
             peak = peak.max(log.backlog.0.lock().unwrap().bytes);
-            if peak > MAX_QUEUED_BYTES {
-                break;
-            }
+            thread::sleep(Duration::from_millis(1));
         }
 
         assert!(
             peak <= MAX_QUEUED_BYTES,
             "the writer was allowed to fall {peak} bytes behind, past the              {MAX_QUEUED_BYTES}-byte allowance"
         );
-        // And the allowance was actually reached, so the bound above is holding
-        // something back rather than being satisfied by a queue that never filled.
         assert!(
             peak > MAX_QUEUED_BYTES / 2,
             "the queue only reached {peak} bytes, so this run never tested the bound"
         );
-        drop(log);
+        assert!(
+            !producer.is_finished(),
+            "the producer queued {frames} frames past a stalled writer without waiting"
+        );
+
+        producer.join().unwrap();
+        drop(Arc::into_inner(log).expect("the producer is finished with it"));
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -873,7 +893,7 @@ mod tests {
     #[test]
     fn a_frame_larger_than_the_allowance_is_still_written() {
         let directory = temporary();
-        let log = SegmentLog::open_behind(&directory, Duration::ZERO).unwrap();
+        let log = SegmentLog::open_stalled(&directory, Duration::ZERO).unwrap();
         let body = serde_json::json!({
             "filler": "x".repeat(MAX_QUEUED_BYTES as usize + 1),
         });
@@ -893,7 +913,7 @@ mod tests {
     #[test]
     fn a_writer_failure_stops_the_log_rather_than_being_swallowed() {
         let directory = temporary();
-        let log = SegmentLog::open_behind(&directory, Duration::ZERO).unwrap();
+        let log = SegmentLog::open_stalled(&directory, Duration::ZERO).unwrap();
         fail(&log.backlog, "the disk went away".to_owned());
 
         let body = payload("turn_finished");
