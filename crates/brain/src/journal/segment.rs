@@ -17,7 +17,7 @@ use std::{
     collections::HashMap,
     path::Path,
     sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use brain_protocol::{Identity, JournalId, Session, SessionId, SessionStatus};
@@ -35,9 +35,25 @@ use crate::{
 /// namespace a session's record kinds are drawn from.
 const IDEMPOTENCY: &str = "$idempotency";
 
+/// How long a recorded answer is kept, and so how long a redelivery of the same request
+/// is answered from the record rather than executed again.
+///
+/// A window is unavoidable: a record that never expires is a record that pins the
+/// segment it was written in forever, and Brain measured exactly that — one entry from
+/// a deleted session held back every reclaimable segment, and a million entries held
+/// 2 GiB of memory across a restart. What the window buys is that the cost is bounded
+/// by traffic within it rather than by traffic since the process was first started.
+///
+/// A day is far longer than any retry a client makes and far shorter than forever.
+pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Below this an eviction sweep costs more than the entries it would find.
+const MIN_IDEMPOTENCY_SWEEP: usize = 64;
+
 pub struct SegmentJournal {
     log: SegmentLog,
     state: Mutex<State>,
+    idempotency_retention: Duration,
 }
 
 #[derive(Default)]
@@ -45,6 +61,9 @@ struct State {
     /// Keyed by the raw session id so replay and lookups never allocate one.
     sessions: HashMap<String, Tracked>,
     idempotency: HashMap<(String, String), Stored>,
+    /// Sweep expired records once the table has doubled since the last sweep, so the
+    /// total cost of sweeping stays linear in the number of records written.
+    idempotency_sweep_at: usize,
 }
 
 struct Tracked {
@@ -58,10 +77,13 @@ struct Stored {
     request: Identity,
     response: serde_json::Value,
     segment: u64,
+    expires_at_ms: u64,
 }
 
 impl SegmentJournal {
-    pub fn open(directory: &Path) -> Result<Self, KernelError> {
+    /// `idempotency_retention` is how long a recorded answer stays answerable. See
+    /// [`DEFAULT_IDEMPOTENCY_RETENTION`] for why it is finite.
+    pub fn open(directory: &Path, idempotency_retention: Duration) -> Result<Self, KernelError> {
         // Both visitors need the same state and neither ever runs while the other is
         // borrowed, which the borrow checker cannot see across two closures.
         let state = RefCell::new(State::default());
@@ -70,9 +92,12 @@ impl SegmentJournal {
             |session_id, bytes| restore_session(&mut state.borrow_mut(), session_id, bytes),
             |frame, location| replay(&mut state.borrow_mut(), &frame, location),
         )?;
+        let mut state = state.into_inner();
+        state.idempotency_sweep_at = state.idempotency.len().max(MIN_IDEMPOTENCY_SWEEP);
         Ok(Self {
             log,
-            state: Mutex::new(state.into_inner()),
+            state: Mutex::new(state),
+            idempotency_retention,
         })
     }
 
@@ -100,6 +125,67 @@ impl SegmentJournal {
             kind,
             payload,
         })
+    }
+}
+
+impl SegmentJournal {
+    /// Free every segment nothing live still needs.
+    ///
+    /// Sessions pin the segment their oldest record is in, and that is inherent: those
+    /// records are the history a client can still page through. Idempotency records are
+    /// not — they are small, they are not addressable, and one of them sitting in an old
+    /// segment used to hold back every reclaimable segment behind it. Expired ones are
+    /// dropped, and live ones below the floor are appended again at the head so the
+    /// segment they were in can go.
+    fn reclaim(&self) -> Result<(), KernelError> {
+        let now = wall_clock_ms()?;
+        let current = self.log.current_segment()?;
+        let stale = {
+            let mut state = self.lock()?;
+            state
+                .idempotency
+                .retain(|_, stored| stored.expires_at_ms > now);
+            let floor = session_floor(&state, current);
+            state
+                .idempotency
+                .iter()
+                .filter(|(_, stored)| stored.segment < floor)
+                .map(|((scope, key), stored)| {
+                    (
+                        scope.clone(),
+                        key.clone(),
+                        stored.request,
+                        stored.response.clone(),
+                        stored.expires_at_ms,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        for (scope, key, request, response, expires_at_ms) in stale {
+            let location = self.write(
+                "",
+                0,
+                now,
+                IDEMPOTENCY,
+                &serde_json::json!({
+                    "scope": scope,
+                    "key": key,
+                    "request": request,
+                    "response": response,
+                    "expires_at_ms": expires_at_ms,
+                }),
+            )?;
+            if let Some(stored) = self.lock()?.idempotency.get_mut(&(scope, key)) {
+                stored.segment = location.segment;
+            }
+        }
+
+        let floor = {
+            let state = self.lock()?;
+            reclaim_floor(&state, current)
+        };
+        self.log.reclaim(floor)
     }
 }
 
@@ -305,11 +391,10 @@ impl JournalStore for SegmentJournal {
         }
         self.log.remove_state(session_id.as_str())?;
         state.sessions.remove(session_id.as_str());
+        drop(state);
 
         // The session's records were the only thing keeping its segments alive.
-        let floor = reclaim_floor(&state, self.log.current_segment()?);
-        drop(state);
-        self.log.reclaim(floor)
+        self.reclaim()
     }
 
     fn idempotency_get(
@@ -318,8 +403,18 @@ impl JournalStore for SegmentJournal {
         key: &str,
         request: &Identity,
     ) -> Result<Option<serde_json::Value>, KernelError> {
-        match self.lock()?.idempotency.get(&(scope.into(), key.into())) {
+        let now = wall_clock_ms()?;
+        let mut state = self.lock()?;
+        let entry = (scope.to_string(), key.to_string());
+        match state.idempotency.get(&entry) {
             None => Ok(None),
+            // Past its retention it is not a record any more. Dropped here rather than
+            // returned, so the caller executes the request instead of replaying an
+            // answer Brain has stopped promising to keep.
+            Some(stored) if stored.expires_at_ms <= now => {
+                state.idempotency.remove(&entry);
+                Ok(None)
+            }
             Some(stored) if stored.request != *request => Err(KernelError::InvalidState(
                 "idempotency key reused with different request".into(),
             )),
@@ -334,23 +429,42 @@ impl JournalStore for SegmentJournal {
         request: &Identity,
         response: &serde_json::Value,
     ) -> Result<(), KernelError> {
+        let recorded_at_ms = wall_clock_ms()?;
+        let expires_at_ms = recorded_at_ms.saturating_add(
+            u64::try_from(self.idempotency_retention.as_millis()).unwrap_or(u64::MAX),
+        );
         let mut state = self.lock()?;
         let entry = (scope.to_string(), key.to_string());
-        if state.idempotency.contains_key(&entry) {
+        if state
+            .idempotency
+            .get(&entry)
+            .is_some_and(|stored| stored.expires_at_ms > recorded_at_ms)
+        {
             return Err(KernelError::InvalidState(
                 "idempotency key already recorded".into(),
             ));
         }
+        if state.idempotency.len() >= state.idempotency_sweep_at {
+            state
+                .idempotency
+                .retain(|_, stored| stored.expires_at_ms > recorded_at_ms);
+            state.idempotency_sweep_at = state
+                .idempotency
+                .len()
+                .saturating_mul(2)
+                .max(MIN_IDEMPOTENCY_SWEEP);
+        }
         let location = self.write(
             "",
             0,
-            wall_clock_ms()?,
+            recorded_at_ms,
             IDEMPOTENCY,
             &serde_json::json!({
                 "scope": scope,
                 "key": key,
                 "request": request,
                 "response": response,
+                "expires_at_ms": expires_at_ms,
             }),
         )?;
         state.idempotency.insert(
@@ -359,6 +473,7 @@ impl JournalStore for SegmentJournal {
                 request: *request,
                 response: response.clone(),
                 segment: location.segment,
+                expires_at_ms,
             },
         );
         Ok(())
@@ -420,6 +535,10 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
                 request: payload.request,
                 response: payload.response,
                 segment: location.segment,
+                // A frame written before expiry was recorded describes a record from a
+                // journal that kept them forever. Treating it as already expired is what
+                // the retention now says, and it is what lets its segment be reclaimed.
+                expires_at_ms: payload.expires_at_ms.unwrap_or(0),
             },
         );
     }
@@ -443,17 +562,24 @@ struct IdempotencyFrame {
     key: String,
     request: Identity,
     response: serde_json::Value,
+    expires_at_ms: Option<u64>,
 }
 
 /// The oldest segment any surviving state still lives in. Everything below it is dead
 /// and can be unlinked whole. With nothing left alive, every closed segment goes.
 fn reclaim_floor(state: &State, current_segment: u64) -> u64 {
-    let sessions = state
+    let idempotency = state.idempotency.values().map(|stored| stored.segment);
+    session_floor(state, current_segment).min(idempotency.min().unwrap_or(u64::MAX))
+}
+
+/// The oldest segment a live session's history still lives in.
+fn session_floor(state: &State, current_segment: u64) -> u64 {
+    state
         .sessions
         .values()
-        .filter_map(|tracked| tracked.locations.first().map(|location| location.segment));
-    let idempotency = state.idempotency.values().map(|stored| stored.segment);
-    sessions.chain(idempotency).min().unwrap_or(current_segment)
+        .filter_map(|tracked| tracked.locations.first().map(|location| location.segment))
+        .min()
+        .unwrap_or(current_segment)
 }
 
 fn wall_clock_ms() -> Result<u64, KernelError> {
@@ -471,4 +597,154 @@ fn not_found() -> KernelError {
 
 fn ended_first() -> KernelError {
     KernelError::InvalidState("session must exist and be ended before deletion".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::journal::AppendRecord;
+
+    fn temporary() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "brain-segment-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn row() -> SessionRow {
+        SessionRow {
+            session_id: SessionId::new("ses_0000".to_owned()),
+            journal_id: JournalId::new("jrn_0000".to_owned()),
+            status: SessionStatus::Idle,
+            through_sequence: 1,
+            configuration: serde_json::json!({}),
+            context: serde_json::json!({}),
+            presentation_identity: Identity::of_bytes(b"presentation"),
+        }
+    }
+
+    /// The floor is what decides which segments can be unlinked. A record that is not a
+    /// session's history has no business holding it down.
+    #[test]
+    fn an_expired_record_leaves_the_floor_to_the_sessions() {
+        let mut state = State::default();
+        state.idempotency.insert(
+            ("scope".to_owned(), "key".to_owned()),
+            Stored {
+                request: Identity::of_bytes(b"request"),
+                response: serde_json::json!({}),
+                segment: 0,
+                expires_at_ms: 0,
+            },
+        );
+        assert_eq!(
+            reclaim_floor(&state, 9),
+            0,
+            "a record still in the table is still at the floor"
+        );
+
+        state
+            .idempotency
+            .retain(|_, stored| stored.expires_at_ms > 1);
+        assert_eq!(
+            reclaim_floor(&state, 9),
+            9,
+            "once swept, nothing holds the floor below the open segment"
+        );
+    }
+
+    /// A live record cannot be dropped, so reclamation writes it again at the head and
+    /// leaves the old copy behind to be unlinked with its segment. Without this it holds
+    /// that segment for its whole retention.
+    ///
+    /// The move itself is only visible once the log has rotated, which costs 64 MiB to
+    /// reach, so what is asserted here is that the record was written a second time and
+    /// is still answerable.
+    #[test]
+    fn a_live_record_below_the_floor_is_written_again_at_the_head() {
+        let directory = temporary();
+        let journal = SegmentJournal::open(&directory, Duration::from_secs(3_600)).unwrap();
+        let request = Identity::of_bytes(b"request");
+        journal
+            .idempotency_put("scope", "key", &request, &serde_json::json!({ "ok": true }))
+            .unwrap();
+
+        // A session whose history starts above the record, which is what an old segment
+        // means once the log has rotated past it.
+        journal.lock().unwrap().sessions.insert(
+            "ses_pin".to_owned(),
+            Tracked {
+                row: row(),
+                locations: vec![Location {
+                    segment: 1,
+                    offset: 0,
+                    length: 1,
+                }],
+                last_recorded_at_ms: 0,
+            },
+        );
+
+        journal.reclaim().unwrap();
+        assert_eq!(
+            journal.idempotency_get("scope", "key", &request).unwrap(),
+            Some(serde_json::json!({ "ok": true }))
+        );
+        drop(journal);
+
+        let mut records = 0;
+        let log = SegmentLog::open(
+            &directory,
+            |_, _| Ok(()),
+            |frame, _| {
+                if frame.kind == IDEMPOTENCY {
+                    records += 1;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            records, 2,
+            "the record below the floor must be written again rather than pinning its segment"
+        );
+        drop(log);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Session state is the one thing that is never a record, so a session that has
+    /// written nothing since it was created must still come back.
+    #[test]
+    fn a_session_comes_back_from_its_state_file() {
+        let directory = temporary();
+        let journal = SegmentJournal::open(&directory, DEFAULT_IDEMPOTENCY_RETENTION).unwrap();
+        let mut created = row();
+        created.context = serde_json::json!({ "items": ["one", "two"] });
+        journal
+            .create_session(
+                &created,
+                AppendRecord::new("session_created", serde_json::json!({})),
+            )
+            .unwrap();
+        drop(journal);
+
+        let journal = SegmentJournal::open(&directory, DEFAULT_IDEMPOTENCY_RETENTION).unwrap();
+        let restored = journal
+            .session_row(&created.session_id)
+            .unwrap()
+            .expect("the session was created above");
+        assert_eq!(restored.context, created.context);
+        assert_eq!(restored.journal_id, created.journal_id);
+        assert_eq!(
+            restored.through_sequence, 1,
+            "the sequence comes from the records on disk, not from the state file"
+        );
+        drop(journal);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

@@ -228,7 +228,11 @@ async fn the_session_row_still_holds_the_final_context_after_the_turn() {
     // Moving the context write off the per-decision path must not leave the row stale:
     // the row is the only thing rehydration reads, and `Decision::Finish` historically
     // relied on the per-decision write having already persisted it.
-    let store = brain::SegmentJournal::open(&data_dir.join("journal")).unwrap();
+    let store = brain::SegmentJournal::open(
+        &data_dir.join("journal"),
+        brain::DEFAULT_IDEMPOTENCY_RETENTION,
+    )
+    .unwrap();
     let row = brain::JournalStore::session_row(&store, &session_id)
         .unwrap()
         .unwrap();
