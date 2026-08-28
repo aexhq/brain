@@ -54,7 +54,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         models.clone(),
         config.model_base_url.clone(),
         Duration::from_secs(120),
-    ));
+    )?);
     let http = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())

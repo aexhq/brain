@@ -81,10 +81,9 @@ impl WorkerPool {
         digest: AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, String> {
-        let input_bytes = serde_json::to_vec(&input).map_err(|error| error.to_string())?;
-        if input_bytes.len() > self.limits.activation_input_bytes {
-            return Err("Agentloop activation input exceeds the configured limit".into());
-        }
+        // The input bound is enforced where the input is encoded, in `write_frame`
+        // below. Encoding it here as well to measure its length meant serialising the
+        // whole context twice per decision and throwing one copy away.
         let _permit = self
             .permits
             .clone()
@@ -103,7 +102,7 @@ impl WorkerPool {
             state.admitted.insert(digest.clone());
         }
         let client = WorkerClient::new(&self.socket);
-        let call = client.activate(digest, input);
+        let call = client.activate(digest, input, self.limits.activation_input_bytes);
         match tokio::time::timeout(self.limits.wall_time, call).await {
             Ok(Ok(output)) => {
                 let output_bytes =

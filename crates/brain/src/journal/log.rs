@@ -29,7 +29,7 @@ const SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
 const HEADER_BYTES: usize = 12;
 
 /// Frames handed to the writer but not yet flushed, keyed by segment and offset.
-type Staged = Arc<Mutex<HashMap<(u64, u64), Arc<[u8]>>>>;
+type Staged = Arc<Mutex<HashMap<(u64, u64), Arc<Vec<u8>>>>>;
 
 /// Where a frame lives. Small and `Copy` so the in-memory index can hold one per record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +73,7 @@ impl Frame<'_> {
 enum Message {
     Frame {
         location: Location,
-        bytes: Arc<[u8]>,
+        bytes: Arc<Vec<u8>>,
     },
     Reclaim(u64),
 }
@@ -164,7 +164,9 @@ impl SegmentLog {
     /// Assign a location, hand the bytes to the writer, and return. Does not block on
     /// the disk.
     pub(crate) fn append(&self, append: Append<'_>) -> Result<Location, KernelError> {
-        let frame: Arc<[u8]> = encode(&append)?.into();
+        // `Arc<Vec<u8>>` rather than `Arc<[u8]>`: converting a `Vec` into `Arc<[u8]>`
+        // allocates a second buffer and copies the frame into it.
+        let frame = Arc::new(encode(&append)?);
         let length = frame.len() as u64;
 
         let mut tail = self.tail.lock().map_err(|_| poisoned())?;
@@ -353,25 +355,31 @@ fn reclaim_segments(directory: &Path, keep_from: u64) {
 //
 // body = sequence u64 | recorded_at_ms u64 | session u16-prefixed | kind u16-prefixed | payload
 
+/// Builds the whole frame in one buffer: header space first, then the body written
+/// straight into it, then the header patched once the body's length and check value are
+/// known. A record's payload is the largest thing the kernel handles, so serialising it
+/// into a payload buffer, copying that into a body buffer, and copying that into a frame
+/// buffer meant three copies of it before the frame existed.
 fn encode(append: &Append<'_>) -> Result<Vec<u8>, KernelError> {
-    let payload = serde_json::to_vec(append.payload)
-        .map_err(|error| KernelError::Journal(error.to_string()))?;
     let session = append.session_id.as_bytes();
     let kind = append.kind.as_bytes();
 
-    let mut body = Vec::with_capacity(payload.len() + session.len() + kind.len() + 24);
-    body.extend_from_slice(&append.sequence.to_le_bytes());
-    body.extend_from_slice(&append.recorded_at_ms.to_le_bytes());
-    body.extend_from_slice(&(session.len() as u16).to_le_bytes());
-    body.extend_from_slice(session);
-    body.extend_from_slice(&(kind.len() as u16).to_le_bytes());
-    body.extend_from_slice(kind);
-    body.extend_from_slice(&payload);
+    let mut frame = Vec::with_capacity(HEADER_BYTES + session.len() + kind.len() + 24);
+    frame.resize(HEADER_BYTES, 0);
+    frame.extend_from_slice(&append.sequence.to_le_bytes());
+    frame.extend_from_slice(&append.recorded_at_ms.to_le_bytes());
+    frame.extend_from_slice(&(session.len() as u16).to_le_bytes());
+    frame.extend_from_slice(session);
+    frame.extend_from_slice(&(kind.len() as u16).to_le_bytes());
+    frame.extend_from_slice(kind);
+    serde_json::to_writer(&mut frame, append.payload)
+        .map_err(|error| KernelError::Journal(error.to_string()))?;
 
-    let mut frame = Vec::with_capacity(body.len() + HEADER_BYTES);
-    frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    frame.extend_from_slice(&xxhash_rust::xxh3::xxh3_64(&body).to_le_bytes());
-    frame.extend_from_slice(&body);
+    let body = &frame[HEADER_BYTES..];
+    let length = (body.len() as u32).to_le_bytes();
+    let check = xxhash_rust::xxh3::xxh3_64(body).to_le_bytes();
+    frame[0..4].copy_from_slice(&length);
+    frame[4..HEADER_BYTES].copy_from_slice(&check);
     Ok(frame)
 }
 

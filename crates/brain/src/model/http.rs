@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::IpAddr, time::Duration};
+use std::{collections::BTreeMap, net::IpAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use brain_protocol::{
@@ -20,20 +20,29 @@ pub struct RemoteModelConfig {
     pub timeout: Duration,
 }
 
-pub struct RemoteModelClient {
+/// The half of a model client that does not depend on who is calling: the validated
+/// endpoint and the connection pool behind it. Both are expensive to build and both are
+/// the same for every session, so a process builds one and shares it. Building one per
+/// call discards the pool with it, which costs a TCP connect and a TLS handshake on
+/// every model call.
+pub struct ModelTransport {
     client: reqwest::Client,
     base_url: String,
+}
+
+pub struct RemoteModelClient {
+    transport: Arc<ModelTransport>,
     api_key: Zeroizing<String>,
 }
 
-impl RemoteModelClient {
-    pub fn new(config: RemoteModelConfig) -> Result<Self, KernelError> {
-        if config.base_url.trim().is_empty() || config.api_key.trim().is_empty() {
+impl ModelTransport {
+    pub fn new(base_url: &str, timeout: Duration) -> Result<Self, KernelError> {
+        if base_url.trim().is_empty() {
             return Err(KernelError::InvalidState(
-                "model base URL and API key are required".into(),
+                "model base URL is required".into(),
             ));
         }
-        let url = reqwest::Url::parse(&config.base_url).map_err(|error| {
+        let url = reqwest::Url::parse(base_url).map_err(|error| {
             KernelError::InvalidState(format!("model base URL is invalid: {error}"))
         })?;
         let loopback_http = url.scheme() == "http"
@@ -55,14 +64,35 @@ impl RemoteModelClient {
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(config.timeout.min(Duration::from_secs(10)))
-            .timeout(config.timeout)
+            .connect_timeout(timeout.min(Duration::from_secs(10)))
+            .timeout(timeout)
             .build()
             .map_err(|error| KernelError::Executor(error.to_string()))?;
         Ok(Self {
             client,
-            base_url: config.base_url.trim_end_matches('/').to_owned(),
-            api_key: Zeroizing::new(config.api_key),
+            base_url: base_url.trim_end_matches('/').to_owned(),
+        })
+    }
+}
+
+impl RemoteModelClient {
+    /// Builds a transport of its own. For a caller that makes one call, or a test.
+    pub fn new(config: RemoteModelConfig) -> Result<Self, KernelError> {
+        let transport = ModelTransport::new(&config.base_url, config.timeout)?;
+        Self::bound(Arc::new(transport), config.api_key)
+    }
+
+    /// Binds a credential to a transport the caller already holds. This is the shape a
+    /// server uses: one transport for the process, one credential per session.
+    pub fn bound(transport: Arc<ModelTransport>, api_key: String) -> Result<Self, KernelError> {
+        if api_key.trim().is_empty() {
+            return Err(KernelError::InvalidState(
+                "model API key is required".into(),
+            ));
+        }
+        Ok(Self {
+            transport,
+            api_key: Zeroizing::new(api_key),
         })
     }
 
@@ -160,8 +190,9 @@ impl ModelExecutor for RemoteModelClient {
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
     ) -> Result<ModelResult, KernelError> {
         let response = self
+            .transport
             .client
-            .post(format!("{}/chat/completions", self.base_url))
+            .post(format!("{}/chat/completions", self.transport.base_url))
             .bearer_auth(self.api_key.as_str())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")

@@ -6,7 +6,7 @@ use brain_protocol::{
 mod http;
 mod sse;
 
-pub use http::{RemoteModelClient, RemoteModelConfig};
+pub use http::{ModelTransport, RemoteModelClient, RemoteModelConfig};
 
 use brain_protocol::Identity;
 

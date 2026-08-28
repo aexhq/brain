@@ -2,13 +2,22 @@ use crate::KernelError;
 
 pub struct SseDecoder {
     pending: Vec<u8>,
+    /// How far into `pending` the separator scan has already looked. A model delivers
+    /// one frame across many network chunks, so rescanning from the start of the buffer
+    /// on every chunk costs the square of the chunk count.
+    scanned: usize,
     max_frame: usize,
 }
+
+/// The longest separator is four bytes, so a resumed scan backs up three in case one
+/// straddles the boundary between the last chunk and this one.
+const SEPARATOR_OVERLAP: usize = 3;
 
 impl SseDecoder {
     pub fn new(max_frame: usize) -> Self {
         Self {
             pending: Vec::with_capacity(max_frame.min(8_192)),
+            scanned: 0,
             max_frame,
         }
     }
@@ -17,7 +26,13 @@ impl SseDecoder {
         self.pending.extend_from_slice(chunk);
         let mut events = Vec::new();
         loop {
-            let Some(end) = frame_end(&self.pending) else {
+            let from = self.scanned.saturating_sub(SEPARATOR_OVERLAP);
+            let found = frame_end(&self.pending[from..]).map(|end| FrameEnd {
+                content: end.content + from,
+                length: end.length + from,
+            });
+            let Some(end) = found else {
+                self.scanned = self.pending.len();
                 if self.pending.len() > self.max_frame {
                     return Err(KernelError::Executor(format!(
                         "model SSE frame exceeded {} bytes",
@@ -27,6 +42,8 @@ impl SseDecoder {
                 break;
             };
             let frame: Vec<u8> = self.pending.drain(..end.length).collect();
+            // What remains starts a fresh frame, so the next scan starts at its start.
+            self.scanned = 0;
             let text = std::str::from_utf8(&frame[..end.content]).map_err(|error| {
                 KernelError::Executor(format!("model SSE is not UTF-8: {error}"))
             })?;
@@ -73,6 +90,40 @@ fn frame_end(bytes: &[u8]) -> Option<FrameEnd> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A separator split across two chunks must still be found: the resumed scan backs
+    /// up far enough to see it whole.
+    #[test]
+    fn finds_a_separator_split_across_chunks() {
+        for separator in [&b"\n\n"[..], &b"\r\n\r\n"[..]] {
+            for split in 1..separator.len() {
+                let mut decoder = SseDecoder::new(128);
+                let mut head = b"data: one".to_vec();
+                head.extend_from_slice(&separator[..split]);
+                assert!(decoder.feed(&head).unwrap().is_empty());
+                assert_eq!(
+                    decoder.feed(&separator[split..]).unwrap(),
+                    ["one"],
+                    "a separator split at {split} must still terminate the frame"
+                );
+                assert_eq!(decoder.pending_bytes(), 0);
+            }
+        }
+    }
+
+    /// Several frames in one chunk must all come out, which means the scan offset resets
+    /// when a frame is taken rather than skipping past the next separator.
+    #[test]
+    fn decodes_several_frames_from_one_chunk() {
+        let mut decoder = SseDecoder::new(128);
+        assert_eq!(
+            decoder
+                .feed(b"data: one\n\ndata: two\n\ndata: three")
+                .unwrap(),
+            ["one", "two"]
+        );
+        assert_eq!(decoder.feed(b"\n\n").unwrap(), ["three"]);
+    }
 
     #[test]
     fn decodes_fragmented_and_crlf_frames() {
