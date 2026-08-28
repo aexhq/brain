@@ -61,6 +61,13 @@ pub(crate) struct Frame<'a> {
 
 impl Frame<'_> {
     pub(crate) fn payload(&self) -> Result<serde_json::Value, KernelError> {
+        self.decode()
+    }
+
+    /// The payload as whatever shape the caller wants. Replay reads frames it will
+    /// mostly discard, and building a `Value` for one only to pull two fields out of it
+    /// materialises the whole payload twice.
+    pub(crate) fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, KernelError> {
         serde_json::from_slice(self.payload)
             .map_err(|error| KernelError::Journal(error.to_string()))
     }
