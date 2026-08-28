@@ -126,7 +126,7 @@ jobs:
           toolchain: "1.97.1"
       - uses: Swatinem/rust-cache@v2
       - name: Exercise bounded resources in release mode
-        run: cargo test --release -p brain-telemetry -p brain-loophost -p brain-server --all-targets
+        run: cargo test --release -p brain -p brain-telemetry -p brain-loophost -p brain-server --all-targets
       - name: Bound Brain HTTP memory after sustained requests
         shell: bash
         run: |

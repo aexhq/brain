@@ -118,18 +118,10 @@ impl SessionActor {
         };
         for decision_index in 0..self.max_decisions_per_turn {
             if self.cancel_requested.load(Ordering::Acquire) {
-                self.commit(
-                    vec![AppendRecord::new(
-                        "turn_failed",
-                        serde_json::json!({"code":"cancelled"}),
-                    )],
-                    SessionUpdate {
-                        status: Some(SessionStatus::Idle),
-                        context: None,
-                        configuration: None,
-                    },
-                )?;
-                return Ok(self.public());
+                return self.finish_turn(vec![AppendRecord::new(
+                    "turn_failed",
+                    serde_json::json!({"code":"cancelled"}),
+                )]);
             }
             let activation = ActivationInput {
                 context: self.context.clone(),
@@ -158,8 +150,7 @@ impl SessionActor {
                 Err(()) => return self.cancel_turn(),
                 Ok(Ok(output)) => output,
                 Ok(Err(error)) => {
-                    self.commit(vec![AppendRecord::new("activation_result", serde_json::json!({"error":error.to_string()})), AppendRecord::new("turn_failed", serde_json::json!({"code":"agentloop_failed","message":error.to_string()}))], SessionUpdate { status: Some(SessionStatus::Idle), context: None, configuration: None })?;
-                    return Ok(self.public());
+                    return self.finish_turn(vec![AppendRecord::new("activation_result", serde_json::json!({"error":error.to_string()})), AppendRecord::new("turn_failed", serde_json::json!({"code":"agentloop_failed","message":error.to_string()}))]);
                 }
             };
             if output.context.protocol_version != "agentloop/v1" {
@@ -169,20 +160,12 @@ impl SessionActor {
                 );
             }
             self.context = output.context;
-            let context_value = serde_json::to_value(&self.context).map_err(json_error)?;
             self.commit(
-                vec![
-                    AppendRecord::new(
-                        "activation_result",
-                        serde_json::json!({"decision":output.decision}),
-                    ),
-                    AppendRecord::new("context_updated", context_value.clone()),
-                ],
-                SessionUpdate {
-                    status: None,
-                    context: Some(&context_value),
-                    configuration: None,
-                },
+                vec![AppendRecord::new(
+                    "activation_result",
+                    serde_json::json!({"decision":output.decision}),
+                )],
+                SessionUpdate::default(),
             )?;
             observation = match output.decision {
                 Decision::Model { request } => {
@@ -321,26 +304,20 @@ impl SessionActor {
                     }
                 }
                 Decision::Finish { result } => {
-                    self.commit(
-                        vec![AppendRecord::new(
-                            "turn_finished",
-                            serde_json::json!({"result":result}),
-                        )],
-                        SessionUpdate {
-                            status: Some(SessionStatus::Idle),
-                            context: None,
-                            configuration: None,
-                        },
-                    )?;
-                    return Ok(self.public());
+                    return self.finish_turn(vec![AppendRecord::new(
+                        "turn_finished",
+                        serde_json::json!({"result":result}),
+                    )]);
                 }
                 Decision::Fail {
                     code,
                     message,
                     retryable,
                 } => {
-                    self.commit(vec![AppendRecord::new("turn_failed", serde_json::json!({"code":code,"message":message,"retryable":retryable}))], SessionUpdate { status: Some(SessionStatus::Idle), context: None, configuration: None })?;
-                    return Ok(self.public());
+                    return self.finish_turn(vec![AppendRecord::new(
+                        "turn_failed",
+                        serde_json::json!({"code":code,"message":message,"retryable":retryable}),
+                    )]);
                 }
             };
         }
@@ -361,19 +338,40 @@ impl SessionActor {
         } else {
             format!("{kind}_result")
         };
-        self.commit(vec![AppendRecord::new(outcome, serde_json::json!({"operation_id":operation_id,"error":error.to_string()})), AppendRecord::new("turn_failed", serde_json::json!({"code":format!("{kind}_failed"),"message":error.to_string()}))], SessionUpdate { status: Some(SessionStatus::Idle), context: None, configuration: None })?;
-        Ok(self.public())
+        self.finish_turn(vec![
+            AppendRecord::new(
+                outcome,
+                serde_json::json!({"operation_id":operation_id,"error":error.to_string()}),
+            ),
+            AppendRecord::new(
+                "turn_failed",
+                serde_json::json!({"code":format!("{kind}_failed"),"message":error.to_string()}),
+            ),
+        ])
     }
 
     fn fail_turn(&mut self, code: &str, message: &str) -> Result<Session, KernelError> {
+        self.finish_turn(vec![AppendRecord::new(
+            "turn_failed",
+            serde_json::json!({"code":code,"message":message}),
+        )])
+    }
+
+    /// Commits a turn's terminal record and returns the session to Idle.
+    ///
+    /// This is the only point at which the session row's context is written. Within a
+    /// turn the context is held in memory: it grows with every decision, so writing it
+    /// per decision costs the sum of every intermediate size rather than the final one,
+    /// and nothing ever reads those intermediate values. A restart fails an in-flight
+    /// turn outright (`Kernel::recover_interrupted`) rather than resuming it, and the row
+    /// is read back only when an Idle session is rehydrated — which is to say, here.
+    fn finish_turn(&mut self, records: Vec<AppendRecord>) -> Result<Session, KernelError> {
+        let context = serde_json::to_value(&self.context).map_err(json_error)?;
         self.commit(
-            vec![AppendRecord::new(
-                "turn_failed",
-                serde_json::json!({"code":code,"message":message}),
-            )],
+            records,
             SessionUpdate {
                 status: Some(SessionStatus::Idle),
-                context: None,
+                context: Some(&context),
                 configuration: None,
             },
         )?;
@@ -501,7 +499,9 @@ impl SessionActor {
         if let Some(status) = status {
             self.row.status = status;
         }
-        self.row.context = serde_json::to_value(&self.context).map_err(json_error)?;
+        // `row.context` is not refreshed here: the actor reads it once, in `new`, to seed
+        // `self.context`, and never again. Re-serialising the envelope on every commit
+        // only to discard it cost a full context serialisation per record.
         Ok(saved)
     }
 

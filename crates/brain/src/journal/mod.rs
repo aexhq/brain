@@ -1,12 +1,10 @@
 mod cursor;
-mod fold;
 mod observed;
 mod record;
 mod sqlite;
 mod store;
 
 pub use cursor::event_page;
-pub use fold::{FoldedSession, fold_records};
 pub(crate) use observed::ObservedJournal;
 pub use record::{AppendRecord, JournalRecord};
 pub use sqlite::SqliteJournal;
