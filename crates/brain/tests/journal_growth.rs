@@ -4,7 +4,7 @@
 //! per decision costs the sum of every intermediate size, not the final one. At the
 //! production ceiling of `BRAIN_MAX_DECISIONS=128` that turns a megabyte of conversation
 //! into tens of megabytes of permanently retained journal, on an EFS-backed database that
-//! is never vacuumed and is re-checksummed in full on every restart.
+//! is never vacuumed and is replayed in full on every restart.
 //!
 //! These tests pin the bound and the two correctness properties a fix must not break: the
 //! session row still carries the final context, and reopening the kernel rehydrates it.
@@ -146,10 +146,13 @@ async fn measure_one_turn(data_dir: &Path) -> (u64, SessionId) {
     );
     drop(handle);
     drop(kernel);
-    // Closing the last connection checkpoints and removes the WAL, so the database file
-    // alone is the whole journal.
+    // Dropping the kernel drains the journal writer, so the segments on disk are the
+    // whole journal.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let bytes = fs::metadata(data_dir.join("brain.sqlite3")).unwrap().len();
+    let bytes = fs::read_dir(data_dir.join("journal"))
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum();
     (bytes, session_id)
 }
 
@@ -223,7 +226,7 @@ async fn the_session_row_still_holds_the_final_context_after_the_turn() {
     // Moving the context write off the per-decision path must not leave the row stale:
     // the row is the only thing rehydration reads, and `Decision::Finish` historically
     // relied on the per-decision write having already persisted it.
-    let store = brain::SqliteJournal::open(&data_dir.join("brain.sqlite3")).unwrap();
+    let store = brain::SegmentJournal::open(&data_dir.join("journal")).unwrap();
     let row = brain::JournalStore::session(&store, &session_id)
         .unwrap()
         .unwrap();

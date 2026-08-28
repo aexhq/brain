@@ -49,7 +49,7 @@ laptop — where the work actually happens. The small-and-extensible shape follo
 | **Any model** | Anthropic and OpenAI wire formats, gateways, your own keys. The model is pinned when the session starts, so nothing swaps it out mid-conversation. |
 | **The loop is sealed off** | An agent loop gets an observation and returns a decision. No network, no filesystem, no secrets, no clock. Brain performs every effect. |
 | **More than one machine** | Environments are addressed by a stable name, so two sessions on two servers can share one workspace when you want them to. |
-| **Server or library** | Run the binary with a SQLite file, or embed the `brain` crate in your own Rust service and supply your own storage and transport. |
+| **Server or library** | Run the binary against a log directory, or embed the `brain` crate in your own Rust service and supply your own storage and transport. |
 | **Everything is an event log** | A session is an ordered, replayable log of what happened. Live streaming sits on top and drops events rather than stalling a turn. |
 
 ## Benchmark
@@ -132,7 +132,7 @@ The schemas and OpenAPI document under [`contracts/`](contracts) are the source 
 | --- | --- | --- |
 | ✅ | Four-part kernel: agent loop, model, tool, environment | Shipped |
 | ✅ | Unified `brain`, `tool`, and `environment` authoring with `brain build` | Shipped |
-| ✅ | SQLite log, crash recovery, writing to disk before acting | Shipped |
+| ✅ | Append-only segment log, written behind the turn, replayed on restart | Shipped |
 | ✅ | HTTP/SSE session API and the `@aexhq/brain` TypeScript SDK | Shipped |
 | ✅ | Remote environment contract with `env-app` and `env-aws-microvm` | Shipped |
 | 🚧 | Storage split apart from sandboxing | In progress |
