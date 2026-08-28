@@ -1,7 +1,7 @@
 {
   "contract": "environment/v1",
   "operation_id": "op_example",
-  "request_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "request_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "receipt": {
     "type": "tool_result",
     "result": {

@@ -119,7 +119,7 @@ impl JournalStore for SegmentJournal {
                 "status": row.status,
                 "configuration": row.configuration,
                 "context": row.context,
-                "presentation_digest": row.presentation_digest,
+                "presentation_identity": row.presentation_identity,
             }),
         )?;
         let location = self.write(
@@ -405,8 +405,8 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
                             .map_err(json_error)?,
                         // A frame that introduces a session always carries both; a
                         // later one that only moves its status hits the arm above.
-                        presentation_digest: serde_json::from_value(
-                            payload["presentation_digest"].clone(),
+                        presentation_identity: serde_json::from_value(
+                            payload["presentation_identity"].clone(),
                         )
                         .map_err(json_error)?,
                         status: SessionStatus::Idle,
@@ -428,9 +428,9 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
             if let Some(configuration) = payload.get("configuration") {
                 tracked.row.configuration = configuration.clone();
             }
-            if let Some(digest) = payload.get("presentation_digest") {
-                tracked.row.presentation_digest =
-                    serde_json::from_value(digest.clone()).map_err(json_error)?;
+            if let Some(identity) = payload.get("presentation_identity") {
+                tracked.row.presentation_identity =
+                    serde_json::from_value(identity.clone()).map_err(json_error)?;
             }
             tracked.state_segment = location.segment;
         }

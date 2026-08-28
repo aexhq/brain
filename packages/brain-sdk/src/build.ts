@@ -13,7 +13,7 @@ import { extensionSource } from "./extensions.js";
 export const BUILDER_TOOLCHAIN = "brain-build-1 componentize-js-0.19.3";
 
 export interface BuildOptions { readonly entry?: string; readonly out?: string }
-export interface BuiltExtension { readonly name: string; readonly kind: "brain" | "tool" | "environment"; readonly artifact?: string; readonly digest?: string; readonly bytes?: number }
+export interface BuiltExtension { readonly name: string; readonly kind: "brain" | "tool" | "environment"; readonly artifact?: string; readonly identity?: string; readonly bytes?: number }
 
 export async function build(options: BuildOptions = {}): Promise<readonly BuiltExtension[]> {
   const entry = resolve(options.entry ?? "src/index.ts");
@@ -36,7 +36,7 @@ export async function build(options: BuildOptions = {}): Promise<readonly BuiltE
     if (kind === "brain") {
       const artifact = `${name}.brain.json`;
       const packageValue = await buildBrain(entry, name, join(out, artifact));
-      built.push({ name, kind, artifact, digest: packageValue.manifest.component_digest, bytes: packageValue.manifest.component_bytes });
+      built.push({ name, kind, artifact, identity: packageValue.manifest.component_identity, bytes: packageValue.manifest.component_bytes });
     } else if (kind === "tool") {
       const source = definition[extensionSource] as unknown as { contract: { description: string; input: z.ZodType; output?: z.ZodType } };
       const contract = {
@@ -148,7 +148,7 @@ async function buildBrain(entry: string, name: string, out: string): Promise<Bra
     await rm(work, { recursive: true, force: true });
   }
   const packageValue: BrainPackage = {
-    manifest: { contract_version: "agentloop/v1", component_digest: createHash("sha256").update(component).digest("hex"), component_bytes: component.byteLength, toolchain: BUILDER_TOOLCHAIN },
+    manifest: { contract_version: "agentloop/v1", component_identity: createHash("sha256").update(component).digest("hex"), component_bytes: component.byteLength, toolchain: BUILDER_TOOLCHAIN },
     component_base64: Buffer.from(component).toString("base64"),
   };
   await writeFile(out, `${JSON.stringify(packageValue)}\n`);
@@ -156,7 +156,7 @@ async function buildBrain(entry: string, name: string, out: string): Promise<Bra
 }
 
 interface BrainPackage {
-  readonly manifest: { readonly contract_version: "agentloop/v1"; readonly component_digest: string; readonly component_bytes: number; readonly toolchain: string };
+  readonly manifest: { readonly contract_version: "agentloop/v1"; readonly component_identity: string; readonly component_bytes: number; readonly toolchain: string };
   readonly component_base64: string;
 }
 

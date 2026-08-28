@@ -17,7 +17,7 @@ pub trait ModelExecutor: Send + Sync + 'static {
     async fn execute(
         &self,
         operation_id: &OperationId,
-        request_digest: &Identity,
+        request_identity: &Identity,
         binding: &ModelBinding,
         presentation: &ModelPresentation,
         request: ModelRequest,

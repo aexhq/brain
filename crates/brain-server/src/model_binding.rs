@@ -214,7 +214,7 @@ impl ModelExecutor for ServerModelExecutor {
     async fn execute(
         &self,
         operation_id: &OperationId,
-        request_digest: &Identity,
+        request_identity: &Identity,
         binding: &ModelBinding,
         presentation: &ModelPresentation,
         request: ModelRequest,
@@ -237,7 +237,7 @@ impl ModelExecutor for ServerModelExecutor {
         client
             .execute(
                 operation_id,
-                request_digest,
+                request_identity,
                 binding,
                 presentation,
                 request,

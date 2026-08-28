@@ -83,7 +83,7 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         })?;
         if response.contract != "environment/v1"
             || response.operation_id != operation.operation_id
-            || response.request_digest != operation.request_digest
+            || response.request_identity != operation.request_identity
         {
             return Err(KernelError::InvalidState(
                 "Environment response correlation does not match the operation".into(),

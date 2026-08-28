@@ -153,7 +153,7 @@ impl ModelExecutor for RemoteModelClient {
     async fn execute(
         &self,
         operation_id: &OperationId,
-        request_digest: &Identity,
+        request_identity: &Identity,
         binding: &ModelBinding,
         presentation: &ModelPresentation,
         request: ModelRequest,
@@ -166,7 +166,7 @@ impl ModelExecutor for RemoteModelClient {
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
             .header("x-idempotency-key", operation_id.as_str())
-            .header("x-request-digest", request_digest.to_string())
+            .header("x-request-identity", request_identity.to_string())
             .json(&Self::body(binding, presentation, &request))
             .send()
             .await
@@ -414,7 +414,7 @@ mod tests {
         assert_eq!(headers["authorization"], "Bearer test-key");
         assert_eq!(headers["x-idempotency-key"], "op_test");
         assert_eq!(
-            headers["x-request-digest"],
+            headers["x-request-identity"],
             Identity::of(&"request").unwrap().to_string()
         );
         let body: Value = serde_json::from_slice(&body).unwrap();

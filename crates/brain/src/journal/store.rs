@@ -13,7 +13,7 @@ pub struct SessionRow {
     pub through_sequence: u64,
     pub configuration: serde_json::Value,
     pub context: serde_json::Value,
-    pub presentation_digest: Identity,
+    pub presentation_identity: Identity,
 }
 
 #[derive(Default)]

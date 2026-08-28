@@ -5,7 +5,7 @@ use axum::{
 };
 use brain_http::{BrainApi, router, router_with_bearer};
 use brain_protocol::{
-    AdmissionStatus, AgentloopAdmission, AgentloopDigest, ApiError, CreateSessionRequest,
+    AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, Event, EventId, EventPage,
     MessageRequest, Session, SessionId, SessionList, SessionStatus,
 };
@@ -19,7 +19,7 @@ impl BrainApi for Api {
     async fn admit_agentloop(&self, _: String, _: Vec<u8>) -> Result<AgentloopAdmission, ApiError> {
         Ok(admission())
     }
-    async fn get_agentloop(&self, _: AgentloopDigest) -> Result<AgentloopAdmission, ApiError> {
+    async fn get_agentloop(&self, _: AgentloopIdentity) -> Result<AgentloopAdmission, ApiError> {
         Ok(admission())
     }
     async fn create_session(
@@ -91,7 +91,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
     let digest = "a".repeat(64);
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let create = serde_json::json!({
-        "agentloop_digest": digest,
+        "agentloop_identity": digest,
         "brain_configuration": {},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "presentation": {"system":"","tools":[]},
@@ -154,7 +154,7 @@ async fn mutating_routes_fail_fast_without_an_idempotency_key() {
 async fn request_bodies_reject_unknown_fields() {
     let digest = "a".repeat(64);
     let create = serde_json::json!({
-        "agentloop_digest": digest,
+        "agentloop_identity": digest,
         "brain_configuration": {},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "presentation": {"system":"","tools":[]},
@@ -244,7 +244,7 @@ fn request(
 
 fn admission() -> AgentloopAdmission {
     AgentloopAdmission {
-        digest: AgentloopDigest::new("a".repeat(64)),
+        identity: AgentloopIdentity::new("a".repeat(64)),
         status: AdmissionStatus::Admitted,
         error: None,
     }
@@ -256,6 +256,6 @@ fn session() -> Session {
         journal_id: brain_protocol::JournalId::new("jrn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         status: SessionStatus::Idle,
         through_sequence: 1,
-        presentation_digest: brain_protocol::Identity::of(&"presentation").unwrap(),
+        presentation_identity: brain_protocol::Identity::of(&"presentation").unwrap(),
     }
 }

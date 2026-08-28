@@ -9,7 +9,7 @@ use brain::{Kernel, KernelError, LoopExecutor};
 use brain_http::BrainApi;
 use brain_loophost::WorkerPool;
 use brain_protocol::{
-    AdmissionStatus, AgentloopAdmission, AgentloopDigest, ApiError, CreateSessionRequest,
+    AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage, MessageRequest,
     ModelBinding, ResolvedSessionRequest, Session, SessionId, SessionList,
 };
@@ -118,14 +118,14 @@ impl BrainApi for ServerApi {
         {
             return Self::replay(saved);
         }
-        let digest = self
+        let identity = self
             .resources
             .loops
             .admit(package.clone())
             .await
             .map_err(loop_error)?;
         let admission = AgentloopAdmission {
-            digest,
+            identity,
             status: AdmissionStatus::Admitted,
             error: None,
         };
@@ -141,23 +141,26 @@ impl BrainApi for ServerApi {
         Ok(admission)
     }
 
-    async fn get_agentloop(&self, digest: AgentloopDigest) -> Result<AgentloopAdmission, ApiError> {
-        if !valid_digest(digest.as_str()) {
+    async fn get_agentloop(
+        &self,
+        identity: AgentloopIdentity,
+    ) -> Result<AgentloopAdmission, ApiError> {
+        if !valid_identity(identity.as_str()) {
             return Err(ApiError::invalid_request(
-                "Agentloop digest must be 64 lowercase hexadecimal characters",
+                "an Agentloop is named by 64 lowercase hexadecimal characters",
             ));
         }
         if !self
             .resources
             .loops
-            .status(&digest)
+            .status(&identity)
             .await
             .map_err(loop_error)?
         {
             return Err(not_found("Agentloop is not admitted"));
         }
         Ok(AgentloopAdmission {
-            digest,
+            identity,
             status: AdmissionStatus::Admitted,
             error: None,
         })
@@ -181,7 +184,7 @@ impl BrainApi for ServerApi {
         if !self
             .resources
             .loops
-            .status(&request.agentloop_digest)
+            .status(&request.agentloop_identity)
             .await
             .map_err(loop_error)?
         {
@@ -196,7 +199,7 @@ impl BrainApi for ServerApi {
             .put(&binding_id, &request.model)
             .map_err(api_error)?;
         let resolved = ResolvedSessionRequest {
-            agentloop_digest: request.agentloop_digest.clone(),
+            agentloop_identity: request.agentloop_identity.clone(),
             brain_configuration: request.brain_configuration.clone(),
             model: ModelBinding {
                 binding_id: binding_id.clone(),
@@ -525,7 +528,7 @@ pub struct WorkerLoopExecutor(pub Arc<WorkerPool>);
 impl LoopExecutor for WorkerLoopExecutor {
     async fn activate(
         &self,
-        agentloop: &AgentloopDigest,
+        agentloop: &AgentloopIdentity,
         input: brain_protocol::ActivationInput,
     ) -> Result<brain_protocol::ActivationOutput, KernelError> {
         self.0
@@ -535,7 +538,7 @@ impl LoopExecutor for WorkerLoopExecutor {
     }
 }
 
-fn valid_digest(value: &str) -> bool {
+fn valid_identity(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()

@@ -11,7 +11,7 @@ use std::{
 };
 
 use brain_protocol::{
-    AgentloopDigest, EnvironmentAttachment, EnvironmentId, EnvironmentRequirement, EventPage,
+    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EnvironmentRequirement, EventPage,
     Identity, JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId,
     RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, Session, SessionId,
     SessionStatus, ToolBinding, operation_id,
@@ -101,7 +101,7 @@ impl Kernel {
             through_sequence: 1,
             configuration: serde_json::to_value(request).map_err(json_error)?,
             context: serde_json::to_value(context).map_err(json_error)?,
-            presentation_digest: presentation.digest,
+            presentation_identity: presentation.identity,
         };
         self.inner.store.create_session(
             &row,
@@ -218,18 +218,18 @@ impl Kernel {
             return Err(KernelError::InvalidState("session is not idle".into()));
         }
         let operation_id = operation_id(&row.journal_id, row.through_sequence + 1);
-        let digest =
+        let identity =
             Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
         self.inner.store.append(
             session_id,
             row.through_sequence,
             &[AppendRecord::new(
                 format!("{kind}_intent"),
-                serde_json::json!({"operation_id":operation_id,"request_digest":digest,"request":request}),
+                serde_json::json!({"operation_id":operation_id,"request_identity":identity,"request":request}),
             )],
             SessionUpdate::default(),
         )?;
-        Ok((operation_id, digest))
+        Ok((operation_id, identity))
     }
 
     pub fn record_external_result<T: serde::Serialize>(
@@ -294,9 +294,9 @@ impl Kernel {
         key: &str,
         request: &T,
     ) -> Result<Option<serde_json::Value>, KernelError> {
-        let digest =
+        let identity =
             Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
-        self.inner.store.idempotency_get(scope, key, &digest)
+        self.inner.store.idempotency_get(scope, key, &identity)
     }
 
     fn recover_interrupted(&self) -> Result<(), KernelError> {
@@ -336,11 +336,11 @@ impl Kernel {
         request: &T,
         response: &serde_json::Value,
     ) -> Result<(), KernelError> {
-        let digest =
+        let identity =
             Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
         self.inner
             .store
-            .idempotency_put(scope, key, &digest, response)
+            .idempotency_put(scope, key, &identity, response)
     }
 
     fn spawn(&self, row: SessionRow) -> Result<SessionHandle, KernelError> {
@@ -398,16 +398,16 @@ impl CreatingSession {
         request: &T,
     ) -> Result<(OperationId, Identity), KernelError> {
         let operation_id = operation_id(&self.row.journal_id, self.row.through_sequence + 1);
-        let digest =
+        let identity =
             Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
         let saved = self.kernel.inner.store.append(
             &self.row.session_id,
             self.row.through_sequence,
-            &[AppendRecord::new(format!("{kind}_intent"), serde_json::json!({"operation_id":operation_id,"request_digest":digest,"request":request}))],
+            &[AppendRecord::new(format!("{kind}_intent"), serde_json::json!({"operation_id":operation_id,"request_identity":identity,"request":request}))],
             SessionUpdate::default(),
         )?;
         self.row.through_sequence += saved.len() as u64;
-        Ok((operation_id, digest))
+        Ok((operation_id, identity))
     }
 
     pub fn record_result<T: serde::Serialize>(
@@ -573,7 +573,7 @@ trait SessionContract: serde::Serialize {
     type Environment: EnvironmentView;
     type ToolBinding: ToolBindingView;
 
-    fn agentloop_digest(&self) -> &AgentloopDigest;
+    fn agentloop_identity(&self) -> &AgentloopIdentity;
     fn model(&self) -> &ModelBinding;
     fn presentation(&self) -> &ModelPresentation;
     fn environments(&self) -> &[Self::Environment];
@@ -584,8 +584,8 @@ impl SessionContract for ResolvedSessionRequest {
     type Environment = EnvironmentRequirement;
     type ToolBinding = RequestedToolBinding;
 
-    fn agentloop_digest(&self) -> &AgentloopDigest {
-        &self.agentloop_digest
+    fn agentloop_identity(&self) -> &AgentloopIdentity {
+        &self.agentloop_identity
     }
 
     fn model(&self) -> &ModelBinding {
@@ -609,8 +609,8 @@ impl SessionContract for SealedSessionConfig {
     type Environment = EnvironmentAttachment;
     type ToolBinding = ToolBinding;
 
-    fn agentloop_digest(&self) -> &AgentloopDigest {
-        &self.agentloop_digest
+    fn agentloop_identity(&self) -> &AgentloopIdentity {
+        &self.agentloop_identity
     }
 
     fn model(&self) -> &ModelBinding {
@@ -636,7 +636,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
             "session request exceeds 2 MiB".into(),
         ));
     }
-    if !digest_valid(request.agentloop_digest().as_str())
+    if !identity_valid(request.agentloop_identity().as_str())
         || !identifier_valid(&request.model().binding_id)
         || request.model().model.is_empty()
         || request.model().model.len() > 256
@@ -730,7 +730,7 @@ fn identifier_valid(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
-fn digest_valid(value: &str) -> bool {
+fn identity_valid(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
@@ -743,7 +743,7 @@ fn public_session(row: &SessionRow) -> Session {
         journal_id: row.journal_id.clone(),
         status: row.status.clone(),
         through_sequence: row.through_sequence,
-        presentation_digest: row.presentation_digest,
+        presentation_identity: row.presentation_identity,
     }
 }
 
@@ -778,7 +778,7 @@ mod tests {
     fn environment_binding() -> EnvironmentBinding {
         EnvironmentBinding {
             environment_id: EnvironmentId::new("workspace"),
-            configuration_digest: Identity::of(&"configuration").unwrap(),
+            configuration_identity: Identity::of(&"configuration").unwrap(),
             adapter_binding: "sealed".into(),
             directory_generation: 1,
             lifecycle_policy: LifecyclePolicy::Shared,
@@ -787,7 +787,7 @@ mod tests {
 
     fn resolved() -> ResolvedSessionRequest {
         ResolvedSessionRequest {
-            agentloop_digest: AgentloopDigest::new(digest()),
+            agentloop_identity: AgentloopIdentity::new(digest()),
             brain_configuration: serde_json::json!({}),
             model: ModelBinding {
                 binding_id: "gateway".into(),
@@ -815,7 +815,7 @@ mod tests {
 
     fn sealed() -> SealedSessionConfig {
         SealedSessionConfig {
-            agentloop_digest: AgentloopDigest::new(digest()),
+            agentloop_identity: AgentloopIdentity::new(digest()),
             brain_configuration: serde_json::json!({}),
             model: ModelBinding {
                 binding_id: "gateway".into(),
@@ -878,12 +878,12 @@ mod tests {
             ),
             (
                 "an Agentloop digest of the wrong length",
-                |request| request.agentloop_digest = AgentloopDigest::new("a".repeat(63)),
+                |request| request.agentloop_identity = AgentloopIdentity::new("a".repeat(63)),
                 "size or identity bound",
             ),
             (
                 "an Agentloop digest that is not hex",
-                |request| request.agentloop_digest = AgentloopDigest::new("g".repeat(64)),
+                |request| request.agentloop_identity = AgentloopIdentity::new("g".repeat(64)),
                 "size or identity bound",
             ),
             (
@@ -1035,7 +1035,7 @@ mod tests {
             ),
             (
                 "an Agentloop digest that is not hex",
-                |sealed| sealed.agentloop_digest = AgentloopDigest::new("g".repeat(64)),
+                |sealed| sealed.agentloop_identity = AgentloopIdentity::new("g".repeat(64)),
                 "size or identity bound",
             ),
             (
@@ -1116,12 +1116,12 @@ mod tests {
 
     #[test]
     fn a_digest_is_exactly_sixty_four_lowercase_hex_characters() {
-        assert!(digest_valid(&"a".repeat(64)));
-        assert!(digest_valid(&"0123456789abcdef".repeat(4)));
-        assert!(!digest_valid(&"a".repeat(63)));
-        assert!(!digest_valid(&"a".repeat(65)));
-        assert!(!digest_valid(&"A".repeat(64)));
-        assert!(!digest_valid(&"g".repeat(64)));
-        assert!(!digest_valid(""));
+        assert!(identity_valid(&"a".repeat(64)));
+        assert!(identity_valid(&"0123456789abcdef".repeat(4)));
+        assert!(!identity_valid(&"a".repeat(63)));
+        assert!(!identity_valid(&"a".repeat(65)));
+        assert!(!identity_valid(&"A".repeat(64)));
+        assert!(!identity_valid(&"g".repeat(64)));
+        assert!(!identity_valid(""));
     }
 }

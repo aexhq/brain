@@ -231,14 +231,14 @@ export async function executeTool(factory: unknown, options: unknown, input: unk
 export function createEnvironmentHandler(factory: unknown): (command: unknown) => Promise<unknown> {
   const source = sourceOf(factory as ExtensionFactory, "environment") as EnvironmentSource;
   const instances = new Map<string, { readonly value: unknown; readonly options: unknown; readonly attachments: Map<string, string> }>();
-  const receipts = new Map<string, { readonly digest: string; readonly response: unknown }>();
+  const receipts = new Map<string, { readonly identity: string; readonly response: unknown }>();
   const active = new Map<string, AbortController>();
   return async (raw: unknown) => {
     const command = environmentCommand(raw);
     const operation = command.operation;
     const prior = receipts.get(operation.operation_id);
     if (prior !== undefined) {
-      if (prior.digest !== operation.request_digest) return environmentResponse(operation, { type: "conflict", expected_digest: prior.digest, actual_digest: operation.request_digest });
+      if (prior.identity !== operation.request_identity) return environmentResponse(operation, { type: "conflict", expected_identity: prior.identity, actual_identity: operation.request_identity });
       return prior.response;
     }
     const controller = new AbortController();
@@ -323,14 +323,14 @@ export function createEnvironmentHandler(factory: unknown): (command: unknown) =
       active.delete(operation.operation_id);
     }
     const response = environmentResponse(operation, receipt);
-    receipts.set(operation.operation_id, { digest: operation.request_digest, response });
+    receipts.set(operation.operation_id, { identity: operation.request_identity, response });
     return response;
   };
 }
 
 interface RuntimeEnvironmentOperation {
   readonly operation_id: string;
-  readonly request_digest: string;
+  readonly request_identity: string;
   readonly environment_id: string;
   readonly session_id: string;
   readonly attachment_id?: string;
@@ -340,7 +340,7 @@ interface RuntimeEnvironmentOperation {
 function environmentCommand(raw: unknown): { readonly operation: RuntimeEnvironmentOperation } {
   if (!plainObject(raw) || raw.contract !== "environment/v1" || !plainObject(raw.operation)) throw new TypeError("invalid environment/v1 command");
   const operation = raw.operation;
-  for (const name of ["operation_id", "request_digest", "environment_id", "session_id"] as const) if (typeof operation[name] !== "string" || operation[name].length === 0) throw new TypeError(`Environment operation ${name} is required`);
+  for (const name of ["operation_id", "request_identity", "environment_id", "session_id"] as const) if (typeof operation[name] !== "string" || operation[name].length === 0) throw new TypeError(`Environment operation ${name} is required`);
   if (!plainObject(operation.request) || typeof operation.request.type !== "string") throw new TypeError("Environment operation request is invalid");
   return { operation: operation as unknown as RuntimeEnvironmentOperation };
 }
@@ -358,7 +358,7 @@ function authorizedEnvironmentInstance(instances: Map<string, { readonly value: 
 }
 
 function environmentResponse(operation: RuntimeEnvironmentOperation, receipt: unknown) {
-  return { contract: "environment/v1", operation_id: operation.operation_id, request_digest: operation.request_digest, receipt };
+  return { contract: "environment/v1", operation_id: operation.operation_id, request_identity: operation.request_identity, receipt };
 }
 
 function requireEmptyCallInput(value: unknown): Record<string, never> {

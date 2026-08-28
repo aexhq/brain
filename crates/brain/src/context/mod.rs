@@ -20,6 +20,6 @@ pub fn presentation(
     // it is looking at this presentation compares the identity rather than the bytes.
     let bytes =
         canonical_json(&sealed).map_err(|error| KernelError::InvalidState(error.to_string()))?;
-    let digest = Identity::of_bytes(&bytes);
-    Ok(Presentation { bytes, digest })
+    let identity = Identity::of_bytes(&bytes);
+    Ok(Presentation { bytes, identity })
 }

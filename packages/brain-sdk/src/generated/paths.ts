@@ -17,7 +17,7 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/agentloops/{digest}": {
+    "/v1/agentloops/{identity}": {
         parameters: {
             query?: never;
             header?: never;
@@ -190,9 +190,9 @@ export type components = {
             retryable: boolean;
             details?: unknown;
         };
-        Digest: string;
+        Identity: string;
         AgentloopAdmission: {
-            digest: components["schemas"]["Digest"];
+            identity: components["schemas"]["Identity"];
             /** @enum {unknown} */
             status: "admitted" | "rejected";
             error?: components["schemas"]["ApiError"];
@@ -204,7 +204,7 @@ export type components = {
             /** @enum {unknown} */
             status: "creating" | "idle" | "running" | "ended" | "failed";
             through_sequence: number;
-            presentation_digest: components["schemas"]["Digest"];
+            presentation_identity: components["schemas"]["Identity"];
         };
         SessionList: {
             sessions: components["schemas"]["Session"][];
@@ -240,7 +240,7 @@ export type components = {
             grant: unknown;
         };
         CreateSessionRequest: {
-            agentloop_digest: components["schemas"]["Digest"];
+            agentloop_identity: components["schemas"]["Identity"];
             brain_configuration: unknown;
             model: components["schemas"]["ModelSelection"];
             presentation: components["schemas"]["ModelPresentation"];
@@ -321,7 +321,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                digest: components["schemas"]["Digest"];
+                identity: components["schemas"]["Identity"];
             };
             cookie?: never;
         };

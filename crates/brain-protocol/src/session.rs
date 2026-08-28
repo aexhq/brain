@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopDigest, EnvironmentAttachment, EnvironmentId, EventId, Identity, JournalId,
+    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, Identity, JournalId,
     LifecyclePolicy, ModelBinding, ModelSelection, RequestedToolBinding, SessionId, ToolBinding,
     ToolDefinition,
 };
@@ -18,7 +18,7 @@ pub struct ModelPresentation {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {
-    pub agentloop_digest: AgentloopDigest,
+    pub agentloop_identity: AgentloopIdentity,
     pub brain_configuration: serde_json::Value,
     pub model: ModelSelection,
     pub presentation: ModelPresentation,
@@ -29,7 +29,7 @@ pub struct CreateSessionRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedSessionRequest {
-    pub agentloop_digest: AgentloopDigest,
+    pub agentloop_identity: AgentloopIdentity,
     pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
     pub presentation: ModelPresentation,
@@ -47,7 +47,7 @@ pub struct EnvironmentRequirement {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SealedSessionConfig {
-    pub agentloop_digest: AgentloopDigest,
+    pub agentloop_identity: AgentloopIdentity,
     pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
     pub presentation: ModelPresentation,
@@ -77,7 +77,7 @@ pub struct Session {
     pub journal_id: JournalId,
     pub status: SessionStatus,
     pub through_sequence: u64,
-    pub presentation_digest: Identity,
+    pub presentation_identity: Identity,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -109,7 +109,7 @@ pub enum AdmissionStatus {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentloopAdmission {
-    pub digest: AgentloopDigest,
+    pub identity: AgentloopIdentity,
     pub status: AdmissionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<crate::ApiError>,

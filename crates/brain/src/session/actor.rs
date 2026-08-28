@@ -66,7 +66,7 @@ impl SessionActor {
         Ok(Self {
             presentation: Presentation {
                 bytes: presentation_bytes,
-                digest: row.presentation_digest,
+                identity: row.presentation_identity,
             },
             row,
             sealed,
@@ -132,8 +132,8 @@ impl SessionActor {
             // take the identity it was sealed with instead of reading its bytes again.
             // What is left is hashed from Brain's own encoding: nothing outside Brain
             // recomputes this one, so it does not have to be canonical.
-            let activation_digest = Identity::over(&[
-                self.presentation.digest,
+            let activation_identity = Identity::over(&[
+                self.presentation.identity,
                 Identity::of_bytes(
                     &serde_json::to_vec(&(&self.context, &observation, &runtime))
                         .map_err(json_error)?,
@@ -149,14 +149,14 @@ impl SessionActor {
             self.commit(
                 vec![AppendRecord::new(
                     "activation_intent",
-                    serde_json::json!({"request_digest":activation_digest}),
+                    serde_json::json!({"request_identity":activation_identity}),
                 )],
                 SessionUpdate::default(),
             )?;
             let loop_executor = self.loop_executor.clone();
-            let agentloop_digest = self.sealed.agentloop_digest.clone();
+            let agentloop_identity = self.sealed.agentloop_identity.clone();
             let output = match self
-                .interruptible(loop_executor.activate(&agentloop_digest, activation))
+                .interruptible(loop_executor.activate(&agentloop_identity, activation))
                 .await
             {
                 Err(()) => return self.cancel_turn(),
@@ -183,8 +183,8 @@ impl SessionActor {
                 Decision::Model { request } => {
                     let intent_sequence = self.row.through_sequence + 1;
                     let operation_id = operation_id(&self.row.journal_id, intent_sequence);
-                    let digest = Identity::of(&request).map_err(identity_error)?;
-                    self.commit(vec![AppendRecord::new("model_intent", serde_json::json!({"operation_id":operation_id,"request_digest":digest,"request":request}))], SessionUpdate::default())?;
+                    let identity = Identity::of(&request).map_err(identity_error)?;
+                    self.commit(vec![AppendRecord::new("model_intent", serde_json::json!({"operation_id":operation_id,"request_identity":identity,"request":request}))], SessionUpdate::default())?;
                     let mut stream = Vec::new();
                     let model_executor = self.model_executor.clone();
                     let model_binding = self.sealed.model.clone();
@@ -192,7 +192,7 @@ impl SessionActor {
                     match self
                         .interruptible(model_executor.execute(
                             &operation_id,
-                            &digest,
+                            &identity,
                             &model_binding,
                             &model_presentation,
                             request,
@@ -240,7 +240,7 @@ impl SessionActor {
                         );
                         // The Environment recomputes this to decide whether a
                         // redelivery is the same effect, so it must be canonical.
-                        let digest = Identity::of(&EnvironmentRequest::Execute {
+                        let identity = Identity::of(&EnvironmentRequest::Execute {
                             tool: invocation.clone(),
                             remote_tool_id: binding.remote_tool_id.clone(),
                             tool_configuration: binding.tool_configuration.clone(),
@@ -249,7 +249,7 @@ impl SessionActor {
                         .map_err(identity_error)?;
                         let dispatch = ToolDispatch {
                             operation_id: operation_id.clone(),
-                            request_digest: digest,
+                            request_identity: identity,
                             session_id: self.row.session_id.clone(),
                             binding,
                             invocation,
@@ -408,7 +408,7 @@ impl SessionActor {
                     &self.row.journal_id,
                     self.row.through_sequence + offset as u64 + 1,
                 ),
-                request_digest: Identity::of(&request).map_err(identity_error)?,
+                request_identity: Identity::of(&request).map_err(identity_error)?,
                 target_operation_id: dispatch.operation_id.clone(),
                 session_id: dispatch.session_id.clone(),
                 binding: dispatch.binding.clone(),
@@ -525,7 +525,7 @@ impl SessionActor {
             journal_id: self.row.journal_id.clone(),
             status: self.row.status.clone(),
             through_sequence: self.row.through_sequence,
-            presentation_digest: self.row.presentation_digest,
+            presentation_identity: self.row.presentation_identity,
         }
     }
 }

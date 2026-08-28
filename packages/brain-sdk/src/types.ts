@@ -47,7 +47,7 @@ export interface SessionState {
   readonly journalId: string;
   readonly status: "creating" | "idle" | "running" | "ended" | "failed";
   readonly throughSequence: number;
-  readonly presentationDigest: string;
+  readonly presentationIdentity: string;
 }
 
 export interface SessionEvent<Data = unknown> {
@@ -59,7 +59,7 @@ export interface SessionEvent<Data = unknown> {
 }
 
 export interface AgentloopAdmission {
-  readonly digest: string;
+  readonly identity: string;
   readonly status: "admitted" | "rejected";
   readonly error?: { readonly code: string; readonly message: string; readonly retryable: boolean; readonly details?: unknown };
 }
@@ -83,7 +83,7 @@ export interface WireEnvironmentRequirement {
   lifecycle_policy: "session";
 }
 export interface WireCreateSessionRequest {
-  agentloop_digest: string;
+  agentloop_identity: string;
   brain_configuration: unknown;
   model: { provider: "vercel-ai-gateway"; name: string; api_key: string };
   presentation: { system: string; tools: WireToolDefinition[]; response_format?: unknown };
@@ -95,7 +95,7 @@ export interface WireSession {
   journal_id: string;
   status: SessionState["status"];
   through_sequence: number;
-  presentation_digest: string;
+  presentation_identity: string;
 }
 export interface WireEvent {
   event_id: string;

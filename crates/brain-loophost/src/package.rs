@@ -1,5 +1,5 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use brain_protocol::AgentloopDigest;
+use brain_protocol::AgentloopIdentity;
 use serde::{Deserialize, Serialize};
 
 use crate::MAX_PACKAGE_BYTES;
@@ -8,7 +8,7 @@ use crate::MAX_PACKAGE_BYTES;
 #[serde(deny_unknown_fields)]
 pub struct AgentloopManifest {
     pub contract_version: String,
-    pub component_digest: AgentloopDigest,
+    pub component_identity: AgentloopIdentity,
     pub component_bytes: usize,
     pub toolchain: String,
 }

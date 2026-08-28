@@ -15,7 +15,7 @@ pub enum LifecyclePolicy {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentBinding {
     pub environment_id: EnvironmentId,
-    pub configuration_digest: Identity,
+    pub configuration_identity: Identity,
     pub adapter_binding: String,
     pub directory_generation: u64,
     pub lifecycle_policy: LifecyclePolicy,
@@ -30,7 +30,7 @@ pub struct EnvironmentAttachment {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentOperation<T> {
     pub operation_id: OperationId,
-    pub request_digest: Identity,
+    pub request_identity: Identity,
     pub environment_id: EnvironmentId,
     pub session_id: SessionId,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,7 +49,7 @@ pub struct EnvironmentCommand<T> {
 pub struct EnvironmentResponse {
     pub contract: String,
     pub operation_id: OperationId,
-    pub request_digest: Identity,
+    pub request_identity: Identity,
     pub receipt: EnvironmentReceipt,
 }
 
@@ -98,8 +98,8 @@ pub enum EnvironmentReceipt {
         retryable: bool,
     },
     Conflict {
-        expected_digest: Identity,
-        actual_digest: Identity,
+        expected_identity: Identity,
+        actual_identity: Identity,
     },
     Ambiguous {
         message: String,

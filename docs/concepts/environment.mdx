@@ -21,7 +21,7 @@ Connections are caches. They never decide identity, and they never decide teardo
 
 ## Replay is explicit
 
-Every operation carries a stable identifier and a digest of its request. When a redelivery arrives,
+Every operation carries a stable identifier and the identity of its request. When a redelivery arrives,
 the adapter can tell "this is the same call again" from "this is a new call that looks similar", and
 Brain never replays an ambiguous effect against a replacement target.
 

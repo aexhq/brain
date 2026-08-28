@@ -53,10 +53,10 @@
         "presentation": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["bytes", "digest"],
+          "required": ["bytes", "identity"],
           "properties": {
             "bytes": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
-            "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            "identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
           }
         },
         "runtime": {
