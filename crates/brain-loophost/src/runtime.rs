@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopDigest, ContextEnvelope, Decision, Observation,
+    ActivationInput, ActivationOutput, AgentloopIdentity, ContextEnvelope, Decision, Observation,
     ToolInvocation,
 };
 use sha2::{Digest as _, Sha256};
@@ -24,7 +24,7 @@ pub struct AdmissionEngine {
 }
 
 pub struct AdmittedAgentloop {
-    pub digest: AgentloopDigest,
+    pub digest: AgentloopIdentity,
     pub component: Arc<Component>,
 }
 
@@ -55,8 +55,8 @@ impl AdmissionEngine {
         if package.manifest.contract_version != "agentloop/v1" {
             return Err("Agentloop contract version is not supported".into());
         }
-        let actual = AgentloopDigest::new(hex_digest(&component_bytes));
-        if actual != package.manifest.component_digest {
+        let actual = AgentloopIdentity::new(hex_digest(&component_bytes));
+        if actual != package.manifest.component_identity {
             return Err("Agentloop component digest does not match its manifest".into());
         }
         let component = Component::new(&self.engine, &component_bytes)
@@ -157,7 +157,7 @@ fn to_wit_input(
             .map_err(|error| error.to_string())?,
         presentation: wit::Presentation {
             bytes: input.presentation.bytes,
-            digest: input.presentation.digest,
+            identity: input.presentation.identity.to_string(),
         },
         runtime: wit::RuntimeEnvelope {
             logical_time_ms: input.runtime.logical_time_ms,

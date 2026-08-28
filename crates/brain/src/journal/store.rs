@@ -1,4 +1,4 @@
-use brain_protocol::{JournalId, SessionId, SessionStatus};
+use brain_protocol::{Identity, JournalId, SessionId, SessionStatus};
 
 use crate::{
     KernelError,
@@ -13,7 +13,7 @@ pub struct SessionRow {
     pub through_sequence: u64,
     pub configuration: serde_json::Value,
     pub context: serde_json::Value,
-    pub presentation_digest: String,
+    pub presentation_identity: Identity,
 }
 
 #[derive(Default)]
@@ -45,17 +45,19 @@ pub trait JournalStore: Send + Sync + 'static {
         limit: usize,
     ) -> Result<Vec<JournalRecord>, KernelError>;
     fn delete_ended(&self, session_id: &SessionId) -> Result<(), KernelError>;
+    /// The answer already recorded under `key`, if the request is the same one.
+    /// Reusing a key for different content is an error, not a miss.
     fn idempotency_get(
         &self,
         scope: &str,
         key: &str,
-        digest: &str,
+        request: &Identity,
     ) -> Result<Option<serde_json::Value>, KernelError>;
     fn idempotency_put(
         &self,
         scope: &str,
         key: &str,
-        digest: &str,
+        request: &Identity,
         response: &serde_json::Value,
     ) -> Result<(), KernelError>;
 }

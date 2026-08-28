@@ -23,10 +23,10 @@ use brain::{
     Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor, SessionHandle, ToolExecutor,
 };
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopDigest, Decision, EnvironmentRequirement,
-    MessageRequest, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent,
-    OperationId, RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, SessionId,
-    ToolCancellation, ToolDispatch, ToolResult,
+    ActivationInput, ActivationOutput, AgentloopIdentity, Decision, EnvironmentRequirement,
+    Identity, MessageRequest, ModelBinding, ModelPresentation, ModelRequest, ModelResult,
+    ModelStreamEvent, OperationId, RequestedToolBinding, ResolvedSessionRequest,
+    SealedSessionConfig, SessionId, ToolCancellation, ToolDispatch, ToolResult,
 };
 use brain_telemetry::telemetry_channel;
 
@@ -55,7 +55,7 @@ struct GrowingLoop {
 impl LoopExecutor for GrowingLoop {
     async fn activate(
         &self,
-        _agentloop: &AgentloopDigest,
+        _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {
         let activation = self.activations.fetch_add(1, Ordering::Relaxed);
@@ -88,7 +88,7 @@ impl ModelExecutor for TinyModel {
     async fn execute(
         &self,
         _operation_id: &OperationId,
-        _request_digest: &str,
+        _request_digest: &Identity,
         _binding: &ModelBinding,
         _presentation: &ModelPresentation,
         _request: ModelRequest,
@@ -274,7 +274,7 @@ struct AssertContext {
 impl LoopExecutor for AssertContext {
     async fn activate(
         &self,
-        _agentloop: &AgentloopDigest,
+        _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {
         assert_eq!(
@@ -291,7 +291,7 @@ impl LoopExecutor for AssertContext {
 
 fn request() -> SealedSessionConfig {
     SealedSessionConfig {
-        agentloop_digest: AgentloopDigest::new("a".repeat(64)),
+        agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
         brain_configuration: serde_json::json!({}),
         model: ModelBinding {
             binding_id: "gateway".into(),
@@ -318,7 +318,7 @@ fn temporary_directory() -> PathBuf {
 /// so these tests exercise the same validation the production path enforces.
 fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
     let resolved = ResolvedSessionRequest {
-        agentloop_digest: sealed.agentloop_digest.clone(),
+        agentloop_identity: sealed.agentloop_identity.clone(),
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
         presentation: sealed.presentation.clone(),

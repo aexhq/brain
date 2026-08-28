@@ -4,8 +4,8 @@
   "title": "Brain Session API v1",
   "$defs": {
     "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "Digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "AgentloopDigest": { "$ref": "#/$defs/Digest" },
+    "Identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "AgentloopIdentity": { "$ref": "#/$defs/Identity" },
     "SessionId": { "type": "string", "pattern": "^ses_[A-Za-z0-9]{20,32}$" },
     "ToolDefinition": {
       "type": "object",
@@ -63,9 +63,9 @@
     "CreateSessionRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["agentloop_digest", "brain_configuration", "model", "presentation", "environments", "tool_bindings"],
+      "required": ["agentloop_identity", "brain_configuration", "model", "presentation", "environments", "tool_bindings"],
       "properties": {
-        "agentloop_digest": { "$ref": "#/$defs/AgentloopDigest" },
+        "agentloop_identity": { "$ref": "#/$defs/AgentloopIdentity" },
         "brain_configuration": {},
         "model": { "$ref": "#/$defs/ModelSelection" },
         "presentation": { "$ref": "#/$defs/ModelPresentation" },
@@ -94,13 +94,13 @@
     "Session": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session_id", "journal_id", "status", "through_sequence", "presentation_digest"],
+      "required": ["session_id", "journal_id", "status", "through_sequence", "presentation_identity"],
       "properties": {
         "session_id": { "$ref": "#/$defs/SessionId" },
         "journal_id": { "$ref": "#/$defs/Identifier" },
         "status": { "enum": ["creating", "idle", "running", "ended", "failed"] },
         "through_sequence": { "type": "integer", "minimum": 0 },
-        "presentation_digest": { "$ref": "#/$defs/Digest" }
+        "presentation_identity": { "$ref": "#/$defs/Identity" }
       }
     },
     "SessionList": {
@@ -133,10 +133,10 @@
     "AgentloopManifest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract_version", "component_digest", "component_bytes"],
+      "required": ["contract_version", "component_identity", "component_bytes"],
       "properties": {
         "contract_version": { "const": "agentloop/v1" },
-        "component_digest": { "$ref": "#/$defs/Digest" },
+        "component_identity": { "$ref": "#/$defs/Identity" },
         "component_bytes": { "type": "integer", "minimum": 1, "maximum": 33554432 },
         "toolchain": { "type": "string", "minLength": 1, "maxLength": 256 }
       }
@@ -144,9 +144,9 @@
     "AgentloopAdmission": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["digest", "status"],
+      "required": ["identity", "status"],
       "properties": {
-        "digest": { "$ref": "#/$defs/Digest" },
+        "identity": { "$ref": "#/$defs/Identity" },
         "status": { "enum": ["admitted", "rejected"] },
         "error": { "$ref": "#/$defs/ApiError" }
       }

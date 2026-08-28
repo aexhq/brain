@@ -25,7 +25,7 @@ impl ToolExecutor for ServerToolExecutor {
         let environment = dispatch.binding.environment.clone();
         let operation = EnvironmentOperation {
             operation_id: dispatch.operation_id,
-            request_digest: dispatch.request_digest,
+            request_identity: dispatch.request_identity,
             environment_id: environment.environment_id.clone(),
             session_id: dispatch.session_id,
             attachment_id: Some(dispatch.binding.attachment_id),
@@ -53,7 +53,7 @@ impl ToolExecutor for ServerToolExecutor {
         let environment = cancellation.binding.environment.clone();
         let operation = EnvironmentOperation {
             operation_id: cancellation.operation_id,
-            request_digest: cancellation.request_digest,
+            request_identity: cancellation.request_identity,
             environment_id: environment.environment_id.clone(),
             session_id: cancellation.session_id,
             attachment_id: Some(cancellation.binding.attachment_id),

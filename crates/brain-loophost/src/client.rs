@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use brain_protocol::{ActivationInput, ActivationOutput, AgentloopDigest};
+use brain_protocol::{ActivationInput, ActivationOutput, AgentloopIdentity};
 
 #[cfg(unix)]
 use crate::wire::{MAX_RESPONSE_FRAME_BYTES, max_request_bytes, read_frame, write_frame};
@@ -28,7 +28,7 @@ impl WorkerClient {
         }
     }
 
-    pub async fn admit(&self, package: &[u8]) -> Result<AgentloopDigest, String> {
+    pub async fn admit(&self, package: &[u8]) -> Result<AgentloopIdentity, String> {
         let package_json = String::from_utf8(package.to_vec())
             .map_err(|_| "Agentloop package must be UTF-8 JSON".to_owned())?;
         match self.call(WorkerRequest::Admit { package_json }).await? {
@@ -40,7 +40,7 @@ impl WorkerClient {
 
     pub async fn activate(
         &self,
-        digest: AgentloopDigest,
+        digest: AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, String> {
         match self

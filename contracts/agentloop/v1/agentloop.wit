@@ -18,7 +18,7 @@ interface types {
 
   record presentation {
     bytes: list<u8>,
-    digest: string,
+    identity: string,
   }
 
   record runtime-envelope {

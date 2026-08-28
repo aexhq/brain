@@ -20,14 +20,14 @@ paths:
             application/json:
               schema: { $ref: './schemas.json#/$defs/AgentloopAdmission' }
         default: { $ref: '#/components/responses/Error' }
-  /v1/agentloops/{digest}:
+  /v1/agentloops/{identity}:
     get:
       operationId: getAgentloop
       parameters:
-        - name: digest
+        - name: identity
           in: path
           required: true
-          schema: { $ref: './schemas.json#/$defs/Digest' }
+          schema: { $ref: './schemas.json#/$defs/Identity' }
       responses:
         '200':
           description: Admission status

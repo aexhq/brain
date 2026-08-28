@@ -36,7 +36,7 @@ test("composes extensions through sessions, useIn, and object identity", async (
       requests.push(request);
       if (request.url.endsWith("/v1/agentloops")) return Response.json({ digest: "a".repeat(64), status: "admitted" });
       if (request.url.includes("/calls/suspend")) return Response.json({ output: null });
-      return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", through_sequence: 1, presentation_digest: "b".repeat(64) });
+      return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", through_sequence: 1, presentation_identity: "b".repeat(64) });
     },
   });
   const vm = workspace();
@@ -104,7 +104,7 @@ test("runs async Environment lifecycle, methods, and streams through the generat
   const command = (id, request, attachment_id) => ({
     contract: "environment/v1",
     binding: {},
-    operation: { operation_id: id, request_digest: id.padEnd(64, "a"), environment_id: "env_1", session_id: "ses_test", ...(attachment_id === undefined ? {} : { attachment_id }), request },
+    operation: { operation_id: id, request_identity: id.padEnd(64, "a"), environment_id: "env_1", session_id: "ses_test", ...(attachment_id === undefined ? {} : { attachment_id }), request },
   });
   assert.equal((await handle(command("setup", { type: "setup", configuration: { driver: "managed", prefix: ">" } }))).receipt.type, "accepted");
   assert.equal((await handle(command("attach", { type: "attach", grants: {} }, "att_1"))).receipt.type, "accepted");

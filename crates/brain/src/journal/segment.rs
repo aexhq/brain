@@ -12,7 +12,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use brain_protocol::{SessionId, SessionStatus};
+use brain_protocol::{Identity, SessionId, SessionStatus};
 
 use crate::{
     KernelError,
@@ -51,7 +51,7 @@ struct Tracked {
 }
 
 struct Stored {
-    digest: String,
+    request: Identity,
     response: serde_json::Value,
     segment: u64,
 }
@@ -119,7 +119,7 @@ impl JournalStore for SegmentJournal {
                 "status": row.status,
                 "configuration": row.configuration,
                 "context": row.context,
-                "presentation_digest": row.presentation_digest,
+                "presentation_identity": row.presentation_identity,
             }),
         )?;
         let location = self.write(
@@ -318,11 +318,11 @@ impl JournalStore for SegmentJournal {
         &self,
         scope: &str,
         key: &str,
-        digest: &str,
+        request: &Identity,
     ) -> Result<Option<serde_json::Value>, KernelError> {
         match self.lock()?.idempotency.get(&(scope.into(), key.into())) {
             None => Ok(None),
-            Some(stored) if stored.digest != digest => Err(KernelError::InvalidState(
+            Some(stored) if stored.request != *request => Err(KernelError::InvalidState(
                 "idempotency key reused with different request".into(),
             )),
             Some(stored) => Ok(Some(stored.response.clone())),
@@ -333,7 +333,7 @@ impl JournalStore for SegmentJournal {
         &self,
         scope: &str,
         key: &str,
-        digest: &str,
+        request: &Identity,
         response: &serde_json::Value,
     ) -> Result<(), KernelError> {
         let mut state = self.lock()?;
@@ -351,14 +351,14 @@ impl JournalStore for SegmentJournal {
             &serde_json::json!({
                 "scope": scope,
                 "key": key,
-                "digest": digest,
+                "request": request,
                 "response": response,
             }),
         )?;
         state.idempotency.insert(
             entry,
             Stored {
-                digest: digest.to_string(),
+                request: *request,
                 response: response.clone(),
                 segment: location.segment,
             },
@@ -403,11 +403,16 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
                         session_id: SessionId::new(frame.session_id.to_string()),
                         journal_id: serde_json::from_value(payload["journal_id"].clone())
                             .map_err(json_error)?,
+                        // A frame that introduces a session always carries both; a
+                        // later one that only moves its status hits the arm above.
+                        presentation_identity: serde_json::from_value(
+                            payload["presentation_identity"].clone(),
+                        )
+                        .map_err(json_error)?,
                         status: SessionStatus::Idle,
                         through_sequence: 0,
                         configuration: serde_json::Value::Null,
                         context: serde_json::Value::Null,
-                        presentation_digest: String::new(),
                     },
                     locations: Vec::new(),
                     state_segment: location.segment,
@@ -423,11 +428,9 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
             if let Some(configuration) = payload.get("configuration") {
                 tracked.row.configuration = configuration.clone();
             }
-            if let Some(digest) = payload
-                .get("presentation_digest")
-                .and_then(|value| value.as_str())
-            {
-                tracked.row.presentation_digest = digest.to_string();
+            if let Some(identity) = payload.get("presentation_identity") {
+                tracked.row.presentation_identity =
+                    serde_json::from_value(identity.clone()).map_err(json_error)?;
             }
             tracked.state_segment = location.segment;
         }
@@ -436,11 +439,8 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
         }
         IDEMPOTENCY => {
             let payload = frame.payload()?;
-            let (Some(scope), Some(key), Some(digest)) = (
-                payload["scope"].as_str(),
-                payload["key"].as_str(),
-                payload["digest"].as_str(),
-            ) else {
+            let (Some(scope), Some(key)) = (payload["scope"].as_str(), payload["key"].as_str())
+            else {
                 return Err(KernelError::Journal(
                     "idempotency frame is malformed".into(),
                 ));
@@ -448,7 +448,8 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
             state.idempotency.insert(
                 (scope.to_string(), key.to_string()),
                 Stored {
-                    digest: digest.to_string(),
+                    request: serde_json::from_value(payload["request"].clone())
+                        .map_err(json_error)?,
                     response: payload["response"].clone(),
                     segment: location.segment,
                 },

@@ -78,7 +78,7 @@ export class BrainClient {
     const idempotencyKey = `brain-${createHash("sha256").update(bytes).digest("hex")}`;
     const admission = await this.request<AgentloopAdmission>("POST", "/v1/agentloops", bytes, idempotencyKey, "application/octet-stream");
     if (admission.status !== "admitted") throw new BrainError(400, "brain_rejected", admission.error?.message ?? "Brain was rejected", false, admission.error?.details);
-    return admission.digest;
+    return admission.identity;
   }
 }
 
@@ -87,8 +87,8 @@ export class Sessions {
 
   async create(options: CreateSessionOptions, operation: OperationOptions = {}): Promise<SessionHandle> {
     validateSessionOptions(options);
-    const digest = await this.client.admit(options.brain);
-    const compiled = compileSession(options, digest);
+    const identity = await this.client.admit(options.brain);
+    const compiled = compileSession(options, identity);
     for (const environment of compiled.environments.keys()) assertEnvironmentBindable(environment);
     const session = await this.client.request<WireSession>("POST", "/v1/sessions", compiled.request, keyOf(operation));
     for (const [environment, environmentId] of compiled.environments) bindEnvironment(environment, this.client, session.session_id, environmentId);
@@ -147,7 +147,7 @@ export class SessionHandle {
   private endEnvironments(): void { for (const environment of this.environments) endEnvironment(environment); }
 }
 
-function compileSession(options: CreateSessionOptions, agentloopDigest: string): { readonly request: WireCreateSessionRequest; readonly environments: ReadonlyMap<Environment, string> } {
+function compileSession(options: CreateSessionOptions, agentloopIdentity: string): { readonly request: WireCreateSessionRequest; readonly environments: ReadonlyMap<Environment, string> } {
   const environments = new Map<Environment, string>();
   const requirements: WireEnvironmentRequirement[] = [];
   const definitions: WireToolDefinition[] = [];
@@ -168,7 +168,7 @@ function compileSession(options: CreateSessionOptions, agentloopDigest: string):
   }
   const brain = inspectBrain(options.brain);
   return { request: {
-    agentloop_digest: agentloopDigest,
+    agentloop_identity: agentloopIdentity,
     brain_configuration: structuredClone(brain.configuration),
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
     presentation: { system: options.system ?? "", tools: definitions, ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }) },
@@ -192,5 +192,5 @@ function keyOf(options: OperationOptions): string {
   return options.idempotencyKey ?? randomUUID();
 }
 function toSessionState(session: WireSession): SessionState {
-  return Object.freeze({ id: session.session_id, journalId: session.journal_id, status: session.status, throughSequence: session.through_sequence, presentationDigest: session.presentation_digest });
+  return Object.freeze({ id: session.session_id, journalId: session.journal_id, status: session.status, throughSequence: session.through_sequence, presentationIdentity: session.presentation_identity });
 }

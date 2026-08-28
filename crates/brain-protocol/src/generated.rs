@@ -2,16 +2,16 @@
 
 pub const AGENTLOOP_SCHEMA: &str = include_str!("../../../contracts/agentloop/v1/contract.json");
 pub const AGENTLOOP_SCHEMA_DIGEST: &str =
-    "d8f09a54454364361e11a1bb49e9bf93fd04aa3c78e0e75c1a7388b17f52b520";
+    "aae54716a97e28c71698cc92a25a2f448da8ffb0c4881b9fc9b933ff4c4e413d";
 pub const ENVIRONMENT_SCHEMA: &str = include_str!("../../../contracts/environment/v1/schemas.json");
 pub const ENVIRONMENT_SCHEMA_DIGEST: &str =
-    "77753fcd4ec41e9807a44029967e031def2fde4eae9c095a48be3beae44f499b";
+    "dbf1481d0c6e7e70c7e949b3c1c4e0557b3dab5e02271bf4e3dc498062d96e4a";
 pub const SESSION_SCHEMA: &str = include_str!("../../../contracts/session/v1/schemas.json");
 pub const SESSION_SCHEMA_DIGEST: &str =
-    "070b56330fced88fe757045c276eb39d452100b49a4f6f8b77d3faa5fe0e8b96";
+    "8a7da2854841fc57181c3fdee62fa8c60f7b7b9be016afe59215b23ef0c4f65c";
 pub const AGENTLOOP_WIT: &str = include_str!("../../../contracts/agentloop/v1/agentloop.wit");
 pub const AGENTLOOP_WIT_DIGEST: &str =
-    "27de3321e99fd663d0f8ae6e261e8e20e6332493c1983ca934840473aa335675";
+    "153768b47ad95c717b34821c2204380764e15c6ab87eec0dda4b0b4d1cd32af1";
 pub const SESSION_OPENAPI: &str = include_str!("../../../contracts/session/v1/openapi.yaml");
 pub const SESSION_OPENAPI_DIGEST: &str =
-    "4b885b74945969d11d2235705795a65d474d9a42ce83f635fee99d765de1e5c9";
+    "4a51b9571df5148e756004b44b6dab1dd582e431b3df0d7e2035793ff28ab815";

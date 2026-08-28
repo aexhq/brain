@@ -9,7 +9,7 @@ use axum::{
     routing::{get, post},
 };
 use brain_protocol::{
-    AgentloopAdmission, AgentloopDigest, CreateSessionRequest, EnvironmentCallRequest,
+    AgentloopAdmission, AgentloopIdentity, CreateSessionRequest, EnvironmentCallRequest,
     EnvironmentCallResult, EnvironmentId, MessageRequest, Session, SessionId, SessionList,
 };
 
@@ -125,7 +125,7 @@ async fn admit_agentloop<A: BrainApi>(
 
 async fn get_agentloop<A: BrainApi>(
     State(api): State<A>,
-    Path(digest): Path<AgentloopDigest>,
+    Path(digest): Path<AgentloopIdentity>,
 ) -> Result<Json<AgentloopAdmission>, HttpError> {
     Ok(Json(api.get_agentloop(digest).await.map_err(HttpError)?))
 }

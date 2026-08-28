@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
-use brain_protocol::{ActivationInput, ActivationOutput, AgentloopDigest};
+use brain_protocol::{ActivationInput, ActivationOutput, AgentloopIdentity};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{AgentloopPackage, LoopLimits, WorkerClient};
@@ -16,7 +16,7 @@ pub struct WorkerPool {
 
 #[derive(Default)]
 struct WorkerState {
-    admitted: HashSet<AgentloopDigest>,
+    admitted: HashSet<AgentloopIdentity>,
     #[cfg(unix)]
     child: Option<tokio::process::Child>,
 }
@@ -41,7 +41,7 @@ impl WorkerPool {
         }
     }
 
-    pub async fn admit(&self, package: Vec<u8>) -> Result<AgentloopDigest, String> {
+    pub async fn admit(&self, package: Vec<u8>) -> Result<AgentloopIdentity, String> {
         if package.len() > self.limits.package_bytes {
             return Err("Agentloop package exceeds the configured admission limit".into());
         }
@@ -59,7 +59,7 @@ impl WorkerPool {
         Ok(digest)
     }
 
-    pub async fn status(&self, digest: &AgentloopDigest) -> Result<bool, String> {
+    pub async fn status(&self, digest: &AgentloopIdentity) -> Result<bool, String> {
         tokio::fs::try_exists(package_path(&self.packages, digest))
             .await
             .map_err(|error| error.to_string())
@@ -78,7 +78,7 @@ impl WorkerPool {
 
     pub async fn activate(
         &self,
-        digest: AgentloopDigest,
+        digest: AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, String> {
         let input_bytes = serde_json::to_vec(&input).map_err(|error| error.to_string())?;
@@ -195,7 +195,7 @@ impl WorkerPool {
 
 async fn persist_package(
     directory: &std::path::Path,
-    digest: &AgentloopDigest,
+    digest: &AgentloopIdentity,
     package: &[u8],
 ) -> Result<(), String> {
     tokio::fs::create_dir_all(directory)
@@ -211,6 +211,6 @@ async fn persist_package(
         .map_err(|error| error.to_string())
 }
 
-fn package_path(directory: &std::path::Path, digest: &AgentloopDigest) -> PathBuf {
+fn package_path(directory: &std::path::Path, digest: &AgentloopIdentity) -> PathBuf {
     directory.join(format!("{}.json", digest.as_str()))
 }

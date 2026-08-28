@@ -38,7 +38,7 @@ const admission = await request(
 );
 assert.equal(admission.status, "admitted");
 const session = await request("POST", "/v1/sessions", {
-  agentloop_digest: admission.digest,
+  agentloop_identity: admission.digest,
   brain_configuration: {},
   model: {
     provider: "vercel-ai-gateway",

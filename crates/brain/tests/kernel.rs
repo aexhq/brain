@@ -13,12 +13,12 @@ use brain::{
     SegmentJournal, SessionHandle, SessionUpdate, ToolExecutor,
 };
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopDigest, AttachmentId, Decision,
+    ActivationInput, ActivationOutput, AgentloopIdentity, AttachmentId, Decision,
     EnvironmentAttachment, EnvironmentBinding, EnvironmentId, EnvironmentRequest,
-    EnvironmentRequirement, LifecyclePolicy, MessageRequest, ModelBinding, ModelPresentation,
-    ModelRequest, ModelResult, ModelStreamEvent, Observation, OperationId, RequestedToolBinding,
-    ResolvedSessionRequest, SealedSessionConfig, ToolBinding, ToolCancellation, ToolDefinition,
-    ToolDispatch, ToolInvocation, ToolResult, request_digest,
+    EnvironmentRequirement, Identity, LifecyclePolicy, MessageRequest, ModelBinding,
+    ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent, Observation, OperationId,
+    RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, ToolBinding,
+    ToolCancellation, ToolDefinition, ToolDispatch, ToolInvocation, ToolResult,
 };
 use brain_telemetry::telemetry_channel;
 use tokio::sync::Notify;
@@ -31,7 +31,7 @@ struct ScriptedLoop {
 impl LoopExecutor for ScriptedLoop {
     async fn activate(
         &self,
-        _agentloop: &AgentloopDigest,
+        _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
@@ -67,7 +67,7 @@ impl ModelExecutor for ScriptedModel {
     async fn execute(
         &self,
         _operation_id: &OperationId,
-        _request_digest: &str,
+        _request_digest: &Identity,
         _binding: &ModelBinding,
         _presentation: &ModelPresentation,
         _request: ModelRequest,
@@ -106,7 +106,7 @@ struct ToolLoop;
 impl LoopExecutor for ToolLoop {
     async fn activate(
         &self,
-        _agentloop: &AgentloopDigest,
+        _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {
         Ok(ActivationOutput {
@@ -129,7 +129,7 @@ impl ModelExecutor for NoModels {
     async fn execute(
         &self,
         _operation_id: &OperationId,
-        _request_digest: &str,
+        _request_digest: &Identity,
         _binding: &ModelBinding,
         _presentation: &ModelPresentation,
         _request: ModelRequest,
@@ -153,7 +153,7 @@ impl ToolExecutor for SlowTools {
             tool_configuration: dispatch.binding.tool_configuration.clone(),
             grant: dispatch.binding.grant.clone(),
         };
-        assert_eq!(dispatch.request_digest, request_digest(&request).unwrap());
+        assert_eq!(dispatch.request_identity, Identity::of(&request).unwrap());
         self.started.notify_one();
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         unreachable!("cancel must drop the in-flight Tool request")
@@ -172,7 +172,7 @@ impl ModelExecutor for SlowModel {
     async fn execute(
         &self,
         _operation_id: &OperationId,
-        _request_digest: &str,
+        _request_digest: &Identity,
         _binding: &ModelBinding,
         _presentation: &ModelPresentation,
         _request: ModelRequest,
@@ -436,7 +436,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
 
 fn request() -> SealedSessionConfig {
     SealedSessionConfig {
-        agentloop_digest: AgentloopDigest::new("a".repeat(64)),
+        agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
         brain_configuration: serde_json::json!({}),
         model: ModelBinding {
             binding_id: "gateway".into(),
@@ -455,13 +455,13 @@ fn request() -> SealedSessionConfig {
 fn tool_request() -> SealedSessionConfig {
     let environment = EnvironmentBinding {
         environment_id: EnvironmentId::new("workspace"),
-        configuration_digest: "b".repeat(64),
+        configuration_identity: Identity::of(&"configuration").unwrap(),
         adapter_binding: "sealed".into(),
         directory_generation: 1,
         lifecycle_policy: LifecyclePolicy::Shared,
     };
     SealedSessionConfig {
-        agentloop_digest: AgentloopDigest::new("a".repeat(64)),
+        agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
         brain_configuration: serde_json::json!({}),
         model: ModelBinding {
             binding_id: "gateway".into(),
@@ -503,7 +503,7 @@ fn temporary_directory() -> PathBuf {
 /// so these tests exercise the same validation the production path enforces.
 fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
     let resolved = ResolvedSessionRequest {
-        agentloop_digest: sealed.agentloop_digest.clone(),
+        agentloop_identity: sealed.agentloop_identity.clone(),
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
         presentation: sealed.presentation.clone(),

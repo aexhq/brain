@@ -1,4 +1,4 @@
-use brain_protocol::{ActivationInput, ActivationOutput, AgentloopDigest};
+use brain_protocol::{ActivationInput, ActivationOutput, AgentloopIdentity};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -14,7 +14,7 @@ pub enum WorkerRequest {
         package_json: String,
     },
     Activate {
-        digest: AgentloopDigest,
+        digest: AgentloopIdentity,
         input: Box<ActivationInput>,
     },
 }
@@ -23,7 +23,7 @@ pub enum WorkerRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerResponse {
     Pong,
-    Admitted { digest: AgentloopDigest },
+    Admitted { digest: AgentloopIdentity },
     Activated { output: ActivationOutput },
     Error { code: String, message: String },
 }

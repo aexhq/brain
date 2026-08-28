@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use brain_protocol::SessionId;
+use brain_protocol::{Identity, SessionId};
 use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
 
 use crate::{
@@ -84,18 +84,18 @@ impl JournalStore for ObservedJournal {
         &self,
         scope: &str,
         key: &str,
-        digest: &str,
+        request: &Identity,
     ) -> Result<Option<serde_json::Value>, KernelError> {
-        self.inner.idempotency_get(scope, key, digest)
+        self.inner.idempotency_get(scope, key, request)
     }
 
     fn idempotency_put(
         &self,
         scope: &str,
         key: &str,
-        digest: &str,
+        request: &Identity,
         response: &serde_json::Value,
     ) -> Result<(), KernelError> {
-        self.inner.idempotency_put(scope, key, digest, response)
+        self.inner.idempotency_put(scope, key, request, response)
     }
 }

@@ -32,7 +32,7 @@ fn main() -> Result<(), String> {
             configuration: serde_json::json!({}),
             presentation: Presentation {
                 bytes: Vec::new(),
-                digest: "a".repeat(64),
+                identity: brain_protocol::Identity::of(&"example").unwrap(),
             },
             runtime: RuntimeEnvelope {
                 logical_time_ms: 1,

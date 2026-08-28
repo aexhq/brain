@@ -8,12 +8,12 @@
 export type Identifier = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "Digest".
+ * via the `definition` "Identity".
  *
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "AgentloopDigest".
+ * via the `definition` "AgentloopIdentity".
  */
-export type Digest = string;
+export type Identity = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "SessionId".
@@ -79,7 +79,7 @@ export interface ModelPresentation {
  * via the `definition` "CreateSessionRequest".
  */
 export interface CreateSessionRequest {
-  agentloop_digest: Digest;
+  agentloop_identity: Identity;
   brain_configuration: unknown;
   model: ModelSelection;
   presentation: ModelPresentation;
@@ -122,7 +122,7 @@ export interface Session {
   journal_id: Identifier;
   status: "creating" | "idle" | "running" | "ended" | "failed";
   through_sequence: number;
-  presentation_digest: Digest;
+  presentation_identity: Identity;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -159,7 +159,7 @@ export interface EventPage {
  */
 export interface AgentloopManifest {
   contract_version: "agentloop/v1";
-  component_digest: Digest;
+  component_identity: Identity;
   component_bytes: number;
   toolchain?: string;
 }
@@ -168,7 +168,7 @@ export interface AgentloopManifest {
  * via the `definition` "AgentloopAdmission".
  */
 export interface AgentloopAdmission {
-  digest: Digest;
+  identity: Identity;
   status: "admitted" | "rejected";
   error?: ApiError;
 }

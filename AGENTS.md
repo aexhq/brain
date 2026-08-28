@@ -8,7 +8,7 @@
 - Journal every decision. The journal is written behind the turn and is not a durability fence:
   Brain does not fsync, and a crash may lose its tail. Seal the session presentation and bindings
   for its lifetime, preserve absent usage counters as absent, and record terminal results before
-  the next Agentloop activation. Redelivery must preserve the operation ID, request digest, and
+  the next Agentloop activation. Redelivery must preserve the operation ID, request identity, and
   logical binding; never replay an ambiguous effect to a replacement physical target.
 - Keep the `brain` core independent of cloud SDKs. Put storage, custody, and runtime behaviour behind
   public adapters, and do not weaken production invariants for local development.

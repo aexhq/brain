@@ -3,8 +3,8 @@ use std::sync::Arc;
 use brain::{CreatingSession, Kernel, KernelError, SessionHandle};
 use brain_protocol::{
     AttachmentId, EnvironmentAttachment, EnvironmentCallResult, EnvironmentId,
-    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, ResolvedSessionRequest,
-    SealedSessionConfig, SessionId, ToolBinding, request_digest,
+    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, Identity, ResolvedSessionRequest,
+    SealedSessionConfig, SessionId, ToolBinding,
 };
 
 use super::{DirectoryEntry, EnvironmentAdapter, EnvironmentDirectory};
@@ -110,7 +110,7 @@ impl EnvironmentRegistry {
             })
             .collect::<Result<Vec<_>, KernelError>>()?;
         Ok(SealedSessionConfig {
-            agentloop_digest: request.agentloop_digest,
+            agentloop_identity: request.agentloop_identity,
             brain_configuration: request.brain_configuration,
             model: request.model,
             presentation: request.presentation,
@@ -127,10 +127,10 @@ impl EnvironmentRegistry {
         attachment_id: Option<AttachmentId>,
         kind: &str,
     ) -> Result<EnvironmentReceipt, KernelError> {
-        let (operation_id, request_digest) = creation.record_intent(kind, &request)?;
+        let (operation_id, request_identity) = creation.record_intent(kind, &request)?;
         let operation = EnvironmentOperation {
             operation_id: operation_id.clone(),
-            request_digest,
+            request_identity,
             environment_id: entry.binding.environment_id.clone(),
             session_id: creation.session_id().clone(),
             attachment_id,
@@ -194,11 +194,11 @@ impl EnvironmentRegistry {
             })?;
         let entry = self.directory.get(&attachment.binding).await?;
         let request = EnvironmentRequest::Call { name, input };
-        let (operation_id, request_digest) =
+        let (operation_id, request_identity) =
             kernel.record_external_intent(session_id, "environment_call", &request)?;
         let operation = EnvironmentOperation {
             operation_id: operation_id.clone(),
-            request_digest,
+            request_identity,
             environment_id: environment_id.clone(),
             session_id: session_id.clone(),
             attachment_id: Some(attachment.attachment_id.clone()),
@@ -269,7 +269,7 @@ impl EnvironmentRegistry {
         let (operation_id, digest) = kernel.record_external_intent(session_id, kind, &request)?;
         let operation = EnvironmentOperation {
             operation_id: operation_id.clone(),
-            request_digest: digest,
+            request_identity: digest,
             environment_id: entry.binding.environment_id.clone(),
             session_id: session_id.clone(),
             attachment_id,
@@ -306,7 +306,10 @@ fn attachment_id(
     session_id: &brain_protocol::SessionId,
     environment_id: &brain_protocol::EnvironmentId,
 ) -> Result<AttachmentId, KernelError> {
-    let digest = request_digest(&(session_id, environment_id))
+    let identity = Identity::of(&(session_id, environment_id))
         .map_err(|error| KernelError::InvalidState(error.to_string()))?;
-    Ok(AttachmentId::new(format!("att_{}", &digest[..24])))
+    Ok(AttachmentId::new(format!(
+        "att_{}",
+        &identity.to_string()[..24]
+    )))
 }

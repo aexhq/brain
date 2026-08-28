@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use brain_protocol::{
-    AgentloopAdmission, AgentloopDigest, ApiError, CreateSessionRequest, EnvironmentCallRequest,
+    AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest, EnvironmentCallRequest,
     EnvironmentCallResult, EnvironmentId, EventPage, MessageRequest, Session, SessionId,
     SessionList,
 };
@@ -12,7 +12,10 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         idempotency_key: String,
         package: Vec<u8>,
     ) -> Result<AgentloopAdmission, ApiError>;
-    async fn get_agentloop(&self, digest: AgentloopDigest) -> Result<AgentloopAdmission, ApiError>;
+    async fn get_agentloop(
+        &self,
+        digest: AgentloopIdentity,
+    ) -> Result<AgentloopAdmission, ApiError>;
     async fn create_session(
         &self,
         idempotency_key: String,

@@ -2,14 +2,14 @@
   "contract": "environment/v1",
   "binding": {
     "environment_id": "env_shared",
-    "configuration_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "configuration_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "adapter_binding": "{\"driver\":\"aws-microvm\"}",
     "directory_generation": 1,
     "lifecycle_policy": "shared"
   },
   "operation": {
     "operation_id": "op_example",
-    "request_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "request_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "environment_id": "env_shared",
     "session_id": "ses_example",
     "attachment_id": "att_example",
