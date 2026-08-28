@@ -106,9 +106,9 @@ flowchart TD
 
 ## Tiny
 
-Six crates, about 7,300 lines of Rust. The session kernel is 3,400 of them and its journal is 1,337,
+Six crates, about 7,600 lines of Rust. The session kernel is 3,400 of them and its journal is 1,556,
 of which the entire on-disk format — frames, segment rotation, torn-tail recovery, reclamation — is
-one 610-line file. There is no ORM, no query planner and no embedded database: the kernel's
+one 703-line file. There is no ORM, no query planner and no embedded database: the kernel's
 dependency on SQLite was removed outright, and `sha2` went with it.
 
 ## Blazing fast
@@ -118,6 +118,16 @@ xxh3 over the bytes just serialised, and a channel send — no syscall on the tu
 fsync anywhere. Session state, the record index and idempotency all live in memory, so a running
 session never reads the disk; paging a client's history resolves locations under the lock but reads
 outside it, so replaying history never blocks an append.
+
+What is *not* in the log matters as much. A session's state is rewritten at the end of every turn
+and only its latest value is ever read, so it lives in a file per session that the writer replaces
+in place — appended, it grew the journal with the square of the turn count. A recorded idempotency
+answer expires, so it stops holding back the segments behind it. And the writer is bounded: past
+64 MiB of frames it has not yet put on disk, an append waits, so a stalled disk shows up as a slow
+turn rather than as a process that grows until it is killed.
+
+Agentloop activations run concurrently, bounded at sixteen per worker: each one is a live Wasm
+instance, so that number is the worker's memory ceiling rather than a throughput dial.
 
 ```sh
 cargo test --release -p brain --test journal_throughput -- --ignored --nocapture
@@ -182,6 +192,7 @@ Every push runs these against a live server, so they are bounds rather than clai
 | --- | --- |
 | Resident memory after 10,000 requests | under 256 MiB, and grown by no more than 16 MiB |
 | A turn's journal, over 64 decisions on a 1 MiB context | no more than 8x the final context |
+| A session's journal, over 64 turns on a 1 MiB context | no more than 8x the final context |
 | One page of that turn's event stream | no more than 8x the final context |
 
 End-to-end latency, throughput and the cross-session isolation test are being rebuilt against the
