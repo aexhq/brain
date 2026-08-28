@@ -19,11 +19,14 @@ use std::{
 };
 
 use async_trait::async_trait;
-use brain::{Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor, ToolExecutor};
+use brain::{
+    Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor, SessionHandle, ToolExecutor,
+};
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopDigest, Decision, MessageRequest, ModelBinding,
-    ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent, OperationId,
-    SealedSessionConfig, SessionId, ToolCancellation, ToolDispatch, ToolResult,
+    ActivationInput, ActivationOutput, AgentloopDigest, Decision, EnvironmentRequirement,
+    MessageRequest, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent,
+    OperationId, RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, SessionId,
+    ToolCancellation, ToolDispatch, ToolResult,
 };
 use brain_telemetry::telemetry_channel;
 
@@ -129,7 +132,7 @@ async fn measure_one_turn(data_dir: &Path) -> (u64, SessionId) {
         publisher,
     )
     .unwrap();
-    let handle = kernel.create_session(request()).await.unwrap();
+    let handle = start(&kernel, request());
     let session_id = handle.id().clone();
     let finished = handle
         .message(MessageRequest {
@@ -184,7 +187,7 @@ async fn the_event_stream_does_not_carry_a_context_copy_per_decision() {
         publisher,
     )
     .unwrap();
-    let handle = kernel.create_session(request()).await.unwrap();
+    let handle = start(&kernel, request());
     let session_id = handle.id().clone();
     handle
         .message(MessageRequest {
@@ -305,4 +308,41 @@ fn temporary_directory() -> PathBuf {
     let path = std::env::temp_dir().join(format!("brain-journal-growth-{}", rand::random::<u64>()));
     fs::create_dir(&path).unwrap();
     path
+}
+
+/// Sessions are created the way the server creates them: a resolved request is admitted,
+/// then the sealed configuration completes it. There is no shortcut past `begin_session`,
+/// so these tests exercise the same validation the production path enforces.
+fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
+    let resolved = ResolvedSessionRequest {
+        agentloop_digest: sealed.agentloop_digest.clone(),
+        brain_configuration: sealed.brain_configuration.clone(),
+        model: sealed.model.clone(),
+        presentation: sealed.presentation.clone(),
+        environments: sealed
+            .environments
+            .iter()
+            .map(|environment| EnvironmentRequirement {
+                environment_id: environment.binding.environment_id.clone(),
+                configuration: serde_json::json!({}),
+                lifecycle_policy: environment.binding.lifecycle_policy.clone(),
+            })
+            .collect(),
+        tool_bindings: sealed
+            .tool_bindings
+            .iter()
+            .map(|binding| RequestedToolBinding {
+                name: binding.name.clone(),
+                environment_id: binding.environment.environment_id.clone(),
+                remote_tool_id: binding.remote_tool_id.clone(),
+                tool_configuration: binding.tool_configuration.clone(),
+                grant: binding.grant.clone(),
+            })
+            .collect(),
+    };
+    kernel
+        .begin_session(&resolved)
+        .unwrap()
+        .complete(sealed)
+        .unwrap()
 }

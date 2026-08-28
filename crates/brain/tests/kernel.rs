@@ -10,13 +10,14 @@ use std::{
 use async_trait::async_trait;
 use brain::{
     AppendRecord, JournalStore, Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor,
-    SessionUpdate, SqliteJournal, ToolExecutor,
+    SessionHandle, SessionUpdate, SqliteJournal, ToolExecutor,
 };
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopDigest, AttachmentId, Decision,
-    EnvironmentAttachment, EnvironmentBinding, EnvironmentId, EnvironmentRequest, LifecyclePolicy,
-    MessageRequest, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent,
-    Observation, OperationId, SealedSessionConfig, ToolBinding, ToolCancellation, ToolDefinition,
+    EnvironmentAttachment, EnvironmentBinding, EnvironmentId, EnvironmentRequest,
+    EnvironmentRequirement, LifecyclePolicy, MessageRequest, ModelBinding, ModelPresentation,
+    ModelRequest, ModelResult, ModelStreamEvent, Observation, OperationId, RequestedToolBinding,
+    ResolvedSessionRequest, SealedSessionConfig, ToolBinding, ToolCancellation, ToolDefinition,
     ToolDispatch, ToolInvocation, ToolResult, request_digest,
 };
 use brain_telemetry::telemetry_channel;
@@ -197,7 +198,7 @@ async fn intent_precedes_model_effect_and_reopen_preserves_events() {
         tool_executor: Arc::new(NoTools),
     };
     let kernel = Kernel::open(config(), publisher.clone()).unwrap();
-    let handle = kernel.create_session(request()).await.unwrap();
+    let handle = start(&kernel, request());
     let session_id = handle.id().clone();
     let finished = handle
         .message(MessageRequest {
@@ -273,7 +274,7 @@ async fn restart_marks_an_inflight_turn_ambiguous_instead_of_guessing() {
         tool_executor: Arc::new(NoTools),
     };
     let kernel = Kernel::open(config(), publisher.clone()).unwrap();
-    let handle = kernel.create_session(request()).await.unwrap();
+    let handle = start(&kernel, request());
     let session_id = handle.id().clone();
     drop(handle);
     drop(kernel);
@@ -351,7 +352,7 @@ async fn opens_a_legacy_journal_after_removing_session_metadata() {
         publisher,
     )
     .unwrap();
-    kernel.create_session(request()).await.unwrap();
+    start(&kernel, request());
     drop(kernel);
 
     let connection = rusqlite::Connection::open(database).unwrap();
@@ -392,7 +393,7 @@ async fn cancel_interrupts_an_inflight_model_request() {
         publisher,
     )
     .unwrap();
-    let handle = kernel.create_session(request()).await.unwrap();
+    let handle = start(&kernel, request());
     let session_id = handle.id().clone();
     let running = {
         let handle = handle.clone();
@@ -451,7 +452,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
         publisher,
     )
     .unwrap();
-    let handle = kernel.create_session(tool_request()).await.unwrap();
+    let handle = start(&kernel, tool_request());
     let session_id = handle.id().clone();
     let running = {
         let handle = handle.clone();
@@ -551,4 +552,41 @@ fn temporary_directory() -> PathBuf {
     let path = std::env::temp_dir().join(format!("brain-kernel-test-{}", rand::random::<u64>()));
     fs::create_dir(&path).unwrap();
     path
+}
+
+/// Sessions are created the way the server creates them: a resolved request is admitted,
+/// then the sealed configuration completes it. There is no shortcut past `begin_session`,
+/// so these tests exercise the same validation the production path enforces.
+fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
+    let resolved = ResolvedSessionRequest {
+        agentloop_digest: sealed.agentloop_digest.clone(),
+        brain_configuration: sealed.brain_configuration.clone(),
+        model: sealed.model.clone(),
+        presentation: sealed.presentation.clone(),
+        environments: sealed
+            .environments
+            .iter()
+            .map(|environment| EnvironmentRequirement {
+                environment_id: environment.binding.environment_id.clone(),
+                configuration: serde_json::json!({}),
+                lifecycle_policy: environment.binding.lifecycle_policy.clone(),
+            })
+            .collect(),
+        tool_bindings: sealed
+            .tool_bindings
+            .iter()
+            .map(|binding| RequestedToolBinding {
+                name: binding.name.clone(),
+                environment_id: binding.environment.environment_id.clone(),
+                remote_tool_id: binding.remote_tool_id.clone(),
+                tool_configuration: binding.tool_configuration.clone(),
+                grant: binding.grant.clone(),
+            })
+            .collect(),
+    };
+    kernel
+        .begin_session(&resolved)
+        .unwrap()
+        .complete(sealed)
+        .unwrap()
 }

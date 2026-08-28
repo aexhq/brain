@@ -18,7 +18,12 @@ let kernel = brain::Kernel::open(
     telemetry,
 )?;
 
-let session = kernel.create_session(sealed_session_config).await?;
+// Admitting the request bounds its authority before anything is journalled.
+let creating = kernel.begin_session(&resolved_session_request)?;
+
+// Attach the Environments the request named, then seal what was actually granted.
+let session = creating.complete(sealed_session_config)?;
+
 session
     .message(brain_protocol::MessageRequest {
         content: serde_json::json!("Explain the current changes."),
@@ -35,7 +40,8 @@ your own transport, your own placement.
 ## What the kernel keeps
 
 Writes still land before effects, and recovery still works the same way. The kernel does not become
-more permissive because it is embedded.
+more permissive because it is embedded: `begin_session` and `complete` are the only ways a session
+is admitted, and both hold the request to the same contract the server's callers meet.
 
 ## What stays yours
 

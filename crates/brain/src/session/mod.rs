@@ -11,8 +11,10 @@ use std::{
 };
 
 use brain_protocol::{
-    EventPage, JournalId, MessageRequest, OperationId, ResolvedSessionRequest, SealedSessionConfig,
-    Session, SessionId, SessionStatus, operation_id, request_digest,
+    AgentloopDigest, EnvironmentAttachment, EnvironmentId, EnvironmentRequirement, EventPage,
+    JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId, RequestedToolBinding,
+    ResolvedSessionRequest, SealedSessionConfig, Session, SessionId, SessionStatus, ToolBinding,
+    operation_id, request_digest,
 };
 use brain_telemetry::TelemetryPublisher;
 use rand::RngCore;
@@ -82,45 +84,11 @@ impl Kernel {
         Ok(kernel)
     }
 
-    pub async fn create_session(
-        &self,
-        request: SealedSessionConfig,
-    ) -> Result<SessionHandle, KernelError> {
-        validate_bindings(&request)?;
-        let session_id = SessionId::new(random_id("ses"));
-        let journal_id = JournalId::new(random_id("jrn"));
-        let presentation =
-            context::presentation(&request.presentation, &request.brain_configuration)?;
-        let context = context::empty_context();
-        let row = SessionRow {
-            session_id: session_id.clone(),
-            journal_id,
-            status: SessionStatus::Idle,
-            through_sequence: 1,
-            configuration: serde_json::to_value(&request).map_err(json_error)?,
-            context: serde_json::to_value(&context).map_err(json_error)?,
-            presentation_digest: presentation.digest.clone(),
-        };
-        self.inner.store.create_session(
-            &row,
-            AppendRecord::new(
-                "session_created",
-                serde_json::json!({
-                    "configuration": request,
-                    "presentation_bytes": presentation.bytes,
-                    "presentation_digest": presentation.digest,
-                }),
-            ),
-        )?;
-        self.spawn(row)
-    }
-
     pub fn begin_session(
         &self,
         request: &ResolvedSessionRequest,
     ) -> Result<CreatingSession, KernelError> {
-        validate_create_request(request)?;
-        validate_requested_bindings(request)?;
+        validate_session_contract(request)?;
         let session_id = SessionId::new(random_id("ses"));
         let journal_id = JournalId::new(random_id("jrn"));
         let presentation =
@@ -462,7 +430,7 @@ impl CreatingSession {
     }
 
     pub fn complete(mut self, sealed: SealedSessionConfig) -> Result<SessionHandle, KernelError> {
-        validate_bindings(&sealed)?;
+        validate_session_contract(&sealed)?;
         let configuration = serde_json::to_value(&sealed).map_err(json_error)?;
         let context = self.row.context.clone();
         let saved = self.kernel.inner.store.append(
@@ -546,114 +514,142 @@ impl SessionHandle {
     }
 }
 
-fn validate_bindings(request: &SealedSessionConfig) -> Result<(), KernelError> {
-    let mut definitions: Vec<&str> = request
-        .presentation
-        .tools
-        .iter()
-        .map(|tool| tool.name.as_str())
-        .collect();
-    let mut bindings: Vec<&str> = request
-        .tool_bindings
-        .iter()
-        .map(|tool| tool.name.as_str())
-        .collect();
-    definitions.sort_unstable();
-    bindings.sort_unstable();
-    if definitions.windows(2).any(|pair| pair[0] == pair[1])
-        || bindings.windows(2).any(|pair| pair[0] == pair[1])
-    {
-        return Err(KernelError::InvalidState(
-            "tool names must be unique".into(),
-        ));
-    }
-    if definitions != bindings {
-        return Err(KernelError::InvalidState(
-            "every Tool definition must have exactly one binding".into(),
-        ));
-    }
-    let environment_ids: std::collections::HashSet<_> = request
-        .environments
-        .iter()
-        .map(|environment| &environment.binding.environment_id)
-        .collect();
-    if environment_ids.len() != request.environments.len()
-        || request
-            .tool_bindings
-            .iter()
-            .any(|binding| !environment_ids.contains(&binding.environment.environment_id))
-    {
-        return Err(KernelError::InvalidState(
-            "sealed Environment bindings are inconsistent".into(),
-        ));
-    }
-    Ok(())
+/// The two request shapes the kernel admits differ only in where an Environment identity
+/// lives: a resolved request names it directly, a sealed configuration carries it inside
+/// the binding it resolved to. Every other term of the contract is identical, and core
+/// principle 3 requires that authority be bounded identically however a session is
+/// created, so the bounds are stated once and both shapes are read through these views.
+trait EnvironmentView {
+    fn environment_id(&self) -> &EnvironmentId;
 }
 
-fn validate_requested_bindings(request: &ResolvedSessionRequest) -> Result<(), KernelError> {
-    let mut definitions: Vec<&str> = request
-        .presentation
-        .tools
-        .iter()
-        .map(|tool| tool.name.as_str())
-        .collect();
-    let mut bindings: Vec<&str> = request
-        .tool_bindings
-        .iter()
-        .map(|tool| tool.name.as_str())
-        .collect();
-    definitions.sort_unstable();
-    bindings.sort_unstable();
-    if definitions.windows(2).any(|pair| pair[0] == pair[1])
-        || bindings.windows(2).any(|pair| pair[0] == pair[1])
-        || definitions != bindings
-    {
-        return Err(KernelError::InvalidState(
-            "every unique Tool definition must have exactly one requested binding".into(),
-        ));
+impl EnvironmentView for EnvironmentRequirement {
+    fn environment_id(&self) -> &EnvironmentId {
+        &self.environment_id
     }
-    let environment_ids: std::collections::HashSet<_> = request
-        .environments
-        .iter()
-        .map(|environment| &environment.environment_id)
-        .collect();
-    if environment_ids.len() != request.environments.len() {
-        return Err(KernelError::InvalidState(
-            "Environment identities must be unique".into(),
-        ));
-    }
-    if request
-        .tool_bindings
-        .iter()
-        .any(|binding| !environment_ids.contains(&binding.environment_id))
-    {
-        return Err(KernelError::InvalidState(
-            "every Tool binding must name a requested Environment".into(),
-        ));
-    }
-    Ok(())
 }
 
-fn validate_create_request(request: &ResolvedSessionRequest) -> Result<(), KernelError> {
+impl EnvironmentView for EnvironmentAttachment {
+    fn environment_id(&self) -> &EnvironmentId {
+        &self.binding.environment_id
+    }
+}
+
+trait ToolBindingView {
+    fn name(&self) -> &str;
+    fn environment_id(&self) -> &EnvironmentId;
+    fn remote_tool_id(&self) -> &str;
+}
+
+impl ToolBindingView for RequestedToolBinding {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn environment_id(&self) -> &EnvironmentId {
+        &self.environment_id
+    }
+
+    fn remote_tool_id(&self) -> &str {
+        &self.remote_tool_id
+    }
+}
+
+impl ToolBindingView for ToolBinding {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn environment_id(&self) -> &EnvironmentId {
+        &self.environment.environment_id
+    }
+
+    fn remote_tool_id(&self) -> &str {
+        &self.remote_tool_id
+    }
+}
+
+trait SessionContract: serde::Serialize {
+    type Environment: EnvironmentView;
+    type ToolBinding: ToolBindingView;
+
+    fn agentloop_digest(&self) -> &AgentloopDigest;
+    fn model(&self) -> &ModelBinding;
+    fn presentation(&self) -> &ModelPresentation;
+    fn environments(&self) -> &[Self::Environment];
+    fn tool_bindings(&self) -> &[Self::ToolBinding];
+}
+
+impl SessionContract for ResolvedSessionRequest {
+    type Environment = EnvironmentRequirement;
+    type ToolBinding = RequestedToolBinding;
+
+    fn agentloop_digest(&self) -> &AgentloopDigest {
+        &self.agentloop_digest
+    }
+
+    fn model(&self) -> &ModelBinding {
+        &self.model
+    }
+
+    fn presentation(&self) -> &ModelPresentation {
+        &self.presentation
+    }
+
+    fn environments(&self) -> &[Self::Environment] {
+        &self.environments
+    }
+
+    fn tool_bindings(&self) -> &[Self::ToolBinding] {
+        &self.tool_bindings
+    }
+}
+
+impl SessionContract for SealedSessionConfig {
+    type Environment = EnvironmentAttachment;
+    type ToolBinding = ToolBinding;
+
+    fn agentloop_digest(&self) -> &AgentloopDigest {
+        &self.agentloop_digest
+    }
+
+    fn model(&self) -> &ModelBinding {
+        &self.model
+    }
+
+    fn presentation(&self) -> &ModelPresentation {
+        &self.presentation
+    }
+
+    fn environments(&self) -> &[Self::Environment] {
+        &self.environments
+    }
+
+    fn tool_bindings(&self) -> &[Self::ToolBinding] {
+        &self.tool_bindings
+    }
+}
+
+fn validate_session_contract(request: &impl SessionContract) -> Result<(), KernelError> {
     if serde_json::to_vec(request).map_err(json_error)?.len() > 2 * 1024 * 1024 {
         return Err(KernelError::InvalidState(
             "session request exceeds 2 MiB".into(),
         ));
     }
-    if !digest_valid(request.agentloop_digest.as_str())
-        || !identifier_valid(&request.model.binding_id)
-        || request.model.model.is_empty()
-        || request.model.model.len() > 256
-        || request.presentation.system.len() > 131_072
-        || request.presentation.tools.len() > 128
-        || request.environments.len() > 128
-        || request.tool_bindings.len() > 128
+    if !digest_valid(request.agentloop_digest().as_str())
+        || !identifier_valid(&request.model().binding_id)
+        || request.model().model.is_empty()
+        || request.model().model.len() > 256
+        || request.presentation().system.len() > 131_072
+        || request.presentation().tools.len() > 128
+        || request.environments().len() > 128
+        || request.tool_bindings().len() > 128
     {
         return Err(KernelError::InvalidState(
             "session request violates a contract size or identity bound".into(),
         ));
     }
-    for tool in &request.presentation.tools {
+    for tool in &request.presentation().tools {
         if !identifier_valid(&tool.name)
             || tool.description.len() > 8_192
             || !tool.input_schema.is_object()
@@ -668,17 +664,57 @@ fn validate_create_request(request: &ResolvedSessionRequest) -> Result<(), Kerne
         }
     }
     if request
-        .environments
+        .environments()
         .iter()
-        .any(|environment| !identifier_valid(environment.environment_id.as_str()))
-        || request.tool_bindings.iter().any(|binding| {
-            !identifier_valid(&binding.name)
-                || !identifier_valid(binding.environment_id.as_str())
-                || !identifier_valid(&binding.remote_tool_id)
+        .any(|environment| !identifier_valid(environment.environment_id().as_str()))
+        || request.tool_bindings().iter().any(|binding| {
+            !identifier_valid(binding.name())
+                || !identifier_valid(binding.environment_id().as_str())
+                || !identifier_valid(binding.remote_tool_id())
         })
     {
         return Err(KernelError::InvalidState(
             "Environment or Tool binding has an invalid identity".into(),
+        ));
+    }
+    let mut definitions: Vec<&str> = request
+        .presentation()
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
+    let mut bindings: Vec<&str> = request
+        .tool_bindings()
+        .iter()
+        .map(ToolBindingView::name)
+        .collect();
+    definitions.sort_unstable();
+    bindings.sort_unstable();
+    if definitions.windows(2).any(|pair| pair[0] == pair[1])
+        || bindings.windows(2).any(|pair| pair[0] == pair[1])
+        || definitions != bindings
+    {
+        return Err(KernelError::InvalidState(
+            "every unique Tool definition must have exactly one binding".into(),
+        ));
+    }
+    let environment_ids: std::collections::HashSet<_> = request
+        .environments()
+        .iter()
+        .map(EnvironmentView::environment_id)
+        .collect();
+    if environment_ids.len() != request.environments().len() {
+        return Err(KernelError::InvalidState(
+            "Environment identities must be unique".into(),
+        ));
+    }
+    if request
+        .tool_bindings()
+        .iter()
+        .any(|binding| !environment_ids.contains(binding.environment_id()))
+    {
+        return Err(KernelError::InvalidState(
+            "every Tool binding must name a bound Environment".into(),
         ));
     }
     Ok(())
@@ -719,4 +755,373 @@ fn random_id(prefix: &str) -> String {
 
 fn json_error(error: serde_json::Error) -> KernelError {
     KernelError::InvalidState(error.to_string())
+}
+#[cfg(test)]
+mod tests {
+    use brain_protocol::{AttachmentId, EnvironmentBinding, LifecyclePolicy, ToolDefinition};
+
+    use super::*;
+
+    fn digest() -> String {
+        "a".repeat(64)
+    }
+
+    fn tool() -> ToolDefinition {
+        ToolDefinition {
+            name: "search".into(),
+            description: "search the workspace".into(),
+            input_schema: serde_json::json!({"type":"object"}),
+            output_schema: None,
+        }
+    }
+
+    fn environment_binding() -> EnvironmentBinding {
+        EnvironmentBinding {
+            environment_id: EnvironmentId::new("workspace"),
+            configuration_digest: "b".repeat(64),
+            adapter_binding: "sealed".into(),
+            directory_generation: 1,
+            lifecycle_policy: LifecyclePolicy::Shared,
+        }
+    }
+
+    fn resolved() -> ResolvedSessionRequest {
+        ResolvedSessionRequest {
+            agentloop_digest: AgentloopDigest::new(digest()),
+            brain_configuration: serde_json::json!({}),
+            model: ModelBinding {
+                binding_id: "gateway".into(),
+                model: "openai/test".into(),
+            },
+            presentation: ModelPresentation {
+                system: "test".into(),
+                tools: vec![tool()],
+                response_format: None,
+            },
+            environments: vec![EnvironmentRequirement {
+                environment_id: EnvironmentId::new("workspace"),
+                configuration: serde_json::json!({}),
+                lifecycle_policy: LifecyclePolicy::Shared,
+            }],
+            tool_bindings: vec![RequestedToolBinding {
+                name: "search".into(),
+                environment_id: EnvironmentId::new("workspace"),
+                remote_tool_id: "search".into(),
+                tool_configuration: serde_json::json!({}),
+                grant: serde_json::json!({}),
+            }],
+        }
+    }
+
+    fn sealed() -> SealedSessionConfig {
+        SealedSessionConfig {
+            agentloop_digest: AgentloopDigest::new(digest()),
+            brain_configuration: serde_json::json!({}),
+            model: ModelBinding {
+                binding_id: "gateway".into(),
+                model: "openai/test".into(),
+            },
+            presentation: ModelPresentation {
+                system: "test".into(),
+                tools: vec![tool()],
+                response_format: None,
+            },
+            environments: vec![EnvironmentAttachment {
+                binding: environment_binding(),
+                attachment_id: AttachmentId::new("attachment"),
+            }],
+            tool_bindings: vec![ToolBinding {
+                name: "search".into(),
+                environment: environment_binding(),
+                attachment_id: AttachmentId::new("attachment"),
+                remote_tool_id: "search".into(),
+                tool_configuration: serde_json::json!({}),
+                grant: serde_json::json!({}),
+            }],
+        }
+    }
+
+    /// A rejection case: the name of the breach, the smallest edit that commits it, and
+    /// the bound that must reject it.
+    type Breach<T> = (&'static str, fn(&mut T), &'static str);
+
+    /// Each case names the bound it breaches, so a case that starts passing for some
+    /// other reason fails rather than quietly stops testing what it was written for.
+    fn assert_rejected<T: SessionContract>(subject: &str, case: &str, request: &T, bound: &str) {
+        let error = validate_session_contract(request)
+            .expect_err(&format!("{subject} with {case} must be rejected"));
+        let message = error.to_string();
+        assert!(
+            message.contains(bound),
+            "{subject} with {case} must be rejected by the {bound:?} bound, not by {message:?}"
+        );
+    }
+
+    #[test]
+    fn a_request_within_every_bound_is_admitted() {
+        validate_session_contract(&resolved()).unwrap();
+        validate_session_contract(&sealed()).unwrap();
+    }
+
+    /// Principle 3 fixes authority at create, so every bound below is the difference
+    /// between a session that can only do what it was granted and one that cannot be
+    /// reasoned about at all. Each case is the smallest edit that breaches one bound.
+    #[test]
+    fn every_bound_rejects_a_resolved_request_that_breaches_it() {
+        let cases: Vec<Breach<ResolvedSessionRequest>> = vec![
+            (
+                "configuration over 2 MiB",
+                |request| {
+                    request.brain_configuration = serde_json::json!("x".repeat(3 * 1024 * 1024));
+                },
+                "exceeds 2 MiB",
+            ),
+            (
+                "an Agentloop digest of the wrong length",
+                |request| request.agentloop_digest = AgentloopDigest::new("a".repeat(63)),
+                "size or identity bound",
+            ),
+            (
+                "an Agentloop digest that is not hex",
+                |request| request.agentloop_digest = AgentloopDigest::new("g".repeat(64)),
+                "size or identity bound",
+            ),
+            (
+                "an empty model binding",
+                |request| request.model.binding_id = String::new(),
+                "size or identity bound",
+            ),
+            (
+                "a model binding holding a path traversal",
+                |request| request.model.binding_id = "gateway/../root".into(),
+                "size or identity bound",
+            ),
+            (
+                "an empty model name",
+                |request| request.model.model = String::new(),
+                "size or identity bound",
+            ),
+            (
+                "a model name over 256 bytes",
+                |request| request.model.model = "m".repeat(257),
+                "size or identity bound",
+            ),
+            (
+                "a system prompt over 128 KiB",
+                |request| request.presentation.system = "s".repeat(131_073),
+                "size or identity bound",
+            ),
+            (
+                "more than 128 Tool definitions",
+                |request| {
+                    let binding = request.tool_bindings[0].clone();
+                    request.presentation.tools = (0..129)
+                        .map(|index| ToolDefinition {
+                            name: format!("tool{index}"),
+                            ..tool()
+                        })
+                        .collect();
+                    request.tool_bindings = (0..129)
+                        .map(|index| RequestedToolBinding {
+                            name: format!("tool{index}"),
+                            ..binding.clone()
+                        })
+                        .collect();
+                },
+                "size or identity bound",
+            ),
+            (
+                "more than 128 Environments",
+                |request| {
+                    let environment = request.environments[0].clone();
+                    request.environments = (0..129)
+                        .map(|index| EnvironmentRequirement {
+                            environment_id: EnvironmentId::new(format!("env{index}")),
+                            ..environment.clone()
+                        })
+                        .collect();
+                    request.tool_bindings[0].environment_id = EnvironmentId::new("env0");
+                },
+                "size or identity bound",
+            ),
+            (
+                "a Tool name that is not an identifier",
+                |request| {
+                    request.presentation.tools[0].name = "../escape".into();
+                    request.tool_bindings[0].name = "../escape".into();
+                },
+                "Tool definition violates",
+            ),
+            (
+                "a Tool description over 8 KiB",
+                |request| request.presentation.tools[0].description = "d".repeat(8_193),
+                "Tool definition violates",
+            ),
+            (
+                "a Tool input schema that is not an object",
+                |request| request.presentation.tools[0].input_schema = serde_json::json!("string"),
+                "Tool definition violates",
+            ),
+            (
+                "a Tool output schema that is not an object",
+                |request| request.presentation.tools[0].output_schema = Some(serde_json::json!([])),
+                "Tool definition violates",
+            ),
+            (
+                "an Environment identity that is not an identifier",
+                |request| {
+                    request.environments[0].environment_id = EnvironmentId::new("../escape");
+                    request.tool_bindings[0].environment_id = EnvironmentId::new("../escape");
+                },
+                "invalid identity",
+            ),
+            (
+                "a remote Tool identity that is not an identifier",
+                |request| request.tool_bindings[0].remote_tool_id = "../escape".into(),
+                "invalid identity",
+            ),
+            (
+                "two Tool definitions sharing one name",
+                |request| {
+                    request.presentation.tools.push(tool());
+                    let binding = request.tool_bindings[0].clone();
+                    request.tool_bindings.push(binding);
+                },
+                "exactly one binding",
+            ),
+            (
+                "a Tool definition with no binding",
+                |request| request.tool_bindings.clear(),
+                "exactly one binding",
+            ),
+            (
+                "a binding with no Tool definition",
+                |request| request.presentation.tools.clear(),
+                "exactly one binding",
+            ),
+            (
+                "two Environments sharing one identity",
+                |request| {
+                    let environment = request.environments[0].clone();
+                    request.environments.push(environment);
+                },
+                "Environment identities must be unique",
+            ),
+            (
+                "a binding naming an Environment that was not granted",
+                |request| request.tool_bindings[0].environment_id = EnvironmentId::new("elsewhere"),
+                "must name a bound Environment",
+            ),
+        ];
+        for (case, breach, bound) in cases {
+            let mut request = resolved();
+            breach(&mut request);
+            assert_rejected("a resolved request", case, &request, bound);
+        }
+    }
+
+    /// A sealed configuration reaches the journal through `CreatingSession::complete`,
+    /// the only other way a session is admitted. It is held to the same bounds, so the
+    /// kernel does not become more permissive by being driven from inside a service.
+    #[test]
+    fn every_bound_rejects_a_sealed_configuration_that_breaches_it() {
+        let cases: Vec<Breach<SealedSessionConfig>> = vec![
+            (
+                "configuration over 2 MiB",
+                |sealed| {
+                    sealed.brain_configuration = serde_json::json!("x".repeat(3 * 1024 * 1024));
+                },
+                "exceeds 2 MiB",
+            ),
+            (
+                "an Agentloop digest that is not hex",
+                |sealed| sealed.agentloop_digest = AgentloopDigest::new("g".repeat(64)),
+                "size or identity bound",
+            ),
+            (
+                "an empty model binding",
+                |sealed| sealed.model.binding_id = String::new(),
+                "size or identity bound",
+            ),
+            (
+                "a system prompt over 128 KiB",
+                |sealed| sealed.presentation.system = "s".repeat(131_073),
+                "size or identity bound",
+            ),
+            (
+                "a Tool name that is not an identifier",
+                |sealed| {
+                    sealed.presentation.tools[0].name = "../escape".into();
+                    sealed.tool_bindings[0].name = "../escape".into();
+                },
+                "Tool definition violates",
+            ),
+            (
+                "an Environment identity that is not an identifier",
+                |sealed| {
+                    sealed.environments[0].binding.environment_id = EnvironmentId::new("../escape");
+                    sealed.tool_bindings[0].environment.environment_id =
+                        EnvironmentId::new("../escape");
+                },
+                "invalid identity",
+            ),
+            (
+                "a remote Tool identity that is not an identifier",
+                |sealed| sealed.tool_bindings[0].remote_tool_id = "../escape".into(),
+                "invalid identity",
+            ),
+            (
+                "a Tool definition with no binding",
+                |sealed| sealed.tool_bindings.clear(),
+                "exactly one binding",
+            ),
+            (
+                "two Environments sharing one identity",
+                |sealed| {
+                    let environment = sealed.environments[0].clone();
+                    sealed.environments.push(environment);
+                },
+                "Environment identities must be unique",
+            ),
+            (
+                "a binding naming an Environment that was not sealed",
+                |sealed| {
+                    sealed.tool_bindings[0].environment.environment_id =
+                        EnvironmentId::new("elsewhere");
+                },
+                "must name a bound Environment",
+            ),
+        ];
+        for (case, breach, bound) in cases {
+            let mut configuration = sealed();
+            breach(&mut configuration);
+            assert_rejected("a sealed configuration", case, &configuration, bound);
+        }
+    }
+
+    #[test]
+    fn an_identifier_admits_only_the_characters_the_contract_names() {
+        assert!(identifier_valid("a"));
+        assert!(identifier_valid("workspace.tool_1:read-only"));
+        assert!(identifier_valid(&"a".repeat(128)));
+        assert!(!identifier_valid(""));
+        assert!(!identifier_valid(&"a".repeat(129)));
+        assert!(!identifier_valid(".leading"));
+        assert!(!identifier_valid("-leading"));
+        assert!(!identifier_valid("has space"));
+        assert!(!identifier_valid("has/slash"));
+        assert!(!identifier_valid("../escape"));
+        assert!(!identifier_valid("na\u{ef}ve"));
+    }
+
+    #[test]
+    fn a_digest_is_exactly_sixty_four_lowercase_hex_characters() {
+        assert!(digest_valid(&"a".repeat(64)));
+        assert!(digest_valid(&"0123456789abcdef".repeat(4)));
+        assert!(!digest_valid(&"a".repeat(63)));
+        assert!(!digest_valid(&"a".repeat(65)));
+        assert!(!digest_valid(&"A".repeat(64)));
+        assert!(!digest_valid(&"g".repeat(64)));
+        assert!(!digest_valid(""));
+    }
 }
