@@ -256,6 +256,6 @@ fn session() -> Session {
         journal_id: brain_protocol::JournalId::new("jrn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         status: SessionStatus::Idle,
         through_sequence: 1,
-        presentation_digest: "a".repeat(64),
+        presentation_digest: brain_protocol::Identity::of(&"presentation").unwrap(),
     }
 }

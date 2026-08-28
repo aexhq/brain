@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{AttachmentId, EnvironmentBinding, EnvironmentId, OperationId, SessionId};
+use crate::{AttachmentId, EnvironmentBinding, EnvironmentId, Identity, OperationId, SessionId};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -42,7 +42,7 @@ pub struct ToolInvocation {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolDispatch {
     pub operation_id: OperationId,
-    pub request_digest: String,
+    pub request_digest: Identity,
     pub session_id: SessionId,
     pub binding: ToolBinding,
     pub invocation: ToolInvocation,
@@ -51,7 +51,7 @@ pub struct ToolDispatch {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolCancellation {
     pub operation_id: OperationId,
-    pub request_digest: String,
+    pub request_digest: Identity,
     pub target_operation_id: OperationId,
     pub session_id: SessionId,
     pub binding: ToolBinding,

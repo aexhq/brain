@@ -157,7 +157,7 @@ fn to_wit_input(
             .map_err(|error| error.to_string())?,
         presentation: wit::Presentation {
             bytes: input.presentation.bytes,
-            digest: input.presentation.digest,
+            digest: input.presentation.digest.to_string(),
         },
         runtime: wit::RuntimeEnvelope {
             logical_time_ms: input.runtime.logical_time_ms,

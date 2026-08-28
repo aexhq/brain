@@ -23,7 +23,7 @@ use brain::{
     Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor, SessionHandle, ToolExecutor,
 };
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopDigest, Decision, EnvironmentRequirement,
+    ActivationInput, ActivationOutput, AgentloopDigest, Decision, EnvironmentRequirement, Identity,
     MessageRequest, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent,
     OperationId, RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, SessionId,
     ToolCancellation, ToolDispatch, ToolResult,
@@ -88,7 +88,7 @@ impl ModelExecutor for TinyModel {
     async fn execute(
         &self,
         _operation_id: &OperationId,
-        _request_digest: &str,
+        _request_digest: &Identity,
         _binding: &ModelBinding,
         _presentation: &ModelPresentation,
         _request: ModelRequest,

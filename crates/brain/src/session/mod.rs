@@ -12,9 +12,9 @@ use std::{
 
 use brain_protocol::{
     AgentloopDigest, EnvironmentAttachment, EnvironmentId, EnvironmentRequirement, EventPage,
-    JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId, RequestedToolBinding,
-    ResolvedSessionRequest, SealedSessionConfig, Session, SessionId, SessionStatus, ToolBinding,
-    operation_id, request_digest,
+    Identity, JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId,
+    RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, Session, SessionId,
+    SessionStatus, ToolBinding, operation_id,
 };
 use brain_telemetry::TelemetryPublisher;
 use rand::RngCore;
@@ -203,7 +203,7 @@ impl Kernel {
         session_id: &SessionId,
         kind: &str,
         request: &T,
-    ) -> Result<(OperationId, String), KernelError> {
+    ) -> Result<(OperationId, Identity), KernelError> {
         self.inner
             .sessions
             .lock()
@@ -218,8 +218,8 @@ impl Kernel {
             return Err(KernelError::InvalidState("session is not idle".into()));
         }
         let operation_id = operation_id(&row.journal_id, row.through_sequence + 1);
-        let digest = request_digest(request)
-            .map_err(|error| KernelError::InvalidState(error.to_string()))?;
+        let digest =
+            Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
         self.inner.store.append(
             session_id,
             row.through_sequence,
@@ -294,8 +294,8 @@ impl Kernel {
         key: &str,
         request: &T,
     ) -> Result<Option<serde_json::Value>, KernelError> {
-        let digest = request_digest(request)
-            .map_err(|error| KernelError::InvalidState(error.to_string()))?;
+        let digest =
+            Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
         self.inner.store.idempotency_get(scope, key, &digest)
     }
 
@@ -336,8 +336,8 @@ impl Kernel {
         request: &T,
         response: &serde_json::Value,
     ) -> Result<(), KernelError> {
-        let digest = request_digest(request)
-            .map_err(|error| KernelError::InvalidState(error.to_string()))?;
+        let digest =
+            Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
         self.inner
             .store
             .idempotency_put(scope, key, &digest, response)
@@ -396,10 +396,10 @@ impl CreatingSession {
         &mut self,
         kind: &str,
         request: &T,
-    ) -> Result<(OperationId, String), KernelError> {
+    ) -> Result<(OperationId, Identity), KernelError> {
         let operation_id = operation_id(&self.row.journal_id, self.row.through_sequence + 1);
-        let digest = request_digest(request)
-            .map_err(|error| KernelError::InvalidState(error.to_string()))?;
+        let digest =
+            Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
         let saved = self.kernel.inner.store.append(
             &self.row.session_id,
             self.row.through_sequence,
@@ -743,7 +743,7 @@ fn public_session(row: &SessionRow) -> Session {
         journal_id: row.journal_id.clone(),
         status: row.status.clone(),
         through_sequence: row.through_sequence,
-        presentation_digest: row.presentation_digest.clone(),
+        presentation_digest: row.presentation_digest,
     }
 }
 
@@ -778,7 +778,7 @@ mod tests {
     fn environment_binding() -> EnvironmentBinding {
         EnvironmentBinding {
             environment_id: EnvironmentId::new("workspace"),
-            configuration_digest: "b".repeat(64),
+            configuration_digest: Identity::of(&"configuration").unwrap(),
             adapter_binding: "sealed".into(),
             directory_generation: 1,
             lifecycle_policy: LifecyclePolicy::Shared,

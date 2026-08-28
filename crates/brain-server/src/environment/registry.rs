@@ -3,8 +3,8 @@ use std::sync::Arc;
 use brain::{CreatingSession, Kernel, KernelError, SessionHandle};
 use brain_protocol::{
     AttachmentId, EnvironmentAttachment, EnvironmentCallResult, EnvironmentId,
-    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, ResolvedSessionRequest,
-    SealedSessionConfig, SessionId, ToolBinding, request_digest,
+    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, Identity, ResolvedSessionRequest,
+    SealedSessionConfig, SessionId, ToolBinding,
 };
 
 use super::{DirectoryEntry, EnvironmentAdapter, EnvironmentDirectory};
@@ -306,7 +306,10 @@ fn attachment_id(
     session_id: &brain_protocol::SessionId,
     environment_id: &brain_protocol::EnvironmentId,
 ) -> Result<AttachmentId, KernelError> {
-    let digest = request_digest(&(session_id, environment_id))
+    let identity = Identity::of(&(session_id, environment_id))
         .map_err(|error| KernelError::InvalidState(error.to_string()))?;
-    Ok(AttachmentId::new(format!("att_{}", &digest[..24])))
+    Ok(AttachmentId::new(format!(
+        "att_{}",
+        &identity.to_string()[..24]
+    )))
 }

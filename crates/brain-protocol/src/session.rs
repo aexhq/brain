@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopDigest, EnvironmentAttachment, EnvironmentId, EventId, JournalId, LifecyclePolicy,
-    ModelBinding, ModelSelection, RequestedToolBinding, SessionId, ToolBinding, ToolDefinition,
+    AgentloopDigest, EnvironmentAttachment, EnvironmentId, EventId, Identity, JournalId,
+    LifecyclePolicy, ModelBinding, ModelSelection, RequestedToolBinding, SessionId, ToolBinding,
+    ToolDefinition,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -76,7 +77,7 @@ pub struct Session {
     pub journal_id: JournalId,
     pub status: SessionStatus,
     pub through_sequence: u64,
-    pub presentation_digest: String,
+    pub presentation_digest: Identity,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

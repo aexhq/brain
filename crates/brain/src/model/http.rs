@@ -2,7 +2,8 @@ use std::{collections::BTreeMap, net::IpAddr, time::Duration};
 
 use async_trait::async_trait;
 use brain_protocol::{
-    ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent, OperationId,
+    Identity, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent,
+    OperationId,
 };
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -152,7 +153,7 @@ impl ModelExecutor for RemoteModelClient {
     async fn execute(
         &self,
         operation_id: &OperationId,
-        request_digest: &str,
+        request_digest: &Identity,
         binding: &ModelBinding,
         presentation: &ModelPresentation,
         request: ModelRequest,
@@ -165,7 +166,7 @@ impl ModelExecutor for RemoteModelClient {
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
             .header("x-idempotency-key", operation_id.as_str())
-            .header("x-request-digest", request_digest)
+            .header("x-request-digest", request_digest.to_string())
             .json(&Self::body(binding, presentation, &request))
             .send()
             .await
@@ -385,7 +386,7 @@ mod tests {
         let result = client
             .execute(
                 &OperationId::new("op_test"),
-                "request-digest",
+                &Identity::of(&"request").unwrap(),
                 &ModelBinding {
                     binding_id: "gateway".into(),
                     model: "test/model".into(),
@@ -412,7 +413,10 @@ mod tests {
         let (headers, body) = observed_rx.await.unwrap();
         assert_eq!(headers["authorization"], "Bearer test-key");
         assert_eq!(headers["x-idempotency-key"], "op_test");
-        assert_eq!(headers["x-request-digest"], "request-digest");
+        assert_eq!(
+            headers["x-request-digest"],
+            Identity::of(&"request").unwrap().to_string()
+        );
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["messages"][0]["content"], "system");
         assert_eq!(body["max_completion_tokens"], 12);

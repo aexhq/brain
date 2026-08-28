@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Mutex};
 
 use async_trait::async_trait;
 use brain::KernelError;
-use brain_protocol::{EnvironmentBinding, EnvironmentId, EnvironmentRequirement, request_digest};
+use brain_protocol::{EnvironmentBinding, EnvironmentId, EnvironmentRequirement, Identity};
 
 #[derive(Clone, Debug)]
 pub struct DirectoryEntry {
@@ -44,7 +44,7 @@ impl EnvironmentDirectory for InMemoryEnvironmentDirectory {
                 "no Environment endpoint is configured".into(),
             ));
         }
-        let digest = request_digest(&requirement.configuration)
+        let digest = Identity::of(&requirement.configuration)
             .map_err(|error| KernelError::InvalidState(error.to_string()))?;
         let mut entries = self
             .entries
@@ -98,7 +98,7 @@ mod tests {
         let directory = InMemoryEnvironmentDirectory::new("https://environment.example");
         let binding = EnvironmentBinding {
             environment_id: EnvironmentId::new("shared-workspace"),
-            configuration_digest: "a".repeat(64),
+            configuration_digest: Identity::of(&"configuration").unwrap(),
             adapter_binding: "sealed".into(),
             directory_generation: 7,
             lifecycle_policy: LifecyclePolicy::Shared,

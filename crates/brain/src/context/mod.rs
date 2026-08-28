@@ -1,6 +1,4 @@
-use brain_protocol::{
-    ContextEnvelope, ModelPresentation, Presentation, canonical_json, request_digest,
-};
+use brain_protocol::{ContextEnvelope, Identity, ModelPresentation, Presentation, canonical_json};
 
 use crate::KernelError;
 
@@ -18,9 +16,10 @@ pub fn presentation(
 ) -> Result<Presentation, KernelError> {
     let sealed =
         serde_json::json!({ "brain_configuration": brain_configuration, "presentation": value });
+    // Sealed once, for the life of the session. Everything that needs to know whether
+    // it is looking at this presentation compares the identity rather than the bytes.
     let bytes =
         canonical_json(&sealed).map_err(|error| KernelError::InvalidState(error.to_string()))?;
-    let digest =
-        request_digest(&sealed).map_err(|error| KernelError::InvalidState(error.to_string()))?;
+    let digest = Identity::of_bytes(&bytes);
     Ok(Presentation { bytes, digest })
 }

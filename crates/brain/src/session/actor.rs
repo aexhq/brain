@@ -5,9 +5,9 @@ use std::sync::{
 use std::{future::Future, time::Duration};
 
 use brain_protocol::{
-    ActivationInput, ContextEnvelope, Decision, EnvironmentRequest, Event, EventId, MessageRequest,
-    Observation, Presentation, RuntimeEnvelope, SealedSessionConfig, Session, SessionStatus,
-    ToolCancellation, ToolDispatch, ToolResult, operation_id, request_digest,
+    ActivationInput, ContextEnvelope, Decision, EnvironmentRequest, Event, EventId, Identity,
+    MessageRequest, Observation, Presentation, RuntimeEnvelope, SealedSessionConfig, Session,
+    SessionStatus, ToolCancellation, ToolDispatch, ToolResult, operation_id,
 };
 use futures_util::future::join_all;
 use tokio::sync::{mpsc, oneshot};
@@ -66,7 +66,7 @@ impl SessionActor {
         Ok(Self {
             presentation: Presentation {
                 bytes: presentation_bytes,
-                digest: row.presentation_digest.clone(),
+                digest: row.presentation_digest,
             },
             row,
             sealed,
@@ -123,17 +123,29 @@ impl SessionActor {
                     serde_json::json!({"code":"cancelled"}),
                 )]);
             }
+            let runtime = RuntimeEnvelope::at(
+                &self.row.journal_id,
+                self.row.through_sequence,
+                decision_index,
+            );
+            // The sealed presentation is the same on every decision of the session, so
+            // take the identity it was sealed with instead of reading its bytes again.
+            // What is left is hashed from Brain's own encoding: nothing outside Brain
+            // recomputes this one, so it does not have to be canonical.
+            let activation_digest = Identity::over(&[
+                self.presentation.digest,
+                Identity::of_bytes(
+                    &serde_json::to_vec(&(&self.context, &observation, &runtime))
+                        .map_err(json_error)?,
+                ),
+            ]);
             let activation = ActivationInput {
                 context: self.context.clone(),
                 observation,
                 configuration: self.sealed.brain_configuration.clone(),
                 presentation: self.presentation.clone(),
-                runtime: RuntimeEnvelope {
-                    logical_time_ms: self.row.through_sequence,
-                    deterministic_seed: deterministic_seed(&self.row, decision_index),
-                },
+                runtime,
             };
-            let activation_digest = request_digest(&activation).map_err(digest_error)?;
             self.commit(
                 vec![AppendRecord::new(
                     "activation_intent",
@@ -171,7 +183,7 @@ impl SessionActor {
                 Decision::Model { request } => {
                     let intent_sequence = self.row.through_sequence + 1;
                     let operation_id = operation_id(&self.row.journal_id, intent_sequence);
-                    let digest = request_digest(&request).map_err(digest_error)?;
+                    let digest = Identity::of(&request).map_err(identity_error)?;
                     self.commit(vec![AppendRecord::new("model_intent", serde_json::json!({"operation_id":operation_id,"request_digest":digest,"request":request}))], SessionUpdate::default())?;
                     let mut stream = Vec::new();
                     let model_executor = self.model_executor.clone();
@@ -226,16 +238,18 @@ impl SessionActor {
                             &self.row.journal_id,
                             self.row.through_sequence + offset as u64 + 1,
                         );
-                        let digest = request_digest(&EnvironmentRequest::Execute {
+                        // The Environment recomputes this to decide whether a
+                        // redelivery is the same effect, so it must be canonical.
+                        let digest = Identity::of(&EnvironmentRequest::Execute {
                             tool: invocation.clone(),
                             remote_tool_id: binding.remote_tool_id.clone(),
                             tool_configuration: binding.tool_configuration.clone(),
                             grant: binding.grant.clone(),
                         })
-                        .map_err(digest_error)?;
+                        .map_err(identity_error)?;
                         let dispatch = ToolDispatch {
                             operation_id: operation_id.clone(),
-                            request_digest: digest.clone(),
+                            request_digest: digest,
                             session_id: self.row.session_id.clone(),
                             binding,
                             invocation,
@@ -394,7 +408,7 @@ impl SessionActor {
                     &self.row.journal_id,
                     self.row.through_sequence + offset as u64 + 1,
                 ),
-                request_digest: request_digest(&request).map_err(digest_error)?,
+                request_digest: Identity::of(&request).map_err(identity_error)?,
                 target_operation_id: dispatch.operation_id.clone(),
                 session_id: dispatch.session_id.clone(),
                 binding: dispatch.binding.clone(),
@@ -511,23 +525,14 @@ impl SessionActor {
             journal_id: self.row.journal_id.clone(),
             status: self.row.status.clone(),
             through_sequence: self.row.through_sequence,
-            presentation_digest: self.row.presentation_digest.clone(),
+            presentation_digest: self.row.presentation_digest,
         }
     }
-}
-
-fn deterministic_seed(row: &SessionRow, decision_index: usize) -> Vec<u8> {
-    use sha2::{Digest as _, Sha256};
-    let mut hash = Sha256::new();
-    hash.update(row.journal_id.as_str().as_bytes());
-    hash.update(row.through_sequence.to_be_bytes());
-    hash.update(decision_index.to_be_bytes());
-    hash.finalize().to_vec()
 }
 
 fn json_error(error: serde_json::Error) -> KernelError {
     KernelError::InvalidState(error.to_string())
 }
-fn digest_error(error: brain_protocol::DigestError) -> KernelError {
+fn identity_error(error: brain_protocol::IdentityError) -> KernelError {
     KernelError::InvalidState(error.to_string())
 }

@@ -8,6 +8,8 @@ mod sse;
 
 pub use http::{RemoteModelClient, RemoteModelConfig};
 
+use brain_protocol::Identity;
+
 use crate::KernelError;
 
 #[async_trait]
@@ -15,7 +17,7 @@ pub trait ModelExecutor: Send + Sync + 'static {
     async fn execute(
         &self,
         operation_id: &OperationId,
-        request_digest: &str,
+        request_digest: &Identity,
         binding: &ModelBinding,
         presentation: &ModelPresentation,
         request: ModelRequest,

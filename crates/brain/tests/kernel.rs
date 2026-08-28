@@ -15,10 +15,10 @@ use brain::{
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopDigest, AttachmentId, Decision,
     EnvironmentAttachment, EnvironmentBinding, EnvironmentId, EnvironmentRequest,
-    EnvironmentRequirement, LifecyclePolicy, MessageRequest, ModelBinding, ModelPresentation,
-    ModelRequest, ModelResult, ModelStreamEvent, Observation, OperationId, RequestedToolBinding,
-    ResolvedSessionRequest, SealedSessionConfig, ToolBinding, ToolCancellation, ToolDefinition,
-    ToolDispatch, ToolInvocation, ToolResult, request_digest,
+    EnvironmentRequirement, Identity, LifecyclePolicy, MessageRequest, ModelBinding,
+    ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent, Observation, OperationId,
+    RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, ToolBinding,
+    ToolCancellation, ToolDefinition, ToolDispatch, ToolInvocation, ToolResult,
 };
 use brain_telemetry::telemetry_channel;
 use tokio::sync::Notify;
@@ -67,7 +67,7 @@ impl ModelExecutor for ScriptedModel {
     async fn execute(
         &self,
         _operation_id: &OperationId,
-        _request_digest: &str,
+        _request_digest: &Identity,
         _binding: &ModelBinding,
         _presentation: &ModelPresentation,
         _request: ModelRequest,
@@ -129,7 +129,7 @@ impl ModelExecutor for NoModels {
     async fn execute(
         &self,
         _operation_id: &OperationId,
-        _request_digest: &str,
+        _request_digest: &Identity,
         _binding: &ModelBinding,
         _presentation: &ModelPresentation,
         _request: ModelRequest,
@@ -153,7 +153,7 @@ impl ToolExecutor for SlowTools {
             tool_configuration: dispatch.binding.tool_configuration.clone(),
             grant: dispatch.binding.grant.clone(),
         };
-        assert_eq!(dispatch.request_digest, request_digest(&request).unwrap());
+        assert_eq!(dispatch.request_digest, Identity::of(&request).unwrap());
         self.started.notify_one();
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         unreachable!("cancel must drop the in-flight Tool request")
@@ -172,7 +172,7 @@ impl ModelExecutor for SlowModel {
     async fn execute(
         &self,
         _operation_id: &OperationId,
-        _request_digest: &str,
+        _request_digest: &Identity,
         _binding: &ModelBinding,
         _presentation: &ModelPresentation,
         _request: ModelRequest,
@@ -455,7 +455,7 @@ fn request() -> SealedSessionConfig {
 fn tool_request() -> SealedSessionConfig {
     let environment = EnvironmentBinding {
         environment_id: EnvironmentId::new("workspace"),
-        configuration_digest: "b".repeat(64),
+        configuration_digest: Identity::of(&"configuration").unwrap(),
         adapter_binding: "sealed".into(),
         directory_generation: 1,
         lifecycle_policy: LifecyclePolicy::Shared,

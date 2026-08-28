@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{AttachmentId, EnvironmentId, OperationId, SessionId, ToolInvocation, ToolResult};
+use crate::{
+    AttachmentId, EnvironmentId, Identity, OperationId, SessionId, ToolInvocation, ToolResult,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -13,7 +15,7 @@ pub enum LifecyclePolicy {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentBinding {
     pub environment_id: EnvironmentId,
-    pub configuration_digest: String,
+    pub configuration_digest: Identity,
     pub adapter_binding: String,
     pub directory_generation: u64,
     pub lifecycle_policy: LifecyclePolicy,
@@ -28,7 +30,7 @@ pub struct EnvironmentAttachment {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentOperation<T> {
     pub operation_id: OperationId,
-    pub request_digest: String,
+    pub request_digest: Identity,
     pub environment_id: EnvironmentId,
     pub session_id: SessionId,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -47,7 +49,7 @@ pub struct EnvironmentCommand<T> {
 pub struct EnvironmentResponse {
     pub contract: String,
     pub operation_id: OperationId,
-    pub request_digest: String,
+    pub request_digest: Identity,
     pub receipt: EnvironmentReceipt,
 }
 
@@ -96,8 +98,8 @@ pub enum EnvironmentReceipt {
         retryable: bool,
     },
     Conflict {
-        expected_digest: String,
-        actual_digest: String,
+        expected_digest: Identity,
+        actual_digest: Identity,
     },
     Ambiguous {
         message: String,

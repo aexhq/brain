@@ -13,8 +13,8 @@ use aes_gcm::{
 use async_trait::async_trait;
 use brain::{KernelError, ModelExecutor, model::RemoteModelClient, model::RemoteModelConfig};
 use brain_protocol::{
-    ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelSelection, ModelStreamEvent,
-    OperationId,
+    Identity, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelSelection,
+    ModelStreamEvent, OperationId,
 };
 use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -214,7 +214,7 @@ impl ModelExecutor for ServerModelExecutor {
     async fn execute(
         &self,
         operation_id: &OperationId,
-        request_digest: &str,
+        request_digest: &Identity,
         binding: &ModelBinding,
         presentation: &ModelPresentation,
         request: ModelRequest,
