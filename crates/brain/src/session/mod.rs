@@ -37,7 +37,11 @@ pub struct Kernel {
 }
 
 struct KernelInner {
-    store: Arc<dyn JournalStore>,
+    /// Concrete rather than `dyn JournalStore`, because the live subscription is not part
+    /// of being a store: a journal an embedder brings has no reason to know about HTTP
+    /// subscribers, and the wrapper that observes every append is the only thing that
+    /// can serve them.
+    store: Arc<ObservedJournal>,
     config: KernelConfig,
     sessions: Mutex<HashMap<SessionId, SessionRuntime>>,
 }
@@ -151,6 +155,19 @@ impl Kernel {
             .session_row(session_id)?
             .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
         self.spawn(row)
+    }
+
+    /// Every record appended from now on, across every session.
+    ///
+    /// Subscribe before reading a page, then drop what the page already carried: a record
+    /// appended between the two arrives here rather than being lost in the gap. A
+    /// subscriber that falls further behind than the buffer loses records and is told so
+    /// by the channel — the journal is the record and `after` reads it back, while this is
+    /// a notification that it moved. A slow reader must never be able to hold up a turn.
+    pub fn subscribe(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::Event)> {
+        self.inner.store.subscribe()
     }
 
     pub fn events(

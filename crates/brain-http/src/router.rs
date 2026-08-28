@@ -13,6 +13,8 @@ use brain_protocol::{
     EnvironmentCallResult, EnvironmentId, MessageRequest, Session, SessionId, SessionList,
 };
 
+use futures_util::StreamExt as _;
+
 use crate::{BrainApi, HttpError};
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
@@ -204,10 +206,6 @@ async fn events<A: BrainApi>(
     Query(query): Query<EventsQuery>,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
-    let page = api
-        .events(session_id, query.after)
-        .await
-        .map_err(HttpError)?;
     let wants_sse = headers
         .get(axum::http::header::ACCEPT)
         .and_then(|value| value.to_str().ok())
@@ -216,19 +214,71 @@ async fn events<A: BrainApi>(
                 .split(',')
                 .any(|media| media.trim().starts_with("text/event-stream"))
         });
-    if !wants_sse {
+
+    // Subscribed before the page is read, so a record appended between the two arrives on
+    // the subscription rather than falling into the gap. Only for a stream: a JSON reader
+    // asked for a page and gets one.
+    let live = wants_sse.then(|| api.subscribe());
+    let page = api
+        .events(session_id.clone(), query.after)
+        .await
+        .map_err(HttpError)?;
+    let Some(live) = live else {
         return Ok(Json(page).into_response());
+    };
+
+    // Where the page ended. Everything at or below it was already sent; everything above
+    // it is what this stream is for.
+    let sent_through = page.next_cursor;
+    // A session that has ended appends nothing more, so a stream that stayed open on one
+    // would wait for records that cannot arrive. The page is the whole story there.
+    let ended = page.events.iter().any(is_last);
+    let backlog = futures_util::stream::iter(page.events.into_iter().map(sse));
+    if ended {
+        return Ok(Sse::new(backlog).into_response());
     }
-    let events = page.events.into_iter().map(|event| {
-        let data = serde_json::to_string(&event.data).expect("JSON event payload is serializable");
-        Ok::<_, std::convert::Infallible>(
-            SseEvent::default()
-                .id(event.sequence.to_string())
-                .event(event.event_type)
-                .data(data),
-        )
-    });
-    Ok(Sse::new(futures_util::stream::iter(events)).into_response())
+    let following =
+        futures_util::stream::unfold(Some((live, sent_through, session_id)), |state| async move {
+            // `None` once the session has ended: nothing follows it, so holding the
+            // connection open would leave a client waiting on a promise the journal
+            // cannot keep.
+            let (mut live, mut sent_through, session_id) = state?;
+            loop {
+                match live.recv().await {
+                    Ok((session, event))
+                        if session == session_id && event.sequence > sent_through =>
+                    {
+                        sent_through = event.sequence;
+                        let carry = (!is_last(&event)).then_some((live, sent_through, session_id));
+                        return Some((event, carry));
+                    }
+                    Ok(_) => continue,
+                    // Lagged, or the kernel is gone. The stream ends rather than
+                    // silently skipping records: a client reconnects with the cursor it
+                    // last saw and the journal hands back exactly what it missed.
+                    Err(_) => return None,
+                }
+            }
+        })
+        .map(sse);
+
+    Ok(Sse::new(backlog.chain(following)).into_response())
+}
+
+/// Whether this record is the last a session can produce. A stream past it would wait
+/// on an append that cannot happen.
+fn is_last(event: &brain_protocol::Event) -> bool {
+    event.event_type == "session_ended"
+}
+
+/// One journal record as it goes out on the wire. The id is the sequence, so a client
+/// that reconnects with `Last-Event-ID` resumes from exactly what it saw.
+fn sse(event: brain_protocol::Event) -> Result<SseEvent, std::convert::Infallible> {
+    let data = serde_json::to_string(&event.data).expect("JSON event payload is serializable");
+    Ok(SseEvent::default()
+        .id(event.sequence.to_string())
+        .event(event.event_type)
+        .data(data))
 }
 
 fn invalid(message: impl Into<String>) -> HttpError {

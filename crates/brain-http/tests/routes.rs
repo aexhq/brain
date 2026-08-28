@@ -11,8 +11,12 @@ use brain_protocol::{
 };
 use tower::ServiceExt;
 
-#[derive(Clone)]
-struct Api;
+#[derive(Clone, Default)]
+struct Api {
+    /// Held so a test can push a record after the page has been served, which is what a
+    /// turn does while a client is already streaming.
+    live: Option<tokio::sync::broadcast::Sender<(SessionId, Event)>>,
+}
 
 #[async_trait]
 impl BrainApi for Api {
@@ -56,6 +60,12 @@ impl BrainApi for Api {
         Ok(EnvironmentCallResult {
             output: request.input,
         })
+    }
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, Event)> {
+        match &self.live {
+            Some(live) => live.subscribe(),
+            None => tokio::sync::broadcast::Sender::new(8).subscribe(),
+        }
     }
     async fn events(&self, _: SessionId, after: Option<u64>) -> Result<EventPage, ApiError> {
         Ok(EventPage {
@@ -134,7 +144,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
         request("GET", "/health/ready", None, None),
     ];
     for request in cases {
-        let response = router(Api).oneshot(request).await.unwrap();
+        let response = router(Api::default()).oneshot(request).await.unwrap();
         assert!(response.status().is_success(), "{}", response.status());
     }
 }
@@ -146,7 +156,7 @@ async fn mutating_routes_fail_fast_without_an_idempotency_key() {
         .uri("/v1/agentloops")
         .body(Body::from(vec![1]))
         .unwrap();
-    let response = router(Api).oneshot(request).await.unwrap();
+    let response = router(Api::default()).oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -162,7 +172,7 @@ async fn request_bodies_reject_unknown_fields() {
         "tool_bindings": [],
         "unknown": true
     });
-    let response = router(Api)
+    let response = router(Api::default())
         .oneshot(request(
             "POST",
             "/v1/sessions",
@@ -176,13 +186,13 @@ async fn request_bodies_reject_unknown_fields() {
 
 #[tokio::test]
 async fn bearer_auth_protects_api_routes_but_not_health() {
-    let unauthorized = router_with_bearer(Api, "secret".into())
+    let unauthorized = router_with_bearer(Api::default(), "secret".into())
         .oneshot(request("GET", "/v1/sessions", None, None))
         .await
         .unwrap();
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
-    let authorized = router_with_bearer(Api, "secret".into())
+    let authorized = router_with_bearer(Api::default(), "secret".into())
         .oneshot(
             Request::builder()
                 .uri("/v1/sessions")
@@ -194,16 +204,19 @@ async fn bearer_auth_protects_api_routes_but_not_health() {
         .unwrap();
     assert_eq!(authorized.status(), StatusCode::OK);
 
-    let health = router_with_bearer(Api, "secret".into())
+    let health = router_with_bearer(Api::default(), "secret".into())
         .oneshot(request("GET", "/health/ready", None, None))
         .await
         .unwrap();
     assert_eq!(health.status(), StatusCode::NO_CONTENT);
 }
 
+/// A stream still starts with the page `after` names, and still ends when there is
+/// nothing live behind it — a client reading history gets history and a close, not a
+/// connection held open forever.
 #[tokio::test]
-async fn event_route_negotiates_a_finite_sse_page() {
-    let response = router(Api)
+async fn the_event_stream_starts_with_the_page_the_cursor_names() {
+    let response = router(Api::default())
         .oneshot(
             Request::builder()
                 .uri("/v1/sessions/ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/events?after=7")
@@ -258,4 +271,70 @@ fn session() -> Session {
         through_sequence: 1,
         presentation_identity: brain_protocol::Identity::of(&"presentation").unwrap(),
     }
+}
+
+/// The event stream must carry what happens *after* it is opened.
+///
+/// It served one finite page of the journal and closed, so a client that opened it and
+/// then sent a message never saw the turn it was waiting for. Nothing pushed, which made
+/// a first-token measurement impossible to distinguish from a whole-turn one: the
+/// benchmark's `ttfb` probe could only ever return its `round_trip`.
+#[tokio::test]
+async fn the_event_stream_carries_records_appended_after_it_opened() {
+    let live = tokio::sync::broadcast::Sender::new(8);
+    let api = Api {
+        live: Some(live.clone()),
+    };
+
+    let request = Request::builder()
+        .uri("/v1/sessions/ses_test/events")
+        .header("accept", "text/event-stream")
+        .body(Body::empty())
+        .unwrap();
+    let response = router(api).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Appended after the page was served, the way a turn appends while a client streams.
+    live.send((
+        SessionId::new("ses_test"),
+        Event {
+            event_id: EventId::new("evt_live"),
+            sequence: 2,
+            recorded_at_ms: 1_787_846_400_001,
+            event_type: "assistant_delta".into(),
+            data: serde_json::json!({"delta": "hello"}),
+        },
+    ))
+    .unwrap();
+    // A record for another session must not reach this stream.
+    live.send((
+        SessionId::new("ses_other"),
+        Event {
+            event_id: EventId::new("evt_other"),
+            sequence: 3,
+            recorded_at_ms: 1_787_846_400_002,
+            event_type: "assistant_delta".into(),
+            data: serde_json::json!({"delta": "not yours"}),
+        },
+    ))
+    .unwrap();
+    drop(live);
+
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(
+        body.contains("test_event"),
+        "the page the stream starts with is missing: {body}"
+    );
+    assert!(
+        body.contains("assistant_delta") && body.contains("hello"),
+        "a record appended after the stream opened never arrived: {body}"
+    );
+    assert!(
+        !body.contains("not yours"),
+        "another session's record reached this stream: {body}"
+    );
 }

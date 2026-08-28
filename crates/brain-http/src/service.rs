@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use brain_protocol::{
     AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentId, EventPage, MessageRequest, Session, SessionId,
+    EnvironmentCallResult, EnvironmentId, Event, EventPage, MessageRequest, Session, SessionId,
     SessionList,
 };
 
@@ -42,6 +42,13 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         session_id: SessionId,
         after: Option<u64>,
     ) -> Result<EventPage, ApiError>;
+    /// Every record appended from now on, for every session.
+    ///
+    /// Opened *before* the page a stream starts with, so a record appended between the
+    /// two arrives here instead of being lost in the gap; the caller drops what the page
+    /// already carried, by sequence. Falling behind loses records rather than holding up
+    /// a turn — the journal is the record, and `after` reads it back.
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, Event)>;
     async fn cancel_session(
         &self,
         session_id: SessionId,
