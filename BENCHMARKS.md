@@ -27,6 +27,21 @@ of `BRAIN_MAX_DECISIONS=128` that is the difference between a megabyte of conver
 megabytes of permanently retained journal. `crates/brain/tests/journal_growth.rs` holds a turn's
 journal, and one page of its event stream, to a small constant multiple of the final context.
 
+## What the journal costs
+
+`crates/brain/tests/journal_throughput.rs` reports the cost of the journal itself, apart from HTTP,
+the model and the loop:
+
+```sh
+cargo test --release -p brain --test journal_throughput -- --ignored --nocapture
+```
+
+It reports rather than asserts, and it is ignored by default. A threshold that passes on a laptop
+says nothing about a server, so the numbers quoted in the README are from one machine and are worth
+exactly what re-running them on yours is worth. The shape is the durable part: an append is a
+serialise, a hash of those bytes and a channel send, with no syscall on the turn's path, and a
+restart pays for the log that was kept rather than for every record ever written.
+
 That job is a leak guard, not a benchmark, and it does not check leakage between sessions;
 the name is older than what it does. Latency, throughput, and the cross-session isolation test are
 being rebuilt — see **Status** in the [README](README.md).

@@ -1,6 +1,6 @@
 <h1 align="center">Brain</h1>
 
-<p align="center"><strong>The durable session kernel for AI agents.</strong></p>
+<p align="center"><strong>A tiny, blazing fast, extensible agent kernel.</strong></p>
 
 <p align="center">
   <a href="https://github.com/aexhq/brain/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/aexhq/brain/actions/workflows/ci.yml/badge.svg" /></a>
@@ -20,7 +20,8 @@
 </p>
 
 Brain runs agent sessions. It holds the conversation, decides what happens next, calls the model,
-hands out tool calls, and writes all of it to a durable log. That is the entire job.
+hands out tool calls, and appends every step to a log. That is the entire job, in about 7,300 lines
+of Rust across six crates.
 
 Four things plug into it, and all four are yours to replace: the **agent loop**, the **model**, the
 **tools**, and the **environment** tools run in. Run Brain as a server your app talks to over HTTP,
@@ -91,28 +92,63 @@ Brain owns the session. Everything it does not do itself is one of four things y
 flowchart TD
     app["Your app — @aexhq/brain over HTTP/SSE"]
     kernel["brain — session kernel"]
-    log[("session log on disk")]
+    log[("append-only segment log")]
     loop["Agent loop — Wasm, sealed off"]
     model["Model API"]
     env["Environment — sandbox, browser, your backend, a laptop"]
 
     app <--> kernel
-    kernel --> log
+    kernel -.->|"behind the turn"| log
     kernel -->|"observation to decision"| loop
     kernel -->|"pinned model call"| model
     kernel -->|"tool call"| env
 ```
 
-The packages we ship use the same interface you would — nothing built in gets a shortcut.
+## Tiny
 
-## Why Brain
+Six crates, about 7,300 lines of Rust. The session kernel is 3,400 of them and its journal is 1,337,
+of which the entire on-disk format — frames, segment rotation, torn-tail recovery, reclamation — is
+one 610-line file. There is no ORM, no query planner and no embedded database: the kernel's
+dependency on SQLite was removed outright, and `sha2` went with it.
 
-- **Sessions survive crashes.** Brain writes each step to disk before it runs. Kill the process
-  mid-turn, start it again, and the session carries on from where it stopped.
+## Blazing fast
+
+The journal is an append-only segment log written *behind* the turn. An append is a serialise, an
+xxh3 over the bytes just serialised, and a channel send — no syscall on the turn's path, and no
+fsync anywhere. Session state, the record index and idempotency all live in memory, so a running
+session never reads the disk; paging a client's history resolves locations under the lock but reads
+outside it, so replaying history never blocks an append.
+
+```sh
+cargo test --release -p brain --test journal_throughput -- --ignored --nocapture
+```
+
+```
+append 20000 x 1024 B   684168 records/s   p50 1.30 us   p99 4.60 us
+page 1000 records          9.2 ms
+restart replay              10 ms for 20001 records
+```
+
+One run on one machine — a 12th-gen i7-12700K, Windows 11, NVMe — where three consecutive runs held
+the append rate within 1.5% and p50 at 1.30 µs. The harness reports rather than asserts, because a
+threshold that passes here says nothing about your server, so run it on your own hardware. What does
+not move is the shape: an append never waits on a disk, and a restart pays for the log it kept
+rather than for every record ever written.
+
+**Durability is not Brain's job.** Nothing is fsynced, so a crash can lose the log's tail. Restart
+replays what reached the disk and rebuilds every session from it. Operation identifiers are derived
+from `(journal_id, sequence)` and so are stable across a replay, which is the seam a layer above
+Brain uses to recognise an effect it has already issued.
+
+## Extensible
+
+- **Nothing built in gets a shortcut.** The agent loops, models, tools and environments we ship use
+  the same four interfaces yours would.
 - **Brain never executes tool code.** A tool call is a message to the environment you bound it to,
   so a crashing or hostile tool takes down its own sandbox, not the process holding your sessions.
-- **The agent loop is sealed off.** It gets an observation and returns a decision. No network, no
-  filesystem, no secrets, no clock — Brain performs every effect.
+- **The agent loop is sealed off.** It gets an observation and returns a decision, inside a
+  WebAssembly sandbox. No network, no filesystem, no secrets, no clock — Brain performs every
+  effect, and that seal is what makes a decision reproducible from its position in the journal.
 - **Any language.** Agent loops compile to WebAssembly; tools and environments talk plain HTTP. One
   tool in Rust and another in Node, in the same session.
 - **Any loop, any model.** Pi, Codex-style, or your own, against Anthropic and OpenAI wire formats,
@@ -138,26 +174,30 @@ The packages we ship use the same interface you would — nothing built in gets 
 The schemas and OpenAPI document under [`contracts/`](contracts) are the source of truth, and the
 [API Reference](https://aex.dev/brain/docs/reference/api) is generated from them.
 
-## Performance
+## What CI holds
 
-The benchmark measures the engine, not a model: it drives the real HTTP and SSE paths with an
-instant scripted provider and an in-process echo environment, so no model latency reaches the
-numbers. CI enforces a resource bound on every push — after 10,000 requests, resident memory must
-stay under 256 MiB and must not have grown by more than 16 MiB.
+Every push runs these against a live server, so they are bounds rather than claims:
 
-Latency, throughput, and the cross-session isolation test are being rebuilt against the current
-kernel. Figures measured before the architecture reset are archived in
-[BENCHMARKS.md](BENCHMARKS.md) and are not current.
+| Bound | Enforced |
+| --- | --- |
+| Resident memory after 10,000 requests | under 256 MiB, and grown by no more than 16 MiB |
+| A turn's journal, over 64 decisions on a 1 MiB context | no more than 8x the final context |
+| One page of that turn's event stream | no more than 8x the final context |
+
+End-to-end latency, throughput and the cross-session isolation test are being rebuilt against the
+current kernel. Figures measured before the architecture reset are archived in
+[BENCHMARKS.md](BENCHMARKS.md) and are not current — the journal numbers above come from the harness
+in this repository and are reproducible with the command shown.
 
 ## Status
 
 **Shipped** — the four-part kernel; unified `brain`, `tool`, and `environment` authoring with
-`brain build`; a SQLite log with crash recovery and writing to disk before acting; the HTTP/SSE
-session API and the `@aexhq/brain` SDK; the remote environment contract with `env-app` and
-`env-aws-microvm`.
+`brain build`; an append-only segment log with restart recovery; content identity as a type rather
+than a digest string; the HTTP/SSE session API and the `@aexhq/brain` SDK; the remote environment
+contract with `env-app` and `env-aws-microvm`.
 
-**In progress** — splitting storage apart from sandboxing, rebuilding the benchmarks and the
-cross-session isolation test, and freezing a v1 API with tagged releases.
+**In progress** — rebuilding the end-to-end benchmarks and the cross-session isolation test, and
+freezing a v1 API with tagged releases.
 
 **Next** — an MCP client, subagents, file access and workspace sync, `web_search` and `web_fetch`,
 and crates.io publication.
