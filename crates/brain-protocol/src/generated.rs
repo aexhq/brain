@@ -14,4 +14,4 @@ pub const AGENTLOOP_WIT_DIGEST: &str =
     "153768b47ad95c717b34821c2204380764e15c6ab87eec0dda4b0b4d1cd32af1";
 pub const SESSION_OPENAPI: &str = include_str!("../../../contracts/session/v1/openapi.yaml");
 pub const SESSION_OPENAPI_DIGEST: &str =
-    "4a51b9571df5148e756004b44b6dab1dd582e431b3df0d7e2035793ff28ab815";
+    "cc1b6a8a3da1582dc0607f46808ed168185ebe9f6ae670d9c61af3ef14eaa992";

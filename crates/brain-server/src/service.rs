@@ -402,6 +402,10 @@ impl BrainApi for ServerApi {
             .map_err(api_error)
     }
 
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::Event)> {
+        self.resources.kernel.subscribe()
+    }
+
     async fn cancel_session(
         &self,
         session_id: SessionId,

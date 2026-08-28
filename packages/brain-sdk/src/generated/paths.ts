@@ -529,7 +529,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Finite event page or SSE stream according to Accept */
+            /** @description A finite event page for application/json, or a live SSE stream for text/event-stream. The stream begins with the page `after` names and then carries records as they are appended, so a client that opens it before sending a message sees that turn. It ends if the subscriber falls too far behind: reconnect with `after` set to the last id seen, and the journal hands back exactly what was missed. */
             200: {
                 headers: {
                     [name: string]: unknown;

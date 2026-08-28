@@ -22,6 +22,26 @@ const call = async (method, path, { body, contentType = "application/json", key,
   return { response, result };
 };
 
+/// Reads an open SSE response only until `pattern` appears, then cancels it. Bounded, so
+/// a stream that never carries what was asked for fails the test instead of hanging it.
+const streamCarries = async (response, pattern, timeoutMs = 30_000) => {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const deadline = setTimeout(() => reader.cancel(), timeoutMs);
+  let seen = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return pattern.test(seen);
+      seen += decoder.decode(value, { stream: true });
+      if (pattern.test(seen)) return true;
+    }
+  } finally {
+    clearTimeout(deadline);
+    await reader.cancel().catch(() => {});
+  }
+};
+
 for (const path of ["/health/live", "/health/ready"]) {
   const { response } = await call("GET", path, { authorized: false });
   assert.equal(response.status, 204);
@@ -93,10 +113,15 @@ const page = await call("GET", `/v1/sessions/${sessionId}/events?after=0`);
 assert.equal(page.response.status, 200);
 assert.equal(page.result.next_cursor, message.result.through_sequence);
 assert.equal(page.result.events.at(-1).event_type, "turn_finished");
-const sse = await call("GET", `/v1/sessions/${sessionId}/events?after=0`, { accept: "text/event-stream" });
-assert.equal(sse.response.status, 200);
-assert.ok(sse.response.headers.get("content-type")?.startsWith("text/event-stream"));
-assert.match(sse.result, /event: turn_finished/u);
+// Read until the event we came for, not to the end of the body: the stream stays open
+// carrying records as they are appended, which is what makes a first-token measurement
+// possible. Reading it to EOF would wait for a close that only a session ending brings.
+const sse = await fetch(`${baseUrl}/v1/sessions/${sessionId}/events?after=0`, {
+  headers: { accept: "text/event-stream", authorization: `Bearer ${token}` },
+});
+assert.equal(sse.status, 200);
+assert.ok(sse.headers.get("content-type")?.startsWith("text/event-stream"));
+assert.ok(await streamCarries(sse, /event: turn_finished/u), "the stream never carried the finished turn");
 
 const cancelled = await call("POST", `/v1/sessions/${sessionId}/cancel`, { key: "http-contract-cancel" });
 assert.equal(cancelled.response.status, 204);
