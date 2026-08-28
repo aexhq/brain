@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use brain_protocol::{JournalId, SessionId};
+use brain_protocol::SessionId;
 use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
 
 use crate::{
@@ -33,10 +33,6 @@ impl ObservedJournal {
 }
 
 impl JournalStore for ObservedJournal {
-    fn journal_id(&self) -> &JournalId {
-        self.inner.journal_id()
-    }
-
     fn create_session(
         &self,
         row: &SessionRow,

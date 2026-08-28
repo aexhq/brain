@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     KernelError, context,
     journal::{
-        AppendRecord, JournalStore, ObservedJournal, SessionRow, SessionUpdate, SqliteJournal,
+        AppendRecord, JournalStore, ObservedJournal, SegmentJournal, SessionRow, SessionUpdate,
         event_page,
     },
 };
@@ -64,7 +64,7 @@ impl Kernel {
     pub fn open(config: KernelConfig, telemetry: TelemetryPublisher) -> Result<Self, KernelError> {
         fs::create_dir_all(&config.data_dir)
             .map_err(|error| KernelError::Journal(error.to_string()))?;
-        let store = Arc::new(SqliteJournal::open(&config.data_dir.join("brain.sqlite3"))?);
+        let store = Arc::new(SegmentJournal::open(&config.data_dir.join("journal"))?);
         Self::with_store(config, store, telemetry)
     }
 

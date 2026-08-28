@@ -56,6 +56,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = { version = "0.5", features = ["util"] }
 url = "2"
 walkdir = "2"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zeroize = "1"
 
 [profile.release]

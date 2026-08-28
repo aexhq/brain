@@ -10,7 +10,7 @@ use std::{
 use async_trait::async_trait;
 use brain::{
     AppendRecord, JournalStore, Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor,
-    SessionHandle, SessionUpdate, SqliteJournal, ToolExecutor,
+    SegmentJournal, SessionHandle, SessionUpdate, ToolExecutor,
 };
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopDigest, AttachmentId, Decision,
@@ -280,7 +280,7 @@ async fn restart_marks_an_inflight_turn_ambiguous_instead_of_guessing() {
     drop(kernel);
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-    let store = SqliteJournal::open(&data_dir.join("brain.sqlite3")).unwrap();
+    let store = SegmentJournal::open(&data_dir.join("journal")).unwrap();
     let row = store.session(&session_id).unwrap().unwrap();
     store
         .append(
@@ -314,62 +314,6 @@ async fn restart_marks_an_inflight_turn_ambiguous_instead_of_guessing() {
         "operation_outcome_ambiguous"
     );
     drop(recovered);
-    fs::remove_dir_all(data_dir).unwrap();
-}
-
-#[tokio::test]
-async fn opens_a_legacy_journal_after_removing_session_metadata() {
-    let data_dir = temporary_directory();
-    let database = data_dir.join("brain.sqlite3");
-    let connection = rusqlite::Connection::open(&database).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TABLE sessions (
-               session_id TEXT PRIMARY KEY,
-               journal_id TEXT NOT NULL,
-               status TEXT NOT NULL,
-               through_sequence INTEGER NOT NULL,
-               configuration_json TEXT NOT NULL,
-               context_json TEXT NOT NULL,
-               presentation_digest TEXT NOT NULL,
-               metadata_json TEXT NOT NULL
-             );",
-        )
-        .unwrap();
-    drop(connection);
-
-    let (publisher, _worker) = telemetry_channel();
-    let kernel = Kernel::open(
-        KernelConfig {
-            data_dir: data_dir.clone(),
-            max_decisions_per_turn: 8,
-            loop_executor: Arc::new(ScriptedLoop {
-                calls: AtomicUsize::new(0),
-            }),
-            model_executor: Arc::new(ScriptedModel),
-            tool_executor: Arc::new(NoTools),
-        },
-        publisher,
-    )
-    .unwrap();
-    start(&kernel, request());
-    drop(kernel);
-
-    let connection = rusqlite::Connection::open(database).unwrap();
-    let metadata_columns = connection
-        .prepare("PRAGMA table_info(sessions)")
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(1))
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-    assert!(
-        !metadata_columns
-            .iter()
-            .any(|column| column == "metadata_json")
-    );
-    drop(connection);
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     fs::remove_dir_all(data_dir).unwrap();
 }
 

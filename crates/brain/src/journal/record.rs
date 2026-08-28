@@ -18,14 +18,12 @@ impl AppendRecord {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct JournalRecord {
-    pub schema_version: u32,
     pub session_id: SessionId,
     pub journal_id: JournalId,
     pub sequence: u64,
     pub recorded_at_ms: u64,
     pub kind: String,
     pub payload: serde_json::Value,
-    pub checksum: String,
 }
 
 impl JournalRecord {

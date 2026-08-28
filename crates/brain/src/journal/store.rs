@@ -24,7 +24,6 @@ pub struct SessionUpdate<'a> {
 }
 
 pub trait JournalStore: Send + Sync + 'static {
-    fn journal_id(&self) -> &JournalId;
     fn create_session(
         &self,
         row: &SessionRow,
