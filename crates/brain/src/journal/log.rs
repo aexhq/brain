@@ -301,7 +301,7 @@ impl SegmentLog {
         session_id: &str,
         payload: &serde_json::Value,
     ) -> Result<(), KernelError> {
-        check_session_id(session_id)?;
+        usable_as_a_file_name(session_id)?;
         let bytes =
             serde_json::to_vec(payload).map_err(|error| KernelError::Journal(error.to_string()))?;
         self.reserve(bytes.len() as u64)?;
@@ -314,7 +314,7 @@ impl SegmentLog {
     /// Forget a session's state. Its records stay in the log until their segments are
     /// reclaimed, exactly as they did when its state was a frame among them.
     pub(crate) fn remove_state(&self, session_id: &str) -> Result<(), KernelError> {
-        check_session_id(session_id)?;
+        usable_as_a_file_name(session_id)?;
         self.send(Message::State {
             session_id: session_id.to_owned(),
             bytes: None,
@@ -578,17 +578,17 @@ fn read_states(directory: &Path) -> Result<Vec<(String, Vec<u8>)>, KernelError> 
 }
 
 fn state_path(directory: &Path, session_id: &str) -> Option<PathBuf> {
-    check_session_id(session_id).ok()?;
+    usable_as_a_file_name(session_id).ok()?;
     Some(directory.join(format!("{session_id}.state")))
 }
 
-/// A session id becomes a file name, so it may not be able to name anything but a file
-/// in this directory. Ids are generated, not supplied, so this never fires today — it is
-/// here so that it fires loudly rather than silently if that ever changes.
-fn check_session_id(session_id: &str) -> Result<(), KernelError> {
-    let usable = !session_id.is_empty()
-        && session_id.len() <= 128
-        && session_id
+/// Whether `name` can be a file in a directory and nothing else. A session id becomes a
+/// state file's name, and ids are generated rather than supplied, so this never fires
+/// today — it is here so that it fires loudly rather than silently if that changes.
+fn usable_as_a_file_name(name: &str) -> Result<(), KernelError> {
+    let usable = !name.is_empty()
+        && name.len() <= 128
+        && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
     if usable {
