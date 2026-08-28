@@ -367,11 +367,9 @@ fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
 /// bytes of journal for a 1 MiB context, 32.6x. The closed form predicts `(T+1)/2` =
 /// 32.5x, so what is being measured is the per-turn write and not overhead around it.
 ///
-/// IGNORED because it fails today and describes work that is not done. It is the
-/// acceptance test for that work: remove the `#[ignore]` when the per-turn context write
-/// goes away, and it will hold the fix in place. See `PERF-REVIEW.md` finding X0.
+/// Session state now lives in a file per session that is rewritten in place rather than
+/// appended, so the same run leaves 1,084,376 bytes — 1.0x, and flat in the turn count.
 #[tokio::test]
-#[ignore = "records a known defect: the journal grows with the square of the turn count"]
 async fn a_session_does_not_journal_one_context_copy_per_turn() {
     /// Turns in the measured session. Far below anything a real conversation reaches.
     const TURNS: usize = 64;

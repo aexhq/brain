@@ -4,9 +4,17 @@
 //! behind the caller and is only read to rebuild this state at startup, or to page a
 //! client back through records it has not seen. Appending costs a serialise and a
 //! channel send; no journal call waits on the disk.
+//!
+//! A session's own state — its status, its sealed configuration, its context — is not a
+//! record. It is rewritten at the end of every turn and only its latest value is ever
+//! read, so it lives in a file per session that the log rewrites in place. Appending it
+//! instead wrote the sum of every context the session ever had: a 64-turn session
+//! holding a 1 MiB context left 34 MB of journal, all of it read back at every restart,
+//! and nothing bounds the turn count.
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    cell::RefCell,
+    collections::HashMap,
     path::Path,
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -22,11 +30,9 @@ use crate::{
     },
 };
 
-/// Frame kinds the journal writes for itself. They carry no sequence number, so they
-/// never reach a client's event stream, and the `$` prefix keeps them out of the
+/// The one frame kind the journal writes for itself. It carries no sequence number, so
+/// it never reaches a client's event stream, and the `$` prefix keeps it out of the
 /// namespace a session's record kinds are drawn from.
-const SESSION_STATE: &str = "$session";
-const SESSION_DELETED: &str = "$deleted";
 const IDEMPOTENCY: &str = "$idempotency";
 
 pub struct SegmentJournal {
@@ -45,8 +51,6 @@ struct Tracked {
     row: SessionRow,
     /// `locations[i]` holds the record at sequence `i + 1`.
     locations: Vec<Location>,
-    /// Where the session's own state was last written, so reclamation keeps it.
-    state_segment: u64,
     last_recorded_at_ms: u64,
 }
 
@@ -58,13 +62,17 @@ struct Stored {
 
 impl SegmentJournal {
     pub fn open(directory: &Path) -> Result<Self, KernelError> {
-        let mut state = State::default();
-        let log = SegmentLog::open(directory, |frame, location| {
-            replay(&mut state, &frame, location)
-        })?;
+        // Both visitors need the same state and neither ever runs while the other is
+        // borrowed, which the borrow checker cannot see across two closures.
+        let state = RefCell::new(State::default());
+        let log = SegmentLog::open(
+            directory,
+            |session_id, bytes| restore_session(&mut state.borrow_mut(), session_id, bytes),
+            |frame, location| replay(&mut state.borrow_mut(), &frame, location),
+        )?;
         Ok(Self {
             log,
-            state: Mutex::new(state),
+            state: Mutex::new(state.into_inner()),
         })
     }
 
@@ -109,19 +117,8 @@ impl JournalStore for SegmentJournal {
 
         // State before the record: a replay that stops between the two still knows the
         // session, and the record it is missing is one nothing has acted on yet.
-        let state_location = self.write(
-            row.session_id.as_str(),
-            0,
-            recorded_at_ms,
-            SESSION_STATE,
-            &serde_json::json!({
-                "journal_id": row.journal_id,
-                "status": row.status,
-                "configuration": row.configuration,
-                "context": row.context,
-                "presentation_identity": row.presentation_identity,
-            }),
-        )?;
+        self.log
+            .write_state(row.session_id.as_str(), &state_payload(row))?;
         let location = self.write(
             row.session_id.as_str(),
             1,
@@ -137,7 +134,6 @@ impl JournalStore for SegmentJournal {
             Tracked {
                 row: row.clone(),
                 locations: vec![location],
-                state_segment: state_location.segment,
                 last_recorded_at_ms: recorded_at_ms,
             },
         );
@@ -198,17 +194,6 @@ impl JournalStore for SegmentJournal {
             });
         }
 
-        let state_location = match state_payload(&update) {
-            Some(payload) => Some(self.write(
-                session_id.as_str(),
-                0,
-                recorded_at_ms,
-                SESSION_STATE,
-                &payload,
-            )?),
-            None => None,
-        };
-
         let tracked = state
             .sessions
             .get_mut(session_id.as_str())
@@ -216,6 +201,8 @@ impl JournalStore for SegmentJournal {
         tracked.locations.extend(locations);
         tracked.row.through_sequence = expected_through + records.len() as u64;
         tracked.last_recorded_at_ms = recorded_at_ms;
+        let changed =
+            update.status.is_some() || update.context.is_some() || update.configuration.is_some();
         if let Some(status) = update.status {
             tracked.row.status = status;
         }
@@ -225,8 +212,14 @@ impl JournalStore for SegmentJournal {
         if let Some(configuration) = update.configuration {
             tracked.row.configuration = configuration.clone();
         }
-        if let Some(location) = state_location {
-            tracked.state_segment = location.segment;
+        // Rewritten only when the update moved something. A turn whose records change
+        // nothing about the session — a batch of intents mid-turn — leaves the state
+        // file alone, so the context is written once per turn and not once per commit.
+        if changed {
+            let payload = state_payload(&tracked.row);
+            let session = session_id.as_str().to_owned();
+            drop(state);
+            self.log.write_state(&session, &payload)?;
         }
 
         Ok(saved)
@@ -310,13 +303,7 @@ impl JournalStore for SegmentJournal {
         if !matches!(tracked.row.status, SessionStatus::Ended) {
             return Err(ended_first());
         }
-        self.write(
-            session_id.as_str(),
-            0,
-            wall_clock_ms()?,
-            SESSION_DELETED,
-            &serde_json::json!({}),
-        )?;
+        self.log.remove_state(session_id.as_str())?;
         state.sessions.remove(session_id.as_str());
 
         // The session's records were the only thing keeping its segments alive.
@@ -378,20 +365,41 @@ impl JournalStore for SegmentJournal {
     }
 }
 
-/// Only the fields an update actually changes, so a turn that touches nothing but its
-/// status does not rewrite the context envelope.
-fn state_payload(update: &SessionUpdate<'_>) -> Option<serde_json::Value> {
-    let mut payload = serde_json::Map::new();
-    if let Some(status) = &update.status {
-        payload.insert("status".into(), serde_json::json!(status));
-    }
-    if let Some(context) = update.context {
-        payload.insert("context".into(), context.clone());
-    }
-    if let Some(configuration) = update.configuration {
-        payload.insert("configuration".into(), configuration.clone());
-    }
-    (!payload.is_empty()).then_some(serde_json::Value::Object(payload))
+/// The whole state, because the file it goes to replaces its predecessor rather than
+/// following it. `through_sequence` is deliberately absent: it is what the records on
+/// disk say it is, and deriving it there keeps the two from disagreeing.
+fn state_payload(row: &SessionRow) -> serde_json::Value {
+    serde_json::json!({
+        "journal_id": row.journal_id,
+        "status": row.status,
+        "configuration": row.configuration,
+        "context": row.context,
+        "presentation_identity": row.presentation_identity,
+    })
+}
+
+/// Rebuild one session from its state file. Called for every session before any record
+/// is replayed, so a record always finds the session it belongs to.
+fn restore_session(state: &mut State, session_id: &str, bytes: &[u8]) -> Result<(), KernelError> {
+    let payload: StateFile = serde_json::from_slice(bytes)
+        .map_err(|error| KernelError::Journal(format!("session state is unreadable: {error}")))?;
+    state.sessions.insert(
+        session_id.to_owned(),
+        Tracked {
+            row: SessionRow {
+                session_id: SessionId::new(session_id.to_owned()),
+                journal_id: payload.journal_id,
+                presentation_identity: payload.presentation_identity,
+                status: payload.status,
+                through_sequence: 0,
+                configuration: payload.configuration,
+                context: payload.context,
+            },
+            locations: Vec::new(),
+            last_recorded_at_ms: 0,
+        },
+    );
+    Ok(())
 }
 
 fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<(), KernelError> {
@@ -404,84 +412,29 @@ fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<()
         return Ok(());
     }
 
-    match frame.kind {
-        SESSION_STATE => {
-            // Decoded straight into its own shape and moved in. Building a `Value` and
-            // then cloning the context out of it materialised the context twice, and a
-            // session writes one of these per turn — so replay paid for every context it
-            // ever had, twice over, to keep the last.
-            let payload: StateFrame = frame.decode()?;
-            let tracked = match state.sessions.entry(frame.session_id.to_string()) {
-                Entry::Occupied(occupied) => occupied.into_mut(),
-                Entry::Vacant(vacant) => {
-                    // A frame that introduces a session always carries both; a later one
-                    // that only moves its status finds the session already here.
-                    let (Some(journal_id), Some(presentation_identity)) =
-                        (payload.journal_id, payload.presentation_identity)
-                    else {
-                        return Err(KernelError::Journal(
-                            "the first session state frame must name the journal and the presentation".into(),
-                        ));
-                    };
-                    vacant.insert(Tracked {
-                        row: SessionRow {
-                            session_id: SessionId::new(frame.session_id.to_string()),
-                            journal_id,
-                            presentation_identity,
-                            status: SessionStatus::Idle,
-                            through_sequence: 0,
-                            configuration: serde_json::Value::Null,
-                            context: serde_json::Value::Null,
-                        },
-                        locations: Vec::new(),
-                        state_segment: location.segment,
-                        last_recorded_at_ms: frame.recorded_at_ms,
-                    })
-                }
-            };
-            if let Some(status) = payload.status {
-                tracked.row.status = status;
-            }
-            if let Some(context) = payload.context {
-                tracked.row.context = context;
-            }
-            if let Some(configuration) = payload.configuration {
-                tracked.row.configuration = configuration;
-            }
-            if let Some(identity) = payload.presentation_identity {
-                tracked.row.presentation_identity = identity;
-            }
-            tracked.state_segment = location.segment;
-        }
-        SESSION_DELETED => {
-            state.sessions.remove(frame.session_id);
-        }
-        IDEMPOTENCY => {
-            let payload: IdempotencyFrame = frame.decode()?;
-            state.idempotency.insert(
-                (payload.scope, payload.key),
-                Stored {
-                    request: payload.request,
-                    response: payload.response,
-                    segment: location.segment,
-                },
-            );
-        }
-        _ => {}
+    if frame.kind == IDEMPOTENCY {
+        let payload: IdempotencyFrame = frame.decode()?;
+        state.idempotency.insert(
+            (payload.scope, payload.key),
+            Stored {
+                request: payload.request,
+                response: payload.response,
+                segment: location.segment,
+            },
+        );
     }
     Ok(())
 }
 
-/// A `$session` frame carries only the fields the update that wrote it changed, so every
-/// one is optional. Decoding into this rather than a `Value` means the context is built
-/// once and moved, not built and then cloned.
+/// A session's state file. Every field is required: the file is the whole state, and a
+/// file that cannot supply one of them describes no session that can be resumed.
 #[derive(serde::Deserialize)]
-struct StateFrame {
-    journal_id: Option<JournalId>,
-    presentation_identity: Option<Identity>,
-    status: Option<SessionStatus>,
-    context: Option<serde_json::Value>,
-    configuration: Option<serde_json::Value>,
+struct StateFile {
+    journal_id: JournalId,
+    presentation_identity: Identity,
+    status: SessionStatus,
+    context: serde_json::Value,
+    configuration: serde_json::Value,
 }
 
 #[derive(serde::Deserialize)]
@@ -495,14 +448,10 @@ struct IdempotencyFrame {
 /// The oldest segment any surviving state still lives in. Everything below it is dead
 /// and can be unlinked whole. With nothing left alive, every closed segment goes.
 fn reclaim_floor(state: &State, current_segment: u64) -> u64 {
-    let sessions = state.sessions.values().map(|tracked| {
-        tracked
-            .locations
-            .first()
-            .map_or(tracked.state_segment, |location| {
-                location.segment.min(tracked.state_segment)
-            })
-    });
+    let sessions = state
+        .sessions
+        .values()
+        .filter_map(|tracked| tracked.locations.first().map(|location| location.segment));
     let idempotency = state.idempotency.values().map(|stored| stored.segment);
     sessions.chain(idempotency).min().unwrap_or(current_segment)
 }
