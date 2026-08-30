@@ -591,16 +591,12 @@ fn valid_identifier(value: &str) -> bool {
 }
 
 fn validate_model(request: &CreateSessionRequest) -> Result<(), ApiError> {
-    if request.model.provider != "vercel-ai-gateway"
-        || request.model.name.len() > 256
-        || !request
-            .model
-            .name
-            .split_once('/')
-            .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty())
-        || request.model.api_key.is_empty()
-        || request.model.api_key.len() > 16 * 1024
-    {
+    let valid = brain::model::provider_spec(&request.model.provider).is_some_and(|spec| {
+        brain::model::valid_model_name(spec, &request.model.name)
+            && !request.model.api_key.is_empty()
+            && request.model.api_key.len() <= 16 * 1024
+    });
+    if !valid {
         return Err(ApiError::invalid_request("model selection is invalid"));
     }
     Ok(())
@@ -647,6 +643,14 @@ fn api_error(error: KernelError) -> ApiError {
             code: "executor_failed".into(),
             message,
             retryable: true,
+            details: None,
+        },
+        KernelError::ProviderStatus { status, .. } => ApiError {
+            code: "model_provider_failed".into(),
+            message,
+            // The executor already retried what was worth retrying in place; a
+            // whole-turn retry can still help for transient statuses.
+            retryable: matches!(status, 408 | 429) || status >= 500,
             details: None,
         },
         KernelError::Journal(_) => internal(message),

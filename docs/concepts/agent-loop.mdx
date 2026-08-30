@@ -14,13 +14,24 @@ export const simple = brain((author) => {
   const memory = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
 
   author.on.message((message, turn) => {
-    memory.messages.push({ role: "user", content: message.content });
+    memory.messages.push({ role: "user", content: [{ type: "text", text: String(message.content) }] });
     return turn.model({ messages: memory.messages });
   });
 
-  author.on.model((completed, turn) => turn.reply(completed.response.response.text));
+  author.on.model((completed, turn) => {
+    memory.messages.push(completed.response.message);
+    const text = completed.response.message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+    return turn.reply(text);
+  });
 });
 ```
+
+Messages are provider-neutral: a `role` and an array of content blocks (`text`, `tool_use`,
+`tool_result`). Brain renders them into the bound provider's wire format, so the same extension
+runs unchanged against every supported provider.
 
 Handlers are synchronous. Model calls, Tool calls, emitted output, and cancellation complete as a
 later observation, so Brain can journal every effect before performing it and recover without a

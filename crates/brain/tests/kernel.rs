@@ -38,7 +38,7 @@ impl LoopExecutor for ScriptedLoop {
             assert!(matches!(input.observation, Observation::UserMessage { .. }));
             Decision::Model {
                 request: ModelRequest {
-                    messages: vec![serde_json::json!({"role":"user","content":"hello"})],
+                    messages: vec![brain_protocol::Message::user_text("hello")],
                     response_format: None,
                     max_output_tokens: Some(16),
                 },
@@ -73,11 +73,15 @@ impl ModelExecutor for ScriptedModel {
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
     ) -> Result<ModelResult, KernelError> {
         on_event(ModelStreamEvent::TextDelta {
+            index: 0,
             text: "hello".into(),
         });
         Ok(ModelResult {
-            response: serde_json::json!({"text":"hello"}),
-            usage: None,
+            message: brain_protocol::Message::assistant(vec![brain_protocol::ContentBlock::text(
+                "hello",
+            )]),
+            stop_reason: brain_protocol::StopReason::EndTurn,
+            usage: brain_protocol::Usage::default(),
         })
     }
 }
@@ -532,7 +536,7 @@ async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
         .map(|streaming| streaming.data.clone());
     assert_eq!(
         text,
-        Some(serde_json::json!({ "text": "hello" })),
+        Some(serde_json::json!({ "index": 0, "text": "hello" })),
         "the model's output never reached a subscriber: {streamed:?}"
     );
     assert!(
@@ -771,7 +775,7 @@ impl LoopExecutor for OrdinaryTurn {
                 context.items.push(content);
                 Decision::Model {
                     request: ModelRequest {
-                        messages: vec![serde_json::json!({"role": "user", "content": "hello"})],
+                        messages: vec![brain_protocol::Message::user_text("hello")],
                         response_format: None,
                         max_output_tokens: Some(16),
                     },

@@ -69,7 +69,7 @@ impl LoopExecutor for GrowingLoop {
         let decision = if activation + 1 < DECISIONS {
             Decision::Model {
                 request: ModelRequest {
-                    messages: vec![serde_json::json!({"role": "user", "content": "next"})],
+                    messages: vec![brain_protocol::Message::user_text("next")],
                     response_format: None,
                     max_output_tokens: Some(16),
                 },
@@ -96,10 +96,16 @@ impl ModelExecutor for TinyModel {
         _request: ModelRequest,
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
     ) -> Result<ModelResult, KernelError> {
-        on_event(ModelStreamEvent::TextDelta { text: "ok".into() });
+        on_event(ModelStreamEvent::TextDelta {
+            index: 0,
+            text: "ok".into(),
+        });
         Ok(ModelResult {
-            response: serde_json::json!({"text": "ok"}),
-            usage: None,
+            message: brain_protocol::Message::assistant(vec![brain_protocol::ContentBlock::text(
+                "ok",
+            )]),
+            stop_reason: brain_protocol::StopReason::EndTurn,
+            usage: brain_protocol::Usage::default(),
         })
     }
 }
@@ -538,14 +544,8 @@ impl LoopExecutor for ResendingLoop {
                     .push(serde_json::json!({ "role": "user", "turn": turn }));
                 // The whole conversation so far, one message longer every turn, which is
                 // what an agentloop actually sends a model.
-                let messages: Vec<serde_json::Value> = (0..=turn)
-                    .map(|index| {
-                        serde_json::json!({
-                            "role": "user",
-                            "n": index,
-                            "content": "x".repeat(MESSAGE_BYTES),
-                        })
-                    })
+                let messages: Vec<brain_protocol::Message> = (0..=turn)
+                    .map(|_| brain_protocol::Message::user_text("x".repeat(MESSAGE_BYTES)))
                     .collect();
                 Ok(ActivationOutput {
                     context,
@@ -649,7 +649,7 @@ impl LoopExecutor for AskOnce {
                 context,
                 decision: Decision::Model {
                     request: ModelRequest {
-                        messages: vec![serde_json::json!({"role": "user", "content": "go"})],
+                        messages: vec![brain_protocol::Message::user_text("go")],
                         response_format: None,
                         max_output_tokens: Some(16),
                     },
@@ -681,12 +681,16 @@ impl ModelExecutor for ChattyModel {
     ) -> Result<ModelResult, KernelError> {
         for _ in 0..DELTAS {
             on_event(ModelStreamEvent::TextDelta {
+                index: 0,
                 text: "x".repeat(DELTA_BYTES),
             });
         }
         Ok(ModelResult {
-            response: serde_json::json!({"text": "done"}),
-            usage: None,
+            message: brain_protocol::Message::assistant(vec![brain_protocol::ContentBlock::text(
+                "done",
+            )]),
+            stop_reason: brain_protocol::StopReason::EndTurn,
+            usage: brain_protocol::Usage::default(),
         })
     }
 }

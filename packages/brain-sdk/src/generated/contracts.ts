@@ -5,5 +5,5 @@ export const contractDigests = {
   agentloop_wit: "fbed0005e7c0f57c232b953d46725d682253014e01e6c04bdb1b83606d32ae3c",
   environment_schema: "dbf1481d0c6e7e70c7e949b3c1c4e0557b3dab5e02271bf4e3dc498062d96e4a",
   session_openapi: "cc1b6a8a3da1582dc0607f46808ed168185ebe9f6ae670d9c61af3ef14eaa992",
-  session_schema: "99ecdb6f7efed625e9e437595fcc8f37785cb084b274819fdd4c043266439982",
+  session_schema: "92b31b431f538732d32c47dc9765a8ed1e650a8c64bb9b95b79bd9a56e25261d",
 } as const;

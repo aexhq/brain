@@ -31,9 +31,46 @@ export interface VercelAiGatewayModel {
   readonly name: `${string}/${string}`;
   readonly apiKey: string;
 }
+export interface OpenAiModel {
+  readonly provider: "openai";
+  readonly name: string;
+  readonly apiKey: string;
+}
+export interface AnthropicModel {
+  readonly provider: "anthropic";
+  readonly name: string;
+  readonly apiKey: string;
+}
+export type ModelSelection = VercelAiGatewayModel | OpenAiModel | AnthropicModel;
+
+/** The provider-neutral message model. History is authored once, in this
+ * shape; Brain renders it per provider dialect at request build time. */
+export type ModelContentBlock =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "tool_use"; readonly id: string; readonly name: string; readonly input: unknown }
+  | { readonly type: "tool_result"; readonly tool_use_id: string; readonly content: unknown; readonly is_error: boolean };
+export interface ModelMessage {
+  readonly role: "user" | "assistant";
+  readonly content: readonly ModelContentBlock[];
+}
+export type ModelStopReason = "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "refusal" | "unknown";
+/** Every field is optional because absent is never zero: a provider that did
+ * not report a count did not report zero. */
+export interface ModelUsage {
+  readonly input_tokens?: number;
+  readonly output_tokens?: number;
+  readonly cache_read_input_tokens?: number;
+  readonly cache_creation_input_tokens?: number;
+  readonly reasoning_tokens?: number;
+}
+export interface ModelResponse {
+  readonly message: ModelMessage;
+  readonly stop_reason: ModelStopReason;
+  readonly usage: ModelUsage;
+}
 
 export interface CreateSessionOptions {
-  readonly model: VercelAiGatewayModel;
+  readonly model: ModelSelection;
   readonly brain: BrainExtension;
   readonly tools?: readonly BoundTool[];
   readonly system?: string;
@@ -94,7 +131,7 @@ export interface WireEnvironmentRequirement {
 export interface WireCreateSessionRequest {
   agentloop_identity: string;
   brain_configuration: unknown;
-  model: { provider: "vercel-ai-gateway"; name: string; api_key: string };
+  model: { provider: ModelSelection["provider"]; name: string; api_key: string };
   presentation: { system: string; tools: WireToolDefinition[]; response_format?: unknown };
   environments: WireEnvironmentRequirement[];
   tool_bindings: WireToolBinding[];

@@ -1,7 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use brain::{KernelError, ModelExecutor, model::ModelTransport, model::RemoteModelClient};
+use brain::{
+    KernelError, ModelExecutor,
+    model::{Dialect, ModelTransport, RemoteModelClient},
+};
 use brain_protocol::{
     Identity, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelSelection,
     ModelStreamEvent, OperationId,
@@ -45,20 +48,46 @@ impl ModelBindingStore for LocalModelBindingStore {
 
 pub struct ServerModelExecutor {
     bindings: Arc<dyn ModelBindingStore>,
-    /// One connection pool for the process. The credential is the only part of a model
-    /// call that varies by session, and a credential is a header, not a client.
-    transport: Arc<ModelTransport>,
+    /// One connection pool per provider for the process. The credential is the only
+    /// part of a model call that varies by session, and a credential is a header,
+    /// not a client.
+    transports: HashMap<&'static str, (Dialect, Arc<ModelTransport>)>,
 }
 
 impl ServerModelExecutor {
+    /// `base_url_overrides` replaces a provider's registry default endpoint, keyed by
+    /// provider name. Unknown names are rejected so a typo cannot silently leave the
+    /// default in place.
     pub fn new(
         bindings: Arc<dyn ModelBindingStore>,
-        base_url: impl Into<String>,
+        base_url_overrides: &[(String, String)],
         timeout: Duration,
     ) -> Result<Self, KernelError> {
+        for (name, _) in base_url_overrides {
+            if brain::model::provider_spec(name).is_none() {
+                return Err(KernelError::InvalidState(format!(
+                    "unknown model provider {name} in base URL overrides"
+                )));
+            }
+        }
+        let mut transports = HashMap::new();
+        for spec in brain::model::PROVIDERS {
+            let base_url = base_url_overrides
+                .iter()
+                .find(|(name, _)| name == spec.name)
+                .map(|(_, url)| url.as_str())
+                .unwrap_or(spec.default_base_url);
+            transports.insert(
+                spec.name,
+                (
+                    spec.dialect,
+                    Arc::new(ModelTransport::new(base_url, timeout)?),
+                ),
+            );
+        }
         Ok(Self {
             bindings,
-            transport: Arc::new(ModelTransport::new(&base_url.into(), timeout)?),
+            transports,
         })
     }
 }
@@ -78,13 +107,13 @@ impl ModelExecutor for ServerModelExecutor {
             .bindings
             .get(&binding.binding_id)?
             .ok_or_else(|| KernelError::Executor("model binding is unavailable".into()))?;
-        if credential.provider != "vercel-ai-gateway" {
+        let Some((dialect, transport)) = self.transports.get(credential.provider.as_str()) else {
             return Err(KernelError::Executor(
                 "model provider is unsupported".into(),
             ));
-        }
+        };
         let client =
-            RemoteModelClient::bound(self.transport.clone(), credential.api_key.to_string())?;
+            RemoteModelClient::bound(transport.clone(), credential.api_key.to_string(), *dialect)?;
         client
             .execute(
                 operation_id,
@@ -126,6 +155,27 @@ mod tests {
             name: "openai/gpt-5-mini".into(),
             api_key: api_key.into(),
         }
+    }
+
+    #[test]
+    fn a_typoed_base_url_override_is_rejected_instead_of_silently_ignored() {
+        let directory = temporary();
+        let store = Arc::new(store(&directory));
+        let result = ServerModelExecutor::new(
+            store.clone(),
+            &[("open-ai".into(), "https://example.invalid".into())],
+            Duration::from_secs(1),
+        );
+        assert!(matches!(result, Err(KernelError::InvalidState(_))));
+        assert!(
+            ServerModelExecutor::new(
+                store,
+                &[("anthropic".into(), "https://example.invalid".into())],
+                Duration::from_secs(1),
+            )
+            .is_ok()
+        );
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     /// A binding is sealed at creation. The same credential again is the idempotent retry

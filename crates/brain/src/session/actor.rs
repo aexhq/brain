@@ -673,13 +673,28 @@ fn decision_kind(decision: &Decision) -> &'static str {
 /// `model_result`, and it is not something a reader is watching the stream for.
 fn streaming_event(operation_id: &OperationId, event: &ModelStreamEvent) -> Option<StreamingEvent> {
     let (event_type, data) = match event {
-        ModelStreamEvent::TextDelta { text } => {
-            ("assistant_delta", serde_json::json!({ "text": text }))
-        }
-        ModelStreamEvent::ToolCallDelta { call } => {
-            ("tool_call_delta", serde_json::json!({ "call": call }))
-        }
-        ModelStreamEvent::Usage { .. } => return None,
+        ModelStreamEvent::TextDelta { index, text } => (
+            "assistant_delta",
+            serde_json::json!({ "index": index, "text": text }),
+        ),
+        ModelStreamEvent::RefusalDelta { index, text } => (
+            "refusal_delta",
+            serde_json::json!({ "index": index, "text": text }),
+        ),
+        ModelStreamEvent::ToolUseStart { index, id, name } => (
+            "tool_call_delta",
+            serde_json::json!({ "index": index, "id": id, "name": name }),
+        ),
+        ModelStreamEvent::ToolInputDelta {
+            index,
+            partial_json,
+        } => (
+            "tool_call_delta",
+            serde_json::json!({ "index": index, "partial_json": partial_json }),
+        ),
+        ModelStreamEvent::BlockDone { .. }
+        | ModelStreamEvent::Usage { .. }
+        | ModelStreamEvent::MessageDone { .. } => return None,
     };
     Some(StreamingEvent {
         operation_id: operation_id.clone(),

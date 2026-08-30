@@ -183,8 +183,10 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
 function validateSessionOptions(options: CreateSessionOptions): void {
   if (options === null || typeof options !== "object") throw new TypeError("session options are required");
   inspectBrain(options.brain);
-  if (options.model?.provider !== "vercel-ai-gateway") throw new TypeError("unsupported model provider");
-  if (!/^[^/\s]+\/[^/\s][^\s]*$/u.test(options.model.name)) throw new TypeError("model name must include its provider namespace");
+  const provider = options.model?.provider;
+  if (provider !== "vercel-ai-gateway" && provider !== "openai" && provider !== "anthropic") throw new TypeError("unsupported model provider");
+  if (provider === "vercel-ai-gateway" && !/^[^/\s]+\/[^/\s][^\s]*$/u.test(options.model.name)) throw new TypeError("model name must include its provider namespace");
+  if (typeof options.model.name !== "string" || options.model.name.length === 0 || options.model.name.length > 256 || /\s/u.test(options.model.name)) throw new TypeError("model name is invalid");
   if (typeof options.model.apiKey !== "string" || options.model.apiKey.trim() === "") throw new TypeError("model apiKey is required");
   if (options.tools !== undefined && !Array.isArray(options.tools)) throw new TypeError("tools must be an array");
   if (options.system !== undefined && (typeof options.system !== "string" || options.system.length > 131_072)) throw new TypeError("system exceeds its contract bound");

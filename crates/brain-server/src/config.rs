@@ -11,12 +11,21 @@ pub struct ServerConfig {
     pub data_dir: PathBuf,
     #[arg(long, env = "BRAIN_LOOP_WORKER", default_value = "brain-loop-worker")]
     pub loop_worker: PathBuf,
+    /// Endpoint for the `vercel-ai-gateway` provider. Kept under its historic
+    /// name because deploys and tests already set it.
     #[arg(
         long,
         env = "BRAIN_MODEL_BASE_URL",
         default_value = "https://ai-gateway.vercel.sh/v1"
     )]
     pub model_base_url: String,
+    /// Endpoint override for the `openai` provider; also the hook for pointing
+    /// that provider at any OpenAI-compatible server (Ollama, vLLM, a proxy).
+    #[arg(long, env = "BRAIN_OPENAI_BASE_URL")]
+    pub openai_base_url: Option<String>,
+    /// Endpoint override for the `anthropic` provider.
+    #[arg(long, env = "BRAIN_ANTHROPIC_BASE_URL")]
+    pub anthropic_base_url: Option<String>,
     #[arg(long, env = "BRAIN_API_TOKEN", hide_env_values = true)]
     pub api_token: Option<String>,
     #[arg(long, env = "BRAIN_ENVIRONMENT_BASE_URL", default_value = "")]
