@@ -143,7 +143,9 @@ mod tests {
                 items: Vec::new(),
                 state: None,
             },
-            observation: brain_protocol::Observation::SessionStarted,
+            observation: brain_protocol::Observation::SessionStarted {
+                history: Vec::new(),
+            },
             configuration: serde_json::json!({}),
             presentation: brain_protocol::Presentation {
                 bytes: Vec::new(),

@@ -1,0 +1,28 @@
+{
+  "name": "claude-managed-agents",
+  "class": "session-kernel",
+  "version": "managed-agents-2026-04-01 (beta), claude-haiku-4-5",
+  "notes": [
+    "The closest brain anywhere: server-side append-only journal, mediated model calls, cron, REST and SSE. The loop is fixed and config-only.",
+    "No BYOK, so it cannot be pointed at the scripted provider. Every latency number here carries a real model and is excluded from engine comparisons by model_included.",
+    "Its real value in this set is the pricing row.",
+    "Measured with claude-haiku-4-5 to keep the run cheap; the model is named in the version because it changes the number. Every latency here contains real inference and a network round trip, so model_included is set on both probes and they are excluded from engine comparisons by design - this is the cost of a hosted agent, not a figure to put beside a kernel running against a fixture.",
+    "BLOCKED on credentials 2026-08-28: the driver is written and the API shapes are correct, but the ANTHROPIC_API_KEY in .env.dev returns 401 authentication_error 'API key is invalid.' on POST /v1/agents. It is structurally a real key (sk-ant-api...) so it is stale or revoked rather than malformed. Supply a working key and this subject runs as-is."
+  ],
+  "requires": {
+    "env": [
+      "ANTHROPIC_API_KEY"
+    ],
+    "paid": true
+  },
+  "probes": {
+    "create": {
+      "definition": "POST /v1/sessions against a stored agent until the response carries a session id; the container is provisioned behind it",
+      "model_included": true
+    },
+    "round_trip": {
+      "definition": "user.message event submitted until the session returns to idle, one complete turn; Anthropic's model is inside this number and there is no way to point Managed Agents at a scripted provider",
+      "model_included": true
+    }
+  }
+}

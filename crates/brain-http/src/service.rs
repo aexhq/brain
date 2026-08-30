@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use brain_protocol::{
     AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentId, Event, EventPage, MessageRequest, Session, SessionId,
+    EnvironmentCallResult, EnvironmentId, EventPage, LiveEvent, MessageRequest, Session, SessionId,
     SessionList,
 };
 
@@ -48,7 +48,7 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
     /// two arrives here instead of being lost in the gap; the caller drops what the page
     /// already carried, by sequence. Falling behind loses records rather than holding up
     /// a turn — the journal is the record, and `after` reads it back.
-    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, Event)>;
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, LiveEvent)>;
     async fn cancel_session(
         &self,
         session_id: SessionId,

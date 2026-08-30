@@ -75,6 +75,15 @@ export interface CreateSessionOptions {
   readonly tools?: readonly BoundTool[];
   readonly system?: string;
   readonly responseFormat?: unknown;
+  /**
+   * Events from an earlier session, to carry a conversation forward.
+   *
+   * A session lives in the process that created it and does not survive a restart, so
+   * keep the events you receive from `handle.events()` and pass them back here to
+   * continue. Brain writes them as the new session's opening records and tells the
+   * agentloop about them. Omit for an ordinary new session.
+   */
+  readonly history?: readonly SessionEvent[];
 }
 
 export interface OperationOptions { readonly idempotencyKey?: string }
@@ -126,6 +135,13 @@ export interface WireCreateSessionRequest {
   presentation: { system: string; tools: WireToolDefinition[]; response_format?: unknown };
   environments: WireEnvironmentRequirement[];
   tool_bindings: WireToolBinding[];
+  history?: WireHistoryEvent[];
+}
+export interface WireHistoryEvent {
+  sequence: number;
+  recorded_at_ms?: number;
+  event_type: string;
+  data: unknown;
 }
 export interface WireSession {
   session_id: string;

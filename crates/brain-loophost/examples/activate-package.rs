@@ -28,7 +28,9 @@ fn main() -> Result<(), String> {
                 items: Vec::new(),
                 state: None,
             },
-            observation: Observation::SessionStarted,
+            observation: Observation::SessionStarted {
+                history: Vec::new(),
+            },
             configuration: serde_json::json!({}),
             presentation: Presentation {
                 bytes: Vec::new(),

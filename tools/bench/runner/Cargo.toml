@@ -1,0 +1,41 @@
+# Its own workspace, not a member of the kernel's.
+#
+# The runner is a tool, not part of Brain: it depends on no brain crate and drives the
+# shipped binary over HTTP exactly as a third party would. Joining the kernel workspace
+# would also put it inside `cargo test --workspace` and `clippy --workspace`, where a
+# benchmark harness has no business, and would break those commands outright whenever
+# this directory is absent.
+[workspace]
+
+[package]
+name = "brain-bench"
+version = "0.1.0"
+description = "Comparative benchmark runner: probes, fixtures, memory sampling, and result gates"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "brain-bench"
+path = "src/main.rs"
+
+# No dependency on any brain crate. The runner drives the shipped binary over its
+# public HTTP surface, exactly as a third party would, so a Brain number is produced
+# the same way every competitor's number is.
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "tokio", "query"] }
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "signal", "process", "fs"] }
+
+# Signalling a subject's whole process group on teardown. A subject whose children outlive
+# it holds ports and memory into the next subject's measurement.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

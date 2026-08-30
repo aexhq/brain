@@ -7,7 +7,8 @@ use brain_http::{BrainApi, router, router_with_bearer};
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, Event, EventId, EventPage,
-    MessageRequest, Session, SessionId, SessionList, SessionStatus,
+    LiveEvent, MessageRequest, OperationId, Session, SessionId, SessionList, SessionStatus,
+    StreamingEvent,
 };
 use tower::ServiceExt;
 
@@ -15,7 +16,7 @@ use tower::ServiceExt;
 struct Api {
     /// Held so a test can push a record after the page has been served, which is what a
     /// turn does while a client is already streaming.
-    live: Option<tokio::sync::broadcast::Sender<(SessionId, Event)>>,
+    live: Option<tokio::sync::broadcast::Sender<(SessionId, LiveEvent)>>,
 }
 
 #[async_trait]
@@ -61,7 +62,7 @@ impl BrainApi for Api {
             output: request.input,
         })
     }
-    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, Event)> {
+    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, LiveEvent)> {
         match &self.live {
             Some(live) => live.subscribe(),
             None => tokio::sync::broadcast::Sender::new(8).subscribe(),
@@ -297,25 +298,25 @@ async fn the_event_stream_carries_records_appended_after_it_opened() {
     // Appended after the page was served, the way a turn appends while a client streams.
     live.send((
         SessionId::new("ses_test"),
-        Event {
+        LiveEvent::Recorded(Event {
             event_id: EventId::new("evt_live"),
             sequence: 2,
             recorded_at_ms: 1_787_846_400_001,
             event_type: "assistant_delta".into(),
             data: serde_json::json!({"delta": "hello"}),
-        },
+        }),
     ))
     .unwrap();
     // A record for another session must not reach this stream.
     live.send((
         SessionId::new("ses_other"),
-        Event {
+        LiveEvent::Recorded(Event {
             event_id: EventId::new("evt_other"),
             sequence: 3,
             recorded_at_ms: 1_787_846_400_002,
             event_type: "assistant_delta".into(),
             data: serde_json::json!({"delta": "not yours"}),
-        },
+        }),
     ))
     .unwrap();
     drop(live);
@@ -336,5 +337,92 @@ async fn the_event_stream_carries_records_appended_after_it_opened() {
     assert!(
         !body.contains("not yours"),
         "another session's record reached this stream: {body}"
+    );
+}
+
+/// Model output has to reach a watching client while the turn is still running.
+///
+/// Brain streams from the model but used to keep what it received to itself: the deltas
+/// went into a buffer in the session actor and the client saw nothing until the turn
+/// finished and its record was appended. There was no first token to wait for, which is
+/// why the benchmark's `ttfb` probe could only ever time out.
+///
+/// A streaming event is not a journal record, so it must not move the resume cursor: the
+/// cursor is a position in the record and this was never in it. The recorded event sent
+/// after it here would be dropped as already-seen if the delta had advanced the cursor.
+#[tokio::test]
+async fn the_event_stream_carries_model_output_before_the_turn_finishes() {
+    let live = tokio::sync::broadcast::Sender::new(8);
+    let api = Api {
+        live: Some(live.clone()),
+    };
+
+    let request = Request::builder()
+        .uri("/v1/sessions/ses_test/events")
+        .header("accept", "text/event-stream")
+        .body(Body::empty())
+        .unwrap();
+    let response = router(api).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    live.send((
+        SessionId::new("ses_test"),
+        LiveEvent::Streaming(StreamingEvent {
+            operation_id: OperationId::new("opr_test"),
+            event_type: "assistant_delta".into(),
+            data: serde_json::json!({ "text": "half a thought" }),
+        }),
+    ))
+    .unwrap();
+    // Another session's output must not reach this stream either.
+    live.send((
+        SessionId::new("ses_other"),
+        LiveEvent::Streaming(StreamingEvent {
+            operation_id: OperationId::new("opr_other"),
+            event_type: "assistant_delta".into(),
+            data: serde_json::json!({ "text": "not yours" }),
+        }),
+    ))
+    .unwrap();
+    // The record the turn eventually appends, at the sequence right after the page.
+    live.send((
+        SessionId::new("ses_test"),
+        LiveEvent::Recorded(Event {
+            event_id: EventId::new("evt_done"),
+            sequence: 2,
+            recorded_at_ms: 1_787_846_400_003,
+            event_type: "model_result".into(),
+            data: serde_json::json!({ "result": "whole thought" }),
+        }),
+    ))
+    .unwrap();
+    drop(live);
+
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(
+        body.contains("half a thought"),
+        "model output never reached a client watching the turn: {body}"
+    );
+    assert!(
+        !body.contains("not yours"),
+        "another session's model output reached this stream: {body}"
+    );
+    assert!(
+        body.contains("whole thought"),
+        "the record appended after the deltas never arrived, so the delta consumed the \
+         resume cursor it has no business touching: {body}"
+    );
+    // The id is the resume cursor, and a delta is not somewhere a client can resume to.
+    let delta_block = body
+        .split("\n\n")
+        .find(|block| block.contains("half a thought"))
+        .expect("the delta is on the stream");
+    assert!(
+        !delta_block.contains("id:"),
+        "a delta carried a resume id, which points at nothing in the journal: {delta_block}"
     );
 }

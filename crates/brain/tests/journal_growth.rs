@@ -25,7 +25,7 @@ use brain::{
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopIdentity, Decision, EnvironmentRequirement,
     Identity, MessageRequest, ModelBinding, ModelPresentation, ModelRequest, ModelResult,
-    ModelStreamEvent, OperationId, RequestedToolBinding, ResolvedSessionRequest,
+    ModelStreamEvent, Observation, OperationId, RequestedToolBinding, ResolvedSessionRequest,
     SealedSessionConfig, SessionId, ToolCancellation, ToolDispatch, ToolResult,
 };
 use brain_telemetry::telemetry_channel;
@@ -227,19 +227,43 @@ async fn the_event_stream_does_not_carry_a_context_copy_per_decision() {
 }
 
 #[tokio::test]
-async fn the_session_row_still_holds_the_final_context_after_the_turn() {
+async fn the_session_row_holds_the_final_context_after_the_turn() {
     let data_dir = temporary_directory();
-    let (_, session_id) = measure_one_turn(&data_dir).await;
-
-    // Moving the context write off the per-decision path must not leave the row stale:
-    // the row is the only thing rehydration reads, and `Decision::Finish` historically
-    // relied on the per-decision write having already persisted it.
-    let store = brain::SegmentJournal::open(
-        &data_dir.join("journal"),
-        brain::DEFAULT_IDEMPOTENCY_RETENTION,
+    let (publisher, _worker) = telemetry_channel();
+    let store: Arc<dyn brain::JournalStore> = Arc::new(
+        brain::SegmentJournal::open(
+            &data_dir.join("journal"),
+            brain::DEFAULT_IDEMPOTENCY_RETENTION,
+        )
+        .unwrap(),
+    );
+    let kernel = Kernel::with_store(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: DECISIONS,
+            loop_executor: Arc::new(GrowingLoop {
+                activations: AtomicUsize::new(0),
+            }),
+            model_executor: Arc::new(TinyModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        Arc::clone(&store),
+        publisher,
     )
     .unwrap();
-    let row = brain::JournalStore::session_row(&store, &session_id)
+    let handle = start(&kernel, request());
+    let session_id = handle.id().clone();
+    handle
+        .message(MessageRequest {
+            content: serde_json::json!("hello"),
+        })
+        .await
+        .unwrap();
+
+    // Moving the context write off the per-decision path must not leave the row stale.
+    // Read while the process that owns the session is still alive: that is the only place
+    // a session exists, so it is the only place worth asserting about.
+    let row = brain::JournalStore::session_row(&*store, &session_id)
         .unwrap()
         .unwrap();
     let items = row.context["items"].as_array().unwrap().len();
@@ -247,58 +271,11 @@ async fn the_session_row_still_holds_the_final_context_after_the_turn() {
         items, DECISIONS,
         "the session row must hold every item the turn produced"
     );
-    drop(store);
 
-    // And the rehydrated kernel must resume from that context rather than an empty one.
-    let (publisher, _worker) = telemetry_channel();
-    let reopened = Kernel::open(
-        KernelConfig {
-            data_dir: data_dir.clone(),
-            max_decisions_per_turn: 1,
-            loop_executor: Arc::new(AssertContext {
-                expected_items: DECISIONS,
-            }),
-            model_executor: Arc::new(TinyModel),
-            tool_executor: Arc::new(NoTools),
-        },
-        publisher,
-    )
-    .unwrap();
-    let handle = reopened.handle(&session_id).unwrap();
-    handle
-        .message(MessageRequest {
-            content: serde_json::json!("again"),
-        })
-        .await
-        .unwrap();
     drop(handle);
-    drop(reopened);
+    drop(kernel);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     fs::remove_dir_all(data_dir).unwrap();
-}
-
-/// Fails the turn unless the kernel handed it the context the previous turn ended on.
-struct AssertContext {
-    expected_items: usize,
-}
-
-#[async_trait]
-impl LoopExecutor for AssertContext {
-    async fn activate(
-        &self,
-        _agentloop: &AgentloopIdentity,
-        input: ActivationInput,
-    ) -> Result<ActivationOutput, KernelError> {
-        assert_eq!(
-            input.context.items.len(),
-            self.expected_items,
-            "rehydration must restore the context the previous turn ended on"
-        );
-        Ok(ActivationOutput {
-            context: input.context,
-            decision: Decision::Finish { result: None },
-        })
-    }
 }
 
 fn request() -> SealedSessionConfig {
@@ -330,6 +307,7 @@ fn temporary_directory() -> PathBuf {
 /// so these tests exercise the same validation the production path enforces.
 fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
     let resolved = ResolvedSessionRequest {
+        history: Vec::new(),
         agentloop_identity: sealed.agentloop_identity.clone(),
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
@@ -362,23 +340,124 @@ fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
         .unwrap()
 }
 
-/// The same defect on the other axis: turns, not decisions.
+/// A turn that was in flight when the process stopped is closed, and says so.
 ///
-/// `finish_turn` writes a `$session` state frame carrying the whole context at the end
-/// of every turn, and the context grows across turns as the conversation accumulates. So
-/// a session that runs T turns, each adding C bytes, writes `C*T*(T+1)/2` bytes of
-/// journal — the sum of every intermediate context, not the final one. Unlike the
-/// decision axis, which the kernel caps at `BRAIN_MAX_DECISIONS`, nothing bounds T.
+/// Whether the model call or the tool call actually happened is not in the journal, so
+/// Brain records exactly that and returns the session to Idle. It does not decide for the
+/// client: an agentloop, a tool or an SDK client sees `turn_interrupted` on the stream and
+/// resumes or abandons on its own terms.
+#[tokio::test]
+async fn an_interrupted_turn_is_closed_and_recorded() {
+    let data_dir = temporary_directory();
+    let (_, session_id) = measure_one_turn(&data_dir).await;
+
+    // Leave the session mid-turn, the way a process that died during one would.
+    {
+        let store = brain::SegmentJournal::open(
+            &data_dir.join("journal"),
+            brain::DEFAULT_IDEMPOTENCY_RETENTION,
+        )
+        .unwrap();
+        let row = brain::JournalStore::session_row(&store, &session_id)
+            .unwrap()
+            .unwrap();
+        brain::JournalStore::append(
+            &store,
+            &session_id,
+            row.through_sequence,
+            &[brain::AppendRecord::new(
+                "turn_started",
+                serde_json::json!({"content": "and then the lights went out"}),
+            )],
+            brain::SessionUpdate {
+                status: Some(brain_protocol::SessionStatus::Running),
+                context: None,
+                configuration: None,
+            },
+        )
+        .unwrap();
+        drop(store);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let (publisher, _worker) = telemetry_channel();
+    let reopened = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 4,
+            loop_executor: Arc::new(GrowingLoop {
+                activations: AtomicUsize::new(0),
+            }),
+            model_executor: Arc::new(TinyModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+
+    let session = reopened.session(&session_id).unwrap();
+    assert!(
+        matches!(session.status, brain_protocol::SessionStatus::Idle),
+        "an interrupted turn must leave the session able to take another, not stuck: {:?}",
+        session.status
+    );
+    let events = reopened.events(&session_id, 0, 1_000).unwrap().events;
+    assert_eq!(
+        events.last().map(|event| event.event_type.as_str()),
+        Some("turn_interrupted"),
+        "the break must be in the record, so a client can see it and decide"
+    );
+
+    drop(reopened);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// A session comes back from its own journal, best effort.
 ///
-/// Every one of those bytes is also read back and parsed at every restart, so the same
-/// term shows up in cold start.
-///
-/// Measured at `TURNS = 64` on 2026-08-28: one 16 KiB item per turn produced 34,199,242
-/// bytes of journal for a 1 MiB context, 32.6x. The closed form predicts `(T+1)/2` =
-/// 32.5x, so what is being measured is the per-turn write and not overhead around it.
-///
-/// Session state now lives in a file per session that is rewritten in place rather than
-/// appended, so the same run leaves 1,084,376 bytes — 1.0x, and flat in the turn count.
+/// The journal is the record of the session, so folding it back in write order rebuilds
+/// everything except two things the records never held: the agentloop's context, which is
+/// handed back to the loop to rebuild, and the `journal_id`, which the server minted and
+/// holds. Nothing is fsynced to make this true — a crash can lose the tail and a session
+/// can return a few records behind, which is the trade this design accepts.
+#[tokio::test]
+async fn a_session_comes_back_from_its_journal() {
+    let data_dir = temporary_directory();
+    let (_, session_id) = measure_one_turn(&data_dir).await;
+
+    let store = brain::SegmentJournal::open(
+        &data_dir.join("journal"),
+        brain::DEFAULT_IDEMPOTENCY_RETENTION,
+    )
+    .unwrap();
+    let row = brain::JournalStore::session_row(&store, &session_id)
+        .unwrap()
+        .expect("a session must be rebuilt from the records it left behind");
+    assert!(
+        matches!(row.status, brain_protocol::SessionStatus::Idle),
+        "a session whose last turn finished comes back idle, not mid-turn: {:?}",
+        row.status
+    );
+
+    // Its history reads back whole, and densely: `records_after` indexes by sequence, so a
+    // session rebuilt with a gap would answer for the wrong record under the right number.
+    let records = brain::JournalStore::records_after(&store, &session_id, 0, 1_000).unwrap();
+    let sequences: Vec<u64> = records.iter().map(|record| record.sequence).collect();
+    let dense: Vec<u64> = (1..=records.len() as u64).collect();
+    assert_eq!(
+        sequences, dense,
+        "a restored session's records must stay dense"
+    );
+    assert_eq!(
+        records.first().map(|record| record.kind.as_str()),
+        Some("session_creation_started"),
+        "the session must be rebuilt from its genesis record, not from wherever the log \
+         happened to still have records"
+    );
+    drop(store);
+    let _ = fs::remove_dir_all(data_dir);
+}
+
 #[tokio::test]
 async fn a_session_does_not_journal_one_context_copy_per_turn() {
     /// Turns in the measured session. Far below anything a real conversation reaches.
@@ -430,5 +509,234 @@ async fn a_session_does_not_journal_one_context_copy_per_turn() {
         "a {TURNS}-turn session journalled {journal_bytes} bytes for a {context_bytes}-byte \
          context ({ratio:.1}x, bound {MAX_RATIO}x): the kernel is writing the whole context \
          once per turn, so the log grows with the square of the turn count"
+    );
+}
+
+/// Bytes in each message a turn adds to the model request.
+const MESSAGE_BYTES: usize = 8 * 1024;
+
+/// An agentloop that talks to the model the way a real one does: every turn resends the
+/// whole conversation so far, one message longer than the last.
+///
+/// `GrowingLoop` above deliberately keeps its model requests tiny so that it measures the
+/// context write alone, which is why nothing here caught the journal recording a fresh
+/// copy of the transcript on every decision.
+struct ResendingLoop {
+    turns: AtomicUsize,
+}
+
+#[async_trait]
+impl LoopExecutor for ResendingLoop {
+    async fn activate(
+        &self,
+        _agentloop: &AgentloopIdentity,
+        input: ActivationInput,
+    ) -> Result<ActivationOutput, KernelError> {
+        // Branch on what happened, not on the context: a marker left in the items would
+        // still be there on the next turn and every turn after the first would finish
+        // without ever reaching the model.
+        let mut context = input.context;
+        match input.observation {
+            Observation::UserMessage { .. } => {
+                let turn = self.turns.fetch_add(1, Ordering::Relaxed);
+                context
+                    .items
+                    .push(serde_json::json!({ "role": "user", "turn": turn }));
+                // The whole conversation so far, one message longer every turn, which is
+                // what an agentloop actually sends a model.
+                let messages: Vec<brain_protocol::Message> = (0..=turn)
+                    .map(|_| brain_protocol::Message::user_text("x".repeat(MESSAGE_BYTES)))
+                    .collect();
+                Ok(ActivationOutput {
+                    context,
+                    decision: Decision::Model {
+                        request: ModelRequest {
+                            messages,
+                            response_format: None,
+                            max_output_tokens: Some(16),
+                        },
+                    },
+                })
+            }
+            _ => Ok(ActivationOutput {
+                context,
+                decision: Decision::Finish {
+                    result: Some(serde_json::json!({"ok": true})),
+                },
+            }),
+        }
+    }
+}
+
+/// A model request carries the whole conversation, so journalling it whole on every
+/// decision writes the transcript again each turn and the journal grows with the square of
+/// the turn count. Measured on a real conversation before this: 5.02 MiB at 250 turns,
+/// 18.85 at 500 and 72.99 at 1000 — 3.8x per doubling.
+///
+/// The journal may hold the conversation a constant number of times over. It may not hold
+/// it once per turn.
+#[tokio::test]
+async fn a_session_does_not_journal_the_whole_transcript_once_per_turn() {
+    const TURNS: usize = 48;
+    /// Measured at `TURNS = 48`: the journal was 49.4x the transcript when both the
+    /// activation result and the model intent carried the whole request, 25.8x with one of
+    /// them fixed, and is 1.2x with neither. The bound sits between the regimes.
+    const MAX_RATIO: u64 = 6;
+
+    let data_dir = temporary_directory();
+    let (publisher, _worker) = telemetry_channel();
+    let kernel = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 4,
+            loop_executor: Arc::new(ResendingLoop {
+                turns: AtomicUsize::new(0),
+            }),
+            model_executor: Arc::new(TinyModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+    let handle = start(&kernel, request());
+    for _ in 0..TURNS {
+        handle
+            .message(MessageRequest {
+                content: serde_json::json!("go"),
+            })
+            .await
+            .unwrap();
+    }
+    drop(handle);
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let journal_bytes: u64 = fs::read_dir(data_dir.join("journal"))
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum();
+    // What the conversation itself weighs by the end.
+    let transcript_bytes = (TURNS * MESSAGE_BYTES) as u64;
+    let ratio = journal_bytes as f64 / transcript_bytes as f64;
+    let held = journal_bytes <= transcript_bytes * MAX_RATIO;
+    fs::remove_dir_all(data_dir).unwrap();
+
+    assert!(
+        held,
+        "a {TURNS}-turn session journalled {journal_bytes} bytes for a {transcript_bytes}-byte \
+         transcript ({ratio:.1}x, bound {MAX_RATIO}x): the kernel is recording the whole \
+         conversation once per turn, so the journal grows with the square of the turn count"
+    );
+}
+
+/// Deltas per model call, and the size of each.
+const DELTAS: usize = 512;
+const DELTA_BYTES: usize = 1024;
+
+/// An agentloop that asks the model once and finishes.
+struct AskOnce;
+
+#[async_trait]
+impl LoopExecutor for AskOnce {
+    async fn activate(
+        &self,
+        _agentloop: &AgentloopIdentity,
+        input: ActivationInput,
+    ) -> Result<ActivationOutput, KernelError> {
+        let context = input.context;
+        match input.observation {
+            Observation::UserMessage { .. } => Ok(ActivationOutput {
+                context,
+                decision: Decision::Model {
+                    request: ModelRequest {
+                        messages: vec![brain_protocol::Message::user_text("go")],
+                        response_format: None,
+                        max_output_tokens: Some(16),
+                    },
+                },
+            }),
+            _ => Ok(ActivationOutput {
+                context,
+                decision: Decision::Finish {
+                    result: Some(serde_json::json!({"ok": true})),
+                },
+            }),
+        }
+    }
+}
+
+/// A model that says a great deal in small pieces, and returns one short answer.
+struct ChattyModel;
+
+#[async_trait]
+impl ModelExecutor for ChattyModel {
+    async fn execute(
+        &self,
+        _operation_id: &OperationId,
+        _request_digest: &Identity,
+        _binding: &ModelBinding,
+        _presentation: &ModelPresentation,
+        _request: ModelRequest,
+        on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
+    ) -> Result<ModelResult, KernelError> {
+        for _ in 0..DELTAS {
+            on_event(ModelStreamEvent::TextDelta {
+                index: 0,
+                text: "x".repeat(DELTA_BYTES),
+            });
+        }
+        Ok(ModelResult {
+            message: brain_protocol::Message::assistant(vec![brain_protocol::ContentBlock::text(
+                "done",
+            )]),
+            stop_reason: brain_protocol::StopReason::EndTurn,
+            usage: brain_protocol::Usage::default(),
+        })
+    }
+}
+
+/// Model output is streamed, not stored.
+///
+/// `model_result` carried the whole list of deltas beside the assembled response, so a
+/// turn wrote its own output twice — once in pieces and once whole — and nothing ever read
+/// the pieces. A client that wants them takes them off the live stream as they arrive.
+#[tokio::test]
+async fn a_turn_does_not_journal_the_pieces_its_answer_arrived_in() {
+    let data_dir = temporary_directory();
+    let (publisher, _worker) = telemetry_channel();
+    let kernel = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 4,
+            loop_executor: Arc::new(AskOnce),
+            model_executor: Arc::new(ChattyModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+    let handle = start(&kernel, request());
+    handle
+        .message(MessageRequest {
+            content: serde_json::json!("go"),
+        })
+        .await
+        .unwrap();
+    drop(handle);
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let journal_bytes: u64 = fs::read_dir(data_dir.join("journal"))
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum();
+    let streamed_bytes = (DELTAS * DELTA_BYTES) as u64;
+    let _ = fs::remove_dir_all(data_dir);
+
+    assert!(
+        journal_bytes < streamed_bytes / 4,
+        "one turn journalled {journal_bytes} bytes after streaming {streamed_bytes} bytes of \
+         model output: the pieces the answer arrived in are being written to disk beside the \
+         answer itself"
     );
 }

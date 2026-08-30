@@ -15,7 +15,7 @@
     },
     "Observation": {
       "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "session_started" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "history"], "properties": { "type": { "const": "session_started" }, "history": { "type": "array" } } },
         { "type": "object", "additionalProperties": false, "required": ["type", "content"], "properties": { "type": { "const": "user_message" }, "content": {} } },
         { "type": "object", "additionalProperties": false, "required": ["type", "response"], "properties": { "type": { "const": "model_completed" }, "response": {} } },
         { "type": "object", "additionalProperties": false, "required": ["type", "results"], "properties": { "type": { "const": "tools_completed" }, "results": { "type": "array", "maxItems": 128 } } },

@@ -12,22 +12,34 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    cell::Cell,
     fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use brain::{AppendRecord, JournalStore, SegmentJournal, journal::SessionRow};
 use brain_protocol::{Identity, JournalId, SessionId, SessionStatus};
 
 /// Counts bytes handed out, so a test can measure one call rather than a whole process.
+///
+/// Per thread, not per process: the tests in this binary run concurrently, and the
+/// journal's writer thread allocates in the background, so a shared counter charged one
+/// test for another's allocations and failed it — rarely, and only under load.
 struct Counting;
 
-static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+std::thread_local! {
+    static ALLOCATED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// `try_with`, because an allocation during thread teardown must not touch a destroyed
+/// thread-local; bytes allocated then are nobody's measurement.
+fn count(bytes: usize) {
+    let _ = ALLOCATED.try_with(|allocated| allocated.set(allocated.get() + bytes));
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed);
+        count(layout.size());
         unsafe { System.alloc(layout) }
     }
 
@@ -36,7 +48,7 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCATED.fetch_add(new_size.saturating_sub(layout.size()), Ordering::Relaxed);
+        count(new_size.saturating_sub(layout.size()));
         unsafe { System.realloc(pointer, layout, new_size) }
     }
 }
@@ -45,9 +57,9 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOCATOR: Counting = Counting;
 
 fn measure<T>(call: impl FnOnce() -> T) -> (T, usize) {
-    let before = ALLOCATED.load(Ordering::Relaxed);
+    let before = ALLOCATED.with(Cell::get);
     let value = call();
-    (value, ALLOCATED.load(Ordering::Relaxed) - before)
+    (value, ALLOCATED.with(Cell::get) - before)
 }
 
 /// Sessions in the listing.

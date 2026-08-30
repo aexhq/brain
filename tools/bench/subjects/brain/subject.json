@@ -1,0 +1,57 @@
+{
+  "name": "brain",
+  "class": "session-kernel",
+  "version": "f6efa6e",
+  "notes": [
+    "The reference subject. Driven over the public HTTP surface with no brain crate linked, so its numbers are produced the same way every rival's are.",
+    "Build first: cargo build --release -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker",
+    "Pinned to the commit measured: origin/main f6efa6e, which is the first revision where ttfb is a distinct measurement from round_trip and where the four architectural blockers are fixed.",
+    "No ttfb probe. The events endpoint streams live as of f6efa6e, but Brain journals a model call as one `model_result` record written when the call completes - there is no per-token record to wait for, so a first-token number here would be the whole model call under another name. Declare it again once Brain publishes stream deltas as they arrive.",
+    "No tool_dispatch probe. The agentloop the benchmark drives (examples/example-brain.mjs) answers every model completion with turn.reply and has no tool path at all, so no tool is ever dispatched however the scripted provider answers. The probe timed out blaming the environment, which had nothing to do with it. Declare it again once the benchmark ships its own agentloop that dispatches a tool - it should not borrow one whose job is teaching."
+  ],
+  "requires": {
+    "linux": true
+  },
+  "launch": {
+    "command": "target/release/brain",
+    "args": [],
+    "env": {
+      "BRAIN_LISTEN": "127.0.0.1:{port}",
+      "BRAIN_DATA_DIR": "{data_dir}",
+      "BRAIN_LOOP_WORKER": "target/release/brain-loop-worker",
+      "BRAIN_MODEL_BASE_URL": "{model_base_url}",
+      "BRAIN_ENVIRONMENT_BASE_URL": "{environment_base_url}"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health/ready",
+    "ready_timeout_secs": 60
+  },
+  "probes": {
+    "create": {
+      "definition": "POST /v1/sessions until the response carries a session_id, agentloop already admitted"
+    },
+    "idle": {
+      "definition": "private memory across the whole process tree with no sessions created, sampled for 20s after 10s of settling; the figure a project README calls \"idle memory\""
+    },
+    "ttfb": {
+      "definition": "message submitted until the first assistant_delta frame on its SSE stream; the stream is opened before the message is sent, so the client’s own subscribe latency is outside the measurement"
+    },
+    "round_trip": {
+      "definition": "POST /v1/sessions/{id}/messages until the response returns, one complete text turn"
+    },
+    "throughput": {
+      "definition": "complete text turns per second across N concurrent sessions, unpaced",
+      "limit_source": "engine"
+    },
+    "resident": {
+      "definition": "Private_Clean + Private_Dirty + Private_Hugetlb across the brain and loop-worker tree, held minus post-discard, per session",
+      "resident_kind": "private"
+    },
+    "reclaim": {
+      "definition": "share of private memory returned after deleting every session, then settling"
+    },
+    "persistence": {
+      "definition": "bytes on disk in the session data directory after N turns of one conversation, sampled per turn; Brain appends a record per turn and rewrites session state in place"
+    }
+  }
+}

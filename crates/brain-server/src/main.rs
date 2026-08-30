@@ -47,9 +47,12 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         .ready()
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
-    let models = Arc::new(LocalModelBindingStore::open(
-        &config.data_dir.join("model-bindings"),
+    // The server's one-off record of each session: the journal it was given, and the
+    // credential it calls a model with. Appended, never fsynced.
+    let metadata = Arc::new(brain_server::metadata::ServerMetadata::open(
+        &brain_server::metadata::metadata_directory(&config.data_dir),
     )?);
+    let models = Arc::new(LocalModelBindingStore::new(Arc::clone(&metadata)));
     let mut base_url_overrides = vec![(
         "vercel-ai-gateway".to_owned(),
         config.model_base_url.clone(),
@@ -90,11 +93,15 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         },
         telemetry,
     )?;
+    // Restored sessions get back the journal ids this server minted for them. Best effort:
+    // one the metadata lost stays readable and refuses further turns.
+    kernel.adopt_journal_ids(&metadata.journals()?)?;
     Ok(ServerApi::new(ServerResources {
         kernel,
         loops,
         environments,
         models,
+        metadata,
     }))
 }
 

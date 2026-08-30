@@ -6,8 +6,9 @@ use std::{future::Future, time::Duration};
 
 use brain_protocol::{
     ActivationInput, ContextEnvelope, Decision, EnvironmentRequest, Event, EventId, Identity,
-    MessageRequest, Observation, Presentation, RuntimeEnvelope, SealedSessionConfig, Session,
-    SessionStatus, ToolCancellation, ToolDispatch, ToolResult, operation_id,
+    LiveEvent, MessageRequest, ModelStreamEvent, Observation, OperationId, Presentation,
+    RuntimeEnvelope, SealedSessionConfig, Session, SessionId, SessionStatus, StreamingEvent,
+    ToolCancellation, ToolDispatch, ToolResult, operation_id,
 };
 use futures_util::future::join_all;
 use tokio::sync::{mpsc, oneshot};
@@ -40,6 +41,18 @@ pub struct SessionActor {
     max_decisions_per_turn: usize,
     receiver: mpsc::Receiver<SessionCommand>,
     cancel_requested: Arc<AtomicBool>,
+    /// Events the session opened with, waiting to be handed to the agentloop. Taken once,
+    /// before the first message.
+    opening_history: Vec<serde_json::Value>,
+    /// Where model output goes while a turn is still running. Not the journal.
+    live: tokio::sync::broadcast::Sender<(SessionId, brain_protocol::LiveEvent)>,
+    /// How many of the model request's messages the journal already holds.
+    ///
+    /// A model request carries the whole conversation, and recording it whole on every
+    /// decision wrote the transcript again each turn -- the journal grew with the square
+    /// of the turn count, 5 MiB at 250 turns and 73 MiB at 1000. Only the messages past
+    /// this point are recorded now.
+    journalled_messages: usize,
 }
 
 impl SessionActor {
@@ -53,6 +66,8 @@ impl SessionActor {
         max_decisions_per_turn: usize,
         receiver: mpsc::Receiver<SessionCommand>,
         cancel_requested: Arc<AtomicBool>,
+        live: tokio::sync::broadcast::Sender<(SessionId, brain_protocol::LiveEvent)>,
+        opening_history: Vec<serde_json::Value>,
     ) -> Result<Self, KernelError> {
         // The row is owned, and neither value is read again after this: `sealed` and
         // `context` replace them. Cloning first deep-copied the whole configuration and
@@ -82,10 +97,27 @@ impl SessionActor {
             max_decisions_per_turn,
             receiver,
             cancel_requested,
+            live,
+            opening_history,
+            // A restored session has journalled messages it cannot count without reading
+            // its own history back, so the first request after a restart records its
+            // messages whole and every one after that is a delta again.
+            journalled_messages: 0,
         })
     }
 
     pub async fn run(mut self) {
+        // Before anything is asked of it. A session created with history has records in
+        // its journal that this agentloop has never seen, and it cannot answer a message
+        // sensibly without them. The events are Brain's; what to make of them is the
+        // loop's, so they are handed over and the context that comes back is taken as-is.
+        if let Err(error) = self.announce_history().await {
+            // Recorded and then abandoned: a session that could not be told what it is
+            // continuing cannot answer for that conversation, and pretending otherwise
+            // would answer as though it had just begun.
+            let _ = self.fail_turn("session_history_rejected", &error.to_string());
+            return;
+        }
         while let Some(command) = self.receiver.recv().await {
             match command {
                 SessionCommand::Message { request, reply } => {
@@ -179,7 +211,7 @@ impl SessionActor {
             self.commit(
                 vec![AppendRecord::new(
                     "activation_result",
-                    serde_json::json!({"decision":output.decision}),
+                    serde_json::json!({"decision": decision_kind(&output.decision)}),
                 )],
                 SessionUpdate::default(),
             )?;
@@ -188,8 +220,40 @@ impl SessionActor {
                     let intent_sequence = self.row.through_sequence + 1;
                     let operation_id = operation_id(&self.row.journal_id, intent_sequence);
                     let identity = Identity::of(&request).map_err(identity_error)?;
-                    self.commit(vec![AppendRecord::new("model_intent", serde_json::json!({"operation_id":operation_id,"request_identity":identity,"request":request}))], SessionUpdate::default())?;
-                    let mut stream = Vec::new();
+                    // Only the messages this decision added. `request_identity` still
+                    // covers the whole request, so a reader that rebuilds the messages by
+                    // concatenation can check that what it rebuilt is what was sent: if an
+                    // agentloop rewrote what it had already said, the identity will not
+                    // match and the reader knows it, rather than being handed a
+                    // conversation that never happened.
+                    let sent = request.messages.len();
+                    let from = self.journalled_messages.min(sent);
+                    self.commit(
+                        vec![AppendRecord::new(
+                            "model_intent",
+                            serde_json::json!({
+                                "operation_id": operation_id,
+                                "request_identity": identity,
+                                "messages_from": from,
+                                "messages_total": sent,
+                                "messages": &request.messages[from..],
+                                "response_format": request.response_format,
+                                "max_output_tokens": request.max_output_tokens,
+                            }),
+                        )],
+                        SessionUpdate::default(),
+                    )?;
+                    self.journalled_messages = sent;
+                    // Model output is streamed and not stored. `model_result` used to
+                    // carry every delta beside the assembled response, so a turn wrote its
+                    // own output twice -- once in pieces and once whole -- and nothing ever
+                    // read the pieces. The assembled response is the durable truth; a
+                    // client that wants the pieces takes them off the stream as they
+                    // arrive. Sending is non-blocking and drops for a subscriber that has
+                    // fallen behind, so watching a turn cannot slow it down.
+                    let live = self.live.clone();
+                    let live_session = self.row.session_id.clone();
+                    let live_operation = operation_id.clone();
                     let model_executor = self.model_executor.clone();
                     let model_binding = self.sealed.model.clone();
                     let model_presentation = self.sealed.presentation.clone();
@@ -200,13 +264,20 @@ impl SessionActor {
                             &model_binding,
                             &model_presentation,
                             request,
-                            &mut |event| stream.push(event),
+                            &mut |event| {
+                                if let Some(streaming) = streaming_event(&live_operation, &event) {
+                                    let _ = live.send((
+                                        live_session.clone(),
+                                        LiveEvent::Streaming(streaming),
+                                    ));
+                                }
+                            },
                         ))
                         .await
                     {
                         Err(()) => return self.cancel_turn(),
                         Ok(Ok(result)) => {
-                            self.commit(vec![AppendRecord::new("model_result", serde_json::json!({"operation_id":operation_id,"stream":stream,"result":result}))], SessionUpdate::default())?;
+                            self.commit(vec![AppendRecord::new("model_result", serde_json::json!({"operation_id":operation_id,"result":result}))], SessionUpdate::default())?;
                             Observation::ModelCompleted {
                                 response: serde_json::to_value(result).map_err(json_error)?,
                             }
@@ -380,9 +451,9 @@ impl SessionActor {
     /// This is the only point at which the session row's context is written. Within a
     /// turn the context is held in memory: it grows with every decision, so writing it
     /// per decision costs the sum of every intermediate size rather than the final one,
-    /// and nothing ever reads those intermediate values. A restart fails an in-flight
-    /// turn outright (`Kernel::recover_interrupted`) rather than resuming it, and the row
-    /// is read back only when an Idle session is rehydrated — which is to say, here.
+    /// and nothing ever reads those intermediate values. A restart closes an in-flight
+    /// turn with `turn_interrupted` rather than resuming it, and the row is read back only
+    /// when an Idle session is rehydrated — which is to say, here.
     fn finish_turn(&mut self, records: Vec<AppendRecord>) -> Result<Session, KernelError> {
         let context = serde_json::to_value(&self.context).map_err(json_error)?;
         self.commit(
@@ -523,6 +594,50 @@ impl SessionActor {
         Ok(saved)
     }
 
+    /// Hands the opening history to the agentloop and keeps whatever context it builds.
+    ///
+    /// One activation, journalled like any other, and no decision is acted on: this is not
+    /// a turn, it is the loop reading what came before one.
+    async fn announce_history(&mut self) -> Result<(), KernelError> {
+        let history = std::mem::take(&mut self.opening_history);
+        if history.is_empty() {
+            return Ok(());
+        }
+        // Derived the same way every other activation's is, so an agentloop that depends
+        // on it sees nothing unusual about this one.
+        let runtime = RuntimeEnvelope::at(&self.row.journal_id, self.row.through_sequence, 0);
+        let activation = ActivationInput {
+            context: self.context.clone(),
+            observation: Observation::SessionStarted { history },
+            configuration: self.sealed.brain_configuration.clone(),
+            presentation: self.presentation.clone(),
+            runtime,
+        };
+        let output = self
+            .loop_executor
+            .activate(&self.sealed.agentloop_identity, activation)
+            .await?;
+        if output.context.protocol_version != self.context.protocol_version {
+            return Err(KernelError::InvalidState(
+                "Agentloop returned an unsupported context version".into(),
+            ));
+        }
+        self.context = output.context;
+        let context = serde_json::to_value(&self.context).map_err(json_error)?;
+        self.commit(
+            vec![AppendRecord::new(
+                "session_history_replayed",
+                serde_json::json!({"events": self.row.through_sequence}),
+            )],
+            SessionUpdate {
+                status: None,
+                context: Some(&context),
+                configuration: None,
+            },
+        )?;
+        Ok(())
+    }
+
     fn public(&self) -> Session {
         Session {
             session_id: self.row.session_id.clone(),
@@ -532,6 +647,60 @@ impl SessionActor {
             presentation_identity: self.row.presentation_identity,
         }
     }
+}
+
+/// What the agentloop decided, without what it decided it with.
+///
+/// This record carried the decision whole, and a model decision holds the entire request:
+/// the conversation was written here on every turn, and then written again by the
+/// `model_intent` that followed it. Between them the journal grew with the square of the
+/// turn count. Every variant is followed by a record carrying its detail -- a model
+/// decision by `model_intent`, an emit by `output_emitted`, a failure by `turn_failed` --
+/// so the kind is all this one has to add.
+fn decision_kind(decision: &Decision) -> &'static str {
+    match decision {
+        Decision::Model { .. } => "model",
+        Decision::Tools { .. } => "tools",
+        Decision::Emit { .. } => "emit",
+        Decision::Finish { .. } => "finish",
+        Decision::Fail { .. } => "fail",
+    }
+}
+
+/// One piece of model output, as a client watching the turn should see it.
+///
+/// Usage is left out: it is an accounting total that arrives at the end and is already in
+/// `model_result`, and it is not something a reader is watching the stream for.
+fn streaming_event(operation_id: &OperationId, event: &ModelStreamEvent) -> Option<StreamingEvent> {
+    let (event_type, data) = match event {
+        ModelStreamEvent::TextDelta { index, text } => (
+            "assistant_delta",
+            serde_json::json!({ "index": index, "text": text }),
+        ),
+        ModelStreamEvent::RefusalDelta { index, text } => (
+            "refusal_delta",
+            serde_json::json!({ "index": index, "text": text }),
+        ),
+        ModelStreamEvent::ToolUseStart { index, id, name } => (
+            "tool_call_delta",
+            serde_json::json!({ "index": index, "id": id, "name": name }),
+        ),
+        ModelStreamEvent::ToolInputDelta {
+            index,
+            partial_json,
+        } => (
+            "tool_call_delta",
+            serde_json::json!({ "index": index, "partial_json": partial_json }),
+        ),
+        ModelStreamEvent::BlockDone { .. }
+        | ModelStreamEvent::Usage { .. }
+        | ModelStreamEvent::MessageDone { .. } => return None,
+    };
+    Some(StreamingEvent {
+        operation_id: operation_id.clone(),
+        event_type: event_type.to_owned(),
+        data,
+    })
 }
 
 fn json_error(error: serde_json::Error) -> KernelError {

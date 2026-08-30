@@ -20,7 +20,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use brain_protocol::{Identity, JournalId, Session, SessionId, SessionStatus};
+use brain_protocol::{Identity, JournalId, SealedSessionConfig, Session, SessionId, SessionStatus};
 
 use crate::{
     KernelError,
@@ -71,6 +71,10 @@ struct Tracked {
     /// `locations[i]` holds the record at sequence `i + 1`.
     locations: Vec<Location>,
     last_recorded_at_ms: u64,
+    /// Rebuilt from the journal rather than created by this process. Its context is empty
+    /// until the agentloop is handed its own records back, and its `journal_id` is a
+    /// placeholder until the server supplies the one it minted.
+    restored: bool,
 }
 
 struct Stored {
@@ -87,11 +91,9 @@ impl SegmentJournal {
         // Both visitors need the same state and neither ever runs while the other is
         // borrowed, which the borrow checker cannot see across two closures.
         let state = RefCell::new(State::default());
-        let log = SegmentLog::open(
-            directory,
-            |session_id, bytes| restore_session(&mut state.borrow_mut(), session_id, bytes),
-            |frame, location| replay(&mut state.borrow_mut(), &frame, location),
-        )?;
+        let log = SegmentLog::open(directory, |frame, location| {
+            replay(&mut state.borrow_mut(), &frame, location)
+        })?;
         let mut state = state.into_inner();
         state.idempotency_sweep_at = state.idempotency.len().max(MIN_IDEMPOTENCY_SWEEP);
         Ok(Self {
@@ -107,9 +109,8 @@ impl SegmentJournal {
             .map_err(|_| KernelError::Journal("journal state mutex poisoned".into()))
     }
 
-    /// Append one frame and return where it landed. Held separate from `write_state`
-    /// so the state lock is never held across an encode of a large payload more than
-    /// it must be.
+    /// Append one frame and return where it landed. Held separate so the state lock is
+    /// never held across an encode of a large payload more than it must be.
     fn write(
         &self,
         session_id: &str,
@@ -201,10 +202,6 @@ impl JournalStore for SegmentJournal {
         }
         let recorded_at_ms = wall_clock_ms()?;
 
-        // State before the record: a replay that stops between the two still knows the
-        // session, and the record it is missing is one nothing has acted on yet.
-        self.log
-            .write_state(row.session_id.as_str(), &state_payload(row))?;
         let location = self.write(
             row.session_id.as_str(),
             1,
@@ -221,6 +218,7 @@ impl JournalStore for SegmentJournal {
                 row: row.clone(),
                 locations: vec![location],
                 last_recorded_at_ms: recorded_at_ms,
+                restored: false,
             },
         );
 
@@ -287,8 +285,6 @@ impl JournalStore for SegmentJournal {
         tracked.locations.extend(locations);
         tracked.row.through_sequence = expected_through + records.len() as u64;
         tracked.last_recorded_at_ms = recorded_at_ms;
-        let changed =
-            update.status.is_some() || update.context.is_some() || update.configuration.is_some();
         if let Some(status) = update.status {
             tracked.row.status = status;
         }
@@ -297,15 +293,6 @@ impl JournalStore for SegmentJournal {
         }
         if let Some(configuration) = update.configuration {
             tracked.row.configuration = configuration.clone();
-        }
-        // Rewritten only when the update moved something. A turn whose records change
-        // nothing about the session — a batch of intents mid-turn — leaves the state
-        // file alone, so the context is written once per turn and not once per commit.
-        if changed {
-            let payload = state_payload(&tracked.row);
-            let session = session_id.as_str().to_owned();
-            drop(state);
-            self.log.write_state(&session, &payload)?;
         }
 
         Ok(saved)
@@ -380,6 +367,29 @@ impl JournalStore for SegmentJournal {
         })
     }
 
+    fn adopt_journal_ids(
+        &self,
+        journals: &std::collections::HashMap<String, String>,
+    ) -> Result<(), KernelError> {
+        let mut state = self.lock()?;
+        for (session_id, journal_id) in journals {
+            if let Some(tracked) = state.sessions.get_mut(session_id)
+                && tracked.row.journal_id.as_str().is_empty()
+            {
+                tracked.row.journal_id = JournalId::new(journal_id.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn take_restored(&self, session_id: &SessionId) -> Result<bool, KernelError> {
+        let mut state = self.lock()?;
+        let Some(tracked) = state.sessions.get_mut(session_id.as_str()) else {
+            return Ok(false);
+        };
+        Ok(std::mem::take(&mut tracked.restored))
+    }
+
     fn delete_ended(&self, session_id: &SessionId) -> Result<(), KernelError> {
         let mut state = self.lock()?;
         let tracked = state
@@ -389,7 +399,6 @@ impl JournalStore for SegmentJournal {
         if !matches!(tracked.row.status, SessionStatus::Ended) {
             return Err(ended_first());
         }
-        self.log.remove_state(session_id.as_str())?;
         state.sessions.remove(session_id.as_str());
         drop(state);
 
@@ -480,89 +489,126 @@ impl JournalStore for SegmentJournal {
     }
 }
 
-/// The whole state, because the file it goes to replaces its predecessor rather than
-/// following it. `through_sequence` is deliberately absent: it is what the records on
-/// disk say it is, and deriving it there keeps the two from disagreeing.
-fn state_payload(row: &SessionRow) -> serde_json::Value {
-    serde_json::json!({
-        "journal_id": row.journal_id,
-        "status": row.status,
-        "configuration": row.configuration,
-        "context": row.context,
-        "presentation_identity": row.presentation_identity,
-    })
-}
-
-/// Rebuild one session from its state file. Called for every session before any record
-/// is replayed, so a record always finds the session it belongs to.
-fn restore_session(state: &mut State, session_id: &str, bytes: &[u8]) -> Result<(), KernelError> {
-    let payload: StateFile = serde_json::from_slice(bytes)
-        .map_err(|error| KernelError::Journal(format!("session state is unreadable: {error}")))?;
-    state.sessions.insert(
-        session_id.to_owned(),
-        Tracked {
-            row: SessionRow {
-                session_id: SessionId::new(session_id.to_owned()),
-                journal_id: payload.journal_id,
-                presentation_identity: payload.presentation_identity,
-                status: payload.status,
-                through_sequence: 0,
-                configuration: payload.configuration,
-                context: payload.context,
-            },
-            locations: Vec::new(),
-            last_recorded_at_ms: 0,
-        },
-    );
-    Ok(())
-}
-
+/// Rebuilds a session from its own records.
+///
+/// A session survives a restart because the journal is the record of it, folded back in
+/// write order. Everything a `SessionRow` needs is in here except two things: the context,
+/// which is the agentloop's and is rebuilt by handing the records back to it, and the
+/// `journal_id`, which is one-off metadata the server minted and holds.
+///
+/// Best effort throughout. A session whose records will not parse, or whose beginning is no
+/// longer on disk, is left out rather than propagated — one damaged session must not stop a
+/// process starting.
 fn replay(state: &mut State, frame: &Frame<'_>, location: Location) -> Result<(), KernelError> {
     if frame.is_sequenced() {
-        if let Some(tracked) = state.sessions.get_mut(frame.session_id) {
-            tracked.locations.push(location);
-            tracked.row.through_sequence = frame.sequence;
-            tracked.last_recorded_at_ms = frame.recorded_at_ms;
+        // A session is admitted only at its genesis record, and only at sequence 1.
+        //
+        // `records_after` indexes `locations[sequence - 1]` and reports the sequence from
+        // the index rather than the frame, so a session whose first surviving frame is
+        // sequence 40 would answer for sequence 1 with the wrong record and say nothing.
+        // If an earlier process reclaimed the segments this session began in, its history
+        // is no longer whole and it does not come back.
+        if frame.kind == "session_creation_started" && frame.sequence == 1 {
+            let Ok(row) = restored_row(frame) else {
+                return Ok(());
+            };
+            state.sessions.insert(
+                frame.session_id.to_owned(),
+                Tracked {
+                    row,
+                    locations: vec![location],
+                    last_recorded_at_ms: frame.recorded_at_ms,
+                    restored: true,
+                },
+            );
+            return Ok(());
         }
+
+        let Some(tracked) = state.sessions.get_mut(frame.session_id) else {
+            return Ok(());
+        };
+        // Dense or not at all: a gap means the records between are gone, and an index that
+        // silently slides every later record down by one is worse than no session.
+        if frame.sequence as usize != tracked.locations.len() + 1 {
+            state.sessions.remove(frame.session_id);
+            return Ok(());
+        }
+        tracked.locations.push(location);
+        tracked.row.through_sequence = frame.sequence;
+        tracked.last_recorded_at_ms = frame.recorded_at_ms;
+        apply_lifecycle(&mut tracked.row, frame);
         return Ok(());
     }
 
-    if frame.kind == IDEMPOTENCY {
-        let payload: IdempotencyFrame = frame.decode()?;
-        state.idempotency.insert(
-            (payload.scope, payload.key),
-            Stored {
-                request: payload.request,
-                response: payload.response,
-                segment: location.segment,
-                // A frame written before expiry was recorded describes a record from a
-                // journal that kept them forever. Treating it as already expired is what
-                // the retention now says, and it is what lets its segment be reclaimed.
-                expires_at_ms: payload.expires_at_ms.unwrap_or(0),
-            },
-        );
-    }
+    // Idempotency frames are deliberately not replayed.
+    //
+    // A recorded answer is only useful if the thing it answers about still exists, and
+    // what these answer about is sessions — which do not survive the process that made
+    // them. Replaying them meant a retried `POST /v1/sessions` after a restart returned
+    // 200 with a session id that referred to nothing: the client believed it had a live
+    // session, every turn on it failed, and there was no way to repair it. An empty table
+    // makes the retry create a real session instead.
+    //
+    // They are still written. The journal is the record of what was asked, and that a
+    // request arrived is part of it.
     Ok(())
 }
 
-/// A session's state file. Every field is required: the file is the whole state, and a
-/// file that cannot supply one of them describes no session that can be resumed.
-#[derive(serde::Deserialize)]
-struct StateFile {
-    journal_id: JournalId,
-    presentation_identity: Identity,
-    status: SessionStatus,
-    context: serde_json::Value,
-    configuration: serde_json::Value,
+/// The row a session begins with, from its genesis record.
+///
+/// `journal_id` is a placeholder here. It never appears in any payload — it is minted once
+/// by the server and is not derivable from the conversation, because `operation_id` hashes
+/// it one way. The server hands the real one back for the sessions it still has metadata
+/// for; a session it has lost keeps this one and can be read but not continued.
+fn restored_row(frame: &Frame<'_>) -> Result<SessionRow, KernelError> {
+    let configuration: serde_json::Value = frame.decode()?;
+    Ok(SessionRow {
+        session_id: SessionId::new(frame.session_id.to_owned()),
+        journal_id: JournalId::new(String::new()),
+        status: SessionStatus::Creating,
+        through_sequence: frame.sequence,
+        configuration,
+        context: serde_json::to_value(crate::context::empty_context())
+            .map_err(|error| KernelError::Journal(error.to_string()))?,
+        presentation_identity: Identity::of_bytes(b""),
+    })
 }
 
-#[derive(serde::Deserialize)]
-struct IdempotencyFrame {
-    scope: String,
-    key: String,
-    request: Identity,
-    response: serde_json::Value,
-    expires_at_ms: Option<u64>,
+/// Folds one record into the session's status and, at `session_created`, its configuration.
+///
+/// Last write wins, which is what the records mean: both `turn_finished` and `turn_failed`
+/// go through `finish_turn` and leave a session Idle, so neither implies a failed session —
+/// only a failed creation does that.
+fn apply_lifecycle(row: &mut SessionRow, frame: &Frame<'_>) {
+    match frame.kind {
+        "session_created" => {
+            #[derive(serde::Deserialize)]
+            struct Created {
+                configuration: serde_json::Value,
+            }
+            if let Ok(created) = frame.decode::<Created>() {
+                // What the row held all along: `complete` writes this same value to both.
+                if let Ok(identity) = presentation_identity(&created.configuration) {
+                    row.presentation_identity = identity;
+                }
+                row.configuration = created.configuration;
+                row.status = SessionStatus::Idle;
+            }
+        }
+        "session_creation_failed" => row.status = SessionStatus::Failed,
+        "turn_started" => row.status = SessionStatus::Running,
+        "turn_finished" | "turn_failed" => row.status = SessionStatus::Idle,
+        "session_ended" => row.status = SessionStatus::Ended,
+        _ => {}
+    }
+}
+
+/// Recomputed rather than stored: it is a pure function of two fields inside the sealed
+/// configuration, both of which the record carries.
+fn presentation_identity(configuration: &serde_json::Value) -> Result<Identity, KernelError> {
+    let sealed: SealedSessionConfig = serde_json::from_value(configuration.clone())
+        .map_err(|error| KernelError::Journal(error.to_string()))?;
+    Ok(crate::context::presentation(&sealed.presentation, &sealed.brain_configuration)?.identity)
 }
 
 /// The oldest segment any surviving state still lives in. Everything below it is dead
@@ -602,7 +648,7 @@ fn ended_first() -> KernelError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::AppendRecord;
+    use brain_protocol::JournalId;
 
     fn temporary() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -687,6 +733,7 @@ mod tests {
                     length: 1,
                 }],
                 last_recorded_at_ms: 0,
+                restored: false,
             },
         );
 
@@ -698,53 +745,18 @@ mod tests {
         drop(journal);
 
         let mut records = 0;
-        let log = SegmentLog::open(
-            &directory,
-            |_, _| Ok(()),
-            |frame, _| {
-                if frame.kind == IDEMPOTENCY {
-                    records += 1;
-                }
-                Ok(())
-            },
-        )
+        let log = SegmentLog::open(&directory, |frame, _| {
+            if frame.kind == IDEMPOTENCY {
+                records += 1;
+            }
+            Ok(())
+        })
         .unwrap();
         assert_eq!(
             records, 2,
             "the record below the floor must be written again rather than pinning its segment"
         );
         drop(log);
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    /// Session state is the one thing that is never a record, so a session that has
-    /// written nothing since it was created must still come back.
-    #[test]
-    fn a_session_comes_back_from_its_state_file() {
-        let directory = temporary();
-        let journal = SegmentJournal::open(&directory, DEFAULT_IDEMPOTENCY_RETENTION).unwrap();
-        let mut created = row();
-        created.context = serde_json::json!({ "items": ["one", "two"] });
-        journal
-            .create_session(
-                &created,
-                AppendRecord::new("session_created", serde_json::json!({})),
-            )
-            .unwrap();
-        drop(journal);
-
-        let journal = SegmentJournal::open(&directory, DEFAULT_IDEMPOTENCY_RETENTION).unwrap();
-        let restored = journal
-            .session_row(&created.session_id)
-            .unwrap()
-            .expect("the session was created above");
-        assert_eq!(restored.context, created.context);
-        assert_eq!(restored.journal_id, created.journal_id);
-        assert_eq!(
-            restored.through_sequence, 1,
-            "the sequence comes from the records on disk, not from the state file"
-        );
-        drop(journal);
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

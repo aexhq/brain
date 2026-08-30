@@ -93,6 +93,20 @@ export interface CreateSessionRequest {
    * @maxItems 128
    */
   tool_bindings: RequestedToolBinding[];
+  /**
+   * @maxItems 10000
+   */
+  history?: HistoryEvent[];
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HistoryEvent".
+ */
+export interface HistoryEvent {
+  sequence: number;
+  recorded_at_ms?: number;
+  event_type: Identifier;
+  data: unknown;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

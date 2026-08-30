@@ -180,7 +180,9 @@ fn to_wit_input(
 ) -> Result<bindings::aex::agentloop::types::ActivationInput, String> {
     use bindings::aex::agentloop::types as wit;
     let observation = match input.observation {
-        Observation::SessionStarted => wit::Observation::SessionStarted,
+        Observation::SessionStarted { history } => wit::Observation::SessionStarted(
+            serde_json::to_string(&history).map_err(|error| error.to_string())?,
+        ),
         Observation::UserMessage { content } => wit::Observation::UserMessage(
             serde_json::to_string(&content).map_err(|error| error.to_string())?,
         ),

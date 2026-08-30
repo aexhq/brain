@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod environment;
+pub mod metadata;
 pub mod model_binding;
 mod service;
 mod session_ownership;

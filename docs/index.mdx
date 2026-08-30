@@ -4,7 +4,7 @@ description: What Brain is, and the four things that plug into it.
 ---
 
 Brain runs agent sessions. It holds the conversation, decides what happens next, calls the model,
-hands out tool calls, and writes all of it to a durable log. That is the entire job.
+hands out tool calls, and journals every step. That is the entire job.
 
 Run it as a server your app talks to over HTTP, or embed the `brain` crate in a Rust service you
 already own.
