@@ -1,0 +1,8 @@
+{
+  "dependencies": [
+    "langchain-openai"
+  ],
+  "graphs": {
+    "agent": "./tools/bench/subjects/langgraph-server/graph/bench_graph.py:graph"
+  }
+}

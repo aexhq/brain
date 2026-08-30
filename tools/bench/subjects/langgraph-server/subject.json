@@ -1,0 +1,57 @@
+{
+  "name": "langgraph-server",
+  "class": "session-kernel",
+  "version": "langgraph-api 0.13.0",
+  "notes": [
+    "Deliberately a separate subject from the `langgraph` library: this one is the running server measured end to end, that one is the persistence model measured in isolation. Merging them would blur which was which.",
+    "Self-hostable dev server with the Postgres checkpointer. The interesting result is not raw latency but write amplification: a full checkpoint per super-step against Brain's append.",
+    "Run the write-cost-against-turn-index arm here, not a single-figure comparison.",
+    "Pinned to langgraph-api 0.13.0, released 2026-08-21, the latest at survey time. Run at documented defaults: `langgraph dev` with the in-memory checkpointer unless the Postgres arm is the one being measured.",
+    "The graph the server runs is ours (subjects/langgraph-server/graph/bench_graph.py): one node that calls the model and appends the reply, the smallest fair analogue of Brain's agentloop. Any published number has to say we wrote it.",
+    "The persistence figure from `langgraph dev` is against the in-memory checkpointer and must not be charted against Brain's durable log. Run the Postgres checkpointer arm for that comparison."
+  ],
+  "requires": {
+    "linux": true
+  },
+  "probes": {
+    "create": {
+      "definition": "thread create until it will accept input"
+    },
+    "ttfb": {
+      "definition": "run submitted until the first model output byte on the run's own SSE response; scripted provider. Unlike Brain's, the stream is opened by submitting the run rather than before it, so the subscribe cost is inside this number by construction"
+    },
+    "round_trip": {
+      "definition": "input submitted until the run completes"
+    },
+    "resident": {
+      "definition": "private memory across the server tree, excluding Postgres, held minus post-discard, per thread",
+      "resident_kind": "private"
+    },
+    "persistence": {
+      "definition": "bytes on disk in the server's data directory after N turns of one thread, sampled per turn. MEASURED AGAINST THE IN-MEMORY CHECKPOINTER that `langgraph dev` runs, which is not a durable store: this number is not comparable to a subject that writes every turn to disk, and the Postgres arm has to be run separately before any persistence comparison is published"
+    }
+  },
+  "launch": {
+    "command": "python3",
+    "args": [
+      "-m",
+      "langgraph_cli",
+      "dev",
+      "--config",
+      "tools/bench/subjects/langgraph-server/graph/langgraph.json",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "{port}",
+      "--no-browser",
+      "--no-reload"
+    ],
+    "env": {
+      "OPENAI_API_KEY": "bench",
+      "OPENAI_BASE_URL": "{model_base_url}",
+      "LANGGRAPH_DATA_DIR": "{data_dir}"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/ok"
+  }
+}

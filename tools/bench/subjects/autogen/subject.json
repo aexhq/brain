@@ -1,0 +1,44 @@
+{
+  "name": "autogen",
+  "class": "framework",
+  "version": "autogen-agentchat 0.7.5 + autogen-ext 0.7.5",
+  "notes": [
+    "microsoft/autogen, 60.7k stars, Python. Last push 2026-04-15, so it has been static for months, and Microsoft's active successor is `microsoft-agent-framework` in this same list. Measure it for the historical comparison if at all; do not present it as a current rival without saying it is frozen.",
+    "Licensed CC-BY-4.0 per the GitHub API, which is a content licence rather than a software one. Confirm what actually governs the code before publishing any comparison that names it.",
+    "A library, not a server, so the same harness caveat applies as for crewai.",
+    "It ships no durable store at all — checked, not assumed: `autogen-agentchat` has no file or database backend for a conversation, and `save_state()` returns the whole conversation as a dict. Its own state documentation says to write that dict to a file or a database, so the harness does exactly that: one `json.dump` per turn over one file. The curve is AutoGen's serialization; the write is ours. A number from this subject is not comparable to LangGraph's or CrewAI's in the same way those two are comparable to each other, because those two chose their own write and this one did not.",
+    "It also means what lands on disk is the latest snapshot, not every snapshot: AutoGen rewrites the conversation in full every turn, but only the last rewrite is still there to measure. The retained bytes grow with the turn index; the bytes written grow with its square, and this probe sees the first.",
+    "Measured through a harness we wrote (subjects/_framework_harness/wrapper.py): the same two endpoints every framework subject gets, with the same input built in one place, so the only thing that differs between them is what each chooses to write. Each turn's input carries the turn index — a conversation whose every turn is byte-identical is not a conversation, and one framework in this set de-duplicates a repeated message. Any published number has to say so."
+  ],
+  "requires": {
+    "linux": true
+  },
+  "probes": {
+    "persistence": {
+      "definition": "bytes on disk after N turns of one AutoGen AssistantAgent whose `save_state()` is written to one JSON file per turn by the harness, because AutoGen ships no durable store of its own; sampled per turn, through the harness at subjects/_framework_harness/wrapper.py"
+    }
+  },
+  "launch": {
+    "command": "python3",
+    "args": [
+      "-m",
+      "uvicorn",
+      "wrapper:app",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "{port}",
+      "--app-dir",
+      "tools/bench/subjects/_framework_harness"
+    ],
+    "env": {
+      "BENCH_FRAMEWORK": "autogen",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "OPENAI_BASE_URL": "{model_base_url}",
+      "OPENAI_API_KEY": "bench"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/ok",
+    "ready_timeout_secs": 120
+  }
+}

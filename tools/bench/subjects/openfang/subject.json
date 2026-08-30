@@ -1,0 +1,48 @@
+{
+  "name": "openfang",
+  "class": "session-kernel",
+  "version": "acf2587e46be",
+  "notes": [
+    "Closest architectural twin to Brain: Rust, Wasm-sandboxed tools, SQLite session log, HTTP/SSE surface. The single highest-value comparison.",
+    "18k stars against eight weeks of silence. Confirm the project is alive before treating its numbers as the rival's.",
+    "Pinned to commit acf2587e46be, cloned 2026-08-28. Built with -p openfang-cli -p openfang-api: a full workspace build pulls in openfang-desktop and fails on GTK, which has nothing to do with the server being measured."
+  ],
+  "requires": {
+    "linux": true
+  },
+  "probes": {
+    "create": {
+      "definition": "session create call until the session will accept a message"
+    },
+    "ttfb": {
+      "definition": "message submitted until the first assistant output byte on its SSE stream; pointed at the scripted provider through its OpenAI-compatible model config"
+    },
+    "round_trip": {
+      "definition": "message submitted until the turn is complete"
+    },
+    "resident": {
+      "definition": "private memory across the openfang process tree including forked Wasm workers, held minus post-discard, per session",
+      "resident_kind": "private"
+    },
+    "throughput": {
+      "definition": "complete turns per second across N concurrent sessions",
+      "limit_source": "engine"
+    },
+    "persistence": {
+      "definition": "bytes on disk in the OpenFang home after N turns of one agent, sampled per turn; OpenFang keeps sessions in SQLite"
+    }
+  },
+  "launch": {
+    "command": "tools/bench/subjects/openfang/launch.sh",
+    "args": [],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "OPENAI_BASE_URL": "{model_base_url}",
+      "OPENAI_API_KEY": "bench"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/api/agents",
+    "ready_timeout_secs": 120
+  }
+}

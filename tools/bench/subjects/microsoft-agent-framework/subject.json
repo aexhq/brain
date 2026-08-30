@@ -1,0 +1,44 @@
+{
+  "name": "microsoft-agent-framework",
+  "class": "framework",
+  "version": "agent-framework 1.16.0 (agent-framework-core 1.16.0, agent-framework-openai 1.14.1)",
+  "notes": [
+    "microsoft/agent-framework, 13.2k stars, Python and .NET, MIT, actively pushed. AutoGen's successor, which is why it is here and AutoGen is kept only as the frozen historical entry.",
+    "A library rather than a server; the harness caveat applies. Worth a latency arm later if it grows a hosted or daemon mode.",
+    "Persisted with `FileHistoryProvider`, the one durable conversation store shipped in agent-framework-core: one append-only JSONL file per session, one line per message. It is marked experimental in 1.16.0 and says so on import. Its sibling `FileSessionStore` writes a whole session snapshot per turn instead — a different storage model with a different curve — and the appending one was chosen deliberately, because measuring a rival on its worse option produces a number worth nothing. The other durable options it ships are Redis and Cosmos DB, which are external services rather than something writing into the run's data directory.",
+    "Its default `OpenAIChatClient` speaks the Responses API, which the benchmark's scripted provider does not serve. This subject uses `OpenAIChatCompletionClient`, the framework's own client for `/chat/completions`, so it is wired to exactly the same fixture as every other subject. That is a client choice, not a model choice: same endpoint, same model name, same fixed reply.",
+    "One caveat that moves the number down: its history provider content-hashes messages and drops anything already stored, to survive a full-transcript replay. The scripted provider answers every turn with the same fixed reply, so from turn two onward the assistant half of each turn is de-duplicated away and only the user half is appended. The measured bytes are therefore a floor — against a model whose replies differ, roughly double. With a constant input on both sides it stored two messages and nothing after them, which is why the harness numbers each turn.",
+    "Measured through a harness we wrote (subjects/_framework_harness/wrapper.py): the same two endpoints every framework subject gets, with the same input built in one place, so the only thing that differs between them is what each chooses to write. Any published number has to say so."
+  ],
+  "requires": {
+    "linux": true
+  },
+  "probes": {
+    "persistence": {
+      "definition": "bytes on disk in the directory given to FileHistoryProvider after N turns of one session, sampled per turn; Agent Framework appends one JSON line per message, through the harness at subjects/_framework_harness/wrapper.py"
+    }
+  },
+  "launch": {
+    "command": "python3",
+    "args": [
+      "-m",
+      "uvicorn",
+      "wrapper:app",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "{port}",
+      "--app-dir",
+      "tools/bench/subjects/_framework_harness"
+    ],
+    "env": {
+      "BENCH_FRAMEWORK": "microsoft-agent-framework",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "OPENAI_BASE_URL": "{model_base_url}",
+      "OPENAI_API_KEY": "bench"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/ok",
+    "ready_timeout_secs": 120
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "crewai",
+  "class": "framework",
+  "version": "crewai 1.15.18 (crewai-core 1.15.18) + lancedb 0.30.0",
+  "notes": [
+    "crewAIInc/crewAI, 57.7k stars, Python, MIT, active. A library for orchestrating agents, not a server that holds sessions, so it answers no latency probe until someone writes a harness around it — and any published number must then say we wrote that harness, because the harness affects the result.",
+    "Its value in this set is the persistence probe. Memory is switched on with `memory=True` and pointed at the run's data directory with CREWAI_STORAGE_DIR; everything below that root is CrewAI's own decision. It writes a LanceDB table under `memory/` — one data fragment, one transaction record and one manifest per save, plus periodic compaction — and a `latest_kickoff_task_outputs.db` SQLite beside it. The dominant cost per turn is the embedding vector LanceDB stores with each memory, not the text. Growth is close to linear; LanceDB compacts every 100 saves, so the single last-turn figure the probe reports can land on a compaction and read far above the steady rate.",
+    "Because the store is vector memory rather than a transcript, CrewAI is answering a different question from LangGraph's checkpointer: what it keeps is what it decided was worth remembering about the conversation, not the conversation. That belongs next to any number.",
+    "It calls the model about four times per turn, not once: the agent's own call plus the LLM steps its memory pipeline runs to analyse and consolidate what it saved. The runner prints the fixture's call count after every subject because a count *below* the turns driven means a cache or replay path; this one is above, and it is CrewAI doing extra work per turn rather than the harness driving it more.",
+    "Its embedder is left on its default provider but pointed at the same scripted endpoint as the chat model. On its own default it would embed against api.openai.com, which is neither reachable from the benchmark host nor the same input every other subject gets.",
+    "Measured through a harness we wrote (subjects/_framework_harness/wrapper.py): the same two endpoints every framework subject gets, with the same input built in one place, so the only thing that differs between them is what each chooses to write. Each turn's input carries the turn index — a conversation whose every turn is byte-identical is not a conversation, and one framework in this set de-duplicates a repeated message. Any published number has to say so."
+  ],
+  "requires": {
+    "linux": true
+  },
+  "probes": {
+    "persistence": {
+      "definition": "bytes on disk in the directory CrewAI was given as CREWAI_STORAGE_DIR after N turns of one crew, sampled per turn; CrewAI writes a LanceDB memory record per save plus its kickoff-output SQLite, through the harness at subjects/_framework_harness/wrapper.py"
+    }
+  },
+  "launch": {
+    "command": "python3",
+    "args": [
+      "-m",
+      "uvicorn",
+      "wrapper:app",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "{port}",
+      "--app-dir",
+      "tools/bench/subjects/_framework_harness"
+    ],
+    "env": {
+      "BENCH_FRAMEWORK": "crewai",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "OPENAI_BASE_URL": "{model_base_url}",
+      "OPENAI_API_KEY": "bench"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/ok",
+    "ready_timeout_secs": 180
+  }
+}

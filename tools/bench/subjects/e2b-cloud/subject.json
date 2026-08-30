@@ -1,0 +1,28 @@
+{
+  "name": "e2b-cloud",
+  "class": "sandbox",
+  "version": "API 2026-08-28",
+  "notes": [
+    "The hosted service. Network round trip and region are inside every number here; run the driver in the same region and record which.",
+    "Private memory is not readable on a service. The resident probe reports a proxy instead and must never be called memory per sandbox.",
+    "Only create is measured. E2B executes commands over gRPC against the sandbox's own envd, so a turn probe would use a different client than every other subject's and would not be the same measurement."
+  ],
+  "requires": {
+    "env": [
+      "E2B_API_KEY"
+    ],
+    "paid": true
+  },
+  "probes": {
+    "create": {
+      "definition": "sandbox create call until it will accept an exec, from a client in the same region",
+      "variants": [
+        "cold",
+        "warm"
+      ]
+    },
+    "cost": {
+      "definition": "published price per vCPU-hour, idle and active"
+    }
+  }
+}

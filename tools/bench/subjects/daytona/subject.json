@@ -1,0 +1,31 @@
+{
+  "name": "daytona",
+  "class": "sandbox",
+  "version": "API 2026-08-28",
+  "notes": [
+    "Their core went private in June 2026, so there is no self-hosted counterpart subject to measure alongside this one.",
+    "Published sub-90 ms p99 cold start is a blog figure with no stated methodology, hardware, region or run count. It belongs in the manifest as a citation, never as our number.",
+    "Driven through the public REST API at app.daytona.io. Hosted, so the network round trip to their region is inside every number; the class and limit source say so."
+  ],
+  "requires": {
+    "env": [
+      "DAYTONA_API_KEY"
+    ],
+    "paid": true
+  },
+  "probes": {
+    "create": {
+      "definition": "sandbox create call until it will accept an exec, from a client in the same region",
+      "variants": [
+        "cold",
+        "warm"
+      ]
+    },
+    "round_trip": {
+      "definition": "exec submitted until the command has completed"
+    },
+    "cost": {
+      "definition": "published price per vCPU-hour"
+    }
+  }
+}

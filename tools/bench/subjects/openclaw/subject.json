@@ -1,0 +1,41 @@
+{
+  "name": "openclaw",
+  "class": "session-kernel",
+  "version": "2026.7.1-2",
+  "notes": [
+    "openclaw/openclaw, TypeScript. Its Gateway is the local control plane for sessions, tools, events and channel connections, so it does hold sessions behind a daemon.",
+    "Pinned to npm `openclaw@2026.7.1-2`, which matches GitHub release v2026.7.1-2 and is the `latest` dist-tag at 2026-08-28. Identity checked before installing: the package is published by maintainer `steipete` with `repository: git+https://github.com/openclaw/openclaw.git`. The impersonating package `@openclaw-ai/openclawai`, which steals credentials and installs a RAT, was never fetched.",
+    "LICENCE, resolved: MIT. The GitHub API reports NOASSERTION because the LICENSE file at this tag is the verbatim MIT text plus a closing sentence pointing at THIRD_PARTY_NOTICES.md, which defeats GitHub's classifier; package.json declares \"license\": \"MIT\". A comparison that names a licence should name MIT.",
+    "Like zeroclaw it is documented as designed for a single operator running locally, not a multi-user server. Throughput and the per-session memory ramp are therefore not declared: they would measure a design goal the project does not have.",
+    "Node, so the fixed memory floor is large. Only a slope or a delta says anything about per-session cost here, never an absolute footprint.",
+    "Two surfaces on one port, because neither answers all three probes alone: the control-plane WebSocket carries `sessions.create` and `sessions.delete`, which have no HTTP route, and `POST /v1/chat/completions` carries the turns. The docs say a request through the latter 'runs as a normal Gateway agent run (same codepath as `openclaw agent`)'; `model` is an agent target and `x-openclaw-session-key` routes the turn into a session this benchmark already created, so a turn number is a turn in an existing session rather than an implicit create folded into the first message.",
+    "Config differences from a stock install are listed at the top of launch.sh: auth off on loopback, the chat-completions endpoint enabled, and the scripted provider.",
+    "Session routing was verified, not assumed: three turns sent with one `x-openclaw-session-key` reached the model as 2, then 4, then 6 messages, and `GET /sessions/{key}/history` returned a single transcript with all six. The header is honoured, so a turn number here is a turn in an existing session.",
+    "Which means the turn numbers rise with session length, and visibly: over the 200 turns of one probe, round_trip ran from 996 ms at the start to 1578 ms at the end. The p50 is the middle of that, not a first-turn cost. Every session-kernel subject is driven the same way — one session, many turns — so the method is comparable, but OpenClaw's slope is steep enough that its p50 must be quoted with the turn count beside it.",
+    "The runner's fixture count came out at exactly one model call per turn, so nothing was answered from a cache or a replay path."
+  ],
+  "requires": { "linux": true },
+  "probes": {
+    "create": {
+      "definition": "`sessions.create` on the Gateway control plane until it returns the session key — the same call the Control UI's new-session button makes. The control connection is opened in `prepare` and is not inside this number"
+    },
+    "ttfb": {
+      "definition": "`POST /v1/chat/completions` with `stream: true` submitted until the first non-empty assistant content delta; scripted provider via a `models.providers` entry"
+    },
+    "round_trip": {
+      "definition": "`POST /v1/chat/completions` submitted until the response carrying the completed assistant message"
+    }
+  },
+  "launch": {
+    "command": "tools/bench/subjects/openclaw/launch.sh",
+    "args": [],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health",
+    "ready_timeout_secs": 180
+  }
+}

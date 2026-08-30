@@ -1,0 +1,22 @@
+{
+  "name": "firecracker",
+  "class": "isolation-substrate",
+  "version": "firecracker v1.16.1 aarch64, guest kernel vmlinux-6.1.155 (firecracker-ci/v1.15)",
+  "notes": [
+    "Sits underneath an environment, not beside Brain. Its numbers belong in the substrate table with Wasmtime, Hyperlight, QuickJS and V8 — never in a table with a session kernel.",
+    "Needs nested KVM, which on EC2 exists only on .metal capacity.",
+    "Guest: 1 vCPU, 128 MiB, initramfs only (no block device), Firecracker's own getting-started boot arguments `console=ttyS0 reboot=k panic=1 pci=off` unchanged. The initramfs is busybox-static with an init that writes one marker line to the console and sleeps; a smaller guest would flatter the boot number and a larger one would measure the distribution instead of the VMM.",
+    "No jailer. The documented production setup wraps each VMM in `jailer` for a chroot, cgroup and namespaces; the getting-started path this was run at does not, so the number excludes that setup cost and is the VMM's alone.",
+    "The runner records one value per probe, with no variant loop, so only the cold boot was measured. The snapshot-restore half of Firecracker's headline — the `warm` variant this manifest used to declare — is deliberately absent rather than estimated: measuring it needs a second pass whose result would land in the same field as the cold one with nothing to tell them apart."
+  ],
+  "requires": { "linux": true, "metal": true },
+  "probes": {
+    "create": {
+      "definition": "one microVM from nothing, cold: exec the firecracker binary, configure boot-source and machine-config over its API socket, PUT InstanceStart, until the guest's init writes its marker to the serial console — that is, until the guest is executing code, not until the API call returns"
+    },
+    "resident": {
+      "definition": "private memory per running microVM: the slope of Private_Clean + Private_Dirty + Private_Hugetlb, summed over the process tree holding the VMMs, against live microVM count. Every VMM is a child of the runner, so the runner's own footprint lands in the fit's intercept and only the slope is quoted",
+      "resident_kind": "private"
+    }
+  }
+}
