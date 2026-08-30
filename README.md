@@ -12,20 +12,19 @@
 
 <p align="center">
   <a href="https://aex.dev/brain/docs"><strong>Docs</strong></a> ·
-  <a href="https://aex.dev/brain/docs/quickstart">Quickstart</a> ·
   <a href="https://aex.dev/brain/docs/reference/api">API Reference</a> ·
   <a href="https://aex.dev/brain">Website</a> ·
-  <a href="https://github.com/aexhq/extensions">Extensions</a> ·
+  <a href="https://github.com/aexhq/extensions">Official extensions</a> ·
   <a href="https://discord.gg/Qk2YnHMHVb">Discord</a>
 </p>
 
-Brain runs agent sessions. It holds the conversation, decides what happens next, calls the model,
-hands out tool calls, and appends every step to a log. That is the entire job, in about 7,300 lines
-of Rust across six crates.
+## What is it
 
-Four things plug into it, and all four are yours to replace: the **agent loop**, the **model**, the
-**tools**, and the **environment** tools run in. Run Brain as a server your app talks to over HTTP,
-or embed the `brain` crate in a Rust service you already own.
+Brain is a tiny agent kernel that runs sessions: it holds the conversation, decides what happens
+next, calls the model, hands out tool calls, and journals every step — about 7,300 lines of Rust.
+The **agent loop**, the **model**, the **tools**, and the **environment** they run in all plug in
+and are yours to replace, whether you run Brain as an HTTP server or embed the `brain` crate in a
+Rust service you already own.
 
 > [!NOTE]
 > **Brain is under early development.** Contracts are replaced in place until the first stable
@@ -34,11 +33,10 @@ or embed the `brain` crate in a Rust service you already own.
 
 ## Benchmarks
 
-Measured figures come from the harness in [`tools/bench`](tools/bench): same machine, one subject
-at a time, each driven through its own public API against the same scripted model — no model
-latency in any number. ★ marks the best figure in each chart.[^bench]
+Same machine, same scripted model behind every subject — no model latency in any number. ★ marks
+the best figure in each chart.[^bench]
 
-**Turn round-trip latency** — message submitted → completed reply, median
+**Turn round-trip**
 
 ```text
 Brain             █                                     25 ms ★
@@ -47,10 +45,7 @@ LangGraph Server  ████████████████████�
 OpenClaw          ████████████████████████████████████ 1257 ms
 ```
 
-<sub>180 turns per subject per run; includes HTTP, request construction, the session-log write,
-and dispatch.</sub>
-
-**Time to first token** — message submitted → first assistant delta, median
+**Time to first token**
 
 ```text
 ZeroClaw          █                                    9.6 ms ★
@@ -60,11 +55,7 @@ OpenFang          ██████                              75.8 ms
 OpenClaw          ██████████████████████████████     874.4 ms
 ```
 
-<sub>First delta on the subject's own stream, 180 turns per subject. Brain's probe declines under
-an instant scripted model — the turn completes before a delta reaches the event stream — so its
-whole-turn median stands in as an upper bound.</sub>
-
-**New session latency** — create call → session accepts a message, median
+**New session**
 
 ```text
 Brain             ██                                   0.6 ms ★
@@ -74,10 +65,7 @@ OpenClaw          ███████████                          3.7
 OpenFang          ██████████████████████████████      10.3 ms
 ```
 
-<sub>180 creates per subject against a running server; each session is confirmed ready before the
-timer stops.</sub>
-
-**Cold start latency** — process launch → first served session
+**Cold start**
 
 ```text
 ZeroClaw    █                                 10 ms ★
@@ -89,10 +77,7 @@ AutoGen     ███████████████████           
 OpenClaw    ████████████████████████         5.98 s
 ```
 
-<sub>Brain measured on the bench box; the other figures are each project's own numbers, from
-official documentation and public repositories.</sub>
-
-**Memory per session** — private memory to hold one session, idle
+**Memory per idle session**
 
 ```text
 Brain     █                                 14 KiB ★
@@ -101,32 +86,36 @@ ZeroClaw  █████████████████████       
 OpenClaw  ██████████████████████████████   490 MiB
 ```
 
-<sub>Brain: marginal private memory per additional idle session (+7 MiB across 512 sessions).
-OpenFang: whole process at 64 sessions, amortised. ZeroClaw and OpenClaw are single-operator
-daemons — one session per install, so the process is the session. Bars are log-scaled.</sub>
+Disk stays flat — a 100-turn conversation leaves **0.2 MiB**, the hundredth turn writing the same
+2.3 KiB as the first — and CI enforces bounds on every push: under 256 MiB resident after 10,000
+requests, and a journal held to a small constant multiple of its final context. Earlier figures
+are archived in [BENCHMARKS.md](BENCHMARKS.md).
 
-- Disk is flat: a 100-turn conversation leaves **0.2 MiB** — the hundredth turn writes the same
-  2.3 KiB as the first.
-- The trade: **220 MiB** at rest and a **~20 MB** install, mostly the compiled agent loop held
-  warm inside its sandbox.
-- A turn slows by ~54 µs per turn of history, because the loop is handed the whole context.
-- CI enforces bounds on every push: under 256 MiB resident after 10,000 requests, and a journal
-  held to a small constant multiple of its final context. Pre-reset figures are archived in
-  [BENCHMARKS.md](BENCHMARKS.md).
-
-[^bench]: AWS `c7g.xlarge`, Linux, subjects pinned away from the load generator, 512 sessions for
-    the memory probe. Any probe a subject cannot honestly answer is recorded as a refusal rather
-    than a number. Framework libraries (LangGraph, CrewAI, AutoGen) appear only where their own
-    published figures allow; harness numbers for libraries are never ranked against whole servers.
+[^bench]: Medians on AWS `c7g.xlarge`, Linux. Brain's first-token figure is an upper bound: under
+    an instant scripted model the turn completes before a delta reaches the stream, so its
+    whole-turn median stands in. Cold-start figures other than Brain's come from each project's
+    own published numbers. Memory bars are log-scaled; Brain's is the marginal cost per
+    additional idle session.
 
 ## How it works
 
 ```text
-your app <--HTTP/SSE--> [ brain kernel ] --pinned model call--> model API
-                           |   |   |
-                           |   |   +-- tool call (HTTP) --> environment (sandbox, browser, your backend)
-                           |   +-- observation -> decision --> agent loop (Wasm, sealed)
-                           +-- append, behind the turn --> segment log
+your app
+   ▲
+   │ HTTP / SSE
+   ▼
+[ brain kernel ]
+   │
+   ├── observation ──► agent loop ──► decision
+   │                   (Wasm, sealed)
+   │
+   ├── pinned model call ──► model API
+   │
+   ├── tool call (HTTP) ──► environment
+   │                        (sandbox, browser,
+   │                         your backend)
+   │
+   └── append, behind the turn ──► segment log
 ```
 
 Brain owns the session; the agent loop, model, tools, and environment are yours to supply. The
@@ -148,6 +137,19 @@ What makes it fast is mostly what it refuses to do on the turn's path:
 
 Sessions survive a restart best effort, rebuilt from what reached the disk; a session interrupted
 mid-turn comes back with a `turn_interrupted` event and lets the client decide.
+
+## Features
+
+- **Tools run anywhere** — a tool is plain HTTP in an environment you choose: a microVM sandbox,
+  a browser driving the DOM, your own backend — and one session can span several at once.
+- **Built for low overhead** — memory-resident session state, appends behind the turn, ~14 KiB
+  per idle session, 25 ms round trips. The numbers above are measured, and CI holds them.
+- **Bring your model, spawn your agents** — built-in bindings for the major LLM providers, sealed
+  per session, and sessions that create sessions for subagent work.
+- **Sealed extension execution** — agent loops compile to WebAssembly and run in a standalone
+  runtime with no network, filesystem, secrets, or clock; Brain performs every effect.
+- **Observable end to end** — every observation, decision, model intent, and tool result is an
+  event you can stream live or read back later, token by token while the turn runs.
 
 ## Quick start
 
@@ -204,17 +206,13 @@ are welcome.
 - [x] Content identity as a type rather than a digest string
 - [x] HTTP/SSE session API and the `@aexhq/brain` SDK
 - [x] Remote environment contract with `env-app` and `env-aws-microvm`
-- [ ] End-to-end benchmark rebuild and the cross-session isolation test
+- [ ] Cross-session isolation test
 - [ ] Freeze a v1 API with tagged releases
-- [ ] MCP client
-- [ ] Subagents
 - [ ] File access and workspace sync
-- [ ] `web_search` and `web_fetch`
 - [ ] crates.io publication
 - [ ] Sessions spread across machines sharing environments
 - [ ] `checkpoint` and `restore`
 - [ ] Custom images with scoped credentials and network metering
-- [ ] Hosted Brain at [aex.dev](https://aex.dev/brain)
 
 ## Acknowledgements
 

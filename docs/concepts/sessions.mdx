@@ -10,9 +10,17 @@ A session is a conversation plus everything Brain did on its behalf, recorded as
 Before Brain calls a model, activates the agent loop, or dispatches a tool call, it writes the
 intent to the log. Before the loop sees a result, that result is written too.
 
-This is what makes a crash survivable. Restart the process and Brain replays the log to work out
-what had already happened, what was in flight, and what to do about it. Nothing is inferred from
-memory that outlived nothing.
+The log is written behind the turn — no fsync on the hot path — so a crash may lose its tail. On
+restart Brain rebuilds every session from the records that reached the disk: a session whose last
+turn finished comes back idle with its history readable, and one that was mid-turn comes back with
+a `turn_interrupted` event and returns to idle. Whether the in-flight call reached the model or a
+tool is not knowable from here, so Brain records exactly that and lets the client resume or
+abandon on its own terms.
+
+A session also does not have to be resumed in place. Pass the events you already received back as
+`history` when creating a session, and Brain writes them as the new session's opening records and
+tells the agent loop what it is continuing — which is how a conversation moves across processes or
+machines.
 
 ## Turns
 
@@ -48,10 +56,13 @@ Accept: text/event-stream
 ```
 
 It begins with the page `after` names and then carries records as they are appended, so opening it
-*before* sending a message is how you see that turn's first output. It ends when the session ends,
-and it ends if you fall too far behind — reconnect with the last `id` you saw and the log hands
-back exactly what you missed. `Accept: application/json` returns one page and is what
-`session.events()` uses.
+*before* sending a message is how you see that turn's first output. While a turn is running it
+also carries the model's output as it arrives — `assistant_delta` and `tool_call_delta` events.
+Those are never written to the log and carry no `id`: the id is the resume cursor, and a client
+that reconnects gets the completed message from the log rather than the tokens that built it. The
+stream ends when the session ends, and it ends if you fall too far behind — reconnect with the
+last `id` you saw and the log hands back exactly what you missed. `Accept: application/json`
+returns one page and is what `session.events()` uses.
 
 ## Lifecycle
 
