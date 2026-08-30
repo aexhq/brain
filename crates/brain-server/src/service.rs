@@ -23,6 +23,9 @@ pub struct ServerResources {
     pub loops: Arc<WorkerPool>,
     pub environments: Arc<EnvironmentRegistry>,
     pub models: Arc<dyn ModelBindingStore>,
+    /// What the server knows about a session that its records do not: the journal it was
+    /// given. Written when the session is created so a restart can restore it.
+    pub metadata: Arc<crate::metadata::ServerMetadata>,
 }
 
 #[derive(Clone)]
@@ -228,6 +231,7 @@ impl BrainApi for ServerApi {
             presentation: request.presentation.clone(),
             environments: request.environments.clone(),
             tool_bindings: request.tool_bindings.clone(),
+            history: request.history.clone(),
         };
         let creation = self
             .resources
@@ -238,6 +242,13 @@ impl BrainApi for ServerApi {
                 api_error(error)
             })?;
         let session_id = creation.session_id().clone();
+        // The one thing about a session that its own records never carry. Written now so a
+        // restart can give the session back the journal it has been writing to; best
+        // effort, like everything else here.
+        self.resources
+            .metadata
+            .put_journal(session_id.as_str(), creation.journal_id().as_str())
+            .map_err(api_error)?;
         if let Err(error) = self.ownership.claim_new(creation.session_id()).await {
             creation
                 .fail("session_ownership_failed", &error.to_string())
@@ -402,7 +413,9 @@ impl BrainApi for ServerApi {
             .map_err(api_error)
     }
 
-    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::Event)> {
+    fn subscribe(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
         self.resources.kernel.subscribe()
     }
 

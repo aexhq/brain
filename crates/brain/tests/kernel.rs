@@ -9,8 +9,7 @@ use std::{
 
 use async_trait::async_trait;
 use brain::{
-    AppendRecord, JournalStore, Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor,
-    SegmentJournal, SessionHandle, SessionUpdate, ToolExecutor,
+    Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor, SessionHandle, ToolExecutor,
 };
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopIdentity, AttachmentId, Decision,
@@ -185,7 +184,7 @@ impl ModelExecutor for SlowModel {
 }
 
 #[tokio::test]
-async fn intent_precedes_model_effect_and_reopen_preserves_events() {
+async fn intent_precedes_model_effect() {
     let data_dir = temporary_directory();
     let (publisher, _worker) = telemetry_channel();
     let config = || KernelConfig {
@@ -241,83 +240,10 @@ async fn intent_precedes_model_effect_and_reopen_preserves_events() {
         events.events.len(),
         "every committed event enters the bounded telemetry queue"
     );
+    let _ = recorded_at_ms;
     drop(handle);
     drop(kernel);
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-    let reopened = Kernel::open(config(), publisher).unwrap();
-    let reopened_events = reopened.events(&session_id, 0, 100).unwrap().events;
-    assert_eq!(reopened_events.len(), events.events.len());
-    assert_eq!(
-        reopened_events
-            .iter()
-            .map(|event| event.recorded_at_ms)
-            .collect::<Vec<_>>(),
-        recorded_at_ms
-    );
-    drop(reopened);
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    fs::remove_dir_all(data_dir).unwrap();
-}
-
-#[tokio::test]
-async fn restart_marks_an_inflight_turn_ambiguous_instead_of_guessing() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let config = || KernelConfig {
-        data_dir: data_dir.clone(),
-        max_decisions_per_turn: 8,
-        loop_executor: Arc::new(ScriptedLoop {
-            calls: AtomicUsize::new(0),
-        }),
-        model_executor: Arc::new(ScriptedModel),
-        tool_executor: Arc::new(NoTools),
-    };
-    let kernel = Kernel::open(config(), publisher.clone()).unwrap();
-    let handle = start(&kernel, request());
-    let session_id = handle.id().clone();
-    drop(handle);
-    drop(kernel);
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-    let store = SegmentJournal::open(
-        &data_dir.join("journal"),
-        brain::DEFAULT_IDEMPOTENCY_RETENTION,
-    )
-    .unwrap();
-    let row = store.session_row(&session_id).unwrap().unwrap();
-    store
-        .append(
-            &session_id,
-            row.through_sequence,
-            &[AppendRecord::new(
-                "model_intent",
-                serde_json::json!({"operation_id":"op_interrupted"}),
-            )],
-            SessionUpdate {
-                status: Some(brain_protocol::SessionStatus::Running),
-                context: None,
-                configuration: None,
-            },
-        )
-        .unwrap();
-    drop(store);
-
-    let recovered = Kernel::open(config(), publisher).unwrap();
-    assert!(matches!(
-        recovered.session(&session_id).unwrap().status,
-        brain_protocol::SessionStatus::Failed
-    ));
-    let events = recovered.events(&session_id, 0, 100).unwrap();
-    assert_eq!(
-        events.events.last().unwrap().event_type,
-        "recovery_interrupted"
-    );
-    assert_eq!(
-        events.events.last().unwrap().data["classification"],
-        "operation_outcome_ambiguous"
-    );
-    drop(recovered);
     fs::remove_dir_all(data_dir).unwrap();
 }
 
@@ -506,7 +432,17 @@ fn temporary_directory() -> PathBuf {
 /// then the sealed configuration completes it. There is no shortcut past `begin_session`,
 /// so these tests exercise the same validation the production path enforces.
 fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
-    let resolved = ResolvedSessionRequest {
+    let resolved = resolved_from(&sealed);
+    kernel
+        .begin_session(&resolved)
+        .unwrap()
+        .complete(sealed)
+        .unwrap()
+}
+
+fn resolved_from(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
+    ResolvedSessionRequest {
+        history: Vec::new(),
         agentloop_identity: sealed.agentloop_identity.clone(),
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
@@ -531,10 +467,443 @@ fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
                 grant: binding.grant.clone(),
             })
             .collect(),
+    }
+}
+
+/// A client watching a session must see the model's output while the turn is running.
+///
+/// The actor received deltas from the model and pushed them into a local buffer, and
+/// nothing forwarded them: the whole assistant message appeared at once, when the turn was
+/// already over, so there was no first token to wait for. The deltas are not journalled --
+/// recording one would be a durable write per token -- so a subscription is the only place
+/// they appear.
+#[tokio::test]
+async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
+    let data_dir = temporary_directory();
+    let (publisher, _worker) = telemetry_channel();
+    let kernel = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 8,
+            loop_executor: Arc::new(ScriptedLoop {
+                calls: AtomicUsize::new(0),
+            }),
+            model_executor: Arc::new(ScriptedModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+    // Subscribed before the turn, the way a client opens a stream and then sends.
+    let mut live = kernel.subscribe();
+    let handle = start(&kernel, request());
+    handle
+        .message(MessageRequest {
+            content: serde_json::json!("hello"),
+        })
+        .await
+        .unwrap();
+
+    let mut streamed = Vec::new();
+    let mut recorded_after_the_first_delta = false;
+    let mut seen_delta = false;
+    while let Ok((_, event)) = live.try_recv() {
+        match event {
+            brain_protocol::LiveEvent::Streaming(streaming) => {
+                seen_delta = true;
+                streamed.push(streaming);
+            }
+            brain_protocol::LiveEvent::Recorded(record) => {
+                if seen_delta && record.event_type == "model_result" {
+                    recorded_after_the_first_delta = true;
+                }
+            }
+        }
+    }
+    drop(handle);
+    drop(kernel);
+    // Best-effort: the writer thread may still hold a segment open, and the assertions
+    // below are what this test is for.
+    let _ = std::fs::remove_dir_all(data_dir);
+
+    let text = streamed
+        .iter()
+        .find(|streaming| streaming.event_type == "assistant_delta")
+        .map(|streaming| streaming.data.clone());
+    assert_eq!(
+        text,
+        Some(serde_json::json!({ "text": "hello" })),
+        "the model's output never reached a subscriber: {streamed:?}"
+    );
+    assert!(
+        recorded_after_the_first_delta,
+        "the delta did not arrive before the record that holds the finished message, so it \
+         is not telling a watcher anything the journal was not already going to"
+    );
+}
+
+/// Records an agentloop that was told what the session is continuing.
+struct RecordsHistory {
+    seen: Arc<std::sync::Mutex<Option<Vec<serde_json::Value>>>>,
+}
+
+#[async_trait]
+impl LoopExecutor for RecordsHistory {
+    async fn activate(
+        &self,
+        _agentloop: &AgentloopIdentity,
+        input: ActivationInput,
+    ) -> Result<ActivationOutput, KernelError> {
+        let mut context = input.context;
+        if let Observation::SessionStarted { history } = &input.observation {
+            *self.seen.lock().unwrap() = Some(history.clone());
+            // What a real loop does with history: turn it into its own context. The shape
+            // is the loop's business, which is exactly why Brain hands over the events
+            // rather than a context it built itself.
+            for event in history {
+                context.items.push(event.clone());
+            }
+            return Ok(ActivationOutput {
+                context,
+                decision: Decision::Finish { result: None },
+            });
+        }
+        Ok(ActivationOutput {
+            context,
+            decision: Decision::Finish {
+                result: Some(serde_json::json!({"ok": true})),
+            },
+        })
+    }
+}
+
+fn history_of(count: u64) -> Vec<brain_protocol::HistoryEvent> {
+    (1..=count)
+        .map(|sequence| brain_protocol::HistoryEvent {
+            sequence,
+            recorded_at_ms: Some(1_787_846_400_000 + sequence),
+            event_type: "output_emitted".to_owned(),
+            data: serde_json::json!({"content": format!("earlier {sequence}")}),
+        })
+        .collect()
+}
+
+fn start_with_history(
+    kernel: &Kernel,
+    sealed: SealedSessionConfig,
+    history: Vec<brain_protocol::HistoryEvent>,
+) -> Result<SessionHandle, KernelError> {
+    let mut resolved = resolved_from(&sealed);
+    resolved.history = history;
+    kernel.begin_session(&resolved)?.complete(sealed)
+}
+
+/// A session created with history has that history in its journal, and the agentloop is
+/// told about it before anything is asked of it.
+///
+/// This is what replaces surviving a restart: the process that held the session is gone,
+/// the application kept the events it was already receiving, and it hands them back.
+#[tokio::test]
+async fn a_session_can_be_created_with_prior_history() {
+    let data_dir = temporary_directory();
+    let (publisher, _worker) = telemetry_channel();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let kernel = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 8,
+            loop_executor: Arc::new(RecordsHistory {
+                seen: Arc::clone(&seen),
+            }),
+            model_executor: Arc::new(ScriptedModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+
+    let handle = start_with_history(&kernel, request(), history_of(3)).unwrap();
+    let session_id = handle.id().clone();
+    // The actor announces history on its own task, so give it the moment it needs.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let told = seen.lock().unwrap().clone();
+    let told = told.expect("the agentloop must be told the session is continuing one");
+    assert_eq!(told.len(), 3, "every event handed back must reach the loop");
+    assert_eq!(told[0]["content"], "earlier 1");
+
+    // And the journal holds them, so reading the session back reads the whole conversation.
+    let events = kernel.events(&session_id, 0, 100).unwrap().events;
+    let replayed: Vec<&str> = events
+        .iter()
+        .filter(|event| event.event_type == "output_emitted")
+        .filter_map(|event| event.data["content"].as_str())
+        .collect();
+    assert_eq!(replayed, vec!["earlier 1", "earlier 2", "earlier 3"]);
+
+    // Sequences are this session's own, dense from its first record: the numbers the
+    // caller supplied name positions in a session that no longer exists.
+    let sequences: Vec<u64> = events.iter().map(|event| event.sequence).collect();
+    let dense: Vec<u64> = (1..=sequences.len() as u64).collect();
+    assert_eq!(
+        sequences, dense,
+        "records must be numbered densely from one, whatever the caller's numbering was"
+    );
+
+    drop(handle);
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// History that skips or repeats a position is a conversation with a piece missing or
+/// moved, and writing it down as though it were whole would make the journal a worse
+/// record than no journal.
+#[tokio::test]
+async fn history_out_of_order_is_refused() {
+    let data_dir = temporary_directory();
+    let (publisher, _worker) = telemetry_channel();
+    let kernel = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 8,
+            loop_executor: Arc::new(ScriptedLoop {
+                calls: AtomicUsize::new(0),
+            }),
+            model_executor: Arc::new(ScriptedModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+
+    let mut history = history_of(3);
+    history[2].sequence = 2;
+    let error = match start_with_history(&kernel, request(), history) {
+        Ok(_) => panic!("a conversation with a repeated position must not be accepted"),
+        Err(error) => error,
     };
-    kernel
-        .begin_session(&resolved)
-        .unwrap()
-        .complete(sealed)
-        .unwrap()
+    assert!(
+        error.to_string().contains("out of order"),
+        "the refusal must say what is wrong with it: {error}"
+    );
+
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// What Brain leaves on disk, asserted rather than assumed.
+///
+/// The journal, and nothing else. It used to be the journal plus a state file per session
+/// plus a SQLite database of encrypted credentials plus the key that opened it — all of it
+/// there so a session could outlive its process, which sessions no longer do. A file
+/// appearing here again should be a decision someone made, not something noticed later.
+#[tokio::test]
+async fn the_journal_is_the_only_thing_written() {
+    let data_dir = temporary_directory();
+    let (publisher, _worker) = telemetry_channel();
+    let kernel = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 8,
+            loop_executor: Arc::new(OrdinaryTurn),
+            model_executor: Arc::new(ScriptedModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+    let handle = start(&kernel, request());
+    for _ in 0..10 {
+        handle
+            .message(MessageRequest {
+                content: serde_json::json!("hello"),
+            })
+            .await
+            .unwrap();
+    }
+    drop(handle);
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let mut found = Vec::new();
+    fn walk(dir: &std::path::Path, prefix: &str, found: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
+            if entry.metadata().is_ok_and(|meta| meta.is_dir()) {
+                walk(&entry.path(), &format!("{name}/"), found);
+            } else {
+                found.push(name);
+            }
+        }
+    }
+    walk(&data_dir, "", &mut found);
+    found.sort();
+    let _ = fs::remove_dir_all(&data_dir);
+
+    assert!(
+        found.iter().all(|name| name.ends_with(".journal")),
+        "the journal is the only thing Brain writes; found {found:?}"
+    );
+    assert!(
+        !found.is_empty(),
+        "ten turns must have written a journal segment"
+    );
+}
+
+/// A turn shaped like a real one: ask the model, emit what it said, finish.
+struct OrdinaryTurn;
+
+#[async_trait]
+impl LoopExecutor for OrdinaryTurn {
+    async fn activate(
+        &self,
+        _agentloop: &AgentloopIdentity,
+        input: ActivationInput,
+    ) -> Result<ActivationOutput, KernelError> {
+        let mut context = input.context;
+        let decision = match input.observation {
+            Observation::UserMessage { content } => {
+                context.items.push(content);
+                Decision::Model {
+                    request: ModelRequest {
+                        messages: vec![serde_json::json!({"role": "user", "content": "hello"})],
+                        response_format: None,
+                        max_output_tokens: Some(16),
+                    },
+                }
+            }
+            Observation::ModelCompleted { response } => {
+                context.items.push(response);
+                Decision::Emit {
+                    event: serde_json::json!({"type": "assistant_message", "content": "ok"}),
+                }
+            }
+            _ => Decision::Finish {
+                result: Some(serde_json::json!({"ok": true})),
+            },
+        };
+        Ok(ActivationOutput { context, decision })
+    }
+}
+
+/// A caller's history cannot wear a lifecycle record's name.
+///
+/// A restart derives a session's status by reading these kinds back out of the journal, so
+/// a client able to supply `session_ended` as history could describe a session that never
+/// happened and have a later restart believe it.
+#[tokio::test]
+async fn history_cannot_forge_a_lifecycle_record() {
+    let data_dir = temporary_directory();
+    let (publisher, _worker) = telemetry_channel();
+    let kernel = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 8,
+            loop_executor: Arc::new(ScriptedLoop {
+                calls: AtomicUsize::new(0),
+            }),
+            model_executor: Arc::new(ScriptedModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+
+    for forged in ["session_ended", "turn_started", "session_created"] {
+        let history = vec![brain_protocol::HistoryEvent {
+            sequence: 1,
+            recorded_at_ms: None,
+            event_type: forged.to_owned(),
+            data: serde_json::json!({}),
+        }];
+        let error = match start_with_history(&kernel, request(), history) {
+            Ok(_) => panic!("history must not be allowed to carry {forged}"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains(forged),
+            "the refusal must name the record it refused: {error}"
+        );
+    }
+
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// A restored session whose server metadata was lost is readable, and says why it cannot
+/// continue.
+///
+/// The `journal_id` is the server's record, not the session's, and writing it is best
+/// effort like everything else. When it is gone the honest answer is the reason, not a
+/// session that accepts messages and fails every turn without explaining itself.
+#[tokio::test]
+async fn a_session_without_its_metadata_is_readable_and_refuses_turns() {
+    let data_dir = temporary_directory();
+    let (publisher, _worker) = telemetry_channel();
+    let kernel = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 8,
+            loop_executor: Arc::new(ScriptedLoop {
+                calls: AtomicUsize::new(0),
+            }),
+            model_executor: Arc::new(ScriptedModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+    let handle = start(&kernel, request());
+    let session_id = handle.id().clone();
+    drop(handle);
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Reopened without ever being told the journal ids: exactly the case where the
+    // metadata write did not survive.
+    let (publisher, _worker) = telemetry_channel();
+    let reopened = Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 8,
+            loop_executor: Arc::new(ScriptedLoop {
+                calls: AtomicUsize::new(0),
+            }),
+            model_executor: Arc::new(ScriptedModel),
+            tool_executor: Arc::new(NoTools),
+        },
+        publisher,
+    )
+    .unwrap();
+
+    assert!(
+        reopened.session(&session_id).is_ok(),
+        "the session must still be listed and readable"
+    );
+    assert!(
+        !reopened
+            .events(&session_id, 0, 100)
+            .unwrap()
+            .events
+            .is_empty(),
+        "its history must still be readable"
+    );
+    let error = match reopened.handle(&session_id) {
+        Ok(_) => panic!("a session with no journal id must not take another turn"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("metadata"),
+        "the refusal must explain itself: {error}"
+    );
+
+    drop(reopened);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
 }

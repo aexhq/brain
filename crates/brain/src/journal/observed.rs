@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use brain_protocol::{Event, Identity, Session, SessionId};
+use brain_protocol::{Event, Identity, LiveEvent, Session, SessionId};
 use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
 use tokio::sync::broadcast;
 
@@ -20,7 +20,7 @@ const LIVE_BACKLOG: usize = 1_024;
 pub(crate) struct ObservedJournal {
     inner: Arc<dyn JournalStore>,
     telemetry: TelemetryPublisher,
-    live: broadcast::Sender<(SessionId, Event)>,
+    live: broadcast::Sender<(SessionId, LiveEvent)>,
 }
 
 impl ObservedJournal {
@@ -37,8 +37,17 @@ impl ObservedJournal {
     /// Subscribing before reading a page is what closes the gap between the two: a record
     /// appended in between arrives on the subscription, and the reader drops what it has
     /// already seen by sequence.
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<(SessionId, Event)> {
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<(SessionId, LiveEvent)> {
         self.live.subscribe()
+    }
+
+    /// A handle for publishing model output as it arrives.
+    ///
+    /// Handed to a session's actor so that a turn in progress can be watched. It goes to
+    /// subscribers and nowhere else: nothing here is written to the journal, because the
+    /// journal's business is what a turn produced and a token is not that yet.
+    pub(crate) fn live_sender(&self) -> broadcast::Sender<(SessionId, LiveEvent)> {
+        self.live.clone()
     }
 
     fn publish(&self, record: &JournalRecord) {
@@ -46,13 +55,13 @@ impl ObservedJournal {
         // or not anyone is listening, and drops for a receiver that has fallen behind.
         let _ = self.live.send((
             record.session_id.clone(),
-            Event {
+            LiveEvent::Recorded(Event {
                 event_id: record.event_id(),
                 sequence: record.sequence,
                 recorded_at_ms: record.recorded_at_ms,
                 event_type: record.kind.clone(),
                 data: record.payload.clone(),
-            },
+            }),
         ));
         let _ = self.telemetry.try_publish(TelemetryRecord {
             kind: TelemetryKind::Event,
@@ -113,6 +122,17 @@ impl JournalStore for ObservedJournal {
         limit: usize,
     ) -> Result<Vec<JournalRecord>, KernelError> {
         self.inner.records_after(session_id, after, limit)
+    }
+
+    fn adopt_journal_ids(
+        &self,
+        journals: &std::collections::HashMap<String, String>,
+    ) -> Result<(), KernelError> {
+        self.inner.adopt_journal_ids(journals)
+    }
+
+    fn take_restored(&self, session_id: &SessionId) -> Result<bool, KernelError> {
+        self.inner.take_restored(session_id)
     }
 
     fn delete_ended(&self, session_id: &SessionId) -> Result<(), KernelError> {

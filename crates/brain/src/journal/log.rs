@@ -113,12 +113,6 @@ enum Message {
         location: Location,
         bytes: Arc<Vec<u8>>,
     },
-    /// `None` deletes the session's state file. Later states for one session supersede
-    /// earlier ones, so the writer keeps only the last of each batch.
-    State {
-        session_id: String,
-        bytes: Option<Vec<u8>>,
-    },
     Reclaim(u64),
 }
 
@@ -140,16 +134,17 @@ struct Tail {
 }
 
 impl SegmentLog {
-    /// Open the log at `directory`. Every session state it holds goes to `visit_state`
-    /// first, then every frame goes to `visit_frame` in write order — states first
-    /// because a frame belongs to a session and says nothing about which. A torn tail —
-    /// the last frame of a crashed process — is truncated away.
+    /// Open the log at `directory`, handing every frame to `visit` in write order. A torn
+    /// tail — the last frame of a crashed process — is truncated away.
+    ///
+    /// Rebuilding sessions from these frames is the reader's business, not the log's:
+    /// `SegmentJournal` folds them back into an index. The log's own job is to hand every
+    /// frame over in the order it was written, and to stop at a torn tail.
     pub(crate) fn open(
         directory: &Path,
-        visit_state: impl FnMut(&str, &[u8]) -> Result<(), KernelError>,
         visit: impl FnMut(Frame<'_>, Location) -> Result<(), KernelError>,
     ) -> Result<Self, KernelError> {
-        Self::open_inner(directory, visit_state, visit, None)
+        Self::open_inner(directory, visit, None)
     }
 
     /// A log whose writer waits, before its first frame, until `release` is set. A test
@@ -161,19 +156,15 @@ impl SegmentLog {
         directory: &Path,
         release: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Self, KernelError> {
-        Self::open_inner(directory, |_, _| Ok(()), |_, _| Ok(()), Some(release))
+        Self::open_inner(directory, |_, _| Ok(()), Some(release))
     }
 
     fn open_inner(
         directory: &Path,
-        mut visit_state: impl FnMut(&str, &[u8]) -> Result<(), KernelError>,
         mut visit: impl FnMut(Frame<'_>, Location) -> Result<(), KernelError>,
         release: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Self, KernelError> {
         fs::create_dir_all(directory).map_err(log_error)?;
-        for (session_id, bytes) in read_states(directory)? {
-            visit_state(&session_id, &bytes)?;
-        }
         let mut segments = Vec::new();
         for entry in fs::read_dir(directory).map_err(log_error)? {
             let path = entry.map_err(log_error)?.path();
@@ -293,37 +284,6 @@ impl SegmentLog {
         Ok(location)
     }
 
-    /// Replace a session's state on disk. Queued behind whatever is already waiting, so
-    /// it lands before any record appended after this call, and superseded by any later
-    /// state for the same session that is still queued.
-    pub(crate) fn write_state(
-        &self,
-        session_id: &str,
-        payload: &serde_json::Value,
-    ) -> Result<(), KernelError> {
-        usable_as_a_file_name(session_id)?;
-        let bytes =
-            serde_json::to_vec(payload).map_err(|error| KernelError::Journal(error.to_string()))?;
-        self.reserve(bytes.len() as u64)?;
-        self.send(Message::State {
-            session_id: session_id.to_owned(),
-            bytes: Some(bytes),
-        })
-    }
-
-    /// Forget a session's state. Its records stay in the log until their segments are
-    /// reclaimed, exactly as they did when its state was a frame among them.
-    pub(crate) fn remove_state(&self, session_id: &str) -> Result<(), KernelError> {
-        usable_as_a_file_name(session_id)?;
-        self.send(Message::State {
-            session_id: session_id.to_owned(),
-            bytes: None,
-        })
-    }
-
-    /// Read a run of frames, in order, handing each to `read`. A page of a session's
-    /// history is a contiguous stretch of one segment, so the whole stretch comes back
-    /// in one read rather than one per record.
     pub(crate) fn read_many<T>(
         &self,
         locations: &[Location],
@@ -426,19 +386,10 @@ fn spawn_writer(
         let mut written: Vec<(u64, u64)> = Vec::new();
         // Bytes this batch took off the queue, released once they are on the disk.
         let mut drained = 0_u64;
-        // The last state seen for each session in this batch. A session that finished
-        // three turns while the disk was busy is written once, not three times.
-        let mut states: HashMap<String, Option<Vec<u8>>> = HashMap::new();
         while let Ok(first) = receiver.recv() {
             let mut next = Some(first);
             while let Some(message) = next.take() {
                 match message {
-                    Message::State { session_id, bytes } => {
-                        drained += bytes.as_ref().map_or(0, |bytes| bytes.len() as u64);
-                        // A state superseded before it reached the disk is dropped, and
-                        // its allowance goes back with the one that replaced it.
-                        states.insert(session_id, bytes);
-                    }
                     Message::Frame { location, bytes } => {
                         if let Some(release) = held.take() {
                             // Capped so a test that never releases fails on its own
@@ -486,9 +437,6 @@ fn spawn_writer(
                 }
                 next = receiver.try_recv().ok();
             }
-            // State before the segment flush: a record that a state must precede is
-            // still in the `BufWriter`, so the state reaches the disk first.
-            write_states(&directory, states.drain());
             if let Some((_, file)) = open.as_mut() {
                 let _ = file.flush();
             }
@@ -501,7 +449,6 @@ fn spawn_writer(
             }
             release(&backlog, std::mem::take(&mut drained));
         }
-        write_states(&directory, states.drain());
         release(&backlog, drained);
         if let Some((_, mut file)) = open.take() {
             let _ = file.flush();
@@ -527,76 +474,6 @@ fn fail(backlog: &Backlog, reason: String) {
         queue.failure.get_or_insert(reason);
     }
     room.notify_all();
-}
-
-/// Replace or delete each session's state file. A state is written to a temporary file
-/// and renamed over the old one, so a reader — including the next process to open this
-/// directory — sees either the whole previous state or the whole new one.
-fn write_states(directory: &Path, states: impl Iterator<Item = (String, Option<Vec<u8>>)>) {
-    for (session_id, bytes) in states {
-        let Some(path) = state_path(directory, &session_id) else {
-            continue;
-        };
-        match bytes {
-            None => {
-                let _ = fs::remove_file(&path);
-            }
-            Some(bytes) => {
-                let staging = path.with_extension("state-writing");
-                if fs::write(&staging, &bytes).is_ok() {
-                    let _ = fs::rename(&staging, &path);
-                }
-            }
-        }
-    }
-}
-
-/// Every session state in `directory`, as raw bytes. A file left behind by a crash
-/// between write and rename carries the `.state-writing` extension and is removed rather
-/// than read: the state it was replacing is still whole under its own name.
-fn read_states(directory: &Path) -> Result<Vec<(String, Vec<u8>)>, KernelError> {
-    let mut states = Vec::new();
-    for entry in fs::read_dir(directory).map_err(log_error)? {
-        let path = entry.map_err(log_error)?.path();
-        match path.extension().and_then(|extension| extension.to_str()) {
-            Some("state-writing") => {
-                let _ = fs::remove_file(&path);
-            }
-            Some("state") => {
-                let Some(session_id) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                    continue;
-                };
-                let session_id = session_id.to_owned();
-                states.push((session_id, fs::read(&path).map_err(log_error)?));
-            }
-            _ => {}
-        }
-    }
-    // Deterministic, so a directory listing's order cannot change what recovery sees.
-    states.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(states)
-}
-
-fn state_path(directory: &Path, session_id: &str) -> Option<PathBuf> {
-    usable_as_a_file_name(session_id).ok()?;
-    Some(directory.join(format!("{session_id}.state")))
-}
-
-/// Whether `name` can be a file in a directory and nothing else. A session id becomes a
-/// state file's name, and ids are generated rather than supplied, so this never fires
-/// today — it is here so that it fires loudly rather than silently if that changes.
-fn usable_as_a_file_name(name: &str) -> Result<(), KernelError> {
-    let usable = !name.is_empty()
-        && name.len() <= 128
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
-    if usable {
-        return Ok(());
-    }
-    Err(KernelError::Journal(
-        "session id cannot name a state file".into(),
-    ))
 }
 
 fn reclaim_segments(directory: &Path, keep_from: u64) {
@@ -751,37 +628,13 @@ mod tests {
     }
 
     fn collect(directory: &Path) -> (SegmentLog, Vec<(u64, String, Location)>) {
-        let (log, seen, _) = collect_all(directory);
-        (log, seen)
-    }
-
-    /// Frames and session states, in the order `open` hands them over.
-    #[allow(clippy::type_complexity)]
-    fn collect_all(
-        directory: &Path,
-    ) -> (
-        SegmentLog,
-        Vec<(u64, String, Location)>,
-        Vec<(String, serde_json::Value)>,
-    ) {
         let mut seen = Vec::new();
-        let mut states = Vec::new();
-        let log = SegmentLog::open(
-            directory,
-            |session_id, bytes| {
-                states.push((
-                    session_id.to_owned(),
-                    serde_json::from_slice(bytes).unwrap(),
-                ));
-                Ok(())
-            },
-            |frame, location| {
-                seen.push((frame.sequence, frame.kind.to_string(), location));
-                Ok(())
-            },
-        )
+        let log = SegmentLog::open(directory, |frame, location| {
+            seen.push((frame.sequence, frame.kind.to_string(), location));
+            Ok(())
+        })
         .unwrap();
-        (log, seen, states)
+        (log, seen)
     }
 
     #[test]
@@ -951,79 +804,7 @@ mod tests {
             error.to_string().contains("the disk went away"),
             "the failure must say what happened: {error}"
         );
-        assert!(log.write_state("ses_test", &body).is_err());
 
-        drop(log);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn a_session_state_is_replaced_rather_than_accumulated() {
-        let directory = temporary();
-        let (log, _, states) = collect_all(&directory);
-        assert!(states.is_empty());
-
-        for turn in 1..=8 {
-            log.write_state("ses_test", &serde_json::json!({ "turn": turn }))
-                .unwrap();
-        }
-        drop(log);
-
-        let (log, _, states) = collect_all(&directory);
-        assert_eq!(states.len(), 1, "one file per session, not one per write");
-        assert_eq!(states[0].0, "ses_test");
-        assert_eq!(states[0].1, serde_json::json!({ "turn": 8 }));
-        drop(log);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn a_removed_session_state_does_not_come_back() {
-        let directory = temporary();
-        let (log, _, _) = collect_all(&directory);
-        log.write_state("ses_test", &serde_json::json!({ "turn": 1 }))
-            .unwrap();
-        log.remove_state("ses_test").unwrap();
-        drop(log);
-
-        let (log, _, states) = collect_all(&directory);
-        assert!(states.is_empty());
-        drop(log);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    /// A crash between writing the replacement and renaming it over the old one leaves a
-    /// staging file. The state under its own name is still whole, so the staging file is
-    /// discarded rather than read.
-    #[test]
-    fn a_half_written_state_is_discarded_and_the_whole_one_kept() {
-        let directory = temporary();
-        let (log, _, _) = collect_all(&directory);
-        log.write_state("ses_test", &serde_json::json!({ "turn": 1 }))
-            .unwrap();
-        drop(log);
-        fs::write(directory.join("ses_test.state-writing"), b"{\"turn\":").unwrap();
-
-        let (log, _, states) = collect_all(&directory);
-        assert_eq!(states.len(), 1);
-        assert_eq!(states[0].1, serde_json::json!({ "turn": 1 }));
-        assert!(!directory.join("ses_test.state-writing").exists());
-        drop(log);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    /// A session id becomes a file name. Ids are generated today, so this only fires if
-    /// that changes — which is the point.
-    #[test]
-    fn a_session_id_that_could_escape_the_directory_is_refused() {
-        let directory = temporary();
-        let (log, _, _) = collect_all(&directory);
-        for hostile in ["../escape", "a/b", "", "."] {
-            assert!(
-                log.write_state(hostile, &serde_json::json!({})).is_err(),
-                "{hostile:?} must not name a state file"
-            );
-        }
         drop(log);
         fs::remove_dir_all(directory).unwrap();
     }

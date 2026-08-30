@@ -12,9 +12,9 @@ use std::{
 
 use brain_protocol::{
     AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EnvironmentRequirement, EventPage,
-    Identity, JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId,
-    RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, Session, SessionId,
-    SessionStatus, ToolBinding, operation_id,
+    HistoryEvent, Identity, JournalId, MessageRequest, ModelBinding, ModelPresentation,
+    OperationId, RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, Session,
+    SessionId, SessionStatus, ToolBinding, operation_id,
 };
 use brain_telemetry::TelemetryPublisher;
 use rand::RngCore;
@@ -59,9 +59,25 @@ pub struct SessionHandle {
     cancelled: Arc<AtomicBool>,
 }
 
+/// Record kinds a restart reads a session's state out of, and which a caller therefore
+/// cannot supply as history.
+const RESERVED_KINDS: [&str; 7] = [
+    "session_creation_started",
+    "session_created",
+    "session_creation_failed",
+    "session_ended",
+    "turn_started",
+    "turn_finished",
+    "turn_failed",
+];
+
 pub struct CreatingSession {
     kernel: Kernel,
     row: SessionRow,
+    /// The events this session opened with, carried in memory to the actor so the
+    /// agentloop can be told about them. They are already in the journal; this is not a
+    /// second copy of the record, it is the one delivery of it.
+    history: Vec<serde_json::Value>,
 }
 
 impl Kernel {
@@ -87,8 +103,51 @@ impl Kernel {
                 sessions: Mutex::new(HashMap::new()),
             }),
         };
-        kernel.recover_interrupted()?;
+        kernel.interrupt_unfinished_turns()?;
         Ok(kernel)
+    }
+
+    /// Closes turns that the previous process did not finish.
+    ///
+    /// A session still `Running` after the journal has been read was mid-turn when that
+    /// process stopped. Whether the model call or the tool call actually happened is not
+    /// knowable from here, so Brain says exactly that and returns the session to Idle
+    /// rather than deciding on the client's behalf. Agentloops, tools and SDK clients see
+    /// `turn_interrupted` on the event stream and resume or abandon as suits them.
+    fn interrupt_unfinished_turns(&self) -> Result<(), KernelError> {
+        for session in self.inner.store.session_summaries()? {
+            if !matches!(session.status, SessionStatus::Running) {
+                continue;
+            }
+            self.inner.store.append(
+                &session.session_id,
+                session.through_sequence,
+                &[AppendRecord::new(
+                    "turn_interrupted",
+                    serde_json::json!({
+                        "message": "Brain restarted while this turn was in flight; whether its effects reached the model or a tool is not recorded"
+                    }),
+                )],
+                SessionUpdate {
+                    status: Some(SessionStatus::Idle),
+                    context: None,
+                    configuration: None,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Hands restored sessions the journal ids the server kept for them.
+    ///
+    /// Called once at startup, before anything is served. A session the server has no
+    /// record of stays readable and refuses turns rather than taking them against a
+    /// journal it cannot name.
+    pub fn adopt_journal_ids(
+        &self,
+        journals: &std::collections::HashMap<String, String>,
+    ) -> Result<(), KernelError> {
+        self.inner.store.adopt_journal_ids(journals)
     }
 
     pub fn begin_session(
@@ -110,6 +169,8 @@ impl Kernel {
             context: serde_json::to_value(context).map_err(json_error)?,
             presentation_identity: presentation.identity,
         };
+        // The creation record is the session's own genesis and comes first; the events the
+        // caller handed back are what happened before it, and follow.
         self.inner.store.create_session(
             &row,
             AppendRecord::new(
@@ -117,9 +178,12 @@ impl Kernel {
                 serde_json::to_value(request).map_err(json_error)?,
             ),
         )?;
+        let mut row = row;
+        let history = self.replay_history(&mut row, &request.history)?;
         Ok(CreatingSession {
             kernel: self.clone(),
             row,
+            history,
         })
     }
 
@@ -154,7 +218,48 @@ impl Kernel {
             .store
             .session_row(session_id)?
             .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
-        self.spawn(row)
+        // A session this process created was told about its history when it was created,
+        // and telling it again would replay a conversation it is already holding. One
+        // rebuilt from the journal has an agentloop that has never seen any of it.
+        if row.journal_id.as_str().is_empty() {
+            return Err(KernelError::InvalidState(
+                "this session was restored from the journal but the server no longer has the \
+                 metadata it needs to continue it; its history can be read, and a new session \
+                 can be created with that history"
+                    .into(),
+            ));
+        }
+        let history = if self.inner.store.take_restored(session_id)? {
+            self.restored_history(session_id)?
+        } else {
+            Vec::new()
+        };
+        self.spawn(row, history)
+    }
+
+    /// A restored session's own records, to hand back to its agentloop.
+    ///
+    /// Bounded at the same count the create API accepts as history. A conversation longer
+    /// than that restores and can be read, but is not replayed into a loop: handing over
+    /// part of a conversation as though it were the whole of it would be a worse answer
+    /// than declining to.
+    fn restored_history(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Vec<serde_json::Value>, KernelError> {
+        const MOST: usize = 10_000;
+        let mut history = Vec::new();
+        let mut after = 0;
+        loop {
+            let page = self.inner.store.records_after(session_id, after, 1_000)?;
+            let Some(last) = page.last() else { break };
+            after = last.sequence;
+            history.extend(page.into_iter().map(|record| record.payload));
+            if history.len() > MOST {
+                return Ok(Vec::new());
+            }
+        }
+        Ok(history)
     }
 
     /// Every record appended from now on, across every session.
@@ -166,7 +271,7 @@ impl Kernel {
     /// a notification that it moved. A slow reader must never be able to hold up a turn.
     pub fn subscribe(
         &self,
-    ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::Event)> {
+    ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
         self.inner.store.subscribe()
     }
 
@@ -311,38 +416,6 @@ impl Kernel {
         self.inner.store.idempotency_get(scope, key, &identity)
     }
 
-    fn recover_interrupted(&self) -> Result<(), KernelError> {
-        // Summaries, not rows: recovery reads only status, id and sequence, and at
-        // startup there is one live row per session on disk to clone otherwise.
-        for row in self.inner.store.session_summaries()? {
-            let classification = match row.status {
-                SessionStatus::Creating => Some("session_creation_interrupted"),
-                SessionStatus::Running => Some("operation_outcome_ambiguous"),
-                SessionStatus::Idle | SessionStatus::Ended | SessionStatus::Failed => None,
-            };
-            let Some(classification) = classification else {
-                continue;
-            };
-            self.inner.store.append(
-                &row.session_id,
-                row.through_sequence,
-                &[AppendRecord::new(
-                    "recovery_interrupted",
-                    serde_json::json!({
-                        "classification": classification,
-                        "message": "Brain restarted before the in-flight transition reached a terminal record"
-                    }),
-                )],
-                SessionUpdate {
-                    status: Some(SessionStatus::Failed),
-                    context: None,
-                    configuration: None,
-                },
-            )?;
-        }
-        Ok(())
-    }
-
     pub fn idempotency_put<T: serde::Serialize>(
         &self,
         scope: &str,
@@ -357,7 +430,64 @@ impl Kernel {
             .idempotency_put(scope, key, &identity, response)
     }
 
-    fn spawn(&self, row: SessionRow) -> Result<SessionHandle, KernelError> {
+    /// Writes the caller's events into the new session's journal, and hands back what the
+    /// agentloop should be told.
+    ///
+    /// The sequences the caller supplies are checked but not kept: they name positions in
+    /// the session those events came from, and this is a different session, whose records
+    /// are numbered densely from its own beginning. What they are good for is catching a
+    /// caller that has lost or reordered part of the conversation, which is worth failing
+    /// on rather than silently writing down.
+    fn replay_history(
+        &self,
+        row: &mut SessionRow,
+        history: &[HistoryEvent],
+    ) -> Result<Vec<serde_json::Value>, KernelError> {
+        if history.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut previous = 0;
+        for event in history {
+            // A caller's history cannot wear a lifecycle kind. These are the records the
+            // journal is read back by -- a restart derives a session's status from them --
+            // so accepting `session_ended` or `turn_started` from a client would let it
+            // describe a session that never happened, and a later restart would believe it.
+            if RESERVED_KINDS.contains(&event.event_type.as_str()) {
+                return Err(KernelError::InvalidState(format!(
+                    "session history may not contain `{}`: lifecycle records are Brain's own, \
+                     and a restart reads a session's state back out of them",
+                    event.event_type
+                )));
+            }
+            if event.sequence <= previous {
+                return Err(KernelError::InvalidState(format!(
+                    "session history is out of order at sequence {}: events must ascend, and \
+                     one that does not is a conversation with a piece missing or moved",
+                    event.sequence
+                )));
+            }
+            previous = event.sequence;
+        }
+
+        let records: Vec<AppendRecord> = history
+            .iter()
+            .map(|event| AppendRecord::new(&event.event_type, event.data.clone()))
+            .collect();
+        let saved = self.inner.store.append(
+            &row.session_id,
+            row.through_sequence,
+            &records,
+            SessionUpdate::default(),
+        )?;
+        row.through_sequence += saved.len() as u64;
+        Ok(history.iter().map(|event| event.data.clone()).collect())
+    }
+
+    fn spawn(
+        &self,
+        row: SessionRow,
+        history: Vec<serde_json::Value>,
+    ) -> Result<SessionHandle, KernelError> {
         let mut sessions = self
             .inner
             .sessions
@@ -381,6 +511,8 @@ impl Kernel {
             self.inner.config.max_decisions_per_turn,
             receiver,
             cancelled.clone(),
+            self.inner.store.live_sender(),
+            history,
         )?;
         tokio::spawn(actor.run());
         sessions.insert(
@@ -463,7 +595,7 @@ impl CreatingSession {
         self.row.through_sequence += saved.len() as u64;
         self.row.status = SessionStatus::Idle;
         self.row.configuration = configuration;
-        self.kernel.spawn(self.row)
+        self.kernel.spawn(self.row, self.history)
     }
 
     pub fn fail(mut self, code: &str, message: &str) -> Result<(), KernelError> {
@@ -791,6 +923,7 @@ mod tests {
 
     fn resolved() -> ResolvedSessionRequest {
         ResolvedSessionRequest {
+            history: Vec::new(),
             agentloop_identity: AgentloopIdentity::new(digest()),
             brain_configuration: serde_json::json!({}),
             model: ModelBinding {

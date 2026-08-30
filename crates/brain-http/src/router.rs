@@ -245,12 +245,23 @@ async fn events<A: BrainApi>(
             let (mut live, mut sent_through, session_id) = state?;
             loop {
                 match live.recv().await {
-                    Ok((session, event))
+                    Ok((session, brain_protocol::LiveEvent::Recorded(event)))
                         if session == session_id && event.sequence > sent_through =>
                     {
                         sent_through = event.sequence;
                         let carry = (!is_last(&event)).then_some((live, sent_through, session_id));
-                        return Some((event, carry));
+                        return Some((sse(event), carry));
+                    }
+                    // Model output, mid-turn. It has no sequence and is not in the journal,
+                    // so it is passed straight through and leaves the cursor alone: the
+                    // cursor is a position in the record, and this is not a record. A client
+                    // that reconnects resumes from the last record it saw and is given the
+                    // completed message rather than the tokens.
+                    Ok((session, brain_protocol::LiveEvent::Streaming(streaming)))
+                        if session == session_id =>
+                    {
+                        let carry = Some((live, sent_through, session_id));
+                        return Some((streaming_sse(streaming), carry));
                     }
                     Ok(_) => continue,
                     // Lagged, or the kernel is gone. The stream ends rather than
@@ -259,8 +270,7 @@ async fn events<A: BrainApi>(
                     Err(_) => return None,
                 }
             }
-        })
-        .map(sse);
+        });
 
     Ok(Sse::new(backlog.chain(following)).into_response())
 }
@@ -279,6 +289,17 @@ fn sse(event: brain_protocol::Event) -> Result<SseEvent, std::convert::Infallibl
         .id(event.sequence.to_string())
         .event(event.event_type)
         .data(data))
+}
+
+/// Model output on the wire.
+///
+/// No `id`: the id is the resume cursor, and this is not something a client can resume to
+/// -- it was never journalled. Giving it one would hand back a cursor that means nothing.
+fn streaming_sse(
+    streaming: brain_protocol::StreamingEvent,
+) -> Result<SseEvent, std::convert::Infallible> {
+    let data = serde_json::to_string(&streaming.data).expect("JSON event payload is serializable");
+    Ok(SseEvent::default().event(streaming.event_type).data(data))
 }
 
 fn invalid(message: impl Into<String>) -> HttpError {
