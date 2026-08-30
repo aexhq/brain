@@ -29,7 +29,7 @@ use aes_gcm::{
 };
 use brain::KernelError;
 use brain_protocol::ModelSelection;
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -185,8 +185,7 @@ impl ServerMetadata {
     ) -> Result<(String, String), KernelError> {
         let cipher = Aes256Gcm::new_from_slice(self.key.as_slice())
             .map_err(|error| KernelError::Executor(error.to_string()))?;
-        let mut nonce = [0_u8; NONCE_BYTES];
-        rand::rng().fill_bytes(&mut nonce);
+        let nonce: [u8; NONCE_BYTES] = rand::rng().random();
         // The binding id is authenticated but not encrypted: a credential lifted from one
         // identity must not decrypt under another.
         let sealed = cipher
@@ -298,8 +297,7 @@ fn load_or_create_key(path: &Path) -> Result<[u8; KEY_BYTES], KernelError> {
         }
         Err(_) => {}
     }
-    let mut key = [0_u8; KEY_BYTES];
-    rand::rng().fill_bytes(&mut key);
+    let key: [u8; KEY_BYTES] = rand::rng().random();
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

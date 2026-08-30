@@ -104,13 +104,13 @@ mod tests {
     use crate::metadata::ServerMetadata;
 
     fn temporary() -> std::path::PathBuf {
+        // A counter, not the clock: tests start close enough together that two can share a
+        // timestamp, and two tests in one directory share a metadata log.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
             "brain-bindings-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&path).unwrap();
         path
