@@ -11,7 +11,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     KernelError, ModelExecutor,
-    model::{Accumulator, Dialect, anthropic, openai, sse::SseDecoder},
+    model::{Accumulator, Dialect, MaxTokensField, anthropic, openai, sse::SseDecoder},
 };
 
 const MAX_ERROR_BYTES: usize = 16 * 1024;
@@ -36,6 +36,7 @@ pub struct RemoteModelConfig {
     pub api_key: String,
     pub timeout: Duration,
     pub dialect: Dialect,
+    pub max_tokens_field: MaxTokensField,
 }
 
 /// The half of a model client that does not depend on who is calling: the validated
@@ -52,34 +53,43 @@ pub struct RemoteModelClient {
     transport: Arc<ModelTransport>,
     api_key: Zeroizing<String>,
     dialect: Dialect,
+    max_tokens_field: MaxTokensField,
+}
+
+/// The endpoint rules every provider base URL must satisfy, wherever it comes
+/// from: the generated catalog (checked again at generation time), a custom
+/// providers file, or an override flag.
+pub fn validate_base_url(base_url: &str) -> Result<(), KernelError> {
+    if base_url.trim().is_empty() {
+        return Err(KernelError::InvalidState(
+            "model base URL is required".into(),
+        ));
+    }
+    let url = reqwest::Url::parse(base_url).map_err(|error| {
+        KernelError::InvalidState(format!("model base URL is invalid: {error}"))
+    })?;
+    let loopback_http = url.scheme() == "http"
+        && url
+            .host_str()
+            .and_then(|host| host.trim_matches(['[', ']']).parse::<IpAddr>().ok())
+            .is_some_and(|ip| ip.is_loopback());
+    if !(url.scheme() == "https" || loopback_http)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(KernelError::InvalidState(
+            "model base URL must use HTTPS or literal loopback HTTP and cannot contain credentials, query, or fragment"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 impl ModelTransport {
     pub fn new(base_url: &str, timeout: Duration) -> Result<Self, KernelError> {
-        if base_url.trim().is_empty() {
-            return Err(KernelError::InvalidState(
-                "model base URL is required".into(),
-            ));
-        }
-        let url = reqwest::Url::parse(base_url).map_err(|error| {
-            KernelError::InvalidState(format!("model base URL is invalid: {error}"))
-        })?;
-        let loopback_http = url.scheme() == "http"
-            && url
-                .host_str()
-                .and_then(|host| host.trim_matches(['[', ']']).parse::<IpAddr>().ok())
-                .is_some_and(|ip| ip.is_loopback());
-        if !(url.scheme() == "https" || loopback_http)
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            return Err(KernelError::InvalidState(
-                "model base URL must use HTTPS or literal loopback HTTP and cannot contain credentials, query, or fragment"
-                    .into(),
-            ));
-        }
+        validate_base_url(base_url)?;
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -98,7 +108,12 @@ impl RemoteModelClient {
     /// Builds a transport of its own. For a caller that makes one call, or a test.
     pub fn new(config: RemoteModelConfig) -> Result<Self, KernelError> {
         let transport = ModelTransport::new(&config.base_url, config.timeout)?;
-        Self::bound(Arc::new(transport), config.api_key, config.dialect)
+        Self::bound(
+            Arc::new(transport),
+            config.api_key,
+            config.dialect,
+            config.max_tokens_field,
+        )
     }
 
     /// Binds a credential to a transport the caller already holds. This is the shape a
@@ -107,6 +122,7 @@ impl RemoteModelClient {
         transport: Arc<ModelTransport>,
         api_key: String,
         dialect: Dialect,
+        max_tokens_field: MaxTokensField,
     ) -> Result<Self, KernelError> {
         if api_key.trim().is_empty() {
             return Err(KernelError::InvalidState(
@@ -117,6 +133,7 @@ impl RemoteModelClient {
             transport,
             api_key: Zeroizing::new(api_key),
             dialect,
+            max_tokens_field,
         })
     }
 
@@ -127,7 +144,9 @@ impl RemoteModelClient {
         request: &ModelRequest,
     ) -> Result<Value, KernelError> {
         match self.dialect {
-            Dialect::OpenAiChat => openai::body(&binding.model, presentation, request),
+            Dialect::OpenAiChat => {
+                openai::body(&binding.model, presentation, request, self.max_tokens_field)
+            }
             Dialect::AnthropicMessages => anthropic::body(&binding.model, presentation, request),
         }
     }
@@ -397,6 +416,7 @@ mod tests {
             api_key: "test-key".into(),
             timeout: Duration::from_secs(2),
             dialect: Dialect::OpenAiChat,
+            max_tokens_field: MaxTokensField::default(),
         })
         .unwrap();
         let mut events = Vec::new();
@@ -489,6 +509,7 @@ mod tests {
             api_key: "sk-ant".into(),
             timeout: Duration::from_secs(2),
             dialect: Dialect::AnthropicMessages,
+            max_tokens_field: MaxTokensField::default(),
         })
         .unwrap();
         let result = client
@@ -562,6 +583,7 @@ mod tests {
             api_key: "test-key".into(),
             timeout: Duration::from_secs(2),
             dialect: Dialect::OpenAiChat,
+            max_tokens_field: MaxTokensField::default(),
         })
         .unwrap();
         let request = ModelRequest {
@@ -598,6 +620,7 @@ mod tests {
             api_key: "test-key".into(),
             timeout: Duration::from_secs(2),
             dialect: Dialect::OpenAiChat,
+            max_tokens_field: MaxTokensField::default(),
         })
         .unwrap();
         let error = client
@@ -634,6 +657,7 @@ mod tests {
             api_key: "test-key".into(),
             timeout: Duration::from_secs(2),
             dialect: Dialect::OpenAiChat,
+            max_tokens_field: MaxTokensField::default(),
         })
         .unwrap();
         let error = client

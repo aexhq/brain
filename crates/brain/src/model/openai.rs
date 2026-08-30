@@ -8,6 +8,7 @@ use brain_protocol::{
 use serde_json::{Map, Value, json};
 
 use crate::KernelError;
+use crate::model::MaxTokensField;
 
 pub fn path() -> &'static str {
     "/chat/completions"
@@ -112,6 +113,7 @@ pub fn body(
     model: &str,
     presentation: &ModelPresentation,
     request: &ModelRequest,
+    max_tokens_field: MaxTokensField,
 ) -> Result<Value, KernelError> {
     let mut messages: Vec<Value> = Vec::with_capacity(request.messages.len() + 1);
     if !presentation.system.is_empty() {
@@ -154,7 +156,13 @@ pub fn body(
         body["response_format"] = format.clone();
     }
     if let Some(tokens) = request.max_output_tokens {
-        body["max_completion_tokens"] = json!(tokens);
+        // OpenAI deprecated `max_tokens`; most OpenAI-compatible servers only
+        // know it. The provider's registry entry says which one it speaks.
+        let field = match max_tokens_field {
+            MaxTokensField::MaxCompletionTokens => "max_completion_tokens",
+            MaxTokensField::MaxTokens => "max_tokens",
+        };
+        body[field] = json!(tokens);
     }
     Ok(body)
 }
@@ -281,6 +289,30 @@ mod tests {
     use crate::model::sse::SseDecoder;
     use brain_protocol::ToolDefinition;
 
+    #[test]
+    fn the_output_token_cap_lands_in_the_field_the_provider_speaks() {
+        let request = ModelRequest {
+            messages: vec![Message::user_text("hi")],
+            response_format: None,
+            max_output_tokens: Some(64),
+        };
+        let modern = body(
+            "m",
+            &presentation(),
+            &request,
+            MaxTokensField::MaxCompletionTokens,
+        )
+        .unwrap();
+        assert_eq!(modern["max_completion_tokens"], 64);
+        assert!(modern.get("max_tokens").is_none());
+        let compatible = body("m", &presentation(), &request, MaxTokensField::MaxTokens).unwrap();
+        assert_eq!(compatible["max_tokens"], 64);
+        assert!(
+            compatible.get("max_completion_tokens").is_none(),
+            "an OpenAI-compatible server must not receive the field it does not know"
+        );
+    }
+
     fn decode_stream(bytes: &[u8]) -> Result<Vec<ModelStreamEvent>, KernelError> {
         let mut decoder = SseDecoder::new(256 * 1024);
         let mut out = Vec::new();
@@ -322,7 +354,13 @@ mod tests {
             response_format: None,
             max_output_tokens: None,
         };
-        let body = body("test/model", &presentation(), &request).unwrap();
+        let body = body(
+            "test/model",
+            &presentation(),
+            &request,
+            MaxTokensField::default(),
+        )
+        .unwrap();
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[1]["role"], "user");
@@ -351,7 +389,13 @@ mod tests {
             response_format: None,
             max_output_tokens: None,
         };
-        let body = body("test/model", &presentation(), &request).unwrap();
+        let body = body(
+            "test/model",
+            &presentation(),
+            &request,
+            MaxTokensField::default(),
+        )
+        .unwrap();
         assert_eq!(body["messages"][1]["content"], r#"{"stdout":""}"#);
     }
 

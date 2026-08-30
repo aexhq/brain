@@ -183,8 +183,10 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
 function validateSessionOptions(options: CreateSessionOptions): void {
   if (options === null || typeof options !== "object") throw new TypeError("session options are required");
   inspectBrain(options.brain);
+  // Shape only, mirroring the contract's Identifier: which providers exist is
+  // the server deployment's registry, so an unknown one fails there, not here.
   const provider = options.model?.provider;
-  if (provider !== "vercel-ai-gateway" && provider !== "openai" && provider !== "anthropic") throw new TypeError("unsupported model provider");
+  if (typeof provider !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(provider)) throw new TypeError("model provider is invalid");
   if (provider === "vercel-ai-gateway" && !/^[^/\s]+\/[^/\s][^\s]*$/u.test(options.model.name)) throw new TypeError("model name must include its provider namespace");
   if (typeof options.model.name !== "string" || options.model.name.length === 0 || options.model.name.length > 256 || /\s/u.test(options.model.name)) throw new TypeError("model name is invalid");
   if (typeof options.model.apiKey !== "string" || options.model.apiKey.trim() === "") throw new TypeError("model apiKey is required");

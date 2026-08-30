@@ -13,7 +13,11 @@ model: {
 }
 ```
 
-Three providers ship built in:
+Around 185 providers ship built in, generated from the [models.dev](https://models.dev) catalog:
+every provider whose API speaks one of the two wire dialects Brain implements. The catalog is a
+snapshot vendored in the repo and refreshed manually with `tools/fetch-models-dev.mjs`, so the
+provider set is a reviewed, released artifact rather than a runtime fetch. Three entries are worth
+naming:
 
 | Provider | Wire dialect | Model names | Default endpoint |
 | --- | --- | --- | --- |
@@ -21,10 +25,38 @@ Three providers ship built in:
 | `openai` | OpenAI Chat Completions | bare, `gpt-5-mini` | `https://api.openai.com/v1` |
 | `anthropic` | Anthropic Messages | bare, `claude-sonnet-4-5` | `https://api.anthropic.com/v1` |
 
+The rest -- `deepseek`, `openrouter`, `fireworks-ai`, and so on -- take bare model ids over the
+OpenAI dialect. Admission is open: a model id the catalog has not heard of still passes, so a
+day-zero model works without waiting for a snapshot refresh; the catalog's metadata (context
+windows, capabilities, cost) applies when the model is known.
+
 Message history is provider-neutral -- one shape in your agent loop and in the journal, rendered
-into the provider's wire format at request build time. Endpoints can be overridden per provider:
-`BRAIN_MODEL_BASE_URL` (the gateway), `BRAIN_OPENAI_BASE_URL` (also the hook for any
-OpenAI-compatible server such as Ollama or vLLM), and `BRAIN_ANTHROPIC_BASE_URL`.
+into the provider's wire format at request build time.
+
+## Custom providers
+
+The catalog is data feeding a normalized provider layer, and a deployment can feed that layer
+itself. `--providers-file` (`BRAIN_PROVIDERS_FILE`) names a JSON file of definitions in the same
+shape, merged over the catalog -- a definition with a catalog provider's name supersedes it:
+
+```json
+{
+  "providers": [
+    {
+      "name": "ollama-local",
+      "dialect": "openai_chat",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "max_tokens_field": "max_tokens",
+      "models": [{ "id": "llama3.3", "context_window_tokens": 131072 }]
+    }
+  ]
+}
+```
+
+`dialect` is `openai_chat` or `anthropic_messages`; `max_tokens_field` says whether the endpoint
+takes `max_completion_tokens` (OpenAI itself) or the original `max_tokens` (most compatible
+servers). Endpoints can also be overridden per provider without a file: `BRAIN_MODEL_BASE_URL`
+(the gateway), `BRAIN_OPENAI_BASE_URL`, and `BRAIN_ANTHROPIC_BASE_URL`.
 
 ## Pinned for the session
 

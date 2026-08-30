@@ -63,9 +63,17 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     if let Some(url) = &config.anthropic_base_url {
         base_url_overrides.push(("anthropic".to_owned(), url.clone()));
     }
+    let custom_providers = match &config.providers_file {
+        Some(path) => brain_server::load_providers_file(path)?,
+        None => Vec::new(),
+    };
+    let providers = Arc::new(brain::model::ProviderRegistry::compose(
+        custom_providers,
+        &base_url_overrides,
+    )?);
     let model = Arc::new(ServerModelExecutor::new(
         models.clone(),
-        &base_url_overrides,
+        &providers,
         Duration::from_secs(120),
     )?);
     let http = reqwest::Client::builder()
@@ -101,6 +109,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         loops,
         environments,
         models,
+        providers,
         metadata,
     }))
 }

@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use brain::{
     KernelError, ModelExecutor,
-    model::{Dialect, ModelTransport, RemoteModelClient},
+    model::{Dialect, MaxTokensField, ModelTransport, ProviderRegistry, RemoteModelClient},
 };
 use brain_protocol::{
     Identity, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelSelection,
@@ -11,6 +11,27 @@ use brain_protocol::{
 };
 
 pub use crate::metadata::ModelCredential;
+
+/// The `--providers-file` format: custom provider definitions in the same
+/// shape as the registry's `ProviderDef`, merged over the built-in catalog.
+/// An error here is fatal at startup — the operator wrote this file, unlike
+/// the third-party catalog rows, so it must be exactly right.
+pub fn load_providers_file(
+    path: &std::path::Path,
+) -> Result<Vec<brain::model::ProviderDef>, KernelError> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ProvidersFile {
+        providers: Vec<brain::model::ProviderDef>,
+    }
+    let raw = std::fs::read_to_string(path).map_err(|error| {
+        KernelError::InvalidState(format!("providers file {}: {error}", path.display()))
+    })?;
+    let file: ProvidersFile = serde_json::from_str(&raw).map_err(|error| {
+        KernelError::InvalidState(format!("providers file {}: {error}", path.display()))
+    })?;
+    Ok(file.providers)
+}
 
 pub trait ModelBindingStore: Send + Sync + 'static {
     fn put(&self, binding_id: &str, selection: &ModelSelection) -> Result<(), KernelError>;
@@ -50,45 +71,50 @@ pub struct ServerModelExecutor {
     bindings: Arc<dyn ModelBindingStore>,
     /// One connection pool per provider for the process. The credential is the only
     /// part of a model call that varies by session, and a credential is a header,
-    /// not a client.
-    transports: HashMap<&'static str, (Dialect, Arc<ModelTransport>)>,
+    /// not a client. `reqwest` pools connect lazily, so building one per registered
+    /// provider up front costs memory, not sockets.
+    transports: HashMap<String, (Dialect, MaxTokensField, Arc<ModelTransport>)>,
 }
 
 impl ServerModelExecutor {
-    /// `base_url_overrides` replaces a provider's registry default endpoint, keyed by
-    /// provider name. Unknown names are rejected so a typo cannot silently leave the
-    /// default in place.
+    /// Builds a transport for every provider in the composed registry. A row whose
+    /// transport cannot be built is skipped with a warning rather than aborting
+    /// startup: custom providers and override flags were already validated fatally
+    /// when the registry composed, so what fails here is third-party catalog data,
+    /// and third-party data must not brick the server.
     pub fn new(
         bindings: Arc<dyn ModelBindingStore>,
-        base_url_overrides: &[(String, String)],
+        providers: &ProviderRegistry,
         timeout: Duration,
     ) -> Result<Self, KernelError> {
-        for (name, _) in base_url_overrides {
-            if brain::model::provider_spec(name).is_none() {
-                return Err(KernelError::InvalidState(format!(
-                    "unknown model provider {name} in base URL overrides"
-                )));
+        let mut transports = HashMap::new();
+        for def in providers.iter() {
+            match ModelTransport::new(&def.base_url, timeout) {
+                Ok(transport) => {
+                    transports.insert(
+                        def.name.clone(),
+                        (def.dialect, def.max_tokens_field, Arc::new(transport)),
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(provider = %def.name, %error, "skipping provider whose transport cannot be built");
+                }
             }
         }
-        let mut transports = HashMap::new();
-        for spec in brain::model::PROVIDERS {
-            let base_url = base_url_overrides
-                .iter()
-                .find(|(name, _)| name == spec.name)
-                .map(|(_, url)| url.as_str())
-                .unwrap_or(spec.default_base_url);
-            transports.insert(
-                spec.name,
-                (
-                    spec.dialect,
-                    Arc::new(ModelTransport::new(base_url, timeout)?),
-                ),
-            );
+        if transports.is_empty() {
+            return Err(KernelError::InvalidState(
+                "no model provider transport could be built".into(),
+            ));
         }
         Ok(Self {
             bindings,
             transports,
         })
+    }
+
+    #[cfg(test)]
+    fn has_transport(&self, provider: &str) -> bool {
+        self.transports.contains_key(provider)
     }
 }
 
@@ -107,13 +133,19 @@ impl ModelExecutor for ServerModelExecutor {
             .bindings
             .get(&binding.binding_id)?
             .ok_or_else(|| KernelError::Executor("model binding is unavailable".into()))?;
-        let Some((dialect, transport)) = self.transports.get(credential.provider.as_str()) else {
+        let Some((dialect, max_tokens_field, transport)) =
+            self.transports.get(credential.provider.as_str())
+        else {
             return Err(KernelError::Executor(
                 "model provider is unsupported".into(),
             ));
         };
-        let client =
-            RemoteModelClient::bound(transport.clone(), credential.api_key.to_string(), *dialect)?;
+        let client = RemoteModelClient::bound(
+            transport.clone(),
+            credential.api_key.to_string(),
+            *dialect,
+            *max_tokens_field,
+        )?;
         client
             .execute(
                 operation_id,
@@ -158,23 +190,117 @@ mod tests {
     }
 
     #[test]
-    fn a_typoed_base_url_override_is_rejected_instead_of_silently_ignored() {
+    fn every_registered_provider_gets_a_transport_including_the_catalog() {
         let directory = temporary();
         let store = Arc::new(store(&directory));
-        let result = ServerModelExecutor::new(
-            store.clone(),
-            &[("open-ai".into(), "https://example.invalid".into())],
+        let executor = ServerModelExecutor::new(
+            store,
+            &ProviderRegistry::default_set(),
             Duration::from_secs(1),
+        )
+        .unwrap();
+        for provider in ["vercel-ai-gateway", "openai", "anthropic", "deepseek"] {
+            assert!(
+                executor.has_transport(provider),
+                "{provider} should have a transport"
+            );
+        }
+        assert!(!executor.has_transport("bedrock"));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    /// The whole custom-provider path, end to end: a providers file defines a
+    /// provider the catalog has never heard of, the registry admits it, and a
+    /// session bound to it streams a model call against its endpoint speaking
+    /// the dialect and compat the file declared.
+    #[tokio::test]
+    async fn a_providers_file_provider_serves_a_model_call_end_to_end() {
+        use axum::{Router, body::Bytes, routing::post};
+        use brain_protocol::{Identity, Message, ModelPresentation, ModelRequest, OperationId};
+        use tokio::sync::oneshot;
+
+        let (observed_tx, observed_rx) = oneshot::channel();
+        let observed_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(observed_tx)));
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |body: Bytes| {
+                let observed_tx = observed_tx.clone();
+                async move {
+                    observed_tx.lock().unwrap().take().unwrap().send(body).unwrap();
+                    (
+                        [("content-type", "text/event-stream")],
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                    )
+                }
+            }),
         );
-        assert!(matches!(result, Err(KernelError::InvalidState(_))));
-        assert!(
-            ServerModelExecutor::new(
-                store,
-                &[("anthropic".into(), "https://example.invalid".into())],
-                Duration::from_secs(1),
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let directory = temporary();
+        let file = directory.join("providers.json");
+        std::fs::write(
+            &file,
+            format!(
+                r#"{{"providers": [{{
+                    "name": "local-llm",
+                    "dialect": "openai_chat",
+                    "base_url": "http://{address}/v1",
+                    "max_tokens_field": "max_tokens",
+                    "models": [{{"id": "test-model", "context_window_tokens": 8192}}]
+                }}]}}"#
+            ),
+        )
+        .unwrap();
+        let custom = load_providers_file(&file).unwrap();
+        let registry = ProviderRegistry::compose(custom, &[]).unwrap();
+        assert!(registry.model("local-llm", "test-model").is_some());
+
+        let store = Arc::new(store(&directory));
+        store
+            .put(
+                "model_local",
+                &ModelSelection {
+                    provider: "local-llm".into(),
+                    name: "test-model".into(),
+                    api_key: "local-key".into(),
+                },
             )
-            .is_ok()
+            .unwrap();
+        let executor = ServerModelExecutor::new(store, &registry, Duration::from_secs(2)).unwrap();
+        let result = executor
+            .execute(
+                &OperationId::new("op_custom"),
+                &Identity::of(&"request").unwrap(),
+                &ModelBinding {
+                    binding_id: "model_local".into(),
+                    model: "test-model".into(),
+                },
+                &ModelPresentation {
+                    system: String::new(),
+                    tools: Vec::new(),
+                    response_format: None,
+                },
+                ModelRequest {
+                    messages: vec![Message::user_text("hi")],
+                    response_format: None,
+                    max_output_tokens: Some(16),
+                },
+                &mut |_| {},
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            &result.message.content[0],
+            brain_protocol::ContentBlock::Text { text } if text == "ok"
+        ));
+        let body: serde_json::Value = serde_json::from_slice(&observed_rx.await.unwrap()).unwrap();
+        assert_eq!(
+            body["max_tokens"], 16,
+            "the file's max_tokens_field compat must reach the wire"
         );
+        assert!(body.get("max_completion_tokens").is_none());
         let _ = std::fs::remove_dir_all(directory);
     }
 

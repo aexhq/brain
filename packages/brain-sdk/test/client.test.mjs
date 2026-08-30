@@ -114,3 +114,32 @@ test("runs async Environment lifecycle, methods, and streams through the generat
   assert.equal((await handle(command("call", { type: "call", name: "echo", input: "ok" }, "att_1"))).receipt.output, ">ok");
   assert.deepEqual((await handle(command("stream", { type: "call", name: "values", input: 3 }, "att_1"))).receipt.output, [0, 1, 2]);
 });
+
+test("admits any identifier-shaped provider client-side and leaves admission to the server", async () => {
+  const fetchStub = async (input, init) => {
+    const request = new Request(input, init);
+    if (request.url.endsWith("/v1/agentloops")) return Response.json({ digest: "a".repeat(64), status: "admitted" });
+    return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", through_sequence: 1, presentation_identity: "b".repeat(64) });
+  };
+  const client = new Brain({ baseUrl: "https://brain.example/", token: "t", fetch: fetchStub });
+  // A custom provider the SDK has never heard of passes shape validation.
+  const session = await client.sessions.create({
+    model: { provider: "ollama-local", name: "llama3.3", apiKey: "k" },
+    brain: simple(),
+  });
+  assert.equal(session.id, "ses_12345678901234567890");
+  // Shape rules still hold.
+  await assert.rejects(
+    client.sessions.create({ model: { provider: "not a provider", name: "m", apiKey: "k" }, brain: simple() }),
+    /model provider is invalid/u,
+  );
+  await assert.rejects(
+    client.sessions.create({ model: { provider: "", name: "m", apiKey: "k" }, brain: simple() }),
+    /model provider is invalid/u,
+  );
+  // The gateway keeps its namespace rule.
+  await assert.rejects(
+    client.sessions.create({ model: { provider: "vercel-ai-gateway", name: "gpt-5-mini", apiKey: "k" }, brain: simple() }),
+    /provider namespace/u,
+  );
+});

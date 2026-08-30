@@ -45,16 +45,10 @@
       "additionalProperties": false,
       "required": ["provider", "name", "api_key"],
       "properties": {
-        "provider": { "enum": ["vercel-ai-gateway", "openai", "anthropic"] },
+        "provider": { "$ref": "#/$defs/Identifier" },
         "name": { "type": "string", "pattern": "^\\S{1,256}$", "maxLength": 256 },
         "api_key": { "type": "string", "minLength": 1, "maxLength": 16384 }
-      },
-      "allOf": [
-        {
-          "if": { "properties": { "provider": { "const": "vercel-ai-gateway" } } },
-          "then": { "properties": { "name": { "pattern": "^[^/\\s]+/[^/\\s][^\\s]*$" } } }
-        }
-      ]
+      }
     },
     "ModelPresentation": {
       "type": "object",

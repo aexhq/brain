@@ -19,17 +19,6 @@ export type Identity = string;
  * via the `definition` "SessionId".
  */
 export type SessionId = string;
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ModelSelection".
- */
-export type ModelSelection = {
-  [k: string]: unknown | undefined;
-} & {
-  provider: "vercel-ai-gateway" | "openai" | "anthropic";
-  name: string;
-  api_key: string;
-};
 
 export interface BrainSessionAPIV1 {
   contract: "session/v1";
@@ -63,6 +52,15 @@ export interface EnvironmentRequirement {
   environment_id: Identifier;
   configuration: unknown;
   lifecycle_policy: "session" | "shared" | "external";
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ModelSelection".
+ */
+export interface ModelSelection {
+  provider: Identifier;
+  name: string;
+  api_key: string;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

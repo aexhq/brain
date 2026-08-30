@@ -5,6 +5,7 @@ use brain_protocol::{
 
 mod accumulator;
 mod anthropic;
+mod generated;
 mod http;
 mod openai;
 mod registry;
@@ -14,8 +15,12 @@ mod sse;
 pub use sse::SseDecoder;
 
 pub use accumulator::Accumulator;
-pub use http::{ModelTransport, RemoteModelClient, RemoteModelConfig};
-pub use registry::{Dialect, PROVIDERS, ProviderSpec, provider_spec, valid_model_name};
+pub use generated::{CATALOG, SNAPSHOT_DIGEST};
+pub use http::{ModelTransport, RemoteModelClient, RemoteModelConfig, validate_base_url};
+pub use registry::{
+    Dialect, MaxTokensField, ModelCost, ModelDef, ProviderDef, ProviderRegistry, valid_model_name,
+    valid_provider_name,
+};
 
 use brain_protocol::Identity;
 

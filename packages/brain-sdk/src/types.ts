@@ -26,22 +26,30 @@ export interface ToolDefinition {
   readonly outputSchema?: Readonly<Record<string, unknown>>;
 }
 
+export type { KnownProviderId } from "./generated/providers.js";
+import type { KnownProviderId } from "./generated/providers.js";
+
 export interface VercelAiGatewayModel {
   readonly provider: "vercel-ai-gateway";
   readonly name: `${string}/${string}`;
   readonly apiKey: string;
 }
-export interface OpenAiModel {
-  readonly provider: "openai";
+/** A provider from the generated models.dev catalog. */
+export interface KnownProviderModel {
+  readonly provider: Exclude<KnownProviderId, "vercel-ai-gateway">;
   readonly name: string;
   readonly apiKey: string;
 }
-export interface AnthropicModel {
-  readonly provider: "anthropic";
+/** Any other provider the server's deployment registers (a custom providers
+ * file, a proxy). `string & {}` keeps autocomplete for the known ids while
+ * still accepting an arbitrary identifier; unknown providers are rejected by
+ * the server, not the client. */
+export interface CustomProviderModel {
+  readonly provider: string & {};
   readonly name: string;
   readonly apiKey: string;
 }
-export type ModelSelection = VercelAiGatewayModel | OpenAiModel | AnthropicModel;
+export type ModelSelection = VercelAiGatewayModel | KnownProviderModel | CustomProviderModel;
 
 /** The provider-neutral message model. History is authored once, in this
  * shape; Brain renders it per provider dialect at request build time. */
@@ -131,7 +139,7 @@ export interface WireEnvironmentRequirement {
 export interface WireCreateSessionRequest {
   agentloop_identity: string;
   brain_configuration: unknown;
-  model: { provider: ModelSelection["provider"]; name: string; api_key: string };
+  model: { provider: string; name: string; api_key: string };
   presentation: { system: string; tools: WireToolDefinition[]; response_format?: unknown };
   environments: WireEnvironmentRequirement[];
   tool_bindings: WireToolBinding[];
