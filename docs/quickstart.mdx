@@ -35,9 +35,9 @@ const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
 
 const session = await brain.sessions.create({
   model: {
-    provider: "vercel-ai-gateway",
-    name: "openai/gpt-5-mini",
-    apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
+    provider: "openai",
+    name: "gpt-5-mini",
+    apiKey: process.env.OPENAI_API_KEY!,
   },
   brain: pi(),
   system: "Answer briefly and directly.",
