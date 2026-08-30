@@ -1,0 +1,22 @@
+{
+  "name": "modal",
+  "class": "sandbox",
+  "version": "modal 1.5.4 (Python SDK)",
+  "notes": [
+    "gVisor rather than a microVM, and the only sandbox in the set with GPU on the sandbox side. Where GPU work matters there is no substitute, and the CPU multiplier is the price of having it.",
+    "The one subject not driven with the runner's own HTTP client. Modal publishes no HTTP API for sandboxes: all three of its SDKs speak protobuf over gRPC to a control plane its own documentation calls \"not a public API, and can change without warning\". These numbers therefore come through Modal's Python SDK, in a long-lived sidecar process the driver starts once (subjects/modal/sidecar.py), and carry the Python interpreter, Modal's gRPC stack and one pipe hop where every other hosted subject carries reqwest. Compare a Modal row to a Daytona row with that in mind.",
+    "Hosted, so the network round trip to Modal's region is inside every number; the class says so. It dominates them: an exec returns after one round trip and its first output byte or its exit code after a second, so the client's distance to whichever worker Modal placed the sandbox on is most of what these figures measure. Measured from a developer machine off Modal's network the unit round trip moved between ~73 ms and ~245 ms across sandboxes created minutes apart, so a Modal row taken anywhere but beside their region says more about the observer than about Modal.",
+    "The latency probes each create their own sandbox, so a ttfb row and a round_trip row from one run were measured against different sandboxes on different workers. Do not read the gap between them as a Modal property: back to back on one sandbox, time-to-first-byte and time-to-completion for a trivial command are the same figure to within a millisecond, because each is one round trip after the exec.",
+    "Run at Modal's documented defaults — their standard debian_slim image, no CPU, memory or timeout override — because a rival measured at settings we chose is not the rival anyone else runs.",
+    "The sidecar needs an interpreter with modal==1.5.4 installed; point BENCH_MODAL_PYTHON at it. The driver prints the SDK version the sidecar actually loaded, so a drift from the pin above is visible in the run log.",
+    "No throughput probe: the sidecar is one process behind one pipe, so requests are serialised. Driving it concurrently would measure the sidecar's queue and call the result Modal's throughput.",
+    "No cost probe. The runner has no cost measurement — a price is a citation, not something it can run — and Modal's per-second sandbox price with its CPU multiplier belongs beside a published table rather than in a manifest that only latency reads.",
+    "destroy returns once Modal accepts the termination, not once the sandbox is released: releasing one takes a measured ~31s, which would put thirteen minutes of teardown inside a 25-sample create probe. Nothing here depends on the release having finished — a hosted subject exposes no process for the memory sampler, so the resident and reclaim probes are refused outright."
+  ],
+  "requires": { "env": ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"], "paid": true },
+  "probes": {
+    "create": { "definition": "Sandbox.create until it returns a sandbox that will accept an exec; a fresh sandbox per sample, so every sample is a cold create against an already-cached image" },
+    "ttfb": { "definition": "sandbox.exec submitted until the first stdout chunk of the command's own output reaches the client" },
+    "round_trip": { "definition": "sandbox.exec submitted until the process has exited and its exit code has reached the client" }
+  }
+}

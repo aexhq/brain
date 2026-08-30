@@ -1,0 +1,42 @@
+{
+  "name": "langgraph",
+  "class": "framework",
+  "version": "langgraph 1.2.11 + langgraph-checkpoint-sqlite 3.1.1",
+  "notes": [
+    "langchain-ai/langgraph, 40.6k stars, Python, MIT, active. The library, deliberately a separate subject from `langgraph-server`: one is a persistence model measured in isolation, the other is a running server measured end to end, and merging them would blur which was which.",
+    "Writes a full checkpoint per super-step, so this is the cleanest comparison against an append-only log. Their own docs also warn that checkpoint deserialization is an RCE vector in a multi-tenant host; set LANGGRAPH_STRICT_MSGPACK=true for any run.",
+    "Checkpointers save state between nodes and not inside one, which is a semantic difference from Brain's per-step journal and belongs in the writeup next to any number.",
+    "Measured through a harness we wrote (subjects/_framework_harness/wrapper.py): the same two endpoints every framework subject gets, with the same fixed input, so the only thing that differs between them is what each chooses to write. Any published number has to say so."
+  ],
+  "requires": {
+    "linux": true
+  },
+  "probes": {
+    "persistence": {
+      "definition": "bytes on disk in the SQLite checkpointer's directory after N turns of one thread, sampled per turn; LangGraph writes a full checkpoint per super-step, through the harness at subjects/_framework_harness/wrapper.py"
+    }
+  },
+  "launch": {
+    "command": "python3",
+    "args": [
+      "-m",
+      "uvicorn",
+      "wrapper:app",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "{port}",
+      "--app-dir",
+      "tools/bench/subjects/_framework_harness"
+    ],
+    "env": {
+      "BENCH_FRAMEWORK": "langgraph",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "OPENAI_BASE_URL": "{model_base_url}",
+      "OPENAI_API_KEY": "bench"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/ok",
+    "ready_timeout_secs": 120
+  }
+}

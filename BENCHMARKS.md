@@ -1,9 +1,9 @@
 # Benchmarks
 
 > [!NOTE]
-> The benchmark harness is being rebuilt against the current kernel. The figures in the archive
-> below were measured before that rebuild and are **not current**. Do not quote them as present-day
-> numbers.
+> Current headline figures are in the [README](README.md#benchmarks), measured with the harness in
+> [`tools/bench`](tools/bench) against thirteen other agent runtimes. The archive below predates
+> that harness and is **not current** — it is kept for history, not for quoting.
 
 ## What the benchmark measures
 
@@ -46,7 +46,7 @@ restart pays for the log that was kept rather than for every record ever written
 
 That job is a leak guard, not a benchmark, and it does not check leakage between sessions;
 the name is older than what it does. Latency, throughput, and the cross-session isolation test are
-being rebuilt — see **Status** in the [README](README.md).
+being rebuilt — see **Roadmap** in the [README](README.md).
 
 ## Pre-rebuild archive (not current)
 

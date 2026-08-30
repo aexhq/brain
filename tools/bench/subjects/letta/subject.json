@@ -1,0 +1,44 @@
+{
+  "name": "letta",
+  "class": "session-kernel",
+  "version": "letta/letta:0.16.8",
+  "notes": [
+    "The closest architectural rival measured here: a stateful agent server that owns its own sessions and memory, rather than a library an application drives.",
+    "Pinned to letta/letta:0.16.8, and that is the end of the line rather than a snapshot of a moving target. 0.16.8 is the last release of the Python server (PyPI and Docker, 2026-05-14); the repository was archived on 2026-08-16 and development moved to letta-code, a TypeScript CLI speaking WebSocket. This subject is the frozen v1 REST server, and no newer version of it exists to measure.",
+    "Runs its own bundled Postgres inside the container. Session state lives outside the server process, so every number here includes a database round trip that an in-process subject does not pay, and the memory it costs is not in any figure below.",
+    "Wired to the scripted provider, so no model latency is in any number. Letta discovers models rather than being told one: it enables its built-in `openai` provider only when OPENAI_API_KEY is non-empty, points that provider wherever OPENAI_BASE_URL says, and then renames the handles of any endpoint that is not api.openai.com to `openai-proxy/<model>`. The driver resolves the handle out of Letta's own model list and refuses to measure anything unless the endpoint behind it is the benchmark's — a run against real inference cannot pass silently.",
+    "Run at defaults otherwise: the bundled Postgres, the base tool set Letta attaches to every agent, and no memory blocks.",
+    "Listens on 8283 regardless of configuration, so this subject cannot take the per-run port the runner assigns; two Letta runs on one host would collide.",
+    "No resident or reclaim probe. The process the runner starts is the docker client, not the server, so a process-tree reading would measure the wrong process; the server and its Postgres are both inside the container. Both probes need a container-aware sampler before this subject can answer them."
+  ],
+  "requires": {
+    "linux": true
+  },
+  "probes": {
+    "create": {
+      "definition": "POST /v1/agents/ until the response carries an agent id, at Letta's defaults including the base tool set it attaches; no memory blocks"
+    },
+    "ttfb": {
+      "definition": "turn submitted until the first assistant frame on its own SSE stream, pings disabled. As with LangGraph Server and unlike Brain, the stream is opened by submitting the turn rather than before it, so the subscribe cost is inside this number by construction"
+    },
+    "round_trip": {
+      "definition": "message submitted until Letta reports the turn ended on its own terms — a stop_reason of end_turn and an assistant message in the body, not merely HTTP 200"
+    },
+    "persistence": {
+      "definition": "bytes on disk in the directory bind-mounted over Letta's Postgres data directory after N turns of one agent, sampled per turn, with everything the empty cluster wrote before the conversation subtracted. MUST BE RUN ON ITS OWN, against a freshly started server: this is a database file rather than a log, so Postgres allocates in 8 KiB pages and recycles WAL segments instead of extending them, and a cluster that has already served the latency probes has enough slack for 100 more turns to fit inside it and read as zero bytes written. That is what a whole-manifest run measured — 0.000 MiB after 2,000 prior turns — and it is an artefact of the store, not a finding about Letta"
+    }
+  },
+  "launch": {
+    "command": "bash",
+    "args": [
+      "tools/bench/subjects/letta/run.sh",
+      "letta/letta:0.16.8",
+      "{data_dir}",
+      "{model_base_url}"
+    ],
+    "env": {},
+    "base_url": "http://127.0.0.1:8283",
+    "ready_url": "http://127.0.0.1:8283/v1/health/",
+    "ready_timeout_secs": 300
+  }
+}

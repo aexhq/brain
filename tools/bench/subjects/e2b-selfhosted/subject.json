@@ -1,0 +1,26 @@
+{
+  "name": "e2b-selfhosted",
+  "class": "sandbox",
+  "version": "e2b-dev/infra 2026.29 (557445ffddda8d9a27f6f529a3f4d7732cf81a13)",
+  "notes": [
+    "Apache-2.0 and self-hostable, so this is a different subject from e2b-cloud and its numbers must never be merged with them: one measures their OSS build on our instance, the other measures their service.",
+    "Firecracker underneath, so nested KVM applies.",
+    "Their supported self-host path cannot produce this row. `self-host.md` lists `Cloudflare account`, `Domain on Cloudflare` and `PostgreSQL database` under non-optional Prerequisites and deploys Nomad and Consul through Terraform to GCP or AWS; the README's provider list has `[ ] General linux machine` unchecked. A row produced that way would measure a cloud deployment, not their engine on the instance every other subject ran on.",
+    "The single-host path is `DEV-LOCAL.md`, which the project heads with: \"Note: Linux is required for developing on bare metal. This is a work in progress. Not everything will function as expected.\" Anything measured here is measured at that disclaimer, and the row must carry it.",
+    "NOT MEASURED. Attempted 2026-08-28 on m6g.metal (64 vCPU, 251 GiB, aarch64, /dev/kvm present) following DEV-LOCAL.md at tag 2026.29. Everything came up: postgres, clickhouse and redis containers running; db and clickhouse migrations applied; database seeded; API healthy on :3000, orchestrator+template-manager healthy on :5008, client-proxy healthy on :3003. The blocker is one step further on — `make -C packages/shared/scripts local-build-base-template`, which DEV-LOCAL.md says is \"required before you can create sandboxes\". It boots three microVMs, provisions the rootfs, and then fails at the pause-and-snapshot step: `error building step 1: pause and upload: error processing vm: failed to get memfile metadata: failed to get dirty memory: error getting dirty memory: Get \"http://localhost/memory/dirty\": dial unix /tmp/fc-<sandbox>-<build>.sock: connect: connection refused`, preceded by `envd unfreeze failed ... context deadline exceeded`. Their patched Firecracker v1.14.1_431f1fc (arm64) had exited by the time the orchestrator asked it for dirty memory.",
+    "With no built template, sandbox creation cannot happen and no create sample exists. Both DEV-LOCAL.md's own hello-world curl and this driver get the same answer: `404 {\"code\":404,\"message\":\"tag 'default' does not exist for template 'local-dev-team/base'\"}`. That refusal is recorded as a skip in the run rather than turned into a number.",
+    "Two arm64 gaps to repeat before anyone tries again. `BUILD_ARCH ?= amd64` in both `packages/orchestrator/Makefile` and `packages/envd/Makefile`, while DEV-LOCAL.md gives the build commands without it — so the documented steps cross-build amd64 binaries on an arm64 host, and the template build dies with `error getting envd version: fork/exec .../packages/envd/bin/envd: exec format error` until envd is rebuilt with `BUILD_ARCH=arm64`. `make -C packages/orchestrator fetch-busybox BUILD_ARCH=arm64` also has to be run by hand; nothing in the DEV-LOCAL flow depends on it.",
+    "When it does run, note that `LOCAL_BUILD_TARGET ?= build-debug` for the API and client-proxy, and no `build-local` target exists for either — so their documented local mode serves the create call from a `-race -gcflags=all=\"-N -l\"` binary. Any create number taken that way is measuring the race detector as much as their engine, and must say so.",
+    "ttfb and round_trip are deleted rather than left declared. E2B's sandbox lifecycle is REST but command execution is gRPC against each sandbox's own envd, so a turn number would come from a vendored protobuf client rather than the HTTP client every other subject is driven with — the same reason e2b-cloud declares neither."
+  ],
+  "requires": { "linux": true, "metal": true, "env": ["E2B_API_KEY"] },
+  "probes": {
+    "create": {
+      "definition": "the POST that asks for a sandbox until the API says it exists and will accept an exec, against the local API, so no network to another region is inside the number"
+    },
+    "resident": {
+      "definition": "private memory per live sandbox: the slope of Private_Clean + Private_Dirty + Private_Hugetlb, summed over the orchestrator's process tree — which is where the Firecracker VMMs are — against live sandbox count. Needs --pid, because the runner does not start this stack. Declared but never exercised: no sandbox has ever existed to ramp",
+      "resident_kind": "private"
+    }
+  }
+}

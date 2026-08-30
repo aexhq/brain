@@ -1,0 +1,39 @@
+{
+  "name": "zeroclaw",
+  "class": "session-kernel",
+  "version": "v0.8.4",
+  "notes": [
+    "zeroclaw-labs/zeroclaw, Rust, Apache-2.0 / MIT dual, actively pushed. Runs as a daemon (`zeroclaw daemon`) with an HTTP and WebSocket gateway, and keeps memory in SQLite. Rust plus a daemon plus SQLite makes it the second-closest architectural comparison to Brain after OpenFang.",
+    "Pinned to release v0.8.4, the latest at 2026-08-28. Installed from the project's own GitHub release asset zeroclaw-aarch64-unknown-linux-gnu.tar.gz, checked against the SHA256SUMS published beside it — not built from source, so the binary measured is the one the project ships.",
+    "It is single-instance and single-user by design: one configured agent per installation, one TOML config, and multi-channel means one agent reachable from many places rather than many concurrent sessions. So throughput at N concurrent sessions and a per-session memory ramp are NOT declared here. Running them would measure something the project never claimed to do, and publishing the result would be a straw man.",
+    "The background memory sampler still records its footprint over time on every probe, which is the memory question that is fair to ask of a single-operator daemon.",
+    "Driven over `GET /ws/chat`, which is what its own dashboard uses. The HTTP surface cannot answer these probes: `POST /api/sessions/{id}/messages` only appends to the session log and never reaches the agent, and `POST /webhook` does run a turn but is rate limited per client key, emits no stream to time a first byte against, and has no session-create call.",
+    "Config differences from a stock install are listed at the top of launch.sh: pairing off on loopback, the scripted provider, and one named agent because zeroclaw has no default agent.",
+    "Its round_trip distribution is almost flat and does not match its ttfb: over 200 turns in one session, ttfb had a p50 of 9.6 ms while round_trip sat at p50 50.99 / p90 51.01 / min 49.99 ms — a spread of one millisecond across the middle 90%, and unchanged as the transcript grew. A turn's completion is therefore paced by something fixed of about 40 ms after the first assistant chunk rather than by the work in the turn. The cause was not traced to a line of zeroclaw's source, so it is recorded as an observation and not as a claim about their design; anyone quoting the round_trip figure should quote the ttfb beside it.",
+    "The scripted provider is hit TWICE per turn, not once. The second call is zeroclaw's memory consolidation, which its own source calls fire-and-forget: with the default SQLite memory backend and auto-save on, every completed turn spawns a background extraction call. It is off the turn's critical path — it starts after the reply is persisted and the `done` frame is sent — so it is not inside the latency numbers, but it is real work the daemon does per turn at its defaults, and it is why the runner's fixture-call count is 2x the turns driven rather than the 1x that would signal a cache."
+  ],
+  "requires": { "linux": true },
+  "probes": {
+    "create": {
+      "definition": "chat WebSocket upgrade until the gateway has answered the client's connect frame — zeroclaw's session create, after which the session accepts a message"
+    },
+    "ttfb": {
+      "definition": "message frame submitted until the first assistant `chunk` frame on the same socket; pointed at the scripted provider through a `providers.models.custom` entry"
+    },
+    "round_trip": {
+      "definition": "message frame submitted until the `done` frame carrying the completed reply"
+    }
+  },
+  "launch": {
+    "command": "tools/bench/subjects/zeroclaw/launch.sh",
+    "args": [],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health",
+    "ready_timeout_secs": 120
+  }
+}
