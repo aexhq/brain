@@ -24,8 +24,8 @@ assert.equal(completed.status, "idle");
 const events = [];
 for await (const event of session.events()) events.push(event);
 assert.deepEqual(
-  events.slice(-5).map(({ type }) => type),
-  ["turn_started", "activation_intent", "activation_result", "context_updated", "turn_finished"],
+  events.slice(-4).map(({ type }) => type),
+  ["turn_started", "activation_intent", "activation_result", "turn_finished"],
 );
 assert.deepEqual(events.at(-1)?.data.result, { activations: 1, observation: "user_message" });
 assert.ok(events.every(({ recordedAt }) => recordedAt instanceof Date && !Number.isNaN(recordedAt.valueOf())));

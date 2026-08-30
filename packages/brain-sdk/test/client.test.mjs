@@ -34,7 +34,7 @@ test("composes extensions through sessions, useIn, and object identity", async (
     fetch: async (input, init) => {
       const request = new Request(input, init);
       requests.push(request);
-      if (request.url.endsWith("/v1/agentloops")) return Response.json({ digest: "a".repeat(64), status: "admitted" });
+      if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
       if (request.url.includes("/calls/suspend")) return Response.json({ output: null });
       return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", through_sequence: 1, presentation_identity: "b".repeat(64) });
     },
@@ -52,6 +52,7 @@ test("composes extensions through sessions, useIn, and object identity", async (
   assert.match(requests[0].headers.get("idempotency-key"), /^brain-[0-9a-f]{64}$/u);
   const body = await requests[1].json();
   assert.deepEqual(body.brain_configuration, {});
+  assert.equal(body.agentloop_identity, "a".repeat(64));
   assert.equal(body.environments.length, 1);
   assert.equal(body.environments[0].environment_id, "env_1");
   assert.deepEqual(body.tool_bindings.map(({ name, environment_id }) => [name, environment_id]), [["read", "env_1"]]);
