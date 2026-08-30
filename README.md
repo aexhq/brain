@@ -162,34 +162,34 @@ docker run --rm -p 8080:8080 -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:la
 Drive a session from TypeScript:
 
 ```sh
-npm install @aexhq/brain @aexhq/brain-pi @aexhq/env-aws-microvm @aexhq/tools
+npm install @aexhq/brain @aexhq/brain-pi
 ```
 
 ```ts
 import { Brain } from "@aexhq/brain";
-import { awsMicroVm } from "@aexhq/env-aws-microvm";
 import { pi } from "@aexhq/brain-pi";
-import { bash, read, write } from "@aexhq/tools";
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
-const workspace = awsMicroVm({ region: "eu-west-2" });
 
 const session = await brain.sessions.create({
   model: {
-    provider: "vercel-ai-gateway",
-    name: "openai/gpt-5-mini",
-    apiKey: process.env.VERCEL_AI_GATEWAY_API_KEY!,
+    provider: "openai",
+    name: "gpt-5-mini",
+    apiKey: process.env.OPENAI_API_KEY!,
   },
   brain: pi(),
-  tools: [read().useIn(workspace), write().useIn(workspace), bash().useIn(workspace)],
+  system: "Answer briefly and directly.",
 });
 
-await session.send("Read README.md and summarize it.");
+await session.send("Explain what a session kernel does, in one sentence.");
 for await (const event of session.events()) console.log(event);
+
+await session.end();
+await session.delete();
 ```
 
-Leave out `tools` and the model sees none. Brain listens on loopback and needs no token there; set
-`BRAIN_API_TOKEN` to listen anywhere else.
+No `tools` means the model sees none. Add them once you have somewhere to run them. Brain listens on
+loopback and needs no token there; set `BRAIN_API_TOKEN` to listen anywhere else.
 
 Four runnable scripts — a basic session, event history, the full lifecycle, and the same thing over
 raw HTTP with no SDK — are in [`examples/`](examples). Building from source and embedding the crate
