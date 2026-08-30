@@ -1,43 +1,49 @@
 ---
 title: Benchmarks
-description: What is measured, what CI enforces, and why there are no current numbers yet.
+description: Current figures, how they are measured, and what CI enforces.
 ---
 
-<Callout type="warn">
-The benchmark harness is being rebuilt against the current kernel. There are no current published
-figures. The archive below was measured before the rebuild and should not be quoted as present-day
-performance.
-</Callout>
+Headline figures, measured on AWS `c7g.xlarge` against the same scripted model behind every
+subject:
+
+| Measurement | Brain |
+| --- | ---: |
+| Turn round-trip, median | 25 ms |
+| Time to first token, median | ≤25 ms |
+| New session, median | 0.6 ms |
+| Cold start to first served session | 25 ms |
+| Marginal memory per idle session | ~14 KiB |
+| Disk after a 100-turn conversation | 0.2 MiB |
+
+The comparison charts against other agent runtimes are in the
+[README](https://github.com/aexhq/brain#benchmarks), and the harness that produced them is in
+[`tools/bench`](https://github.com/aexhq/brain/tree/main/tools/bench) — one subject at a time,
+each driven through its own public API, so the numbers can be re-run rather than trusted.
 
 ## What the benchmark measures
 
-The engine, not a model. It drives the real HTTP and SSE paths with an instant scripted provider and
-an in-process echo environment, so no model latency reaches the numbers. First-byte and turn figures
-include HTTP, SSE, request construction, writing to the log, and dispatch.
+The engine, not a model. It drives the real HTTP and SSE paths with an instant scripted provider
+and an in-process echo environment, so no model latency reaches the numbers. First-token and turn
+figures include HTTP, request construction, writing to the session log, and dispatch.
 
-Density and reclaim measurements need Linux `/proc/*/smaps_rollup`. Other platforms run the portable
-latency and correctness arms only. The harness refuses to substitute RSS for private memory, because
-that would double-count shared pages.
+Density and reclaim measurements need Linux `/proc/*/smaps_rollup`. Other platforms run the
+portable latency and correctness arms only. The harness refuses to substitute RSS for private
+memory, because that would double-count shared pages. Any probe a subject cannot honestly answer
+is recorded as a refusal rather than a number.
 
-## What CI enforces today
+## What CI enforces
 
 Every push bounds resident memory against a live server: after 10,000 requests it must stay under
 256 MiB and must not have grown by more than 16 MiB.
 
-That is a leak guard, not a benchmark. Latency, throughput, and the cross-session isolation test are
-being rebuilt.
+The same push bounds journal growth on both axes. A context grows with every decision and across
+every turn, so anything written per decision or per turn would cost the sum of every intermediate
+size rather than the final one; `crates/brain/tests/journal_growth.rs` holds the journal — and one
+page of the event stream — to a small constant multiple of the final context, and holds a
+whole-transcript ratio so a session's log cannot grow with the square of its turn count.
 
-## Archive (not current)
+## History
 
-Measured 2026-08-18 on a c7g.xlarge, against the kernel as it stood before the architecture reset.
-
-| Measurement | Result |
-| --- | ---: |
-| First visible byte, one session | p50 1.4 ms · p99 2.2 ms |
-| Complete text turn, one session | p50 2.3 ms · p99 3.2 ms |
-| Throughput, 64 sessions | 2,002 turns/s · p99 58 ms |
-| Tool loop, 64 sessions | about 3,430 tool calls/s |
-| Resident session | 21–31 KiB private memory |
-
-The current record always lives in
-[BENCHMARKS.md](https://github.com/aexhq/brain/blob/main/BENCHMARKS.md).
+Figures from before the current harness are archived in
+[BENCHMARKS.md](https://github.com/aexhq/brain/blob/main/BENCHMARKS.md) and should not be quoted
+as present-day performance.
