@@ -70,7 +70,19 @@
         "model": { "$ref": "#/$defs/ModelSelection" },
         "presentation": { "$ref": "#/$defs/ModelPresentation" },
         "environments": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/EnvironmentRequirement" } },
-        "tool_bindings": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/RequestedToolBinding" } }
+        "tool_bindings": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/RequestedToolBinding" } },
+        "history": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/HistoryEvent" } }
+      }
+    },
+    "HistoryEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "event_type", "data"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "recorded_at_ms": { "type": "integer", "minimum": 0 },
+        "event_type": { "$ref": "#/$defs/Identifier" },
+        "data": {}
       }
     },
     "MessageRequest": {

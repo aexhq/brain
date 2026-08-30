@@ -2,7 +2,7 @@
   "contract": "agentloop/v1",
   "input": {
     "context": { "protocol_version": "agentloop/v1", "items": [] },
-    "observation": { "type": "session_started" },
+    "observation": { "type": "session_started", "history": [] },
     "configuration": {},
     "presentation": {
       "bytes": [],

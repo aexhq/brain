@@ -34,57 +34,90 @@ or embed the `brain` crate in a Rust service you already own.
 
 ## Benchmarks
 
-Same machine, same scripted model behind every runtime — no model latency in any number.
-Figures marked ★ are the project's own published numbers.[^bench]
+Measured figures come from the harness in [`tools/bench`](tools/bench): same machine, one subject
+at a time, each driven through its own public API against the same scripted model — no model
+latency in any number. ★ marks the best figure in each chart.[^bench]
 
-**One turn** (median, lower is better)
-
-```text
-Brain             █                                       25 ms
-ZeroClaw          ██                                      51 ms
-LangGraph Server  █████████████████████████████         1000 ms
-OpenClaw          ████████████████████████████████████  1257 ms
-```
-
-**Throughput** (complete turns per second, higher is better)
+**Turn round-trip latency** — message submitted → completed reply, median
 
 ```text
-Brain     ██████████████████████████████  227 turns/s
-OpenFang  ███                              25 turns/s
+Brain             █                                     25 ms ★
+ZeroClaw          ██                                    51 ms
+LangGraph Server  ██████████████████████████████      1049 ms
+OpenClaw          ████████████████████████████████████ 1257 ms
 ```
 
-**New session, ready to take a message** (median, lower is better)
+<sub>180 turns per subject per run; includes HTTP, request construction, the session-log write,
+and dispatch.</sub>
+
+**Time to first token** — message submitted → first assistant delta, median
 
 ```text
-Brain             █████                           0.6 ms
-LangGraph Server  ██████                          0.7 ms
-ZeroClaw          ███████████████                 1.9 ms
-OpenClaw          ██████████████████████████████  3.7 ms
+ZeroClaw          █                                    9.6 ms ★
+Brain             ██                                   ≤25 ms
+LangGraph Server  ████                                48.6 ms
+OpenFang          ██████                              75.8 ms
+OpenClaw          ██████████████████████████████     874.4 ms
 ```
 
-**Cold start: launch the process, take a session** (lower is better)
+<sub>First delta on the subject's own stream, 180 turns per subject. Brain's probe declines under
+an instant scripted model — the turn completes before a delta reaches the event stream — so its
+whole-turn median stands in as an upper bound.</sub>
+
+**New session latency** — create call → session accepts a message, median
 
 ```text
-Brain     ████                             25 ms
-OpenFang  ██████████████████████████████  180 ms ★
+Brain             ██                                   0.6 ms ★
+LangGraph Server  ███                                  0.7 ms
+ZeroClaw          ██████                               1.9 ms
+OpenClaw          ███████████                          3.7 ms
+OpenFang          ██████████████████████████████      10.3 ms
 ```
+
+<sub>180 creates per subject against a running server; each session is confirmed ready before the
+timer stops.</sub>
+
+**Cold start latency** — process launch → first served session
+
+```text
+ZeroClaw    █                                 10 ms ★
+Brain       ██                                25 ms
+OpenFang    ████                             180 ms
+LangGraph   ███████████████                  2.5 s
+CrewAI      █████████████████                3.0 s
+AutoGen     ███████████████████              4.0 s
+OpenClaw    ████████████████████████         5.98 s
+```
+
+<sub>Brain measured on the bench box; the other figures are each project's own numbers, from
+official documentation and public repositories.</sub>
+
+**Memory per session** — private memory to hold one session, idle
+
+```text
+Brain     █                                 14 KiB ★
+OpenFang  ████████                         0.6 MiB
+ZeroClaw  █████████████████████             50 MiB
+OpenClaw  ██████████████████████████████   490 MiB
+```
+
+<sub>Brain: marginal private memory per additional idle session (+7 MiB across 512 sessions).
+OpenFang: whole process at 64 sessions, amortised. ZeroClaw and OpenClaw are single-operator
+daemons — one session per install, so the process is the session. Bars are log-scaled.</sub>
 
 - Disk is flat: a 100-turn conversation leaves **0.2 MiB** — the hundredth turn writes the same
   2.3 KiB as the first.
-- An idle session costs ~**14 KiB**. The trade: **220 MiB** at rest and a **~20 MB** install,
-  mostly the compiled agent loop held warm inside its sandbox.
+- The trade: **220 MiB** at rest and a **~20 MB** install, mostly the compiled agent loop held
+  warm inside its sandbox.
 - A turn slows by ~54 µs per turn of history, because the loop is handed the whole context.
-- Framework libraries (LangGraph, CrewAI, AutoGen, Microsoft Agent Framework) and hosted sandboxes
-  are measured under different conditions and not ranked against whole servers.
 - CI enforces bounds on every push: under 256 MiB resident after 10,000 requests, and a journal
   held to a small constant multiple of its final context. Pre-reset figures are archived in
   [BENCHMARKS.md](BENCHMARKS.md).
 
-[^bench]: AWS `c7g.xlarge`, Linux, one subject at a time, pinned away from the load generator.
-    Medians over 600 samples for latency, 100 turns for disk, 16 concurrent sessions for
-    throughput, 512 sessions for the memory probe. Each subject is driven through its own HTTP API
-    against the same scripted model; ★ figures come from the project's own documentation and are
-    not reproduced by us. The harness is in [`tools/bench`](tools/bench).
+[^bench]: AWS `c7g.xlarge`, Linux, subjects pinned away from the load generator, 512 sessions for
+    the memory probe. Any probe a subject cannot honestly answer is recorded as a refusal rather
+    than a number. Framework libraries (LangGraph, CrewAI, AutoGen) appear only where their own
+    published figures allow; harness numbers for libraries are never ranked against whole servers.
 
 ## How it works
 

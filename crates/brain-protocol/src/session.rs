@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, Identity, JournalId,
-    LifecyclePolicy, ModelBinding, ModelSelection, RequestedToolBinding, SessionId, ToolBinding,
-    ToolDefinition,
+    LifecyclePolicy, ModelBinding, ModelSelection, OperationId, RequestedToolBinding, SessionId,
+    ToolBinding, ToolDefinition,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -24,6 +24,32 @@ pub struct CreateSessionRequest {
     pub presentation: ModelPresentation,
     pub environments: Vec<EnvironmentRequirement>,
     pub tool_bindings: Vec<RequestedToolBinding>,
+    /// Prior events for this conversation, if the caller kept them.
+    ///
+    /// A session does not outlive the process that made it, so an application that wants
+    /// one to continue holds the events it was already receiving and hands them back here.
+    /// Brain writes them as the new session's opening records and tells the agentloop about
+    /// them, so `GET /events` reads the whole conversation and the loop can pick up where
+    /// it left off. Empty is an ordinary new session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<HistoryEvent>,
+}
+
+/// One event an application kept and is handing back.
+///
+/// The shape `GET /v1/sessions/{id}/events` returns, less `event_id`: an id names an event
+/// in a session, and this is being replayed into a different one, so Brain mints them
+/// again rather than taking one that points somewhere else.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryEvent {
+    /// Where this sat in the conversation it came from. Kept because the caller has it and
+    /// because it is what makes a gap or a reordering visible instead of silent.
+    pub sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_at_ms: Option<u64>,
+    pub event_type: String,
+    pub data: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -35,6 +61,8 @@ pub struct ResolvedSessionRequest {
     pub presentation: ModelPresentation,
     pub environments: Vec<EnvironmentRequirement>,
     pub tool_bindings: Vec<RequestedToolBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<HistoryEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -85,6 +113,35 @@ pub struct Event {
     pub event_id: EventId,
     pub sequence: u64,
     pub recorded_at_ms: u64,
+    pub event_type: String,
+    pub data: serde_json::Value,
+}
+
+/// What a live subscription carries.
+///
+/// A subscription exists to say that a session moved. Most of what it carries is a journal
+/// record, which has a sequence and can be read back later with `after`. Model output is
+/// the exception: it arrives while the turn is still running, before the record that will
+/// hold it exists.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum LiveEvent {
+    /// A journal record, as it is appended.
+    Recorded(Event),
+    /// Model output as it arrives.
+    ///
+    /// Never journalled and never replayed. A client that reconnects is handed the
+    /// completed message from the page rather than the tokens that built it, because
+    /// recording a token is a durable write per token and the completed message is the
+    /// durable truth. This is the difference between watching a turn and reading it.
+    Streaming(StreamingEvent),
+}
+
+/// One piece of model output, mid-turn.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StreamingEvent {
+    /// The model call this came from, so a client can tell two concurrent ones apart.
+    pub operation_id: OperationId,
+    /// `assistant_delta` for text, `tool_call_delta` for a tool call being assembled.
     pub event_type: String,
     pub data: serde_json::Value,
 }

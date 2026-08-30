@@ -239,6 +239,12 @@ export type components = {
             tool_configuration: unknown;
             grant: unknown;
         };
+        HistoryEvent: {
+            sequence: number;
+            recorded_at_ms?: number;
+            event_type: components["schemas"]["Identifier"];
+            data: unknown;
+        };
         CreateSessionRequest: {
             agentloop_identity: components["schemas"]["Identity"];
             brain_configuration: unknown;
@@ -246,6 +252,7 @@ export type components = {
             presentation: components["schemas"]["ModelPresentation"];
             environments: components["schemas"]["EnvironmentRequirement"][];
             tool_bindings: components["schemas"]["RequestedToolBinding"][];
+            history?: components["schemas"]["HistoryEvent"][];
         };
         MessageRequest: {
             content: unknown;

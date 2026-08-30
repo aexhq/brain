@@ -8,7 +8,8 @@ interface types {
   }
 
   variant observation {
-    session-started,
+    // JSON array of the events an application handed back at create.
+    session-started(string),
     user-message(string),
     model-completed(string),
     tools-completed(string),
