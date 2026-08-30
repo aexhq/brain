@@ -17,18 +17,19 @@ export type {
 } from "./extensions.js";
 export { BrainError } from "./errors.js";
 export type {
-  AnthropicModel,
-  BrainExtension,
   BoundTool,
+  BrainExtension,
   CreateSessionOptions,
+  CustomProviderModel,
   Environment,
+  KnownProviderId,
+  KnownProviderModel,
   ModelContentBlock,
   ModelMessage,
   ModelResponse,
   ModelSelection,
   ModelStopReason,
   ModelUsage,
-  OpenAiModel,
   OperationOptions,
   Schema,
   SchemaInput,

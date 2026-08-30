@@ -210,11 +210,10 @@ export type components = {
             sessions: components["schemas"]["Session"][];
         };
         ModelSelection: {
-            /** @enum {unknown} */
-            provider: "vercel-ai-gateway" | "openai" | "anthropic";
+            provider: components["schemas"]["Identifier"];
             name: string;
             api_key: string;
-        } & unknown;
+        };
         ToolDefinition: {
             name: components["schemas"]["Identifier"];
             description: string;

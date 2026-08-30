@@ -23,6 +23,8 @@ pub struct ServerResources {
     pub loops: Arc<WorkerPool>,
     pub environments: Arc<EnvironmentRegistry>,
     pub models: Arc<dyn ModelBindingStore>,
+    /// The composed provider set this deployment admits sessions against.
+    pub providers: Arc<brain::model::ProviderRegistry>,
     /// What the server knows about a session that its records do not: the journal it was
     /// given. Written when the session is created so a restart can restore it.
     pub metadata: Arc<crate::metadata::ServerMetadata>,
@@ -215,7 +217,7 @@ impl BrainApi for ServerApi {
                 "session Agentloop has not been admitted",
             ));
         }
-        validate_model(&request)?;
+        validate_model(&request, &self.resources.providers)?;
         let binding_id = model_binding_id(&idempotency_key);
         self.resources
             .models
@@ -590,14 +592,25 @@ fn valid_identifier(value: &str) -> bool {
         })
 }
 
-fn validate_model(request: &CreateSessionRequest) -> Result<(), ApiError> {
-    let valid = brain::model::provider_spec(&request.model.provider).is_some_and(|spec| {
-        brain::model::valid_model_name(spec, &request.model.name)
+fn validate_model(
+    request: &CreateSessionRequest,
+    providers: &brain::model::ProviderRegistry,
+) -> Result<(), ApiError> {
+    let valid = providers.get(&request.model.provider).is_some_and(|def| {
+        brain::model::valid_model_name(def, &request.model.name)
             && !request.model.api_key.is_empty()
             && request.model.api_key.len() <= 16 * 1024
     });
     if !valid {
         return Err(ApiError::invalid_request("model selection is invalid"));
+    }
+    // Rejected here, at create, instead of as a kernel error on the first turn.
+    if request.presentation.response_format.is_some()
+        && !providers.supports_response_format(&request.model.provider, &request.model.name)
+    {
+        return Err(ApiError::invalid_request(
+            "the selected model provider does not support response_format",
+        ));
     }
     Ok(())
 }
@@ -678,6 +691,44 @@ fn internal(message: impl Into<String>) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::KeyedLocks;
+
+    #[test]
+    fn model_selection_is_admitted_against_the_composed_registry() {
+        let registry = brain::model::ProviderRegistry::default_set();
+        let request = |provider: &str, name: &str, response_format: bool| {
+            serde_json::from_value::<brain_protocol::CreateSessionRequest>(serde_json::json!({
+                "agentloop_identity": "a".repeat(64),
+                "brain_configuration": {},
+                "model": { "provider": provider, "name": name, "api_key": "k" },
+                "presentation": {
+                    "system": "",
+                    "tools": [],
+                    "response_format": if response_format { Some(serde_json::json!({"type": "json_object"})) } else { None },
+                },
+                "environments": [],
+                "tool_bindings": [],
+            }))
+            .unwrap()
+        };
+        let validate = |provider: &str, name: &str, rf: bool| {
+            super::validate_model(&request(provider, name, rf), &registry)
+        };
+        assert!(validate("vercel-ai-gateway", "openai/gpt-5-mini", false).is_ok());
+        assert!(
+            validate("vercel-ai-gateway", "gpt-5-mini", false).is_err(),
+            "the gateway requires a provider namespace in the model name"
+        );
+        assert!(
+            validate("deepseek", "brand-new-model", false).is_ok(),
+            "open admission: an unknown model on a catalog provider passes"
+        );
+        assert!(validate("bedrock", "some-model", false).is_err());
+        assert!(validate("openai", "gpt-5-mini", true).is_ok());
+        assert!(
+            validate("anthropic", "claude-sonnet-4-5", true).is_err(),
+            "response_format on a provider that cannot carry it is rejected at create"
+        );
+    }
 
     #[test]
     fn keyed_locks_share_live_keys_and_reclaim_stale_keys() {

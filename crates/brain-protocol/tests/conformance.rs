@@ -116,16 +116,20 @@ fn model_selection_names_are_validated_per_provider() {
             .validate(value)
             .is_ok()
     };
+    // The contract stops naming providers: which ones a deployment admits is a
+    // property of its composed registry, enforced server-side. The schema keeps
+    // only the shape rules.
     assert!(validate(&selection(
         "vercel-ai-gateway",
         "openai/gpt-5-mini"
     )));
-    assert!(
-        !validate(&selection("vercel-ai-gateway", "gpt-5-mini")),
-        "the gateway requires a provider namespace in the model name"
-    );
     assert!(validate(&selection("openai", "gpt-5-mini")));
     assert!(validate(&selection("anthropic", "claude-sonnet-4-5")));
+    assert!(
+        validate(&selection("bedrock", "some-model")),
+        "an identifier-shaped provider the schema has never heard of passes; admission is the server's job"
+    );
     assert!(!validate(&selection("anthropic", "claude sonnet")));
-    assert!(!validate(&selection("bedrock", "some-model")));
+    assert!(!validate(&selection("not a provider", "model")));
+    assert!(!validate(&selection("", "model")));
 }

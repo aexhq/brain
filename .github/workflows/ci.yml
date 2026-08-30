@@ -23,7 +23,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run gen
-      - run: git diff --exit-code -- contracts crates/brain-protocol/src/generated.rs packages/brain-sdk/src/generated packages/brain-sdk/contracts
+      - run: git diff --exit-code -- contracts catalog crates/brain-protocol/src/generated.rs crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts
       - run: npm test
       - run: npm run package-smoke
       - run: npm audit --audit-level=high

@@ -26,6 +26,12 @@ pub struct ServerConfig {
     /// Endpoint override for the `anthropic` provider.
     #[arg(long, env = "BRAIN_ANTHROPIC_BASE_URL")]
     pub anthropic_base_url: Option<String>,
+    /// A JSON file of custom provider definitions merged over the built-in
+    /// catalog: `{"providers": [{"name", "dialect", "base_url", ...}]}`, each
+    /// entry in the same shape as a registry `ProviderDef`. A definition here
+    /// supersedes a catalog provider of the same name.
+    #[arg(long, env = "BRAIN_PROVIDERS_FILE")]
+    pub providers_file: Option<PathBuf>,
     #[arg(long, env = "BRAIN_API_TOKEN", hide_env_values = true)]
     pub api_token: Option<String>,
     #[arg(long, env = "BRAIN_ENVIRONMENT_BASE_URL", default_value = "")]
