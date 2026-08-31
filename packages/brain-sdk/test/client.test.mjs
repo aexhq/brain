@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { z } from "zod";
-import { Brain, BrainError, activateBrain, brain, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, tool } from "../dist/index.js";
+import { Brain, BrainError, activateAgentloop, agentloop, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, tool } from "../dist/index.js";
 
-const simple = brain((author) => {
+const simple = agentloop((author) => {
   const state = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
   author.on.message((message, turn) => {
     state.messages.push({ role: "user", content: [{ type: "text", text: String(message.content) }] });
@@ -36,33 +36,50 @@ test("composes extensions through sessions, useIn, and object identity", async (
       requests.push(request);
       if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
       if (request.url.includes("/calls/suspend")) return Response.json({ output: null });
-      return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", through_sequence: 1, presentation_identity: "b".repeat(64) });
+      return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", last_sequence: 1, config_hash: "b".repeat(64) });
     },
   });
   const vm = workspace();
   const session = await client.sessions.create({
     model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", apiKey: "model-secret" },
-    brain: simple(),
+    agentloop: simple(),
     tools: [read().useIn(vm)],
   });
 
   assert.equal(session.id, "ses_12345678901234567890");
   assert.equal(requests.length, 2);
   assert.equal(requests[0].headers.get("authorization"), "Bearer test-token");
-  assert.match(requests[0].headers.get("idempotency-key"), /^brain-[0-9a-f]{64}$/u);
+  assert.match(requests[0].headers.get("idempotency-key"), /^agentloop-[0-9a-f]{64}$/u);
   const body = await requests[1].json();
-  assert.deepEqual(body.brain_configuration, {});
-  assert.equal(body.agentloop_identity, "a".repeat(64));
+  assert.deepEqual(body.agentloop, { identity: "a".repeat(64), configuration: {} });
   assert.equal(body.environments.length, 1);
   assert.equal(body.environments[0].environment_id, "env_1");
-  assert.deepEqual(body.tool_bindings.map(({ name, environment_id }) => [name, environment_id]), [["read", "env_1"]]);
+  assert.deepEqual(body.tools.map(({ name, environment_id, remote_tool_id }) => [name, environment_id, remote_tool_id]), [["read", "env_1", "read"]]);
+  assert.equal(body.system, "");
 
   await vm.suspend();
   assert.match(requests[2].url, /\/environments\/env_1\/calls\/suspend$/u);
 });
 
-test("runs synchronous Brain hooks and persists validated state", () => {
-  const result = activateBrain(simple, {
+test("retries admission after a failure instead of caching the rejection", async () => {
+  let calls = 0;
+  const client = new Brain({
+    baseUrl: "https://brain.example",
+    fetch: async () => {
+      calls += 1;
+      if (calls === 1) return Response.json({ code: "internal", message: "boom", retryable: true }, { status: 500 });
+      return Response.json({ identity: "a".repeat(64), status: "admitted" });
+    },
+  });
+  const loop = simple();
+  await assert.rejects(client.admit(loop), (error) => error instanceof BrainError && error.status === 500);
+  assert.equal(await client.admit(loop), "a".repeat(64));
+  assert.equal(await client.admit(loop), "a".repeat(64));
+  assert.equal(calls, 2, "a successful admission stays cached");
+});
+
+test("runs synchronous Agentloop hooks and persists validated state", () => {
+  const result = activateAgentloop(simple, {
     context: {},
     observation: { type: "user_message", content: "hello" },
     configuration: {},
@@ -118,28 +135,28 @@ test("runs async Environment lifecycle, methods, and streams through the generat
 test("admits any identifier-shaped provider client-side and leaves admission to the server", async () => {
   const fetchStub = async (input, init) => {
     const request = new Request(input, init);
-    if (request.url.endsWith("/v1/agentloops")) return Response.json({ digest: "a".repeat(64), status: "admitted" });
-    return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", through_sequence: 1, presentation_identity: "b".repeat(64) });
+    if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
+    return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", last_sequence: 1, config_hash: "b".repeat(64) });
   };
   const client = new Brain({ baseUrl: "https://brain.example/", token: "t", fetch: fetchStub });
   // A custom provider the SDK has never heard of passes shape validation.
   const session = await client.sessions.create({
     model: { provider: "ollama-local", name: "llama3.3", apiKey: "k" },
-    brain: simple(),
+    agentloop: simple(),
   });
   assert.equal(session.id, "ses_12345678901234567890");
   // Shape rules still hold.
   await assert.rejects(
-    client.sessions.create({ model: { provider: "not a provider", name: "m", apiKey: "k" }, brain: simple() }),
+    client.sessions.create({ model: { provider: "not a provider", name: "m", apiKey: "k" }, agentloop: simple() }),
     /model provider is invalid/u,
   );
   await assert.rejects(
-    client.sessions.create({ model: { provider: "", name: "m", apiKey: "k" }, brain: simple() }),
+    client.sessions.create({ model: { provider: "", name: "m", apiKey: "k" }, agentloop: simple() }),
     /model provider is invalid/u,
   );
   // The gateway keeps its namespace rule.
   await assert.rejects(
-    client.sessions.create({ model: { provider: "vercel-ai-gateway", name: "gpt-5-mini", apiKey: "k" }, brain: simple() }),
+    client.sessions.create({ model: { provider: "vercel-ai-gateway", name: "gpt-5-mini", apiKey: "k" }, agentloop: simple() }),
     /provider namespace/u,
   );
 });

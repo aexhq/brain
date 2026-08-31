@@ -60,7 +60,7 @@ pub fn router_with_bearer<A: BrainApi>(api: A, token: String) -> Router {
 fn protected_routes<A: BrainApi>(api: A) -> Router {
     Router::new()
         .route("/v1/agentloops", post(admit_agentloop::<A>))
-        .route("/v1/agentloops/{digest}", get(get_agentloop::<A>))
+        .route("/v1/agentloops/{identity}", get(get_agentloop::<A>))
         .route(
             "/v1/sessions",
             post(create_session::<A>).get(list_sessions::<A>),

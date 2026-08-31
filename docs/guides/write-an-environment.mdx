@@ -34,7 +34,7 @@ interface and keeps its own methods:
 ```ts
 const vm = cloudVm({ region: "eu-west-2" });
 const session = await client.sessions.create({
-  brain: pi(),
+  agentloop: pi(),
   model,
   tools: [read().useIn(vm), bash().useIn(vm)],
 });

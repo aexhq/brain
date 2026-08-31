@@ -141,8 +141,7 @@ impl Driver for BrainDriver {
             .as_ref()
             .context("prepare() must run before create()")?;
         let body = json!({
-            "agentloop_identity": identity,
-            "brain_configuration": {},
+            "agentloop": { "identity": identity, "configuration": {} },
             "model": {
                 "provider": "vercel-ai-gateway",
                 // The contract requires a provider-qualified name, so this must carry a
@@ -152,28 +151,23 @@ impl Driver for BrainDriver {
                 // a server in a configuration nobody ships.
                 "api_key": "bench",
             },
+            "system": "",
             // Tools are bound on every session, not only for the dispatch probe. Binding
             // them changes the presentation the model sees and the work the kernel does
             // per turn, so a turn measured without them is a different turn.
-            "presentation": {
-                "system": "",
-                "tools": [{
-                    "name": "echo",
-                    "description": "Returns its input unchanged.",
-                    "input_schema": {"type": "object", "properties": {}},
-                }],
-            },
+            "tools": [{
+                "name": "echo",
+                "description": "Returns its input unchanged.",
+                "input_schema": {"type": "object", "properties": {}},
+                "environment_id": "bench",
+                "remote_tool_id": "echo",
+                "configuration": {},
+                "grant": {},
+            }],
             "environments": [{
                 "environment_id": "bench",
                 "configuration": {},
                 "lifecycle_policy": "shared",
-            }],
-            "tool_bindings": [{
-                "name": "echo",
-                "environment_id": "bench",
-                "remote_tool_id": "echo",
-                "tool_configuration": {},
-                "grant": {},
             }],
         });
         let session = self

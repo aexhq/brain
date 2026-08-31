@@ -7,26 +7,27 @@
     "Identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "AgentloopIdentity": { "$ref": "#/$defs/Identity" },
     "SessionId": { "type": "string", "pattern": "^ses_[A-Za-z0-9]{20,32}$" },
-    "ToolDefinition": {
+    "AgentloopRef": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "input_schema"],
+      "required": ["identity", "configuration"],
+      "properties": {
+        "identity": { "$ref": "#/$defs/AgentloopIdentity" },
+        "configuration": {}
+      }
+    },
+    "BoundTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "input_schema", "environment_id", "remote_tool_id", "configuration", "grant"],
       "properties": {
         "name": { "$ref": "#/$defs/Identifier" },
         "description": { "type": "string", "maxLength": 8192 },
         "input_schema": { "type": "object" },
-        "output_schema": { "type": "object" }
-      }
-    },
-    "RequestedToolBinding": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name", "environment_id", "remote_tool_id", "tool_configuration", "grant"],
-      "properties": {
-        "name": { "$ref": "#/$defs/Identifier" },
+        "output_schema": { "type": "object" },
         "environment_id": { "$ref": "#/$defs/Identifier" },
         "remote_tool_id": { "$ref": "#/$defs/Identifier" },
-        "tool_configuration": {},
+        "configuration": {},
         "grant": {}
       }
     },
@@ -50,27 +51,17 @@
         "api_key": { "type": "string", "minLength": 1, "maxLength": 16384 }
       }
     },
-    "ModelPresentation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["system", "tools"],
-      "properties": {
-        "system": { "type": "string", "maxLength": 131072 },
-        "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/ToolDefinition" } },
-        "response_format": {}
-      }
-    },
     "CreateSessionRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["agentloop_identity", "brain_configuration", "model", "presentation", "environments", "tool_bindings"],
+      "required": ["agentloop", "model", "tools", "environments"],
       "properties": {
-        "agentloop_identity": { "$ref": "#/$defs/AgentloopIdentity" },
-        "brain_configuration": {},
+        "agentloop": { "$ref": "#/$defs/AgentloopRef" },
         "model": { "$ref": "#/$defs/ModelSelection" },
-        "presentation": { "$ref": "#/$defs/ModelPresentation" },
+        "system": { "type": "string", "maxLength": 131072 },
+        "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/BoundTool" } },
+        "response_format": {},
         "environments": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/EnvironmentRequirement" } },
-        "tool_bindings": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/RequestedToolBinding" } },
         "history": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/HistoryEvent" } }
       }
     },
@@ -106,13 +97,13 @@
     "Session": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session_id", "journal_id", "status", "through_sequence", "presentation_identity"],
+      "required": ["session_id", "journal_id", "status", "last_sequence", "config_hash"],
       "properties": {
         "session_id": { "$ref": "#/$defs/SessionId" },
         "journal_id": { "$ref": "#/$defs/Identifier" },
         "status": { "enum": ["creating", "idle", "running", "ended", "failed"] },
-        "through_sequence": { "type": "integer", "minimum": 0 },
-        "presentation_identity": { "$ref": "#/$defs/Identity" }
+        "last_sequence": { "type": "integer", "minimum": 0 },
+        "config_hash": { "$ref": "#/$defs/Identity" }
       }
     },
     "SessionList": {

@@ -15,12 +15,12 @@ const session = await brain.sessions.create({
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
     apiKey,
   },
-  brain: example(),
+  agentloop: example(),
   system: "Answer briefly and directly.",
 });
 
 try {
-  await session.send("Explain what an ephemeral execution kernel does in one sentence.");
+  await session.send("Explain what an ephemeral execution runtime does in one sentence.");
 
   for await (const event of session.events()) {
     console.log(event.sequence, event.type, event.data);

@@ -77,6 +77,14 @@ fn rust_views_round_trip_contract_examples() {
     .unwrap();
     assert_eq!(session.model.provider, "vercel-ai-gateway");
     assert_eq!(session.model.name, "openai/gpt-5-mini");
+    assert_eq!(session.agentloop.identity.as_str(), "a".repeat(64));
+    assert_eq!(session.system, "Be useful.");
+    assert_eq!(session.tools.len(), 1);
+    assert_eq!(session.tools[0].name, "read");
+    assert_eq!(
+        session.tools[0].environment_id,
+        session.environments[0].environment_id
+    );
 
     let command: EnvironmentCommand<EnvironmentRequest> =
         serde_json::from_value(read_json("contracts/environment/v1/examples/execute.json"))

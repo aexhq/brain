@@ -1,6 +1,11 @@
-<h1 align="center">Brain</h1>
+<pre align="center">
+              ______ ______ _______ _______ _______
+  ▄████▄     |   __ \   __ \   _   |_     _|    |  |
+▄██▄██▄██▄   |   __ <      <       |_|   |_|       |
+  ▀▀  ▀▀     |______/___|__|___|___|_______|__|____|
+</pre>
 
-<p align="center"><strong>A tiny, blazing fast, extensible agent kernel.</strong></p>
+<p align="center"><strong>A tiny, blazing fast, extensible agent runtime.</strong></p>
 
 <p align="center">
   <a href="https://github.com/aexhq/brain/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/aexhq/brain/actions/workflows/ci.yml/badge.svg" /></a>
@@ -20,7 +25,7 @@
 
 ## What is it
 
-Brain is a tiny agent kernel that runs sessions: it holds the conversation, decides what happens
+Brain is a tiny agent runtime that runs sessions: it holds the conversation, decides what happens
 next, calls the model, hands out tool calls, and journals every step — about 7,300 lines of Rust.
 The **agent loop**, the **model**, the **tools**, and the **environment** they run in all plug in
 and are yours to replace, whether you run Brain as an HTTP server or embed the `brain` crate in a
@@ -34,7 +39,7 @@ Rust service you already own.
 ## Benchmarks
 
 Same machine, same scripted model behind every subject — no model latency in any number. ★ marks
-the best figure in each chart.[^bench]
+Brain in each chart.[^bench]
 
 **Turn round-trip**
 
@@ -48,8 +53,8 @@ OpenClaw          ████████████████████�
 **Time to first token**
 
 ```text
-ZeroClaw          █                                    9.6 ms ★
-Brain             ██                                   ≤25 ms
+ZeroClaw          █                                    9.6 ms
+Brain             ██                                   ≤25 ms ★
 LangGraph Server  ████                                48.6 ms
 OpenFang          ██████                              75.8 ms
 OpenClaw          ██████████████████████████████     874.4 ms
@@ -68,8 +73,8 @@ OpenFang          ████████████████████�
 **Cold start**
 
 ```text
-ZeroClaw    █                                 10 ms ★
-Brain       ██                                25 ms
+ZeroClaw    █                                 10 ms
+Brain       ██                                25 ms ★
 OpenFang    ████                             180 ms
 LangGraph   ███████████████                  2.5 s
 CrewAI      █████████████████                3.0 s
@@ -104,7 +109,7 @@ your app
    ▲
    │ HTTP / SSE
    ▼
-[ brain kernel ]
+[ brain runtime ]
    │
    ├── observation ──► agent loop ──► decision
    │                   (Wasm, sealed)
@@ -177,11 +182,11 @@ const session = await brain.sessions.create({
     name: "gpt-5-mini",
     apiKey: process.env.OPENAI_API_KEY!,
   },
-  brain: pi(),
+  agentloop: pi(),
   system: "Answer briefly and directly.",
 });
 
-await session.send("Explain what a session kernel does, in one sentence.");
+await session.send("Explain what a session runtime does, in one sentence.");
 for await (const event of session.events()) console.log(event);
 
 await session.end();
@@ -200,7 +205,7 @@ are welcome.
 
 ## Roadmap
 
-- [x] The four-part kernel: agent loop, model, tools, environment
+- [x] The four-part runtime: agent loop, model, tools, environment
 - [x] Unified `brain`, `tool`, and `environment` authoring with `brain build`
 - [x] Append-only segment log with restart recovery
 - [x] Content identity as a type rather than a digest string

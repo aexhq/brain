@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Durable in-process session kernel for Brain"
+description = "Durable in-process session runtime for Brain"
 publish = false
 
 [dependencies]

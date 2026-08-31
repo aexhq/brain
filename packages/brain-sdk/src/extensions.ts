@@ -1,10 +1,10 @@
 import { z } from "zod";
 
-import type { BoundTool, BrainExtension, Environment, ModelMessage, ModelResponse, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition } from "./types.js";
+import type { BoundTool, Agentloop, Environment, ModelMessage, ModelResponse, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition } from "./types.js";
 
 export const extensionSource = Symbol.for("@aexhq/brain/extension-source");
 
-export interface BrainInput {
+export interface AgentloopInput {
   readonly context: { readonly state?: unknown };
   readonly observation:
     | { readonly type: "session_started" }
@@ -23,7 +23,7 @@ export interface ModelTurnRequest {
   readonly response_format?: unknown;
   readonly max_output_tokens?: number;
 }
-export type BrainAction =
+export type AgentloopAction =
   | { readonly type: "model"; readonly request: ModelTurnRequest }
   | { readonly type: "tools"; readonly calls: readonly ToolCall[] }
   | { readonly type: "emit"; readonly event: unknown }
@@ -31,34 +31,34 @@ export type BrainAction =
   | { readonly type: "finish"; readonly result?: unknown }
   | { readonly type: "fail"; readonly code: string; readonly message: string; readonly retryable: boolean };
 
-export interface BrainTurn {
+export interface AgentloopTurn {
   readonly logicalTime: Date;
   readonly signal: AbortSignal;
-  model(request: ModelTurnRequest): BrainAction;
-  tools(calls: readonly ToolCall[]): BrainAction;
-  emit(event: unknown): BrainAction;
-  reply(content: unknown): BrainAction;
-  done(result?: unknown): BrainAction;
-  fail(code: string, message: string, options?: { readonly retryable?: boolean }): BrainAction;
+  model(request: ModelTurnRequest): AgentloopAction;
+  tools(calls: readonly ToolCall[]): AgentloopAction;
+  emit(event: unknown): AgentloopAction;
+  reply(content: unknown): AgentloopAction;
+  done(result?: unknown): AgentloopAction;
+  fail(code: string, message: string, options?: { readonly retryable?: boolean }): AgentloopAction;
 }
 
-type BrainHandler<Input> = (input: Input, turn: BrainTurn) => BrainAction;
-export interface BrainAuthor<Options> {
+type AgentloopHandler<Input> = (input: Input, turn: AgentloopTurn) => AgentloopAction;
+export interface AgentloopAuthor<Options> {
   readonly options: Options;
   readonly on: {
-    start(handler: BrainHandler<{ readonly type: "session_started" }>): void;
-    message(handler: BrainHandler<{ readonly type: "user_message"; readonly content: unknown }>): void;
-    model(handler: BrainHandler<{ readonly type: "model_completed"; readonly response: ModelResponse }>): void;
-    tools(handler: BrainHandler<{ readonly type: "tools_completed"; readonly results: readonly unknown[] }>): void;
-    event(handler: BrainHandler<{ readonly type: "emitted"; readonly event: unknown }>): void;
-    cancel(handler: BrainHandler<{ readonly type: "cancelled" }>): void;
+    start(handler: AgentloopHandler<{ readonly type: "session_started" }>): void;
+    message(handler: AgentloopHandler<{ readonly type: "user_message"; readonly content: unknown }>): void;
+    model(handler: AgentloopHandler<{ readonly type: "model_completed"; readonly response: ModelResponse }>): void;
+    tools(handler: AgentloopHandler<{ readonly type: "tools_completed"; readonly results: readonly unknown[] }>): void;
+    event(handler: AgentloopHandler<{ readonly type: "emitted"; readonly event: unknown }>): void;
+    cancel(handler: AgentloopHandler<{ readonly type: "cancelled" }>): void;
   };
   state<Value extends Schema>(schema: Value, initial: () => SchemaOutput<Value>): SchemaOutput<Value>;
   readonly context: { estimateTokens(messages: readonly unknown[]): number };
 }
 
-type BrainSetup<Options> = (author: BrainAuthor<Options>) => void;
-type BrainSource = { readonly kind: "brain"; readonly options?: Schema; readonly setup: BrainSetup<unknown>; artifact?: URL | Uint8Array; name?: string };
+type AgentloopSetup<Options> = (author: AgentloopAuthor<Options>) => void;
+type AgentloopSource = { readonly kind: "agentloop"; readonly options?: Schema; readonly setup: AgentloopSetup<unknown>; artifact?: URL | Uint8Array; name?: string };
 
 export interface ToolContract<OptionsSchema extends Schema | undefined, InputSchema extends Schema, OutputSchema extends Schema | undefined> {
   readonly description: string;
@@ -126,9 +126,9 @@ interface EnvironmentRegistration {
   readonly detach?: (context: unknown) => void | Promise<void>;
 }
 type EnvironmentSource = { readonly kind: "environment"; readonly options?: Schema; readonly setup: EnvironmentSetup<unknown, Record<string, EnvironmentMember>>; name?: string; runtimeName?: string; readonly members: Readonly<Record<string, EnvironmentMember>>; readonly registration: EnvironmentRegistration };
-type ExtensionFactory = Function & { [extensionSource]?: BrainSource | ToolSource | EnvironmentSource };
+type ExtensionFactory = Function & { [extensionSource]?: AgentloopSource | ToolSource | EnvironmentSource };
 
-const brains = new WeakMap<object, { readonly artifact: URL | Uint8Array; readonly configuration: unknown }>();
+const agentloops = new WeakMap<object, { readonly artifact: URL | Uint8Array; readonly configuration: unknown }>();
 const tools = new WeakMap<object, { readonly definition: ToolDefinition; readonly implementationName: string; readonly configuration: unknown }>();
 const environments = new WeakMap<object, EnvironmentRuntime>();
 const bindings = new WeakMap<object, { readonly tool: Tool; readonly environment: Environment }>();
@@ -141,21 +141,21 @@ interface EnvironmentRuntime {
   ended: boolean;
 }
 
-export function brain(setup: BrainSetup<Record<string, never>>): (options?: undefined) => BrainExtension;
-export function brain<OptionsSchema extends Schema>(contract: { readonly options: OptionsSchema }, setup: BrainSetup<SchemaOutput<OptionsSchema>>): (options: SchemaInput<OptionsSchema>) => BrainExtension;
-export function brain<OptionsSchema extends Schema>(contractOrSetup: { readonly options: OptionsSchema } | BrainSetup<Record<string, never>>, possibleSetup?: BrainSetup<SchemaOutput<OptionsSchema>>) {
+export function agentloop(setup: AgentloopSetup<Record<string, never>>): (options?: undefined) => Agentloop;
+export function agentloop<OptionsSchema extends Schema>(contract: { readonly options: OptionsSchema }, setup: AgentloopSetup<SchemaOutput<OptionsSchema>>): (options: SchemaInput<OptionsSchema>) => Agentloop;
+export function agentloop<OptionsSchema extends Schema>(contractOrSetup: { readonly options: OptionsSchema } | AgentloopSetup<Record<string, never>>, possibleSetup?: AgentloopSetup<SchemaOutput<OptionsSchema>>) {
   const options = typeof contractOrSetup === "function" ? undefined : contractOrSetup.options;
-  const setup = (typeof contractOrSetup === "function" ? contractOrSetup : possibleSetup) as BrainSetup<unknown> | undefined;
-  if (setup === undefined) throw new TypeError("brain requires a setup function");
+  const setup = (typeof contractOrSetup === "function" ? contractOrSetup : possibleSetup) as AgentloopSetup<unknown> | undefined;
+  if (setup === undefined) throw new TypeError("agentloop requires a setup function");
   const factory = ((value?: unknown) => {
-    const source = sourceOf(factory, "brain") as BrainSource;
-    if (source.artifact === undefined || source.name === undefined) throw new Error("Brain extension must be built with brain build before it can be used");
+    const source = sourceOf(factory, "agentloop") as AgentloopSource;
+    if (source.artifact === undefined || source.name === undefined) throw new Error("Agentloop must be built with brain build before it can be used");
     const configuration = options === undefined ? requireNoOptions(value) : options.parse(value);
     const extension = Object.freeze({});
-    brains.set(extension, { artifact: source.artifact, configuration: structuredClone(configuration) });
+    agentloops.set(extension, { artifact: source.artifact, configuration: structuredClone(configuration) });
     return extension;
   }) as ExtensionFactory;
-  defineSource(factory, { kind: "brain", ...(options === undefined ? {} : { options }), setup });
+  defineSource(factory, { kind: "agentloop", ...(options === undefined ? {} : { options }), setup });
   return factory;
 }
 
@@ -462,15 +462,15 @@ export function installExtensionIdentity(factory: unknown, name: string, artifac
   if (source.name !== undefined) throw new TypeError(`extension ${name} already has an identity`);
   source.name = name;
   if (source.kind === "environment") source.runtimeName = runtimeName ?? name;
-  if (source.kind === "brain") {
-    if (artifact === undefined) throw new TypeError(`Brain extension ${name} has no built artifact`);
+  if (source.kind === "agentloop") {
+    if (artifact === undefined) throw new TypeError(`Agentloop ${name} has no built artifact`);
     source.artifact = artifact;
   }
 }
 
-export function inspectBrain(value: BrainExtension): { readonly artifact: URL | Uint8Array; readonly configuration: unknown } {
-  const metadata = brains.get(value);
-  if (metadata === undefined) throw new TypeError("brain must be created by a built Brain extension");
+export function inspectAgentloop(value: Agentloop): { readonly artifact: URL | Uint8Array; readonly configuration: unknown } {
+  const metadata = agentloops.get(value);
+  if (metadata === undefined) throw new TypeError("agentloop must be created by a built Agentloop");
   return metadata;
 }
 
@@ -507,21 +507,21 @@ export function endEnvironment(value: Environment): void {
   if (metadata !== undefined) metadata.ended = true;
 }
 
-export function activateBrain(factory: unknown, input: BrainInput): { readonly context: { readonly protocolVersion: "agentloop/v1"; readonly items: readonly unknown[]; readonly state: unknown }; readonly decision: Exclude<BrainAction, { type: "reply" }> } {
-  const source = sourceOf(factory as ExtensionFactory, "brain") as BrainSource;
+export function activateAgentloop(factory: unknown, input: AgentloopInput): { readonly context: { readonly protocolVersion: "agentloop/v1"; readonly items: readonly unknown[]; readonly state: unknown }; readonly decision: Exclude<AgentloopAction, { type: "reply" }> } {
+  const source = sourceOf(factory as ExtensionFactory, "agentloop") as AgentloopSource;
   const options = source.options === undefined ? requireEmptyConfiguration(input.configuration) : source.options.parse(input.configuration);
   const envelope = parseStateEnvelope(input.context.state);
   if (input.observation.type === "emitted" && Object.hasOwn(envelope, "pendingReply")) return output(envelope.slots, false, undefined, { type: "finish", result: envelope.pendingReply });
-  const handlers = new Map<string, BrainHandler<never>>();
+  const handlers = new Map<string, AgentloopHandler<never>>();
   const schemas: Schema[] = [];
   const slots: unknown[] = [];
-  const on = (name: string) => (handler: BrainHandler<never>) => {
-    if (handlers.has(name)) throw new TypeError(`brain may register ${name} only once`);
+  const on = (name: string) => (handler: AgentloopHandler<never>) => {
+    if (handlers.has(name)) throw new TypeError(`agentloop may register ${name} only once`);
     handlers.set(name, handler);
   };
-  const author: BrainAuthor<unknown> = {
+  const author: AgentloopAuthor<unknown> = {
     options,
-    on: { start: on("session_started"), message: on("user_message"), model: on("model_completed"), tools: on("tools_completed"), event: on("emitted"), cancel: on("cancelled") } as BrainAuthor<unknown>["on"],
+    on: { start: on("session_started"), message: on("user_message"), model: on("model_completed"), tools: on("tools_completed"), event: on("emitted"), cancel: on("cancelled") } as AgentloopAuthor<unknown>["on"],
     state(schema, initial) {
       const index = schemas.length;
       schemas.push(schema);
@@ -532,20 +532,20 @@ export function activateBrain(factory: unknown, input: BrainInput): { readonly c
     context: { estimateTokens(messages) { return Math.ceil(JSON.stringify(messages).length / 4); } },
   };
   const registered = source.setup(author);
-  if (isPromise(registered)) throw new TypeError("Brain setup must be synchronous");
+  if (isPromise(registered)) throw new TypeError("Agentloop setup must be synchronous");
   const handler = handlers.get(input.observation.type);
   const action = handler === undefined ? defaultAction(input.observation.type) : handler(input.observation as never, turn(input.runtime.logicalTimeMs));
-  if (isPromise(action)) throw new TypeError("Brain handlers must be synchronous");
+  if (isPromise(action)) throw new TypeError("Agentloop handlers must be synchronous");
   for (let index = 0; index < schemas.length; index += 1) slots[index] = schemas[index]!.parse(slots[index]);
   if (action.type === "reply") return output(slots, true, action.content, { type: "emit", event: { type: "assistant_message", content: action.content } });
   return output(slots, false, undefined, action);
 }
 
-function turn(logicalTimeMs: bigint): BrainTurn {
+function turn(logicalTimeMs: bigint): AgentloopTurn {
   const signal = new AbortController().signal;
   return Object.freeze({
     logicalTime: new Date(Number(logicalTimeMs)), signal,
-    model: (request: Parameters<BrainTurn["model"]>[0]) => ({ type: "model" as const, request }),
+    model: (request: Parameters<AgentloopTurn["model"]>[0]) => ({ type: "model" as const, request }),
     tools: (calls: readonly ToolCall[]) => ({ type: "tools" as const, calls }),
     emit: (event: unknown) => ({ type: "emit" as const, event }),
     reply: (content: unknown) => ({ type: "reply" as const, content }),
@@ -554,24 +554,24 @@ function turn(logicalTimeMs: bigint): BrainTurn {
   });
 }
 
-function output(slots: readonly unknown[], hasPendingReply: boolean, pendingReply: unknown, decision: Exclude<BrainAction, { type: "reply" }>) {
+function output(slots: readonly unknown[], hasPendingReply: boolean, pendingReply: unknown, decision: Exclude<AgentloopAction, { type: "reply" }>) {
   return { context: { protocolVersion: "agentloop/v1" as const, items: [], state: { version: 1, slots, ...(hasPendingReply ? { pendingReply } : {}) } }, decision };
 }
 
-function defaultAction(type: BrainInput["observation"]["type"]): Exclude<BrainAction, { type: "reply" }> {
+function defaultAction(type: AgentloopInput["observation"]["type"]): Exclude<AgentloopAction, { type: "reply" }> {
   if (type === "session_started") return { type: "finish" };
   if (type === "cancelled") return { type: "fail", code: "cancelled", message: "turn cancelled", retryable: false };
-  throw new Error(`Brain did not register an ${type} handler`);
+  throw new Error(`Agentloop did not register an ${type} handler`);
 }
 
 function parseStateEnvelope(value: unknown): { readonly slots: readonly unknown[]; readonly pendingReply?: unknown } {
   if (value === undefined) return { slots: [] };
-  if (!plainObject(value) || value.version !== 1 || !Array.isArray(value.slots)) throw new TypeError("Brain state envelope is invalid");
+  if (!plainObject(value) || value.version !== 1 || !Array.isArray(value.slots)) throw new TypeError("Agentloop state envelope is invalid");
   return { slots: value.slots, ...(Object.hasOwn(value, "pendingReply") ? { pendingReply: value.pendingReply } : {}) };
 }
 
-function defineSource(factory: ExtensionFactory, source: BrainSource | ToolSource | EnvironmentSource): void { Object.defineProperty(factory, extensionSource, { value: source }); }
-function sourceOf(factory: ExtensionFactory, kind: BrainSource["kind"] | ToolSource["kind"] | EnvironmentSource["kind"]) {
+function defineSource(factory: ExtensionFactory, source: AgentloopSource | ToolSource | EnvironmentSource): void { Object.defineProperty(factory, extensionSource, { value: source }); }
+function sourceOf(factory: ExtensionFactory, kind: AgentloopSource["kind"] | ToolSource["kind"] | EnvironmentSource["kind"]) {
   const source = factory?.[extensionSource];
   if (source?.kind !== kind) throw new TypeError(`expected a ${kind} extension`);
   return source;

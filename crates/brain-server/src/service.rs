@@ -11,7 +11,8 @@ use brain_loophost::WorkerPool;
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage, MessageRequest,
-    ModelBinding, ResolvedSessionRequest, Session, SessionId, SessionList,
+    ModelBinding, ModelPresentation, RequestedToolBinding, ResolvedSessionRequest, Session,
+    SessionId, SessionList, ToolDefinition,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Mutex;
@@ -209,7 +210,7 @@ impl BrainApi for ServerApi {
         if !self
             .resources
             .loops
-            .status(&request.agentloop_identity)
+            .status(&request.agentloop.identity)
             .await
             .map_err(loop_error)?
         {
@@ -223,16 +224,17 @@ impl BrainApi for ServerApi {
             .models
             .put(&binding_id, &request.model)
             .map_err(api_error)?;
+        let (presentation, tool_bindings) = split_tools(&request);
         let resolved = ResolvedSessionRequest {
-            agentloop_identity: request.agentloop_identity.clone(),
-            brain_configuration: request.brain_configuration.clone(),
+            agentloop_identity: request.agentloop.identity.clone(),
+            brain_configuration: request.agentloop.configuration.clone(),
             model: ModelBinding {
                 binding_id: binding_id.clone(),
                 model: request.model.name.clone(),
             },
-            presentation: request.presentation.clone(),
+            presentation,
             environments: request.environments.clone(),
-            tool_bindings: request.tool_bindings.clone(),
+            tool_bindings,
             history: request.history.clone(),
         };
         let creation = self
@@ -592,6 +594,37 @@ fn valid_identifier(value: &str) -> bool {
         })
 }
 
+/// Splits each wire tool back into its two internal halves: what the model sees
+/// (`ModelPresentation`) and where the call goes (`RequestedToolBinding`). The kernel
+/// still validates the split result against the session contract.
+fn split_tools(request: &CreateSessionRequest) -> (ModelPresentation, Vec<RequestedToolBinding>) {
+    let mut definitions = Vec::with_capacity(request.tools.len());
+    let mut bindings = Vec::with_capacity(request.tools.len());
+    for tool in &request.tools {
+        definitions.push(ToolDefinition {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            input_schema: tool.input_schema.clone(),
+            output_schema: tool.output_schema.clone(),
+        });
+        bindings.push(RequestedToolBinding {
+            name: tool.name.clone(),
+            environment_id: tool.environment_id.clone(),
+            remote_tool_id: tool.remote_tool_id.clone(),
+            tool_configuration: tool.configuration.clone(),
+            grant: tool.grant.clone(),
+        });
+    }
+    (
+        ModelPresentation {
+            system: request.system.clone(),
+            tools: definitions,
+            response_format: request.response_format.clone(),
+        },
+        bindings,
+    )
+}
+
 fn validate_model(
     request: &CreateSessionRequest,
     providers: &brain::model::ProviderRegistry,
@@ -605,7 +638,7 @@ fn validate_model(
         return Err(ApiError::invalid_request("model selection is invalid"));
     }
     // Rejected here, at create, instead of as a kernel error on the first turn.
-    if request.presentation.response_format.is_some()
+    if request.response_format.is_some()
         && !providers.supports_response_format(&request.model.provider, &request.model.name)
     {
         return Err(ApiError::invalid_request(
@@ -697,16 +730,15 @@ mod tests {
         let registry = brain::model::ProviderRegistry::default_set();
         let request = |provider: &str, name: &str, response_format: bool| {
             serde_json::from_value::<brain_protocol::CreateSessionRequest>(serde_json::json!({
-                "agentloop_identity": "a".repeat(64),
-                "brain_configuration": {},
-                "model": { "provider": provider, "name": name, "api_key": "k" },
-                "presentation": {
-                    "system": "",
-                    "tools": [],
-                    "response_format": if response_format { Some(serde_json::json!({"type": "json_object"})) } else { None },
+                "agentloop": {
+                    "identity": "a".repeat(64),
+                    "configuration": {},
                 },
+                "model": { "provider": provider, "name": name, "api_key": "k" },
+                "system": "",
+                "tools": [],
+                "response_format": if response_format { Some(serde_json::json!({"type": "json_object"})) } else { None },
                 "environments": [],
-                "tool_bindings": [],
             }))
             .unwrap()
         };

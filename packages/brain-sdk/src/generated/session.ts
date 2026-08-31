@@ -25,23 +25,24 @@ export interface BrainSessionAPIV1 {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ToolDefinition".
+ * via the `definition` "AgentloopRef".
  */
-export interface ToolDefinition {
+export interface AgentloopRef {
+  identity: Identity;
+  configuration: unknown;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "BoundTool".
+ */
+export interface BoundTool {
   name: Identifier;
   description: string;
   input_schema: {};
   output_schema?: {};
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "RequestedToolBinding".
- */
-export interface RequestedToolBinding {
-  name: Identifier;
   environment_id: Identifier;
   remote_tool_id: Identifier;
-  tool_configuration: unknown;
+  configuration: unknown;
   grant: unknown;
 }
 /**
@@ -64,33 +65,21 @@ export interface ModelSelection {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ModelPresentation".
- */
-export interface ModelPresentation {
-  system: string;
-  /**
-   * @maxItems 128
-   */
-  tools: ToolDefinition[];
-  response_format?: unknown;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "CreateSessionRequest".
  */
 export interface CreateSessionRequest {
-  agentloop_identity: Identity;
-  brain_configuration: unknown;
+  agentloop: AgentloopRef;
   model: ModelSelection;
-  presentation: ModelPresentation;
+  system?: string;
+  /**
+   * @maxItems 128
+   */
+  tools: BoundTool[];
+  response_format?: unknown;
   /**
    * @maxItems 128
    */
   environments: EnvironmentRequirement[];
-  /**
-   * @maxItems 128
-   */
-  tool_bindings: RequestedToolBinding[];
   /**
    * @maxItems 10000
    */
@@ -135,8 +124,8 @@ export interface Session {
   session_id: SessionId;
   journal_id: Identifier;
   status: "creating" | "idle" | "running" | "ended" | "failed";
-  through_sequence: number;
-  presentation_identity: Identity;
+  last_sequence: number;
+  config_hash: Identity;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

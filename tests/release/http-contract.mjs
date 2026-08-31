@@ -70,12 +70,11 @@ const admission = await call("GET", `/v1/agentloops/${admitted.result.identity}`
 assert.deepEqual(admission.result, admitted.result);
 
 const createBody = {
-  agentloop_identity: admitted.result.identity,
-  brain_configuration: {},
+  agentloop: { identity: admitted.result.identity, configuration: {} },
   model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", api_key: "release-smoke-key" },
-  presentation: { system: "", tools: [] },
+  system: "",
+  tools: [],
   environments: [],
-  tool_bindings: [],
 };
 const created = await call("POST", "/v1/sessions", { body: createBody, key: "http-contract-create" });
 assert.equal(created.response.status, 200);
@@ -84,7 +83,7 @@ assert.equal(created.result.status, "idle");
 const replayedCreate = await call("POST", "/v1/sessions", { body: createBody, key: "http-contract-create" });
 assert.deepEqual(replayedCreate.result, created.result);
 const conflictingCreate = await call("POST", "/v1/sessions", {
-  body: { ...createBody, presentation: { ...createBody.presentation, system: "changed" } },
+  body: { ...createBody, system: "changed" },
   key: "http-contract-create",
 });
 assert.equal(conflictingCreate.response.status, 409);
@@ -111,7 +110,7 @@ assert.deepEqual(replayedMessage.result, message.result);
 
 const page = await call("GET", `/v1/sessions/${sessionId}/events?after=0`);
 assert.equal(page.response.status, 200);
-assert.equal(page.result.next_cursor, message.result.through_sequence);
+assert.equal(page.result.next_cursor, message.result.last_sequence);
 assert.equal(page.result.events.at(-1).event_type, "turn_finished");
 // Read until the event we came for, not to the end of the body: the stream stays open
 // carrying records as they are appended, which is what makes a first-token measurement

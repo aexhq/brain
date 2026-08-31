@@ -102,12 +102,11 @@ async fn exposes_every_v1_route_with_its_contract_status() {
     let digest = "a".repeat(64);
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let create = serde_json::json!({
-        "agentloop_identity": digest,
-        "brain_configuration": {},
+        "agentloop": {"identity": digest, "configuration": {}},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
-        "presentation": {"system":"","tools":[]},
-        "environments": [],
-        "tool_bindings": []
+        "system": "",
+        "tools": [],
+        "environments": []
     });
     let cases = vec![
         request("POST", "/v1/agentloops", Some(vec![1]), None),
@@ -165,12 +164,11 @@ async fn mutating_routes_fail_fast_without_an_idempotency_key() {
 async fn request_bodies_reject_unknown_fields() {
     let digest = "a".repeat(64);
     let create = serde_json::json!({
-        "agentloop_identity": digest,
-        "brain_configuration": {},
+        "agentloop": {"identity": digest, "configuration": {}},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
-        "presentation": {"system":"","tools":[]},
+        "system": "",
+        "tools": [],
         "environments": [],
-        "tool_bindings": [],
         "unknown": true
     });
     let response = router(Api::default())
@@ -269,8 +267,8 @@ fn session() -> Session {
         session_id: SessionId::new("ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         journal_id: brain_protocol::JournalId::new("jrn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         status: SessionStatus::Idle,
-        through_sequence: 1,
-        presentation_identity: brain_protocol::Identity::of(&"presentation").unwrap(),
+        last_sequence: 1,
+        config_hash: brain_protocol::Identity::of(&"config").unwrap(),
     }
 }
 

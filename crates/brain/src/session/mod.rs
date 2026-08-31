@@ -121,7 +121,7 @@ impl Kernel {
             }
             self.inner.store.append(
                 &session.session_id,
-                session.through_sequence,
+                session.last_sequence,
                 &[AppendRecord::new(
                     "turn_interrupted",
                     serde_json::json!({
@@ -334,12 +334,12 @@ impl Kernel {
         if !matches!(row.status, SessionStatus::Idle) {
             return Err(KernelError::InvalidState("session is not idle".into()));
         }
-        let operation_id = operation_id(&row.journal_id, row.through_sequence + 1);
+        let operation_id = operation_id(&row.journal_id, row.last_sequence + 1);
         let identity =
             Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
         self.inner.store.append(
             session_id,
-            row.through_sequence,
+            row.last_sequence,
             &[AppendRecord::new(
                 format!("{kind}_intent"),
                 serde_json::json!({"operation_id":operation_id,"request_identity":identity,"request":request}),
@@ -363,7 +363,7 @@ impl Kernel {
             .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
         self.inner.store.append(
             session_id,
-            row.through_sequence,
+            row.last_sequence,
             &[AppendRecord::new(
                 format!("{kind}_result"),
                 serde_json::json!({"operation_id":operation_id,"result":result}),
@@ -387,7 +387,7 @@ impl Kernel {
         }
         self.inner.store.append(
             session_id,
-            row.through_sequence,
+            row.last_sequence,
             &[AppendRecord::new("session_ended", serde_json::json!({}))],
             SessionUpdate {
                 status: Some(SessionStatus::Ended),
@@ -395,7 +395,7 @@ impl Kernel {
                 configuration: None,
             },
         )?;
-        row.through_sequence += 1;
+        row.last_sequence += 1;
         row.status = SessionStatus::Ended;
         self.inner
             .sessions
