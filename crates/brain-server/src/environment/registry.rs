@@ -1,13 +1,21 @@
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use brain::{CreatingSession, Kernel, KernelError, SessionHandle};
 use brain_protocol::{
-    AttachmentId, EnvironmentAttachment, EnvironmentCallResult, EnvironmentId,
-    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, Identity, ResolvedSessionRequest,
-    SealedSessionConfig, SessionId, ToolBinding,
+    AttachmentId, Capability, EnvironmentAttachment, EnvironmentCallResult, EnvironmentId,
+    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, Identity, Provision,
+    ResolvedSessionRequest, SealedSessionConfig, SessionId, ToolBinding, ToolManifest,
 };
 
 use super::{DirectoryEntry, EnvironmentAdapter, EnvironmentDirectory};
+
+/// Plaintext binding values per environment, carried beside the resolved request for
+/// exactly as long as create runs. They go out on the attach wire and are journaled
+/// only as identities.
+pub type SessionBindingValues = HashMap<EnvironmentId, BTreeMap<String, String>>;
 
 pub struct EnvironmentRegistry {
     directory: Arc<dyn EnvironmentDirectory>,
@@ -26,8 +34,9 @@ impl EnvironmentRegistry {
         &self,
         mut creation: CreatingSession,
         request: ResolvedSessionRequest,
+        binding_values: SessionBindingValues,
     ) -> Result<(SessionHandle, SealedSessionConfig), KernelError> {
-        match self.prepare(&mut creation, request).await {
+        match self.prepare(&mut creation, request, binding_values).await {
             Ok(sealed) => {
                 let handle = creation.complete(sealed.clone())?;
                 Ok((handle, sealed))
@@ -44,36 +53,55 @@ impl EnvironmentRegistry {
         &self,
         creation: &mut CreatingSession,
         request: ResolvedSessionRequest,
+        mut binding_values: SessionBindingValues,
     ) -> Result<SealedSessionConfig, KernelError> {
         let mut environments = Vec::with_capacity(request.environments.len());
         let mut attachments = std::collections::HashMap::new();
         for requirement in &request.environments {
             let entry = self.directory.resolve(requirement).await?;
-            self.lifecycle(
-                creation,
-                &entry,
-                EnvironmentRequest::Setup {
-                    configuration: requirement.configuration.clone(),
-                },
-                None,
-                "environment_setup",
-            )
-            .await?;
+            let setup = self
+                .lifecycle(
+                    creation,
+                    &entry,
+                    EnvironmentRequest::Setup {
+                        configuration: requirement.configuration.clone(),
+                    },
+                    None,
+                    "environment_setup",
+                )
+                .await?;
             let attachment_id = attachment_id(creation.session_id(), &requirement.environment_id)?;
-            self.lifecycle(
-                creation,
-                &entry,
-                EnvironmentRequest::Attach {
-                    grants: serde_json::json!({}),
-                },
-                Some(attachment_id.clone()),
-                "environment_attach",
-            )
-            .await?;
+            let bindings = binding_values
+                .remove(&requirement.environment_id)
+                .unwrap_or_default();
+            let attach = EnvironmentRequest::Attach {
+                grants: requirement.grants.clone(),
+                provisions: provisions_for(&request, &requirement.environment_id),
+                bindings,
+            };
+            let attached = self
+                .lifecycle(
+                    creation,
+                    &entry,
+                    attach,
+                    Some(attachment_id.clone()),
+                    "environment_attach",
+                )
+                .await?;
+            // What the environment says it provides feeds the sealed configuration's
+            // `requires ⊆ provides` check; setup and attach both may report it.
+            let mut provides = receipt_provides(&setup);
+            for capability in receipt_provides(&attached) {
+                if !provides.contains(&capability) {
+                    provides.push(capability);
+                }
+            }
+            provides.sort_unstable();
             attachments.insert(requirement.environment_id.clone(), attachment_id.clone());
             environments.push(EnvironmentAttachment {
                 binding: entry.binding,
                 attachment_id,
+                provides,
             });
         }
         let tool_bindings = request
@@ -103,9 +131,10 @@ impl EnvironmentRegistry {
                             )
                         })?,
                     attachment_id,
-                    remote_tool_id: tool.remote_tool_id,
-                    tool_configuration: tool.tool_configuration,
-                    grant: tool.grant,
+                    requires: tool.requires,
+                    binding_names: tool.binding_names,
+                    hosting: tool.hosting,
+                    payload: tool.payload,
                 })
             })
             .collect::<Result<Vec<_>, KernelError>>()?;
@@ -127,7 +156,12 @@ impl EnvironmentRegistry {
         attachment_id: Option<AttachmentId>,
         kind: &str,
     ) -> Result<EnvironmentReceipt, KernelError> {
-        let (operation_id, request_identity) = creation.record_intent(kind, &request)?;
+        // An attach carries binding values in plaintext, and plaintext never enters
+        // the journal: the recorded intent replaces each value with its identity.
+        let (operation_id, request_identity) = match redacted(&request)? {
+            Some(journal_view) => creation.record_intent_redacted(kind, &request, &journal_view)?,
+            None => creation.record_intent(kind, &request)?,
+        };
         let operation = EnvironmentOperation {
             operation_id: operation_id.clone(),
             request_identity,
@@ -157,9 +191,9 @@ impl EnvironmentRegistry {
                     "Environment returned progress without a terminal lifecycle receipt".into(),
                 ));
             }
-            EnvironmentReceipt::Accepted
+            EnvironmentReceipt::Accepted { .. }
             | EnvironmentReceipt::Result { .. }
-            | EnvironmentReceipt::ToolResult { .. } => {}
+            | EnvironmentReceipt::Outcome { .. } => {}
         }
         creation.record_result(kind, &operation_id, &receipt)?;
         Ok(receipt)
@@ -280,7 +314,7 @@ impl EnvironmentRegistry {
             .send(&entry.endpoint, &entry.binding, &operation)
             .await?;
         match &receipt {
-            EnvironmentReceipt::Accepted | EnvironmentReceipt::Result { .. } => {}
+            EnvironmentReceipt::Accepted { .. } | EnvironmentReceipt::Result { .. } => {}
             EnvironmentReceipt::Conflict { .. } => {
                 return Err(KernelError::InvalidState(
                     "Environment rejected a lifecycle digest conflict".into(),
@@ -300,6 +334,73 @@ impl EnvironmentRegistry {
         }
         kernel.record_external_result(session_id, kind, &operation_id, &receipt)
     }
+}
+
+/// The provisioned-tool artifacts to hand this environment at attach: every bound tool
+/// with a payload, its manifest rebuilt from the model-facing definition plus the
+/// binding — the two halves the create request split apart.
+fn provisions_for(
+    request: &ResolvedSessionRequest,
+    environment_id: &EnvironmentId,
+) -> Vec<Provision> {
+    request
+        .tool_bindings
+        .iter()
+        .filter(|tool| &tool.environment_id == environment_id)
+        .filter_map(|tool| {
+            let payload = tool.payload.clone()?;
+            let definition = request
+                .presentation
+                .tools
+                .iter()
+                .find(|definition| definition.name == tool.name)?;
+            Some(Provision {
+                payload_identity: payload.identity,
+                manifest: ToolManifest {
+                    name: tool.name.clone(),
+                    description: definition.description.clone(),
+                    input_schema: definition.input_schema.clone(),
+                    output_schema: definition.output_schema.clone(),
+                    requires: tool.requires.clone(),
+                    binding_names: tool.binding_names.clone(),
+                    hosting: tool.hosting,
+                    payload: Some(payload),
+                },
+            })
+        })
+        .collect()
+}
+
+fn receipt_provides(receipt: &EnvironmentReceipt) -> Vec<Capability> {
+    match receipt {
+        EnvironmentReceipt::Accepted { provides } => provides.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// The journal view of a request whose wire form carries plaintext binding values:
+/// the same request with each value replaced by its identity. `None` when the request
+/// carries nothing the journal must not hold.
+fn redacted(request: &EnvironmentRequest) -> Result<Option<EnvironmentRequest>, KernelError> {
+    let EnvironmentRequest::Attach {
+        grants,
+        provisions,
+        bindings,
+    } = request
+    else {
+        return Ok(None);
+    };
+    let mut identities = BTreeMap::new();
+    for (name, value) in bindings {
+        let identity =
+            Identity::of(value).map_err(|error| KernelError::InvalidState(error.to_string()))?;
+        identities.insert(name.clone(), identity.to_string());
+    }
+    Ok(Some(EnvironmentRequest::Attach {
+        grants: grants.clone(),
+        provisions: provisions.clone(),
+        bindings: identities,
+    }))
 }
 
 fn attachment_id(

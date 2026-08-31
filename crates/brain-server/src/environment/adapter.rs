@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use brain::KernelError;
 use brain_protocol::{
-    EnvironmentBinding, EnvironmentCommand, EnvironmentOperation, EnvironmentReceipt,
-    EnvironmentRequest, EnvironmentResponse,
+    ENVIRONMENT_CONTRACT, EnvironmentBinding, EnvironmentCommand, EnvironmentOperation,
+    EnvironmentReceipt, EnvironmentRequest, EnvironmentResponse,
 };
 
 const MAX_ENVIRONMENT_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
@@ -40,7 +40,7 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         operation: &EnvironmentOperation<EnvironmentRequest>,
     ) -> Result<EnvironmentReceipt, KernelError> {
         let command = EnvironmentCommand {
-            contract: "environment/v1".into(),
+            contract: ENVIRONMENT_CONTRACT.into(),
             binding: binding.clone(),
             operation: operation.clone(),
         };
@@ -81,7 +81,7 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         let response: EnvironmentResponse = serde_json::from_slice(&body).map_err(|error| {
             KernelError::Ambiguous(format!("Environment terminal receipt is invalid: {error}"))
         })?;
-        if response.contract != "environment/v1"
+        if response.contract != ENVIRONMENT_CONTRACT
             || response.operation_id != operation.operation_id
             || response.request_identity != operation.request_identity
         {

@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Mutex};
 
 use async_trait::async_trait;
 use brain::KernelError;
-use brain_protocol::{EnvironmentBinding, EnvironmentId, EnvironmentRequirement, Identity};
+use brain_protocol::{EnvironmentBinding, EnvironmentId, Identity, ResolvedEnvironment};
 
 #[derive(Clone, Debug)]
 pub struct DirectoryEntry {
@@ -14,7 +14,7 @@ pub struct DirectoryEntry {
 pub trait EnvironmentDirectory: Send + Sync + 'static {
     async fn resolve(
         &self,
-        requirement: &EnvironmentRequirement,
+        requirement: &ResolvedEnvironment,
     ) -> Result<DirectoryEntry, KernelError>;
     async fn get(&self, binding: &EnvironmentBinding) -> Result<DirectoryEntry, KernelError>;
 }
@@ -37,7 +37,7 @@ impl InMemoryEnvironmentDirectory {
 impl EnvironmentDirectory for InMemoryEnvironmentDirectory {
     async fn resolve(
         &self,
-        requirement: &EnvironmentRequirement,
+        requirement: &ResolvedEnvironment,
     ) -> Result<DirectoryEntry, KernelError> {
         if self.endpoint.trim().is_empty() {
             return Err(KernelError::InvalidState(
@@ -58,13 +58,10 @@ impl EnvironmentDirectory for InMemoryEnvironmentDirectory {
             }
             return Ok(existing.clone());
         }
-        let adapter_binding = serde_jcs::to_string(&requirement.configuration)
-            .map_err(|error| KernelError::InvalidState(error.to_string()))?;
         let entry = DirectoryEntry {
             binding: EnvironmentBinding {
                 environment_id: requirement.environment_id.clone(),
                 configuration_identity: digest,
-                adapter_binding,
                 directory_generation: 1,
                 lifecycle_policy: requirement.lifecycle_policy.clone(),
             },
@@ -99,14 +96,16 @@ mod tests {
         let binding = EnvironmentBinding {
             environment_id: EnvironmentId::new("shared-workspace"),
             configuration_identity: Identity::of(&"configuration").unwrap(),
-            adapter_binding: "sealed".into(),
             directory_generation: 7,
             lifecycle_policy: LifecyclePolicy::Shared,
         };
 
         let entry = directory.get(&binding).await.expect("sealed binding");
 
-        assert_eq!(entry.binding.adapter_binding, "sealed");
+        assert_eq!(
+            entry.binding.environment_id,
+            EnvironmentId::new("shared-workspace")
+        );
         assert_eq!(entry.endpoint, "https://environment.example");
     }
 }
