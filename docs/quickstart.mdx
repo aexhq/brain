@@ -1,12 +1,18 @@
 ---
 title: Quickstart
-description: Run a Brain server and drive one session from TypeScript.
+description: Run a Brain server and give a session a voice — its only tool lives in a browser tab.
 ---
 
 ## Run a server
 
+Host networking lets Brain dial the tool environment on loopback (on Docker Desktop enable host
+networking in settings, or build and run the binary below):
+
 ```sh
-docker run --rm -p 8080:8080 -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
+docker run --rm --network host \
+  -e BRAIN_LISTEN=127.0.0.1:8080 \
+  -e BRAIN_ENVIRONMENT_BASE_URL=http://127.0.0.1:8787 \
+  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
 
 Or build it:
@@ -15,46 +21,90 @@ Or build it:
 cargo build --release -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
 BRAIN_DATA_DIR="$PWD/brain-data" \
 BRAIN_LOOP_WORKER="$PWD/target/release/brain-loop-worker" \
+BRAIN_ENVIRONMENT_BASE_URL=http://127.0.0.1:8787 \
 ./target/release/brain --listen 127.0.0.1:8080
 ```
 
 Brain listens on loopback and needs no token there. Set `BRAIN_API_TOKEN` to listen anywhere else —
 it refuses to start on a non-loopback address without one.
 
-## Drive a session
+## Give the agent a voice
+
+The session's only tool runs in a browser tab: the page holds an outbound WebSocket to the
+environment and answers the model's `say` call with your speakers.
 
 ```sh
-npm install @aexhq/brain @aexhq/agentloop-pi
+npm install @aexhq/brain @aexhq/agentloop-pi @aexhq/env-app zod
 ```
 
-```ts
-import { Brain } from "@aexhq/brain";
+Save as `talk.mjs` and run with `node talk.mjs`:
+
+```js
+import { createServer } from "node:http";
+import { Brain, appTool, createEnvironmentHandler } from "@aexhq/brain";
+import { app } from "@aexhq/env-app";
 import { pi } from "@aexhq/agentloop-pi";
+import { z } from "zod";
+
+// The page: it holds an outbound WebSocket to the environment and answers
+// the `say` tool from inside the tab — with your speakers.
+const page = `<!doctype html><title>brain, out loud</title><body>🔊 This tab is a Brain environment.
+<script type="module">
+import { appTools } from "https://esm.sh/@aexhq/brain";
+import { z } from "https://esm.sh/zod@4";
+appTools.connect({ url: "ws://127.0.0.1:8787/environments/env_1/channel", token: "quickstart" })
+  .register(
+    { name: "say", description: "Speak out loud through the user's speakers.", input: z.object({ text: z.string() }) },
+    ({ text }) => { speechSynthesis.speak(new SpeechSynthesisUtterance(text)); return "spoken"; },
+  );
+</script>`;
+
+// Host the environment beside the page: Brain POSTs operations here, the tab holds the channel.
+const handle = createEnvironmentHandler(app);
+const server = createServer(async (request, response) => {
+  if (request.method === "POST") {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    response.setHeader("content-type", "application/json");
+    return response.end(JSON.stringify(await handle(JSON.parse(body))));
+  }
+  response.setHeader("content-type", "text/html; charset=utf-8");
+  response.end(page);
+});
+server.on("upgrade", (request, socket, head) => handle.channel.upgrade(request, socket, head));
+server.listen(8787, "127.0.0.1");
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
-
+const channel = app({ channelToken: "quickstart" });
 const session = await brain.sessions.create({
-  model: {
-    provider: "openai",
-    name: "gpt-5-mini",
-    apiKey: process.env.OPENAI_API_KEY!,
-  },
+  model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
   agentloop: pi(),
-  system: "Answer briefly and directly.",
+  tools: [
+    appTool({
+      name: "say",
+      description: "Speak out loud through the user's speakers.",
+      input: z.object({ text: z.string() }),
+    }).useIn(channel),
+  ],
+  system: "You can speak out loud. Answer by saying it.",
 });
 
-await session.send("Explain what a session runtime does, in one sentence.");
+console.log("Open http://127.0.0.1:8787 in a browser, sound on, then press Enter.");
+await new Promise((resolve) => process.stdin.once("data", resolve));
 
-for await (const event of session.events()) {
-  console.log(event.sequence, event.type, event.data);
-}
+await session.send("Introduce yourself out loud, in one sentence.");
+for await (const event of session.events()) console.log(event.sequence, event.type);
 
 await session.end();
 await session.delete();
+process.exit(0);
 ```
 
-No `tools` means the model sees none. Add them once you have somewhere to run them — see
-[Tools](/brain/docs/concepts/tool) and [Environments](/brain/docs/concepts/environment).
+The Node script hosts the environment and serves the page, the tab connects out over a WebSocket
+and registers `say`, Brain routes the model's tool call down the channel — and the answer comes
+out of your speakers while the event feed streams in the terminal. See
+[App tools](/brain/docs/guides/app-tools) for how callback tools work, and
+[Environments](/brain/docs/concepts/environment) for what else can host a tool.
 
 ## Runnable versions
 
