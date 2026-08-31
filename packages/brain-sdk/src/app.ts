@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { errorOutcome, parseCancelFrame, parseInvokeFrame, signatureHeader, verifySignature, type InvokeFrame, type Outcome } from "./callback-wire.js";
+import { errorOutcome, MAX_DEADLINE_MS, parseCancelFrame, parseInvokeFrame, signatureHeader, verifySignature, type InvokeFrame, type Outcome } from "./callback-wire.js";
 import type { CapabilityName, Schema, SchemaOutput } from "./types.js";
 
 /** The contract of one app-hosted tool: what the model sees, declared where the
@@ -102,11 +102,12 @@ class AppToolRegistry {
     }
     const call = { controller: new AbortController(), cancelled: false };
     this.active.set(frame.call_id, call);
-    const timer = setTimeout(() => call.controller.abort(new Error("call deadline passed")), frame.deadline_ms);
+    const deadlineMs = Math.min(frame.deadline_ms, MAX_DEADLINE_MS);
+    const timer = setTimeout(() => call.controller.abort(new Error("call deadline passed")), deadlineMs);
     const interrupted = new Promise<typeof interruption>((resolve) => call.controller.signal.addEventListener("abort", () => resolve(interruption), { once: true }));
     try {
       const value = await Promise.race([
-        Promise.resolve(registered.handler(input, { callId: frame.call_id, deadline: new Date(Date.now() + frame.deadline_ms), signal: call.controller.signal })),
+        Promise.resolve(registered.handler(input, { callId: frame.call_id, deadline: new Date(Date.now() + deadlineMs), signal: call.controller.signal })),
         interrupted,
       ]);
       if (value === interruption) return { status: call.cancelled ? "cancelled" : "timeout" };

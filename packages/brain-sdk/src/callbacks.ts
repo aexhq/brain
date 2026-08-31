@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 
-import { errorOutcome, normalizeOutcome, sign, signatureHeader, type InvokeFrame, type Outcome } from "./callback-wire.js";
+import { errorOutcome, MAX_DEADLINE_MS, normalizeOutcome, sign, signatureHeader, type InvokeFrame, type Outcome } from "./callback-wire.js";
 
 /**
  * Where an environment sends callback-tool invocations. `channel` terminates the
@@ -55,7 +55,7 @@ class PostRouter implements CallbackRouter {
     const body = JSON.stringify(frame);
     const controller = new AbortController();
     let interruption: "timeout" | "cancelled" | undefined;
-    const timer = setTimeout(() => { interruption = "timeout"; controller.abort(); }, frame.deadline_ms);
+    const timer = setTimeout(() => { interruption = "timeout"; controller.abort(); }, Math.min(frame.deadline_ms, MAX_DEADLINE_MS));
     const onAbort = (): void => { interruption = "cancelled"; controller.abort(); };
     signal.addEventListener("abort", onAbort, { once: true });
     try {
@@ -128,7 +128,7 @@ class ChannelRouter implements CallbackRouter {
       timer = setTimeout(() => {
         connection.send({ cancel: frame.call_id });
         settle({ status: "timeout" });
-      }, frame.deadline_ms);
+      }, Math.min(frame.deadline_ms, MAX_DEADLINE_MS));
       signal.addEventListener("abort", onAbort, { once: true });
       connection.send(frame);
     });
