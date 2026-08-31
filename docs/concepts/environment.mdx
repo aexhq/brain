@@ -27,6 +27,13 @@ The setup and attach receipts report `provides: [...]`, and Brain checks every b
 create-time rejection naming the capability, the tool, and the environment, not a runtime
 mystery. Growth of the set is a contract release, not an author convention.
 
+An environment authored with the SDK registers providers with `provide.exec(...)`,
+`provide.fs(...)`, and so on; the registered set is exactly what its receipts report. It
+can also host provisioned tools with `host.esm()` — the SDK owns the host runtime, wiring
+each hosted tool's handles to the environment's own providers in-process, so a capability
+call from a hosted tool never crosses a wire. See
+[Write an environment](/brain/docs/guides/write-an-environment).
+
 ## Attach carries the typed policy
 
 `attach` carries three typed fields, replacing the untyped grant and adapter blobs of v1:

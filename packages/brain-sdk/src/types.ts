@@ -30,6 +30,15 @@ export interface ToolDefinition {
  * Growth is a contract release, not an author convention. */
 export type CapabilityName = "exec" | "fs" | "net" | "js" | "page";
 
+/** The one envelope every capability call and tool invocation resolves to.
+ * `timeout` is the caller-owned deadline firing — distinguished, never an exit
+ * code. */
+export type Outcome<Value = unknown> =
+  | { readonly status: "ok"; readonly value: Value }
+  | { readonly status: "error"; readonly error: { readonly code: string; readonly message: string; readonly details?: unknown } }
+  | { readonly status: "timeout" }
+  | { readonly status: "cancelled" };
+
 export type { KnownProviderId } from "./generated/providers.js";
 import type { KnownProviderId } from "./generated/providers.js";
 

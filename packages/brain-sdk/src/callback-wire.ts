@@ -1,12 +1,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import type { Outcome } from "./types.js";
+
 /** The one envelope every callback invocation resolves to — the same Outcome Brain
- * journals for every tool call, regardless of hosting. */
-export type Outcome =
-  | { readonly status: "ok"; readonly value: unknown }
-  | { readonly status: "error"; readonly error: { readonly code: string; readonly message: string; readonly details?: unknown } }
-  | { readonly status: "timeout" }
-  | { readonly status: "cancelled" };
+ * journals for every tool call, regardless of hosting (defined in types.ts). */
+export type { Outcome };
 
 /** One invocation as it crosses the app boundary: MCP data shapes over plain HTTP,
  * no framing ceremony. `deadline_ms` is the remaining budget, not an epoch. */

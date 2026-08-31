@@ -1,6 +1,6 @@
 export { BrainClient as Brain, BrainClient, SessionHandle, Sessions } from "./client.js";
 export type { BrainOptions } from "./client.js";
-export { activateAgentloop, agentloop, appTool, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, tool } from "./extensions.js";
+export { activateAgentloop, agentloop, appTool, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, provisionedToolRuntime, tool } from "./extensions.js";
 export type {
   AgentloopAction,
   AgentloopAuthor,
@@ -16,11 +16,33 @@ export type {
   ToolAuthor,
   ToolCall,
   ToolContract,
+  ToolRunContext,
 } from "./extensions.js";
 export { appTools } from "./app.js";
 export type { AppToolCall, AppToolChannel, AppToolContract, AppToolServer, AppTools, CallbackToolManifest } from "./app.js";
 export type { CallbackRoute } from "./callbacks.js";
-export type { Outcome } from "./callback-wire.js";
+export { CapabilityError, clamp } from "./capabilities.js";
+export type {
+  CapabilityHandles,
+  CapabilityProviderFactory,
+  ConsoleEntry,
+  ExecGrant,
+  ExecHandle,
+  ExecOptions,
+  ExecResult,
+  FsEntry,
+  FsGrant,
+  FsHandle,
+  GrantSet,
+  JsHandle,
+  NetFetchRequest,
+  NetFetchResponse,
+  NetGrant,
+  NetHandle,
+  PageHandle,
+  PageInput,
+} from "./capabilities.js";
+export type { ProvisionedToolArtifact, ProvisionedToolManifest, ProvisionedToolModule } from "./host.js";
 export { BrainError } from "./errors.js";
 export type {
   Agentloop,
@@ -38,6 +60,7 @@ export type {
   ModelStopReason,
   ModelUsage,
   OperationOptions,
+  Outcome,
   Schema,
   SchemaInput,
   SchemaOutput,

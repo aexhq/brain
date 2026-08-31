@@ -1,53 +1,85 @@
 ---
 title: Write a Tool extension
-description: Bundle an async function and its npm dependencies for an Environment.
+description: Declare what you need, receive typed handles, ship one artifact.
 ---
+
+A provisioned tool is a typed async function plus a declaration of what it needs. The run
+context is derived from that declaration: handles for exactly the capabilities in
+`requires`, values for exactly the names in `bindings`, and nothing else.
 
 ```ts
 import { tool } from "@aexhq/brain";
-import Client from "@vendor/orders";
 import { z } from "zod";
 
-const options = z.object({ endpoint: z.url() });
-const input = z.object({ orderId: z.string() });
-const output = z.object({ status: z.string() });
-
-export const lookupOrder = tool(
+export const bash = tool(
   {
-    description: "Look up an order.",
-    options,
-    input,
-    output,
-    // Capabilities this tool needs from its environment. Brain checks the
-    // declaration against what the bound environment provides at session
-    // create; omit it (or leave it empty) and the tool binds anywhere.
-    requires: [],
-    // Named runtime values by shape. Values are supplied at session create and
-    // injected by the environment; only the names enter the manifest.
-    bindings: {},
+    description: "Run a shell command in the session workspace.",
+    input: z.object({ command: z.string(), timeout_ms: z.number().int().optional() }),
+    output: z.object({ exit_code: z.number(), stdout: z.string(), stderr: z.string() }),
+    // Capabilities this tool needs from its environment. The context type below
+    // is derived from this list, so using an undeclared capability is a compile
+    // error — and Brain rejects a bind to an environment that does not provide
+    // them at session create. Omit it (or leave it empty) to bind anywhere.
+    requires: ["exec"],
+    // Named runtime values by shape. Only the names enter the manifest; values
+    // are supplied at session create and injected by the environment.
+    bindings: { API_BASE: z.string() },
   },
   (author) => {
-    let client: Client;
-
-    author.setup(async ({ options, signal }) => {
-      client = new Client({ endpoint: options.endpoint });
-      await client.ready({ signal });
+    author.run(async (input, context) => {
+      // context: { exec: ExecHandle; bindings: { API_BASE: string };
+      //            signal: AbortSignal; deadline: Date; callId: string; ... }
+      const result = await context.exec.run(input.command, { timeoutMs: input.timeout_ms });
+      return { exit_code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
     });
-
-    author.run(async ({ orderId }, call) => client.lookup(orderId, { signal: call.signal }));
   },
 );
 ```
 
-Run `npx brain build`. The export name becomes the model-visible name, input and output cross the
-trust boundary through the Zod schemas, and reachable JavaScript dependencies are bundled into the
-Environment-side runtime. Native addons and install-time files are not portable and fail the build.
+Handles throw typed `CapabilityError`s; timeouts and cancellation arrive through the
+tool's own `signal` and `deadline`, not per-handle knobs. Grant clamping — the fs root,
+exec bounds, the net allowlist — happens behind the handle: a tool cannot observe or
+bypass policy, only hit it as an error.
+
+`requires` is declared, not inferred from the handler body, and the duplication is
+checked twice: at compile time the context type comes from the declaration (hard), and
+at build time `brain build` warns when a declared capability's handle never appears in
+your code (a warning, not an error — passing the context into a helper can hide a real
+use, and over-declaring only makes the bind-time check stricter).
+
+## The artifact
+
+Run `npx brain build`. For each exported tool it emits `<name>.tool.json`: a `tool/v1`
+manifest plus a self-contained single-file ESM bundle, named by the bundle's sha-256.
+
+```jsonc
+{
+  "manifest": {
+    "name": "bash",
+    "description": "Run a shell command in the session workspace.",
+    "input_schema": { /* from zod */ },
+    "output_schema": { /* from zod */ },
+    "requires": ["exec"],
+    "binding_names": ["API_BASE"],
+    "hosting": "provisioned",
+    "payload": { "kind": "esm", "identity": "<sha-256 of the bundle>" }
+  },
+  "payload": "/* the bundle */"
+}
+```
+
+Dependencies are baked into the bundle; binding *values* are structurally impossible in
+it — they do not exist at build time. Provisioning executes the bundle once at attach,
+so a broken tool fails the attach receipt, never the first model call. Native addons and
+install-time files are not portable and fail the build.
 
 Application code chooses placement explicitly:
 
 ```ts
-lookupOrder({ endpoint }).useIn(environment)
+bash().useIn(environment)
 ```
 
-Tool handlers are async. Cancellation aborts `call.signal`; `call.deadline`, `call.requestId`,
-`call.workspace`, and `call.progress()` are available when the selected Environment supports them.
+Legacy notes: the export name becomes the model-visible name, and handlers stay async.
+`call.workspace` and `call.progress()` remain available on environments that support the
+pre-capability runtime; new tools should declare `requires: ["fs"]` instead of reaching
+for a workspace path.
