@@ -95,6 +95,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         KernelConfig {
             data_dir: config.data_dir.join("journal"),
             max_decisions_per_turn: config.max_decisions_per_turn,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(WorkerLoopExecutor(loops.clone())),
             model_executor: model,
             tool_executor: Arc::new(ServerToolExecutor::new(environments.clone())),

@@ -1,0 +1,274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aexhq/brain/contracts/environment/v2/schemas.json",
+  "title": "Brain Environment v2",
+  "$defs": {
+    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "Identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "CapabilityName": { "enum": ["exec", "fs", "net", "js", "page"] },
+    "Outcome": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value"], "properties": { "status": { "const": "ok" }, "value": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "error"], "properties": { "status": { "const": "error" }, "error": { "$ref": "#/$defs/OutcomeError" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "timeout" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "cancelled" } } }
+      ]
+    },
+    "OutcomeError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/Identifier" },
+        "message": { "type": "string", "maxLength": 4096 },
+        "details": {}
+      }
+    },
+    "ExecRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1, "maxLength": 262144 },
+        "cwd": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "env": { "type": "object", "propertyNames": { "maxLength": 256 }, "additionalProperties": { "type": "string", "maxLength": 32768 } },
+        "stdin": { "type": "string", "maxLength": 1048576 },
+        "timeout_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "ExecResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exit_code", "stdout", "stderr"],
+      "properties": {
+        "exit_code": { "type": "integer" },
+        "stdout": { "type": "string", "maxLength": 1048576 },
+        "stderr": { "type": "string", "maxLength": 1048576 }
+      }
+    },
+    "FsPath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "FsRequest": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["op", "path"], "properties": { "op": { "const": "read" }, "path": { "$ref": "#/$defs/FsPath" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "path", "data"], "properties": { "op": { "const": "write" }, "path": { "$ref": "#/$defs/FsPath" }, "data": { "type": "string", "contentEncoding": "base64", "maxLength": 2097152 } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "path"], "properties": { "op": { "const": "list" }, "path": { "$ref": "#/$defs/FsPath" } } }
+      ]
+    },
+    "FsResult": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["op", "data"], "properties": { "op": { "const": "read" }, "data": { "type": "string", "contentEncoding": "base64", "maxLength": 2097152 } } },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "write" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "entries"], "properties": { "op": { "const": "list" }, "entries": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/FsEntry" } } } }
+      ]
+    },
+    "FsEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "kind": { "enum": ["file", "dir"] }
+      }
+    },
+    "NetRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": { "type": "string", "minLength": 1, "maxLength": 8192 },
+        "method": { "type": "string", "pattern": "^[A-Z]{3,16}$" },
+        "headers": { "type": "object", "propertyNames": { "maxLength": 256 }, "additionalProperties": { "type": "string", "maxLength": 16384 } },
+        "body": { "type": "string", "maxLength": 2097152 }
+      }
+    },
+    "NetResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "headers", "body"],
+      "properties": {
+        "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "headers": { "type": "object", "propertyNames": { "maxLength": 256 }, "additionalProperties": { "type": "string", "maxLength": 16384 } },
+        "body": { "type": "string", "maxLength": 2097152 }
+      }
+    },
+    "JsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "timeout_ms"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1, "maxLength": 1048576 },
+        "args": { "type": "array", "maxItems": 64, "items": {} },
+        "timeout_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "JsResult": {},
+    "PageRequest": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["op", "url"], "properties": { "op": { "const": "navigate" }, "url": { "type": "string", "minLength": 1, "maxLength": 8192 }, "wait": { "enum": ["none", "interaction", "complete"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "screenshot" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "action"], "properties": { "op": { "const": "input" }, "action": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "cursor"], "properties": { "op": { "const": "console_since" }, "cursor": { "type": "integer", "minimum": 0 } } }
+      ]
+    },
+    "PageResult": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "navigate" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "data"], "properties": { "op": { "const": "screenshot" }, "data": { "type": "string", "contentEncoding": "base64", "maxLength": 2097152 } } },
+        { "type": "object", "additionalProperties": false, "required": ["op"], "properties": { "op": { "const": "input" } } },
+        { "type": "object", "additionalProperties": false, "required": ["op", "entries", "cursor"], "properties": { "op": { "const": "console_since" }, "entries": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/ConsoleEntry" } }, "cursor": { "type": "integer", "minimum": 0 } } }
+      ]
+    },
+    "ConsoleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "text"],
+      "properties": {
+        "level": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "text": { "type": "string", "maxLength": 16384 }
+      }
+    },
+    "ExecGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_ms_max": { "type": "integer", "minimum": 1 },
+        "output_bytes_max": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "FsGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root"],
+      "properties": { "root": { "type": "string", "minLength": 1, "maxLength": 4096 } }
+    },
+    "NetGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow"],
+      "properties": { "allow": { "type": "array", "maxItems": 256, "items": { "type": "string", "minLength": 1, "maxLength": 256 } } }
+    },
+    "JsGrant": { "type": "object", "additionalProperties": false, "properties": {} },
+    "PageGrant": { "type": "object", "additionalProperties": false, "properties": {} },
+    "GrantSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "exec": { "$ref": "#/$defs/ExecGrant" },
+        "fs": { "$ref": "#/$defs/FsGrant" },
+        "net": { "$ref": "#/$defs/NetGrant" },
+        "js": { "$ref": "#/$defs/JsGrant" },
+        "page": { "$ref": "#/$defs/PageGrant" }
+      }
+    },
+    "ToolPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity"],
+      "properties": {
+        "kind": { "enum": ["esm", "component"] },
+        "identity": { "$ref": "#/$defs/Identity" }
+      }
+    },
+    "ToolManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "input_schema", "requires", "binding_names"],
+      "properties": {
+        "name": { "$ref": "#/$defs/Identifier" },
+        "description": { "type": "string", "maxLength": 8192 },
+        "input_schema": { "type": "object" },
+        "output_schema": { "type": "object" },
+        "requires": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/CapabilityName" } },
+        "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
+        "hosting": { "enum": ["provisioned", "callback"] },
+        "payload": { "$ref": "#/$defs/ToolPayload" }
+      },
+      "allOf": [
+        { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "callback" } } }, "then": { "not": { "required": ["payload"] } } }
+      ]
+    },
+    "Provision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest", "payload_identity"],
+      "properties": {
+        "manifest": { "$ref": "#/$defs/ToolManifest" },
+        "payload_identity": { "$ref": "#/$defs/Identity" }
+      }
+    },
+    "BindingValues": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/Identifier" },
+      "additionalProperties": { "type": "string", "maxLength": 32768 }
+    },
+    "Binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment_id", "configuration_identity", "directory_generation", "lifecycle_policy"],
+      "properties": {
+        "environment_id": { "$ref": "#/$defs/Identifier" },
+        "configuration_identity": { "$ref": "#/$defs/Identity" },
+        "directory_generation": { "type": "integer", "minimum": 1 },
+        "lifecycle_policy": { "enum": ["session", "shared", "external"] }
+      }
+    },
+    "OperationEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "request_identity", "environment_id", "session_id", "request"],
+      "properties": {
+        "operation_id": { "$ref": "#/$defs/Identifier" },
+        "request_identity": { "$ref": "#/$defs/Identity" },
+        "environment_id": { "$ref": "#/$defs/Identifier" },
+        "session_id": { "$ref": "#/$defs/Identifier" },
+        "attachment_id": { "$ref": "#/$defs/Identifier" },
+        "request": { "$ref": "#/$defs/Request" }
+      }
+    },
+    "Request": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type", "configuration"], "properties": { "type": { "const": "setup" }, "configuration": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "grants", "provisions", "bindings"], "properties": { "type": { "const": "attach" }, "grants": { "$ref": "#/$defs/GrantSet" }, "provisions": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/Provision" } }, "bindings": { "$ref": "#/$defs/BindingValues" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "name", "input"], "properties": { "type": { "const": "call" }, "name": { "$ref": "#/$defs/Identifier" }, "input": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "call_id", "tool", "input", "deadline_ms"], "properties": { "type": { "const": "invoke" }, "call_id": { "$ref": "#/$defs/Identifier" }, "tool": { "$ref": "#/$defs/Identifier" }, "input": {}, "deadline_ms": { "type": "integer", "minimum": 1 } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "target_operation_id"], "properties": { "type": { "const": "cancel" }, "target_operation_id": { "$ref": "#/$defs/Identifier" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "detach" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "teardown" } } }
+      ]
+    },
+    "Receipt": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "accepted" }, "provides": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/CapabilityName" } } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "data"], "properties": { "type": { "const": "progress" }, "data": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "output"], "properties": { "type": { "const": "result" }, "output": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "outcome"], "properties": { "type": { "const": "outcome" }, "outcome": { "$ref": "#/$defs/Outcome" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "code", "message", "retryable"], "properties": { "type": { "const": "failure" }, "code": { "$ref": "#/$defs/Identifier" }, "message": { "type": "string", "maxLength": 4096 }, "retryable": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "expected_identity", "actual_identity"], "properties": { "type": { "const": "conflict" }, "expected_identity": { "$ref": "#/$defs/Identity" }, "actual_identity": { "$ref": "#/$defs/Identity" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "message"], "properties": { "type": { "const": "ambiguous" }, "message": { "type": "string", "maxLength": 4096 } } }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "binding", "operation"],
+      "properties": {
+        "contract": { "const": "environment/v2" },
+        "binding": { "$ref": "#/$defs/Binding" },
+        "operation": { "$ref": "#/$defs/OperationEnvelope" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "operation_id", "request_identity", "receipt"],
+      "properties": {
+        "contract": { "const": "environment/v2" },
+        "operation_id": { "$ref": "#/$defs/Identifier" },
+        "request_identity": { "$ref": "#/$defs/Identity" },
+        "receipt": { "$ref": "#/$defs/Receipt" }
+      }
+    }
+  ]
+}

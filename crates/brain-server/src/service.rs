@@ -10,9 +10,9 @@ use brain_http::BrainApi;
 use brain_loophost::WorkerPool;
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
-    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage, MessageRequest,
-    ModelBinding, ModelPresentation, RequestedToolBinding, ResolvedSessionRequest, Session,
-    SessionId, SessionList, ToolDefinition,
+    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage, Identity,
+    MessageRequest, ModelBinding, ModelPresentation, RequestedToolBinding, ResolvedEnvironment,
+    ResolvedSessionRequest, Session, SessionId, SessionList, ToolDefinition,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Mutex;
@@ -225,6 +225,7 @@ impl BrainApi for ServerApi {
             .put(&binding_id, &request.model)
             .map_err(api_error)?;
         let (presentation, tool_bindings) = split_tools(&request);
+        let (environments, binding_values) = seal_environments(&request)?;
         let resolved = ResolvedSessionRequest {
             agentloop_identity: request.agentloop.identity.clone(),
             brain_configuration: request.agentloop.configuration.clone(),
@@ -233,7 +234,7 @@ impl BrainApi for ServerApi {
                 model: request.model.name.clone(),
             },
             presentation,
-            environments: request.environments.clone(),
+            environments,
             tool_bindings,
             history: request.history.clone(),
         };
@@ -266,7 +267,7 @@ impl BrainApi for ServerApi {
         let prepared = self
             .resources
             .environments
-            .prepare_session(creation, resolved)
+            .prepare_session(creation, resolved, binding_values)
             .await;
         let (handle, _) = match prepared {
             Ok(prepared) => prepared,
@@ -610,9 +611,10 @@ fn split_tools(request: &CreateSessionRequest) -> (ModelPresentation, Vec<Reques
         bindings.push(RequestedToolBinding {
             name: tool.name.clone(),
             environment_id: tool.environment_id.clone(),
-            remote_tool_id: tool.remote_tool_id.clone(),
-            tool_configuration: tool.configuration.clone(),
-            grant: tool.grant.clone(),
+            requires: tool.requires.clone(),
+            binding_names: tool.binding_names.clone(),
+            hosting: tool.hosting,
+            payload: tool.payload.clone(),
         });
     }
     (
@@ -623,6 +625,37 @@ fn split_tools(request: &CreateSessionRequest) -> (ModelPresentation, Vec<Reques
         },
         bindings,
     )
+}
+
+/// Seals each environment's binding values the way model credentials are sealed: the
+/// journalable requirement keeps only their identities, and the plaintext travels
+/// beside the create for exactly as long as attach needs it.
+fn seal_environments(
+    request: &CreateSessionRequest,
+) -> Result<(Vec<ResolvedEnvironment>, crate::SessionBindingValues), ApiError> {
+    let mut environments = Vec::with_capacity(request.environments.len());
+    let mut values = crate::SessionBindingValues::new();
+    for requirement in &request.environments {
+        let mut identities = std::collections::BTreeMap::new();
+        for (name, value) in &requirement.bindings {
+            let identity = Identity::of(value).map_err(|error| internal(error.to_string()))?;
+            identities.insert(name.clone(), identity);
+        }
+        environments.push(ResolvedEnvironment {
+            environment_id: requirement.environment_id.clone(),
+            configuration: requirement.configuration.clone(),
+            lifecycle_policy: requirement.lifecycle_policy.clone(),
+            grants: requirement.grants.clone(),
+            binding_identities: identities,
+        });
+        if !requirement.bindings.is_empty() {
+            values.insert(
+                requirement.environment_id.clone(),
+                requirement.bindings.clone(),
+            );
+        }
+    }
+    Ok((environments, values))
 }
 
 fn validate_model(

@@ -23,10 +23,10 @@ use brain::{
     Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor, SessionHandle, ToolExecutor,
 };
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopIdentity, Decision, EnvironmentRequirement,
-    Identity, MessageRequest, ModelBinding, ModelPresentation, ModelRequest, ModelResult,
-    ModelStreamEvent, Observation, OperationId, RequestedToolBinding, ResolvedSessionRequest,
-    SealedSessionConfig, SessionId, ToolCancellation, ToolDispatch, ToolResult,
+    ActivationInput, ActivationOutput, AgentloopIdentity, Decision, Identity, MessageRequest,
+    ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent, Observation,
+    OperationId, Outcome, RequestedToolBinding, ResolvedEnvironment, ResolvedSessionRequest,
+    SealedSessionConfig, SessionId, ToolCancellation, ToolDispatch,
 };
 use brain_telemetry::telemetry_channel;
 
@@ -114,7 +114,7 @@ struct NoTools;
 
 #[async_trait]
 impl ToolExecutor for NoTools {
-    async fn execute(&self, _dispatch: ToolDispatch) -> Result<ToolResult, KernelError> {
+    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, KernelError> {
         panic!("unexpected Tool dispatch")
     }
 
@@ -131,6 +131,7 @@ async fn measure_one_turn(data_dir: &Path) -> (u64, SessionId) {
         KernelConfig {
             data_dir: data_dir.to_path_buf(),
             max_decisions_per_turn: DECISIONS,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(GrowingLoop {
                 activations: AtomicUsize::new(0),
             }),
@@ -187,6 +188,7 @@ async fn the_event_stream_does_not_carry_a_context_copy_per_decision() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: DECISIONS,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(GrowingLoop {
                 activations: AtomicUsize::new(0),
             }),
@@ -237,6 +239,7 @@ async fn the_session_row_holds_the_final_context_after_the_turn() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: DECISIONS,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(GrowingLoop {
                 activations: AtomicUsize::new(0),
             }),
@@ -311,10 +314,12 @@ fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
         environments: sealed
             .environments
             .iter()
-            .map(|environment| EnvironmentRequirement {
+            .map(|environment| ResolvedEnvironment {
                 environment_id: environment.binding.environment_id.clone(),
                 configuration: serde_json::json!({}),
                 lifecycle_policy: environment.binding.lifecycle_policy.clone(),
+                grants: Default::default(),
+                binding_identities: Default::default(),
             })
             .collect(),
         tool_bindings: sealed
@@ -323,9 +328,10 @@ fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
             .map(|binding| RequestedToolBinding {
                 name: binding.name.clone(),
                 environment_id: binding.environment.environment_id.clone(),
-                remote_tool_id: binding.remote_tool_id.clone(),
-                tool_configuration: binding.tool_configuration.clone(),
-                grant: binding.grant.clone(),
+                requires: binding.requires.clone(),
+                binding_names: binding.binding_names.clone(),
+                hosting: binding.hosting,
+                payload: binding.payload.clone(),
             })
             .collect(),
     };
@@ -381,6 +387,7 @@ async fn an_interrupted_turn_is_closed_and_recorded() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 4,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(GrowingLoop {
                 activations: AtomicUsize::new(0),
             }),
@@ -469,6 +476,7 @@ async fn a_session_does_not_journal_one_context_copy_per_turn() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 4,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(GrowingLoop {
                 // One activation per turn, so the growth measured is turns.
                 activations: AtomicUsize::new(DECISIONS - 1),
@@ -583,6 +591,7 @@ async fn a_session_does_not_journal_the_whole_transcript_once_per_turn() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 4,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(ResendingLoop {
                 turns: AtomicUsize::new(0),
             }),
@@ -700,6 +709,7 @@ async fn a_turn_does_not_journal_the_pieces_its_answer_arrived_in() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 4,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(AskOnce),
             model_executor: Arc::new(ChattyModel),
             tool_executor: Arc::new(NoTools),

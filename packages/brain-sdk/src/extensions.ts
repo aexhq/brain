@@ -1,6 +1,8 @@
 import { z } from "zod";
 
-import type { BoundTool, Agentloop, Environment, ModelMessage, ModelResponse, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition, UserInput } from "./types.js";
+import type { BoundTool, Agentloop, CapabilityName, Environment, ModelMessage, ModelResponse, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition, UserInput } from "./types.js";
+
+const capabilityNames: readonly CapabilityName[] = ["exec", "fs", "net", "js", "page"];
 
 export const extensionSource = Symbol.for("@aexhq/brain/extension-source");
 
@@ -65,6 +67,13 @@ export interface ToolContract<OptionsSchema extends Schema | undefined, InputSch
   readonly options?: OptionsSchema;
   readonly input: InputSchema;
   readonly output?: OutputSchema;
+  /** Capabilities the tool needs from its environment. The whole declaration:
+   * Brain rejects a bind to an environment that does not provide them, and an empty
+   * (or absent) list binds anywhere. */
+  readonly requires?: readonly CapabilityName[];
+  /** Binding names plus value shapes. Only the names enter the manifest; values are
+   * supplied at session create and injected by the environment at runtime. */
+  readonly bindings?: Readonly<Record<string, Schema>>;
 }
 export interface ToolAuthor<Options, Input, Output> {
   setup(handler: (context: { readonly options: Options; readonly signal: AbortSignal; readonly requestId: string; readonly workspace?: string }) => void | Promise<void>): void;
@@ -129,7 +138,7 @@ type EnvironmentSource = { readonly kind: "environment"; readonly options?: Sche
 type ExtensionFactory = Function & { [extensionSource]?: AgentloopSource | ToolSource | EnvironmentSource };
 
 const agentloops = new WeakMap<object, { readonly artifact: URL | Uint8Array; readonly configuration: unknown }>();
-const tools = new WeakMap<object, { readonly definition: ToolDefinition; readonly implementationName: string; readonly configuration: unknown }>();
+const tools = new WeakMap<object, { readonly definition: ToolDefinition; readonly implementationName: string; readonly configuration: unknown; readonly requires: readonly CapabilityName[]; readonly bindingNames: readonly string[] }>();
 const environments = new WeakMap<object, EnvironmentRuntime>();
 const bindings = new WeakMap<object, { readonly tool: Tool; readonly environment: Environment }>();
 const initializedTools = new WeakMap<ToolSource, Promise<void>>();
@@ -165,6 +174,10 @@ export function tool<OptionsSchema extends Schema | undefined, InputSchema exten
 ): (options?: OptionsSchema extends Schema ? SchemaInput<OptionsSchema> : undefined) => Tool<SchemaOutput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown> {
   if (typeof contract.description !== "string" || contract.description.length > 8_192) throw new TypeError("Tool description exceeds its contract bound");
   if (typeof setup !== "function") throw new TypeError("tool requires a setup function");
+  const requires = Object.freeze([...(contract.requires ?? [])]);
+  if (requires.some((name) => !capabilityNames.includes(name)) || new Set(requires).size !== requires.length) throw new TypeError("tool requires must be unique capability names");
+  const bindingNames = Object.freeze(Object.keys(contract.bindings ?? {}));
+  if (bindingNames.some((name) => !validIdentifier(name))) throw new TypeError("tool binding names must be identifiers");
   const registered = collectTool(setup as ToolSetup<unknown, unknown, unknown>);
   const factory = ((value?: unknown) => {
     const source = sourceOf(factory, "tool") as ToolSource;
@@ -182,7 +195,7 @@ export function tool<OptionsSchema extends Schema | undefined, InputSchema exten
       bindings.set(bound, { tool: instance as Tool, environment });
       return bound as BoundTool;
     } } as Tool;
-    tools.set(instance, { definition, implementationName: source.name, configuration: structuredClone(options) });
+    tools.set(instance, { definition, implementationName: source.name, configuration: structuredClone(options), requires, bindingNames });
     return Object.freeze(instance);
   }) as ExtensionFactory;
   defineSource(factory, { kind: "tool", contract: contract as ToolContract<Schema | undefined, Schema, Schema | undefined>, ...registered });
@@ -268,16 +281,25 @@ export function createEnvironmentHandler(factory: unknown): (command: unknown) =
         case "attach": {
           const instance = requiredEnvironmentInstance(instances, operation.environment_id);
           if (operation.attachment_id === undefined) throw new TypeError("attach requires an attachment identity");
+          if (!plainObject(operation.request.grants) || !Array.isArray(operation.request.provisions) || !plainObject(operation.request.bindings)) throw new TypeError("attach requires grants, provisions, and bindings");
           instance.attachments.set(operation.attachment_id, operation.session_id);
           await source.registration.attach?.({ ...context, instance: instance.value, sessionId: operation.session_id });
-          receipt = { type: "accepted" };
+          // Generated environments implement no capability providers yet, so they
+          // report an empty `provides`: only tools with empty `requires` bind here.
+          receipt = { type: "accepted", provides: [] };
           break;
         }
-        case "execute": {
+        case "invoke": {
           const instance = authorizedEnvironmentInstance(instances, operation);
-          if (!plainObject(operation.request.tool) || typeof operation.request.tool.call_id !== "string") throw new TypeError("Environment Tool execution is invalid");
-          const output = await source.registration.run(operation.request, { ...context, instance: instance.value, sessionId: operation.session_id });
-          receipt = { type: "tool_result", result: { call_id: operation.request.tool.call_id, output, is_error: false } };
+          if (typeof operation.request.call_id !== "string" || typeof operation.request.tool !== "string") throw new TypeError("Environment Tool invocation is invalid");
+          // A tool that ran and failed is an in-band error outcome; the outer catch
+          // stays for operations that never reached the tool.
+          try {
+            const value = await source.registration.run(operation.request, { ...context, instance: instance.value, sessionId: operation.session_id });
+            receipt = { type: "outcome", outcome: { status: "ok", value: value ?? null } };
+          } catch (error) {
+            receipt = { type: "outcome", outcome: { status: "error", error: { code: "tool_error", message: String(error instanceof Error ? error.message : error).slice(0, 4096) } } };
+          }
           break;
         }
         case "call": {
@@ -343,7 +365,7 @@ interface RuntimeEnvironmentOperation {
 }
 
 function environmentCommand(raw: unknown): { readonly operation: RuntimeEnvironmentOperation } {
-  if (!plainObject(raw) || raw.contract !== "environment/v1" || !plainObject(raw.operation)) throw new TypeError("invalid environment/v1 command");
+  if (!plainObject(raw) || raw.contract !== "environment/v2" || !plainObject(raw.operation)) throw new TypeError("invalid environment/v2 command");
   const operation = raw.operation;
   for (const name of ["operation_id", "request_identity", "environment_id", "session_id"] as const) if (typeof operation[name] !== "string" || operation[name].length === 0) throw new TypeError(`Environment operation ${name} is required`);
   if (!plainObject(operation.request) || typeof operation.request.type !== "string") throw new TypeError("Environment operation request is invalid");
@@ -363,7 +385,7 @@ function authorizedEnvironmentInstance(instances: Map<string, { readonly value: 
 }
 
 function environmentResponse(operation: RuntimeEnvironmentOperation, receipt: unknown) {
-  return { contract: "environment/v1", operation_id: operation.operation_id, request_identity: operation.request_identity, receipt };
+  return { contract: "environment/v2", operation_id: operation.operation_id, request_identity: operation.request_identity, receipt };
 }
 
 function requireEmptyCallInput(value: unknown): Record<string, never> {
@@ -474,7 +496,7 @@ export function inspectAgentloop(value: Agentloop): { readonly artifact: URL | U
   return metadata;
 }
 
-export function inspectBoundTool(value: BoundTool): { readonly definition: ToolDefinition; readonly implementationName: string; readonly configuration: unknown; readonly environment: Environment } {
+export function inspectBoundTool(value: BoundTool): { readonly definition: ToolDefinition; readonly implementationName: string; readonly configuration: unknown; readonly requires: readonly CapabilityName[]; readonly bindingNames: readonly string[]; readonly environment: Environment } {
   const binding = bindings.get(value);
   const metadata = binding === undefined ? undefined : tools.get(binding.tool);
   if (binding === undefined || metadata === undefined) throw new TypeError("tools must be configured with useIn");

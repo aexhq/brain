@@ -1,0 +1,9 @@
+{
+  "contract": "environment/v2",
+  "operation_id": "op_attach_example",
+  "request_identity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "receipt": {
+    "type": "accepted",
+    "provides": ["exec", "fs"]
+  }
+}

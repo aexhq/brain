@@ -25,7 +25,6 @@ clap = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_jcs = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 tokio = { workspace = true }

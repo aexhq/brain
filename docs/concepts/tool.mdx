@@ -8,7 +8,7 @@ A tool is two separate things that happen to share a name.
 **What the model sees** is presentation: a name, a description, and an input schema. This is the
 part that shapes behaviour, and it is stable for the life of the session.
 
-**Where the call goes** is a binding: one remote tool in one environment.
+**Where the call goes** is a binding: the tool's manifest bound to one environment.
 
 ```ts
 tools: [
@@ -18,11 +18,35 @@ tools: [
 ]
 ```
 
+## Declare what you need, get a checked bind
+
+A tool's manifest declares `requires` — the capabilities it needs from whatever environment
+hosts it — and `binding_names`, the named values injected at runtime (an API base URL, a
+token). At session create Brain checks `requires ⊆ provides` for every binding and rejects a
+mismatch naming the missing capability, the tool, and the environment. A tool that declares
+nothing binds anywhere.
+
+```ts
+export const bash = tool({
+  description: "Run a shell command.",
+  input: z.object({ command: z.string() }),
+  requires: ["exec"],
+  bindings: { API_BASE: z.string() },
+}, (author) => { /* ... */ });
+```
+
+Binding *values* never appear in a manifest or in Brain's journal — they are supplied at
+session create and sealed the way model credentials are; the environment injects them at
+runtime.
+
 ## Brain does not run tool code
 
-It logs the call and sends it to the bound environment. The environment owns the implementation, the
-resources, and the blast radius. A tool that hangs, crashes, or is hostile damages its own
-environment, not the process holding your sessions.
+It logs the call and sends it to the bound environment as `invoke {call_id, tool, input,
+deadline_ms}`, and maps the single outcome — `ok | error | timeout | cancelled` — onto the
+tool result the loop observes. Brain enforces the deadline itself: an overdue call is killed
+and recorded as `timeout`. The environment owns the implementation, the resources, and the
+blast radius. A tool that hangs, crashes, or is hostile damages its own environment, not the
+process holding your sessions.
 
 That is also why a tool can be anything with an address: a sandbox VM, a browser tab, a service you
 already run, or a process on the user's own laptop.

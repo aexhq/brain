@@ -3,7 +3,8 @@
 export const contractDigests = {
   agentloop_schema: "246eba7ad006d9e1958cc20ad37aafb35d49fcfcc5276bd05e9e9f1d7f8c9079",
   agentloop_wit: "4a1f2122cc626283dff08678b0144fbb26338dae371e2605d1238cc737f0c805",
-  environment_schema: "dbf1481d0c6e7e70c7e949b3c1c4e0557b3dab5e02271bf4e3dc498062d96e4a",
+  environment_schema: "d3998e481a548d1b7d130968de85fcde22ad1fd267561d4b62938db80cc010c4",
   session_openapi: "cc1b6a8a3da1582dc0607f46808ed168185ebe9f6ae670d9c61af3ef14eaa992",
-  session_schema: "dab1fefe33dfb159f05908df2518f7fd1255708eaaa30786d4d39ecbffa5055e",
+  session_schema: "d223cb0bf9763f5530ae8d8ac67dc33d65abf86b176a5c231419c1ff1cffe04b",
+  tool_schema: "177751b7340e3891fbf6799092569bfa24926bf862bc3cb703885b15b21788e0",
 } as const;

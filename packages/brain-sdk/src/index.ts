@@ -19,6 +19,7 @@ export { BrainError } from "./errors.js";
 export type {
   Agentloop,
   BoundTool,
+  CapabilityName,
   CreateSessionOptions,
   CustomProviderModel,
   Environment,

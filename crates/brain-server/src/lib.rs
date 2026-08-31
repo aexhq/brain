@@ -11,7 +11,7 @@ pub mod tool_dispatcher;
 pub use config::ServerConfig;
 pub use environment::{
     EnvironmentAdapter, EnvironmentDirectory, EnvironmentRegistry, HttpEnvironmentAdapter,
-    InMemoryEnvironmentDirectory,
+    InMemoryEnvironmentDirectory, SessionBindingValues,
 };
 pub use model_binding::{
     LocalModelBindingStore, ModelBindingStore, ServerModelExecutor, load_providers_file,

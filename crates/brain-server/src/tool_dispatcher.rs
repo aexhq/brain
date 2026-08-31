@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use brain::{KernelError, ToolExecutor};
 use brain_protocol::{
-    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, ToolCancellation, ToolDispatch,
-    ToolResult,
+    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, Outcome, ToolCancellation,
+    ToolDispatch,
 };
 
 use crate::EnvironmentRegistry;
@@ -21,7 +21,7 @@ impl ServerToolExecutor {
 
 #[async_trait]
 impl ToolExecutor for ServerToolExecutor {
-    async fn execute(&self, dispatch: ToolDispatch) -> Result<ToolResult, KernelError> {
+    async fn execute(&self, dispatch: ToolDispatch) -> Result<Outcome, KernelError> {
         let environment = dispatch.binding.environment.clone();
         let operation = EnvironmentOperation {
             operation_id: dispatch.operation_id,
@@ -29,15 +29,15 @@ impl ToolExecutor for ServerToolExecutor {
             environment_id: environment.environment_id.clone(),
             session_id: dispatch.session_id,
             attachment_id: Some(dispatch.binding.attachment_id),
-            request: EnvironmentRequest::Execute {
-                tool: dispatch.invocation,
-                remote_tool_id: dispatch.binding.remote_tool_id,
-                tool_configuration: dispatch.binding.tool_configuration,
-                grant: dispatch.binding.grant,
+            request: EnvironmentRequest::Invoke {
+                call_id: dispatch.invocation.call_id,
+                tool: dispatch.binding.name,
+                input: dispatch.invocation.input,
+                deadline_ms: dispatch.deadline_ms,
             },
         };
         match self.environments.execute(&environment, &operation).await? {
-            EnvironmentReceipt::ToolResult { result } => Ok(result),
+            EnvironmentReceipt::Outcome { outcome } => Ok(outcome),
             EnvironmentReceipt::Failure { message, .. } => Err(KernelError::Executor(message)),
             EnvironmentReceipt::Ambiguous { message } => Err(KernelError::Ambiguous(message)),
             EnvironmentReceipt::Conflict { .. } => Err(KernelError::InvalidState(
@@ -62,7 +62,7 @@ impl ToolExecutor for ServerToolExecutor {
             },
         };
         match self.environments.execute(&environment, &operation).await? {
-            EnvironmentReceipt::Accepted | EnvironmentReceipt::Result { .. } => Ok(()),
+            EnvironmentReceipt::Accepted { .. } | EnvironmentReceipt::Result { .. } => Ok(()),
             EnvironmentReceipt::Failure { message, .. } => Err(KernelError::Executor(message)),
             EnvironmentReceipt::Ambiguous { message } => Err(KernelError::Ambiguous(message)),
             EnvironmentReceipt::Conflict { .. } => Err(KernelError::InvalidState(

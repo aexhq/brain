@@ -13,7 +13,19 @@ const input = z.object({ orderId: z.string() });
 const output = z.object({ status: z.string() });
 
 export const lookupOrder = tool(
-  { description: "Look up an order.", options, input, output },
+  {
+    description: "Look up an order.",
+    options,
+    input,
+    output,
+    // Capabilities this tool needs from its environment. Brain checks the
+    // declaration against what the bound environment provides at session
+    // create; omit it (or leave it empty) and the tool binds anywhere.
+    requires: [],
+    // Named runtime values by shape. Values are supplied at session create and
+    // injected by the environment; only the names enter the manifest.
+    bindings: {},
+  },
   (author) => {
     let client: Client;
 

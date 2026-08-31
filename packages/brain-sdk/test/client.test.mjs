@@ -54,7 +54,7 @@ test("composes extensions through sessions, useIn, and object identity", async (
   assert.deepEqual(body.agentloop, { identity: "a".repeat(64), configuration: {} });
   assert.equal(body.environments.length, 1);
   assert.equal(body.environments[0].environment_id, "env_1");
-  assert.deepEqual(body.tools.map(({ name, environment_id, remote_tool_id }) => [name, environment_id, remote_tool_id]), [["read", "env_1", "read"]]);
+  assert.deepEqual(body.tools.map(({ name, environment_id, requires, binding_names }) => [name, environment_id, requires, binding_names]), [["read", "env_1", [], []]]);
   assert.equal(body.system, "");
 
   await vm.suspend();
@@ -122,14 +122,20 @@ test("runs async Environment lifecycle, methods, and streams through the generat
   installExtensionIdentity(managed, "managed", undefined, "managed");
   const handle = createEnvironmentHandler(managed);
   const command = (id, request, attachment_id) => ({
-    contract: "environment/v1",
+    contract: "environment/v2",
     binding: {},
     operation: { operation_id: id, request_identity: id.padEnd(64, "a"), environment_id: "env_1", session_id: "ses_test", ...(attachment_id === undefined ? {} : { attachment_id }), request },
   });
   assert.equal((await handle(command("setup", { type: "setup", configuration: { driver: "managed", prefix: ">" } }))).receipt.type, "accepted");
-  assert.equal((await handle(command("attach", { type: "attach", grants: {} }, "att_1"))).receipt.type, "accepted");
+  const attached = await handle(command("attach", { type: "attach", grants: {}, provisions: [], bindings: {} }, "att_1"));
+  assert.equal(attached.receipt.type, "accepted");
+  assert.deepEqual(attached.receipt.provides, [], "a generated environment provides no capabilities yet");
   assert.equal((await handle(command("call", { type: "call", name: "echo", input: "ok" }, "att_1"))).receipt.output, ">ok");
   assert.deepEqual((await handle(command("stream", { type: "call", name: "values", input: 3 }, "att_1"))).receipt.output, [0, 1, 2]);
+  const invoked = await handle(command("invoke", { type: "invoke", call_id: "call_1", tool: "anything", input: { x: 1 }, deadline_ms: 1000 }, "att_1"));
+  assert.equal(invoked.receipt.type, "outcome");
+  assert.equal(invoked.receipt.outcome.status, "ok");
+  assert.deepEqual(invoked.receipt.outcome.value, { prefix: ">", request: { type: "invoke", call_id: "call_1", tool: "anything", input: { x: 1 }, deadline_ms: 1000 } });
 });
 
 test("admits any identifier-shaped provider client-side and leaves admission to the server", async () => {

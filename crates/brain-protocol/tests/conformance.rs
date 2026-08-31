@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use brain_protocol::{
     CreateSessionRequest, Decision, EnvironmentCommand, EnvironmentReceipt, EnvironmentRequest,
-    EnvironmentResponse,
+    EnvironmentResponse, Outcome, ToolManifest,
 };
 use serde_json::Value;
 
@@ -31,7 +31,8 @@ fn validate_definition(schema_path: &str, definition: &str, value: &Value) {
 fn contract_schemas_are_valid_draft_2020_12() {
     for path in [
         "contracts/agentloop/v1/contract.json",
-        "contracts/environment/v1/schemas.json",
+        "contracts/environment/v2/schemas.json",
+        "contracts/tool/v1/schemas.json",
         "contracts/session/v1/schemas.json",
     ] {
         jsonschema::meta::validate(&read_json(path))
@@ -47,10 +48,23 @@ fn checked_in_examples_validate() {
         .validate(&agentloop)
         .unwrap();
 
-    let environment = read_json("contracts/environment/v1/examples/execute.json");
-    jsonschema::draft202012::new(&read_json("contracts/environment/v1/schemas.json"))
+    let environment_schema =
+        jsonschema::draft202012::new(&read_json("contracts/environment/v2/schemas.json")).unwrap();
+    for example in [
+        "contracts/environment/v2/examples/invoke.json",
+        "contracts/environment/v2/examples/invoke-result.json",
+        "contracts/environment/v2/examples/attach.json",
+        "contracts/environment/v2/examples/attach-result.json",
+    ] {
+        environment_schema
+            .validate(&read_json(example))
+            .unwrap_or_else(|error| panic!("{example}: {error}"));
+    }
+
+    let manifest = read_json("contracts/tool/v1/examples/manifest.json");
+    jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json"))
         .unwrap()
-        .validate(&environment)
+        .validate(&manifest)
         .unwrap();
 
     let session = read_json("contracts/session/v1/examples/create-session.json");
@@ -59,6 +73,19 @@ fn checked_in_examples_validate() {
         "CreateSessionRequest",
         &session,
     );
+}
+
+/// A callback tool's code never leaves its author's process, so a manifest that says
+/// `callback` and still ships a payload is contradictory and the schema rejects it.
+#[test]
+fn a_callback_manifest_with_a_payload_is_rejected() {
+    let schema =
+        jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json")).unwrap();
+    let mut manifest = read_json("contracts/tool/v1/examples/manifest.json");
+    manifest["hosting"] = serde_json::json!("callback");
+    assert!(schema.validate(&manifest).is_err());
+    manifest.as_object_mut().unwrap().remove("payload");
+    schema.validate(&manifest).unwrap();
 }
 
 #[test]
@@ -85,22 +112,38 @@ fn rust_views_round_trip_contract_examples() {
         session.tools[0].environment_id,
         session.environments[0].environment_id
     );
+    assert_eq!(
+        session.tools[0].requires,
+        vec![brain_protocol::Capability::Fs]
+    );
+    assert!(session.environments[0].grants.fs.is_some());
 
     let command: EnvironmentCommand<EnvironmentRequest> =
-        serde_json::from_value(read_json("contracts/environment/v1/examples/execute.json"))
-            .unwrap();
+        serde_json::from_value(read_json("contracts/environment/v2/examples/invoke.json")).unwrap();
     assert!(matches!(
         command.operation.request,
-        EnvironmentRequest::Execute { .. }
+        EnvironmentRequest::Invoke { .. }
+    ));
+    let attach: EnvironmentCommand<EnvironmentRequest> =
+        serde_json::from_value(read_json("contracts/environment/v2/examples/attach.json")).unwrap();
+    assert!(matches!(
+        attach.operation.request,
+        EnvironmentRequest::Attach { .. }
     ));
     let response: EnvironmentResponse = serde_json::from_value(read_json(
-        "contracts/environment/v1/examples/execute-result.json",
+        "contracts/environment/v2/examples/invoke-result.json",
     ))
     .unwrap();
     assert!(matches!(
         response.receipt,
-        EnvironmentReceipt::ToolResult { .. }
+        EnvironmentReceipt::Outcome {
+            outcome: Outcome::Ok { .. }
+        }
     ));
+    let manifest: ToolManifest =
+        serde_json::from_value(read_json("contracts/tool/v1/examples/manifest.json")).unwrap();
+    assert_eq!(manifest.name, "bash");
+    assert_eq!(manifest.binding_names, vec!["API_BASE"]);
 
     let decision: Decision = serde_json::from_value(
         read_json("contracts/agentloop/v1/examples/finish.json")["output"]["decision"].clone(),

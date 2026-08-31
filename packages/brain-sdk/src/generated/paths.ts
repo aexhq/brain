@@ -218,21 +218,53 @@ export type components = {
             name: string;
             api_key: string;
         };
+        /** @enum {unknown} */
+        CapabilityName: "exec" | "fs" | "net" | "js" | "page";
+        ToolPayload: {
+            /** @enum {unknown} */
+            kind: "esm" | "component";
+            identity: components["schemas"]["Identity"];
+        };
         BoundTool: {
             name: components["schemas"]["Identifier"];
             description: string;
             input_schema: Record<string, never>;
             output_schema?: Record<string, never>;
+            requires: components["schemas"]["CapabilityName"][];
+            binding_names: components["schemas"]["Identifier"][];
+            /** @enum {unknown} */
+            hosting?: "provisioned" | "callback";
+            payload?: components["schemas"]["ToolPayload"];
             environment_id: components["schemas"]["Identifier"];
-            remote_tool_id: components["schemas"]["Identifier"];
-            configuration: unknown;
-            grant: unknown;
+        } & unknown;
+        ExecGrant: {
+            timeout_ms_max?: number;
+            output_bytes_max?: number;
+        };
+        FsGrant: {
+            root: string;
+        };
+        NetGrant: {
+            allow: string[];
+        };
+        JsGrant: Record<string, never>;
+        PageGrant: Record<string, never>;
+        GrantSet: {
+            exec?: components["schemas"]["ExecGrant"];
+            fs?: components["schemas"]["FsGrant"];
+            net?: components["schemas"]["NetGrant"];
+            js?: components["schemas"]["JsGrant"];
+            page?: components["schemas"]["PageGrant"];
         };
         EnvironmentRequirement: {
             environment_id: components["schemas"]["Identifier"];
             configuration: unknown;
             /** @enum {unknown} */
             lifecycle_policy: "session" | "shared" | "external";
+            grants?: components["schemas"]["GrantSet"];
+            bindings?: {
+                [key: string]: string;
+            };
         };
         HistoryEvent: {
             sequence: number;

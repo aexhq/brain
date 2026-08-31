@@ -26,6 +26,10 @@ export interface ToolDefinition {
   readonly outputSchema?: Readonly<Record<string, unknown>>;
 }
 
+/** The closed set of capabilities an environment can provide and a tool can require.
+ * Growth is a contract release, not an author convention. */
+export type CapabilityName = "exec" | "fs" | "net" | "js" | "page";
+
 export type { KnownProviderId } from "./generated/providers.js";
 import type { KnownProviderId } from "./generated/providers.js";
 

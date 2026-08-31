@@ -6,7 +6,7 @@ use std::{future::Future, time::Duration};
 
 use brain_protocol::{
     ActivationInput, ContextEnvelope, Decision, EnvironmentRequest, Event, EventId, Identity,
-    LiveEvent, MessageRequest, ModelStreamEvent, Observation, OperationId, Presentation,
+    LiveEvent, MessageRequest, ModelStreamEvent, Observation, OperationId, Outcome, Presentation,
     RuntimeEnvelope, SealedSessionConfig, Session, SessionId, SessionStatus, StreamingEvent,
     ToolCancellation, ToolDispatch, ToolResult, operation_id,
 };
@@ -39,6 +39,7 @@ pub struct SessionActor {
     model_executor: Arc<dyn ModelExecutor>,
     tool_executor: Arc<dyn ToolExecutor>,
     max_decisions_per_turn: usize,
+    tool_deadline_ms: u64,
     receiver: mpsc::Receiver<SessionCommand>,
     cancel_requested: Arc<AtomicBool>,
     /// Events the session opened with, waiting to be handed to the agentloop. Taken once,
@@ -64,6 +65,7 @@ impl SessionActor {
         model_executor: Arc<dyn ModelExecutor>,
         tool_executor: Arc<dyn ToolExecutor>,
         max_decisions_per_turn: usize,
+        tool_deadline_ms: u64,
         receiver: mpsc::Receiver<SessionCommand>,
         cancel_requested: Arc<AtomicBool>,
         live: tokio::sync::broadcast::Sender<(SessionId, brain_protocol::LiveEvent)>,
@@ -95,6 +97,7 @@ impl SessionActor {
             model_executor,
             tool_executor,
             max_decisions_per_turn,
+            tool_deadline_ms,
             receiver,
             cancel_requested,
             live,
@@ -315,11 +318,11 @@ impl SessionActor {
                         );
                         // The Environment recomputes this to decide whether a
                         // redelivery is the same effect, so it must be canonical.
-                        let identity = Identity::of(&EnvironmentRequest::Execute {
-                            tool: invocation.clone(),
-                            remote_tool_id: binding.remote_tool_id.clone(),
-                            tool_configuration: binding.tool_configuration.clone(),
-                            grant: binding.grant.clone(),
+                        let identity = Identity::of(&EnvironmentRequest::Invoke {
+                            call_id: invocation.call_id.clone(),
+                            tool: binding.name.clone(),
+                            input: invocation.input.clone(),
+                            deadline_ms: self.tool_deadline_ms,
                         })
                         .map_err(identity_error)?;
                         let dispatch = ToolDispatch {
@@ -328,6 +331,7 @@ impl SessionActor {
                             session_id: self.row.session_id.clone(),
                             binding,
                             invocation,
+                            deadline_ms: self.tool_deadline_ms,
                         };
                         intents.push(AppendRecord::new(
                             "tool_intent",
@@ -336,15 +340,32 @@ impl SessionActor {
                         dispatches.push(dispatch);
                     }
                     self.commit(intents, SessionUpdate::default())?;
-                    let futures = dispatches.iter().cloned().map(|dispatch| {
-                        let executor = self.tool_executor.clone();
-                        async move {
-                            let operation_id = dispatch.operation_id.clone();
-                            let call_id = dispatch.invocation.call_id.clone();
-                            let result = executor.execute(dispatch).await;
-                            (operation_id, call_id, result)
-                        }
-                    });
+                    let futures =
+                        dispatches
+                            .iter()
+                            .cloned()
+                            .enumerate()
+                            .map(|(index, dispatch)| {
+                                let executor = self.tool_executor.clone();
+                                async move {
+                                    let operation_id = dispatch.operation_id.clone();
+                                    let call_id = dispatch.invocation.call_id.clone();
+                                    let deadline = Duration::from_millis(dispatch.deadline_ms);
+                                    // The deadline is enforced here, on the calling side: the
+                                    // remote cannot be trusted to, so an overdue call is
+                                    // dropped and recorded as its own distinguished outcome.
+                                    let result = match tokio::time::timeout(
+                                        deadline,
+                                        executor.execute(dispatch),
+                                    )
+                                    .await
+                                    {
+                                        Ok(result) => result.map(|outcome| (outcome, false)),
+                                        Err(_) => Ok((Outcome::Timeout, true)),
+                                    };
+                                    (index, operation_id, call_id, result)
+                                }
+                            });
                     let completed = match self.interruptible(join_all(futures)).await {
                         Ok(completed) => completed,
                         Err(()) => {
@@ -354,9 +375,15 @@ impl SessionActor {
                     };
                     let mut terminal = Vec::with_capacity(completed.len());
                     let mut results = Vec::with_capacity(completed.len());
-                    for (operation_id, call_id, result) in completed {
+                    let mut expired = Vec::new();
+                    for (index, operation_id, call_id, result) in completed {
                         let result = match result {
-                            Ok(result) => result,
+                            Ok((outcome, timed_out)) => {
+                                if timed_out {
+                                    expired.push(dispatches[index].clone());
+                                }
+                                ToolResult::from_outcome(call_id, outcome)
+                            }
                             Err(error) => ToolResult {
                                 call_id,
                                 output: serde_json::json!({"code":"tool_error","message":error.to_string()}),
@@ -370,6 +397,11 @@ impl SessionActor {
                         results.push(serde_json::to_value(result).map_err(json_error)?);
                     }
                     self.commit(terminal, SessionUpdate::default())?;
+                    // The call was abandoned locally; tell its environment to stop the
+                    // work too, best effort like every cancellation.
+                    if !expired.is_empty() {
+                        self.cancel_tools(&expired).await?;
+                    }
                     Observation::ToolsCompleted { results }
                 }
                 Decision::Emit { event } => {

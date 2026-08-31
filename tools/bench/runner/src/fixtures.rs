@@ -473,12 +473,8 @@ async fn operations(
     }
     state.arrival.notify_one();
     let operation = body.get("operation").cloned().unwrap_or(Value::Null);
-    let call_id = operation
-        .pointer("/request/tool/call_id")
-        .and_then(Value::as_str)
-        .unwrap_or("call_unknown");
     // The receipt has to answer the *kind* of operation that arrived. A tool dispatch
-    // wants a `tool_result`; a lifecycle operation — setup, attach, detach, teardown —
+    // wants an `outcome`; a lifecycle operation — setup, attach, detach, teardown —
     // only accepts `accepted` or `result`, and answering one of those with a tool receipt
     // fails the session with "Environment returned a nonterminal lifecycle receipt".
     let receipt = match operation
@@ -486,16 +482,16 @@ async fn operations(
         .and_then(Value::as_str)
         .unwrap_or("")
     {
-        "execute" => json!({
-            "type": "tool_result",
-            "result": {"call_id": call_id, "output": {"content": "echo"}, "is_error": false},
+        "invoke" => json!({
+            "type": "outcome",
+            "outcome": {"status": "ok", "value": {"content": "echo"}},
         }),
         "call" => json!({ "type": "result", "output": {"content": "echo"} }),
         // setup, attach, detach, teardown, cancel: nothing to return but that it is done.
         _ => json!({ "type": "accepted" }),
     };
     Json(json!({
-        "contract": "environment/v1",
+        "contract": "environment/v2",
         "operation_id": operation.get("operation_id").cloned().unwrap_or(json!("op_unknown")),
         // Echoed back, not invented: Brain checks the receipt names the request it sent,
         // and a receipt that carries the wrong field fails the whole session with
