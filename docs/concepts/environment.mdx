@@ -4,11 +4,46 @@ description: Where tool calls run, and the lifecycle Brain drives.
 ---
 
 An environment is somewhere tool calls actually execute. Brain drives its lifecycle over the
-`environment/v1` HTTP contract:
+`environment/v2` HTTP contract:
 
-`setup` · `attach` · `call` · `execute` · `cancel` · `detach` · `teardown`
+`setup` · `attach` · `call` · `invoke` · `cancel` · `detach` · `teardown`
 
 The adapter implements them. Brain decides when they happen.
+
+## Capabilities: the typed vocabulary
+
+An environment *provides* capabilities — named, schema-fixed interfaces from a closed set:
+
+| Capability | What it is |
+| --- | --- |
+| `exec` | run a shell string; buffered, bounded `{exit_code, stdout, stderr}` |
+| `fs` | read/write/list under a workspace root; bytes as base64 |
+| `net` | one outbound HTTP fetch under a policy |
+| `js` | evaluate a source string in the environment's realm |
+| `page` | the non-eval browser residue: navigate, screenshot, trusted input, pulled console |
+
+The setup and attach receipts report `provides: [...]`, and Brain checks every bound tool's
+`requires` against it at session create — a bash tool bound to a browser environment is a
+create-time rejection naming the capability, the tool, and the environment, not a runtime
+mystery. Growth of the set is a contract release, not an author convention.
+
+## Attach carries the typed policy
+
+`attach` carries three typed fields, replacing the untyped grant and adapter blobs of v1:
+
+- **`grants`** — per-capability policy the environment enforces: `exec` time and output
+  bounds, an `fs` root, a `net` host allowlist. Tools cannot see grants, only hit them.
+- **`provisions`** — tool artifacts to host: each a `tool/v1` manifest plus the content
+  identity of its payload, so re-provisioning is idempotent.
+- **`bindings`** — named values injected into hosted tools at runtime. They travel on this
+  wire only; the journal records their identities, never the values.
+
+## Invocation is one envelope
+
+A tool call arrives as `invoke {call_id, tool, input, deadline_ms}` and returns exactly one
+outcome: `ok | error | timeout | cancelled`. The deadline is Brain's to enforce — an overdue
+call is killed by the caller and recorded as a distinguished `timeout` outcome, because no
+remote can be trusted to stop on its own.
 
 ## Addressed by object, not by connection
 
