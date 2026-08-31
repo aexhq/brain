@@ -1,0 +1,10 @@
+{
+  "name": "bash",
+  "description": "Run a shell command in the session workspace.",
+  "input_schema": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] },
+  "output_schema": { "type": "object" },
+  "requires": ["exec", "fs"],
+  "binding_names": ["API_BASE"],
+  "hosting": "provisioned",
+  "payload": { "kind": "esm", "identity": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+}

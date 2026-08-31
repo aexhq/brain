@@ -10,13 +10,18 @@
       "name": "read",
       "description": "Read a file from the workspace.",
       "input_schema": { "type": "object" },
-      "environment_id": "env_1",
-      "remote_tool_id": "read",
-      "configuration": {},
-      "grant": {}
+      "requires": ["fs"],
+      "binding_names": [],
+      "environment_id": "env_1"
     }
   ],
   "environments": [
-    { "environment_id": "env_1", "configuration": {}, "lifecycle_policy": "session" }
+    {
+      "environment_id": "env_1",
+      "configuration": {},
+      "lifecycle_policy": "session",
+      "grants": { "fs": { "root": "/workspace" } },
+      "bindings": {}
+    }
   ]
 }

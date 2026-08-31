@@ -16,19 +16,66 @@
         "configuration": {}
       }
     },
+    "CapabilityName": { "enum": ["exec", "fs", "net", "js", "page"] },
+    "ToolPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity"],
+      "properties": {
+        "kind": { "enum": ["esm", "component"] },
+        "identity": { "$ref": "#/$defs/Identity" }
+      }
+    },
     "BoundTool": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "input_schema", "environment_id", "remote_tool_id", "configuration", "grant"],
+      "required": ["name", "description", "input_schema", "requires", "binding_names", "environment_id"],
       "properties": {
         "name": { "$ref": "#/$defs/Identifier" },
         "description": { "type": "string", "maxLength": 8192 },
         "input_schema": { "type": "object" },
         "output_schema": { "type": "object" },
-        "environment_id": { "$ref": "#/$defs/Identifier" },
-        "remote_tool_id": { "$ref": "#/$defs/Identifier" },
-        "configuration": {},
-        "grant": {}
+        "requires": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/CapabilityName" } },
+        "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
+        "hosting": { "enum": ["provisioned", "callback"] },
+        "payload": { "$ref": "#/$defs/ToolPayload" },
+        "environment_id": { "$ref": "#/$defs/Identifier" }
+      },
+      "allOf": [
+        { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "callback" } } }, "then": { "not": { "required": ["payload"] } } }
+      ]
+    },
+    "ExecGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_ms_max": { "type": "integer", "minimum": 1 },
+        "output_bytes_max": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "FsGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root"],
+      "properties": { "root": { "type": "string", "minLength": 1, "maxLength": 4096 } }
+    },
+    "NetGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow"],
+      "properties": { "allow": { "type": "array", "maxItems": 256, "items": { "type": "string", "minLength": 1, "maxLength": 256 } } }
+    },
+    "JsGrant": { "type": "object", "additionalProperties": false, "properties": {} },
+    "PageGrant": { "type": "object", "additionalProperties": false, "properties": {} },
+    "GrantSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "exec": { "$ref": "#/$defs/ExecGrant" },
+        "fs": { "$ref": "#/$defs/FsGrant" },
+        "net": { "$ref": "#/$defs/NetGrant" },
+        "js": { "$ref": "#/$defs/JsGrant" },
+        "page": { "$ref": "#/$defs/PageGrant" }
       }
     },
     "EnvironmentRequirement": {
@@ -38,7 +85,13 @@
       "properties": {
         "environment_id": { "$ref": "#/$defs/Identifier" },
         "configuration": {},
-        "lifecycle_policy": { "enum": ["session", "shared", "external"] }
+        "lifecycle_policy": { "enum": ["session", "shared", "external"] },
+        "grants": { "$ref": "#/$defs/GrantSet" },
+        "bindings": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/Identifier" },
+          "additionalProperties": { "type": "string", "maxLength": 32768 }
+        }
       }
     },
     "ModelSelection": {

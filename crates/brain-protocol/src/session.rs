@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, Identity, JournalId,
-    LifecyclePolicy, ModelBinding, ModelSelection, OperationId, RequestedToolBinding, SessionId,
-    ToolBinding, ToolDefinition,
+    AgentloopIdentity, Capability, EnvironmentAttachment, EnvironmentId, EventId, GrantSet,
+    Identity, JournalId, LifecyclePolicy, ModelBinding, ModelSelection, OperationId,
+    RequestedToolBinding, SessionId, ToolBinding, ToolDefinition, ToolHosting, ToolPayload,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -23,8 +25,8 @@ pub struct AgentloopRef {
     pub configuration: serde_json::Value,
 }
 
-/// One tool as the SDK hands it over: what the model sees and where the call goes,
-/// in a single entry. Brain splits the two halves internally.
+/// One tool as the SDK hands it over: its manifest fields plus the environment it
+/// binds to. Brain splits the model-facing and dispatch-facing halves internally.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoundTool {
@@ -33,10 +35,13 @@ pub struct BoundTool {
     pub input_schema: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<serde_json::Value>,
+    pub requires: Vec<Capability>,
+    pub binding_names: Vec<String>,
+    #[serde(default)]
+    pub hosting: ToolHosting,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<ToolPayload>,
     pub environment_id: EnvironmentId,
-    pub remote_tool_id: String,
-    pub configuration: serde_json::Value,
-    pub grant: serde_json::Value,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -85,18 +90,40 @@ pub struct ResolvedSessionRequest {
     pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
     pub presentation: ModelPresentation,
-    pub environments: Vec<EnvironmentRequirement>,
+    pub environments: Vec<ResolvedEnvironment>,
     pub tool_bindings: Vec<RequestedToolBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<HistoryEvent>,
 }
 
+/// What a session create names about one environment, as it arrives on the wire.
+/// `bindings` carries plaintext values and exists only here: the resolved request the
+/// kernel journals carries their identities instead.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentRequirement {
     pub environment_id: EnvironmentId,
     pub configuration: serde_json::Value,
     pub lifecycle_policy: LifecyclePolicy,
+    #[serde(default)]
+    pub grants: GrantSet,
+    #[serde(default)]
+    pub bindings: BTreeMap<String, String>,
+}
+
+/// The journal-safe form of an environment requirement: binding values are sealed
+/// outside the journal, which keeps only their identities — the same custody model as
+/// model credentials.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedEnvironment {
+    pub environment_id: EnvironmentId,
+    pub configuration: serde_json::Value,
+    pub lifecycle_policy: LifecyclePolicy,
+    #[serde(default)]
+    pub grants: GrantSet,
+    #[serde(default)]
+    pub binding_identities: BTreeMap<String, Identity>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

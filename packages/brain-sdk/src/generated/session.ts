@@ -19,6 +19,31 @@ export type Identity = string;
  * via the `definition` "SessionId".
  */
 export type SessionId = string;
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "CapabilityName".
+ */
+export type CapabilityName = "exec" | "fs" | "net" | "js" | "page";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "BoundTool".
+ */
+export type BoundTool = {
+  [k: string]: unknown | undefined;
+} & {
+  name: Identifier;
+  description: string;
+  input_schema: {};
+  output_schema?: {};
+  requires: CapabilityName[];
+  /**
+   * @maxItems 64
+   */
+  binding_names: Identifier[];
+  hosting?: "provisioned" | "callback";
+  payload?: ToolPayload;
+  environment_id: Identifier;
+};
 
 export interface BrainSessionAPIV1 {
   contract: "session/v1";
@@ -33,17 +58,57 @@ export interface AgentloopRef {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "BoundTool".
+ * via the `definition` "ToolPayload".
  */
-export interface BoundTool {
-  name: Identifier;
-  description: string;
-  input_schema: {};
-  output_schema?: {};
-  environment_id: Identifier;
-  remote_tool_id: Identifier;
-  configuration: unknown;
-  grant: unknown;
+export interface ToolPayload {
+  kind: "esm" | "component";
+  identity: Identity;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ExecGrant".
+ */
+export interface ExecGrant {
+  timeout_ms_max?: number;
+  output_bytes_max?: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "FsGrant".
+ */
+export interface FsGrant {
+  root: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "NetGrant".
+ */
+export interface NetGrant {
+  /**
+   * @maxItems 256
+   */
+  allow: string[];
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "JsGrant".
+ */
+export interface JsGrant {}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "PageGrant".
+ */
+export interface PageGrant {}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "GrantSet".
+ */
+export interface GrantSet {
+  exec?: ExecGrant;
+  fs?: FsGrant;
+  net?: NetGrant;
+  js?: JsGrant;
+  page?: PageGrant;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -53,6 +118,10 @@ export interface EnvironmentRequirement {
   environment_id: Identifier;
   configuration: unknown;
   lifecycle_policy: "session" | "shared" | "external";
+  grants?: GrantSet;
+  bindings?: {
+    [k: string]: string | undefined;
+  };
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

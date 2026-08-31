@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aexhq/brain/contracts/tool/v1/schemas.json",
+  "title": "Brain Tool v1",
+  "$defs": {
+    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "Identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "CapabilityName": { "enum": ["exec", "fs", "net", "js", "page"] },
+    "ToolPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "identity"],
+      "properties": {
+        "kind": { "enum": ["esm", "component"] },
+        "identity": { "$ref": "#/$defs/Identity" }
+      }
+    },
+    "ToolManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "input_schema", "requires", "binding_names"],
+      "properties": {
+        "name": { "$ref": "#/$defs/Identifier" },
+        "description": { "type": "string", "maxLength": 8192 },
+        "input_schema": { "type": "object" },
+        "output_schema": { "type": "object" },
+        "requires": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/CapabilityName" } },
+        "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
+        "hosting": { "enum": ["provisioned", "callback"] },
+        "payload": { "$ref": "#/$defs/ToolPayload" }
+      },
+      "allOf": [
+        { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "callback" } } }, "then": { "not": { "required": ["payload"] } } }
+      ]
+    }
+  },
+  "$ref": "#/$defs/ToolManifest"
+}

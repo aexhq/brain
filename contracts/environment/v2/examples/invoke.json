@@ -1,9 +1,8 @@
 {
-  "contract": "environment/v1",
+  "contract": "environment/v2",
   "binding": {
     "environment_id": "env_shared",
     "configuration_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "adapter_binding": "{\"driver\":\"aws-microvm\"}",
     "directory_generation": 1,
     "lifecycle_policy": "shared"
   },
@@ -14,11 +13,11 @@
     "session_id": "ses_example",
     "attachment_id": "att_example",
     "request": {
-      "type": "execute",
-      "tool": { "call_id": "call_example", "name": "read", "input": { "path": "README.md" } },
-      "remote_tool_id": "read",
-      "tool_configuration": {},
-      "grant": { "paths": ["**"] }
+      "type": "invoke",
+      "call_id": "call_example",
+      "tool": "read",
+      "input": { "path": "README.md" },
+      "deadline_ms": 120000
     }
   }
 }
