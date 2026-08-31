@@ -174,10 +174,9 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
       description: bound.definition.description,
       input_schema: structuredClone(bound.definition.inputSchema),
       ...(bound.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(bound.definition.outputSchema) }),
+      requires: [...bound.requires],
+      binding_names: [...bound.bindingNames],
       environment_id: environmentId,
-      remote_tool_id: bound.implementationName,
-      configuration: structuredClone(bound.configuration),
-      grant: {},
     });
   }
   const agentloop = inspectAgentloop(options.agentloop);
