@@ -143,9 +143,7 @@ async fn measure_one_turn(data_dir: &Path) -> (u64, SessionId) {
     let handle = start(&kernel, request());
     let session_id = handle.id().clone();
     let finished = handle
-        .message(MessageRequest {
-            content: serde_json::json!("go"),
-        })
+        .message(MessageRequest { input: "go".into() })
         .await
         .unwrap();
     assert!(
@@ -201,9 +199,7 @@ async fn the_event_stream_does_not_carry_a_context_copy_per_decision() {
     let handle = start(&kernel, request());
     let session_id = handle.id().clone();
     handle
-        .message(MessageRequest {
-            content: serde_json::json!("go"),
-        })
+        .message(MessageRequest { input: "go".into() })
         .await
         .unwrap();
 
@@ -255,7 +251,7 @@ async fn the_session_row_holds_the_final_context_after_the_turn() {
     let session_id = handle.id().clone();
     handle
         .message(MessageRequest {
-            content: serde_json::json!("hello"),
+            input: "hello".into(),
         })
         .await
         .unwrap();
@@ -486,9 +482,7 @@ async fn a_session_does_not_journal_one_context_copy_per_turn() {
     let handle = start(&kernel, request());
     for _ in 0..TURNS {
         handle
-            .message(MessageRequest {
-                content: serde_json::json!("go"),
-            })
+            .message(MessageRequest { input: "go".into() })
             .await
             .unwrap();
     }
@@ -601,9 +595,7 @@ async fn a_session_does_not_journal_the_whole_transcript_once_per_turn() {
     let handle = start(&kernel, request());
     for _ in 0..TURNS {
         handle
-            .message(MessageRequest {
-                content: serde_json::json!("go"),
-            })
+            .message(MessageRequest { input: "go".into() })
             .await
             .unwrap();
     }
@@ -717,9 +709,7 @@ async fn a_turn_does_not_journal_the_pieces_its_answer_arrived_in() {
     .unwrap();
     let handle = start(&kernel, request());
     handle
-        .message(MessageRequest {
-            content: serde_json::json!("go"),
-        })
+        .message(MessageRequest { input: "go".into() })
         .await
         .unwrap();
     drop(handle);

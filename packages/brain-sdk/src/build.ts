@@ -170,7 +170,7 @@ import { ${name} as definition } from ${JSON.stringify(normalized)};
 const decodeObservation = (observation) => {
   switch (observation.tag) {
     case "session-started": return { type: "session_started" };
-    case "user-message": return { type: "user_message", content: JSON.parse(observation.val) };
+    case "user-message": return { type: "user_message", input: JSON.parse(observation.val) };
     case "model-completed": return { type: "model_completed", response: JSON.parse(observation.val) };
     case "tools-completed": return { type: "tools_completed", results: JSON.parse(observation.val) };
     case "emitted": return { type: "emitted", event: JSON.parse(observation.val) };

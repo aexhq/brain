@@ -2,8 +2,7 @@
 
 > [!NOTE]
 > Current headline figures are in the [README](README.md#benchmarks), measured with the harness in
-> [`tools/bench`](tools/bench) against thirteen other agent runtimes. The archive below predates
-> that harness and is **not current** — it is kept for history, not for quoting.
+> [`tools/bench`](tools/bench) against thirteen other agent runtimes.
 
 ## What the benchmark measures
 
@@ -47,27 +46,3 @@ restart pays for the log that was kept rather than for every record ever written
 That job is a leak guard, not a benchmark, and it does not check leakage between sessions;
 the name is older than what it does. Latency, throughput, and the cross-session isolation test are
 being rebuilt — see **Roadmap** in the [README](README.md).
-
-## Pre-rebuild archive (not current)
-
-Measured 2026-08-18 on a c7g.xlarge (4-vCPU Graviton3, Ubuntu, glibc) release build, against the
-kernel as it stood before the architecture reset. Kept for reference only.
-
-| Measurement | Result |
-| --- | ---: |
-| First visible byte, one session | p50 1.4 ms · p99 2.2 ms |
-| Complete text turn, one session | p50 2.3 ms · p99 3.2 ms |
-| Admission to `turn.started` | p50 0.22 ms |
-| Throughput, 64 sessions | 2,002 turns/s · p99 58 ms |
-| Throughput, 256 sessions | 2,100 turns/s · p99 254 ms |
-| Tool loop, 64 sessions, 2 rounds × 4 calls | 429 turns/s · about 3,430 tool calls/s |
-| Resident session, excluding the in-process log | 21–31 KiB private memory |
-| Memory returned after deleting all sessions | 82–86% in one cycle |
-| Steady-state change across delete cycles | −0.6 MiB per cycle over 6 cycles |
-
-The resident-session figure is the private-memory delta between live actors and the post-discard
-state; production logs are off-process. An in-process log at four 8-KiB turns used roughly
-450–470 KiB per session.
-
-The one-cycle reclaim percentage reflects allocator fragmentation. The stronger long-running
-invariant is that the post-delete floor stops rising, and the measured floor plateaued.

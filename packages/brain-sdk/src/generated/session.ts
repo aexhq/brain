@@ -97,10 +97,17 @@ export interface HistoryEvent {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "UserInput".
+ */
+export interface UserInput {
+  message: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "MessageRequest".
  */
 export interface MessageRequest {
-  content: unknown;
+  input: UserInput;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

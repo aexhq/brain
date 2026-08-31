@@ -16,7 +16,7 @@
     "Observation": {
       "oneOf": [
         { "type": "object", "additionalProperties": false, "required": ["type", "history"], "properties": { "type": { "const": "session_started" }, "history": { "type": "array" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "content"], "properties": { "type": { "const": "user_message" }, "content": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "input"], "properties": { "type": { "const": "user_message" }, "input": { "type": "object", "additionalProperties": false, "required": ["message"], "properties": { "message": { "type": "string", "minLength": 1 } } } } },
         { "type": "object", "additionalProperties": false, "required": ["type", "response"], "properties": { "type": { "const": "model_completed" }, "response": {} } },
         { "type": "object", "additionalProperties": false, "required": ["type", "results"], "properties": { "type": { "const": "tools_completed" }, "results": { "type": "array", "maxItems": 128 } } },
         { "type": "object", "additionalProperties": false, "required": ["type", "event"], "properties": { "type": { "const": "emitted" }, "event": {} } },

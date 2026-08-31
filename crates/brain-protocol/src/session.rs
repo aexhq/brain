@@ -109,10 +109,28 @@ pub struct SealedSessionConfig {
     pub tool_bindings: Vec<ToolBinding>,
 }
 
+/// What an application hands a session on `send`. The shape is closed on purpose:
+/// Brain owes every agentloop the same observation shape regardless of who wrote
+/// the client, so free-form content is not accepted. Multimodal parts will extend
+/// this record when they land — see the roadmap.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserInput {
+    pub message: String,
+}
+
+impl<T: Into<String>> From<T> for UserInput {
+    fn from(message: T) -> Self {
+        UserInput {
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageRequest {
-    pub content: serde_json::Value,
+    pub input: UserInput,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

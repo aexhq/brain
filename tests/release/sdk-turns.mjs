@@ -18,7 +18,7 @@ const session = await brain.sessions.create({
   agentloop: diagnostic(),
 });
 
-const completed = await session.send({ task: "finish without external capabilities" });
+const completed = await session.send("finish without external capabilities");
 assert.equal(completed.status, "idle");
 
 const events = [];

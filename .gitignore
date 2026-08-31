@@ -5,3 +5,4 @@
 .env
 .env.*
 /.worktrees
+tests/release/built/

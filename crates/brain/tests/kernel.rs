@@ -205,7 +205,7 @@ async fn intent_precedes_model_effect() {
     let session_id = handle.id().clone();
     let finished = handle
         .message(MessageRequest {
-            content: serde_json::json!("hello"),
+            input: "hello".into(),
         })
         .await
         .unwrap();
@@ -278,7 +278,7 @@ async fn cancel_interrupts_an_inflight_model_request() {
         tokio::spawn(async move {
             handle
                 .message(MessageRequest {
-                    content: serde_json::json!("hello"),
+                    input: "hello".into(),
                 })
                 .await
         })
@@ -337,7 +337,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
         tokio::spawn(async move {
             handle
                 .message(MessageRequest {
-                    content: serde_json::json!("run"),
+                    input: "run".into(),
                 })
                 .await
         })
@@ -503,7 +503,7 @@ async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
     let handle = start(&kernel, request());
     handle
         .message(MessageRequest {
-            content: serde_json::json!("hello"),
+            input: "hello".into(),
         })
         .await
         .unwrap();
@@ -722,7 +722,7 @@ async fn the_journal_is_the_only_thing_written() {
     for _ in 0..10 {
         handle
             .message(MessageRequest {
-                content: serde_json::json!("hello"),
+                input: "hello".into(),
             })
             .await
             .unwrap();
@@ -771,8 +771,8 @@ impl LoopExecutor for OrdinaryTurn {
     ) -> Result<ActivationOutput, KernelError> {
         let mut context = input.context;
         let decision = match input.observation {
-            Observation::UserMessage { content } => {
-                context.items.push(content);
+            Observation::UserMessage { input } => {
+                context.items.push(serde_json::to_value(&input).unwrap());
                 Decision::Model {
                     request: ModelRequest {
                         messages: vec![brain_protocol::Message::user_text("hello")],

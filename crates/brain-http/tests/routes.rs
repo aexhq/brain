@@ -122,7 +122,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
         request(
             "POST",
             &format!("/v1/sessions/{id}/messages"),
-            Some(br#"{"content":"hello"}"#.to_vec()),
+            Some(br#"{"input":{"message":"hello"}}"#.to_vec()),
             Some("application/json"),
         ),
         request(

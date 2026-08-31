@@ -46,7 +46,7 @@ const session = await request("POST", "/v1/sessions", {
 
 try {
   await request("POST", `/v1/sessions/${session.session_id}/messages`, {
-    content: "Reply with HTTP_OK.",
+    input: { message: "Reply with HTTP_OK." },
   });
   console.log(await request("GET", `/v1/sessions/${session.session_id}/events?after=0`));
 } finally {

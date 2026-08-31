@@ -30,7 +30,7 @@ async fn real_worker_admits_and_activates_the_typescript_diagnostic_loop() {
                     state: None,
                 },
                 observation: Observation::UserMessage {
-                    content: serde_json::json!({"scenario":"tools"}),
+                    input: "tools scenario".into(),
                 },
                 configuration: serde_json::json!({}),
                 presentation: Presentation {
@@ -110,7 +110,7 @@ fn activation(index: usize) -> ActivationInput {
             state: None,
         },
         observation: Observation::UserMessage {
-            content: serde_json::json!({ "scenario": "tools", "index": index }),
+            input: format!("tools scenario {index}").into(),
         },
         configuration: serde_json::json!({}),
         presentation: Presentation {

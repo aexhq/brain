@@ -8,7 +8,7 @@ import type {
   EventPage, Session as WireSession, SessionList,
 } from "./generated/session.js";
 import type {
-  Agentloop, BoundTool, CreateSessionOptions, Environment, OperationOptions, SessionEvent, SessionState,
+  Agentloop, BoundTool, CreateSessionOptions, Environment, OperationOptions, SessionEvent, SessionState, UserInput,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -115,8 +115,10 @@ export class SessionHandle {
   constructor(private readonly client: BrainClient, public state: SessionState, private readonly environments: readonly Environment[]) {}
   get id(): string { return this.state.id; }
 
-  async send(content: unknown, operation: OperationOptions = {}): Promise<SessionState> {
-    const session = await this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`, { content }, keyOf(operation));
+  async send(input: UserInput | string, operation: OperationOptions = {}): Promise<SessionState> {
+    const normalized = typeof input === "string" ? { message: input } : input;
+    if (typeof normalized?.message !== "string" || normalized.message === "") throw new TypeError("send needs a non-empty message");
+    const session = await this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/messages`, { input: normalized }, keyOf(operation));
     return (this.state = toSessionState(session));
   }
 

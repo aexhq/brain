@@ -3,9 +3,8 @@ import { z } from "zod";
 
 export const example = agentloop((author) => {
   const state = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
-  author.on.message((message, turn) => {
-    const text = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
-    state.messages.push({ role: "user", content: [{ type: "text", text }] });
+  author.on.message(({ input }, turn) => {
+    state.messages.push({ role: "user", content: [{ type: "text", text: input.message }] });
     return turn.model({ messages: state.messages });
   });
   author.on.model((completed, turn) => {

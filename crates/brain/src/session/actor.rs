@@ -150,7 +150,7 @@ impl SessionActor {
             },
         )?;
         let mut observation = Observation::UserMessage {
-            content: request.content,
+            input: request.input,
         };
         for decision_index in 0..self.max_decisions_per_turn {
             if self.cancel_requested.load(Ordering::Acquire) {

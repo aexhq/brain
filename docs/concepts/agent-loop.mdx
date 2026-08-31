@@ -13,8 +13,8 @@ import { z } from "zod";
 export const simple = agentloop((author) => {
   const memory = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
 
-  author.on.message((message, turn) => {
-    memory.messages.push({ role: "user", content: [{ type: "text", text: String(message.content) }] });
+  author.on.message(({ input }, turn) => {
+    memory.messages.push({ role: "user", content: [{ type: "text", text: input.message }] });
     return turn.model({ messages: memory.messages });
   });
 
