@@ -31,12 +31,20 @@ impl TelemetryMetrics {
         self.inner.queued_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    pub(crate) fn removed(&self, bytes: usize) {
-        self.inner.queued_records.fetch_sub(1, Ordering::Relaxed);
+    pub(crate) fn removed(&self, records: usize, bytes: usize) {
+        self.inner
+            .queued_records
+            .fetch_sub(records, Ordering::Relaxed);
         self.inner.queued_bytes.fetch_sub(bytes, Ordering::Relaxed);
     }
 
     pub(crate) fn dropped(&self) {
         self.inner.dropped_records.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn dropped_by(&self, records: usize) {
+        self.inner
+            .dropped_records
+            .fetch_add(records as u64, Ordering::Relaxed);
     }
 }

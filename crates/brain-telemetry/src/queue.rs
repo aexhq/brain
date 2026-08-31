@@ -42,9 +42,8 @@ impl BoundedQueue {
         Some(bytes)
     }
 
-    pub fn pop(&mut self) -> Option<QueuedRecord> {
-        let queued = self.records.pop_front()?;
-        self.bytes -= queued.bytes;
-        Some(queued)
+    pub fn drain(&mut self) -> Vec<QueuedRecord> {
+        self.bytes = 0;
+        self.records.drain(..).collect()
     }
 }

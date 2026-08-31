@@ -185,20 +185,22 @@ struct LogSink;
 
 #[async_trait]
 impl TelemetrySink for LogSink {
-    async fn publish(
+    async fn publish_batch(
         &self,
-        record: &TelemetryRecord,
+        records: &[TelemetryRecord],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        tracing::info!(
-            telemetry_kind = ?record.kind,
-            telemetry_name = %record.name,
-            session_id = record.session_id.as_ref().map(ToString::to_string),
-            journal_id = record.journal_id.as_ref().map(ToString::to_string),
-            event_id = record.event_id.as_ref().map(ToString::to_string),
-            operation_id = record.operation_id.as_ref().map(ToString::to_string),
-            payload_bytes = record.payload.len(),
-            "Brain telemetry"
-        );
+        for record in records {
+            tracing::info!(
+                telemetry_kind = ?record.kind,
+                telemetry_name = %record.name,
+                session_id = record.session_id.as_ref().map(ToString::to_string),
+                journal_id = record.journal_id.as_ref().map(ToString::to_string),
+                event_id = record.event_id.as_ref().map(ToString::to_string),
+                operation_id = record.operation_id.as_ref().map(ToString::to_string),
+                payload_bytes = record.payload.len(),
+                "Brain telemetry"
+            );
+        }
         Ok(())
     }
 }
