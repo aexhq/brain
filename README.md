@@ -5,12 +5,11 @@
   ▀▀  ▀▀     |______/___|__|___|___|_______|__|____|
 </pre>
 
-<p align="center"><strong>A tiny, blazing fast, extensible agent runtime.</strong></p>
+<p align="center"><strong>A minimal, blazing fast, extensible agent runtime.</strong></p>
 
 <p align="center">
   <a href="https://github.com/aexhq/brain/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/aexhq/brain/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://www.npmjs.com/package/@aexhq/brain"><img alt="npm" src="https://img.shields.io/npm/v/%40aexhq%2Fbrain?label=%40aexhq%2Fbrain" /></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue" /></a>
   <img alt="Rust" src="https://img.shields.io/badge/rust-1.97%2B-orange" />
 </p>
 
@@ -23,11 +22,11 @@
 
 ## What is it
 
-Brain is a tiny agent runtime that runs sessions: it holds the conversation, decides what happens
-next, calls the model, hands out tool calls, and journals every step — about 7,300 lines of Rust.
-The **agent loop**, the **model**, the **tools**, and the **environment** they run in all plug in
-and are yours to replace, whether you run Brain as an HTTP server or embed the `brain` crate in a
-Rust service you already own.
+**Brain** is a minimal, *blazingly fast* agent runtime. Build your own AI-native apps, with
+tools that run anywhere from a client browser to a server sandbox. Run any agentloop, from pi
+to codex. Deploy flexibly as a Docker image or an embedded Rust crate. Secure by design, with
+Wasm-isolated agentloop and tool execution. Scale easily with minimal memory overhead. Instant
+observability with real-time events.
 
 > [!NOTE]
 > **Brain is under early development.** Contracts are replaced in place until the first stable
@@ -43,104 +42,113 @@ Brain in each chart.
 
 ```text
 Brain      █                                     25 ms ★
-ZeroClaw   ██                                    51 ms
+ZeroClaw   ██                                    51 ms †
 LangGraph  ██████████████████████████████      1049 ms
-OpenClaw   ████████████████████████████████████ 1257 ms
+OpenClaw   ████████████████████████████████████ 1257 ms †
 ```
 
 **Time to first token**
 
 ```text
-ZeroClaw   █                                    9.6 ms
-Brain      ██                                   ≤25 ms ★
+ZeroClaw   █                                    9.6 ms †
+Brain      ██                                    25 ms ★
 LangGraph  ████                                48.6 ms
 OpenFang   ██████                              75.8 ms
-OpenClaw   ██████████████████████████████     874.4 ms
+OpenClaw   ██████████████████████████████     874.4 ms †
 ```
 
 **New session**
 
 ```text
-Brain      ██                                   0.6 ms ★
-LangGraph  ███                                  0.7 ms
-ZeroClaw   ██████                               1.9 ms
-OpenClaw   ███████████                          3.7 ms
-OpenFang   ██████████████████████████████      10.3 ms
+Agno       █                                     3 µs °
+Brain      ███                                 0.6 ms ★
+LangGraph  ████                                0.7 ms
+ZeroClaw   ███████                             1.9 ms †
+OpenClaw   ████████████                        3.7 ms †
+OpenFang   ██████████████████████████████     10.3 ms
 ```
 
 **Cold start**
 
 ```text
-ZeroClaw   █                                 10 ms
-Brain      ██                                25 ms ★
-OpenFang   ████                             180 ms
-LangGraph  ███████████████                  2.5 s
-OpenClaw   ████████████████████████         5.98 s
+Cloudflare  █                                   <5 ms °
+ZeroClaw    ██                                  10 ms †
+Brain       ███                                 25 ms ★
+OpenFang    ██████                             180 ms
+LangGraph   ████████████████                   2.5 s
+Vertex AI   ███████████████████████            4.7 s °
+OpenClaw    ██████████████████████████████     5.98 s †
 ```
 
 **Memory per idle session**
 
 ```text
-Brain     █                                 14 KiB ★
-OpenFang  ████████                         0.6 MiB
-ZeroClaw  █████████████████████             50 MiB
-OpenClaw  ██████████████████████████████   490 MiB
+Agno       █                                  6.5 KiB °
+Brain      ██                                  14 KiB ★
+OpenFang   █████████                          0.6 MiB
+ZeroClaw   █████████████████████               50 MiB †
+OpenClaw   ██████████████████████████████     490 MiB †
 ```
 
-Disk stays flat — a 100-turn conversation leaves **0.2 MiB**, the hundredth turn writing the same
-2.3 KiB as the first — and CI enforces bounds on every push: under 256 MiB resident after 10,000
-requests, and a journal held to a small constant multiple of its final context.
-
-> **Benchmark setup.** Medians, measured by the harness in [`tools/bench`](tools/bench) on an AWS
-> `c7g.xlarge` (Linux) with the same instant scripted model behind every subject. The LangGraph
-> figures measure LangGraph Server. Brain's first-token figure is an upper bound: the scripted
-> turn completes before a delta reaches the stream, so its whole-turn median stands in. Cold-start
-> figures other than Brain's come from each project's own published numbers. Memory bars are
-> log-scaled, and Brain's is the marginal cost per additional idle session. A subject absent from
-> a chart has no measured figure for that probe. Methodology and the bounds CI enforces are in
-> [BENCHMARKS.md](BENCHMARKS.md).
+<sub>Medians measured by the harness in <a href="tools/bench">tools/bench</a> on an AWS
+<code>c7g.xlarge</code> with the same instant scripted model behind every subject; the LangGraph
+figures measure LangGraph Server, and Brain's first-token figure is an upper bound (its whole-turn
+median). Memory bars are log-scaled; Brain's is the marginal cost per additional idle session.
+<strong>°</strong> the project's own published figure, not measured by our harness — Cloudflare
+Agents' is a V8 isolate spawn on their cloud, Vertex AI Agent Engine's is its documented cold
+start, and Agno's are in-process agent instantiation with no server round trip.
+<strong>†</strong> personal/local assistant runtimes — a different deployment model than a server
+runtime, kept for reference. Runtimes that publish no comparable figures (Letta, Mastra, Golem,
+Awaken, Restate, Temporal, AgentScope, VoltAgent, Julep, …) are absent until we measure them
+ourselves. Methodology and the bounds CI enforces on every push are in
+<a href="BENCHMARKS.md">BENCHMARKS.md</a>.</sub>
 
 ## How it works
 
 ```text
-your app
-   ▲
-   │ HTTP / SSE
-   ▼
-[ brain runtime ]
-   │
-   ├── observation ──► agent loop ──► decision
-   │                   (Wasm, sealed)
-   │
-   ├── pinned model call ──► model API
-   │
-   ├── tool call (HTTP) ──► environment
-   │                        (sandbox, browser,
-   │                         your backend)
-   │
-   └── append, behind the turn ──► segment log
+your app ──── send (HTTP) ────►  [ brain runtime ]  ──── event feed (SSE), token by token ────► your app
+
+┌───────────────────────────────────── inside one turn ────────────────────────────────────┐
+│                                                                                          │
+│  observation ──► agent loop ──► decision      a Wasm component, sealed: no network, no   │
+│                                               filesystem, no secrets, no clock — Brain   │
+│                                               performs every effect on its behalf, so    │
+│                                               any decision replays exactly               │
+│                                                                                          │
+│  decision ──┬──► model call ──► provider      pinned per session; deltas stream          │
+│             │                                 straight through to the feed               │
+│             │                                                                            │
+│             └──► tool call ──► environment    plain HTTP: a microVM sandbox, a browser   │
+│                                               tab, your own backend — one session can    │
+│                                               span several at once                       │
+│                                                                                          │
+│  every step ──► append-only journal           the write-ahead record, appended behind    │
+│                                               the turn; a restart rebuilds every         │
+│                                               session from it                            │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Brain owns the session; the agent loop, model, tools, and environment are yours to supply. The
-loop compiles to WebAssembly from any language and runs on [Wasmtime](https://wasmtime.dev/)'s
-component model, with Brain performing every effect on its behalf — which is what makes a
-decision deterministic and replayable from its position in the journal. Tools and environments
-speak plain HTTP, so they run wherever you want them.
+speed comes from a handful of techniques most runtimes don't use:
 
-The runtime itself is Rust end to end, and its speed comes from the architecture rather than
-tuning:
+- **Sealed WebAssembly agent loops** — a loop compiles from any language to a component on
+  [Wasmtime](https://wasmtime.dev/), compiled once and activated per decision at native speed.
+  It gets no ambient capabilities — Brain performs every effect for it — which is what makes a
+  decision deterministic and replayable from its position in the journal.
+- **A write-ahead journal instead of a database** — the only durable state is an append-only
+  segment log, written behind the turn, off the hot path. Sessions are memory-resident and
+  rebuilt from the journal after a restart; a session interrupted mid-turn comes back with a
+  `turn_interrupted` event and lets the client decide.
+- **Streaming with a bound, not a buffer** — a model delta reaches subscribers the moment the
+  provider emits it; nothing is accumulated per turn. The live feed rides a fixed 1,024-event
+  ring per subscriber, so a reader that falls behind drops (and is told how many it missed)
+  rather than slowing the turn — the journal is the record it re-reads.
+- **Observability as the data model** — every observation, decision, model intent, token, and
+  tool outcome is an event in one feed; watching live and reading history back are the same
+  records, so tracing a session is replaying it.
 
-- **Rust on [Tokio](https://tokio.rs/)** — the whole runtime is one native async binary, serving
-  the session API over [Axum](https://github.com/tokio-rs/axum) HTTP/SSE.
-- **Memory-resident sessions** — session state and indexes live in memory, backed by an
-  append-only journal written behind the turn, off the hot path.
-- **Pre-compiled agent loops** — a loop compiles once through Wasmtime and activates per decision
-  at native speed.
-- **Streaming end to end** — model output streams through the event feed as it arrives, token by
-  token, instead of being buffered per turn.
-
-Sessions survive a restart, rebuilt from the journal; a session interrupted mid-turn comes back
-with a `turn_interrupted` event and lets the client decide.
+The rest is deliberately boring: one native Rust binary on [Tokio](https://tokio.rs/), serving
+the session API over [Axum](https://github.com/tokio-rs/axum) HTTP/SSE, with no external stores.
 
 ## Features
 
@@ -158,50 +166,91 @@ with a `turn_interrupted` event and lets the client decide.
 
 ## Quick start
 
-Run a server:
+Give the agent a voice: its only tool lives in a browser tab, and it answers out loud through
+your speakers.
+
+Run a server (host networking, so Brain can dial the environment on loopback — on Docker
+Desktop enable host networking in settings, or run the binary from the
+[Quickstart](https://aex.dev/brain/docs/quickstart)):
 
 ```sh
-docker run --rm -p 8080:8080 -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
+docker run --rm --network host \
+  -e BRAIN_LISTEN=127.0.0.1:8080 \
+  -e BRAIN_ENVIRONMENT_BASE_URL=http://127.0.0.1:8787 \
+  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
-
-Drive a session from TypeScript:
 
 ```sh
-npm install @aexhq/brain @aexhq/agentloop-pi
+npm install @aexhq/brain @aexhq/agentloop-pi @aexhq/env-app zod
 ```
 
-```ts
-import { Brain } from "@aexhq/brain";
+Save as `talk.mjs` and run with `node talk.mjs`:
+
+```js
+import { createServer } from "node:http";
+import { Brain, appTool, createEnvironmentHandler } from "@aexhq/brain";
+import { app } from "@aexhq/env-app";
 import { pi } from "@aexhq/agentloop-pi";
+import { z } from "zod";
+
+// The page: it holds an outbound WebSocket to the environment and answers
+// the `say` tool from inside the tab — with your speakers.
+const page = `<!doctype html><title>brain, out loud</title><body>🔊 This tab is a Brain environment.
+<script type="module">
+import { appTools } from "https://esm.sh/@aexhq/brain";
+import { z } from "https://esm.sh/zod@4";
+appTools.connect({ url: "ws://127.0.0.1:8787/environments/env_1/channel", token: "quickstart" })
+  .register(
+    { name: "say", description: "Speak out loud through the user's speakers.", input: z.object({ text: z.string() }) },
+    ({ text }) => { speechSynthesis.speak(new SpeechSynthesisUtterance(text)); return "spoken"; },
+  );
+</script>`;
+
+// Host the environment beside the page: Brain POSTs operations here, the tab holds the channel.
+const handle = createEnvironmentHandler(app);
+const server = createServer(async (request, response) => {
+  if (request.method === "POST") {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    response.setHeader("content-type", "application/json");
+    return response.end(JSON.stringify(await handle(JSON.parse(body))));
+  }
+  response.setHeader("content-type", "text/html; charset=utf-8");
+  response.end(page);
+});
+server.on("upgrade", (request, socket, head) => handle.channel.upgrade(request, socket, head));
+server.listen(8787, "127.0.0.1");
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
-
+const channel = app({ channelToken: "quickstart" });
 const session = await brain.sessions.create({
-  model: {
-    provider: "openai",
-    name: "gpt-5-mini",
-    apiKey: process.env.OPENAI_API_KEY!,
-  },
+  model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
   agentloop: pi(),
-  system: "Answer briefly and directly.",
+  tools: [
+    appTool({
+      name: "say",
+      description: "Speak out loud through the user's speakers.",
+      input: z.object({ text: z.string() }),
+    }).useIn(channel),
+  ],
+  system: "You can speak out loud. Answer by saying it.",
 });
 
-await session.send("Explain what a session runtime does, in one sentence.");
-for await (const event of session.events()) console.log(event);
+console.log("Open http://127.0.0.1:8787 in a browser, sound on, then press Enter.");
+await new Promise((resolve) => process.stdin.once("data", resolve));
+
+await session.send("Introduce yourself out loud, in one sentence.");
+for await (const event of session.events()) console.log(event.sequence, event.type);
 
 await session.end();
 await session.delete();
+process.exit(0);
 ```
 
-No `tools` means the model sees none. Add them once you have somewhere to run them. Brain listens on
-loopback and needs no token there; set `BRAIN_API_TOKEN` to listen anywhere else.
-
-Four runnable scripts — a basic session, event history, the full lifecycle, and the same thing over
-raw HTTP with no SDK — are in [`examples/`](examples). Building from source and embedding the crate
-in Rust are covered in the [Quickstart](https://aex.dev/brain/docs/quickstart) and the
-[embedding guide](https://aex.dev/brain/docs/guides/embed). Setup, the verification commands CI
-runs, and how contracts change are in [CONTRIBUTING.md](CONTRIBUTING.md) — issues and pull requests
-are welcome.
+That's a session whose only tool runs in a browser tab: the Node script hosts the environment and
+serves the page, the tab connects out over a WebSocket and registers `say`, Brain routes the
+model's tool call down the channel — and the answer comes out of your speakers while the event
+feed streams in the terminal.
 
 ## Roadmap
 
@@ -220,15 +269,7 @@ are welcome.
 - [ ] `checkpoint` and `restore`
 - [ ] Custom images with scoped credentials and network metering
 
-## Acknowledgements
+## Contact
 
-Brain stands on [Wasmtime](https://wasmtime.dev/) and the Bytecode Alliance's component model,
-which is what lets an agent loop written in any language run sealed off and reproducible. The
-benchmark would mean nothing without the projects it measures — LangGraph, ZeroClaw, OpenFang,
-OpenClaw, Letta, CrewAI, AutoGen, the Microsoft Agent Framework, E2B, Firecracker, Daytona, and
-Modal — and several of them shaped how Brain thinks about what a runtime owes its operator. Thanks
-also to everyone filing issues and testing early builds.
-
-## License
-
-[MIT](LICENSE).
+Questions, ideas, or something broken? Open an [issue](https://github.com/aexhq/brain/issues) or
+write to [admin@aex.dev](mailto:admin@aex.dev).
