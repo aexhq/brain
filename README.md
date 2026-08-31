@@ -90,17 +90,10 @@ ZeroClaw   █████████████████████      
 OpenClaw   ██████████████████████████████     490 MiB †
 ```
 
-<sub>Medians measured by the harness in <a href="tools/bench">tools/bench</a> on an AWS
-<code>c7g.xlarge</code> with the same instant scripted model behind every subject; the LangGraph
-figures measure LangGraph Server, and Brain's first-token figure is an upper bound (its whole-turn
-median). Memory bars are log-scaled; Brain's is the marginal cost per additional idle session.
-<strong>°</strong> the project's own published figure — Cloudflare Agents' is a V8 isolate spawn
-on their cloud, Vertex AI Agent Engine's is its documented cold start, and Agno's are
-in-process agent instantiation with no server round trip.
-<strong>†</strong> personal/local assistant runtimes — a different deployment model than a server
-runtime, kept for reference. Runtimes that publish no comparable figures (Letta, Mastra, Golem,
-Awaken, Restate, Temporal, AgentScope, VoltAgent, Julep, …) are absent until we measure them
-ourselves. Methodology and the bounds CI enforces on every push are in
+<sub>Medians from the harness in <a href="tools/bench">tools/bench</a> on an AWS
+<code>c7g.xlarge</code>. Brain's first-token figure is an upper bound (its whole-turn median);
+memory bars are log-scaled. <strong>°</strong> a project's own published figure.
+<strong>†</strong> personal/local assistant runtimes. Methodology and the bounds CI enforces:
 <a href="BENCHMARKS.md">BENCHMARKS.md</a>.</sub>
 
 ## How it works
