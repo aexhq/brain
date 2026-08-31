@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { BoundTool, Agentloop, Environment, ModelMessage, ModelResponse, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition } from "./types.js";
+import type { BoundTool, Agentloop, Environment, ModelMessage, ModelResponse, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition, UserInput } from "./types.js";
 
 export const extensionSource = Symbol.for("@aexhq/brain/extension-source");
 
@@ -8,7 +8,7 @@ export interface AgentloopInput {
   readonly context: { readonly state?: unknown };
   readonly observation:
     | { readonly type: "session_started" }
-    | { readonly type: "user_message"; readonly content: unknown }
+    | { readonly type: "user_message"; readonly input: UserInput }
     | { readonly type: "model_completed"; readonly response: ModelResponse }
     | { readonly type: "tools_completed"; readonly results: readonly unknown[] }
     | { readonly type: "emitted"; readonly event: unknown }
@@ -27,7 +27,7 @@ export type AgentloopAction =
   | { readonly type: "model"; readonly request: ModelTurnRequest }
   | { readonly type: "tools"; readonly calls: readonly ToolCall[] }
   | { readonly type: "emit"; readonly event: unknown }
-  | { readonly type: "reply"; readonly content: unknown }
+  | { readonly type: "reply"; readonly input: UserInput }
   | { readonly type: "finish"; readonly result?: unknown }
   | { readonly type: "fail"; readonly code: string; readonly message: string; readonly retryable: boolean };
 
@@ -37,7 +37,7 @@ export interface AgentloopTurn {
   model(request: ModelTurnRequest): AgentloopAction;
   tools(calls: readonly ToolCall[]): AgentloopAction;
   emit(event: unknown): AgentloopAction;
-  reply(content: unknown): AgentloopAction;
+  reply(input: UserInput | string): AgentloopAction;
   done(result?: unknown): AgentloopAction;
   fail(code: string, message: string, options?: { readonly retryable?: boolean }): AgentloopAction;
 }
@@ -47,7 +47,7 @@ export interface AgentloopAuthor<Options> {
   readonly options: Options;
   readonly on: {
     start(handler: AgentloopHandler<{ readonly type: "session_started" }>): void;
-    message(handler: AgentloopHandler<{ readonly type: "user_message"; readonly content: unknown }>): void;
+    message(handler: AgentloopHandler<{ readonly type: "user_message"; readonly input: UserInput }>): void;
     model(handler: AgentloopHandler<{ readonly type: "model_completed"; readonly response: ModelResponse }>): void;
     tools(handler: AgentloopHandler<{ readonly type: "tools_completed"; readonly results: readonly unknown[] }>): void;
     event(handler: AgentloopHandler<{ readonly type: "emitted"; readonly event: unknown }>): void;
@@ -537,7 +537,7 @@ export function activateAgentloop(factory: unknown, input: AgentloopInput): { re
   const action = handler === undefined ? defaultAction(input.observation.type) : handler(input.observation as never, turn(input.runtime.logicalTimeMs));
   if (isPromise(action)) throw new TypeError("Agentloop handlers must be synchronous");
   for (let index = 0; index < schemas.length; index += 1) slots[index] = schemas[index]!.parse(slots[index]);
-  if (action.type === "reply") return output(slots, true, action.content, { type: "emit", event: { type: "assistant_message", content: action.content } });
+  if (action.type === "reply") return output(slots, true, action.input, { type: "emit", event: { type: "assistant_message", message: action.input.message } });
   return output(slots, false, undefined, action);
 }
 
@@ -548,7 +548,7 @@ function turn(logicalTimeMs: bigint): AgentloopTurn {
     model: (request: Parameters<AgentloopTurn["model"]>[0]) => ({ type: "model" as const, request }),
     tools: (calls: readonly ToolCall[]) => ({ type: "tools" as const, calls }),
     emit: (event: unknown) => ({ type: "emit" as const, event }),
-    reply: (content: unknown) => ({ type: "reply" as const, content }),
+    reply: (input: UserInput | string) => ({ type: "reply" as const, input: typeof input === "string" ? { message: input } : input }),
     done: (result?: unknown) => ({ type: "finish" as const, ...(result === undefined ? {} : { result }) }),
     fail: (code: string, message: string, options: { readonly retryable?: boolean } = {}) => ({ type: "fail" as const, code, message, retryable: options.retryable ?? false }),
   });

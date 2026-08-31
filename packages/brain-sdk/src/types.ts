@@ -77,6 +77,13 @@ export interface ModelResponse {
   readonly usage: ModelUsage;
 }
 
+/**
+ * What `send` hands the session. The shape is closed on purpose: Brain owes every
+ * agentloop the same observation shape regardless of who wrote the client. Multimodal
+ * parts will extend this record when they land — see the roadmap.
+ */
+export interface UserInput { readonly message: string }
+
 export interface CreateSessionOptions {
   readonly model: ModelSelection;
   readonly agentloop: Agentloop;

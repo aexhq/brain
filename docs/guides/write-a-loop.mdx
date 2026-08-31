@@ -19,8 +19,8 @@ const state = z.object({ messages: z.array(z.unknown()) });
 export const assistant = agentloop({ options }, (author) => {
   const memory = author.state(state, () => ({ messages: [] }));
 
-  author.on.message((message, turn) => {
-    memory.messages.push({ role: "user", content: [{ type: "text", text: String(message.content) }] });
+  author.on.message(({ input }, turn) => {
+    memory.messages.push({ role: "user", content: [{ type: "text", text: input.message }] });
     return turn.model({ messages: memory.messages });
   });
 

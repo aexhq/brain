@@ -76,11 +76,17 @@
         "data": {}
       }
     },
+    "UserInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": { "message": { "type": "string", "minLength": 1 } }
+    },
     "MessageRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["content"],
-      "properties": { "content": {} }
+      "required": ["input"],
+      "properties": { "input": { "$ref": "#/$defs/UserInput" } }
     },
     "EnvironmentCallRequest": {
       "type": "object",

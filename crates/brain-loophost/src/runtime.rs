@@ -183,8 +183,8 @@ fn to_wit_input(
         Observation::SessionStarted { history } => wit::Observation::SessionStarted(
             serde_json::to_string(&history).map_err(|error| error.to_string())?,
         ),
-        Observation::UserMessage { content } => wit::Observation::UserMessage(
-            serde_json::to_string(&content).map_err(|error| error.to_string())?,
+        Observation::UserMessage { input } => wit::Observation::UserMessage(
+            serde_json::to_string(&input).map_err(|error| error.to_string())?,
         ),
         Observation::ModelCompleted { response } => wit::Observation::ModelCompleted(
             serde_json::to_string(&response).map_err(|error| error.to_string())?,

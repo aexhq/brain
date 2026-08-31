@@ -97,13 +97,13 @@ assert.equal(unknownField.response.status, 422);
 
 const sessionId = created.result.session_id;
 const message = await call("POST", `/v1/sessions/${sessionId}/messages`, {
-  body: { content: "finish locally" },
+  body: { input: { message: "finish locally" } },
   key: "http-contract-message",
 });
 assert.equal(message.response.status, 200);
 assert.equal(message.result.status, "idle");
 const replayedMessage = await call("POST", `/v1/sessions/${sessionId}/messages`, {
-  body: { content: "finish locally" },
+  body: { input: { message: "finish locally" } },
   key: "http-contract-message",
 });
 assert.deepEqual(replayedMessage.result, message.result);

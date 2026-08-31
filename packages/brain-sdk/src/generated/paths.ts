@@ -249,8 +249,11 @@ export type components = {
             environments: components["schemas"]["EnvironmentRequirement"][];
             history?: components["schemas"]["HistoryEvent"][];
         };
+        UserInput: {
+            message: string;
+        };
         MessageRequest: {
-            content: unknown;
+            input: components["schemas"]["UserInput"];
         };
         EnvironmentCallRequest: {
             input: unknown;

@@ -26,7 +26,7 @@ let session = creating.complete(sealed_session_config)?;
 
 session
     .message(brain_protocol::MessageRequest {
-        content: serde_json::json!("Explain the current changes."),
+        input: "Explain the current changes.".into(),
     })
     .await?;
 ```

@@ -623,6 +623,9 @@ impl SessionHandle {
     }
 
     pub async fn message(&self, request: MessageRequest) -> Result<Session, KernelError> {
+        if request.input.message.is_empty() {
+            return Err(KernelError::InvalidState("message cannot be empty".into()));
+        }
         if serde_json::to_vec(&request).map_err(json_error)?.len() > 2 * 1024 * 1024 {
             return Err(KernelError::InvalidState(
                 "message request exceeds 2 MiB".into(),
