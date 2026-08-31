@@ -102,7 +102,7 @@ class AppToolRegistry {
     }
     const call = { controller: new AbortController(), cancelled: false };
     this.active.set(frame.call_id, call);
-    const deadlineMs = Math.min(frame.deadline_ms, MAX_DEADLINE_MS);
+    const deadlineMs = frame.deadline_ms > MAX_DEADLINE_MS ? MAX_DEADLINE_MS : frame.deadline_ms;
     const timer = setTimeout(() => call.controller.abort(new Error("call deadline passed")), deadlineMs);
     const interrupted = new Promise<typeof interruption>((resolve) => call.controller.signal.addEventListener("abort", () => resolve(interruption), { once: true }));
     try {

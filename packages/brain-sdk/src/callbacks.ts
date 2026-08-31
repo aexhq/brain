@@ -55,7 +55,7 @@ class PostRouter implements CallbackRouter {
     const body = JSON.stringify(frame);
     const controller = new AbortController();
     let interruption: "timeout" | "cancelled" | undefined;
-    const timer = setTimeout(() => { interruption = "timeout"; controller.abort(); }, Math.min(frame.deadline_ms, MAX_DEADLINE_MS));
+    const timer = setTimeout(() => { interruption = "timeout"; controller.abort(); }, frame.deadline_ms > MAX_DEADLINE_MS ? MAX_DEADLINE_MS : frame.deadline_ms);
     const onAbort = (): void => { interruption = "cancelled"; controller.abort(); };
     signal.addEventListener("abort", onAbort, { once: true });
     try {
@@ -128,7 +128,7 @@ class ChannelRouter implements CallbackRouter {
       timer = setTimeout(() => {
         connection.send({ cancel: frame.call_id });
         settle({ status: "timeout" });
-      }, Math.min(frame.deadline_ms, MAX_DEADLINE_MS));
+      }, frame.deadline_ms > MAX_DEADLINE_MS ? MAX_DEADLINE_MS : frame.deadline_ms);
       signal.addEventListener("abort", onAbort, { once: true });
       connection.send(frame);
     });
