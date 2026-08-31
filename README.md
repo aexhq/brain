@@ -12,15 +12,13 @@
   <a href="https://www.npmjs.com/package/@aexhq/brain"><img alt="npm" src="https://img.shields.io/npm/v/%40aexhq%2Fbrain?label=%40aexhq%2Fbrain" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue" /></a>
   <img alt="Rust" src="https://img.shields.io/badge/rust-1.97%2B-orange" />
-  <a href="https://discord.gg/Qk2YnHMHVb"><img alt="Discord" src="https://img.shields.io/badge/discord-join-5865F2" /></a>
 </p>
 
 <p align="center">
   <a href="https://aex.dev/brain/docs"><strong>Docs</strong></a> ·
   <a href="https://aex.dev/brain/docs/reference/api">API Reference</a> ·
   <a href="https://aex.dev/brain">Website</a> ·
-  <a href="https://github.com/aexhq/extensions">Official extensions</a> ·
-  <a href="https://discord.gg/Qk2YnHMHVb">Discord</a>
+  <a href="https://github.com/aexhq/extensions">Official extensions</a>
 </p>
 
 ## What is it
@@ -39,47 +37,45 @@ Rust service you already own.
 ## Benchmarks
 
 Same machine, same scripted model behind every subject — no model latency in any number. ★ marks
-Brain in each chart.[^bench]
+Brain in each chart.
 
 **Turn round-trip**
 
 ```text
-Brain             █                                     25 ms ★
-ZeroClaw          ██                                    51 ms
-LangGraph Server  ██████████████████████████████      1049 ms
-OpenClaw          ████████████████████████████████████ 1257 ms
+Brain      █                                     25 ms ★
+ZeroClaw   ██                                    51 ms
+LangGraph  ██████████████████████████████      1049 ms
+OpenClaw   ████████████████████████████████████ 1257 ms
 ```
 
 **Time to first token**
 
 ```text
-ZeroClaw          █                                    9.6 ms
-Brain             ██                                   ≤25 ms ★
-LangGraph Server  ████                                48.6 ms
-OpenFang          ██████                              75.8 ms
-OpenClaw          ██████████████████████████████     874.4 ms
+ZeroClaw   █                                    9.6 ms
+Brain      ██                                   ≤25 ms ★
+LangGraph  ████                                48.6 ms
+OpenFang   ██████                              75.8 ms
+OpenClaw   ██████████████████████████████     874.4 ms
 ```
 
 **New session**
 
 ```text
-Brain             ██                                   0.6 ms ★
-LangGraph Server  ███                                  0.7 ms
-ZeroClaw          ██████                               1.9 ms
-OpenClaw          ███████████                          3.7 ms
-OpenFang          ██████████████████████████████      10.3 ms
+Brain      ██                                   0.6 ms ★
+LangGraph  ███                                  0.7 ms
+ZeroClaw   ██████                               1.9 ms
+OpenClaw   ███████████                          3.7 ms
+OpenFang   ██████████████████████████████      10.3 ms
 ```
 
 **Cold start**
 
 ```text
-ZeroClaw    █                                 10 ms
-Brain       ██                                25 ms ★
-OpenFang    ████                             180 ms
-LangGraph   ███████████████                  2.5 s
-CrewAI      █████████████████                3.0 s
-AutoGen     ███████████████████              4.0 s
-OpenClaw    ████████████████████████         5.98 s
+ZeroClaw   █                                 10 ms
+Brain      ██                                25 ms ★
+OpenFang   ████                             180 ms
+LangGraph  ███████████████                  2.5 s
+OpenClaw   ████████████████████████         5.98 s
 ```
 
 **Memory per idle session**
@@ -93,14 +89,16 @@ OpenClaw  ███████████████████████�
 
 Disk stays flat — a 100-turn conversation leaves **0.2 MiB**, the hundredth turn writing the same
 2.3 KiB as the first — and CI enforces bounds on every push: under 256 MiB resident after 10,000
-requests, and a journal held to a small constant multiple of its final context. Earlier figures
-are archived in [BENCHMARKS.md](BENCHMARKS.md).
+requests, and a journal held to a small constant multiple of its final context.
 
-[^bench]: Medians on AWS `c7g.xlarge`, Linux. Brain's first-token figure is an upper bound: under
-    an instant scripted model the turn completes before a delta reaches the stream, so its
-    whole-turn median stands in. Cold-start figures other than Brain's come from each project's
-    own published numbers. Memory bars are log-scaled; Brain's is the marginal cost per
-    additional idle session.
+> **Benchmark setup.** Medians, measured by the harness in [`tools/bench`](tools/bench) on an AWS
+> `c7g.xlarge` (Linux) with the same instant scripted model behind every subject. The LangGraph
+> figures measure LangGraph Server. Brain's first-token figure is an upper bound: the scripted
+> turn completes before a delta reaches the stream, so its whole-turn median stands in. Cold-start
+> figures other than Brain's come from each project's own published numbers. Memory bars are
+> log-scaled, and Brain's is the marginal cost per additional idle session. A subject absent from
+> a chart has no measured figure for that probe. Methodology and the bounds CI enforces are in
+> [BENCHMARKS.md](BENCHMARKS.md).
 
 ## How it works
 
@@ -124,24 +122,25 @@ your app
 ```
 
 Brain owns the session; the agent loop, model, tools, and environment are yours to supply. The
-loop runs in a WebAssembly sandbox with no network, filesystem, secrets, or clock — Brain performs
-every effect, so a decision replays from its position in the journal, and a crashing or hostile
-tool takes down its own sandbox, not the process holding your sessions. Loops compile to Wasm from
-any language; tools and environments speak plain HTTP.
+loop compiles to WebAssembly from any language and runs on [Wasmtime](https://wasmtime.dev/)'s
+component model, with Brain performing every effect on its behalf — which is what makes a
+decision deterministic and replayable from its position in the journal. Tools and environments
+speak plain HTTP, so they run wherever you want them.
 
-What makes it fast is mostly what it refuses to do on the turn's path:
+The runtime itself is Rust end to end, and its speed comes from the architecture rather than
+tuning:
 
-- **Journal behind the turn** — an append is a serialise, an xxh3, and a channel send; no syscall,
-  no fsync. Session state and indexes live in memory.
-- **Record the delta, not the state** — a turn keeps the messages it added, decisions by name, and
-  model output streams once instead of being written down twice.
-- **Everything unbounded got a bound** — a 64 MiB writer queue with backpressure, expiring
-  idempotency records, a wall-clock deadline on the agent loop.
-- **One of everything shared** — one HTTP client to the provider, one buffer per journal frame,
-  one encode per activation, credentials cached.
+- **Rust on [Tokio](https://tokio.rs/)** — the whole runtime is one native async binary, serving
+  the session API over [Axum](https://github.com/tokio-rs/axum) HTTP/SSE.
+- **Memory-resident sessions** — session state and indexes live in memory, backed by an
+  append-only journal written behind the turn, off the hot path.
+- **Pre-compiled agent loops** — a loop compiles once through Wasmtime and activates per decision
+  at native speed.
+- **Streaming end to end** — model output streams through the event feed as it arrives, token by
+  token, instead of being buffered per turn.
 
-Sessions survive a restart best effort, rebuilt from what reached the disk; a session interrupted
-mid-turn comes back with a `turn_interrupted` event and lets the client decide.
+Sessions survive a restart, rebuilt from the journal; a session interrupted mid-turn comes back
+with a `turn_interrupted` event and lets the client decide.
 
 ## Features
 
@@ -149,8 +148,9 @@ mid-turn comes back with a `turn_interrupted` event and lets the client decide.
   a browser driving the DOM, your own backend — and one session can span several at once.
 - **Built for low overhead** — memory-resident session state, appends behind the turn, ~14 KiB
   per idle session, 25 ms round trips. The numbers above are measured, and CI holds them.
-- **Bring your model, spawn your agents** — built-in bindings for the major LLM providers, sealed
-  per session, and sessions that create sessions for subagent work.
+- **Bring your model, spawn your agents** — built-in bindings for 70+ LLM providers via
+  [models.dev](https://models.dev), sealed per session, and sessions that create sessions for
+  subagent work.
 - **Sealed extension execution** — agent loops compile to WebAssembly and run in a standalone
   runtime with no network, filesystem, secrets, or clock; Brain performs every effect.
 - **Observable end to end** — every observation, decision, model intent, and tool result is an
@@ -212,6 +212,7 @@ are welcome.
 - [x] HTTP/SSE session API and the `@aexhq/brain` SDK
 - [x] Remote environment contract with `env-app` and `env-aws-microvm`
 - [ ] Cross-session isolation test
+- [ ] Multimodal input — images and files on `send`
 - [ ] Freeze a v1 API with tagged releases
 - [ ] File access and workspace sync
 - [ ] crates.io publication
@@ -226,8 +227,7 @@ which is what lets an agent loop written in any language run sealed off and repr
 benchmark would mean nothing without the projects it measures — LangGraph, ZeroClaw, OpenFang,
 OpenClaw, Letta, CrewAI, AutoGen, the Microsoft Agent Framework, E2B, Firecracker, Daytona, and
 Modal — and several of them shaped how Brain thinks about what a runtime owes its operator. Thanks
-also to everyone filing issues and testing early builds on
-[Discord](https://discord.gg/Qk2YnHMHVb).
+also to everyone filing issues and testing early builds.
 
 ## License
 

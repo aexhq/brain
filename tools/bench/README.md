@@ -107,9 +107,9 @@ Python only when an arena empties, V8 when GC runs, Go on a scavenger timer — 
 *shape* is that policy and explains itself, while only the trend across repeats is a leak
 signal.
 
-This means the pre-reset "82–86% returned in one cycle" figure is **not reproducible and
-not comparable**. The claim that survives is the one the archive itself called stronger:
-the post-delete floor stops rising.
+A "percent returned in one cycle" figure is therefore **not reproducible and not
+comparable**. The claim that survives is the stronger one: the post-delete floor stops
+rising.
 
 ## Fixtures
 
