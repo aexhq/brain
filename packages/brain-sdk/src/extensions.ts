@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { createCallbackRouter, refuseUpgrade, resolveCallbackRoute, type CallbackRoute, type CallbackRouter } from "./callbacks.js";
 import type { BoundTool, Agentloop, CapabilityName, Environment, ModelMessage, ModelResponse, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition, UserInput } from "./types.js";
 
 const capabilityNames: readonly CapabilityName[] = ["exec", "fs", "net", "js", "page"];
@@ -116,6 +117,13 @@ export interface EnvironmentInstanceAuthor<Instance> {
 export interface EnvironmentAuthor<Options> {
   readonly options: Options;
   open<Instance>(handler: (context: { readonly options: Options; readonly id: string; readonly signal: AbortSignal; readonly requestId: string }) => Instance | Promise<Instance>): EnvironmentInstanceAuthor<Instance>;
+  readonly route: {
+    /** Route callback-hosted tool invocations to the author's app. Without a resolver
+     * the environment terminates the app's outbound WebSocket channel and expects a
+     * `channelToken` string option; a resolver can pick channel or signed-POST mode
+     * from the environment's own options instead. */
+    callbacks(resolve?: (context: { readonly options: Options }) => CallbackRoute): void;
+  };
 }
 type PublicEnvironmentMembers<Members extends Record<string, EnvironmentMember>> = {
   [Name in keyof Members]: Members[Name] extends EnvironmentMethod<infer Input, infer Output>
@@ -134,11 +142,11 @@ interface EnvironmentRegistration {
   readonly cancel?: (context: unknown) => void | Promise<void>;
   readonly detach?: (context: unknown) => void | Promise<void>;
 }
-type EnvironmentSource = { readonly kind: "environment"; readonly options?: Schema; readonly setup: EnvironmentSetup<unknown, Record<string, EnvironmentMember>>; name?: string; runtimeName?: string; readonly members: Readonly<Record<string, EnvironmentMember>>; readonly registration: EnvironmentRegistration };
+type EnvironmentSource = { readonly kind: "environment"; readonly options?: Schema; readonly setup: EnvironmentSetup<unknown, Record<string, EnvironmentMember>>; name?: string; runtimeName?: string; readonly members: Readonly<Record<string, EnvironmentMember>>; readonly registration: EnvironmentRegistration; readonly callbacks?: (context: { readonly options: unknown }) => CallbackRoute };
 type ExtensionFactory = Function & { [extensionSource]?: AgentloopSource | ToolSource | EnvironmentSource };
 
 const agentloops = new WeakMap<object, { readonly artifact: URL | Uint8Array; readonly configuration: unknown }>();
-const tools = new WeakMap<object, { readonly definition: ToolDefinition; readonly implementationName: string; readonly configuration: unknown; readonly requires: readonly CapabilityName[]; readonly bindingNames: readonly string[] }>();
+const tools = new WeakMap<object, { readonly definition: ToolDefinition; readonly implementationName: string; readonly configuration: unknown; readonly requires: readonly CapabilityName[]; readonly bindingNames: readonly string[]; readonly hosting?: "callback" }>();
 const environments = new WeakMap<object, EnvironmentRuntime>();
 const bindings = new WeakMap<object, { readonly tool: Tool; readonly environment: Environment }>();
 const initializedTools = new WeakMap<ToolSource, Promise<void>>();
@@ -202,6 +210,36 @@ export function tool<OptionsSchema extends Schema | undefined, InputSchema exten
   return factory as never;
 }
 
+/**
+ * Declare a callback-hosted tool for session composition: the model sees an ordinary
+ * tool, but the implementation stays in the author's app — the bound environment
+ * routes each invocation there (see `appTools` and `route.callbacks`). The manifest
+ * carries `hosting: "callback"`, no payload, empty `requires`, so it binds anywhere.
+ */
+export function appTool<InputSchema extends Schema, OutputSchema extends Schema | undefined = undefined>(contract: {
+  readonly name: string;
+  readonly description: string;
+  readonly input: InputSchema;
+  readonly output?: OutputSchema;
+}): Tool<SchemaOutput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown> {
+  if (!validIdentifier(contract?.name)) throw new TypeError("appTool needs an identifier-shaped name");
+  if (typeof contract.description !== "string" || contract.description.length === 0 || contract.description.length > 8_192) throw new TypeError("appTool description exceeds its contract bound");
+  const definition: ToolDefinition = Object.freeze({
+    name: contract.name,
+    description: contract.description,
+    inputSchema: Object.freeze(z.toJSONSchema(contract.input) as Record<string, unknown>),
+    ...(contract.output === undefined ? {} : { outputSchema: Object.freeze(z.toJSONSchema(contract.output) as Record<string, unknown>) }),
+  });
+  const instance = { useIn(environment: Environment): BoundTool {
+    if (!environments.has(environment)) throw new TypeError("useIn requires an Environment extension");
+    const bound = Object.freeze({});
+    bindings.set(bound, { tool: instance as Tool, environment });
+    return bound as BoundTool;
+  } } as Tool;
+  tools.set(instance, { definition, implementationName: contract.name, configuration: Object.freeze({}), requires: Object.freeze([]), bindingNames: Object.freeze([]), hosting: "callback" });
+  return Object.freeze(instance) as never;
+}
+
 function collectTool(setup: ToolSetup<unknown, unknown, unknown>): Pick<ToolSource, "initialize" | "run"> {
   let initialize: ToolSource["initialize"];
   let run: ToolSource["run"] | undefined;
@@ -246,12 +284,27 @@ export async function executeTool(factory: unknown, options: unknown, input: unk
   return source.contract.output === undefined ? result : source.contract.output.parse(result);
 }
 
-export function createEnvironmentHandler(factory: unknown): (command: unknown) => Promise<unknown> {
+/** The channel side of a generated environment handler: mount it on the host HTTP
+ * server's `upgrade` event so apps can hold their callback channel to it. */
+export interface EnvironmentChannel {
+  upgrade(request: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head?: Uint8Array): void;
+}
+export type EnvironmentHandler = ((command: unknown) => Promise<unknown>) & { readonly channel: EnvironmentChannel };
+
+interface EnvironmentInstanceState {
+  readonly value: unknown;
+  readonly options: unknown;
+  readonly attachments: Map<string, string>;
+  readonly provisioned: Set<string>;
+  readonly router?: CallbackRouter;
+}
+
+export function createEnvironmentHandler(factory: unknown): EnvironmentHandler {
   const source = sourceOf(factory as ExtensionFactory, "environment") as EnvironmentSource;
-  const instances = new Map<string, { readonly value: unknown; readonly options: unknown; readonly attachments: Map<string, string> }>();
+  const instances = new Map<string, EnvironmentInstanceState>();
   const receipts = new Map<string, { readonly identity: string; readonly response: unknown }>();
   const active = new Map<string, AbortController>();
-  return async (raw: unknown) => {
+  const handler = async (raw: unknown) => {
     const command = environmentCommand(raw);
     const operation = command.operation;
     const prior = receipts.get(operation.operation_id);
@@ -272,7 +325,8 @@ export function createEnvironmentHandler(factory: unknown): (command: unknown) =
           let instance = instances.get(operation.environment_id);
           if (instance === undefined) {
             const value = await source.registration.open({ ...context, id: operation.environment_id, options });
-            instance = { value, options, attachments: new Map() };
+            const router = source.callbacks === undefined ? undefined : createCallbackRouter(resolveCallbackRoute(source.callbacks({ options })));
+            instance = { value, options, attachments: new Map(), provisioned: new Set(), ...(router === undefined ? {} : { router }) };
             instances.set(operation.environment_id, instance);
           }
           receipt = { type: "accepted" };
@@ -282,6 +336,11 @@ export function createEnvironmentHandler(factory: unknown): (command: unknown) =
           const instance = requiredEnvironmentInstance(instances, operation.environment_id);
           if (operation.attachment_id === undefined) throw new TypeError("attach requires an attachment identity");
           if (!plainObject(operation.request.grants) || !Array.isArray(operation.request.provisions) || !plainObject(operation.request.bindings)) throw new TypeError("attach requires grants, provisions, and bindings");
+          // Only provisioned tools arrive as provisions; anything else invoked here is
+          // callback-hosted and belongs to the router, when one is registered.
+          for (const provision of operation.request.provisions) {
+            if (plainObject(provision) && plainObject(provision.manifest) && typeof provision.manifest.name === "string") instance.provisioned.add(provision.manifest.name);
+          }
           instance.attachments.set(operation.attachment_id, operation.session_id);
           await source.registration.attach?.({ ...context, instance: instance.value, sessionId: operation.session_id });
           // Generated environments implement no capability providers yet, so they
@@ -292,6 +351,16 @@ export function createEnvironmentHandler(factory: unknown): (command: unknown) =
         case "invoke": {
           const instance = authorizedEnvironmentInstance(instances, operation);
           if (typeof operation.request.call_id !== "string" || typeof operation.request.tool !== "string") throw new TypeError("Environment Tool invocation is invalid");
+          if (instance.router !== undefined && !instance.provisioned.has(operation.request.tool)) {
+            const deadline = operation.request.deadline_ms;
+            if (typeof deadline !== "number" || !Number.isInteger(deadline) || deadline < 1) throw new TypeError("Environment Tool invocation needs a deadline");
+            const outcome = await instance.router.invoke(
+              { call_id: operation.request.call_id, name: operation.request.tool, arguments: operation.request.input, deadline_ms: deadline },
+              controller.signal,
+            );
+            receipt = { type: "outcome", outcome };
+            break;
+          }
           // A tool that ran and failed is an in-band error outcome; the outer catch
           // stays for operations that never reached the tool.
           try {
@@ -337,6 +406,7 @@ export function createEnvironmentHandler(factory: unknown): (command: unknown) =
         case "teardown": {
           const instance = requiredEnvironmentInstance(instances, operation.environment_id);
           if (instance.attachments.size > 0) throw new Error("cannot close an Environment with active attachments");
+          instance.router?.close();
           await source.registration.close({ ...context, instance: instance.value });
           instances.delete(operation.environment_id);
           receipt = { type: "accepted" };
@@ -353,6 +423,15 @@ export function createEnvironmentHandler(factory: unknown): (command: unknown) =
     receipts.set(operation.operation_id, { identity: operation.request_identity, response });
     return response;
   };
+  const channel: EnvironmentChannel = {
+    upgrade(request, socket, head = new Uint8Array(0)) {
+      const pathname = new URL(request.url ?? "/", "http://environment").pathname;
+      const candidates = [...instances.entries()].filter(([, instance]) => instance.router !== undefined);
+      const match = candidates.find(([id]) => pathname.endsWith(`/environments/${id}/channel`)) ?? (candidates.length === 1 ? candidates[0] : undefined);
+      if (match === undefined || match[1].router?.upgrade(request, socket, head) !== true) refuseUpgrade(socket, 404, "no callback channel here");
+    },
+  };
+  return Object.assign(handler, { channel });
 }
 
 interface RuntimeEnvironmentOperation {
@@ -372,13 +451,13 @@ function environmentCommand(raw: unknown): { readonly operation: RuntimeEnvironm
   return { operation: operation as unknown as RuntimeEnvironmentOperation };
 }
 
-function requiredEnvironmentInstance(instances: Map<string, { readonly value: unknown; readonly options: unknown; readonly attachments: Map<string, string> }>, id: string) {
+function requiredEnvironmentInstance(instances: Map<string, EnvironmentInstanceState>, id: string) {
   const instance = instances.get(id);
   if (instance === undefined) throw new Error(`Environment ${id} is not open`);
   return instance;
 }
 
-function authorizedEnvironmentInstance(instances: Map<string, { readonly value: unknown; readonly options: unknown; readonly attachments: Map<string, string> }>, operation: RuntimeEnvironmentOperation) {
+function authorizedEnvironmentInstance(instances: Map<string, EnvironmentInstanceState>, operation: RuntimeEnvironmentOperation) {
   const instance = requiredEnvironmentInstance(instances, operation.environment_id);
   if (operation.attachment_id === undefined || instance.attachments.get(operation.attachment_id) !== operation.session_id) throw new Error("Environment attachment does not authorize this session");
   return instance;
@@ -431,19 +510,30 @@ export function environment<OptionsSchema extends Schema, Members extends Record
     environments.set(instance, runtime);
     return Object.freeze(instance);
   }) as ExtensionFactory;
-  defineSource(factory, { kind: "environment", ...(optionsSchema === undefined ? {} : { options: optionsSchema }), setup: setup as EnvironmentSetup<unknown, Record<string, EnvironmentMember>>, members, registration: collected.registration });
+  defineSource(factory, { kind: "environment", ...(optionsSchema === undefined ? {} : { options: optionsSchema }), setup: setup as EnvironmentSetup<unknown, Record<string, EnvironmentMember>>, members, registration: collected.registration, ...(collected.callbacks === undefined ? {} : { callbacks: collected.callbacks }) });
   return factory as never;
 }
 
-function collectEnvironment(setup: EnvironmentSetup<unknown, Record<string, EnvironmentMember>>): { readonly members: Readonly<Record<string, EnvironmentMember>>; readonly registration: EnvironmentRegistration } {
+function collectEnvironment(setup: EnvironmentSetup<unknown, Record<string, EnvironmentMember>>): { readonly members: Readonly<Record<string, EnvironmentMember>>; readonly registration: EnvironmentRegistration; readonly callbacks?: (context: { readonly options: unknown }) => CallbackRoute } {
   let open: EnvironmentRegistration["open"] | undefined;
   let run: EnvironmentRegistration["run"] | undefined;
   let close: EnvironmentRegistration["close"] | undefined;
   let attach: EnvironmentRegistration["attach"];
   let cancel: EnvironmentRegistration["cancel"];
   let detach: EnvironmentRegistration["detach"];
+  let callbacks: ((context: { readonly options: unknown }) => CallbackRoute) | undefined;
   const author: EnvironmentAuthor<unknown> = {
     options: Object.freeze({}),
+    route: {
+      callbacks(resolve) {
+        if (callbacks !== undefined) throw new TypeError("environment may register route.callbacks only once");
+        callbacks = resolve ?? (({ options }) => {
+          const token = plainObject(options) ? options.channelToken : undefined;
+          if (typeof token !== "string" || token.length === 0) throw new TypeError("route.callbacks() without a resolver needs a channelToken string option");
+          return { mode: "channel", token };
+        });
+      },
+    },
     open<Instance>(handler: (context: { readonly options: unknown; readonly id: string; readonly signal: AbortSignal; readonly requestId: string }) => Instance | Promise<Instance>) {
       if (open !== undefined) throw new TypeError("environment may register open only once");
       open = handler as EnvironmentRegistration["open"];
@@ -474,7 +564,7 @@ function collectEnvironment(setup: EnvironmentSetup<unknown, Record<string, Envi
   for (const [name, member] of Object.entries(members)) {
     if (!validIdentifier(name) || !plainObject(member) || (member.kind !== "method" && member.kind !== "stream")) throw new TypeError(`Environment member ${name} must be created with method or stream`);
   }
-  return { members: Object.freeze({ ...members }), registration: { open, run, close, ...(attach === undefined ? {} : { attach }), ...(cancel === undefined ? {} : { cancel }), ...(detach === undefined ? {} : { detach }) } };
+  return { members: Object.freeze({ ...members }), registration: { open, run, close, ...(attach === undefined ? {} : { attach }), ...(cancel === undefined ? {} : { cancel }), ...(detach === undefined ? {} : { detach }) }, ...(callbacks === undefined ? {} : { callbacks }) };
 }
 
 export function installExtensionIdentity(factory: unknown, name: string, artifact?: URL | Uint8Array, runtimeName?: string): void {
@@ -496,7 +586,7 @@ export function inspectAgentloop(value: Agentloop): { readonly artifact: URL | U
   return metadata;
 }
 
-export function inspectBoundTool(value: BoundTool): { readonly definition: ToolDefinition; readonly implementationName: string; readonly configuration: unknown; readonly requires: readonly CapabilityName[]; readonly bindingNames: readonly string[]; readonly environment: Environment } {
+export function inspectBoundTool(value: BoundTool): { readonly definition: ToolDefinition; readonly implementationName: string; readonly configuration: unknown; readonly requires: readonly CapabilityName[]; readonly bindingNames: readonly string[]; readonly hosting?: "callback"; readonly environment: Environment } {
   const binding = bindings.get(value);
   const metadata = binding === undefined ? undefined : tools.get(binding.tool);
   if (binding === undefined || metadata === undefined) throw new TypeError("tools must be configured with useIn");

@@ -1,4 +1,4 @@
 {
   "title": "Guides",
-  "pages": ["write-a-loop", "write-a-tool", "write-an-environment", "embed"]
+  "pages": ["write-a-loop", "write-a-tool", "app-tools", "write-an-environment", "embed"]
 }

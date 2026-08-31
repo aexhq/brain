@@ -176,6 +176,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
       ...(bound.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(bound.definition.outputSchema) }),
       requires: [...bound.requires],
       binding_names: [...bound.bindingNames],
+      ...(bound.hosting === undefined ? {} : { hosting: bound.hosting }),
       environment_id: environmentId,
     });
   }
