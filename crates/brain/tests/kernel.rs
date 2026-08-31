@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -985,7 +985,7 @@ impl ToolExecutor for ScriptedOutcome {
 }
 
 fn kernel_with(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     loop_executor: Arc<dyn LoopExecutor>,
     tool_executor: Arc<dyn ToolExecutor>,
     tool_deadline_ms: u64,
@@ -993,7 +993,7 @@ fn kernel_with(
     let (publisher, _worker) = telemetry_channel();
     Kernel::open(
         KernelConfig {
-            data_dir: data_dir.clone(),
+            data_dir: data_dir.to_path_buf(),
             max_decisions_per_turn: 8,
             tool_deadline_ms,
             loop_executor,
