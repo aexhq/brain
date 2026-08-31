@@ -167,12 +167,12 @@ docker run --rm -p 8080:8080 -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:la
 Drive a session from TypeScript:
 
 ```sh
-npm install @aexhq/brain @aexhq/brain-pi
+npm install @aexhq/brain @aexhq/agentloop-pi
 ```
 
 ```ts
 import { Brain } from "@aexhq/brain";
-import { pi } from "@aexhq/brain-pi";
+import { pi } from "@aexhq/agentloop-pi";
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
 
