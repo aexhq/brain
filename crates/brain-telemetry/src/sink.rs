@@ -4,8 +4,10 @@ use crate::TelemetryRecord;
 
 #[async_trait]
 pub trait TelemetrySink: Send + Sync + 'static {
-    async fn publish(
+    /// Accept one ordered batch. Returning an error retries the whole batch, so sinks
+    /// must make duplicate delivery harmless.
+    async fn publish_batch(
         &self,
-        record: &TelemetryRecord,
+        records: &[TelemetryRecord],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }

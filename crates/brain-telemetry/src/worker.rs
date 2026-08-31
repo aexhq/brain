@@ -36,13 +36,14 @@ impl TelemetryWorker {
                 self.queue
                     .lock()
                     .expect("telemetry queue mutex poisoned")
-                    .pop()
+                    .drain()
             };
-            let Some(queued) = queued else {
+            if queued.is_empty() {
                 self.notify.notified().await;
                 continue;
-            };
-            self.metrics.removed(queued.bytes);
+            }
+            self.metrics
+                .removed(queued.len(), queued.iter().map(|record| record.bytes).sum());
             self.deliver(&sink, queued, MAX_RETRY_AGE).await;
         }
     }
@@ -50,17 +51,28 @@ impl TelemetryWorker {
     async fn deliver(
         &self,
         sink: &Arc<dyn TelemetrySink>,
-        queued: QueuedRecord,
+        queued: Vec<QueuedRecord>,
         max_retry_age: Duration,
     ) {
+        let enqueued_at = queued
+            .first()
+            .expect("delivery batches are never empty")
+            .enqueued_at;
+        let records = queued
+            .iter()
+            .map(|queued| queued.record.clone())
+            .collect::<Vec<_>>();
         let mut attempt = 0;
         loop {
-            if sink.publish(&queued.record).await.is_ok() {
+            if sink.publish_batch(&records).await.is_ok() {
                 return;
             }
-            let Some(delay) = retry_delay(attempt, queued.enqueued_at, max_retry_age) else {
-                self.metrics.dropped();
-                if queued.record.name != DELIVERY_DROPPED_NAME {
+            let Some(delay) = retry_delay(attempt, enqueued_at, max_retry_age) else {
+                self.metrics.dropped_by(queued.len());
+                for queued in &queued {
+                    if queued.record.name == DELIVERY_DROPPED_NAME {
+                        continue;
+                    }
                     let accepted = self
                         .queue
                         .lock()
@@ -98,11 +110,16 @@ mod tests {
     struct FailingSink {
         failures: usize,
         attempts: AtomicUsize,
+        records: AtomicUsize,
     }
 
     #[async_trait]
     impl TelemetrySink for FailingSink {
-        async fn publish(&self, _: &TelemetryRecord) -> Result<(), Box<dyn Error + Send + Sync>> {
+        async fn publish_batch(
+            &self,
+            records: &[TelemetryRecord],
+        ) -> Result<(), Box<dyn Error + Send + Sync>> {
+            self.records.store(records.len(), Ordering::Relaxed);
             let attempt = self.attempts.fetch_add(1, Ordering::Relaxed);
             if attempt < self.failures {
                 Err("sink unavailable".into())
@@ -124,25 +141,28 @@ mod tests {
         }
     }
 
-    fn pop(worker: &TelemetryWorker) -> QueuedRecord {
+    fn drain(worker: &TelemetryWorker) -> Vec<QueuedRecord> {
         let queued = worker
             .queue
             .lock()
             .expect("telemetry queue mutex poisoned")
-            .pop()
-            .expect("test record is queued");
-        worker.metrics.removed(queued.bytes);
+            .drain();
+        worker
+            .metrics
+            .removed(queued.len(), queued.iter().map(|record| record.bytes).sum());
         queued
     }
 
     #[tokio::test]
-    async fn retries_a_transient_sink_failure() {
+    async fn batches_records_and_retries_a_transient_sink_failure() {
         let (publisher, worker) = telemetry_channel();
         assert!(publisher.try_publish(record()));
-        let queued = pop(&worker);
+        assert!(publisher.try_publish(record()));
+        let queued = drain(&worker);
         let sink = Arc::new(FailingSink {
             failures: 2,
             attempts: AtomicUsize::new(0),
+            records: AtomicUsize::new(0),
         });
         worker
             .deliver(
@@ -152,32 +172,37 @@ mod tests {
             )
             .await;
         assert_eq!(sink.attempts.load(Ordering::Relaxed), 3);
+        assert_eq!(sink.records.load(Ordering::Relaxed), 2);
         assert_eq!(publisher.metrics().dropped_records(), 0);
+        assert_eq!(publisher.metrics().queued_records(), 0);
     }
 
     #[tokio::test]
     async fn reports_retry_exhaustion_without_recursive_dead_letters() {
         let (publisher, worker) = telemetry_channel();
         assert!(publisher.try_publish(record()));
+        assert!(publisher.try_publish(record()));
         let sink: Arc<dyn TelemetrySink> = Arc::new(FailingSink {
             failures: usize::MAX,
             attempts: AtomicUsize::new(0),
+            records: AtomicUsize::new(0),
         });
-        worker.deliver(&sink, pop(&worker), Duration::ZERO).await;
-        assert_eq!(publisher.metrics().dropped_records(), 1);
-        let dead_letter = pop(&worker);
-        assert_eq!(dead_letter.record.name, DELIVERY_DROPPED_NAME);
-        assert_eq!(dead_letter.record.payload, b"turn_finished");
-
-        worker.deliver(&sink, dead_letter, Duration::ZERO).await;
+        worker.deliver(&sink, drain(&worker), Duration::ZERO).await;
         assert_eq!(publisher.metrics().dropped_records(), 2);
+        let dead_letters = drain(&worker);
+        assert_eq!(dead_letters.len(), 2);
+        assert_eq!(dead_letters[0].record.name, DELIVERY_DROPPED_NAME);
+        assert_eq!(dead_letters[0].record.payload, b"turn_finished");
+
+        worker.deliver(&sink, dead_letters, Duration::ZERO).await;
+        assert_eq!(publisher.metrics().dropped_records(), 4);
         assert!(
             worker
                 .queue
                 .lock()
                 .expect("telemetry queue mutex poisoned")
-                .pop()
-                .is_none()
+                .drain()
+                .is_empty()
         );
     }
 }

@@ -48,3 +48,14 @@ is admitted, and both hold the request to the same contract the server's callers
 When a session is admitted, when it is resident, when it is recovered, when it is evicted. Where
 environments live and how they are found. Everything about product policy. The runtime has opinions
 about correctness, not about your architecture.
+
+## Telemetry delivery
+
+The telemetry channel is bounded and never holds up a turn. Its worker drains queued records into
+ordered batches and retries a rejected batch for up to 30 seconds. A sink may therefore receive a
+batch more than once and must make duplicates harmless. Exhausted deliveries are counted and
+reported through `telemetry_delivery_dropped` records when the queue still has room.
+
+Telemetry remains best effort. For resumable event forwarding, consume the session event endpoint,
+save its sequence cursor after the destination acknowledges a batch, and reconnect from that cursor.
+The journal, rather than the telemetry queue, is the durable record.
