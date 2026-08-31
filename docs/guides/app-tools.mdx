@@ -1,0 +1,118 @@
+---
+title: Host a Tool in your app
+description: Callback tools run in your own process; the environment routes each call to them.
+---
+
+A provisioned tool ships its code to an environment. A callback tool does the opposite: the
+function stays in your app — closing over your state, your secrets, your database client — and
+the bound environment routes each invocation to it. Brain cannot tell the difference: both
+hostings answer `invoke {call_id, tool, input, deadline_ms}` with the same outcome —
+`ok | error | timeout | cancelled`.
+
+The registration shape is identical in both directions; only the transport differs.
+
+## Backend app: mount a handler
+
+A backend can listen, so the environment POSTs invocations to it, HMAC-signed with a key you
+share through the environment's configuration:
+
+```ts
+import { appTools } from "@aexhq/brain";
+import { z } from "zod";
+
+const tools = appTools({ signingKey: process.env.AEX_SIGNING_KEY });
+
+tools.register({
+  name: "create_invoice",
+  description: "Create an invoice in this app.",
+  input: z.object({ customer_id: z.string(), amount_cents: z.number().int() }),
+  output: z.object({ invoice_id: z.string() }),
+}, async (input) => billing.createInvoice(input));   // closes over app state + secrets
+
+export default tools.fetchHandler();                  // a WHATWG fetch handler; mount it anywhere
+```
+
+The handler verifies the signature over the raw body before anything else: an unsigned or
+tampered request is a 401 and a malformed one a 400, and neither ever reaches your function.
+A schema-invalid input, a thrown error, or a broken output contract each become an in-band
+error outcome. The handler races your function against `deadline_ms` and honors best-effort
+cancellation (`{cancel: call_id}` on the same endpoint) through the `signal` it hands you.
+
+## Browser or laptop: hold the channel outward
+
+A page cannot listen, so it connects out to the environment's channel endpoint and answers
+invocation frames over the socket. Registration is the same:
+
+```ts
+import { appTools } from "@aexhq/brain";
+import { z } from "zod";
+
+const tools = appTools.connect({ url: "wss://runtime.example/environments/app/channel", token });
+
+tools.register({
+  name: "highlight_row",
+  description: "Highlight a row in the visible grid.",
+  input: z.object({ row: z.number().int() }),
+}, async ({ row }) => grid.highlight(row));
+```
+
+The channel reconnects with backoff after a drop and is silent-safe: while it is down, the
+environment answers invocations immediately with a typed `app_disconnected` error — nothing
+hangs on either side. `tools.close()` ends it deliberately.
+
+## The environment side: `route.callbacks()`
+
+Whichever direction the transport runs, an environment declares that it routes callback
+invocations with one line:
+
+```ts
+export const app = environment({ options: z.object({ channelToken: z.string() }) }, (author) => {
+  const instance = author.open(async () => ({}));
+  instance.run(async () => undefined);
+  instance.close(async () => undefined);
+  author.route.callbacks();   // terminates the app's channel; token from options.channelToken
+  return {};
+});
+```
+
+Without a resolver the environment terminates the app's outbound WebSocket, authenticated by
+the `channelToken` option; its host server mounts the endpoint in one line:
+
+```ts
+server.on("upgrade", (request, socket, head) => handle.channel.upgrade(request, socket, head));
+```
+
+For a backend app, a resolver picks signed-POST mode from the environment's own options
+instead:
+
+```ts
+author.route.callbacks(({ options }) => ({ mode: "post", url: options.appUrl, signingKey: options.signingKey }));
+```
+
+Either way the environment enforces `deadline_ms` itself — an overdue call becomes a `timeout`
+outcome and a best-effort cancel travels down to the app — and an unreachable or disconnected
+app is a typed error outcome, never a hang.
+
+## Composing a session
+
+At create, a callback tool is schema only — `hosting: "callback"`, no payload, empty
+`requires`, so it binds to any environment:
+
+```ts
+import { appTool } from "@aexhq/brain";
+
+await brain.sessions.create({
+  model, agentloop: pi(),
+  tools: [
+    bash.useIn(vm),                                   // provisioned: code ships to the vm
+    appTool({
+      name: "create_invoice",
+      description: "Create an invoice in this app.",
+      input: z.object({ customer_id: z.string(), amount_cents: z.number().int() }),
+    }).useIn(app),                                    // callback: code stays home
+  ],
+});
+```
+
+The declared schema must match what the app registered — `tools.manifests()` returns the
+callback manifests so the two can share one source of truth.

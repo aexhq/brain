@@ -51,6 +51,18 @@ process holding your sessions.
 That is also why a tool can be anything with an address: a sandbox VM, a browser tab, a service you
 already run, or a process on the user's own laptop.
 
+## Two hostings, one envelope
+
+The manifest's `hosting` axis says where the implementation lives; the invocation envelope does
+not change.
+
+- **Provisioned** (the default): the tool is a built artifact the environment executes.
+- **Callback**: the code stays in the author's own app — declared with
+  [`appTool`](/brain/docs/guides/app-tools) at create, registered with `appTools` in the app —
+  and the bound environment routes each invocation there: signed POSTs to a backend, or down
+  the outbound channel a browser page holds open. Secrets and app state never leave the app;
+  the trade is availability, which follows the app being up and connected.
+
 ## Splitting presentation from execution
 
 Because the two halves are independent, the same `read` the model sees can be bound to a MicroVM in
