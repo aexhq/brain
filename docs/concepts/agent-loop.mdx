@@ -1,16 +1,16 @@
 ---
-title: Brain extension
+title: Agent loop
 description: The deterministic policy that owns context and decides what happens next.
 ---
 
-A Brain extension receives what just happened and returns one durable action. Its registration
+An agent loop receives what just happened and returns one durable action. Its registration
 shape is the same as every other extension:
 
 ```ts
-import { brain } from "@aexhq/brain";
+import { agentloop } from "@aexhq/brain";
 import { z } from "zod";
 
-export const simple = brain((author) => {
+export const simple = agentloop((author) => {
   const memory = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
 
   author.on.message((message, turn) => {

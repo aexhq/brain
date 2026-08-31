@@ -1,7 +1,7 @@
-import { brain } from "@aexhq/brain";
+import { agentloop } from "@aexhq/brain";
 import { z } from "zod";
 
-export const example = brain((author) => {
+export const example = agentloop((author) => {
   const state = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
   author.on.message((message, turn) => {
     const text = typeof message.content === "string" ? message.content : JSON.stringify(message.content);

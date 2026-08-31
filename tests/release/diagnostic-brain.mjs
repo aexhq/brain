@@ -1,7 +1,7 @@
-import { brain } from "@aexhq/brain";
+import { agentloop } from "@aexhq/brain";
 import { z } from "zod";
 
-export const diagnostic = brain((author) => {
+export const diagnostic = agentloop((author) => {
   const state = author.state(z.object({ activations: z.number().int().nonnegative() }), () => ({ activations: 0 }));
   author.on.message((message, turn) => {
     state.activations += 1;

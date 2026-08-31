@@ -40,8 +40,8 @@ try {
   );
   writeFileSync(
     join(directory, "extension.mjs"),
-    `import { brain } from "@aexhq/brain";\n` +
-      `export const simple = brain((author) => { author.on.message((_message, turn) => turn.done()); });\n`,
+    `import { agentloop } from "@aexhq/brain";\n` +
+      `export const simple = agentloop((author) => { author.on.message((_message, turn) => turn.done()); });\n`,
   );
   run(["install", "--no-audit", "--no-fund"], directory);
   run(["audit", "--audit-level=high"], directory);
@@ -56,7 +56,7 @@ try {
       `const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });\n` +
       `assert.equal(typeof brain.sessions.create, "function");\n` +
       `assert.deepEqual(Object.keys(simple()), []);\n` +
-      `await assert.rejects(brain.sessions.create({ model: { provider: "vercel-ai-gateway", name: "openai/test", apiKey: "test" }, brain: simple() }), /validated Brain reached fetch/u);\n` +
+      `await assert.rejects(brain.sessions.create({ model: { provider: "vercel-ai-gateway", name: "openai/test", apiKey: "test" }, agentloop: simple() }), /validated Brain reached fetch/u);\n` +
       `assert.equal(typeof brainSdk.tool, "function");\n` +
       `assert.equal(typeof brainSdk.environment, "function");\n` +
       `assert.equal("DurableEventBridge" in brainSdk, false);\n`,

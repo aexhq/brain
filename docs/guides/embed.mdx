@@ -1,5 +1,5 @@
 ---
-title: Embed the kernel
+title: Embed the runtime
 description: Run sessions inside a Rust service you already own.
 ---
 
@@ -34,17 +34,17 @@ session
 ## You supply the ports
 
 `loop_executor`, `model_executor`, and `tool_executor` are the same seams the server fills in. Fill
-them differently and you get a different deployment without forking the kernel: your own storage,
+them differently and you get a different deployment without forking the runtime: your own storage,
 your own transport, your own placement.
 
-## What the kernel keeps
+## What the runtime keeps
 
-Writes still land before effects, and recovery still works the same way. The kernel does not become
+Writes still land before effects, and recovery still works the same way. The runtime does not become
 more permissive because it is embedded: `begin_session` and `complete` are the only ways a session
 is admitted, and both hold the request to the same contract the server's callers meet.
 
 ## What stays yours
 
 When a session is admitted, when it is resident, when it is recovered, when it is evicted. Where
-environments live and how they are found. Everything about product policy. The kernel has opinions
+environments live and how they are found. Everything about product policy. The runtime has opinions
 about correctness, not about your architecture.

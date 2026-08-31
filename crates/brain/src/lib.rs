@@ -1,4 +1,4 @@
-//! Minimal durable session kernel. Runtime composition belongs to `brain-server`.
+//! Minimal durable session runtime. Runtime composition belongs to `brain-server`.
 
 pub mod agentloop;
 pub mod context;

@@ -15,15 +15,41 @@ pub struct ModelPresentation {
     pub response_format: Option<serde_json::Value>,
 }
 
+/// The admitted loop package a session runs: which one, and how it is configured.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentloopRef {
+    pub identity: AgentloopIdentity,
+    pub configuration: serde_json::Value,
+}
+
+/// One tool as the SDK hands it over: what the model sees and where the call goes,
+/// in a single entry. Brain splits the two halves internally.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    pub environment_id: EnvironmentId,
+    pub remote_tool_id: String,
+    pub configuration: serde_json::Value,
+    pub grant: serde_json::Value,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSessionRequest {
-    pub agentloop_identity: AgentloopIdentity,
-    pub brain_configuration: serde_json::Value,
+    pub agentloop: AgentloopRef,
     pub model: ModelSelection,
-    pub presentation: ModelPresentation,
+    #[serde(default)]
+    pub system: String,
+    pub tools: Vec<BoundTool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<serde_json::Value>,
     pub environments: Vec<EnvironmentRequirement>,
-    pub tool_bindings: Vec<RequestedToolBinding>,
     /// Prior events for this conversation, if the caller kept them.
     ///
     /// A session does not outlive the process that made it, so an application that wants
@@ -104,8 +130,12 @@ pub struct Session {
     pub session_id: SessionId,
     pub journal_id: JournalId,
     pub status: SessionStatus,
-    pub through_sequence: u64,
-    pub presentation_identity: Identity,
+    /// Sequence of the last journal record committed for this session — the journal is
+    /// complete through here, so it is where a `GET /events` cursor starts.
+    pub last_sequence: u64,
+    /// Hash of everything this session was sealed with: agentloop configuration, system
+    /// prompt, tool definitions, and response format. Stable for the session's life.
+    pub config_hash: Identity,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -39,11 +39,11 @@ const session = await brain.sessions.create({
     name: "gpt-5-mini",
     apiKey: process.env.OPENAI_API_KEY!,
   },
-  brain: pi(),
+  agentloop: pi(),
   system: "Answer briefly and directly.",
 });
 
-await session.send("Explain what a session kernel does, in one sentence.");
+await session.send("Explain what a session runtime does, in one sentence.");
 
 for await (const event of session.events()) {
   console.log(event.sequence, event.type, event.data);

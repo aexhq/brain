@@ -643,8 +643,8 @@ impl SessionActor {
             session_id: self.row.session_id.clone(),
             journal_id: self.row.journal_id.clone(),
             status: self.row.status.clone(),
-            through_sequence: self.row.through_sequence,
-            presentation_identity: self.row.presentation_identity,
+            last_sequence: self.row.through_sequence,
+            config_hash: self.row.presentation_identity,
         }
     }
 }

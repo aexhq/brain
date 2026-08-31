@@ -15,7 +15,7 @@ const created = await brain.sessions.create({
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
     apiKey,
   },
-  brain: example(),
+  agentloop: example(),
 });
 
 console.log("created", created.state);

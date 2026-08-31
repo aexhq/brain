@@ -263,7 +263,7 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Prepare the raw HTTP client and deployed journal shape
+      - name: Prepare the raw HTTP client
         shell: bash
         run: |
           set -euo pipefail
@@ -275,24 +275,8 @@ jobs:
           npm install --ignore-scripts --save-exact "$sdk" zod@4.4.3
           npx brain build diagnostic-brain.mjs --out built
           npm audit --audit-level=high
-          python3 - "$RUNNER_TEMP/http-data/brain.sqlite3" <<'PY'
-          import sqlite3
-          import sys
-          connection = sqlite3.connect(sys.argv[1])
-          connection.execute("""CREATE TABLE sessions (
-            session_id TEXT PRIMARY KEY,
-            journal_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            through_sequence INTEGER NOT NULL,
-            configuration_json TEXT NOT NULL,
-            context_json TEXT NOT NULL,
-            presentation_digest TEXT NOT NULL,
-            metadata_json TEXT NOT NULL
-          )""")
-          connection.close()
-          PY
           sudo chown -R 10001:10001 "$RUNNER_TEMP/http-data"
-      - name: Run the candidate image through raw HTTP after an in-place upgrade
+      - name: Run the candidate image through raw HTTP on a mounted data volume
         shell: bash
         env:
           BRAIN_API_TOKEN: release-http-token

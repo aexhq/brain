@@ -1,11 +1,11 @@
 export { BrainClient as Brain, BrainClient, SessionHandle, Sessions } from "./client.js";
 export type { BrainOptions } from "./client.js";
-export { activateBrain, brain, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, tool } from "./extensions.js";
+export { activateAgentloop, agentloop, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, tool } from "./extensions.js";
 export type {
-  BrainAction,
-  BrainAuthor,
-  BrainInput,
-  BrainTurn,
+  AgentloopAction,
+  AgentloopAuthor,
+  AgentloopInput,
+  AgentloopTurn,
   EnvironmentAuthor,
   EnvironmentInstanceAuthor,
   EnvironmentMethod,
@@ -17,8 +17,8 @@ export type {
 } from "./extensions.js";
 export { BrainError } from "./errors.js";
 export type {
+  Agentloop,
   BoundTool,
-  BrainExtension,
   CreateSessionOptions,
   CustomProviderModel,
   Environment,

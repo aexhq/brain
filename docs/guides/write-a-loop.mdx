@@ -1,6 +1,6 @@
 ---
-title: Write a Brain extension
-description: Register synchronous hooks and build a portable Brain artifact.
+title: Write an agent loop
+description: Register synchronous hooks and build a portable agent loop artifact.
 ---
 
 Install Brain and Zod, then export a named definition from `src/index.ts`:
@@ -10,13 +10,13 @@ npm install @aexhq/brain zod
 ```
 
 ```ts
-import { brain } from "@aexhq/brain";
+import { agentloop } from "@aexhq/brain";
 import { z } from "zod";
 
 const options = z.object({ instructions: z.string().default("Be helpful.") });
 const state = z.object({ messages: z.array(z.unknown()) });
 
-export const assistant = brain({ options }, (author) => {
+export const assistant = agentloop({ options }, (author) => {
   const memory = author.state(state, () => ({ messages: [] }));
 
   author.on.message((message, turn) => {
@@ -41,15 +41,15 @@ Build every named extension export with one command:
 npx brain build
 ```
 
-Applications import the generated factory and pass it under `brain`:
+Applications import the generated factory and pass it under `agentloop`:
 
 ```ts
 const session = await client.sessions.create({
-  brain: assistant({ instructions: "Answer briefly." }),
+  agentloop: assistant({ instructions: "Answer briefly." }),
   model,
 });
 ```
 
-Registration and Brain handlers are synchronous. Return `turn.model`, `turn.tools`, `turn.emit`,
+Registration and agent loop handlers are synchronous. Return `turn.model`, `turn.tools`, `turn.emit`,
 `turn.reply`, `turn.done`, or `turn.fail`. Ordinary deterministic packages can be bundled. I/O and
 async work belong in Tools and Environments.

@@ -27,8 +27,8 @@ impl From<&SessionRow> for Session {
             session_id: row.session_id.clone(),
             journal_id: row.journal_id.clone(),
             status: row.status.clone(),
-            through_sequence: row.through_sequence,
-            presentation_identity: row.presentation_identity,
+            last_sequence: row.through_sequence,
+            config_hash: row.presentation_identity,
         }
     }
 }

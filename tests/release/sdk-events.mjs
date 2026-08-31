@@ -15,14 +15,14 @@ const session = await brain.sessions.create({
     name: "openai/gpt-5-mini",
     apiKey: "release-smoke-key",
   },
-  brain: diagnostic(),
+  agentloop: diagnostic(),
 });
 await session.send("first turn");
 await session.send("second turn");
 
 const complete = [];
 for await (const event of session.events()) complete.push(event);
-assert.equal(complete.at(-1)?.sequence, session.state.throughSequence);
+assert.equal(complete.at(-1)?.sequence, session.state.lastSequence);
 const finished = complete.filter(({ type }) => type === "turn_finished");
 assert.equal(finished.length, 2);
 
@@ -33,7 +33,7 @@ assert.deepEqual(
   suffix.map(({ type }) => type),
   ["turn_started", "activation_intent", "activation_result", "turn_finished"],
 );
-assert.equal(suffix.at(-1)?.sequence, session.state.throughSequence);
+assert.equal(suffix.at(-1)?.sequence, session.state.lastSequence);
 
 const streamed = [];
 for await (const event of session.events(cursor)) streamed.push(event);

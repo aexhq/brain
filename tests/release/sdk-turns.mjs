@@ -15,7 +15,7 @@ const session = await brain.sessions.create({
     name: "openai/gpt-5-mini",
     apiKey: "release-smoke-key",
   },
-  brain: diagnostic(),
+  agentloop: diagnostic(),
 });
 
 const completed = await session.send({ task: "finish without external capabilities" });

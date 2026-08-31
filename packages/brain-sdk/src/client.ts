@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-import { assertEnvironmentBindable, bindEnvironment, endEnvironment, inspectBoundTool, inspectBrain, inspectEnvironment } from "./extensions.js";
+import { assertEnvironmentBindable, bindEnvironment, endEnvironment, inspectAgentloop, inspectBoundTool, inspectEnvironment } from "./extensions.js";
 import { BrainError } from "./errors.js";
 import type {
-  AgentloopAdmission, BoundTool, BrainExtension, CreateSessionOptions, Environment, OperationOptions,
-  SessionEvent, SessionState, WireCreateSessionRequest, WireEnvironmentRequirement, WireEventPage,
-  WireSession, WireSessionList, WireToolBinding, WireToolDefinition,
+  AgentloopAdmission, BoundTool as WireBoundTool, CreateSessionRequest, EnvironmentRequirement,
+  EventPage, Session as WireSession, SessionList,
+} from "./generated/session.js";
+import type {
+  Agentloop, BoundTool, CreateSessionOptions, Environment, OperationOptions, SessionEvent, SessionState,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -62,11 +64,14 @@ export class BrainClient {
     return (response.status === 204 ? undefined : await response.json()) as T;
   }
 
-  async admit(extension: BrainExtension): Promise<string> {
+  async admit(extension: Agentloop): Promise<string> {
     const cached = this.admitted.get(extension);
     if (cached !== undefined) return cached;
-    const admission = this.loadAndAdmit(inspectBrain(extension).artifact);
+    const admission = this.loadAndAdmit(inspectAgentloop(extension).artifact);
     this.admitted.set(extension, admission);
+    // A rejection is not an admission: forget it, so a transient fetch or server
+    // failure does not poison this agentloop for the life of the client.
+    admission.catch(() => this.admitted.delete(extension));
     return admission;
   }
 
@@ -74,10 +79,10 @@ export class BrainClient {
     const bytes = artifact instanceof Uint8Array ? artifact : artifact.protocol === "file:"
       ? new Uint8Array(await readFile(artifact))
       : new Uint8Array(await (await this.transport(artifact)).arrayBuffer());
-    if (bytes.byteLength === 0) throw new TypeError("Brain package cannot be empty");
-    const idempotencyKey = `brain-${createHash("sha256").update(bytes).digest("hex")}`;
+    if (bytes.byteLength === 0) throw new TypeError("Agentloop package cannot be empty");
+    const idempotencyKey = `agentloop-${createHash("sha256").update(bytes).digest("hex")}`;
     const admission = await this.request<AgentloopAdmission>("POST", "/v1/agentloops", bytes, idempotencyKey, "application/octet-stream");
-    if (admission.status !== "admitted") throw new BrainError(400, "brain_rejected", admission.error?.message ?? "Brain was rejected", false, admission.error?.details);
+    if (admission.status !== "admitted") throw new BrainError(400, "agentloop_rejected", admission.error?.message ?? "Agentloop was rejected", false, admission.error?.details);
     return admission.identity;
   }
 }
@@ -87,7 +92,7 @@ export class Sessions {
 
   async create(options: CreateSessionOptions, operation: OperationOptions = {}): Promise<SessionHandle> {
     validateSessionOptions(options);
-    const identity = await this.client.admit(options.brain);
+    const identity = await this.client.admit(options.agentloop);
     const compiled = compileSession(options, identity);
     for (const environment of compiled.environments.keys()) assertEnvironmentBindable(environment);
     const session = await this.client.request<WireSession>("POST", "/v1/sessions", compiled.request, keyOf(operation));
@@ -101,7 +106,7 @@ export class Sessions {
   }
 
   async list(): Promise<SessionState[]> {
-    const response = await this.client.request<WireSessionList>("GET", "/v1/sessions");
+    const response = await this.client.request<SessionList>("GET", "/v1/sessions");
     return response.sessions.map(toSessionState);
   }
 }
@@ -121,7 +126,7 @@ export class SessionHandle {
     return { async *[Symbol.asyncIterator]() {
       let cursor = after;
       for (;;) {
-        const page = await client.request<WireEventPage>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`);
+        const page = await client.request<EventPage>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`);
         for (const event of page.events) yield { id: event.event_id, sequence: event.sequence, recordedAt: new Date(event.recorded_at_ms), type: event.event_type, data: event.data };
         if (page.next_cursor === cursor) return;
         cursor = page.next_cursor;
@@ -147,11 +152,10 @@ export class SessionHandle {
   private endEnvironments(): void { for (const environment of this.environments) endEnvironment(environment); }
 }
 
-function compileSession(options: CreateSessionOptions, agentloopIdentity: string): { readonly request: WireCreateSessionRequest; readonly environments: ReadonlyMap<Environment, string> } {
+function compileSession(options: CreateSessionOptions, agentloopIdentity: string): { readonly request: CreateSessionRequest; readonly environments: ReadonlyMap<Environment, string> } {
   const environments = new Map<Environment, string>();
-  const requirements: WireEnvironmentRequirement[] = [];
-  const definitions: WireToolDefinition[] = [];
-  const bindings: WireToolBinding[] = [];
+  const requirements: EnvironmentRequirement[] = [];
+  const tools: WireBoundTool[] = [];
   const names = new Set<string>();
   for (const selected of options.tools ?? []) {
     const bound = inspectBoundTool(selected as BoundTool);
@@ -163,17 +167,25 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
       environments.set(bound.environment, environmentId);
       requirements.push({ environment_id: environmentId, configuration: structuredClone(inspectEnvironment(bound.environment).configuration), lifecycle_policy: "session" });
     }
-    definitions.push({ name: bound.definition.name, description: bound.definition.description, input_schema: structuredClone(bound.definition.inputSchema), ...(bound.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(bound.definition.outputSchema) }) });
-    bindings.push({ name: bound.definition.name, environment_id: environmentId, remote_tool_id: bound.implementationName, tool_configuration: structuredClone(bound.configuration), grant: {} });
+    tools.push({
+      name: bound.definition.name,
+      description: bound.definition.description,
+      input_schema: structuredClone(bound.definition.inputSchema),
+      ...(bound.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(bound.definition.outputSchema) }),
+      environment_id: environmentId,
+      remote_tool_id: bound.implementationName,
+      configuration: structuredClone(bound.configuration),
+      grant: {},
+    });
   }
-  const brain = inspectBrain(options.brain);
+  const agentloop = inspectAgentloop(options.agentloop);
   return { request: {
-    agentloop_identity: agentloopIdentity,
-    brain_configuration: structuredClone(brain.configuration),
+    agentloop: { identity: agentloopIdentity, configuration: structuredClone(agentloop.configuration) },
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
-    presentation: { system: options.system ?? "", tools: definitions, ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }) },
+    system: options.system ?? "",
+    tools,
+    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }),
     environments: requirements,
-    tool_bindings: bindings,
     // The event id is left behind deliberately: it names an event in the session it came
     // from, and this is a different session, so Brain mints them again.
     ...(options.history === undefined ? {} : { history: options.history.map((event) => ({ sequence: event.sequence, recorded_at_ms: event.recordedAt.getTime(), event_type: event.type, data: event.data })) }),
@@ -182,7 +194,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
 
 function validateSessionOptions(options: CreateSessionOptions): void {
   if (options === null || typeof options !== "object") throw new TypeError("session options are required");
-  inspectBrain(options.brain);
+  inspectAgentloop(options.agentloop);
   // Shape only, mirroring the contract's Identifier: which providers exist is
   // the server deployment's registry, so an unknown one fails there, not here.
   const provider = options.model?.provider;
@@ -199,5 +211,5 @@ function keyOf(options: OperationOptions): string {
   return options.idempotencyKey ?? randomUUID();
 }
 function toSessionState(session: WireSession): SessionState {
-  return Object.freeze({ id: session.session_id, journalId: session.journal_id, status: session.status, throughSequence: session.through_sequence, presentationIdentity: session.presentation_identity });
+  return Object.freeze({ id: session.session_id, journalId: session.journal_id, status: session.status, lastSequence: session.last_sequence, configHash: session.config_hash });
 }

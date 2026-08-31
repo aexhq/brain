@@ -13,7 +13,7 @@ import { extensionSource } from "./extensions.js";
 export const BUILDER_TOOLCHAIN = "brain-build-1 componentize-js-0.19.3";
 
 export interface BuildOptions { readonly entry?: string; readonly out?: string }
-export interface BuiltExtension { readonly name: string; readonly kind: "brain" | "tool" | "environment"; readonly artifact?: string; readonly identity?: string; readonly bytes?: number }
+export interface BuiltExtension { readonly name: string; readonly kind: "agentloop" | "tool" | "environment"; readonly artifact?: string; readonly identity?: string; readonly bytes?: number }
 
 export async function build(options: BuildOptions = {}): Promise<readonly BuiltExtension[]> {
   const entry = resolve(options.entry ?? "src/index.ts");
@@ -23,19 +23,19 @@ export async function build(options: BuildOptions = {}): Promise<readonly BuiltE
   const sourcePath = join(out, "source.mjs");
   await bundle({ entryPoints: [entry], outfile: sourcePath, bundle: true, format: "esm", platform: "node", target: "node22", legalComments: "none" });
   const loaded = await import(`${pathToFileURL(sourcePath).href}?build=${Date.now()}`) as Record<string, unknown>;
-  const definitions = Object.entries(loaded).filter((entry): entry is [string, Function & { [extensionSource]: { kind: "brain" | "tool" | "environment" } }] =>
+  const definitions = Object.entries(loaded).filter((entry): entry is [string, Function & { [extensionSource]: { kind: "agentloop" | "tool" | "environment" } }] =>
     typeof entry[1] === "function" && (entry[1] as Function & { [extensionSource]?: unknown })[extensionSource] !== undefined,
   );
-  if (definitions.length === 0) throw new Error(`${entry} exports no brain, tool, or environment extensions`);
+  if (definitions.length === 0) throw new Error(`${entry} exports no agentloop, tool, or environment extensions`);
   const built: BuiltExtension[] = [];
   const toolRegistry: Record<string, { readonly contract_digest: string; readonly filename: string }> = {};
   const environmentRuntimeNames = new Map<string, string>();
   for (const [name, definition] of definitions) {
     if (!validIdentifier(name)) throw new Error(`extension export ${JSON.stringify(name)} is not a stable identifier`);
     const kind = definition[extensionSource].kind;
-    if (kind === "brain") {
+    if (kind === "agentloop") {
       const artifact = `${name}.brain.json`;
-      const packageValue = await buildBrain(entry, name, join(out, artifact));
+      const packageValue = await buildAgentloop(entry, name, join(out, artifact));
       built.push({ name, kind, artifact, identity: packageValue.manifest.component_identity, bytes: packageValue.manifest.component_bytes });
     } else if (kind === "tool") {
       const source = definition[extensionSource] as unknown as { contract: { description: string; input: z.ZodType; output?: z.ZodType } };
@@ -128,13 +128,13 @@ export default {
   });
 }
 
-async function buildBrain(entry: string, name: string, out: string): Promise<BrainPackage> {
+async function buildAgentloop(entry: string, name: string, out: string): Promise<AgentloopPackage> {
   const compiled = await bundle({
     stdin: { contents: componentWrapper(entry, name), resolveDir: dirname(entry), sourcefile: `${name}.brain-entry.js`, loader: "js" },
     bundle: true, format: "esm", platform: "neutral", write: false, legalComments: "none", external: ["node:*"],
   });
   const output = compiled.outputFiles[0];
-  if (output === undefined) throw new Error(`esbuild produced no output for Brain ${name}`);
+  if (output === undefined) throw new Error(`esbuild produced no output for Agentloop ${name}`);
   const wit = await readFile(new URL("../contracts/agentloop.wit", import.meta.url), "utf8");
   const work = await mkdtemp(join(tmpdir(), "brain-build-"));
   let component: Uint8Array;
@@ -147,7 +147,7 @@ async function buildBrain(entry: string, name: string, out: string): Promise<Bra
   } finally {
     await rm(work, { recursive: true, force: true });
   }
-  const packageValue: BrainPackage = {
+  const packageValue: AgentloopPackage = {
     manifest: { contract_version: "agentloop/v1", component_identity: createHash("sha256").update(component).digest("hex"), component_bytes: component.byteLength, toolchain: BUILDER_TOOLCHAIN },
     component_base64: Buffer.from(component).toString("base64"),
   };
@@ -155,7 +155,7 @@ async function buildBrain(entry: string, name: string, out: string): Promise<Bra
   return packageValue;
 }
 
-interface BrainPackage {
+interface AgentloopPackage {
   readonly manifest: { readonly contract_version: "agentloop/v1"; readonly component_identity: string; readonly component_bytes: number; readonly toolchain: string };
   readonly component_base64: string;
 }
@@ -164,7 +164,7 @@ function componentWrapper(entry: string, name: string): string {
   const specifier = relative(dirname(entry), entry).replaceAll("\\", "/");
   const normalized = specifier.startsWith(".") ? specifier : `./${specifier}`;
   return `
-import { activateBrain } from "@aexhq/brain";
+import { activateAgentloop } from "@aexhq/brain";
 import { ${name} as definition } from ${JSON.stringify(normalized)};
 
 const decodeObservation = (observation) => {
@@ -185,11 +185,11 @@ const encodeDecision = (decision) => {
     case "emit": return { tag: "emit", val: JSON.stringify(decision.event) };
     case "finish": return { tag: "finish", val: decision.result === undefined ? undefined : JSON.stringify(decision.result) };
     case "fail": return { tag: "fail", val: [decision.code, decision.message, decision.retryable] };
-    default: throw new Error("unknown Brain action " + decision.type);
+    default: throw new Error("unknown Agentloop action " + decision.type);
   }
 };
 export function step(input) {
-  const output = activateBrain(definition, {
+  const output = activateAgentloop(definition, {
     context: { state: input.context.stateJson === undefined ? undefined : JSON.parse(input.context.stateJson) },
     observation: decodeObservation(input.observation),
     configuration: JSON.parse(input.configurationJson),

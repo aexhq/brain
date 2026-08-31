@@ -203,40 +203,36 @@ export type components = {
             journal_id: components["schemas"]["Identifier"];
             /** @enum {unknown} */
             status: "creating" | "idle" | "running" | "ended" | "failed";
-            through_sequence: number;
-            presentation_identity: components["schemas"]["Identity"];
+            last_sequence: number;
+            config_hash: components["schemas"]["Identity"];
         };
         SessionList: {
             sessions: components["schemas"]["Session"][];
+        };
+        AgentloopRef: {
+            identity: components["schemas"]["Identity"];
+            configuration: unknown;
         };
         ModelSelection: {
             provider: components["schemas"]["Identifier"];
             name: string;
             api_key: string;
         };
-        ToolDefinition: {
+        BoundTool: {
             name: components["schemas"]["Identifier"];
             description: string;
             input_schema: Record<string, never>;
             output_schema?: Record<string, never>;
-        };
-        ModelPresentation: {
-            system: string;
-            tools: components["schemas"]["ToolDefinition"][];
-            response_format?: unknown;
+            environment_id: components["schemas"]["Identifier"];
+            remote_tool_id: components["schemas"]["Identifier"];
+            configuration: unknown;
+            grant: unknown;
         };
         EnvironmentRequirement: {
             environment_id: components["schemas"]["Identifier"];
             configuration: unknown;
             /** @enum {unknown} */
             lifecycle_policy: "session" | "shared" | "external";
-        };
-        RequestedToolBinding: {
-            name: components["schemas"]["Identifier"];
-            environment_id: components["schemas"]["Identifier"];
-            remote_tool_id: components["schemas"]["Identifier"];
-            tool_configuration: unknown;
-            grant: unknown;
         };
         HistoryEvent: {
             sequence: number;
@@ -245,12 +241,12 @@ export type components = {
             data: unknown;
         };
         CreateSessionRequest: {
-            agentloop_identity: components["schemas"]["Identity"];
-            brain_configuration: unknown;
+            agentloop: components["schemas"]["AgentloopRef"];
             model: components["schemas"]["ModelSelection"];
-            presentation: components["schemas"]["ModelPresentation"];
+            system?: string;
+            tools: components["schemas"]["BoundTool"][];
+            response_format?: unknown;
             environments: components["schemas"]["EnvironmentRequirement"][];
-            tool_bindings: components["schemas"]["RequestedToolBinding"][];
             history?: components["schemas"]["HistoryEvent"][];
         };
         MessageRequest: {
