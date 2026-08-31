@@ -22,6 +22,10 @@ export interface CancelFrame { readonly cancel: string }
 
 export const signatureHeader = "x-brain-signature";
 
+/** Ceiling on a wire-provided call deadline: generous next to the kernel's default
+ * tool deadline, small enough that a hostile frame cannot pin a timer for hours. */
+export const MAX_DEADLINE_MS = 600_000;
+
 export function sign(body: string, signingKey: string): string {
   return createHmac("sha256", signingKey).update(body, "utf8").digest("hex");
 }
@@ -61,7 +65,8 @@ export function parseInvokeFrame(value: unknown): InvokeFrame | undefined {
   if (typeof record.name !== "string" || record.name.length === 0) return undefined;
   if (typeof record.deadline_ms !== "number" || !Number.isInteger(record.deadline_ms) || record.deadline_ms < 1) return undefined;
   if (!("arguments" in record)) return undefined;
-  return { call_id: record.call_id, name: record.name, arguments: record.arguments, deadline_ms: record.deadline_ms };
+  // The deadline arms a timer, so a frame must not be able to demand an unbounded one.
+  return { call_id: record.call_id, name: record.name, arguments: record.arguments, deadline_ms: Math.min(record.deadline_ms, MAX_DEADLINE_MS) };
 }
 
 export function parseCancelFrame(value: unknown): CancelFrame | undefined {
