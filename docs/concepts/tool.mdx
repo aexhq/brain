@@ -32,12 +32,30 @@ export const bash = tool({
   input: z.object({ command: z.string() }),
   requires: ["exec"],
   bindings: { API_BASE: z.string() },
-}, (author) => { /* ... */ });
+}, (author) => {
+  author.run(async (input, context) => {
+    // context.exec is typed from `requires`; context.fs would not compile.
+    return context.exec.run(input.command);
+  });
+});
 ```
+
+The declaration is checked at both ends: the run context type is derived from `requires`,
+so using an undeclared capability does not type-check, and `brain build` warns when a
+declared capability's handle never appears in the authored code. See
+[Write a tool](/brain/docs/guides/write-a-tool).
 
 Binding *values* never appear in a manifest or in Brain's journal — they are supplied at
 session create and sealed the way model credentials are; the environment injects them at
 runtime.
+
+## One artifact, provisioned at attach
+
+`brain build` packages each tool as a `tool/v1` artifact: the manifest above plus a
+self-contained single-file ESM bundle, named by the bundle's sha-256 (`payload.identity`).
+The environment provisions the artifact at attach — executing the bundle once, so a broken
+tool fails the attach receipt instead of the first model call — and re-provisioning by the
+same identity is idempotent.
 
 ## Brain does not run tool code
 

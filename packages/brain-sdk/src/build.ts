@@ -13,7 +13,7 @@ import { extensionSource } from "./extensions.js";
 export const BUILDER_TOOLCHAIN = "brain-build-1 componentize-js-0.19.3";
 
 export interface BuildOptions { readonly entry?: string; readonly out?: string }
-export interface BuiltExtension { readonly name: string; readonly kind: "agentloop" | "tool" | "environment"; readonly artifact?: string; readonly identity?: string; readonly bytes?: number }
+export interface BuiltExtension { readonly name: string; readonly kind: "agentloop" | "tool" | "environment"; readonly artifact?: string; readonly identity?: string; readonly bytes?: number; readonly warnings?: readonly string[] }
 
 export async function build(options: BuildOptions = {}): Promise<readonly BuiltExtension[]> {
   const entry = resolve(options.entry ?? "src/index.ts");
@@ -30,6 +30,7 @@ export async function build(options: BuildOptions = {}): Promise<readonly BuiltE
   const built: BuiltExtension[] = [];
   const toolRegistry: Record<string, { readonly contract_digest: string; readonly filename: string }> = {};
   const environmentRuntimeNames = new Map<string, string>();
+  let authoredCheckSource: string | undefined;
   for (const [name, definition] of definitions) {
     if (!validIdentifier(name)) throw new Error(`extension export ${JSON.stringify(name)} is not a stable identifier`);
     const kind = definition[extensionSource].kind;
@@ -38,7 +39,7 @@ export async function build(options: BuildOptions = {}): Promise<readonly BuiltE
       const packageValue = await buildAgentloop(entry, name, join(out, artifact));
       built.push({ name, kind, artifact, identity: packageValue.manifest.component_identity, bytes: packageValue.manifest.component_bytes });
     } else if (kind === "tool") {
-      const source = definition[extensionSource] as unknown as { contract: { description: string; input: z.ZodType; output?: z.ZodType } };
+      const source = definition[extensionSource] as unknown as { contract: { description: string; input: z.ZodType; output?: z.ZodType; requires?: readonly string[]; bindings?: Readonly<Record<string, z.ZodType>> } };
       const contract = {
         name,
         description: source.contract.description,
@@ -48,7 +49,26 @@ export async function build(options: BuildOptions = {}): Promise<readonly BuiltE
       const contractDigest = createHash("sha256").update(canonical(contract)).digest("hex");
       await buildTool(entry, name, join(out, "runtime", `${name}.mjs`), contractDigest);
       toolRegistry[name] = { contract_digest: contractDigest, filename: `${name}.mjs` };
-      built.push({ name, kind });
+      // The provisioned artifact: a self-contained single-file ESM bundle plus
+      // the tool/v1 manifest naming it by content identity. Binding values are
+      // structurally impossible here — only the names enter the manifest.
+      const payload = await buildProvisionedPayload(entry, name);
+      const identity = createHash("sha256").update(payload).digest("hex");
+      const manifest = {
+        name,
+        description: contract.description,
+        input_schema: contract.input_schema,
+        ...(source.contract.output === undefined ? {} : { output_schema: z.toJSONSchema(source.contract.output) }),
+        requires: [...(source.contract.requires ?? [])],
+        binding_names: Object.keys(source.contract.bindings ?? {}),
+        hosting: "provisioned",
+        payload: { kind: "esm", identity },
+      };
+      const artifact = `${name}.tool.json`;
+      await writeFile(join(out, artifact), `${JSON.stringify({ manifest, payload })}\n`);
+      authoredCheckSource ??= await authoredSource(entry);
+      const warnings = unusedRequiresWarnings(name, manifest.requires, authoredCheckSource);
+      built.push({ name, kind, artifact, identity, bytes: Buffer.byteLength(payload), ...(warnings.length === 0 ? {} : { warnings }) });
     } else {
       environmentRuntimeNames.set(name, await packageRuntimeName(entry));
       await buildEnvironment(entry, name, join(out, "runtime", `${name}.mjs`));
@@ -126,6 +146,42 @@ export default {
     },
     bundle: true, format: "esm", platform: "node", target: "node22", outfile: out, legalComments: "none",
   });
+}
+
+async function buildProvisionedPayload(entry: string, name: string): Promise<string> {
+  const compiled = await bundle({
+    stdin: {
+      contents: `
+import { provisionedToolRuntime } from "@aexhq/brain";
+import { ${name} as definition } from ${JSON.stringify(entry.replaceAll("\\", "/"))};
+export default provisionedToolRuntime(definition);
+`,
+      resolveDir: dirname(entry), sourcefile: `${name}.provisioned-entry.js`, loader: "js",
+    },
+    bundle: true, format: "esm", platform: "node", target: "node22", write: false, legalComments: "none",
+  });
+  const output = compiled.outputFiles[0];
+  if (output === undefined) throw new Error(`esbuild produced no provisioned payload for tool ${name}`);
+  return output.text;
+}
+
+/** The authored code alone (dependencies stay external), so the unused-requires
+ * heuristic below is not defeated by capability names appearing inside the SDK
+ * or third-party packages that would be bundled into the payload. */
+async function authoredSource(entry: string): Promise<string> {
+  const compiled = await bundle({ entryPoints: [entry], bundle: true, format: "esm", platform: "node", target: "node22", write: false, legalComments: "none", packages: "external" });
+  return compiled.outputFiles[0]?.text ?? "";
+}
+
+/** Warn on a declared capability whose handle never appears in the authored
+ * code as a property access or destructured key. Aliasing — a context passed
+ * whole into a helper or library — can false-alarm, which is why this is a
+ * warning, not an error: over-declaring is conservative and only makes the
+ * bind-time check stricter. */
+export function unusedRequiresWarnings(name: string, requires: readonly string[], authored: string): readonly string[] {
+  return requires
+    .filter((capability) => !new RegExp(`[.{,(]\\s*${capability}\\b`, "u").test(authored))
+    .map((capability) => `tool ${name} declares capability "${capability}" but its handle never appears in the bundle`);
 }
 
 async function buildAgentloop(entry: string, name: string, out: string): Promise<AgentloopPackage> {

@@ -1,13 +1,15 @@
 ---
 title: Write an Environment extension
-description: Own a Tool runtime and expose provider-specific methods with one authoring shape.
+description: Provide capabilities, host provisioned tools, and expose provider-specific methods.
 ---
 
-An Environment owns somewhere Tools run. `open`, `run`, and `close` may be async and may use normal
-runtime libraries:
+An Environment owns somewhere Tools run. It implements capability *providers* against its
+open instance, and may opt in to hosting provisioned tools with one line — the SDK owns
+the host runtime (payload cache, attach-time validation, handle wiring, the outcome
+envelope), so environment authors never write it:
 
 ```ts
-import { environment } from "@aexhq/brain";
+import { clamp, environment } from "@aexhq/brain";
 import { z } from "zod";
 import Provider from "@vendor/cloud-sdk";
 
@@ -19,6 +21,21 @@ export const cloudVm = environment({ options }, (author) => {
     return provider.getOrCreate({ id });
   });
 
+  // Capability providers: the factory sees the open instance and the
+  // attachment's grants. Enforcement is yours — the shared clamp helper
+  // covers exec bounds and fs-root confinement.
+  vm.provide.exec(({ instance, grants }) => ({
+    run: (command, opts) => instance.exec(command, clamp(opts, grants.exec)),
+  }));
+  vm.provide.fs(({ instance, grants }) => ({
+    read: (path) => instance.readFile(clamp.path(grants.fs.root, path)),
+    write: (path, data) => instance.writeFile(clamp.path(grants.fs.root, path), data),
+    list: (path) => instance.listDir(clamp.path(grants.fs.root, path)),
+  }));
+
+  // Host provisioned ESM tools, wired in-process to the providers above.
+  vm.host.esm({ artifacts: myBuiltArtifacts });
+
   vm.run(async (request, context) => context.instance.execute(request, { signal: context.signal }));
   vm.close(async ({ instance }) => instance.close());
 
@@ -28,8 +45,33 @@ export const cloudVm = environment({ options }, (author) => {
 });
 ```
 
-Build it with `npx brain build`. The generated application object implements Brain's Environment
-interface and keeps its own methods:
+What the environment `provide`s becomes the `provides` list on its setup and attach
+receipts — the other half of Brain's `requires ⊆ provides` check at session create.
+Anything ugly a capability needs — quoting `sh -c`, enforcing a timeout by kill,
+bridging fs over exec — lives inside the provider, never in a tool.
+
+## Hosting provisioned tools
+
+`host.esm()` opts in. An attach carries each tool's manifest and the content identity of
+its payload; the bundle bytes themselves travel out of band and are registered through
+`host.esm({ artifacts })` (`brain build` output, one `<name>.tool.json` per tool). At
+attach the SDK host imports each bundle once per identity, resolves its run function, and
+checks that `requires` are provided and binding values are present — so a broken or
+mis-bound tool fails the attach receipt, never the first model call. At invoke it
+validates input against the tool's schema, wires handles to your providers in-process,
+injects binding values, and maps the result — return value, thrown error, deadline,
+cancellation — onto the one outcome envelope.
+
+An environment that does not call `host.esm()` still accepts provisions: their
+invocations stay on the environment's own `run` handler (the legacy runtime path), and a
+callback router never captures a provisioned name. See
+[App tools](/brain/docs/guides/app-tools) for the callback hosting an environment routes
+with `route.callbacks()`.
+
+## The application object
+
+Build it with `npx brain build`. The generated application object implements Brain's
+Environment interface and keeps its own methods:
 
 ```ts
 const vm = cloudVm({ region: "eu-west-2" });
