@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Run a Brain server and give a session a voice — its only tool lives in a browser tab.
+description: Run a Brain server and give a session a tool that answers from your own process.
 ---
 
 ## Run a server
@@ -28,71 +28,55 @@ BRAIN_ENVIRONMENT_BASE_URL=http://127.0.0.1:8787 \
 Brain listens on loopback and needs no token there. Set `BRAIN_API_TOKEN` to listen anywhere else —
 it refuses to start on a non-loopback address without one.
 
-## Give the agent a voice
+## Give the agent a tool
 
-The session's only tool runs in a browser tab: the page holds an outbound WebSocket to the
-environment and answers the model's `say` call with your speakers.
+The session's tool is a plain function in your own process: the model decides to call it,
+Brain dials the environment, and the environment routes the call back to your code.
 
 ```sh
 npm install @aexhq/brain @aexhq/agentloop-pi @aexhq/env-app zod
 ```
 
-Save as `talk.mjs` and run with `node talk.mjs`:
+Save as `order.mjs` and run with `node order.mjs`:
 
 ```js
 import { createServer } from "node:http";
-import { Brain, appTool, createEnvironmentHandler } from "@aexhq/brain";
+import { Brain, appTool, appTools, createEnvironmentHandler } from "@aexhq/brain";
 import { app } from "@aexhq/env-app";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
-// The page: it holds an outbound WebSocket to the environment and answers
-// the `say` tool from inside the tab — with your speakers.
-const page = `<!doctype html><title>brain, out loud</title><body>🔊 This tab is a Brain environment.
-<script type="module">
-import { appTools } from "https://esm.sh/@aexhq/brain";
-import { z } from "https://esm.sh/zod@4";
-appTools.connect({ url: "ws://127.0.0.1:8787/environments/env_1/channel", token: "quickstart" })
-  .register(
-    { name: "say", description: "Speak out loud through the user's speakers.", input: z.object({ text: z.string() }) },
-    ({ text }) => { speechSynthesis.speak(new SpeechSynthesisUtterance(text)); return "spoken"; },
-  );
-</script>`;
+// The tool: one contract, one plain function, closing over your app's state.
+const orders = { "A-1001": { status: "shipped", eta: "Thursday" } };
+const lookupOrder = {
+  name: "lookup_order",
+  description: "Look up an order's status by id.",
+  input: z.object({ id: z.string() }),
+};
 
-// Host the environment beside the page: Brain POSTs operations here, the tab holds the channel.
+// Host the environment: Brain POSTs operations here, and the tool answers in-process.
 const handle = createEnvironmentHandler(app);
 const server = createServer(async (request, response) => {
-  if (request.method === "POST") {
-    let body = "";
-    for await (const chunk of request) body += chunk;
-    response.setHeader("content-type", "application/json");
-    return response.end(JSON.stringify(await handle(JSON.parse(body))));
-  }
-  response.setHeader("content-type", "text/html; charset=utf-8");
-  response.end(page);
+  let body = "";
+  for await (const chunk of request) body += chunk;
+  response.setHeader("content-type", "application/json");
+  response.end(JSON.stringify(await handle(JSON.parse(body))));
 });
 server.on("upgrade", (request, socket, head) => handle.channel.upgrade(request, socket, head));
 server.listen(8787, "127.0.0.1");
 
+appTools
+  .connect({ url: "ws://127.0.0.1:8787/environments/env_1/channel", token: "quickstart" })
+  .register(lookupOrder, ({ id }) => orders[id] ?? { status: "unknown order" });
+
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
-const channel = app({ channelToken: "quickstart" });
 const session = await brain.sessions.create({
   model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
   agentloop: pi(),
-  tools: [
-    appTool({
-      name: "say",
-      description: "Speak out loud through the user's speakers.",
-      input: z.object({ text: z.string() }),
-    }).useIn(channel),
-  ],
-  system: "You can speak out loud. Answer by saying it.",
+  tools: [appTool(lookupOrder).useIn(app({ channelToken: "quickstart" }))],
 });
 
-console.log("Open http://127.0.0.1:8787 in a browser, sound on, then press Enter.");
-await new Promise((resolve) => process.stdin.once("data", resolve));
-
-await session.send("Introduce yourself out loud, in one sentence.");
+await session.send("Where is order A-1001?");
 for await (const event of session.events()) console.log(event.sequence, event.type);
 
 await session.end();
@@ -100,10 +84,12 @@ await session.delete();
 process.exit(0);
 ```
 
-The Node script hosts the environment and serves the page, the tab connects out over a WebSocket
-and registers `say`, Brain routes the model's tool call down the channel — and the answer comes
-out of your speakers while the event feed streams in the terminal. See
-[App tools](/brain/docs/guides/app-tools) for how callback tools work, and
+The model reads the question, calls `lookup_order`, and your function answers from the `orders`
+object beside it — the whole exchange lands in the event feed, tool call and result included.
+The same channel works from a browser page or anything behind NAT, and provisioned tools ship
+their code into a sandbox environment the same way.
+
+See [App tools](/brain/docs/guides/app-tools) for both callback transports, and
 [Environments](/brain/docs/concepts/environment) for what else can host a tool.
 
 ## Runnable versions
