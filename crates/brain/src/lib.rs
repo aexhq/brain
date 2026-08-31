@@ -16,5 +16,5 @@ pub use journal::{
     SessionUpdate,
 };
 pub use model::ModelExecutor;
-pub use session::{CreatingSession, Kernel, KernelConfig, SessionHandle};
+pub use session::{CreatingSession, DEFAULT_TOOL_DEADLINE_MS, Kernel, KernelConfig, SessionHandle};
 pub use tool::ToolExecutor;

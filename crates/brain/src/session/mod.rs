@@ -11,10 +11,10 @@ use std::{
 };
 
 use brain_protocol::{
-    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EnvironmentRequirement, EventPage,
-    HistoryEvent, Identity, JournalId, MessageRequest, ModelBinding, ModelPresentation,
-    OperationId, RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, Session,
-    SessionId, SessionStatus, ToolBinding, operation_id,
+    AgentloopIdentity, Capability, EnvironmentAttachment, EnvironmentId, EventPage, HistoryEvent,
+    Identity, JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId,
+    RequestedToolBinding, ResolvedEnvironment, ResolvedSessionRequest, SealedSessionConfig,
+    Session, SessionId, SessionStatus, ToolBinding, ToolHosting, ToolPayload, operation_id,
 };
 use brain_telemetry::TelemetryPublisher;
 use rand::RngCore;
@@ -29,7 +29,7 @@ use crate::{
 };
 use actor::{SessionActor, SessionCommand};
 
-pub use config::KernelConfig;
+pub use config::{DEFAULT_TOOL_DEADLINE_MS, KernelConfig};
 
 #[derive(Clone)]
 pub struct Kernel {
@@ -509,6 +509,7 @@ impl Kernel {
             self.inner.config.model_executor.clone(),
             self.inner.config.tool_executor.clone(),
             self.inner.config.max_decisions_per_turn,
+            self.inner.config.tool_deadline_ms,
             receiver,
             cancelled.clone(),
             self.inner.store.live_sender(),
@@ -543,13 +544,26 @@ impl CreatingSession {
         kind: &str,
         request: &T,
     ) -> Result<(OperationId, Identity), KernelError> {
+        self.record_intent_redacted(kind, request, request)
+    }
+
+    /// Journals the intent as `journal_view` while the operation identity still covers
+    /// the wire request. This is how a request carrying values the journal must not
+    /// hold — attach binding values — is recorded: the view replaces each value with
+    /// its identity.
+    pub fn record_intent_redacted<T: serde::Serialize, V: serde::Serialize>(
+        &mut self,
+        kind: &str,
+        request: &T,
+        journal_view: &V,
+    ) -> Result<(OperationId, Identity), KernelError> {
         let operation_id = operation_id(&self.row.journal_id, self.row.through_sequence + 1);
         let identity =
             Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
         let saved = self.kernel.inner.store.append(
             &self.row.session_id,
             self.row.through_sequence,
-            &[AppendRecord::new(format!("{kind}_intent"), serde_json::json!({"operation_id":operation_id,"request_identity":identity,"request":request}))],
+            &[AppendRecord::new(format!("{kind}_intent"), serde_json::json!({"operation_id":operation_id,"request_identity":identity,"request":journal_view}))],
             SessionUpdate::default(),
         )?;
         self.row.through_sequence += saved.len() as u64;
@@ -670,11 +684,19 @@ impl SessionHandle {
 /// created, so the bounds are stated once and both shapes are read through these views.
 trait EnvironmentView {
     fn environment_id(&self) -> &EnvironmentId;
+    /// What this environment provides, when that is already known. A resolved request
+    /// predates the setup/attach receipts that report it, so only a sealed attachment
+    /// answers — and only a sealed configuration is capability-checked.
+    fn provides(&self) -> Option<&[Capability]>;
 }
 
-impl EnvironmentView for EnvironmentRequirement {
+impl EnvironmentView for ResolvedEnvironment {
     fn environment_id(&self) -> &EnvironmentId {
         &self.environment_id
+    }
+
+    fn provides(&self) -> Option<&[Capability]> {
+        None
     }
 }
 
@@ -682,12 +704,19 @@ impl EnvironmentView for EnvironmentAttachment {
     fn environment_id(&self) -> &EnvironmentId {
         &self.binding.environment_id
     }
+
+    fn provides(&self) -> Option<&[Capability]> {
+        Some(&self.provides)
+    }
 }
 
 trait ToolBindingView {
     fn name(&self) -> &str;
     fn environment_id(&self) -> &EnvironmentId;
-    fn remote_tool_id(&self) -> &str;
+    fn requires(&self) -> &[Capability];
+    fn binding_names(&self) -> &[String];
+    fn hosting(&self) -> ToolHosting;
+    fn payload(&self) -> Option<&ToolPayload>;
 }
 
 impl ToolBindingView for RequestedToolBinding {
@@ -699,8 +728,20 @@ impl ToolBindingView for RequestedToolBinding {
         &self.environment_id
     }
 
-    fn remote_tool_id(&self) -> &str {
-        &self.remote_tool_id
+    fn requires(&self) -> &[Capability] {
+        &self.requires
+    }
+
+    fn binding_names(&self) -> &[String] {
+        &self.binding_names
+    }
+
+    fn hosting(&self) -> ToolHosting {
+        self.hosting
+    }
+
+    fn payload(&self) -> Option<&ToolPayload> {
+        self.payload.as_ref()
     }
 }
 
@@ -713,8 +754,20 @@ impl ToolBindingView for ToolBinding {
         &self.environment.environment_id
     }
 
-    fn remote_tool_id(&self) -> &str {
-        &self.remote_tool_id
+    fn requires(&self) -> &[Capability] {
+        &self.requires
+    }
+
+    fn binding_names(&self) -> &[String] {
+        &self.binding_names
+    }
+
+    fn hosting(&self) -> ToolHosting {
+        self.hosting
+    }
+
+    fn payload(&self) -> Option<&ToolPayload> {
+        self.payload.as_ref()
     }
 }
 
@@ -730,7 +783,7 @@ trait SessionContract: serde::Serialize {
 }
 
 impl SessionContract for ResolvedSessionRequest {
-    type Environment = EnvironmentRequirement;
+    type Environment = ResolvedEnvironment;
     type ToolBinding = RequestedToolBinding;
 
     fn agentloop_identity(&self) -> &AgentloopIdentity {
@@ -819,11 +872,23 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
         || request.tool_bindings().iter().any(|binding| {
             !identifier_valid(binding.name())
                 || !identifier_valid(binding.environment_id().as_str())
-                || !identifier_valid(binding.remote_tool_id())
+                || binding
+                    .binding_names()
+                    .iter()
+                    .any(|name| !identifier_valid(name))
         })
     {
         return Err(KernelError::InvalidState(
             "Environment or Tool binding has an invalid identity".into(),
+        ));
+    }
+    // A callback tool's code stays in the author's process; a payload beside it would
+    // be an artifact nothing is allowed to run.
+    if request.tool_bindings().iter().any(|binding| {
+        matches!(binding.hosting(), ToolHosting::Callback) && binding.payload().is_some()
+    }) {
+        return Err(KernelError::InvalidState(
+            "a callback Tool binding cannot carry a payload".into(),
         ));
     }
     let mut definitions: Vec<&str> = request
@@ -865,6 +930,30 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
         return Err(KernelError::InvalidState(
             "every Tool binding must name a bound Environment".into(),
         ));
+    }
+    // The bind-time capability check: what a tool requires must be provided by the
+    // environment it is bound to, so a mismatch is a create-time rejection naming all
+    // three parties instead of a runtime mystery. A tool with empty `requires` binds
+    // anywhere. Provides is known only once the environment has attached, so only the
+    // sealed shape is checked — every admitted session passes through it.
+    for binding in request.tool_bindings() {
+        let provides = request
+            .environments()
+            .iter()
+            .find(|environment| environment.environment_id() == binding.environment_id())
+            .and_then(EnvironmentView::provides);
+        let Some(provides) = provides else { continue };
+        if let Some(missing) = binding
+            .requires()
+            .iter()
+            .find(|capability| !provides.contains(capability))
+        {
+            return Err(KernelError::InvalidState(format!(
+                "Tool `{}` requires capability `{missing}` that Environment `{}` does not provide",
+                binding.name(),
+                binding.environment_id()
+            )));
+        }
     }
     Ok(())
 }
@@ -918,7 +1007,6 @@ mod tests {
         EnvironmentBinding {
             environment_id: EnvironmentId::new("workspace"),
             configuration_identity: Identity::of(&"configuration").unwrap(),
-            adapter_binding: "sealed".into(),
             directory_generation: 1,
             lifecycle_policy: LifecyclePolicy::Shared,
         }
@@ -938,17 +1026,20 @@ mod tests {
                 tools: vec![tool()],
                 response_format: None,
             },
-            environments: vec![EnvironmentRequirement {
+            environments: vec![ResolvedEnvironment {
                 environment_id: EnvironmentId::new("workspace"),
                 configuration: serde_json::json!({}),
                 lifecycle_policy: LifecyclePolicy::Shared,
+                grants: Default::default(),
+                binding_identities: Default::default(),
             }],
             tool_bindings: vec![RequestedToolBinding {
                 name: "search".into(),
                 environment_id: EnvironmentId::new("workspace"),
-                remote_tool_id: "search".into(),
-                tool_configuration: serde_json::json!({}),
-                grant: serde_json::json!({}),
+                requires: Vec::new(),
+                binding_names: Vec::new(),
+                hosting: ToolHosting::Provisioned,
+                payload: None,
             }],
         }
     }
@@ -969,14 +1060,16 @@ mod tests {
             environments: vec![EnvironmentAttachment {
                 binding: environment_binding(),
                 attachment_id: AttachmentId::new("attachment"),
+                provides: vec![Capability::Exec, Capability::Fs],
             }],
             tool_bindings: vec![ToolBinding {
                 name: "search".into(),
                 environment: environment_binding(),
                 attachment_id: AttachmentId::new("attachment"),
-                remote_tool_id: "search".into(),
-                tool_configuration: serde_json::json!({}),
-                grant: serde_json::json!({}),
+                requires: vec![Capability::Exec],
+                binding_names: Vec::new(),
+                hosting: ToolHosting::Provisioned,
+                payload: None,
             }],
         }
     }
@@ -1075,7 +1168,7 @@ mod tests {
                 |request| {
                     let environment = request.environments[0].clone();
                     request.environments = (0..129)
-                        .map(|index| EnvironmentRequirement {
+                        .map(|index| ResolvedEnvironment {
                             environment_id: EnvironmentId::new(format!("env{index}")),
                             ..environment.clone()
                         })
@@ -1116,9 +1209,20 @@ mod tests {
                 "invalid identity",
             ),
             (
-                "a remote Tool identity that is not an identifier",
-                |request| request.tool_bindings[0].remote_tool_id = "../escape".into(),
+                "a binding name that is not an identifier",
+                |request| request.tool_bindings[0].binding_names = vec!["../escape".into()],
                 "invalid identity",
+            ),
+            (
+                "a callback Tool carrying a payload",
+                |request| {
+                    request.tool_bindings[0].hosting = ToolHosting::Callback;
+                    request.tool_bindings[0].payload = Some(ToolPayload {
+                        kind: brain_protocol::PayloadKind::Esm,
+                        identity: Identity::of(&"payload").unwrap(),
+                    });
+                },
+                "cannot carry a payload",
             ),
             (
                 "two Tool definitions sharing one name",
@@ -1206,9 +1310,14 @@ mod tests {
                 "invalid identity",
             ),
             (
-                "a remote Tool identity that is not an identifier",
-                |sealed| sealed.tool_bindings[0].remote_tool_id = "../escape".into(),
+                "a binding name that is not an identifier",
+                |sealed| sealed.tool_bindings[0].binding_names = vec!["../escape".into()],
                 "invalid identity",
+            ),
+            (
+                "a Tool requiring a capability its Environment does not provide",
+                |sealed| sealed.tool_bindings[0].requires = vec![Capability::Page],
+                "does not provide",
             ),
             (
                 "a Tool definition with no binding",

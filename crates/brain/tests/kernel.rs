@@ -12,12 +12,12 @@ use brain::{
     Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor, SessionHandle, ToolExecutor,
 };
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopIdentity, AttachmentId, Decision,
-    EnvironmentAttachment, EnvironmentBinding, EnvironmentId, EnvironmentRequest,
-    EnvironmentRequirement, Identity, LifecyclePolicy, MessageRequest, ModelBinding,
-    ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent, Observation, OperationId,
-    RequestedToolBinding, ResolvedSessionRequest, SealedSessionConfig, ToolBinding,
-    ToolCancellation, ToolDefinition, ToolDispatch, ToolInvocation, ToolResult,
+    ActivationInput, ActivationOutput, AgentloopIdentity, AttachmentId, Capability, Decision,
+    EnvironmentAttachment, EnvironmentBinding, EnvironmentId, EnvironmentRequest, Identity,
+    LifecyclePolicy, MessageRequest, ModelBinding, ModelPresentation, ModelRequest, ModelResult,
+    ModelStreamEvent, Observation, OperationId, Outcome, OutcomeError, RequestedToolBinding,
+    ResolvedEnvironment, ResolvedSessionRequest, SealedSessionConfig, ToolBinding,
+    ToolCancellation, ToolDefinition, ToolDispatch, ToolHosting, ToolInvocation,
 };
 use brain_telemetry::telemetry_channel;
 use tokio::sync::Notify;
@@ -90,7 +90,7 @@ struct NoTools;
 
 #[async_trait]
 impl ToolExecutor for NoTools {
-    async fn execute(&self, _dispatch: ToolDispatch) -> Result<ToolResult, KernelError> {
+    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, KernelError> {
         panic!("unexpected Tool dispatch")
     }
 
@@ -149,12 +149,12 @@ struct SlowTools {
 
 #[async_trait]
 impl ToolExecutor for SlowTools {
-    async fn execute(&self, dispatch: ToolDispatch) -> Result<ToolResult, KernelError> {
-        let request = EnvironmentRequest::Execute {
-            tool: dispatch.invocation.clone(),
-            remote_tool_id: dispatch.binding.remote_tool_id.clone(),
-            tool_configuration: dispatch.binding.tool_configuration.clone(),
-            grant: dispatch.binding.grant.clone(),
+    async fn execute(&self, dispatch: ToolDispatch) -> Result<Outcome, KernelError> {
+        let request = EnvironmentRequest::Invoke {
+            call_id: dispatch.invocation.call_id.clone(),
+            tool: dispatch.binding.name.clone(),
+            input: dispatch.invocation.input.clone(),
+            deadline_ms: dispatch.deadline_ms,
         };
         assert_eq!(dispatch.request_identity, Identity::of(&request).unwrap());
         self.started.notify_one();
@@ -194,6 +194,7 @@ async fn intent_precedes_model_effect() {
     let config = || KernelConfig {
         data_dir: data_dir.clone(),
         max_decisions_per_turn: 8,
+        tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
         loop_executor: Arc::new(ScriptedLoop {
             calls: AtomicUsize::new(0),
         }),
@@ -260,6 +261,7 @@ async fn cancel_interrupts_an_inflight_model_request() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 8,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(ScriptedLoop {
                 calls: AtomicUsize::new(0),
             }),
@@ -320,6 +322,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 8,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(ToolLoop),
             model_executor: Arc::new(NoModels),
             tool_executor: Arc::new(SlowTools {
@@ -387,10 +390,19 @@ fn request() -> SealedSessionConfig {
 }
 
 fn tool_request() -> SealedSessionConfig {
+    tool_request_with("slow", Vec::new(), Vec::new())
+}
+
+/// A sealed configuration binding one tool with the given `requires` to one
+/// environment reporting the given `provides`.
+fn tool_request_with(
+    tool_name: &str,
+    requires: Vec<Capability>,
+    provides: Vec<Capability>,
+) -> SealedSessionConfig {
     let environment = EnvironmentBinding {
         environment_id: EnvironmentId::new("workspace"),
         configuration_identity: Identity::of(&"configuration").unwrap(),
-        adapter_binding: "sealed".into(),
         directory_generation: 1,
         lifecycle_policy: LifecyclePolicy::Shared,
     };
@@ -404,7 +416,7 @@ fn tool_request() -> SealedSessionConfig {
         presentation: ModelPresentation {
             system: "test".into(),
             tools: vec![ToolDefinition {
-                name: "slow".into(),
+                name: tool_name.into(),
                 description: "wait".into(),
                 input_schema: serde_json::json!({"type":"object"}),
                 output_schema: None,
@@ -414,14 +426,16 @@ fn tool_request() -> SealedSessionConfig {
         environments: vec![EnvironmentAttachment {
             binding: environment.clone(),
             attachment_id: AttachmentId::new("attachment"),
+            provides,
         }],
         tool_bindings: vec![ToolBinding {
-            name: "slow".into(),
+            name: tool_name.into(),
             environment,
             attachment_id: AttachmentId::new("attachment"),
-            remote_tool_id: "slow".into(),
-            tool_configuration: serde_json::json!({}),
-            grant: serde_json::json!({}),
+            requires,
+            binding_names: Vec::new(),
+            hosting: ToolHosting::Provisioned,
+            payload: None,
         }],
     }
 }
@@ -454,10 +468,12 @@ fn resolved_from(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
         environments: sealed
             .environments
             .iter()
-            .map(|environment| EnvironmentRequirement {
+            .map(|environment| ResolvedEnvironment {
                 environment_id: environment.binding.environment_id.clone(),
                 configuration: serde_json::json!({}),
                 lifecycle_policy: environment.binding.lifecycle_policy.clone(),
+                grants: Default::default(),
+                binding_identities: Default::default(),
             })
             .collect(),
         tool_bindings: sealed
@@ -466,9 +482,10 @@ fn resolved_from(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
             .map(|binding| RequestedToolBinding {
                 name: binding.name.clone(),
                 environment_id: binding.environment.environment_id.clone(),
-                remote_tool_id: binding.remote_tool_id.clone(),
-                tool_configuration: binding.tool_configuration.clone(),
-                grant: binding.grant.clone(),
+                requires: binding.requires.clone(),
+                binding_names: binding.binding_names.clone(),
+                hosting: binding.hosting,
+                payload: binding.payload.clone(),
             })
             .collect(),
     }
@@ -489,6 +506,7 @@ async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 8,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(ScriptedLoop {
                 calls: AtomicUsize::new(0),
             }),
@@ -616,6 +634,7 @@ async fn a_session_can_be_created_with_prior_history() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 8,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(RecordsHistory {
                 seen: Arc::clone(&seen),
             }),
@@ -671,6 +690,7 @@ async fn history_out_of_order_is_refused() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 8,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(ScriptedLoop {
                 calls: AtomicUsize::new(0),
             }),
@@ -711,6 +731,7 @@ async fn the_journal_is_the_only_thing_written() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 8,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(OrdinaryTurn),
             model_executor: Arc::new(ScriptedModel),
             tool_executor: Arc::new(NoTools),
@@ -808,6 +829,7 @@ async fn history_cannot_forge_a_lifecycle_record() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 8,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(ScriptedLoop {
                 calls: AtomicUsize::new(0),
             }),
@@ -854,6 +876,7 @@ async fn a_session_without_its_metadata_is_readable_and_refuses_turns() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 8,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(ScriptedLoop {
                 calls: AtomicUsize::new(0),
             }),
@@ -876,6 +899,7 @@ async fn a_session_without_its_metadata_is_readable_and_refuses_turns() {
         KernelConfig {
             data_dir: data_dir.clone(),
             max_decisions_per_turn: 8,
+            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
             loop_executor: Arc::new(ScriptedLoop {
                 calls: AtomicUsize::new(0),
             }),
@@ -908,6 +932,268 @@ async fn a_session_without_its_metadata_is_readable_and_refuses_turns() {
     );
 
     drop(reopened);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// A first activation that asks for one tool call, then finishes with whatever came
+/// back, so a test can read the observed results out of the turn's final record.
+struct OneToolTurn {
+    tool: &'static str,
+}
+
+#[async_trait]
+impl LoopExecutor for OneToolTurn {
+    async fn activate(
+        &self,
+        _agentloop: &AgentloopIdentity,
+        input: ActivationInput,
+    ) -> Result<ActivationOutput, KernelError> {
+        let decision = match input.observation {
+            Observation::ToolsCompleted { results } => Decision::Finish {
+                result: Some(serde_json::json!({ "results": results })),
+            },
+            _ => Decision::Tools {
+                calls: vec![ToolInvocation {
+                    call_id: "call-1".into(),
+                    name: self.tool.into(),
+                    input: serde_json::json!({}),
+                }],
+            },
+        };
+        Ok(ActivationOutput {
+            context: input.context,
+            decision,
+        })
+    }
+}
+
+/// Answers every invoke with a scripted outcome.
+struct ScriptedOutcome {
+    outcome: Outcome,
+}
+
+#[async_trait]
+impl ToolExecutor for ScriptedOutcome {
+    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, KernelError> {
+        Ok(self.outcome.clone())
+    }
+
+    async fn cancel(&self, _cancellation: ToolCancellation) -> Result<(), KernelError> {
+        Ok(())
+    }
+}
+
+fn kernel_with(
+    data_dir: &PathBuf,
+    loop_executor: Arc<dyn LoopExecutor>,
+    tool_executor: Arc<dyn ToolExecutor>,
+    tool_deadline_ms: u64,
+) -> Kernel {
+    let (publisher, _worker) = telemetry_channel();
+    Kernel::open(
+        KernelConfig {
+            data_dir: data_dir.clone(),
+            max_decisions_per_turn: 8,
+            tool_deadline_ms,
+            loop_executor,
+            model_executor: Arc::new(NoModels),
+            tool_executor,
+        },
+        publisher,
+    )
+    .unwrap()
+}
+
+/// The bind-time capability check: a tool whose `requires` is not covered by its
+/// environment's `provides` is rejected at create, and the error names the capability,
+/// the tool, and the environment — the bash-on-a-browser mistake surfaces before a
+/// session exists instead of at runtime.
+#[tokio::test]
+async fn requires_beyond_provides_rejects_create_naming_all_three_parties() {
+    let data_dir = temporary_directory();
+    let kernel = kernel_with(
+        &data_dir,
+        Arc::new(OneToolTurn { tool: "bash" }),
+        Arc::new(NoTools),
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+    );
+
+    let sealed = tool_request_with("bash", vec![Capability::Exec], vec![Capability::Js]);
+    let resolved = resolved_from(&sealed);
+    let error = match kernel.begin_session(&resolved).unwrap().complete(sealed) {
+        Ok(_) => {
+            panic!("a tool requiring `exec` must not bind to an environment providing only `js`")
+        }
+        Err(error) => error,
+    };
+    let message = error.to_string();
+    for named in ["exec", "bash", "workspace"] {
+        assert!(
+            message.contains(named),
+            "the rejection must name {named:?}: {message}"
+        );
+    }
+
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// A tool that declares nothing binds anywhere — including to an environment that
+/// provides nothing at all.
+#[tokio::test]
+async fn empty_requires_binds_to_any_environment() {
+    let data_dir = temporary_directory();
+    let kernel = kernel_with(
+        &data_dir,
+        Arc::new(OneToolTurn { tool: "plain" }),
+        Arc::new(ScriptedOutcome {
+            outcome: Outcome::Ok {
+                value: serde_json::json!({"ok": true}),
+            },
+        }),
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+    );
+
+    let sealed = tool_request_with("plain", Vec::new(), Vec::new());
+    let handle = start(&kernel, sealed);
+    let session = handle
+        .message(MessageRequest {
+            input: "run".into(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        session.status,
+        brain_protocol::SessionStatus::Idle
+    ));
+
+    drop(handle);
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// Non-ok invoke outcomes land in the loop's view as failed tool results whose output
+/// carries a readable code, and an ok outcome passes its value through untouched.
+#[tokio::test]
+async fn invoke_outcomes_map_onto_tool_results() {
+    let cases: Vec<(Outcome, bool, serde_json::Value)> = vec![
+        (
+            Outcome::Ok {
+                value: serde_json::json!({"content": "done"}),
+            },
+            false,
+            serde_json::json!("done"),
+        ),
+        (
+            Outcome::Error {
+                error: OutcomeError {
+                    code: "exec_denied".into(),
+                    message: "policy".into(),
+                    details: None,
+                },
+            },
+            true,
+            serde_json::json!("exec_denied"),
+        ),
+        (Outcome::Timeout, true, serde_json::json!("timeout")),
+        (Outcome::Cancelled, true, serde_json::json!("cancelled")),
+    ];
+    for (outcome, is_error, marker) in cases {
+        let data_dir = temporary_directory();
+        let kernel = kernel_with(
+            &data_dir,
+            Arc::new(OneToolTurn { tool: "slow" }),
+            Arc::new(ScriptedOutcome {
+                outcome: outcome.clone(),
+            }),
+            brain::DEFAULT_TOOL_DEADLINE_MS,
+        );
+        let handle = start(&kernel, tool_request());
+        let session_id = handle.id().clone();
+        handle
+            .message(MessageRequest {
+                input: "run".into(),
+            })
+            .await
+            .unwrap();
+        let events = kernel.events(&session_id, 0, 100).unwrap().events;
+        let result = events
+            .iter()
+            .find(|event| event.event_type == "tool_result")
+            .expect("the invoke must record a tool result");
+        assert_eq!(
+            result.data["result"]["is_error"], is_error,
+            "{outcome:?} must map to is_error={is_error}"
+        );
+        let output = &result.data["result"]["output"];
+        let carried = if is_error {
+            output["code"].clone()
+        } else {
+            output["content"].clone()
+        };
+        assert_eq!(carried, marker, "{outcome:?} produced {output}");
+        drop(handle);
+        drop(kernel);
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let _ = fs::remove_dir_all(data_dir);
+    }
+}
+
+/// The deadline is enforced by the caller: an invoke that outlives `deadline_ms` is
+/// dropped, recorded as a `timeout` tool result, and its environment is told to cancel
+/// — because the remote cannot be trusted to stop on its own.
+#[tokio::test]
+async fn an_overdue_invoke_is_killed_and_recorded_as_timeout() {
+    let data_dir = temporary_directory();
+    let started = Arc::new(Notify::new());
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let kernel = kernel_with(
+        &data_dir,
+        Arc::new(OneToolTurn { tool: "slow" }),
+        Arc::new(SlowTools {
+            started: started.clone(),
+            cancelled: cancelled.clone(),
+        }),
+        50,
+    );
+    let handle = start(&kernel, tool_request());
+    let session_id = handle.id().clone();
+    let session = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        handle.message(MessageRequest {
+            input: "run".into(),
+        }),
+    )
+    .await
+    .expect("the deadline must end the call long before the executor's 60s sleep")
+    .unwrap();
+    assert!(matches!(
+        session.status,
+        brain_protocol::SessionStatus::Idle
+    ));
+    assert!(
+        cancelled.load(Ordering::Acquire),
+        "the environment must be told to stop the abandoned work"
+    );
+    let events = kernel.events(&session_id, 0, 100).unwrap().events;
+    let result = events
+        .iter()
+        .find(|event| event.event_type == "tool_result")
+        .expect("the expired invoke must still record a tool result");
+    assert_eq!(result.data["result"]["is_error"], true);
+    assert_eq!(result.data["result"]["output"]["code"], "timeout");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "tool_cancel_intent"),
+        "the kill must be journalled as a cancellation intent"
+    );
+
+    drop(handle);
+    drop(kernel);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _ = fs::remove_dir_all(data_dir);
 }
