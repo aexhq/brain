@@ -35,65 +35,49 @@ No model latency in any number. ★ marks Brain in each chart.
 **Turn round-trip**
 
 ```text
-VoltAgent  █                                       4.3 ms
-Agno       ███████                                  13 ms
-Mastra     █████████                                20 ms
-Restate    ███████████                              31 ms
-Brain      █████████████                            40 ms ★
-ZeroClaw   ██████████████                           53 ms
-OpenFang   ███████████████████                     128 ms
-Temporal   ████████████████████                    174 ms
-AgentScope ████████████████████████                338 ms
-Letta      ████████████████████████████            678 ms
-LangGraph  ███████████████████████████████         1.22 s
-Awaken     ██████████████████████████████████      2.23 s
+Brain      █                                        40 ms ★
+ZeroClaw   ███                                      53 ms
+OpenFang   ██████████                              128 ms
+AgentScope ██████████████████                      338 ms
+Letta      ███████████████████████                 678 ms
+LangGraph  ████████████████████████████            1.22 s
+Awaken     █████████████████████████████████       2.23 s
 OpenClaw   ████████████████████████████████████    3.33 s
 ```
 
 **Time to first token**
 
 ```text
-VoltAgent  █                                       6.6 ms
-ZeroClaw   ████                                     11 ms
-Mastra     ████                                     11 ms
-Agno       ███████                                  16 ms
-Brain      ████████████                             40 ms ★
-OpenFang   ████████████████                         70 ms
-LangGraph  ██████████████████████                  207 ms
-AgentScope █████████████████████████               332 ms
+ZeroClaw   █                                        11 ms
+Brain      ██████████                               40 ms ★
+OpenFang   ██████████████                           70 ms
+LangGraph  █████████████████████                   207 ms
+AgentScope ████████████████████████                332 ms
 Letta      ██████████████████████████              407 ms
-OpenClaw   ██████████████████████████████████      1.33 s
+OpenClaw   █████████████████████████████████       1.33 s
 Awaken     ████████████████████████████████████    1.93 s
 ```
 
 **New session**
 
 ```text
-VoltAgent  █                                      0.59 ms
-LangGraph  ██                                     0.66 ms
-Brain      ███                                    0.76 ms ★
-Mastra     █████                                  0.99 ms
+LangGraph  █                                      0.66 ms
+Brain      ██                                     0.76 ms ★
 ZeroClaw   ██████████                              2.2 ms
-Agno       ██████████████                          3.7 ms
 Awaken     ████████████████                        5.1 ms
 OpenClaw   █████████████████                       5.4 ms
 OpenFang   █████████████████████                   9.8 ms
-Letta      ███████████████████████████████████      67 ms
-Temporal   ████████████████████████████████████     83 ms
+Letta      ████████████████████████████████████     67 ms
 ```
 
 **Journal growth per 100 turns**
 
 ```text
 AgentScope █                                       37 KiB
-OpenFang   █████████                             0.10 MiB
-Brain      ███████████████                       0.23 MiB ★
-Restate    ████████████████████                  0.45 MiB
-Temporal   ██████████████████████████████        1.59 MiB
-Awaken     ███████████████████████████████       1.77 MiB
-Letta      ████████████████████████████████      2.03 MiB
-Agno       ███████████████████████████████████   3.07 MiB
-Mastra     ████████████████████████████████████  3.44 MiB
+OpenFang   ██████████                            0.10 MiB
+Brain      █████████████████                     0.23 MiB ★
+Awaken     ███████████████████████████████████   1.77 MiB
+Letta      ████████████████████████████████████  2.03 MiB
 ```
 
 **Memory per idle session**
@@ -106,10 +90,13 @@ OpenClaw   ███████████████████████
 ```
 
 <sub>Medians from the harness in <a href="tools/bench">tools/bench</a>, every subject measured on
-the same AWS <code>c7g.xlarge</code>; bars are log-scaled. Brain's first-token figure is an upper
+the same AWS <code>c7g.xlarge</code>; bars are log-scaled. The charts compare agent runtimes —
+servers that own sessions and run an agent loop behind an API; agent libraries and generic
+durable-execution engines are measured by the harness but not charted, because a turn without
+persistence or an agent surface is a different product. Brain's first-token figure is an upper
 bound (its whole-turn median — against an instant scripted model the turn completes before a
-delta reaches the stream). VoltAgent and LangGraph's dev server persist nothing to disk, so they
-have no journal-growth bar. Subject versions, methodology, and the bounds CI enforces:
+delta reaches the stream). LangGraph's dev server persists nothing to disk, so it has no
+journal-growth bar. Subject versions, methodology, and the bounds CI enforces:
 <a href="BENCHMARKS.md">BENCHMARKS.md</a>.</sub>
 
 ## How it works
