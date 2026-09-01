@@ -158,58 +158,42 @@ the session API over [Axum](https://github.com/tokio-rs/axum) HTTP/SSE, with no 
 
 ## Quick start
 
-The session's tool is a plain function in your own process: the model decides to call it, Brain
-dials the environment, and the environment routes the call back to your code.
+The session's tool is a plain function in your own process: declare it once, hand it to
+the session, and the SDK answers the model's calls off the session's own event feed. No
+server in your app, no ports, no channel.
 
-Run a server (host networking, so Brain can dial the environment on loopback — on Docker
-Desktop enable host networking in settings, or run the binary from the
-[Quickstart](https://aex.dev/brain/docs/quickstart)):
+Run a server:
 
 ```sh
-docker run --rm --network host   -e BRAIN_LISTEN=127.0.0.1:8080   -e BRAIN_ENVIRONMENT_BASE_URL=http://127.0.0.1:8787   -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
+docker run --rm -p 127.0.0.1:8080:8080 -e BRAIN_LISTEN=0.0.0.0:8080   -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
 
 ```sh
-npm install @aexhq/brain @aexhq/agentloop-pi @aexhq/env-app zod
+npm install @aexhq/brain @aexhq/agentloop-pi zod
 ```
 
 Save as `order.mjs` and run with `node order.mjs`:
 
 ```js
-import { createServer } from "node:http";
-import { Brain, appTool, appTools, createEnvironmentHandler } from "@aexhq/brain";
-import { app } from "@aexhq/env-app";
+import { Brain, appTool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
-// The tool: one contract, one plain function, closing over your app's state.
+// One declaration: the contract the model sees and the function that answers it,
+// closing over your app's state.
 const orders = { "A-1001": { status: "shipped", eta: "Thursday" } };
-const lookupOrder = {
+const lookupOrder = appTool({
   name: "lookup_order",
   description: "Look up an order's status by id.",
   input: z.object({ id: z.string() }),
-};
-
-// Host the environment: Brain POSTs operations here, and the tool answers in-process.
-const handle = createEnvironmentHandler(app);
-const server = createServer(async (request, response) => {
-  let body = "";
-  for await (const chunk of request) body += chunk;
-  response.setHeader("content-type", "application/json");
-  response.end(JSON.stringify(await handle(JSON.parse(body))));
+  execute: ({ id }) => orders[id] ?? { status: "unknown order" },
 });
-server.on("upgrade", (request, socket, head) => handle.channel.upgrade(request, socket, head));
-server.listen(8787, "127.0.0.1");
-
-appTools
-  .connect({ url: "ws://127.0.0.1:8787/environments/env_1/channel", token: "quickstart" })
-  .register(lookupOrder, ({ id }) => orders[id] ?? { status: "unknown order" });
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
 const session = await brain.sessions.create({
   model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
   agentloop: pi(),
-  tools: [appTool(lookupOrder).useIn(app({ channelToken: "quickstart" }))],
+  tools: [lookupOrder],
 });
 
 await session.send("Where is order A-1001?");
@@ -220,10 +204,12 @@ await session.delete();
 process.exit(0);
 ```
 
-The model reads the question, calls `lookup_order`, and your function answers from the `orders`
-object beside it — the whole exchange lands in the event feed, tool call and result included.
-The same channel works from a browser page or anything behind NAT, and provisioned tools ship
-their code into a sandbox environment the same way.
+The model reads the question and calls `lookup_order`: the call arrives as a typed
+record on the session's event feed, your function answers it beside the `orders` object
+it closes over, and the SDK posts the result back — durable in the journal, tool call
+and result included. A tool that must live somewhere else — a browser page, a sandbox,
+another machine — declares a hosting environment instead, and the session API does not
+change: see the [app tools guide](https://aex.dev/brain/docs/guides/app-tools).
 
 ## Roadmap
 

@@ -9,6 +9,14 @@ the bound environment routes each invocation to it. Brain cannot tell the differ
 hostings answer `invoke {call_id, tool, input, deadline_ms}` with the same outcome —
 `ok | error | timeout | cancelled`.
 
+**If your app is the process that creates the session, you don't need any of this page.**
+Give `appTool` an `execute` function and pass it straight to `sessions.create` — the SDK
+serves the call off the session's event feed, no environment, no transport (that is the
+[quickstart](/brain/docs/quickstart)'s shape, `hosting: "client"`). This guide is for the
+tool that lives in a *different* process than the session's creator: a browser page the
+backend opened a session for, a service that must verify signed requests, anything that
+should answer tools without holding the session's API token.
+
 The registration shape is identical in both directions; only the transport differs.
 
 ## Backend app: mount a handler
