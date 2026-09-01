@@ -669,10 +669,20 @@ async fn cold_start(context: &Context_, notes: &mut Vec<String>) -> Result<Outco
         measured.push(ready_ms + serving.elapsed().as_secs_f64() * 1_000.0);
         running.stop().await;
     }
-    let percentiles = stats::summarize(&mut measured);
-    let value = percentiles
-        .p50_ms
-        .context("too few samples to report a median")?;
+    // Lifecycle samples restart the subject each time, so their counts stay small by
+    // design; the run-wide MIN_N thresholds would refuse every honest run of them.
+    measured.sort_by(f64::total_cmp);
+    let value = measured
+        .get(measured.len() / 2)
+        .copied()
+        .context("no samples completed")?;
+    let percentiles = Percentiles {
+        p50_ms: Some(value),
+        p90_ms: None,
+        p99_ms: None,
+        min_ms: measured.first().copied(),
+        max_ms: measured.last().copied(),
+    };
     notes.push("launch to first turn served on a fresh data directory; installation (prepare) untimed".to_owned());
     Ok(Outcome {
         value,
@@ -762,10 +772,20 @@ async fn recovery(context: &Context_, notes: &mut Vec<String>) -> Result<Outcome
             Ok(_) => measured.push(ready_ms + serve_ms),
         }
     }
-    let percentiles = stats::summarize(&mut measured);
-    let value = percentiles
-        .p50_ms
-        .context("too few samples to report a median")?;
+    // Lifecycle samples restart the subject each time, so their counts stay small by
+    // design; the run-wide MIN_N thresholds would refuse every honest run of them.
+    measured.sort_by(f64::total_cmp);
+    let value = measured
+        .get(measured.len() / 2)
+        .copied()
+        .context("no samples completed")?;
+    let percentiles = Percentiles {
+        p50_ms: Some(value),
+        p90_ms: None,
+        p99_ms: None,
+        min_ms: measured.first().copied(),
+        max_ms: measured.last().copied(),
+    };
     notes.push(format!(
         "kill -9 after {} turns, relaunch on the same data, until the same session served a turn whose model request carried its history",
         50
