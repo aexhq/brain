@@ -17,7 +17,8 @@ use std::{
 use tokio::sync::Semaphore;
 
 use crate::{
-    AdmissionEngine, AdmittedAgentloop, LoopLimits, WarmInstances, WorkerRequest, WorkerResponse,
+    AdmissionEngine, AdmittedAgentloop, LoopLimits, ResidentContexts, WarmInstances, WorkerRequest,
+    WorkerResponse,
 };
 
 pub struct WorkerService {
@@ -31,6 +32,8 @@ pub struct WorkerService {
     /// Warm instances, one per recently active session, so a turn's activations do not
     /// pay instantiation and state re-parsing for a conversation this worker just held.
     warm: Arc<WarmInstances>,
+    /// The context of every mid-flight turn, held between a turn's activation legs.
+    resident: Arc<ResidentContexts>,
 }
 
 impl WorkerService {
@@ -41,6 +44,7 @@ impl WorkerService {
             admitted: RwLock::new(HashMap::new()),
             running,
             warm: Arc::new(WarmInstances::default()),
+            resident: Arc::new(ResidentContexts::default()),
         })
     }
 
@@ -65,10 +69,16 @@ impl WorkerService {
             WorkerRequest::Activate {
                 digest,
                 session,
+                context_attached,
                 input,
             } => {
-                self.activate(digest.as_str().to_owned(), session, *input)
-                    .await
+                self.activate(
+                    digest.as_str().to_owned(),
+                    session,
+                    context_attached,
+                    *input,
+                )
+                .await
             }
         }
     }
@@ -98,6 +108,7 @@ impl WorkerService {
         &self,
         digest: String,
         session: String,
+        context_attached: bool,
         input: brain_protocol::ActivationInput,
     ) -> WorkerResponse {
         let component = self
@@ -118,14 +129,29 @@ impl WorkerService {
         };
         let engine = self.engine.clone();
         let warm = self.warm.clone();
+        let resident = self.resident.clone();
         // Wasmtime executes synchronously. Left on a runtime thread it blocks every other
         // connection this worker is serving for as long as the guest runs.
         let activated = tokio::task::spawn_blocking(move || {
-            component.activate(engine.engine(), engine.limits(), &warm, &session, input)
+            component.activate(
+                engine.engine(),
+                engine.limits(),
+                &warm,
+                &resident,
+                &session,
+                context_attached,
+                input,
+            )
         })
         .await;
         match activated {
-            Ok(Ok(output)) => WorkerResponse::Activated { output },
+            Ok(Ok((output, context_attached))) => WorkerResponse::Activated {
+                output,
+                context_attached,
+            },
+            Ok(Err(message)) if message.starts_with("context_required") => {
+                failed("context_required", message)
+            }
             Ok(Err(message)) => failed("activation_failed", message),
             Err(_) => failed("activation_failed", "the activation was lost".into()),
         }
@@ -184,6 +210,7 @@ mod tests {
                 service.clone().handle(WorkerRequest::Ping),
                 service.clone().handle(WorkerRequest::Activate {
                     session: "ses_test".into(),
+                    context_attached: true,
                     digest: brain_protocol::AgentloopIdentity::new("agl_missing"),
                     input: Box::new(input()),
                 }),

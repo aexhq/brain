@@ -158,15 +158,68 @@ impl WarmInstances {
     }
 }
 
+/// The context of every turn currently mid-flight in this worker, keyed by session.
+///
+/// Residency is what lets a turn's later activations cross the wire without the
+/// conversation: the kernel attaches the context on the turn's opening observation, the
+/// worker holds it here between legs, and hands it back on the terminal decision. It is
+/// deliberately NOT part of [`WarmInstances`]: instance eviction is a memory policy, but
+/// dropping a mid-turn context fails a live turn — including turns legitimately parked
+/// for minutes on a client-hosted tool call.
+///
+/// Entries are freed at terminal decisions. A turn the kernel abandons without a
+/// terminal leg (cancel, failure, deadline) leaks its entry until the next turn's
+/// opening leg overwrites it, or the TTL sweep collects it.
+#[derive(Default)]
+pub struct ResidentContexts {
+    entries: std::sync::Mutex<std::collections::HashMap<String, ResidentContext>>,
+}
+
+struct ResidentContext {
+    context: ContextEnvelope,
+    held_since: std::time::Instant,
+}
+
+/// Sweep bound: a resident context older than this belongs to a turn nothing will
+/// finish — kernel deadlines are minutes, not hours. Checked amortized on insert.
+const RESIDENT_TTL: Duration = Duration::from_secs(3600);
+const RESIDENT_SWEEP_AT: usize = 256;
+
+impl ResidentContexts {
+    fn put(&self, session: &str, context: ContextEnvelope) {
+        let Ok(mut entries) = self.entries.lock() else {
+            return;
+        };
+        if entries.len() >= RESIDENT_SWEEP_AT {
+            entries.retain(|_, held| held.held_since.elapsed() < RESIDENT_TTL);
+        }
+        entries.insert(
+            session.to_owned(),
+            ResidentContext {
+                context,
+                held_since: std::time::Instant::now(),
+            },
+        );
+    }
+
+    fn take(&self, session: &str) -> Option<ContextEnvelope> {
+        let mut entries = self.entries.lock().ok()?;
+        entries.remove(session).map(|held| held.context)
+    }
+}
+
 impl AdmittedAgentloop {
+    #[allow(clippy::too_many_arguments)]
     pub fn activate(
         &self,
         engine: &Engine,
         limits: &LoopLimits,
         warm: &WarmInstances,
+        resident: &ResidentContexts,
         session: &str,
+        context_attached: bool,
         input: ActivationInput,
-    ) -> Result<ActivationOutput, String> {
+    ) -> Result<(ActivationOutput, bool), String> {
         let mut entry = match warm.take(session, &self.digest) {
             Some(entry) => entry,
             None => {
@@ -198,6 +251,21 @@ impl AdmittedAgentloop {
         entry
             .store
             .set_epoch_deadline(epoch_deadline_ticks(limits.wall_time));
+        // The turn's context: attached on its opening observation, resident here for the
+        // legs between, returned on the terminal decision. A mid-turn leg that finds
+        // nothing resident means this worker restarted with the turn in flight — the
+        // kernel's copy is the turn's opening state, so continuing from it would replay
+        // effects; the kernel fails the turn honestly instead.
+        let mut input = input;
+        if context_attached {
+            // The opening leg's context is authoritative: it overwrites whatever a
+            // cancelled or failed earlier turn left behind.
+            let _ = resident.take(session);
+        } else {
+            input.context = resident.take(session).ok_or_else(|| {
+                "context_required: the worker holds no resident context for this session".to_owned()
+            })?;
+        }
         let state_json = match (&entry.last_state, &input.context.state) {
             (Some(last), Some(state)) if &last.value == state => Some(last.raw.clone()),
             (_, Some(state)) => Some(serde_json::to_string(state).map_err(|e| e.to_string())?),
@@ -210,13 +278,26 @@ impl AdmittedAgentloop {
             .map_err(activation_error)?
             .map_err(|error| format!("{}: {}", error.code, error.message))?;
         let raw_state = output.context.state_json.clone();
-        let output = from_wit_output(output)?;
+        let mut output = from_wit_output(output)?;
         entry.last_state = match (raw_state, output.context.state.clone()) {
             (Some(raw), Some(value)) => Some(LastState { value, raw }),
             _ => None,
         };
         warm.keep(entry);
-        Ok(output)
+        let terminal = matches!(
+            output.decision,
+            Decision::Finish { .. } | Decision::Fail { .. }
+        );
+        if terminal {
+            Ok((output, true))
+        } else {
+            let context = std::mem::take(&mut output.context);
+            // The placeholder keeps the version so the kernel's per-leg contract check
+            // still holds; everything else stays resident here.
+            output.context.protocol_version = context.protocol_version.clone();
+            resident.put(session, context);
+            Ok((output, false))
+        }
     }
 }
 
