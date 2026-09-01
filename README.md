@@ -48,13 +48,13 @@ OpenClaw   ███████████████████████
 **Time to first token**
 
 ```text
-ZeroClaw   █                                        11 ms
-Brain      ██████████                               40 ms ★
-OpenFang   ██████████████                           70 ms
-LangGraph  █████████████████████                   207 ms
-AgentScope ████████████████████████                332 ms
-Letta      ██████████████████████████              407 ms
-OpenClaw   █████████████████████████████████       1.33 s
+Brain      █                                       2.9 ms ★
+ZeroClaw   ████████                                 11 ms
+OpenFang   ██████████████████                       70 ms
+LangGraph  ████████████████████████                207 ms
+AgentScope ███████████████████████████             332 ms
+Letta      ████████████████████████████            407 ms
+OpenClaw   ██████████████████████████████████      1.33 s
 Awaken     ████████████████████████████████████    1.93 s
 ```
 
@@ -80,12 +80,15 @@ OpenClaw   ███████████████████████
 ```
 
 <sub>Medians from the harness in <a href="tools/bench">tools/bench</a>, every subject measured on
-the same AWS <code>c7g.xlarge</code>; bars are log-scaled. The charts compare agent runtimes —
+the same AWS <code>c7g.xlarge</code>; bars are log-scaled. Brain's first-token figure is now a real
+measurement: the scripted provider delays its first token deliberately and the probe
+subtracts the delay, so what remains is the runtime's own overhead. Cold start — launch on a
+fresh data directory to the first turn served — measures 0.66 s for Brain (n=8); competitor
+rows land with the next measuring session. The charts compare agent runtimes —
 servers that own sessions and run an agent loop behind an API; agent libraries and generic
 durable-execution engines are measured by the harness but not charted, because a turn without
-persistence or an agent surface is a different product. Brain's first-token figure is an upper
-bound (its whole-turn median — against an instant scripted model the turn completes before a
-delta reaches the stream). Subject versions, methodology, and the bounds CI enforces:
+persistence or an agent surface is a different product. Subject versions, methodology, and
+the bounds CI enforces:
 <a href="BENCHMARKS.md">BENCHMARKS.md</a>.</sub>
 
 ## How it works
