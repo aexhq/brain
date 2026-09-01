@@ -453,6 +453,34 @@ async fn run(cli: Cli) -> Result<()> {
                     // Each probe gets what is left of the run budget, so one hung subject
                     // cannot eat the whole thing waiting on a client timeout per sample.
                     deadline,
+                    // The launch-lifecycle probes start and kill their own instances, so
+                    // they only run for subjects the runner launches itself.
+                    relaunch: entry.launch.as_ref().map(|launch| {
+                        let name = entry.name.clone();
+                        let agentloop = agentloop.clone();
+                        let environment = std::sync::Arc::clone(&environment);
+                        let model_base_url = provider.base_url.clone();
+                        probes::Relaunch {
+                            launch: launch.clone(),
+                            subject: entry.name.clone(),
+                            run_id: writer.run_id().to_owned(),
+                            model_base_url: provider.base_url.clone(),
+                            environment_base_url: environment.base_url.clone(),
+                            provider_timings: provider.timings_handle(),
+                            make_driver: std::sync::Arc::new(move |base_url: String| {
+                                let bench = drivers::Bench {
+                                    base_url,
+                                    agentloop_package: agentloop.clone(),
+                                    pid: None,
+                                    environment: std::sync::Arc::clone(&environment),
+                                    model_base_url: model_base_url.clone(),
+                                };
+                                drivers::for_subject(&name, &bench)?.ok_or_else(|| {
+                                    anyhow::anyhow!("no driver implemented for this subject")
+                                })
+                            }),
+                        }
+                    }),
                 };
                 let step = probes::measure(subject_driver.as_ref(), entry, probe, &context);
                 let point = tokio::select! {

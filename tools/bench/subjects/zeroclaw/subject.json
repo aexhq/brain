@@ -14,6 +14,12 @@
   ],
   "requires": { "linux": true },
   "probes": {
+    "cold_start": {
+      "definition": "process launch on a fresh data directory until the first turn is served; one-time installation untimed"
+    },
+    "recovery": {
+      "definition": "kill -9 after 50 turns, relaunch on the same data, until the same session serves a turn whose model request carries its history"
+    },
     "create": {
       "definition": "chat WebSocket upgrade until the gateway has answered the client's connect frame — zeroclaw's session create, after which the session accepts a message"
     },

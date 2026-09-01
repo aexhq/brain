@@ -6,3 +6,4 @@
 .env.*
 /.worktrees
 tests/release/built/
+.claude/
