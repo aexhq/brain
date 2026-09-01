@@ -10,7 +10,7 @@ mod wire;
 
 pub use limits::LoopLimits;
 pub use package::{AgentloopManifest, AgentloopPackage};
-pub use runtime::{AdmissionEngine, AdmittedAgentloop, WarmInstances};
+pub use runtime::{AdmissionEngine, AdmittedAgentloop, ResidentContexts, WarmInstances};
 pub use service::WorkerService;
 pub use supervisor::WorkerPool;
 pub use wire::{WorkerRequest, WorkerResponse};

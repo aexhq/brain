@@ -45,14 +45,16 @@ impl WorkerClient {
         &self,
         session: String,
         digest: AgentloopIdentity,
+        context_attached: bool,
         input: ActivationInput,
         max_input_bytes: usize,
-    ) -> Result<ActivationOutput, String> {
+    ) -> Result<(ActivationOutput, bool), String> {
         match self
             .call_bounded(
                 WorkerRequest::Activate {
                     digest,
                     session,
+                    context_attached,
                     input: Box::new(input),
                 },
                 max_input_bytes,
@@ -65,7 +67,10 @@ impl WorkerClient {
                     error
                 }
             })? {
-            WorkerResponse::Activated { output } => Ok(output),
+            WorkerResponse::Activated {
+                output,
+                context_attached,
+            } => Ok((output, context_attached)),
             WorkerResponse::Error { code, message } => Err(format!("{code}: {message}")),
             response => Err(format!("unexpected worker response: {response:?}")),
         }

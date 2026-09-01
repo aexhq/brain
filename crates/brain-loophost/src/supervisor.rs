@@ -90,8 +90,9 @@ impl WorkerPool {
         &self,
         session: String,
         digest: AgentloopIdentity,
+        context_attached: bool,
         input: ActivationInput,
-    ) -> Result<ActivationOutput, String> {
+    ) -> Result<(ActivationOutput, bool), String> {
         // The input bound is enforced where the input is encoded, in `write_frame`
         // below. Encoding it here as well to measure its length meant serialising the
         // whole context twice per decision and throwing one copy away.
@@ -118,7 +119,13 @@ impl WorkerPool {
             }
         }
         let client = WorkerClient::new(&self.socket);
-        let call = client.activate(session, digest, input, self.limits.activation_input_bytes);
+        let call = client.activate(
+            session,
+            digest,
+            context_attached,
+            input,
+            self.limits.activation_input_bytes,
+        );
         // The guest is stopped by its own epoch deadline at `wall_time`, which costs one
         // instance. This timeout is the backstop for what an epoch cannot interrupt — a
         // worker blocked in a host call, a crashed worker, a socket that never answers —
@@ -126,7 +133,7 @@ impl WorkerPool {
         // be strictly later than the bound the guest enforces on itself, or it fires
         // first and pays the expensive price for the cheap failure.
         match tokio::time::timeout(self.limits.wall_time + WORKER_BACKSTOP, call).await {
-            Ok(Ok(output)) => {
+            Ok(Ok((output, context_attached))) => {
                 let output_bytes =
                     serde_json::to_vec(&output).map_err(|error| error.to_string())?;
                 if output_bytes.len() > self.limits.activation_output_bytes {
@@ -136,7 +143,7 @@ impl WorkerPool {
                     // a far larger price than the violation.
                     return Err("Agentloop activation output exceeds the configured limit".into());
                 }
-                Ok(output)
+                Ok((output, context_attached))
             }
             Ok(Err(error)) => Err(error),
             Err(_) => {

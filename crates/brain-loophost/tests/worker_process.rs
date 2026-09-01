@@ -20,10 +20,11 @@ async fn real_worker_admits_and_activates_the_typescript_diagnostic_loop() {
         LoopLimits::default(),
     );
     let digest = pool.admit(package).await.unwrap();
-    let output = pool
+    let (output, _context_attached) = pool
         .activate(
             "ses_worker_test".into(),
             digest,
+            true,
             ActivationInput {
                 context: ContextEnvelope {
                     protocol_version: "agentloop/v1".into(),
@@ -82,8 +83,9 @@ async fn concurrent_activations_all_reach_the_agentloop() {
         let pool = pool.clone();
         let digest = digest.clone();
         activations.push(tokio::spawn(async move {
-            pool.activate(format!("ses_{index}"), digest, activation(index))
+            pool.activate(format!("ses_{index}"), digest, true, activation(index))
                 .await
+                .map(|(output, _)| output)
         }));
     }
 
