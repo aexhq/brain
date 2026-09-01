@@ -124,6 +124,29 @@ paths:
             application/json:
               schema: { $ref: './schemas.json#/$defs/EnvironmentCallResult' }
         default: { $ref: '#/components/responses/Error' }
+  /v1/sessions/{session_id}/tool-results/{operation_id}:
+    post:
+      operationId: resolveToolCall
+      description: >-
+        Answers a client-hosted tool call. The `tool_intent` record on the event feed
+        carries the operation id; the body is the call's outcome. Idempotent per
+        operation: a retry with the same key replays the first answer, and a call that
+        is no longer pending is a conflict.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - name: operation_id
+          in: path
+          required: true
+          schema: { $ref: './schemas.json#/$defs/OperationId' }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: './schemas.json#/$defs/Outcome' }
+      responses:
+        '204': { description: Outcome recorded }
+        default: { $ref: '#/components/responses/Error' }
   /v1/sessions/{session_id}/cancel:
     post:
       operationId: cancelSession

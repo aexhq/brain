@@ -11,8 +11,8 @@ use brain_loophost::WorkerPool;
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage, Identity,
-    MessageRequest, ModelBinding, ModelPresentation, RequestedToolBinding, ResolvedEnvironment,
-    ResolvedSessionRequest, Session, SessionId, SessionList, ToolDefinition,
+    MessageRequest, ModelBinding, ModelPresentation, OperationId, Outcome, RequestedToolBinding,
+    ResolvedEnvironment, ResolvedSessionRequest, Session, SessionId, SessionList, ToolDefinition,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Mutex;
@@ -422,6 +422,41 @@ impl BrainApi for ServerApi {
         &self,
     ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
         self.resources.kernel.subscribe()
+    }
+
+    async fn resolve_tool_call(
+        &self,
+        session_id: SessionId,
+        operation_id: OperationId,
+        idempotency_key: String,
+        outcome: Outcome,
+    ) -> Result<(), ApiError> {
+        self.ownership
+            .authorize_mutation(&session_id)
+            .await
+            .map_err(api_error)?;
+        // No session lock here on purpose: `send_message` holds it for the whole turn,
+        // and this is the request that lets that turn finish.
+        let scope = format!("session:{session_id}:tool_result:{operation_id}");
+        let lock = self.idempotency_lock(&scope, &idempotency_key)?;
+        let _guard = lock.lock().await;
+        if self
+            .resources
+            .kernel
+            .idempotency_get::<_>(&scope, &idempotency_key, &outcome)
+            .map_err(api_error)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        self.resources
+            .kernel
+            .resolve_tool_call(&session_id, &operation_id, outcome.clone())
+            .map_err(api_error)?;
+        self.resources
+            .kernel
+            .idempotency_put(&scope, &idempotency_key, &outcome, &serde_json::json!({}))
+            .map_err(api_error)
     }
 
     async fn cancel_session(

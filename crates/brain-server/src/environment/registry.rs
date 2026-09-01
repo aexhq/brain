@@ -108,29 +108,34 @@ impl EnvironmentRegistry {
             .tool_bindings
             .into_iter()
             .map(|tool| {
-                let attachment_id =
-                    attachments
-                        .get(&tool.environment_id)
-                        .cloned()
-                        .ok_or_else(|| {
-                            KernelError::InvalidState(
-                                "Tool requested an unresolved Environment".into(),
-                            )
-                        })?;
+                // A client-hosted tool binds no environment: it is served by the
+                // session's creator off the event feed.
+                let Some(environment_id) = tool.environment_id else {
+                    return Ok(ToolBinding {
+                        name: tool.name,
+                        environment: None,
+                        attachment_id: None,
+                        requires: tool.requires,
+                        binding_names: tool.binding_names,
+                        hosting: tool.hosting,
+                        payload: tool.payload,
+                    });
+                };
+                let attachment_id = attachments.get(&environment_id).cloned().ok_or_else(|| {
+                    KernelError::InvalidState("Tool requested an unresolved Environment".into())
+                })?;
                 Ok(ToolBinding {
                     name: tool.name,
                     environment: environments
                         .iter()
-                        .find(|environment| {
-                            environment.binding.environment_id == tool.environment_id
-                        })
-                        .map(|environment| environment.binding.clone())
+                        .find(|environment| environment.binding.environment_id == environment_id)
+                        .map(|environment| Some(environment.binding.clone()))
                         .ok_or_else(|| {
                             KernelError::InvalidState(
                                 "Tool requested an unresolved Environment".into(),
                             )
                         })?,
-                    attachment_id,
+                    attachment_id: Some(attachment_id),
                     requires: tool.requires,
                     binding_names: tool.binding_names,
                     hosting: tool.hosting,
@@ -346,7 +351,7 @@ fn provisions_for(
     request
         .tool_bindings
         .iter()
-        .filter(|tool| &tool.environment_id == environment_id)
+        .filter(|tool| tool.environment_id.as_ref() == Some(environment_id))
         .filter_map(|tool| {
             let payload = tool.payload.clone()?;
             let definition = request

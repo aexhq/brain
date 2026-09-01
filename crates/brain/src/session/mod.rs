@@ -12,7 +12,7 @@ use std::{
 
 use brain_protocol::{
     AgentloopIdentity, Capability, EnvironmentAttachment, EnvironmentId, EventPage, HistoryEvent,
-    Identity, JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId,
+    Identity, JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId, Outcome,
     RequestedToolBinding, ResolvedEnvironment, ResolvedSessionRequest, SealedSessionConfig,
     Session, SessionId, SessionStatus, ToolBinding, ToolHosting, ToolPayload, operation_id,
 };
@@ -44,6 +44,81 @@ struct KernelInner {
     store: Arc<ObservedJournal>,
     config: KernelConfig,
     sessions: Mutex<HashMap<SessionId, SessionRuntime>>,
+    pending_tools: Arc<PendingToolCalls>,
+}
+
+/// Client-hosted tool calls parked mid-turn, waiting for an outcome the session's
+/// creator POSTs back. In-memory on purpose: a restart interrupts the turn exactly like
+/// any other in-flight tool call, and the `tool_intent` record on the feed is the
+/// durable statement of what was asked.
+pub(crate) struct PendingToolCalls {
+    inner: Mutex<HashMap<OperationId, PendingToolCall>>,
+}
+
+struct PendingToolCall {
+    session_id: SessionId,
+    sender: tokio::sync::oneshot::Sender<Outcome>,
+}
+
+impl PendingToolCalls {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Registers a parked call and hands back the receiver the turn awaits. Called
+    /// before the `tool_intent` commit so a client that answers off the live feed can
+    /// never race an empty map.
+    pub(crate) fn park(
+        &self,
+        session_id: SessionId,
+        operation_id: OperationId,
+    ) -> tokio::sync::oneshot::Receiver<Outcome> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.insert(operation_id, PendingToolCall { session_id, sender });
+        }
+        receiver
+    }
+
+    /// Delivers an outcome to a parked call. A call that is not pending — unknown,
+    /// already answered, expired, or belonging to another session — is a conflict the
+    /// caller hears about; the idempotency layer above turns retries into replays.
+    pub(crate) fn resolve(
+        &self,
+        session_id: &SessionId,
+        operation_id: &OperationId,
+        outcome: Outcome,
+    ) -> Result<(), KernelError> {
+        let entry = {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| KernelError::InvalidState("pending Tool map poisoned".into()))?;
+            match inner.get(operation_id) {
+                Some(pending) if &pending.session_id == session_id => inner.remove(operation_id),
+                _ => None,
+            }
+        };
+        let Some(entry) = entry else {
+            return Err(KernelError::InvalidState(
+                "no client Tool call is pending under this operation".into(),
+            ));
+        };
+        // A dropped receiver means the turn stopped waiting (timeout or cancellation)
+        // between our lookup and the send; the caller is told the same thing.
+        entry.sender.send(outcome).map_err(|_| {
+            KernelError::InvalidState("no client Tool call is pending under this operation".into())
+        })
+    }
+
+    /// Forgets a parked call without answering it (timeout, cancellation, failed commit).
+    pub(crate) fn discard(&self, operation_id: &OperationId) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.remove(operation_id);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -101,6 +176,7 @@ impl Kernel {
                 store: Arc::new(ObservedJournal::new(store, telemetry)),
                 config,
                 sessions: Mutex::new(HashMap::new()),
+                pending_tools: Arc::new(PendingToolCalls::new()),
             }),
         };
         kernel.interrupt_unfinished_turns()?;
@@ -405,6 +481,20 @@ impl Kernel {
         Ok(row)
     }
 
+    /// Answers a parked client-hosted tool call. Deliberately lock-free at the session
+    /// level: the turn holding the park is inside `message`, which holds the session
+    /// lock — this is the call that lets it finish.
+    pub fn resolve_tool_call(
+        &self,
+        session_id: &SessionId,
+        operation_id: &OperationId,
+        outcome: Outcome,
+    ) -> Result<(), KernelError> {
+        self.inner
+            .pending_tools
+            .resolve(session_id, operation_id, outcome)
+    }
+
     pub fn idempotency_get<T: serde::Serialize>(
         &self,
         scope: &str,
@@ -514,6 +604,7 @@ impl Kernel {
             cancelled.clone(),
             self.inner.store.live_sender(),
             history,
+            self.inner.pending_tools.clone(),
         )?;
         tokio::spawn(actor.run());
         sessions.insert(
@@ -712,7 +803,7 @@ impl EnvironmentView for EnvironmentAttachment {
 
 trait ToolBindingView {
     fn name(&self) -> &str;
-    fn environment_id(&self) -> &EnvironmentId;
+    fn environment_id(&self) -> Option<&EnvironmentId>;
     fn requires(&self) -> &[Capability];
     fn binding_names(&self) -> &[String];
     fn hosting(&self) -> ToolHosting;
@@ -724,8 +815,8 @@ impl ToolBindingView for RequestedToolBinding {
         &self.name
     }
 
-    fn environment_id(&self) -> &EnvironmentId {
-        &self.environment_id
+    fn environment_id(&self) -> Option<&EnvironmentId> {
+        self.environment_id.as_ref()
     }
 
     fn requires(&self) -> &[Capability] {
@@ -750,8 +841,10 @@ impl ToolBindingView for ToolBinding {
         &self.name
     }
 
-    fn environment_id(&self) -> &EnvironmentId {
-        &self.environment.environment_id
+    fn environment_id(&self) -> Option<&EnvironmentId> {
+        self.environment
+            .as_ref()
+            .map(|binding| &binding.environment_id)
     }
 
     fn requires(&self) -> &[Capability] {
@@ -871,7 +964,9 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
         .any(|environment| !identifier_valid(environment.environment_id().as_str()))
         || request.tool_bindings().iter().any(|binding| {
             !identifier_valid(binding.name())
-                || !identifier_valid(binding.environment_id().as_str())
+                || binding
+                    .environment_id()
+                    .is_some_and(|id| !identifier_valid(id.as_str()))
                 || binding
                     .binding_names()
                     .iter()
@@ -882,14 +977,38 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
             "Environment or Tool binding has an invalid identity".into(),
         ));
     }
-    // A callback tool's code stays in the author's process; a payload beside it would
-    // be an artifact nothing is allowed to run.
+    // A callback or client tool's code stays in the author's process; a payload beside
+    // it would be an artifact nothing is allowed to run.
     if request.tool_bindings().iter().any(|binding| {
-        matches!(binding.hosting(), ToolHosting::Callback) && binding.payload().is_some()
+        matches!(
+            binding.hosting(),
+            ToolHosting::Callback | ToolHosting::Client
+        ) && binding.payload().is_some()
     }) {
         return Err(KernelError::InvalidState(
-            "a callback Tool binding cannot carry a payload".into(),
+            "a callback or client Tool binding cannot carry a payload".into(),
         ));
+    }
+    // A client-hosted tool is served off the event feed by the session's creator: no
+    // environment is on its path, so binding one (or requiring capabilities only an
+    // environment could provide) is a contradiction the caller should hear about.
+    for binding in request.tool_bindings() {
+        let client = matches!(binding.hosting(), ToolHosting::Client);
+        if client && binding.environment_id().is_some() {
+            return Err(KernelError::InvalidState(
+                "a client-hosted Tool binding cannot name an Environment".into(),
+            ));
+        }
+        if client && !binding.requires().is_empty() {
+            return Err(KernelError::InvalidState(
+                "a client-hosted Tool binding cannot require Environment capabilities".into(),
+            ));
+        }
+        if !client && binding.environment_id().is_none() {
+            return Err(KernelError::InvalidState(
+                "every provisioned or callback Tool binding must name a bound Environment".into(),
+            ));
+        }
     }
     let mut definitions: Vec<&str> = request
         .presentation()
@@ -922,11 +1041,11 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
             "Environment identities must be unique".into(),
         ));
     }
-    if request
-        .tool_bindings()
-        .iter()
-        .any(|binding| !environment_ids.contains(binding.environment_id()))
-    {
+    if request.tool_bindings().iter().any(|binding| {
+        binding
+            .environment_id()
+            .is_some_and(|id| !environment_ids.contains(id))
+    }) {
         return Err(KernelError::InvalidState(
             "every Tool binding must name a bound Environment".into(),
         ));
@@ -937,10 +1056,13 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
     // anywhere. Provides is known only once the environment has attached, so only the
     // sealed shape is checked — every admitted session passes through it.
     for binding in request.tool_bindings() {
+        let Some(environment_id) = binding.environment_id() else {
+            continue;
+        };
         let provides = request
             .environments()
             .iter()
-            .find(|environment| environment.environment_id() == binding.environment_id())
+            .find(|environment| environment.environment_id() == environment_id)
             .and_then(EnvironmentView::provides);
         let Some(provides) = provides else { continue };
         if let Some(missing) = binding
@@ -949,9 +1071,8 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
             .find(|capability| !provides.contains(capability))
         {
             return Err(KernelError::InvalidState(format!(
-                "Tool `{}` requires capability `{missing}` that Environment `{}` does not provide",
+                "Tool `{}` requires capability `{missing}` that Environment `{environment_id}` does not provide",
                 binding.name(),
-                binding.environment_id()
             )));
         }
     }
@@ -1035,7 +1156,7 @@ mod tests {
             }],
             tool_bindings: vec![RequestedToolBinding {
                 name: "search".into(),
-                environment_id: EnvironmentId::new("workspace"),
+                environment_id: Some(EnvironmentId::new("workspace")),
                 requires: Vec::new(),
                 binding_names: Vec::new(),
                 hosting: ToolHosting::Provisioned,
@@ -1064,8 +1185,8 @@ mod tests {
             }],
             tool_bindings: vec![ToolBinding {
                 name: "search".into(),
-                environment: environment_binding(),
-                attachment_id: AttachmentId::new("attachment"),
+                environment: Some(environment_binding()),
+                attachment_id: Some(AttachmentId::new("attachment")),
                 requires: vec![Capability::Exec],
                 binding_names: Vec::new(),
                 hosting: ToolHosting::Provisioned,
@@ -1173,7 +1294,7 @@ mod tests {
                             ..environment.clone()
                         })
                         .collect();
-                    request.tool_bindings[0].environment_id = EnvironmentId::new("env0");
+                    request.tool_bindings[0].environment_id = Some(EnvironmentId::new("env0"));
                 },
                 "size or identity bound",
             ),
@@ -1204,7 +1325,7 @@ mod tests {
                 "an Environment identity that is not an identifier",
                 |request| {
                     request.environments[0].environment_id = EnvironmentId::new("../escape");
-                    request.tool_bindings[0].environment_id = EnvironmentId::new("../escape");
+                    request.tool_bindings[0].environment_id = Some(EnvironmentId::new("../escape"));
                 },
                 "invalid identity",
             ),
@@ -1253,7 +1374,9 @@ mod tests {
             ),
             (
                 "a binding naming an Environment that was not granted",
-                |request| request.tool_bindings[0].environment_id = EnvironmentId::new("elsewhere"),
+                |request| {
+                    request.tool_bindings[0].environment_id = Some(EnvironmentId::new("elsewhere"));
+                },
                 "must name a bound Environment",
             ),
         ];
@@ -1304,8 +1427,11 @@ mod tests {
                 "an Environment identity that is not an identifier",
                 |sealed| {
                     sealed.environments[0].binding.environment_id = EnvironmentId::new("../escape");
-                    sealed.tool_bindings[0].environment.environment_id =
-                        EnvironmentId::new("../escape");
+                    sealed.tool_bindings[0]
+                        .environment
+                        .as_mut()
+                        .unwrap()
+                        .environment_id = EnvironmentId::new("../escape");
                 },
                 "invalid identity",
             ),
@@ -1335,8 +1461,11 @@ mod tests {
             (
                 "a binding naming an Environment that was not sealed",
                 |sealed| {
-                    sealed.tool_bindings[0].environment.environment_id =
-                        EnvironmentId::new("elsewhere");
+                    sealed.tool_bindings[0]
+                        .environment
+                        .as_mut()
+                        .unwrap()
+                        .environment_id = EnvironmentId::new("elsewhere");
                 },
                 "must name a bound Environment",
             ),

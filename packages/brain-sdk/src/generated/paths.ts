@@ -99,6 +99,23 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{session_id}/tool-results/{operation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Answers a client-hosted tool call. The `tool_intent` record on the event feed carries the operation id; the body is the call's outcome. Idempotent per operation: a retry with the same key replays the first answer, and a call that is no longer pending is a conflict. */
+        post: operations["resolveToolCall"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{session_id}/cancel": {
         parameters: {
             query?: never;
@@ -233,10 +250,10 @@ export type components = {
             requires: components["schemas"]["CapabilityName"][];
             binding_names: components["schemas"]["Identifier"][];
             /** @enum {unknown} */
-            hosting?: "provisioned" | "callback";
+            hosting?: "provisioned" | "callback" | "client";
             payload?: components["schemas"]["ToolPayload"];
-            environment_id: components["schemas"]["Identifier"];
-        } & unknown;
+            environment_id?: components["schemas"]["Identifier"];
+        } & (unknown & unknown & unknown);
         ExecGrant: {
             timeout_ms_max?: number;
             output_bytes_max?: number;
@@ -292,6 +309,27 @@ export type components = {
         };
         EnvironmentCallResult: {
             output: unknown;
+        };
+        OperationId: string;
+        OutcomeError: {
+            code: components["schemas"]["Identifier"];
+            message: string;
+            details?: unknown;
+        };
+        Outcome: {
+            /** @constant */
+            status: "ok";
+            value: unknown;
+        } | {
+            /** @constant */
+            status: "error";
+            error: components["schemas"]["OutcomeError"];
+        } | {
+            /** @constant */
+            status: "timeout";
+        } | {
+            /** @constant */
+            status: "cancelled";
         };
         Event: {
             event_id: components["schemas"]["Identifier"];
@@ -526,6 +564,34 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["EnvironmentCallResult"];
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    resolveToolCall: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                session_id: components["parameters"]["SessionId"];
+                operation_id: components["schemas"]["OperationId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Outcome"];
+            };
+        };
+        responses: {
+            /** @description Outcome recorded */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };

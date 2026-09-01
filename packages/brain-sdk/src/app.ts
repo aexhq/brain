@@ -60,7 +60,10 @@ interface RegisteredAppTool {
   readonly handler: AppToolHandler<unknown, unknown>;
 }
 
-class AppToolRegistry {
+/** Shared execution semantics for app-held tools, whichever transport delivers the
+ * frame: schema-checked input and output, a clamped deadline race, best-effort
+ * cancellation, exactly one Outcome. Internal to the SDK's transports. */
+export class AppToolRegistry {
   private readonly tools = new Map<string, RegisteredAppTool>();
   private readonly active = new Map<string, { readonly controller: AbortController; cancelled: boolean }>();
 

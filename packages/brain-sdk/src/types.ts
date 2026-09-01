@@ -4,6 +4,7 @@ declare const agentloopBrand: unique symbol;
 declare const environmentBrand: unique symbol;
 declare const toolBrand: unique symbol;
 declare const boundToolBrand: unique symbol;
+declare const clientToolBrand: unique symbol;
 
 export type Schema = z.ZodType;
 export type SchemaInput<Value extends Schema> = z.input<Value>;
@@ -17,6 +18,12 @@ export interface Tool<Input = unknown, Output = unknown> {
 }
 export interface BoundTool<Input = unknown, Output = unknown> {
   readonly [boundToolBrand]: { readonly input: Input; readonly output: Output };
+}
+/** A tool served by the process that creates the session: declared with `appTool`
+ * plus an `execute` function and passed straight to `sessions.create` — no
+ * environment, no channel. The SDK answers its calls off the session's event feed. */
+export interface ClientTool<Input = unknown, Output = unknown> {
+  readonly [clientToolBrand]: { readonly input: Input; readonly output: Output };
 }
 
 export interface ToolDefinition {
@@ -100,7 +107,7 @@ export interface UserInput { readonly message: string }
 export interface CreateSessionOptions {
   readonly model: ModelSelection;
   readonly agentloop: Agentloop;
-  readonly tools?: readonly BoundTool[];
+  readonly tools?: readonly (BoundTool | ClientTool)[];
   readonly system?: string;
   readonly responseFormat?: unknown;
   /**
@@ -132,6 +139,15 @@ export interface SessionEvent<Data = unknown> {
   readonly id: string;
   readonly sequence: number;
   readonly recordedAt: Date;
+  readonly type: string;
+  readonly data: Data;
+}
+
+/** One frame off the live event stream. Journalled records carry their sequence;
+ * streaming deltas (`assistant_delta`, `tool_call_delta`, `refusal_delta`) are never
+ * journalled and carry none. */
+export interface SessionStreamEvent<Data = unknown> {
+  readonly sequence?: number;
   readonly type: string;
   readonly data: Data;
 }

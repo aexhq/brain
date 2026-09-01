@@ -40,10 +40,34 @@ export type BoundTool = {
    * @maxItems 64
    */
   binding_names: Identifier[];
-  hosting?: "provisioned" | "callback";
+  hosting?: "provisioned" | "callback" | "client";
   payload?: ToolPayload;
-  environment_id: Identifier;
+  environment_id?: Identifier;
 };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "OperationId".
+ */
+export type OperationId = string;
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "Outcome".
+ */
+export type Outcome =
+  | {
+      status: "ok";
+      value: unknown;
+    }
+  | {
+      status: "error";
+      error: OutcomeError;
+    }
+  | {
+      status: "timeout";
+    }
+  | {
+      status: "cancelled";
+    };
 
 export interface BrainSessionAPIV1 {
   contract: "session/v1";
@@ -191,6 +215,15 @@ export interface EnvironmentCallRequest {
  */
 export interface EnvironmentCallResult {
   output: unknown;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "OutcomeError".
+ */
+export interface OutcomeError {
+  code: Identifier;
+  message: string;
+  details?: unknown;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

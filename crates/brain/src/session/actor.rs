@@ -8,11 +8,12 @@ use brain_protocol::{
     ActivationInput, ContextEnvelope, Decision, EnvironmentRequest, Event, EventId, Identity,
     LiveEvent, MessageRequest, ModelStreamEvent, Observation, OperationId, Outcome, Presentation,
     RuntimeEnvelope, SealedSessionConfig, Session, SessionId, SessionStatus, StreamingEvent,
-    ToolCancellation, ToolDispatch, ToolResult, operation_id,
+    ToolCancellation, ToolDispatch, ToolHosting, ToolResult, operation_id,
 };
 use futures_util::future::join_all;
 use tokio::sync::{mpsc, oneshot};
 
+use super::PendingToolCalls;
 use crate::{
     KernelError, LoopExecutor, ModelExecutor, ToolExecutor,
     journal::{AppendRecord, JournalRecord, JournalStore, SessionRow, SessionUpdate},
@@ -54,6 +55,8 @@ pub struct SessionActor {
     /// of the turn count, 5 MiB at 250 turns and 73 MiB at 1000. Only the messages past
     /// this point are recorded now.
     journalled_messages: usize,
+    /// Where client-hosted tool calls wait for their POSTed outcome.
+    pending_tools: Arc<PendingToolCalls>,
 }
 
 impl SessionActor {
@@ -70,6 +73,7 @@ impl SessionActor {
         cancel_requested: Arc<AtomicBool>,
         live: tokio::sync::broadcast::Sender<(SessionId, brain_protocol::LiveEvent)>,
         opening_history: Vec<serde_json::Value>,
+        pending_tools: Arc<PendingToolCalls>,
     ) -> Result<Self, KernelError> {
         // The row is owned, and neither value is read again after this: `sealed` and
         // `context` replace them. Cloning first deep-copied the whole configuration and
@@ -106,6 +110,7 @@ impl SessionActor {
             // its own history back, so the first request after a restart records its
             // messages whole and every one after that is a delta again.
             journalled_messages: 0,
+            pending_tools,
         })
     }
 
@@ -339,7 +344,26 @@ impl SessionActor {
                         ));
                         dispatches.push(dispatch);
                     }
-                    self.commit(intents, SessionUpdate::default())?;
+                    // A client-hosted call parks before the intent commit: the commit is
+                    // what puts `tool_intent` on the live feed, so a client answering off
+                    // that feed must never find the park missing.
+                    let mut receivers: Vec<Option<oneshot::Receiver<Outcome>>> = dispatches
+                        .iter()
+                        .map(|dispatch| {
+                            matches!(dispatch.binding.hosting, ToolHosting::Client).then(|| {
+                                self.pending_tools.park(
+                                    dispatch.session_id.clone(),
+                                    dispatch.operation_id.clone(),
+                                )
+                            })
+                        })
+                        .collect();
+                    if let Err(error) = self.commit(intents, SessionUpdate::default()) {
+                        for dispatch in &dispatches {
+                            self.pending_tools.discard(&dispatch.operation_id);
+                        }
+                        return Err(error);
+                    }
                     let futures =
                         dispatches
                             .iter()
@@ -347,6 +371,8 @@ impl SessionActor {
                             .enumerate()
                             .map(|(index, dispatch)| {
                                 let executor = self.tool_executor.clone();
+                                let pending = self.pending_tools.clone();
+                                let receiver = receivers[index].take();
                                 async move {
                                     let operation_id = dispatch.operation_id.clone();
                                     let call_id = dispatch.invocation.call_id.clone();
@@ -354,14 +380,29 @@ impl SessionActor {
                                     // The deadline is enforced here, on the calling side: the
                                     // remote cannot be trusted to, so an overdue call is
                                     // dropped and recorded as its own distinguished outcome.
-                                    let result = match tokio::time::timeout(
-                                        deadline,
-                                        executor.execute(dispatch),
-                                    )
-                                    .await
-                                    {
-                                        Ok(result) => result.map(|outcome| (outcome, false)),
-                                        Err(_) => Ok((Outcome::Timeout, true)),
+                                    let result = match receiver {
+                                        Some(receiver) => {
+                                            match tokio::time::timeout(deadline, receiver).await {
+                                                Ok(Ok(outcome)) => Ok((outcome, false)),
+                                                // The sender is gone without an answer: the
+                                                // park was discarded under us, which only a
+                                                // cancellation does.
+                                                Ok(Err(_)) => Ok((Outcome::Cancelled, false)),
+                                                Err(_) => {
+                                                    pending.discard(&operation_id);
+                                                    Ok((Outcome::Timeout, true))
+                                                }
+                                            }
+                                        }
+                                        None => match tokio::time::timeout(
+                                            deadline,
+                                            executor.execute(dispatch),
+                                        )
+                                        .await
+                                        {
+                                            Ok(result) => result.map(|outcome| (outcome, false)),
+                                            Err(_) => Ok((Outcome::Timeout, true)),
+                                        },
                                     };
                                     (index, operation_id, call_id, result)
                                 }
@@ -533,9 +574,19 @@ impl SessionActor {
             .collect();
         let futures = cancellations.into_iter().map(|cancellation| {
             let executor = self.tool_executor.clone();
+            let pending = self.pending_tools.clone();
             async move {
                 let operation_id = cancellation.operation_id.clone();
-                (operation_id, executor.cancel(cancellation).await)
+                // A client-hosted call has no environment to tell: dropping the park is
+                // the cancellation, and the journaled `tool_cancel_intent` above is the
+                // signal the client aborts its local handler on.
+                let result = if matches!(cancellation.binding.hosting, ToolHosting::Client) {
+                    pending.discard(&cancellation.target_operation_id);
+                    Ok(())
+                } else {
+                    executor.cancel(cancellation).await
+                };
+                (operation_id, result)
             }
         });
         let results = tokio::time::timeout(Duration::from_secs(5), join_all(futures)).await;

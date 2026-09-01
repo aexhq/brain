@@ -29,7 +29,7 @@
     "BoundTool": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "input_schema", "requires", "binding_names", "environment_id"],
+      "required": ["name", "description", "input_schema", "requires", "binding_names"],
       "properties": {
         "name": { "$ref": "#/$defs/Identifier" },
         "description": { "type": "string", "maxLength": 8192 },
@@ -37,12 +37,14 @@
         "output_schema": { "type": "object" },
         "requires": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/CapabilityName" } },
         "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
-        "hosting": { "enum": ["provisioned", "callback"] },
+        "hosting": { "enum": ["provisioned", "callback", "client"] },
         "payload": { "$ref": "#/$defs/ToolPayload" },
         "environment_id": { "$ref": "#/$defs/Identifier" }
       },
       "allOf": [
-        { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "callback" } } }, "then": { "not": { "required": ["payload"] } } }
+        { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "callback" } } }, "then": { "not": { "required": ["payload"] } } },
+        { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "client" } } }, "then": { "allOf": [ { "not": { "required": ["payload"] } }, { "not": { "required": ["environment_id"] } } ] } },
+        { "if": { "not": { "required": ["hosting"], "properties": { "hosting": { "const": "client" } } } }, "then": { "required": ["environment_id"] } }
       ]
     },
     "ExecGrant": {
@@ -152,6 +154,25 @@
       "additionalProperties": false,
       "required": ["output"],
       "properties": { "output": {} }
+    },
+    "OperationId": { "type": "string", "pattern": "^op_[0-9a-f]{32}$" },
+    "Outcome": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value"], "properties": { "status": { "const": "ok" }, "value": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "error"], "properties": { "status": { "const": "error" }, "error": { "$ref": "#/$defs/OutcomeError" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "timeout" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "cancelled" } } }
+      ]
+    },
+    "OutcomeError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/Identifier" },
+        "message": { "type": "string", "maxLength": 4096 },
+        "details": {}
+      }
     },
     "Session": {
       "type": "object",

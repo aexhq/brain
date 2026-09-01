@@ -430,11 +430,43 @@ fn tool_request_with(
         }],
         tool_bindings: vec![ToolBinding {
             name: tool_name.into(),
-            environment,
-            attachment_id: AttachmentId::new("attachment"),
+            environment: Some(environment),
+            attachment_id: Some(AttachmentId::new("attachment")),
             requires,
             binding_names: Vec::new(),
             hosting: ToolHosting::Provisioned,
+            payload: None,
+        }],
+    }
+}
+
+/// A sealed configuration binding one client-hosted tool: no environment anywhere.
+fn client_tool_request(tool_name: &str) -> SealedSessionConfig {
+    SealedSessionConfig {
+        agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
+        brain_configuration: serde_json::json!({}),
+        model: ModelBinding {
+            binding_id: "gateway".into(),
+            model: "openai/test".into(),
+        },
+        presentation: ModelPresentation {
+            system: "test".into(),
+            tools: vec![ToolDefinition {
+                name: tool_name.into(),
+                description: "answered by the session's creator".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                output_schema: None,
+            }],
+            response_format: None,
+        },
+        environments: Vec::new(),
+        tool_bindings: vec![ToolBinding {
+            name: tool_name.into(),
+            environment: None,
+            attachment_id: None,
+            requires: Vec::new(),
+            binding_names: Vec::new(),
+            hosting: ToolHosting::Client,
             payload: None,
         }],
     }
@@ -481,7 +513,10 @@ fn resolved_from(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
             .iter()
             .map(|binding| RequestedToolBinding {
                 name: binding.name.clone(),
-                environment_id: binding.environment.environment_id.clone(),
+                environment_id: binding
+                    .environment
+                    .as_ref()
+                    .map(|environment| environment.environment_id.clone()),
                 requires: binding.requires.clone(),
                 binding_names: binding.binding_names.clone(),
                 hosting: binding.hosting,
@@ -1191,6 +1226,184 @@ async fn an_overdue_invoke_is_killed_and_recorded_as_timeout() {
             .any(|event| event.event_type == "tool_cancel_intent"),
         "the kill must be journalled as a cancellation intent"
     );
+
+    drop(handle);
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// A dispatch that reaches the environment executor for a client-hosted call is the
+/// bug this executor exists to catch.
+struct RefusesDispatch;
+
+#[async_trait]
+impl ToolExecutor for RefusesDispatch {
+    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, KernelError> {
+        Err(KernelError::InvalidState(
+            "a client-hosted call must never reach the environment executor".into(),
+        ))
+    }
+
+    async fn cancel(&self, _cancellation: ToolCancellation) -> Result<(), KernelError> {
+        Err(KernelError::InvalidState(
+            "a client-hosted cancellation must never reach the environment executor".into(),
+        ))
+    }
+}
+
+/// A client-hosted tool call parks the turn on its `tool_intent` and finishes when the
+/// outcome is POSTed back: no environment executor is on the path, the intent on the
+/// feed carries the operation id the answer is correlated by, and the answered value
+/// lands in the journalled `tool_result` untouched.
+#[tokio::test]
+async fn a_client_tool_call_parks_until_its_outcome_is_posted() {
+    let data_dir = temporary_directory();
+    let kernel = kernel_with(
+        &data_dir,
+        Arc::new(OneToolTurn { tool: "local" }),
+        Arc::new(RefusesDispatch),
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+    );
+    let handle = start(&kernel, client_tool_request("local"));
+    let session_id = handle.id().clone();
+    let turn = {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            handle
+                .message(MessageRequest {
+                    input: "run".into(),
+                })
+                .await
+        })
+    };
+    let mut operation_id = None;
+    for _ in 0..500 {
+        let events = kernel.events(&session_id, 0, 100).unwrap().events;
+        if let Some(intent) = events
+            .iter()
+            .find(|event| event.event_type == "tool_intent")
+        {
+            assert_eq!(intent.data["binding"]["hosting"], "client");
+            assert!(
+                intent.data["binding"].get("environment").is_none()
+                    || intent.data["binding"]["environment"].is_null(),
+                "a client tool intent must not carry an environment binding"
+            );
+            operation_id = Some(
+                serde_json::from_value::<brain_protocol::OperationId>(
+                    intent.data["operation_id"].clone(),
+                )
+                .unwrap(),
+            );
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let operation_id = operation_id.expect("the parked call must journal its tool_intent");
+    kernel
+        .resolve_tool_call(
+            &session_id,
+            &operation_id,
+            Outcome::Ok {
+                value: serde_json::json!({"content": "from the client"}),
+            },
+        )
+        .expect("the parked call must accept its outcome");
+    let session = tokio::time::timeout(std::time::Duration::from_secs(5), turn)
+        .await
+        .expect("the turn must finish once the outcome lands")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        session.status,
+        brain_protocol::SessionStatus::Idle
+    ));
+    let events = kernel.events(&session_id, 0, 100).unwrap().events;
+    let result = events
+        .iter()
+        .find(|event| event.event_type == "tool_result")
+        .expect("the answered call must journal a tool result");
+    assert_eq!(result.data["result"]["is_error"], false);
+    assert_eq!(
+        result.data["result"]["output"]["content"],
+        "from the client"
+    );
+
+    drop(handle);
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// An answer for a call nobody is waiting on — unknown, expired, or already answered —
+/// is refused, so a duplicate POST past the idempotency window cannot invent a result.
+#[tokio::test]
+async fn resolving_an_unknown_operation_is_refused() {
+    let data_dir = temporary_directory();
+    let kernel = kernel_with(
+        &data_dir,
+        Arc::new(OneToolTurn { tool: "local" }),
+        Arc::new(RefusesDispatch),
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+    );
+    let handle = start(&kernel, client_tool_request("local"));
+    let error = kernel
+        .resolve_tool_call(
+            handle.id(),
+            &brain_protocol::OperationId::new(format!("op_{}", "0".repeat(32))),
+            Outcome::Ok {
+                value: serde_json::json!(null),
+            },
+        )
+        .expect_err("an unknown operation must be refused");
+    assert!(error.to_string().contains("no client Tool call is pending"));
+
+    drop(handle);
+    drop(kernel);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// A client call nobody answers dies at the kernel's deadline exactly like an overdue
+/// environment invoke: a `timeout` tool result, a journalled cancellation intent for
+/// the client to abort on, and no environment executor touched anywhere.
+#[tokio::test]
+async fn an_unanswered_client_call_times_out_and_journals_the_cancellation() {
+    let data_dir = temporary_directory();
+    let kernel = kernel_with(
+        &data_dir,
+        Arc::new(OneToolTurn { tool: "local" }),
+        Arc::new(RefusesDispatch),
+        50,
+    );
+    let handle = start(&kernel, client_tool_request("local"));
+    let session_id = handle.id().clone();
+    let session = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        handle.message(MessageRequest {
+            input: "run".into(),
+        }),
+    )
+    .await
+    .expect("the deadline must end the unanswered call")
+    .unwrap();
+    assert!(matches!(
+        session.status,
+        brain_protocol::SessionStatus::Idle
+    ));
+    let events = kernel.events(&session_id, 0, 100).unwrap().events;
+    let result = events
+        .iter()
+        .find(|event| event.event_type == "tool_result")
+        .expect("the expired call must still record a tool result");
+    assert_eq!(result.data["result"]["is_error"], true);
+    assert_eq!(result.data["result"]["output"]["code"], "timeout");
+    let cancel = events
+        .iter()
+        .find(|event| event.event_type == "tool_cancel_result")
+        .expect("dropping the park must be journalled as the cancellation");
+    assert_eq!(cancel.data["cancelled"], true);
 
     drop(handle);
     drop(kernel);

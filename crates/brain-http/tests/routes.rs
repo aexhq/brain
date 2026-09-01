@@ -80,6 +80,15 @@ impl BrainApi for Api {
             next_cursor: after.unwrap_or(0) + 1,
         })
     }
+    async fn resolve_tool_call(
+        &self,
+        _: SessionId,
+        _: brain_protocol::OperationId,
+        _: String,
+        _: brain_protocol::Outcome,
+    ) -> Result<(), ApiError> {
+        Ok(())
+    }
     async fn cancel_session(&self, _: SessionId, _: String) -> Result<(), ApiError> {
         Ok(())
     }
@@ -146,6 +155,12 @@ async fn exposes_every_v1_route_with_its_contract_status() {
             "POST",
             &format!("/v1/sessions/{id}/environments/env_1/calls/suspend"),
             Some(br#"{"input":null}"#.to_vec()),
+            Some("application/json"),
+        ),
+        request(
+            "POST",
+            &format!("/v1/sessions/{id}/tool-results/op_{}", "a".repeat(32)),
+            Some(br#"{"status":"ok","value":{"content":"done"}}"#.to_vec()),
             Some("application/json"),
         ),
         request("POST", &format!("/v1/sessions/{id}/cancel"), None, None),

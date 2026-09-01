@@ -3,7 +3,8 @@ import { z } from "zod";
 import { createCallbackRouter, refuseUpgrade, resolveCallbackRoute, type CallbackRoute, type CallbackRouter } from "./callbacks.js";
 import type { CapabilityHandles, CapabilityProviderFactory, GrantSet } from "./capabilities.js";
 import { EsmToolHost, capabilityHandles, invokeProvisioned, type ProvisionedToolArtifact, type ProvisionedToolModule } from "./host.js";
-import type { BoundTool, Agentloop, CapabilityName, Environment, ModelMessage, ModelResponse, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition, UserInput } from "./types.js";
+import type { AppToolCall, AppToolContract } from "./app.js";
+import type { BoundTool, Agentloop, CapabilityName, ClientTool, Environment, ModelMessage, ModelResponse, Schema, SchemaInput, SchemaOutput, Tool, ToolDefinition, UserInput } from "./types.js";
 
 const capabilityNames: readonly CapabilityName[] = ["exec", "fs", "net", "js", "page"];
 
@@ -183,6 +184,7 @@ type ExtensionFactory = Function & { [extensionSource]?: AgentloopSource | ToolS
 
 const agentloops = new WeakMap<object, { readonly artifact: URL | Uint8Array; readonly configuration: unknown }>();
 const tools = new WeakMap<object, { readonly definition: ToolDefinition; readonly implementationName: string; readonly configuration: unknown; readonly requires: readonly CapabilityName[]; readonly bindingNames: readonly string[]; readonly hosting?: "callback" }>();
+const clientTools = new WeakMap<object, { readonly definition: ToolDefinition; readonly contract: AppToolContract; readonly handler: (input: unknown, call: AppToolCall) => unknown }>();
 const environments = new WeakMap<object, EnvironmentRuntime>();
 const bindings = new WeakMap<object, { readonly tool: Tool; readonly environment: Environment }>();
 const initializedTools = new WeakMap<ToolSource, Promise<void>>();
@@ -258,25 +260,58 @@ export function tool<
 }
 
 /**
- * Declare a callback-hosted tool for session composition: the model sees an ordinary
- * tool, but the implementation stays in the author's app — the bound environment
- * routes each invocation there (see `appTools` and `route.callbacks`). The manifest
- * carries `hosting: "callback"`, no payload, empty `requires`, so it binds anywhere.
+ * Declare a tool whose implementation stays in the author's own process.
+ *
+ * With an `execute` function the result is a client-hosted tool: pass it straight to
+ * `sessions.create` and the SDK answers each call off the session's event feed — no
+ * environment, no server, no channel. The manifest carries `hosting: "client"`.
+ *
+ * Without `execute` it is a callback tool for session composition: the bound
+ * environment routes each invocation to the app over a channel or signed POST (see
+ * `appTools` and `route.callbacks`). The manifest carries `hosting: "callback"`, no
+ * payload, empty `requires`, so it binds anywhere.
  */
 export function appTool<InputSchema extends Schema, OutputSchema extends Schema | undefined = undefined>(contract: {
   readonly name: string;
   readonly description: string;
   readonly input: InputSchema;
   readonly output?: OutputSchema;
-}): Tool<SchemaOutput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown> {
+  readonly execute: (
+    input: SchemaOutput<InputSchema>,
+    call: AppToolCall,
+  ) => OutputSchema extends Schema ? SchemaOutput<OutputSchema> | Promise<SchemaOutput<OutputSchema>> : unknown;
+}): ClientTool<SchemaOutput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown>;
+export function appTool<InputSchema extends Schema, OutputSchema extends Schema | undefined = undefined>(contract: {
+  readonly name: string;
+  readonly description: string;
+  readonly input: InputSchema;
+  readonly output?: OutputSchema;
+}): Tool<SchemaOutput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown>;
+export function appTool(contract: {
+  readonly name: string;
+  readonly description: string;
+  readonly input: Schema;
+  readonly output?: Schema;
+  readonly execute?: (input: unknown, call: AppToolCall) => unknown;
+}): unknown {
   if (!validIdentifier(contract?.name)) throw new TypeError("appTool needs an identifier-shaped name");
   if (typeof contract.description !== "string" || contract.description.length === 0 || contract.description.length > 8_192) throw new TypeError("appTool description exceeds its contract bound");
+  if ("execute" in contract && typeof contract.execute !== "function") throw new TypeError("appTool execute must be a function");
   const definition: ToolDefinition = Object.freeze({
     name: contract.name,
     description: contract.description,
     inputSchema: Object.freeze(z.toJSONSchema(contract.input) as Record<string, unknown>),
     ...(contract.output === undefined ? {} : { outputSchema: Object.freeze(z.toJSONSchema(contract.output) as Record<string, unknown>) }),
   });
+  if (contract.execute !== undefined) {
+    const instance = Object.freeze({});
+    clientTools.set(instance, {
+      definition,
+      contract: { name: contract.name, description: contract.description, input: contract.input, ...(contract.output === undefined ? {} : { output: contract.output }) },
+      handler: contract.execute,
+    });
+    return instance;
+  }
   const instance = { useIn(environment: Environment): BoundTool {
     if (!environments.has(environment)) throw new TypeError("useIn requires an Environment extension");
     const bound = Object.freeze({});
@@ -284,7 +319,12 @@ export function appTool<InputSchema extends Schema, OutputSchema extends Schema 
     return bound as BoundTool;
   } } as Tool;
   tools.set(instance, { definition, implementationName: contract.name, configuration: Object.freeze({}), requires: Object.freeze([]), bindingNames: Object.freeze([]), hosting: "callback" });
-  return Object.freeze(instance) as never;
+  return Object.freeze(instance);
+}
+
+/** The registration behind a client-hosted `appTool`, or undefined for anything else. */
+export function inspectClientTool(value: unknown): { readonly definition: ToolDefinition; readonly contract: AppToolContract; readonly handler: (input: unknown, call: AppToolCall) => unknown } | undefined {
+  return typeof value === "object" && value !== null ? clientTools.get(value) : undefined;
 }
 
 function collectTool(setup: ToolSetup<unknown, unknown, unknown>): Pick<ToolSource, "initialize" | "run"> {
