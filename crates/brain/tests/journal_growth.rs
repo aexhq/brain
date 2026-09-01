@@ -55,6 +55,7 @@ struct GrowingLoop {
 impl LoopExecutor for GrowingLoop {
     async fn activate(
         &self,
+        _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {
@@ -534,6 +535,7 @@ struct ResendingLoop {
 impl LoopExecutor for ResendingLoop {
     async fn activate(
         &self,
+        _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {
@@ -644,6 +646,7 @@ struct AskOnce;
 impl LoopExecutor for AskOnce {
     async fn activate(
         &self,
+        _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {

@@ -39,7 +39,7 @@ VoltAgent  █                                       4.3 ms
 Agno       ███████                                  13 ms
 Mastra     █████████                                20 ms
 Restate    ███████████                              31 ms
-Brain      ██████████████                           51 ms ★
+Brain      █████████████                            40 ms ★
 ZeroClaw   ██████████████                           53 ms
 OpenFang   ███████████████████                     128 ms
 Temporal   ████████████████████                    174 ms
@@ -57,7 +57,7 @@ VoltAgent  █                                       6.6 ms
 ZeroClaw   ████                                     11 ms
 Mastra     ████                                     11 ms
 Agno       ███████                                  16 ms
-Brain      ██████████████                           51 ms ★
+Brain      ████████████                             40 ms ★
 OpenFang   ████████████████                         70 ms
 LangGraph  ██████████████████████                  207 ms
 AgentScope █████████████████████████               332 ms

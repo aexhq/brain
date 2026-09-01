@@ -786,9 +786,17 @@ export function endEnvironment(value: Environment): void {
   if (metadata !== undefined) metadata.ended = true;
 }
 
+/// The exact state object the previous activation returned. Incoming state that is
+/// reference-identical to it was validated by this runtime on its way out, so the slot
+/// schemas need not re-parse a conversation that only ever grows — the check that cost
+/// O(history) per activation. Anything else (a cold instance, a host that re-read the
+/// journal) misses and takes the full validation path.
+let warmState: unknown;
+
 export function activateAgentloop(factory: unknown, input: AgentloopInput): { readonly context: { readonly protocolVersion: "agentloop/v1"; readonly items: readonly unknown[]; readonly state: unknown }; readonly decision: Exclude<AgentloopAction, { type: "reply" }> } {
   const source = sourceOf(factory as ExtensionFactory, "agentloop") as AgentloopSource;
   const options = source.options === undefined ? requireEmptyConfiguration(input.configuration) : source.options.parse(input.configuration);
+  const trusted = input.context.state !== undefined && input.context.state === warmState;
   const envelope = parseStateEnvelope(input.context.state);
   if (input.observation.type === "emitted" && Object.hasOwn(envelope, "pendingReply")) return output(envelope.slots, false, undefined, { type: "finish", result: envelope.pendingReply });
   const handlers = new Map<string, AgentloopHandler<never>>();
@@ -804,7 +812,9 @@ export function activateAgentloop(factory: unknown, input: AgentloopInput): { re
     state(schema, initial) {
       const index = schemas.length;
       schemas.push(schema);
-      const value = index < envelope.slots.length ? schema.parse(envelope.slots[index]) : schema.parse(initial());
+      const value = index < envelope.slots.length
+        ? (trusted ? envelope.slots[index] as ReturnType<typeof schema.parse> : schema.parse(envelope.slots[index]))
+        : schema.parse(initial());
       slots.push(value);
       return value;
     },
@@ -815,7 +825,13 @@ export function activateAgentloop(factory: unknown, input: AgentloopInput): { re
   const handler = handlers.get(input.observation.type);
   const action = handler === undefined ? defaultAction(input.observation.type) : handler(input.observation as never, turn(input.runtime.logicalTimeMs));
   if (isPromise(action)) throw new TypeError("Agentloop handlers must be synchronous");
-  for (let index = 0; index < schemas.length; index += 1) slots[index] = schemas[index]!.parse(slots[index]);
+  // Re-validating every slot on every activation cost O(conversation) three times per
+  // turn. Mid-turn continuations skip it: the state is never persisted before the turn
+  // ends, and the next activation receives it by identity, so a handler that corrupts
+  // its state is still caught — at the turn's terminal decision instead of immediately.
+  if (action.type !== "model" && action.type !== "tools") {
+    for (let index = 0; index < schemas.length; index += 1) slots[index] = schemas[index]!.parse(slots[index]);
+  }
   if (action.type === "reply") return output(slots, true, action.input, { type: "emit", event: { type: "assistant_message", message: action.input.message } });
   return output(slots, false, undefined, action);
 }
@@ -834,7 +850,9 @@ function turn(logicalTimeMs: bigint): AgentloopTurn {
 }
 
 function output(slots: readonly unknown[], hasPendingReply: boolean, pendingReply: unknown, decision: Exclude<AgentloopAction, { type: "reply" }>) {
-  return { context: { protocolVersion: "agentloop/v1" as const, items: [], state: { version: 1, slots, ...(hasPendingReply ? { pendingReply } : {}) } }, decision };
+  const state = { version: 1, slots, ...(hasPendingReply ? { pendingReply } : {}) };
+  warmState = state;
+  return { context: { protocolVersion: "agentloop/v1" as const, items: [], state }, decision };
 }
 
 function defaultAction(type: AgentloopInput["observation"]["type"]): Exclude<AgentloopAction, { type: "reply" }> {

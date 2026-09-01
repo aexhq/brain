@@ -30,6 +30,7 @@ struct ScriptedLoop {
 impl LoopExecutor for ScriptedLoop {
     async fn activate(
         &self,
+        _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {
@@ -109,6 +110,7 @@ struct ToolLoop;
 impl LoopExecutor for ToolLoop {
     async fn activate(
         &self,
+        _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {
@@ -608,6 +610,7 @@ struct RecordsHistory {
 impl LoopExecutor for RecordsHistory {
     async fn activate(
         &self,
+        _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {
@@ -822,6 +825,7 @@ struct OrdinaryTurn;
 impl LoopExecutor for OrdinaryTurn {
     async fn activate(
         &self,
+        _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {
@@ -981,6 +985,7 @@ struct OneToolTurn {
 impl LoopExecutor for OneToolTurn {
     async fn activate(
         &self,
+        _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, KernelError> {

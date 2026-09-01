@@ -244,15 +244,24 @@ const encodeDecision = (decision) => {
     default: throw new Error("unknown Agentloop action " + decision.type);
   }
 };
+// The state this instance produced last activation, kept beside its serialized form.
+// When the host keeps the instance warm across a session's activations, the incoming
+// state is byte-identical to what step just returned, and handing back the same object
+// lets the runtime skip re-reading a conversation it already holds. A cold instance
+// misses and parses — the cache is an optimization, never a source of truth.
+let warm = { stateJson: undefined, state: undefined };
 export function step(input) {
+  const incoming = input.context.stateJson;
   const output = activateAgentloop(definition, {
-    context: { state: input.context.stateJson === undefined ? undefined : JSON.parse(input.context.stateJson) },
+    context: { state: incoming === undefined ? undefined : incoming === warm.stateJson ? warm.state : JSON.parse(incoming) },
     observation: decodeObservation(input.observation),
     configuration: JSON.parse(input.configurationJson),
     runtime: { logicalTimeMs: input.runtime.logicalTimeMs },
   });
+  const stateJson = JSON.stringify(output.context.state);
+  warm = { stateJson, state: output.context.state };
   return {
-    context: { protocolVersion: output.context.protocolVersion, itemsJson: JSON.stringify(output.context.items), stateJson: JSON.stringify(output.context.state) },
+    context: { protocolVersion: output.context.protocolVersion, itemsJson: JSON.stringify(output.context.items), stateJson },
     decision: encodeDecision(output.decision),
   };
 }

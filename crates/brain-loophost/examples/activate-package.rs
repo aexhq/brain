@@ -19,9 +19,12 @@ fn main() -> Result<(), String> {
             .collect(),
     )?;
     let admitted = engine.admit(&package)?;
+    let warm = brain_loophost::WarmInstances::default();
     let output = admitted.activate(
         engine.engine(),
         engine.limits(),
+        &warm,
+        "ses_example",
         ActivationInput {
             context: ContextEnvelope {
                 protocol_version: "agentloop/v1".into(),

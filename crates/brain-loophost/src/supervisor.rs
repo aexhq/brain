@@ -88,6 +88,7 @@ impl WorkerPool {
 
     pub async fn activate(
         &self,
+        session: String,
         digest: AgentloopIdentity,
         input: ActivationInput,
     ) -> Result<ActivationOutput, String> {
@@ -117,7 +118,7 @@ impl WorkerPool {
             }
         }
         let client = WorkerClient::new(&self.socket);
-        let call = client.activate(digest, input, self.limits.activation_input_bytes);
+        let call = client.activate(session, digest, input, self.limits.activation_input_bytes);
         // The guest is stopped by its own epoch deadline at `wall_time`, which costs one
         // instance. This timeout is the backstop for what an epoch cannot interrupt — a
         // worker blocked in a host call, a crashed worker, a socket that never answers —
