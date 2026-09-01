@@ -90,25 +90,56 @@ delta reaches the stream). Subject versions, methodology, and the bounds CI enfo
 
 ## How it works
 
-```text
-your app ──── send (HTTP) ────►  [ brain runtime ]  ──── event feed (SSE) ────► your app
+One turn, end to end — every effect preceded by its journaled intent, the loop sandboxed in
+its own process, output streaming while the turn runs, and a client-hosted tool answered by
+your own code off the event feed:
 
-┌───────────────────────────────────── inside one turn ────────────────────────────────────┐
-│                                                                                          │
-│  observation ──► agent loop ──► decision      a secured, isolated Wasm component,        │
-│                                               with limited resources; every decision     │
-│                                               replays exactly from the log               │
-│                                                                                          │
-│  decision ──┬──► model call ──► provider      pinned per session; deltas streamed        │
-│             │                                 to the event feed as they arrive           │
-│             │                                                                            │
-│             └──► tool call ──► environment    environments are where tools are           │
-│                                               executed, at your choice: browser,         │
-│                                               microVM sandbox, lambda, etc.              │
-│                                                                                          │
-│  every step ──► write-ahead log (WAL)         appended behind the turn; a restart        │
-│                                               rebuilds every session from it             │
-└──────────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as your app
+    participant Brain as brain server
+    participant Journal as journal
+    participant Loop as agent loop (Wasm worker)
+    participant Model as model provider
+
+    App->>Brain: POST /messages
+    Brain->>Journal: turn_started
+    Brain->>Loop: activate(user_message)
+    Loop-->>Brain: decision: model
+    Brain->>Journal: model_intent
+    Brain->>Model: completion (streaming)
+    Brain--)App: assistant deltas on the SSE feed, mid-turn
+    Model-->>Brain: completion
+    Brain->>Journal: model_result
+    Brain->>Loop: activate(model_completed)
+    Loop-->>Brain: decision: tools
+    Brain->>Journal: tool_intent — the turn parks
+    Brain--)App: the call surfaces on the event feed
+    App->>App: your execute() runs beside your state
+    App->>Brain: POST /tool-results/{operation_id}
+    Brain->>Journal: tool_result
+    Brain->>Loop: activate(tools_completed)
+    Loop-->>Brain: decision: finish
+    Brain->>Journal: turn_finished + context, once per turn
+    Brain-->>App: updated session
+```
+
+And the part most runtimes cannot draw — what happens when the process dies:
+
+```mermaid
+sequenceDiagram
+    participant App as your app
+    participant Brain as brain server (new process)
+    participant Journal as journal
+
+    Note over Brain: previous process died mid-turn
+    Brain->>Journal: read every session's row at boot
+    Brain->>Journal: turn_interrupted, for anything left running
+    App->>Brain: GET /events?after=n
+    Journal-->>App: exactly the records missed
+    App->>Brain: POST /messages
+    Brain-->>App: the same conversation continues
 ```
 
 Brain owns the session; the agent loop, model, tools, and environment are yours to supply. The
