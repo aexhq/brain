@@ -124,6 +124,17 @@ struct WarmEntry {
     digest: AgentloopIdentity,
     store: Store<StoreLimits>,
     bindings: bindings::Agentloop,
+    /// The state the guest returned last activation: its parsed value beside the exact
+    /// bytes the guest produced. The kernel round-trips state through `serde_json::Value`,
+    /// which re-serializes with different bytes (sorted keys), so without this the guest's
+    /// own byte-equality cache could never hit. When the incoming value is structurally
+    /// equal to what the guest returned, it is handed back verbatim.
+    last_state: Option<LastState>,
+}
+
+struct LastState {
+    value: serde_json::Value,
+    raw: String,
 }
 
 impl WarmInstances {
@@ -174,6 +185,7 @@ impl AdmittedAgentloop {
                     digest: self.digest.clone(),
                     store,
                     bindings,
+                    last_state: None,
                 }
             }
         };
@@ -186,13 +198,23 @@ impl AdmittedAgentloop {
         entry
             .store
             .set_epoch_deadline(epoch_deadline_ticks(limits.wall_time));
-        let input = to_wit_input(input)?;
+        let state_json = match (&entry.last_state, &input.context.state) {
+            (Some(last), Some(state)) if &last.value == state => Some(last.raw.clone()),
+            (_, Some(state)) => Some(serde_json::to_string(state).map_err(|e| e.to_string())?),
+            _ => None,
+        };
+        let input = to_wit_input(input, state_json)?;
         let output = entry
             .bindings
             .call_step(&mut entry.store, &input)
             .map_err(activation_error)?
             .map_err(|error| format!("{}: {}", error.code, error.message))?;
+        let raw_state = output.context.state_json.clone();
         let output = from_wit_output(output)?;
+        entry.last_state = match (raw_state, output.context.state.clone()) {
+            (Some(raw), Some(value)) => Some(LastState { value, raw }),
+            _ => None,
+        };
         warm.keep(entry);
         Ok(output)
     }
@@ -243,6 +265,7 @@ fn epoch_deadline_ticks(budget: Duration) -> u64 {
 
 fn to_wit_input(
     input: ActivationInput,
+    state_json: Option<String>,
 ) -> Result<bindings::aex::agentloop::types::ActivationInput, String> {
     use bindings::aex::agentloop::types as wit;
     let observation = match input.observation {
@@ -268,12 +291,7 @@ fn to_wit_input(
             protocol_version: input.context.protocol_version,
             items_json: serde_json::to_string(&input.context.items)
                 .map_err(|error| error.to_string())?,
-            state_json: input
-                .context
-                .state
-                .map(|state| serde_json::to_string(&state))
-                .transpose()
-                .map_err(|error| error.to_string())?,
+            state_json,
         },
         observation,
         configuration_json: serde_json::to_string(&input.configuration)
