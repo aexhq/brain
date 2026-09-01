@@ -124,6 +124,38 @@ paths:
             application/json:
               schema: { $ref: './schemas.json#/$defs/EnvironmentCallResult' }
         default: { $ref: '#/components/responses/Error' }
+  /v1/sessions/{session_id}/serve:
+    get:
+      operationId: serveSessionTools
+      description: >-
+        The serve feed: an SSE stream of this session's client-hosted `tool_intent`
+        and `tool_cancel_intent` records, filtered to the tools named in `tools`,
+        plus `session_ended`. It opens with the still-pending backlog (intents with
+        no recorded result) and then carries records as they are appended. Authorized
+        by the session's share key as a bearer token (the API token also works). One
+        live consumer per tool: a new connection claiming a tool displaces the
+        stream that held it, so a reconnecting client replaces its own dead
+        connection instead of racing it.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - name: tools
+          in: query
+          required: true
+          description: Comma-separated client-hosted tool names this connection serves.
+          schema: { type: string, minLength: 1, maxLength: 4096 }
+        - name: after
+          in: query
+          description: >-
+            Resume cursor. Absent, the stream opens with the pending backlog; set,
+            it replays every matching record after this sequence instead.
+          schema: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: Live serve stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        default: { $ref: '#/components/responses/Error' }
   /v1/sessions/{session_id}/tool-results/{operation_id}:
     post:
       operationId: resolveToolCall
@@ -131,7 +163,8 @@ paths:
         Answers a client-hosted tool call. The `tool_intent` record on the event feed
         carries the operation id; the body is the call's outcome. Idempotent per
         operation: a retry with the same key replays the first answer, and a call that
-        is no longer pending is a conflict.
+        is no longer pending is a conflict. Authorized by the API token or by the
+        session's share key.
       parameters:
         - $ref: '#/components/parameters/SessionId'
         - name: operation_id

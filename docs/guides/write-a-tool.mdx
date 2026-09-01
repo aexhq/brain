@@ -73,10 +73,11 @@ it — they do not exist at build time. Provisioning executes the bundle once at
 so a broken tool fails the attach receipt, never the first model call. Native addons and
 install-time files are not portable and fail the build.
 
-Application code chooses placement explicitly:
+Application code chooses placement explicitly — the environment is the factory's
+`env` option, beside the tool's own configuration:
 
 ```ts
-bash().useIn(environment)
+bash({ env: environment })
 ```
 
 Legacy notes: the export name becomes the model-visible name, and handlers stay async.

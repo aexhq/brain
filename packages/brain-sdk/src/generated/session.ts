@@ -40,7 +40,7 @@ export type BoundTool = {
    * @maxItems 64
    */
   binding_names: Identifier[];
-  hosting?: "provisioned" | "callback" | "client";
+  hosting?: "provisioned" | "client";
   payload?: ToolPayload;
   environment_id?: Identifier;
 };
@@ -68,6 +68,11 @@ export type Outcome =
   | {
       status: "cancelled";
     };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ShareKey".
+ */
+export type ShareKey = string;
 
 export interface BrainSessionAPIV1 {
   contract: "session/v1";
@@ -235,6 +240,7 @@ export interface Session {
   status: "creating" | "idle" | "running" | "ended" | "failed";
   last_sequence: number;
   config_hash: Identity;
+  share_key: ShareKey;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

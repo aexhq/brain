@@ -26,7 +26,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(listen = %config.listen, "Brain is ready");
     let router = match config.api_token {
         Some(token) => brain_http::router_with_bearer(api, token),
-        None => brain_http::router(api),
+        None => {
+            tracing::warn!(
+                "BRAIN_API_TOKEN is not set: the API runs open and share keys will not survive a restart"
+            );
+            brain_http::router(api)
+        }
     };
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown())
@@ -112,7 +117,23 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         models,
         providers,
         metadata,
+        serve_secret: serve_secret(config.api_token.as_deref()),
     }))
+}
+
+/// The secret share keys are derived from. With an API token it is deterministic, so
+/// share keys stay valid across restarts; open mode gets a random one per boot.
+fn serve_secret(api_token: Option<&str>) -> [u8; 32] {
+    use sha2::Digest as _;
+    match api_token {
+        Some(token) => {
+            let mut digest = sha2::Sha256::new();
+            digest.update(b"brain.serve-secret.v1\0");
+            digest.update(token.as_bytes());
+            digest.finalize().into()
+        }
+        None => rand::random(),
+    }
 }
 
 fn validate(config: &ServerConfig) -> anyhow::Result<()> {

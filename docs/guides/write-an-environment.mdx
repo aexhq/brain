@@ -63,10 +63,10 @@ injects binding values, and maps the result — return value, thrown error, dead
 cancellation — onto the one outcome envelope.
 
 An environment that does not call `host.esm()` still accepts provisions: their
-invocations stay on the environment's own `run` handler (the legacy runtime path), and a
-callback router never captures a provisioned name. See
-[App tools](/brain/docs/guides/app-tools) for the callback hosting an environment routes
-with `route.callbacks()`.
+invocations stay on the environment's own `run` handler (the legacy runtime path).
+Environments only ever execute provisioned tools — a tool answered by an application
+process never touches one; Brain routes those itself (see
+[App tools](/brain/docs/guides/app-tools)).
 
 ## The application object
 
@@ -78,7 +78,7 @@ const vm = cloudVm({ region: "eu-west-2" });
 const session = await client.sessions.create({
   agentloop: pi(),
   model,
-  tools: [read().useIn(vm), bash().useIn(vm)],
+  tools: [read({ env: vm }), bash({ env: vm })],
 });
 
 await vm.suspend();

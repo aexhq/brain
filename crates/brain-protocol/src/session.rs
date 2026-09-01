@@ -183,6 +183,12 @@ pub struct Session {
     /// Hash of everything this session was sealed with: agentloop configuration, system
     /// prompt, tool definitions, and response format. Stable for the session's life.
     pub config_hash: Identity,
+    /// The scoped credential that authorizes answering this session's client-hosted
+    /// tools: the serve feed and the tool-results endpoint, nothing else. Hand it to
+    /// the process that serves a tool; it spends nothing and reads nothing else.
+    /// Minted by the serving layer — the kernel leaves it empty.
+    #[serde(default)]
+    pub share_key: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

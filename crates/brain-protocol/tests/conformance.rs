@@ -82,17 +82,17 @@ fn checked_in_examples_validate() {
     );
 }
 
-/// A callback tool's code never leaves its author's process, so a manifest that says
-/// `callback` and still ships a payload is contradictory and the schema rejects it.
+/// The hosting axis is closed: `callback` left the contract when dispatch channels
+/// landed in Brain itself, so a manifest still saying it is rejected outright.
 #[test]
-fn a_callback_manifest_with_a_payload_is_rejected() {
+fn a_callback_manifest_is_rejected() {
     let schema =
         jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json")).unwrap();
     let mut manifest = read_json("contracts/tool/v1/examples/manifest.json");
     manifest["hosting"] = serde_json::json!("callback");
     assert!(schema.validate(&manifest).is_err());
     manifest.as_object_mut().unwrap().remove("payload");
-    schema.validate(&manifest).unwrap();
+    assert!(schema.validate(&manifest).is_err());
 }
 
 #[test]
@@ -192,8 +192,8 @@ fn model_selection_names_are_validated_per_provider() {
     assert!(!validate(&selection("", "model")));
 }
 
-/// A client-hosted tool is answered by the session's creator: like `callback` it can
-/// carry no payload, and unlike every other hosting it names no environment — the
+/// A client-hosted tool is answered by an application process off the serve feed: it
+/// can carry no payload, and unlike provisioned hosting it names no environment — the
 /// schema enforces both directions of the environment rule.
 #[test]
 fn a_client_tool_binds_no_environment_and_ships_no_payload() {

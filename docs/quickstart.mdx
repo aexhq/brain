@@ -27,7 +27,7 @@ though docker only exposes it to your host's loopback.
 
 ## Give the agent a tool
 
-The session's tool is a plain function in your own process: declare it once with `appTool`,
+The session's tool is a plain function in your own process: declare it once with `tool`,
 hand it to the session, and the SDK answers the model's calls off the session's own event
 feed. No server in your app, no ports, no channel.
 
@@ -38,14 +38,14 @@ npm install @aexhq/brain @aexhq/agentloop-pi zod
 Save as `order.mjs` and run with `node order.mjs`:
 
 ```js
-import { Brain, appTool } from "@aexhq/brain";
+import { Brain, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
 // One declaration: the contract the model sees and the function that answers it,
 // closing over your app's state.
 const orders = { "A-1001": { status: "shipped", eta: "Thursday" } };
-const lookupOrder = appTool({
+const lookupOrder = tool({
   name: "lookup_order",
   description: "Look up an order's status by id.",
   input: z.object({ id: z.string() }),
@@ -73,11 +73,13 @@ beside the `orders` object it closes over, and the SDK posts the outcome back un
 call's operation id — idempotently, so a retry is the same effect. The whole exchange
 lands in the feed, tool call and result included.
 
-Under the hood this is `hosting: "client"` on the tool's manifest. A tool that must live
-somewhere else — a browser page, anything behind NAT, a sandboxed artifact — declares a
-hosting environment instead, and the session API does not change: see
-[App tools](/brain/docs/guides/app-tools) for the channel and signed-POST transports, and
-[Environments](/brain/docs/concepts/environment) for what else can host a tool.
+Under the hood this is `hosting: "client"` on the tool's manifest. When the function
+lives in a *different* process — a browser page your backend opened the session for, a
+CLI on the user's laptop — declare the tool without `execute` and let that process join
+the session with its share key and serve it: see
+[App tools](/brain/docs/guides/app-tools). A tool that needs `exec`, `fs`, or a sandbox
+runs provisioned in an environment instead: see
+[Environments](/brain/docs/concepts/environment).
 
 ## Runnable versions
 

@@ -180,12 +180,9 @@
         "output_schema": { "type": "object" },
         "requires": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/CapabilityName" } },
         "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
-        "hosting": { "enum": ["provisioned", "callback"] },
+        "hosting": { "enum": ["provisioned"] },
         "payload": { "$ref": "#/$defs/ToolPayload" }
-      },
-      "allOf": [
-        { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "callback" } } }, "then": { "not": { "required": ["payload"] } } }
-      ]
+      }
     },
     "Provision": {
       "type": "object",

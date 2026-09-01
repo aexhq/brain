@@ -37,12 +37,11 @@
         "output_schema": { "type": "object" },
         "requires": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/CapabilityName" } },
         "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
-        "hosting": { "enum": ["provisioned", "callback", "client"] },
+        "hosting": { "enum": ["provisioned", "client"] },
         "payload": { "$ref": "#/$defs/ToolPayload" },
         "environment_id": { "$ref": "#/$defs/Identifier" }
       },
       "allOf": [
-        { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "callback" } } }, "then": { "not": { "required": ["payload"] } } },
         { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "client" } } }, "then": { "allOf": [ { "not": { "required": ["payload"] } }, { "not": { "required": ["environment_id"] } } ] } },
         { "if": { "not": { "required": ["hosting"], "properties": { "hosting": { "const": "client" } } } }, "then": { "required": ["environment_id"] } }
       ]
@@ -174,16 +173,18 @@
         "details": {}
       }
     },
+    "ShareKey": { "type": "string", "pattern": "^sk\\.ses_[A-Za-z0-9]{20,32}\\.[0-9a-f]{64}$" },
     "Session": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session_id", "journal_id", "status", "last_sequence", "config_hash"],
+      "required": ["session_id", "journal_id", "status", "last_sequence", "config_hash", "share_key"],
       "properties": {
         "session_id": { "$ref": "#/$defs/SessionId" },
         "journal_id": { "$ref": "#/$defs/Identifier" },
         "status": { "enum": ["creating", "idle", "running", "ended", "failed"] },
         "last_sequence": { "type": "integer", "minimum": 0 },
-        "config_hash": { "$ref": "#/$defs/Identity" }
+        "config_hash": { "$ref": "#/$defs/Identity" },
+        "share_key": { "$ref": "#/$defs/ShareKey" }
       }
     },
     "SessionList": {

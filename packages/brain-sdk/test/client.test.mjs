@@ -26,7 +26,7 @@ const read = tool({ description: "Read a file.", input: z.object({ path: z.strin
 });
 installExtensionIdentity(read, "read");
 
-test("composes extensions through sessions, useIn, and object identity", async () => {
+test("composes extensions through sessions, env placement, and object identity", async () => {
   const requests = [];
   const client = new Brain({
     baseUrl: "https://brain.example/",
@@ -36,14 +36,14 @@ test("composes extensions through sessions, useIn, and object identity", async (
       requests.push(request);
       if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
       if (request.url.includes("/calls/suspend")) return Response.json({ output: null });
-      return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", last_sequence: 1, config_hash: "b".repeat(64) });
+      return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", last_sequence: 1, config_hash: "b".repeat(64), share_key: "sk.ses_12345678901234567890." + "f".repeat(64) });
     },
   });
   const vm = workspace();
   const session = await client.sessions.create({
     model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", apiKey: "model-secret" },
     agentloop: simple(),
-    tools: [read().useIn(vm)],
+    tools: [read({ env: vm })],
   });
 
   assert.equal(session.id, "ses_12345678901234567890");
@@ -142,7 +142,7 @@ test("admits any identifier-shaped provider client-side and leaves admission to 
   const fetchStub = async (input, init) => {
     const request = new Request(input, init);
     if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
-    return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", last_sequence: 1, config_hash: "b".repeat(64) });
+    return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", last_sequence: 1, config_hash: "b".repeat(64), share_key: "sk.ses_12345678901234567890." + "f".repeat(64) });
   };
   const client = new Brain({ baseUrl: "https://brain.example/", token: "t", fetch: fetchStub });
   // A custom provider the SDK has never heard of passes shape validation.

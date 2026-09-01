@@ -728,6 +728,7 @@ impl SessionActor {
             status: self.row.status.clone(),
             last_sequence: self.row.through_sequence,
             config_hash: self.row.presentation_identity,
+            share_key: String::new(),
         }
     }
 }

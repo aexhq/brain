@@ -1,13 +1,12 @@
-export { BrainClient as Brain, BrainClient, SessionHandle, Sessions } from "./client.js";
+export { BrainClient as Brain, BrainClient, ServeHandle, SessionHandle, Sessions } from "./client.js";
 export type { BrainOptions } from "./client.js";
-export { activateAgentloop, agentloop, appTool, createEnvironmentHandler, environment, executeTool, inspectClientTool, installExtensionIdentity, provisionedToolRuntime, tool } from "./extensions.js";
+export { activateAgentloop, agentloop, createEnvironmentHandler, environment, executeTool, inspectClientTool, inspectServedTool, installExtensionIdentity, provisionedToolRuntime, tool } from "./extensions.js";
 export type {
   AgentloopAction,
   AgentloopAuthor,
   AgentloopInput,
   AgentloopTurn,
   EnvironmentAuthor,
-  EnvironmentChannel,
   EnvironmentHandler,
   EnvironmentInstanceAuthor,
   EnvironmentMethod,
@@ -16,11 +15,10 @@ export type {
   ToolAuthor,
   ToolCall,
   ToolContract,
+  ToolPlacement,
   ToolRunContext,
 } from "./extensions.js";
-export { appTools } from "./app.js";
-export type { AppToolCall, AppToolChannel, AppToolContract, AppToolServer, AppTools, CallbackToolManifest } from "./app.js";
-export type { CallbackRoute } from "./callbacks.js";
+export type { AppToolCall, AppToolContract } from "./app.js";
 export { CapabilityError, clamp } from "./capabilities.js";
 export type {
   CapabilityHandles,
@@ -65,10 +63,11 @@ export type {
   Schema,
   SchemaInput,
   SchemaOutput,
+  ServedTool,
   SessionEvent,
   SessionState,
   SessionStreamEvent,
-  Tool,
+  SessionTool,
   ToolDefinition,
   VercelAiGatewayModel,
 } from "./types.js";

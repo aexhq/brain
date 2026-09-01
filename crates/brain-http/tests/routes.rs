@@ -17,6 +17,9 @@ struct Api {
     /// Held so a test can push a record after the page has been served, which is what a
     /// turn does while a client is already streaming.
     live: Option<tokio::sync::broadcast::Sender<(SessionId, LiveEvent)>>,
+    /// A finite journal for tests that page through it (the serve feed does); absent,
+    /// `events` serves one synthetic record per page forever.
+    journal: Option<Vec<Event>>,
 }
 
 #[async_trait]
@@ -69,16 +72,35 @@ impl BrainApi for Api {
         }
     }
     async fn events(&self, _: SessionId, after: Option<u64>) -> Result<EventPage, ApiError> {
+        let after = after.unwrap_or(0);
+        if let Some(journal) = &self.journal {
+            let events: Vec<Event> = journal
+                .iter()
+                .filter(|event| event.sequence > after)
+                .cloned()
+                .collect();
+            let next_cursor = events.last().map_or(after, |event| event.sequence);
+            return Ok(EventPage {
+                events,
+                next_cursor,
+            });
+        }
         Ok(EventPage {
             events: vec![Event {
                 event_id: EventId::new("evt_test"),
-                sequence: after.unwrap_or(0) + 1,
+                sequence: after + 1,
                 recorded_at_ms: 1_787_846_400_000,
                 event_type: "test_event".into(),
                 data: serde_json::json!({"ok":true}),
             }],
-            next_cursor: after.unwrap_or(0) + 1,
+            next_cursor: after + 1,
         })
+    }
+    fn share_key(&self, session_id: &SessionId) -> String {
+        format!("sk.{session_id}.{}", "b".repeat(64))
+    }
+    async fn client_tool_names(&self, _: SessionId) -> Result<Vec<String>, ApiError> {
+        Ok(vec!["highlight_row".into(), "pick_file".into()])
     }
     async fn resolve_tool_call(
         &self,
@@ -316,7 +338,232 @@ fn session() -> Session {
         status: SessionStatus::Idle,
         last_sequence: 1,
         config_hash: brain_protocol::Identity::of(&"config").unwrap(),
+        share_key: String::new(),
     }
+}
+
+fn intent(sequence: u64, tool: &str, operation: &str) -> Event {
+    Event {
+        event_id: EventId::new(format!("evt_{sequence}")),
+        sequence,
+        // Freshly recorded, so the pending filter cannot see it as past its deadline.
+        recorded_at_ms: now_ms(),
+        event_type: "tool_intent".into(),
+        data: serde_json::json!({
+            "operation_id": operation,
+            "deadline_ms": 60_000,
+            "binding": {"name": tool, "hosting": "client"},
+            "invocation": {"call_id": "call_1", "name": tool, "input": {}},
+        }),
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+/// The serve feed is the share key's whole world: the key opens it and the
+/// tool-results answer, while the rest of the API still demands the bearer token.
+#[tokio::test]
+async fn the_share_key_opens_exactly_the_serve_surface() {
+    let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let key = format!("sk.{id}.{}", "b".repeat(64));
+    let journal = vec![intent(1, "highlight_row", "op_1")];
+    let build = || {
+        router_with_bearer(
+            Api {
+                journal: Some(journal.clone()),
+                ..Api::default()
+            },
+            "secret".into(),
+        )
+    };
+    let authed = |uri: &str, method: &str, bearer: &str, body: Option<&str>| {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {bearer}"));
+        if method == "POST" {
+            builder = builder
+                .header("idempotency-key", "test-key")
+                .header("content-type", "application/json");
+        }
+        builder
+            .body(body.map_or_else(Body::empty, |body| Body::from(body.to_owned())))
+            .unwrap()
+    };
+
+    let serve = build()
+        .oneshot(authed(
+            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
+            "GET",
+            &key,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(serve.status(), StatusCode::OK);
+
+    let answer = build()
+        .oneshot(authed(
+            &format!("/v1/sessions/{id}/tool-results/op_{}", "a".repeat(32)),
+            "POST",
+            &key,
+            Some(r#"{"status":"ok","value":null}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), StatusCode::NO_CONTENT);
+
+    let wrong_key = build()
+        .oneshot(authed(
+            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
+            "GET",
+            &format!("sk.{id}.{}", "c".repeat(64)),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(wrong_key.status(), StatusCode::UNAUTHORIZED);
+
+    let rest_of_api = build()
+        .oneshot(authed(&format!("/v1/sessions/{id}"), "GET", &key, None))
+        .await
+        .unwrap();
+    assert_eq!(rest_of_api.status(), StatusCode::UNAUTHORIZED);
+
+    let api_token_serves = build()
+        .oneshot(authed(
+            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
+            "GET",
+            "secret",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(api_token_serves.status(), StatusCode::OK);
+}
+
+/// The serve backlog is the still-pending work: an intent already answered by a
+/// `tool_result` is not replayed, another tool's intent is not this stream's, and a
+/// tool the session never declared is refused at the door.
+#[tokio::test]
+async fn the_serve_feed_opens_with_pending_intents_only() {
+    let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let journal = vec![
+        intent(1, "highlight_row", "op_answered"),
+        Event {
+            event_id: EventId::new("evt_2"),
+            sequence: 2,
+            recorded_at_ms: now_ms(),
+            event_type: "tool_result".into(),
+            data: serde_json::json!({"operation_id": "op_answered", "result": {}}),
+        },
+        intent(3, "highlight_row", "op_pending"),
+        intent(4, "pick_file", "op_other_tool"),
+        Event {
+            event_id: EventId::new("evt_5"),
+            sequence: 5,
+            recorded_at_ms: now_ms(),
+            event_type: "session_ended".into(),
+            data: serde_json::json!({}),
+        },
+    ];
+    let api = Api {
+        journal: Some(journal),
+        ..Api::default()
+    };
+    let response = router(api.clone())
+        .oneshot(request(
+            "GET",
+            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        body.contains("op_pending"),
+        "pending intent missing: {body}"
+    );
+    assert!(
+        !body.contains("op_answered"),
+        "an answered intent was replayed: {body}"
+    );
+    assert!(
+        !body.contains("op_other_tool"),
+        "another tool's intent leaked onto this stream: {body}"
+    );
+    assert!(body.contains("session_ended"), "no end marker: {body}");
+
+    let undeclared = router(api)
+        .oneshot(request(
+            "GET",
+            &format!("/v1/sessions/{id}/serve?tools=made_up"),
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(undeclared.status(), StatusCode::BAD_REQUEST);
+}
+
+/// One live consumer per tool: a second connection claiming the same tool displaces
+/// the first, which ends instead of racing it for side effects.
+#[tokio::test]
+async fn a_new_serve_connection_displaces_the_seat_holder() {
+    let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let live = tokio::sync::broadcast::Sender::new(8);
+    let api = Api {
+        live: Some(live.clone()),
+        journal: Some(vec![intent(1, "highlight_row", "op_1")]),
+    };
+    // One router, two connections: the seats live in the router's serve registry.
+    let router = router(api);
+    let first = router
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let drained = tokio::spawn(axum::body::to_bytes(first.into_body(), 64 * 1024));
+
+    let second = router
+        .oneshot(request(
+            "GET",
+            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+
+    // The first stream must end because the second claimed its seat; a held stream
+    // would make this join hang and the test time out.
+    let body = tokio::time::timeout(std::time::Duration::from_secs(5), drained)
+        .await
+        .expect("the displaced stream must end")
+        .unwrap()
+        .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        body.contains("op_1"),
+        "backlog missing before the end: {body}"
+    );
 }
 
 /// The event stream must carry what happens *after* it is opened.
@@ -330,6 +577,7 @@ async fn the_event_stream_carries_records_appended_after_it_opened() {
     let live = tokio::sync::broadcast::Sender::new(8);
     let api = Api {
         live: Some(live.clone()),
+        ..Api::default()
     };
 
     let request = Request::builder()
@@ -400,6 +648,7 @@ async fn the_event_stream_carries_model_output_before_the_turn_finishes() {
     let live = tokio::sync::broadcast::Sender::new(8);
     let api = Api {
         live: Some(live.clone()),
+        ..Api::default()
     };
 
     let request = Request::builder()
