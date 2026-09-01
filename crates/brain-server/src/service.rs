@@ -643,16 +643,53 @@ pub struct WorkerLoopExecutor(pub Arc<WorkerPool>);
 
 #[async_trait]
 impl LoopExecutor for WorkerLoopExecutor {
+    /// Context residency: the conversation crosses the wire twice per turn, not twice
+    /// per activation.
+    ///
+    /// The turn's opening observation (`user_message`, or `session_started` at create)
+    /// carries the context to the worker, which holds it resident between the turn's
+    /// legs; mid-turn legs send and receive a placeholder envelope, and the terminal
+    /// decision (finish, fail) brings the real context home for `finish_turn` to
+    /// journal. The kernel's own mid-turn copy is therefore a placeholder — its error
+    /// and cancel paths journal the turn-opening context they snapshot, which is the
+    /// same "effects may or may not have happened" honesty a worker restart already
+    /// has.
+    ///
+    /// A worker that restarts mid-turn holds nothing and answers `context_required`;
+    /// the turn fails honestly rather than replaying its effects from the opening
+    /// context.
     async fn activate(
         &self,
         session: &brain_protocol::SessionId,
         agentloop: &AgentloopIdentity,
         input: brain_protocol::ActivationInput,
     ) -> Result<brain_protocol::ActivationOutput, KernelError> {
-        self.0
-            .activate(session.as_str().to_owned(), agentloop.clone(), input)
+        let context_attached = matches!(
+            input.observation,
+            brain_protocol::Observation::UserMessage { .. }
+                | brain_protocol::Observation::SessionStarted { .. }
+        );
+        let (mut output, output_attached) = self
+            .0
+            .activate(
+                session.as_str().to_owned(),
+                agentloop.clone(),
+                context_attached,
+                input,
+            )
             .await
-            .map_err(KernelError::Executor)
+            .map_err(KernelError::Executor)?;
+        if !output_attached {
+            // Mid-turn: the context stays in the worker. The kernel only needs the
+            // envelope's version to accept the leg; the real context returns on the
+            // terminal decision.
+            output.context = brain_protocol::ContextEnvelope {
+                protocol_version: output.context.protocol_version,
+                items: Vec::new(),
+                state: None,
+            };
+        }
+        Ok(output)
     }
 }
 

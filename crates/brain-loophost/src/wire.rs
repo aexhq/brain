@@ -17,6 +17,10 @@ pub enum WorkerRequest {
         digest: AgentloopIdentity,
         /// Cache key for a warm instance; never handed to the guest.
         session: String,
+        /// Whether `input.context` carries the turn's context. On the turn's opening
+        /// observation it does; mid-turn legs send a placeholder and the worker uses
+        /// what it holds resident.
+        context_attached: bool,
         input: Box<ActivationInput>,
     },
 }
@@ -25,9 +29,20 @@ pub enum WorkerRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerResponse {
     Pong,
-    Admitted { digest: AgentloopIdentity },
-    Activated { output: ActivationOutput },
-    Error { code: String, message: String },
+    Admitted {
+        digest: AgentloopIdentity,
+    },
+    Activated {
+        output: ActivationOutput,
+        /// Whether `output.context` carries the turn's context. Terminal decisions
+        /// (finish, fail) return it; mid-turn legs keep it resident and send a
+        /// placeholder.
+        context_attached: bool,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 pub(crate) async fn write_frame<W: AsyncWrite + Unpin, T: Serialize>(
