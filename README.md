@@ -22,21 +22,15 @@
 
 ## What is it
 
-**Brain** is a minimal, *blazingly fast* agent runtime. Build your own AI-native apps, with
-tools that run anywhere from a client browser to a server sandbox. Run any agentloop, from pi
-to codex. Deploy flexibly as a Docker image or an embedded Rust crate. Secure by design, with
-Wasm-isolated agentloop and tool execution. Scale easily with minimal memory overhead. Instant
-observability with real-time events.
-
-> [!NOTE]
-> **Brain is under early development.** Contracts are replaced in place until the first stable
-> release, and there is no upgrade path from earlier builds. APIs, package names, and wire formats
-> will change without notice.
+**Brain** is a minimal, *blazingly fast*, extensible agent runtime server. Deploy and build
+your own AI-native apps, write customized agentloop, tools that run in any environment from
+client browser to server sandbox. Secure by design, with Wasm-isolated agentloop and
+execution. Scale easily with minimal memory overhead. Instant observability with real-time
+events.
 
 ## Benchmarks
 
-Same machine, same scripted model behind every subject — no model latency in any number. ★ marks
-Brain in each chart.
+No model latency in any number. ★ marks Brain in each chart.
 
 **Turn round-trip**
 
@@ -203,8 +197,6 @@ import { Brain, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
-// One declaration: the contract the model sees and the function that answers it,
-// closing over your app's state.
 const orders = { "A-1001": { status: "shipped", eta: "Thursday" } };
 const lookupOrder = tool({
   name: "lookup_order",
