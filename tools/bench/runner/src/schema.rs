@@ -123,7 +123,7 @@ impl Probe {
     /// the run recorded neither a number nor a skip, which is the one outcome this
     /// benchmark is built to prevent. `the_run_order_holds_every_probe` fails to compile
     /// if a variant is added without a decision about where it belongs here.
-    pub const ALL: [Probe; 9] = [
+    pub const ALL: [Probe; 11] = [
         Probe::Create,
         Probe::Idle,
         Probe::Ttfb,
@@ -133,6 +133,10 @@ impl Probe {
         Probe::Throughput,
         Probe::Resident,
         Probe::Reclaim,
+        // Last on purpose: each sample restarts the subject, so everything cheaper banks
+        // its numbers first.
+        Probe::ColdStart,
+        Probe::Recovery,
     ];
 }
 
@@ -421,6 +425,8 @@ mod probe_order_tests {
                 Probe::Resident => "resident",
                 Probe::Reclaim => "reclaim",
                 Probe::Cost => "cost",
+                Probe::ColdStart => "cold_start",
+                Probe::Recovery => "recovery",
             };
             assert_eq!(probe.as_str(), expected);
             Probe::ALL.contains(&probe)
