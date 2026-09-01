@@ -187,7 +187,9 @@ server in your app, no ports, no channel.
 Run a server:
 
 ```sh
-docker run --rm -p 127.0.0.1:8080:8080 -e BRAIN_LISTEN=0.0.0.0:8080   -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -e BRAIN_LISTEN=0.0.0.0:8080 -e BRAIN_API_TOKEN=quickstart \
+  -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
 
 ```sh
@@ -211,7 +213,7 @@ const lookupOrder = appTool({
   execute: ({ id }) => orders[id] ?? { status: "unknown order" },
 });
 
-const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
+const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 const session = await brain.sessions.create({
   model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
   agentloop: pi(),
