@@ -79,74 +79,39 @@ ZeroClaw   ███████████████████████
 OpenClaw   ████████████████████████████████████    490 MiB
 ```
 
-<sub>Medians from the harness in <a href="tools/bench">tools/bench</a>, every subject measured on
-the same AWS <code>c7g.xlarge</code>; bars are log-scaled. Brain's first-token figure is now a real
-measurement: the scripted provider delays its first token deliberately and the probe
-subtracts the delay, so what remains is the runtime's own overhead. Cold start — launch on a
-fresh data directory to the first turn served — measures 0.66 s for Brain (n=8); competitor
-rows land with the next measuring session. The charts compare agent runtimes —
-servers that own sessions and run an agent loop behind an API; agent libraries and generic
-durable-execution engines are measured by the harness but not charted, because a turn without
-persistence or an agent surface is a different product. Subject versions, methodology, and
-the bounds CI enforces:
-<a href="BENCHMARKS.md">BENCHMARKS.md</a>.</sub>
+<sub>Medians from the harness in <a href="tools/bench">tools/bench</a>, every subject on the same
+AWS <code>c7g.xlarge</code>; bars are log-scaled, and charted subjects are agent runtimes that own
+sessions behind an API. Methodology and subject versions: <a href="BENCHMARKS.md">BENCHMARKS.md</a>.</sub>
 
 ## How it works
 
-One turn, end to end — every effect preceded by its journaled intent, the loop sandboxed in
-its own process, output streaming while the turn runs, and a client-hosted tool answered by
-your own code off the event feed:
+One turn, end to end. The agent loop decides, Brain performs every effect on its behalf,
+journals the intent before it happens, and streams the result while the turn is still running:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant App as your app
-    participant Brain as brain server
-    participant Journal as journal
-    participant Loop as agent loop (Wasm worker)
-    participant Model as model provider
-
-    App->>Brain: POST /messages
-    Brain->>Journal: turn_started
-    Brain->>Loop: activate(user_message)
-    Loop-->>Brain: decision: model
-    Brain->>Journal: model_intent
-    Brain->>Model: completion (streaming)
-    Brain--)App: assistant deltas on the SSE feed, mid-turn
-    Model-->>Brain: completion
-    Brain->>Journal: model_result
-    Brain->>Loop: activate(model_completed)
-    Loop-->>Brain: decision: tools
-    Brain->>Journal: tool_intent — the turn parks
-    Brain--)App: the call surfaces on the event feed
-    App->>App: your execute() runs beside your state
-    App->>Brain: POST /tool-results/{operation_id}
-    Brain->>Journal: tool_result
-    Brain->>Loop: activate(tools_completed)
-    Loop-->>Brain: decision: finish
-    Brain->>Journal: turn_finished + context, once per turn
-    Brain-->>App: updated session
-```
-
-And the part most runtimes cannot draw — what happens when the process dies:
-
-```mermaid
-sequenceDiagram
-    participant App as your app
-    participant Brain as brain server (new process)
-    participant Journal as journal
-
-    Note over Brain: previous process died mid-turn
-    Brain->>Journal: read every session's row at boot
-    Brain->>Journal: turn_interrupted, for anything left running
-    App->>Brain: GET /events?after=n
-    Journal-->>App: exactly the records missed
-    App->>Brain: POST /messages
-    Brain-->>App: the same conversation continues
+```text
+                    +-------------------------------+
+   your app ------->| session state, in memory      |
+            <-------| live event feed               |
+                    +---------------+---------------+
+                                    | activate
+                                    v
+                    +-------------------------------+
+                    | agent loop, a Wasm component  |   decides; performs no I/O
+                    +---------------+---------------+
+                                    | decision
+                                    v
+                    +-------------------------------+        +-----------------+
+                    | Brain performs every effect   |<------>| append-only log |
+                    | on the loop's behalf          | intent | off the turn's  |
+                    +---------------+---------------+ result | hot path        |
+                                    |                        +-----------------+
+                                    +--> model provider, streaming
+                                    |
+                                    +--> tool, in any environment
 ```
 
 Brain owns the session; the agent loop, model, tools, and environment are yours to supply. The
-speed comes from a handful of techniques most runtimes don't use:
+speed comes from four techniques:
 
 - **Isolated WebAssembly agent loops** — a loop compiles from any language to a component on
   [Wasmtime](https://wasmtime.dev/): secured, isolated, resource-limited, compiled once and
@@ -154,18 +119,16 @@ speed comes from a handful of techniques most runtimes don't use:
   which makes each decision deterministic and replayable from its position in the log.
 - **Write-ahead log (WAL) persistence** — the runtime's only durable state is an append-only
   write-ahead log, written behind the turn, off the hot path. Sessions are memory-resident and
-  rebuild from the WAL after a restart; a session interrupted mid-turn comes back with a
-  `turn_interrupted` event and lets the client decide.
+  rebuild from the WAL at boot, so a restart picks the conversation up where it left off.
 - **Bounded live streaming** — a model delta reaches subscribers the moment the provider emits
-  it. The live feed rides a fixed 1,024-event ring per subscriber; a reader that falls behind
-  drops, learns how many records it missed, and re-reads them from the WAL, so a slow consumer
-  can never slow a turn.
+  it. The live feed rides a fixed 1,024-event ring per subscriber, and a reader resumes from the
+  WAL at the exact record it left off, so streaming stays constant-cost per subscriber.
 - **Observability as the data model** — every observation, decision, model intent, token, and
   tool outcome is an event in one feed; watching live and reading history back are the same
   records, so tracing a session is replaying it.
 
-The rest is deliberately boring: one native Rust binary on [Tokio](https://tokio.rs/), serving
-the session API over [Axum](https://github.com/tokio-rs/axum) HTTP/SSE, with no external stores.
+One native Rust binary on [Tokio](https://tokio.rs/), serving the session API over
+[Axum](https://github.com/tokio-rs/axum) HTTP/SSE, with no external stores.
 
 ## Features
 
