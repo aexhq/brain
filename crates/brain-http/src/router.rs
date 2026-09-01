@@ -10,7 +10,8 @@ use axum::{
 };
 use brain_protocol::{
     AgentloopAdmission, AgentloopIdentity, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentId, MessageRequest, Session, SessionId, SessionList,
+    EnvironmentCallResult, EnvironmentId, MessageRequest, OperationId, Outcome, Session,
+    SessionId, SessionList,
 };
 
 use futures_util::StreamExt as _;
@@ -78,6 +79,10 @@ fn protected_routes<A: BrainApi>(api: A) -> Router {
             post(call_environment::<A>),
         )
         .route("/v1/sessions/{session_id}/events", get(events::<A>))
+        .route(
+            "/v1/sessions/{session_id}/tool-results/{operation_id}",
+            post(resolve_tool_call::<A>),
+        )
         .route(
             "/v1/sessions/{session_id}/cancel",
             post(cancel_session::<A>),
@@ -179,6 +184,18 @@ async fn send_message<A: BrainApi>(
             .await
             .map_err(HttpError)?,
     ))
+}
+
+async fn resolve_tool_call<A: BrainApi>(
+    State(api): State<A>,
+    Path((session_id, operation_id)): Path<(SessionId, OperationId)>,
+    headers: HeaderMap,
+    Json(outcome): Json<Outcome>,
+) -> Result<StatusCode, HttpError> {
+    api.resolve_tool_call(session_id, operation_id, idempotency_key(&headers)?, outcome)
+        .await
+        .map_err(HttpError)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn call_environment<A: BrainApi>(

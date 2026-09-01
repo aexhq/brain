@@ -16,13 +16,15 @@ pub struct ToolDefinition {
 }
 
 /// Where a tool's implementation executes: a provisioned artifact the environment
-/// hosts, or a callback into the author's own running application.
+/// hosts, a callback an environment forwards into the author's running application,
+/// or the client process that created the session, answering off the event feed.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolHosting {
     #[default]
     Provisioned,
     Callback,
+    Client,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -64,8 +66,11 @@ pub struct ToolManifest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolBinding {
     pub name: String,
-    pub environment: EnvironmentBinding,
-    pub attachment_id: AttachmentId,
+    /// Absent for client-hosted tools: no environment is on their serving path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<AttachmentId>,
     pub requires: Vec<Capability>,
     pub binding_names: Vec<String>,
     #[serde(default)]
@@ -78,7 +83,8 @@ pub struct ToolBinding {
 #[serde(deny_unknown_fields)]
 pub struct RequestedToolBinding {
     pub name: String,
-    pub environment_id: EnvironmentId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<EnvironmentId>,
     pub requires: Vec<Capability>,
     pub binding_names: Vec<String>,
     #[serde(default)]

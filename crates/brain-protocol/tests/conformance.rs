@@ -15,6 +15,13 @@ fn read_json(path: &str) -> Value {
 }
 
 fn validate_definition(schema_path: &str, definition: &str, value: &Value) {
+    assert!(
+        definition_is_valid(schema_path, definition, value),
+        "{definition} example failed validation"
+    );
+}
+
+fn definition_is_valid(schema_path: &str, definition: &str, value: &Value) -> bool {
     let schema = read_json(schema_path);
     let wrapper = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -24,7 +31,7 @@ fn validate_definition(schema_path: &str, definition: &str, value: &Value) {
     jsonschema::draft202012::new(&wrapper)
         .unwrap()
         .validate(value)
-        .unwrap();
+        .is_ok()
 }
 
 #[test]
@@ -109,8 +116,8 @@ fn rust_views_round_trip_contract_examples() {
     assert_eq!(session.tools.len(), 1);
     assert_eq!(session.tools[0].name, "read");
     assert_eq!(
-        session.tools[0].environment_id,
-        session.environments[0].environment_id
+        session.tools[0].environment_id.as_ref(),
+        Some(&session.environments[0].environment_id)
     );
     assert_eq!(
         session.tools[0].requires,
@@ -183,4 +190,47 @@ fn model_selection_names_are_validated_per_provider() {
     assert!(!validate(&selection("anthropic", "claude sonnet")));
     assert!(!validate(&selection("not a provider", "model")));
     assert!(!validate(&selection("", "model")));
+}
+
+/// A client-hosted tool is answered by the session's creator: like `callback` it can
+/// carry no payload, and unlike every other hosting it names no environment — the
+/// schema enforces both directions of the environment rule.
+#[test]
+fn a_client_tool_binds_no_environment_and_ships_no_payload() {
+    let schema =
+        jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json")).unwrap();
+    let mut manifest = read_json("contracts/tool/v1/examples/manifest.json");
+    manifest["hosting"] = serde_json::json!("client");
+    assert!(schema.validate(&manifest).is_err());
+    manifest.as_object_mut().unwrap().remove("payload");
+    schema.validate(&manifest).unwrap();
+
+    let session = read_json("contracts/session/v1/examples/create-session.json");
+    let mut tool = session["tools"][0].clone();
+    tool["hosting"] = serde_json::json!("client");
+    tool.as_object_mut().unwrap().remove("payload");
+    let mut request = session.clone();
+    // A client tool still naming an environment is contradictory.
+    request["tools"][0] = tool.clone();
+    assert!(!definition_is_valid(
+        "contracts/session/v1/schemas.json",
+        "CreateSessionRequest",
+        &request
+    ));
+    tool.as_object_mut().unwrap().remove("environment_id");
+    request["tools"][0] = tool;
+    request["environments"] = serde_json::json!([]);
+    validate_definition(
+        "contracts/session/v1/schemas.json",
+        "CreateSessionRequest",
+        &request,
+    );
+    // And a non-client tool without an environment stays rejected.
+    let mut bare = session.clone();
+    bare["tools"][0].as_object_mut().unwrap().remove("environment_id");
+    assert!(!definition_is_valid(
+        "contracts/session/v1/schemas.json",
+        "CreateSessionRequest",
+        &bare
+    ));
 }

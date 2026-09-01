@@ -41,7 +41,9 @@ pub struct BoundTool {
     pub hosting: ToolHosting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<ToolPayload>,
-    pub environment_id: EnvironmentId,
+    /// Required unless `hosting` is `client`; a client-hosted tool binds no environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<EnvironmentId>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

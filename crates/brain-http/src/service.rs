@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use brain_protocol::{
     AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentId, EventPage, LiveEvent, MessageRequest, Session, SessionId,
-    SessionList,
+    EnvironmentCallResult, EnvironmentId, EventPage, LiveEvent, MessageRequest, OperationId,
+    Outcome, Session, SessionId, SessionList,
 };
 
 #[async_trait]
@@ -49,6 +49,14 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
     /// already carried, by sequence. Falling behind loses records rather than holding up
     /// a turn — the journal is the record, and `after` reads it back.
     fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, LiveEvent)>;
+    /// Answers a parked client-hosted tool call with its outcome.
+    async fn resolve_tool_call(
+        &self,
+        session_id: SessionId,
+        operation_id: OperationId,
+        idempotency_key: String,
+        outcome: Outcome,
+    ) -> Result<(), ApiError>;
     async fn cancel_session(
         &self,
         session_id: SessionId,

@@ -327,7 +327,10 @@ fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
             .iter()
             .map(|binding| RequestedToolBinding {
                 name: binding.name.clone(),
-                environment_id: binding.environment.environment_id.clone(),
+                environment_id: binding
+                    .environment
+                    .as_ref()
+                    .map(|environment| environment.environment_id.clone()),
                 requires: binding.requires.clone(),
                 binding_names: binding.binding_names.clone(),
                 hosting: binding.hosting,
