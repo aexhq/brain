@@ -825,7 +825,13 @@ export function activateAgentloop(factory: unknown, input: AgentloopInput): { re
   const handler = handlers.get(input.observation.type);
   const action = handler === undefined ? defaultAction(input.observation.type) : handler(input.observation as never, turn(input.runtime.logicalTimeMs));
   if (isPromise(action)) throw new TypeError("Agentloop handlers must be synchronous");
-  for (let index = 0; index < schemas.length; index += 1) slots[index] = schemas[index]!.parse(slots[index]);
+  // Re-validating every slot on every activation cost O(conversation) three times per
+  // turn. Mid-turn continuations skip it: the state is never persisted before the turn
+  // ends, and the next activation receives it by identity, so a handler that corrupts
+  // its state is still caught — at the turn's terminal decision instead of immediately.
+  if (action.type !== "model" && action.type !== "tools") {
+    for (let index = 0; index < schemas.length; index += 1) slots[index] = schemas[index]!.parse(slots[index]);
+  }
   if (action.type === "reply") return output(slots, true, action.input, { type: "emit", event: { type: "assistant_message", message: action.input.message } });
   return output(slots, false, undefined, action);
 }
