@@ -1,2 +1,6 @@
 target
 results
+subjects/awaken/checkout
+subjects/mastra/app/.mastra
+subjects/mastra/app/package-lock.json
+subjects/voltagent/app/package-lock.json

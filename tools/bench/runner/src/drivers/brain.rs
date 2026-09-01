@@ -205,7 +205,7 @@ impl Driver for BrainDriver {
                 reqwest::Method::POST,
                 &format!("/v1/sessions/{}/messages", unit.id),
             )
-            .json(&json!({"content": self.prompt}))
+            .json(&json!({"input": {"message": self.prompt}}))
             .send();
 
         // The send is not awaited first: the whole point is that the first token arrives
@@ -301,7 +301,7 @@ impl Driver for BrainDriver {
                 reqwest::Method::POST,
                 &format!("/v1/sessions/{}/messages", unit.id),
             )
-            .json(&json!({"content": self.prompt}))
+            .json(&json!({"input": {"message": self.prompt}}))
             .send()
             .await?
             .error_for_status()
@@ -331,7 +331,7 @@ impl Driver for BrainDriver {
             reqwest::Method::POST,
             &format!("/v1/sessions/{}/messages", unit.id),
         )
-        .json(&json!({"content": TOOL_PROMPT}))
+        .json(&json!({"input": {"message": TOOL_PROMPT}}))
         .send()
         .await?
         .error_for_status()

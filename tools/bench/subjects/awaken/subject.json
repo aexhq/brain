@@ -1,0 +1,61 @@
+{
+  "name": "awaken",
+  "class": "session-kernel",
+  "version": "awaken v0.6.0 (ai-sdk-starter-agent)",
+  "notes": [
+    "A Rust agent runtime serving AI SDK, AG-UI, A2A, and MCP over one HTTP surface with durable dispatch and replay — the closest architectural shape to Brain in this set. Measured through its protocol-neutral runs API; the subject is the repo's own ai-sdk-starter server, because the project ships no standalone server binary.",
+    "Pinned to v0.6.0, pre-1.0 with monthly breaking releases; the checkout and build happen in provisioning (build.sh), and the launch block only runs the built binary.",
+    "OPENAI_API_KEY is set to a dummy value deliberately: without one the starter silently falls back to its built-in deterministic scripted executor, and every latency would be measured against that instead of the benchmark's scripted provider. The launch script also forces the trailing slash the client's URL joining requires.",
+    "The runs API is SSE-first with no blocking completion form, so the round-trip probe reads its own stream to the run_finish event, and the event journal every frame lands in is part of what the number measures — durable replay is the product.",
+    "Retry policy and round ceiling are left at the starter's documented defaults (2 retries / 500 ms backoff, AGENT_MAX_ROUNDS=8); the scripted provider answers instantly and deterministically, so retries never fire.",
+    "Awaken finalizes a run asynchronously after its stream's run_finish, and until then the thread answers the next submission with a 409. Back-to-back turns therefore wait that window out untimed — the probe's clock restarts on each attempt — so every latency here is the accepted run's, not the previous run's cleanup. The window itself is real per-thread behavior worth knowing about.",
+    "Requires: a Rust toolchain and `bash tools/bench/subjects/awaken/build.sh` in provisioning (network once, for the clone and crates)."
+  ],
+  "requires": {
+    "linux": false
+  },
+  "probes": {
+    "create": {
+      "definition": "POST /v1/threads until the response carries the thread id"
+    },
+    "ttfb": {
+      "definition": "run submitted to /v1/runs until the first text_delta event on the SSE stream the run itself is. The stream is opened by submitting the turn, so the subscribe cost is inside this number by construction"
+    },
+    "round_trip": {
+      "definition": "run submitted to /v1/runs until its run_finish event, one complete text turn including the durable event journal written behind it"
+    },
+    "throughput": {
+      "definition": "complete text turns per second across N concurrent threads, unpaced"
+    },
+    "idle": {
+      "definition": "private memory across the whole process tree with no threads created, sampled for 20s after 10s of settling"
+    },
+    "resident": {
+      "definition": "Private_Clean + Private_Dirty + Private_Hugetlb across the server's process tree, per thread held"
+    },
+    "persistence": {
+      "definition": "bytes on disk in the run's storage directory after N turns of one thread, sampled per turn; Awaken journals every run event durably for replay, which is the write pattern under test"
+    }
+  },
+  "launch": {
+    "command": "bash",
+    "args": [
+      "tools/bench/subjects/awaken/launch.sh"
+    ],
+    "env": {
+      "BENCH_MODEL_BASE_URL": "{model_base_url}",
+      "OPENAI_API_KEY": "bench",
+      "OPENAI_ADAPTER": "openai",
+      "AGENT_MODEL": "gpt-4o-mini",
+      "AGENT_ID": "default",
+      "AWAKEN_HTTP_ADDR": "127.0.0.1:{port}",
+      "AWAKEN_ADMIN_API_BEARER_TOKEN": "bench",
+      "AWAKEN_STORAGE_DIR": "{data_dir}",
+      "AWAKEN_SEED_PROFILE": "minimal",
+      "AWAKEN_ALLOW_DEV_FILE_COORDINATOR": "true"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health",
+    "ready_timeout_secs": 120
+  }
+}

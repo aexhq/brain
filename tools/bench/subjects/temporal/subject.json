@@ -1,0 +1,51 @@
+{
+  "name": "temporal",
+  "class": "session-kernel",
+  "version": "temporal CLI 1.8.2 dev server, temporalio 1.32.0",
+  "notes": [
+    "A durable-execution engine, not an agent runtime: Temporal runs agent loops as replayed workflows on workers, and the session measured here is the benchmark's own harness — one long-running workflow per session, messages as workflow updates whose result is the reply — mirroring the pattern of Temporal's own openai_agents customer_service sample, with the model call running as an activity through their official OpenAIAgentsPlugin pointed at the scripted provider. A number measured on a harness has to say who wrote the harness; this one does.",
+    "The runner drives a stdlib HTTP shim living in the worker process, because Temporal's client is an SDK rather than an HTTP surface. The shim's cost — one thread hop onto the client's event loop per request — is a fraction of a millisecond and is inside every number.",
+    "The subject is the single-binary dev server (`temporal server start-dev`, SQLite on the run's data directory, UI disabled). Temporal says it is not intended for production; it is also far lighter than a production Cassandra deployment, so this cuts both ways and the writeup must say so.",
+    "Every turn pays the substrate's own documented costs — roughly 50 ms activity scheduling round-trip plus two workflow tasks — which is the fair comparison point: durability by replayed history against Brain's journaled effects.",
+    "No first-byte probe: an update returns one complete reply, and the integration's experimental streaming publishes into a workflow-hosted stream rather than to an external caller.",
+    "The throughput probe is declared but timed out at 64-way concurrency on the dev server — its default dynamic-config RPS caps throttle exactly this shape of load, as Temporal's own worker-performance docs describe — so the 2026-08-31 run records it as a skip. Raising the dev server's caps to make the number exist would measure our tuning, not their defaults.",
+    "Requires: `bash tools/bench/subjects/temporal/build.sh` in provisioning (downloads the pinned CLI, builds the worker venv; network once)."
+  ],
+  "requires": {
+    "linux": false
+  },
+  "probes": {
+    "create": {
+      "definition": "start_workflow through the shim until the workflow execution is started — Temporal's own create moment for a session, a durable write to its store"
+    },
+    "round_trip": {
+      "definition": "execute_update through the shim until the update's reply returns — one complete text turn: update task, model activity against the scripted provider, update result, and the replayed history written behind all three"
+    },
+    "throughput": {
+      "definition": "complete text turns per second across N concurrent session workflows, unpaced"
+    },
+    "idle": {
+      "definition": "private memory across the dev server's and worker's process trees with no workflows started, sampled for 20s after 10s of settling"
+    },
+    "resident": {
+      "definition": "Private_Clean + Private_Dirty + Private_Hugetlb across both process trees, per started session workflow held; the worker's sticky cache keeps live workflows in memory, which is what the slope measures"
+    },
+    "persistence": {
+      "definition": "bytes on disk in the dev server's SQLite file after N turns of one session workflow, sampled per turn; every update and activity lands in replayed history, so the cost of turn N includes the history before it"
+    }
+  },
+  "launch": {
+    "command": "bash",
+    "args": [
+      "tools/bench/subjects/temporal/launch.sh"
+    ],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health",
+    "ready_timeout_secs": 180
+  }
+}

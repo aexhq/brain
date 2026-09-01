@@ -186,8 +186,11 @@ move them by a different amount than it moves the next subject's. On Unix the su
 in its own process group and the group is signalled on teardown, so loop workers and other
 children cannot outlive it and hold ports or memory into the next measurement.
 
-Only `brain` has a driver so far. Any other subject is recorded as a skip rather than
-driven with Brain's client, which would produce numbers that look real and mean nothing.
+A subject without a driver is recorded as a skip rather than driven with another
+subject's client, which would produce numbers that look real and mean nothing. Drivers
+exist today for brain, langgraph-server, letta, openfang, zeroclaw, openclaw,
+agno-agentos, voltagent, mastra, agentscope-runtime, awaken, restate, temporal, the
+framework harness, and the sandbox subjects — see `drivers/mod.rs` for the registry.
 
 A project with both an open-source build and a hosted service is **two subjects**
 (`e2b-selfhosted` and `e2b-cloud`): one measures their code on our instance, the other

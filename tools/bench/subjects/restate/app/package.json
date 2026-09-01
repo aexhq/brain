@@ -1,0 +1,19 @@
+{
+  "name": "restate-bench-subject",
+  "private": true,
+  "type": "module",
+  "description": "The agent-session service this benchmark runs on Restate: their published Durable Sessions pattern, model pointed at the scripted provider.",
+  "dependencies": {
+    "@restatedev/restate-sdk": "1.16.2",
+    "@restatedev/vercel-ai-middleware": "0.4.0",
+    "@ai-sdk/openai": "4.0.17",
+    "ai": "7.0.2"
+  },
+  "devDependencies": {
+    "tsx": "4.19.2",
+    "typescript": "5.9.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

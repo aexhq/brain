@@ -1,0 +1,53 @@
+{
+  "name": "agno-agentos",
+  "class": "session-kernel",
+  "version": "agno==3.0.4",
+  "notes": [
+    "Agno's AgentOS: the self-hostable FastAPI runtime around the Agno agent library, measured as a running server the way LangGraph Server and Letta are. The library's own published figures (~3 µs instantiation, ~6.5 KiB per agent) are in-process microbenchmarks on Apple silicon; these probes measure the served product instead, so the two sets of numbers are different measurements and must not be merged.",
+    "One agent at Agno's defaults with a SQLite store under the run's data directory, its OpenAI-like model pointed at the scripted provider through the launch environment (server.py reads BENCH_MODEL_BASE_URL). AGNO_TELEMETRY=false is set in the environment and telemetry=False in both constructors, because the env var alone has not always been honoured.",
+    "Sessions are lazy: any session_id passed to a run is created on first use, and POST /sessions is the explicit form of the same row insert. The create probe measures the explicit form, and its definition says so.",
+    "The run endpoint takes form-encoded bodies, not JSON, and streams by default; the blocking probe sends stream=false explicitly.",
+    "Requires: pip install 'agno[os]==3.0.4' openai — provisioning installs it; the launch block assumes python3 can import agno."
+  ],
+  "requires": {
+    "linux": false
+  },
+  "probes": {
+    "create": {
+      "definition": "POST /sessions (session_type=agent) until the response carries a session id. Agno creates sessions lazily on first run; this is its explicit session create — a database row insert, with the agent itself already resident from boot"
+    },
+    "ttfb": {
+      "definition": "run submitted with stream=true until the first RunContent event on the SSE stream the run itself opens. Like LangGraph Server and Letta, the stream is opened by submitting the turn, so the subscribe cost is inside this number by construction"
+    },
+    "round_trip": {
+      "definition": "run submitted with stream=false until the JSON response carries the completed run with its assistant content, one complete text turn against the session's history"
+    },
+    "throughput": {
+      "definition": "complete text turns per second across N concurrent sessions, unpaced"
+    },
+    "idle": {
+      "definition": "private memory across the whole process tree with no sessions created, sampled for 20s after 10s of settling"
+    },
+    "resident": {
+      "definition": "Private_Clean + Private_Dirty + Private_Hugetlb across the uvicorn process tree, per session held. Agno keeps session state in SQLite rather than in memory, so a near-zero slope is the expected result and is itself the finding: no per-session memory cost, and no session state in memory"
+    },
+    "persistence": {
+      "definition": "bytes on disk in the run's data directory after N turns of one session, sampled per turn; Agno writes the session's history and run records into its SQLite store"
+    }
+  },
+  "launch": {
+    "command": "python3",
+    "args": [
+      "tools/bench/subjects/agno-agentos/server.py"
+    ],
+    "env": {
+      "AGENT_OS_PORT": "{port}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "AGNO_TELEMETRY": "false"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health",
+    "ready_timeout_secs": 120
+  }
+}

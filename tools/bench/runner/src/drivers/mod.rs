@@ -15,6 +15,9 @@ use anyhow::Result;
 
 use crate::{driver::Driver, fixtures::Fixture};
 
+pub mod agentscope;
+pub mod agno_agentos;
+pub mod awaken;
 pub mod brain;
 pub mod daytona;
 pub mod e2b;
@@ -22,8 +25,12 @@ pub mod e2b_selfhosted;
 pub mod firecracker;
 pub mod framework;
 pub mod managed_agents;
+pub mod mastra;
 pub mod modal;
 pub mod openclaw;
+pub mod restate;
+pub mod temporal;
+pub mod voltagent;
 pub mod openfang;
 pub mod zeroclaw;
 pub mod langgraph_server;
@@ -70,6 +77,18 @@ pub fn for_subject(subject: &str, bench: &Bench) -> Result<Option<Box<dyn Driver
             bench.pid,
             Arc::clone(&bench.environment),
         )?))),
+        "agentscope-runtime" => Ok(Some(Box::new(agentscope::AgentScopeDriver::new(
+            &bench.base_url,
+            bench.pid,
+        )?))),
+        "awaken" => Ok(Some(Box::new(awaken::AwakenDriver::new(
+            &bench.base_url,
+            bench.pid,
+        )?))),
+        "agno-agentos" => Ok(Some(Box::new(agno_agentos::AgnoAgentOsDriver::new(
+            &bench.base_url,
+            bench.pid,
+        )?))),
         "langgraph-server" => Ok(Some(Box::new(
             langgraph_server::LangGraphServerDriver::new(&bench.base_url, bench.pid)?,
         ))),
@@ -101,6 +120,22 @@ pub fn for_subject(subject: &str, bench: &Bench) -> Result<Option<Box<dyn Driver
         ))),
         "modal" => Ok(Some(Box::new(modal::ModalDriver::new()?))),
         "zeroclaw" => Ok(Some(Box::new(zeroclaw::ZeroclawDriver::new(
+            &bench.base_url,
+            bench.pid,
+        )?))),
+        "mastra" => Ok(Some(Box::new(mastra::MastraDriver::new(
+            &bench.base_url,
+            bench.pid,
+        )?))),
+        "temporal" => Ok(Some(Box::new(temporal::TemporalDriver::new(
+            &bench.base_url,
+            bench.pid,
+        )?))),
+        "restate" => Ok(Some(Box::new(restate::RestateDriver::new(
+            &bench.base_url,
+            bench.pid,
+        )?))),
+        "voltagent" => Ok(Some(Box::new(voltagent::VoltAgentDriver::new(
             &bench.base_url,
             bench.pid,
         )?))),

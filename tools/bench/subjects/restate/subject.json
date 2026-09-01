@@ -1,0 +1,48 @@
+{
+  "name": "restate",
+  "class": "session-kernel",
+  "version": "restate-server 1.7.8",
+  "notes": [
+    "A durable-execution engine, not an agent runtime: restate-server journals and drives handlers that live in a user service, and the agent-session service measured here is the benchmark's own harness code — a faithful copy of Restate's published Durable Sessions pattern (Virtual Object keyed by session id, history in object state, the model call wrapped in their durableCalls middleware), deviating from their example in nothing but the model's base URL. A number measured on a harness has to say who wrote the harness; this one does.",
+    "Two processes under one launch: the harness service on its fixed port 9080, and restate-server with its ingress on the run's port. The driver registers the deployment through the admin API before anything is timed.",
+    "Sessions are implicit — a Virtual Object exists the moment its key is first invoked, so there is no create moment to measure and no create probe is declared.",
+    "No first-byte probe either: ingress answers at handler completion, and Restate's own docs say token streaming is not yet supported. Reporting ttfb through their pubsub add-on would benchmark our SSE relay, not Restate.",
+    "The durability tax is the product: every state read, write, and journaled model call is fsynced per step, and concurrent sends to one session queue on its single writer. The round-trip number includes all of that by design, and the comparison is exactly-once recovery against Brain's replayable journal.",
+    "DO_NOT_TRACK=1 is set; the admin port is Restate's default 9070, so two subjects of this manifest cannot share a host.",
+    "Requires: `bash tools/bench/subjects/restate/build.sh` in provisioning (downloads the pinned server binary, installs the service's npm dependencies; network once)."
+  ],
+  "requires": {
+    "linux": true
+  },
+  "probes": {
+    "round_trip": {
+      "definition": "POST /restate/call/AgentSession/{session}/send on the ingress until the handler's reply returns — one complete text turn, including the invocation journal, the state read and write, and the journaled model call behind it"
+    },
+    "throughput": {
+      "definition": "complete text turns per second across N concurrent sessions, unpaced; one session's turns serialize on its Virtual Object by design, so concurrency comes from session count"
+    },
+    "idle": {
+      "definition": "private memory across both processes' trees with no sessions invoked, sampled for 20s after 10s of settling"
+    },
+    "resident": {
+      "definition": "Private_Clean + Private_Dirty + Private_Hugetlb across the restate-server and service process trees, per session held; object state lives in RocksDB rather than in memory, so a near-zero slope is the expected result and is itself the finding"
+    },
+    "persistence": {
+      "definition": "bytes on disk under the run's restate-data directory after N turns of one session, sampled per turn; the invocation journal and per-object state both land in RocksDB there"
+    }
+  },
+  "launch": {
+    "command": "bash",
+    "args": [
+      "tools/bench/subjects/restate/launch.sh"
+    ],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/restate/health",
+    "ready_timeout_secs": 120
+  }
+}
