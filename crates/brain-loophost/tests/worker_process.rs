@@ -82,7 +82,8 @@ async fn concurrent_activations_all_reach_the_agentloop() {
         let pool = pool.clone();
         let digest = digest.clone();
         activations.push(tokio::spawn(async move {
-            pool.activate(format!("ses_{index}"), digest, activation(index)).await
+            pool.activate(format!("ses_{index}"), digest, activation(index))
+                .await
         }));
     }
 
