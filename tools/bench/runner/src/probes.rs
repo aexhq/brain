@@ -45,6 +45,9 @@ pub struct Context_ {
     /// The probe is abandoned past this instant, so one hung subject cannot eat a run's
     /// whole budget. Without it a stuck request costs `samples` × the client timeout.
     pub deadline: Instant,
+    /// Launch access for the probes that restart the subject themselves; `None` for a
+    /// subject someone else runs.
+    pub relaunch: Option<Relaunch>,
 }
 
 pub fn probe_list(entry: &subject::Subject, wanted: &[String]) -> Vec<Probe> {
@@ -90,6 +93,8 @@ pub async fn measure(
         Probe::ToolDispatch | Probe::Create | Probe::Ttfb | Probe::RoundTrip => {
             latency(subject_driver, probe, context, &mut notes).await?
         }
+        Probe::ColdStart => cold_start(context, &mut notes).await?,
+        Probe::Recovery => recovery(context, &mut notes).await?,
         other => anyhow::bail!("{} has no runner yet", other.as_str()),
     };
 
@@ -212,6 +217,23 @@ async fn latency(
             measured.len(),
             context.samples
         ));
+    }
+    // With the scripted provider's first token deliberately delayed, first-byte latency
+    // is separable from turn completion; the delay is the fixture's, not the subject's,
+    // so it comes back out of every sample.
+    if probe == Probe::Ttfb {
+        if let Some(delay_ms) = std::env::var("BENCH_FIRST_TOKEN_DELAY_MS")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| *value > 0.0)
+        {
+            for sample in &mut measured {
+                *sample = (*sample - delay_ms).max(0.0);
+            }
+            notes.push(format!(
+                "scripted first token delayed {delay_ms} ms; subtracted from every sample"
+            ));
+        }
     }
     let mut measured = stats::drop_warmup(measured, 0.1);
     let percentiles = stats::summarize(&mut measured);
@@ -584,4 +606,176 @@ fn spread(readings: &[crate::schema::Reading]) -> f64 {
     let high = values.clone().fold(f64::MIN, f64::max);
     let low = values.fold(f64::MAX, f64::min);
     if high < low { 0.0 } else { high - low }
+}
+
+/// Everything the launch-lifecycle probes need to start, kill, and restart the subject
+/// themselves. `None` when the operator pointed the runner at something already running,
+/// which those probes then refuse — honestly, with a reason.
+pub struct Relaunch {
+    pub launch: subject::Launch,
+    pub subject: String,
+    pub run_id: String,
+    pub model_base_url: String,
+    pub environment_base_url: String,
+    /// The scripted provider's per-call record; `messages` on the latest entry is how
+    /// many transcript messages the subject actually sent the model — the recovery
+    /// probe's proof that a survived session still remembers its conversation.
+    pub provider_timings: std::sync::Arc<std::sync::Mutex<Vec<crate::fixtures::CallTiming>>>,
+    /// Builds a driver against a freshly launched instance's base URL. Each launch gets
+    /// its own: drivers pin their base URL at construction.
+    #[allow(clippy::type_complexity)]
+    pub make_driver: std::sync::Arc<dyn Fn(String) -> Result<Box<dyn Driver>> + Send + Sync>,
+}
+
+/// Launch on a fresh data directory, until the first turn is served.
+///
+/// The redeploy definition: process artifact caches persist across samples (they live
+/// outside the data directory), session data does not. One-time installation — an
+/// agentloop upload, a project — is `prepare` and stays untimed, matching the create
+/// probe's "already admitted" convention. Kept short on purpose: ten samples, one turn
+/// each.
+async fn cold_start(context: &Context_, notes: &mut Vec<String>) -> Result<Outcome> {
+    let relaunch = context
+        .relaunch
+        .as_ref()
+        .context("cold start needs a subject the runner launches itself; --base-url cannot answer it")?;
+    let samples = context.samples.clamp(3, 10);
+    let mut measured = Vec::with_capacity(samples);
+    for index in 0..samples {
+        if Instant::now() >= context.deadline {
+            notes.push(format!(
+                "probe abandoned at the wall-clock deadline after {} of {samples} samples",
+                measured.len()
+            ));
+            break;
+        }
+        let booted = Instant::now();
+        let mut running = crate::launch::start_in(
+            &relaunch.launch,
+            &relaunch.subject,
+            &format!("{}-cold{index}", relaunch.run_id),
+            &relaunch.model_base_url,
+            &relaunch.environment_base_url,
+            None,
+        )
+        .await?;
+        let ready_ms = booted.elapsed().as_secs_f64() * 1_000.0;
+        let mut driver = (relaunch.make_driver)(running.base_url.clone())?;
+        // Installation is not a redeploy cost; the clock pauses for it.
+        driver.prepare().await?;
+        let serving = Instant::now();
+        let unit = driver.create().await?;
+        driver.round_trip_ms(&unit).await?;
+        measured.push(ready_ms + serving.elapsed().as_secs_f64() * 1_000.0);
+        running.stop().await;
+    }
+    let percentiles = stats::summarize(&mut measured);
+    let value = percentiles
+        .p50_ms
+        .context("too few samples to report a median")?;
+    notes.push("launch to first turn served on a fresh data directory; installation (prepare) untimed".to_owned());
+    Ok(Outcome {
+        value,
+        unit: "ms".to_owned(),
+        n: measured.len(),
+        percentiles,
+        resident_kind: None,
+        latency: true,
+    })
+}
+
+/// Turns one conversation deep, kill -9, relaunch on the same data, and time until the
+/// *same session* serves the next turn — with the model's own transcript as proof the
+/// history survived. A subject that comes back without the conversation is a recorded
+/// refusal, not a bar: that is the result.
+async fn recovery(context: &Context_, notes: &mut Vec<String>) -> Result<Outcome> {
+    let relaunch = context
+        .relaunch
+        .as_ref()
+        .context("recovery needs a subject the runner launches itself; --base-url cannot answer it")?;
+    /// Deep enough that lost history is unmistakable, short enough that the warmup is
+    /// seconds — per the no-long-benchmarks rule.
+    const WARM_TURNS: usize = 50;
+    let samples = context.samples.clamp(2, 5);
+    let mut measured = Vec::with_capacity(samples);
+    for index in 0..samples {
+        if Instant::now() >= context.deadline {
+            notes.push(format!(
+                "probe abandoned at the wall-clock deadline after {} of {samples} samples",
+                measured.len()
+            ));
+            break;
+        }
+        let mut before = crate::launch::start_in(
+            &relaunch.launch,
+            &relaunch.subject,
+            &format!("{}-recovery{index}", relaunch.run_id),
+            &relaunch.model_base_url,
+            &relaunch.environment_base_url,
+            None,
+        )
+        .await?;
+        let data_dir = before.data_dir.clone();
+        let mut warm_driver = (relaunch.make_driver)(before.base_url.clone())?;
+        warm_driver.prepare().await?;
+        let unit = warm_driver.create().await?;
+        for _ in 0..WARM_TURNS {
+            warm_driver.round_trip_ms(&unit).await?;
+        }
+        before.kill_hard().await;
+
+        let killed = Instant::now();
+        let mut after = crate::launch::start_in(
+            &relaunch.launch,
+            &relaunch.subject,
+            &format!("{}-recovered{index}", relaunch.run_id),
+            &relaunch.model_base_url,
+            &relaunch.environment_base_url,
+            Some(data_dir),
+        )
+        .await
+        .context("the subject did not come back up on its own data")?;
+        let ready_ms = killed.elapsed().as_secs_f64() * 1_000.0;
+        let mut driver = (relaunch.make_driver)(after.base_url.clone())?;
+        driver.prepare().await?;
+        let serving = Instant::now();
+        let served = driver.round_trip_ms(&unit).await;
+        let serve_ms = serving.elapsed().as_secs_f64() * 1_000.0;
+        let survived = relaunch
+            .provider_timings
+            .lock()
+            .ok()
+            .and_then(|timings| timings.last().map(|timing| timing.messages))
+            .unwrap_or(0);
+        after.stop().await;
+        match served {
+            Err(error) => {
+                anyhow::bail!(
+                    "the subject restarted but the conversation was lost: turn on the surviving session failed: {error:#}"
+                );
+            }
+            Ok(_) if survived < WARM_TURNS => {
+                anyhow::bail!(
+                    "the subject served the turn without its history: the model saw {survived} messages after {WARM_TURNS} prior turns"
+                );
+            }
+            Ok(_) => measured.push(ready_ms + serve_ms),
+        }
+    }
+    let percentiles = stats::summarize(&mut measured);
+    let value = percentiles
+        .p50_ms
+        .context("too few samples to report a median")?;
+    notes.push(format!(
+        "kill -9 after {} turns, relaunch on the same data, until the same session served a turn whose model request carried its history",
+        50
+    ));
+    Ok(Outcome {
+        value,
+        unit: "ms".to_owned(),
+        n: measured.len(),
+        percentiles,
+        resident_kind: None,
+        latency: true,
+    })
 }

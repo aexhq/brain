@@ -16,6 +16,12 @@
   ],
   "requires": { "linux": true },
   "probes": {
+    "cold_start": {
+      "definition": "process launch on a fresh data directory until the first turn is served; one-time installation untimed"
+    },
+    "recovery": {
+      "definition": "kill -9 after 50 turns, relaunch on the same data, until the same session serves a turn whose model request carries its history"
+    },
     "create": {
       "definition": "`sessions.create` on the Gateway control plane until it returns the session key — the same call the Control UI's new-session button makes. The control connection is opened in `prepare` and is not inside this number"
     },

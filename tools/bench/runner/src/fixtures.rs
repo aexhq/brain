@@ -88,6 +88,12 @@ impl Fixture {
             .unwrap_or_default()
     }
 
+    /// The shared per-call record itself, for probes that outlive one borrow of the
+    /// fixture — recovery reads the latest call's transcript length through it.
+    pub fn timings_handle(&self) -> Arc<Mutex<Vec<CallTiming>>> {
+        Arc::clone(&self.timings)
+    }
+
     /// Stops the fixture. Takes `&self` so a driver can hold a shared handle to it.
     pub fn shutdown(&self) {
         self.handle.abort();

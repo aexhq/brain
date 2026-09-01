@@ -27,6 +27,12 @@
     "ready_timeout_secs": 60
   },
   "probes": {
+    "cold_start": {
+      "definition": "process launch on a fresh data directory until the first turn is served; one-time installation untimed"
+    },
+    "recovery": {
+      "definition": "kill -9 after 50 turns, relaunch on the same data, until the same session serves a turn whose model request carries its history"
+    },
     "create": {
       "definition": "POST /v1/sessions until the response carries a session_id, agentloop already admitted"
     },
