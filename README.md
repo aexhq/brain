@@ -70,16 +70,6 @@ OpenFang   █████████████████████      
 Letta      ████████████████████████████████████     67 ms
 ```
 
-**Journal growth per 100 turns**
-
-```text
-AgentScope █                                       37 KiB
-OpenFang   ██████████                            0.10 MiB
-Brain      █████████████████                     0.23 MiB ★
-Awaken     ███████████████████████████████████   1.77 MiB
-Letta      ████████████████████████████████████  2.03 MiB
-```
-
 **Memory per idle session**
 
 ```text
@@ -95,8 +85,7 @@ servers that own sessions and run an agent loop behind an API; agent libraries a
 durable-execution engines are measured by the harness but not charted, because a turn without
 persistence or an agent surface is a different product. Brain's first-token figure is an upper
 bound (its whole-turn median — against an instant scripted model the turn completes before a
-delta reaches the stream). LangGraph's dev server persists nothing to disk, so it has no
-journal-growth bar. Subject versions, methodology, and the bounds CI enforces:
+delta reaches the stream). Subject versions, methodology, and the bounds CI enforces:
 <a href="BENCHMARKS.md">BENCHMARKS.md</a>.</sub>
 
 ## How it works
