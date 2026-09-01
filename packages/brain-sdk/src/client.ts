@@ -1,14 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-import { assertEnvironmentBindable, bindEnvironment, endEnvironment, inspectAgentloop, inspectBoundTool, inspectEnvironment } from "./extensions.js";
+import { AppToolRegistry } from "./app.js";
+import { ClientToolPump } from "./client-pump.js";
+import { assertEnvironmentBindable, bindEnvironment, endEnvironment, inspectAgentloop, inspectBoundTool, inspectClientTool, inspectEnvironment } from "./extensions.js";
 import { BrainError } from "./errors.js";
 import type {
   AgentloopAdmission, BoundTool as WireBoundTool, CreateSessionRequest, EnvironmentRequirement,
   EventPage, Session as WireSession, SessionList,
 } from "./generated/session.js";
 import type {
-  Agentloop, BoundTool, CreateSessionOptions, Environment, OperationOptions, SessionEvent, SessionState, UserInput,
+  Agentloop, BoundTool, CreateSessionOptions, Environment, OperationOptions, SessionEvent, SessionState, SessionStreamEvent, UserInput,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -64,6 +66,51 @@ export class BrainClient {
     return (response.status === 204 ? undefined : await response.json()) as T;
   }
 
+  /** The session's live event feed over SSE: the journalled backlog after `after`,
+   * then records as they are appended, plus the never-journalled streaming deltas.
+   * Ends when the session ends or the server drops a lagging subscriber — iterate
+   * again from the last seen sequence to resume. */
+  async *stream(sessionId: string, after = 0, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent> {
+    const headers = new Headers({ accept: "text/event-stream" });
+    if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
+    const response = await this.transport(`${this.baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, { headers, signal });
+    if (!response.ok || response.body === null) {
+      const error = (await response.json().catch(() => ({}))) as Partial<BrainError>;
+      throw new BrainError(response.status, error.code ?? "http_error", error.message ?? response.statusText, error.retryable ?? false, error.details);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        let boundary;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          let id: string | undefined;
+          let type: string | undefined;
+          const data: string[] = [];
+          for (const raw of frame.split("\n")) {
+            const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+            if (line.startsWith("id:")) id = line.slice(3).trim();
+            else if (line.startsWith("event:")) type = line.slice(6).trim();
+            else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+          }
+          if (type === undefined) continue;
+          const text = data.join("\n");
+          let payload: unknown = text;
+          try { payload = JSON.parse(text); } catch { /* a non-JSON payload stays a string */ }
+          yield { ...(id === undefined || id === "" ? {} : { sequence: Number(id) }), type, data: payload };
+        }
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+  }
+
   async admit(extension: Agentloop): Promise<string> {
     const cached = this.admitted.get(extension);
     if (cached !== undefined) return cached;
@@ -97,7 +144,14 @@ export class Sessions {
     for (const environment of compiled.environments.keys()) assertEnvironmentBindable(environment);
     const session = await this.client.request<WireSession>("POST", "/v1/sessions", compiled.request, keyOf(operation));
     for (const [environment, environmentId] of compiled.environments) bindEnvironment(environment, this.client, session.session_id, environmentId);
-    return new SessionHandle(this.client, toSessionState(session), [...compiled.environments.keys()]);
+    let pump: ClientToolPump | undefined;
+    if (compiled.clientTools.length > 0) {
+      const registry = new AppToolRegistry();
+      for (const { contract, handler } of compiled.clientTools) registry.register(contract, handler);
+      pump = new ClientToolPump(this.client, session.session_id, registry, session.last_sequence);
+      pump.start();
+    }
+    return new SessionHandle(this.client, toSessionState(session), [...compiled.environments.keys()], pump);
   }
 
   async get(sessionId: string): Promise<SessionHandle> {
@@ -112,7 +166,7 @@ export class Sessions {
 }
 
 export class SessionHandle {
-  constructor(private readonly client: BrainClient, public state: SessionState, private readonly environments: readonly Environment[]) {}
+  constructor(private readonly client: BrainClient, public state: SessionState, private readonly environments: readonly Environment[], private readonly pump?: ClientToolPump) {}
   get id(): string { return this.state.id; }
 
   async send(input: UserInput | string, operation: OperationOptions = {}): Promise<SessionState> {
@@ -136,30 +190,56 @@ export class SessionHandle {
     } };
   }
 
+  /** The live event feed: journalled records after `after` plus streaming deltas,
+   * until the session ends or the stream drops (resume from the last sequence). */
+  stream(after = 0, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent> {
+    return this.client.stream(this.id, after, signal);
+  }
+
   async cancel(operation: OperationOptions = {}): Promise<void> {
     await this.client.request("POST", `/v1/sessions/${encodeURIComponent(this.id)}/cancel`, undefined, keyOf(operation));
   }
 
   async end(operation: OperationOptions = {}): Promise<SessionState> {
     const session = await this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/end`, undefined, keyOf(operation));
-    this.endEnvironments();
+    this.release();
     return (this.state = toSessionState(session));
   }
 
   async delete(operation: OperationOptions = {}): Promise<void> {
     await this.client.request("DELETE", `/v1/sessions/${encodeURIComponent(this.id)}`, undefined, keyOf(operation));
-    this.endEnvironments();
+    this.release();
   }
 
-  private endEnvironments(): void { for (const environment of this.environments) endEnvironment(environment); }
+  private release(): void {
+    this.pump?.stop();
+    for (const environment of this.environments) endEnvironment(environment);
+  }
 }
 
-function compileSession(options: CreateSessionOptions, agentloopIdentity: string): { readonly request: CreateSessionRequest; readonly environments: ReadonlyMap<Environment, string> } {
+function compileSession(options: CreateSessionOptions, agentloopIdentity: string): { readonly request: CreateSessionRequest; readonly environments: ReadonlyMap<Environment, string>; readonly clientTools: readonly NonNullable<ReturnType<typeof inspectClientTool>>[] } {
   const environments = new Map<Environment, string>();
   const requirements: EnvironmentRequirement[] = [];
   const tools: WireBoundTool[] = [];
+  const clientTools: NonNullable<ReturnType<typeof inspectClientTool>>[] = [];
   const names = new Set<string>();
   for (const selected of options.tools ?? []) {
+    const client = inspectClientTool(selected);
+    if (client !== undefined) {
+      if (names.has(client.definition.name)) throw new TypeError(`Tool name ${client.definition.name} is duplicated`);
+      names.add(client.definition.name);
+      tools.push({
+        name: client.definition.name,
+        description: client.definition.description,
+        input_schema: structuredClone(client.definition.inputSchema),
+        ...(client.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(client.definition.outputSchema) }),
+        requires: [],
+        binding_names: [],
+        hosting: "client",
+      });
+      clientTools.push(client);
+      continue;
+    }
     const bound = inspectBoundTool(selected as BoundTool);
     if (names.has(bound.definition.name)) throw new TypeError(`Tool name ${bound.definition.name} is duplicated`);
     names.add(bound.definition.name);
@@ -191,7 +271,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
     // The event id is left behind deliberately: it names an event in the session it came
     // from, and this is a different session, so Brain mints them again.
     ...(options.history === undefined ? {} : { history: options.history.map((event) => ({ sequence: event.sequence, recorded_at_ms: event.recordedAt.getTime(), event_type: event.type, data: event.data })) }),
-  }, environments };
+  }, environments, clientTools };
 }
 
 function validateSessionOptions(options: CreateSessionOptions): void {

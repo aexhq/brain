@@ -1,6 +1,6 @@
 export { BrainClient as Brain, BrainClient, SessionHandle, Sessions } from "./client.js";
 export type { BrainOptions } from "./client.js";
-export { activateAgentloop, agentloop, appTool, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, provisionedToolRuntime, tool } from "./extensions.js";
+export { activateAgentloop, agentloop, appTool, createEnvironmentHandler, environment, executeTool, inspectClientTool, installExtensionIdentity, provisionedToolRuntime, tool } from "./extensions.js";
 export type {
   AgentloopAction,
   AgentloopAuthor,
@@ -48,6 +48,7 @@ export type {
   Agentloop,
   BoundTool,
   CapabilityName,
+  ClientTool,
   CreateSessionOptions,
   CustomProviderModel,
   Environment,
@@ -66,6 +67,7 @@ export type {
   SchemaOutput,
   SessionEvent,
   SessionState,
+  SessionStreamEvent,
   Tool,
   ToolDefinition,
   VercelAiGatewayModel,
