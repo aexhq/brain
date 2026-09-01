@@ -29,6 +29,7 @@ impl From<&SessionRow> for Session {
             status: row.status.clone(),
             last_sequence: row.through_sequence,
             config_hash: row.presentation_identity,
+            share_key: String::new(),
         }
     }
 }

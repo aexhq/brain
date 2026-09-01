@@ -43,6 +43,11 @@ export class ClientToolPump {
     void this.run();
   }
 
+  /** The last journal sequence this pump has seen — where a successor resumes. */
+  position(): number {
+    return this.cursor;
+  }
+
   stop(): void {
     this.stopped = true;
     this.controller.abort();
@@ -85,6 +90,8 @@ export class ClientToolPump {
     const operationId = data.operation_id;
     const invocation = data.invocation;
     if (typeof operationId !== "string" || typeof invocation?.call_id !== "string" || typeof invocation.name !== "string") return;
+    // A client-hosted tool this pump has no handler for is someone else's to serve.
+    if (!this.registry.has(invocation.name)) return;
     this.inFlight.set(operationId, invocation.call_id);
     const outcome = await this.registry.run({
       call_id: invocation.call_id,

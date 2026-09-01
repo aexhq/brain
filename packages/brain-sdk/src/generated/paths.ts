@@ -99,6 +99,23 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{session_id}/serve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The serve feed: an SSE stream of this session's client-hosted `tool_intent` and `tool_cancel_intent` records, filtered to the tools named in `tools`, plus `session_ended`. It opens with the still-pending backlog (intents with no recorded result) and then carries records as they are appended. Authorized by the session's share key as a bearer token (the API token also works). One live consumer per tool: a new connection claiming a tool displaces the stream that held it, so a reconnecting client replaces its own dead connection instead of racing it. */
+        get: operations["serveSessionTools"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{session_id}/tool-results/{operation_id}": {
         parameters: {
             query?: never;
@@ -108,7 +125,7 @@ export type paths = {
         };
         get?: never;
         put?: never;
-        /** @description Answers a client-hosted tool call. The `tool_intent` record on the event feed carries the operation id; the body is the call's outcome. Idempotent per operation: a retry with the same key replays the first answer, and a call that is no longer pending is a conflict. */
+        /** @description Answers a client-hosted tool call. The `tool_intent` record on the event feed carries the operation id; the body is the call's outcome. Idempotent per operation: a retry with the same key replays the first answer, and a call that is no longer pending is a conflict. Authorized by the API token or by the session's share key. */
         post: operations["resolveToolCall"];
         delete?: never;
         options?: never;
@@ -215,6 +232,7 @@ export type components = {
             error?: components["schemas"]["ApiError"];
         };
         SessionId: string;
+        ShareKey: string;
         Session: {
             session_id: components["schemas"]["SessionId"];
             journal_id: components["schemas"]["Identifier"];
@@ -222,6 +240,7 @@ export type components = {
             status: "creating" | "idle" | "running" | "ended" | "failed";
             last_sequence: number;
             config_hash: components["schemas"]["Identity"];
+            share_key: components["schemas"]["ShareKey"];
         };
         SessionList: {
             sessions: components["schemas"]["Session"][];
@@ -250,10 +269,10 @@ export type components = {
             requires: components["schemas"]["CapabilityName"][];
             binding_names: components["schemas"]["Identifier"][];
             /** @enum {unknown} */
-            hosting?: "provisioned" | "callback" | "client";
+            hosting?: "provisioned" | "client";
             payload?: components["schemas"]["ToolPayload"];
             environment_id?: components["schemas"]["Identifier"];
-        } & (unknown & unknown & unknown);
+        } & (unknown & unknown);
         ExecGrant: {
             timeout_ms_max?: number;
             output_bytes_max?: number;
@@ -563,6 +582,34 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EnvironmentCallResult"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    serveSessionTools: {
+        parameters: {
+            query: {
+                /** @description Comma-separated client-hosted tool names this connection serves. */
+                tools: string;
+                /** @description Resume cursor. Absent, the stream opens with the pending backlog; set, it replays every matching record after this sequence instead. */
+                after?: number;
+            };
+            header?: never;
+            path: {
+                session_id: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Live serve stream */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
                 };
             };
             default: components["responses"]["Error"];

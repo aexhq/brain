@@ -16,14 +16,13 @@ pub struct ToolDefinition {
 }
 
 /// Where a tool's implementation executes: a provisioned artifact the environment
-/// hosts, a callback an environment forwards into the author's running application,
-/// or the client process that created the session, answering off the event feed.
+/// hosts, or an application process answering off the serve feed (`client`) — the
+/// session's creator or anyone holding the session's share key.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolHosting {
     #[default]
     Provisioned,
-    Callback,
     Client,
 }
 
@@ -36,7 +35,7 @@ pub enum PayloadKind {
 
 /// The deliverable artifact behind a provisioned tool, named by content identity so
 /// re-provisioning is idempotent. Absent for tools baked into the environment itself
-/// and for callback tools, whose code never leaves the author's process.
+/// and for client-hosted tools, whose code never leaves the author's process.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolPayload {

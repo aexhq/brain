@@ -2,9 +2,9 @@ import type { z } from "zod";
 
 declare const agentloopBrand: unique symbol;
 declare const environmentBrand: unique symbol;
-declare const toolBrand: unique symbol;
 declare const boundToolBrand: unique symbol;
 declare const clientToolBrand: unique symbol;
+declare const servedToolBrand: unique symbol;
 
 export type Schema = z.ZodType;
 export type SchemaInput<Value extends Schema> = z.input<Value>;
@@ -12,19 +12,24 @@ export type SchemaOutput<Value extends Schema> = z.output<Value>;
 
 export interface Agentloop { readonly [agentloopBrand]: true }
 export interface Environment { readonly [environmentBrand]: true }
-export interface Tool<Input = unknown, Output = unknown> {
-  readonly [toolBrand]: true;
-  useIn(environment: Environment): BoundTool<Input, Output>;
-}
+/** A built tool placed in the environment that executes it: the result of calling a
+ * tool factory with `{ env, ...options }`. */
 export interface BoundTool<Input = unknown, Output = unknown> {
   readonly [boundToolBrand]: { readonly input: Input; readonly output: Output };
 }
-/** A tool served by the process that creates the session: declared with `appTool`
- * plus an `execute` function and passed straight to `sessions.create` — no
- * environment, no channel. The SDK answers its calls off the session's event feed. */
+/** A tool that runs in this process: declared with `tool({ ..., execute })` and
+ * passed straight to `sessions.create` — no environment. The SDK answers its calls
+ * off the session's event feed. */
 export interface ClientTool<Input = unknown, Output = unknown> {
   readonly [clientToolBrand]: { readonly input: Input; readonly output: Output };
 }
+/** A tool declared without an `execute`: some other process answers it by joining
+ * the session with its share key and calling `serve`. */
+export interface ServedTool<Input = unknown, Output = unknown> {
+  readonly [servedToolBrand]: { readonly input: Input; readonly output: Output };
+}
+/** Anything `sessions.create` accepts in `tools`. */
+export type SessionTool = BoundTool | ClientTool | ServedTool;
 
 export interface ToolDefinition {
   readonly name: string;
@@ -107,7 +112,7 @@ export interface UserInput { readonly message: string }
 export interface CreateSessionOptions {
   readonly model: ModelSelection;
   readonly agentloop: Agentloop;
-  readonly tools?: readonly (BoundTool | ClientTool)[];
+  readonly tools?: readonly SessionTool[];
   readonly system?: string;
   readonly responseFormat?: unknown;
   /**
@@ -133,6 +138,10 @@ export interface SessionState {
   /** Hash of everything the session was sealed with: agentloop configuration, system
    * prompt, tool definitions, and response format. Stable for the session's life. */
   readonly configHash: string;
+  /** The scoped credential another process joins with to serve this session's
+   * tools. It opens the serve feed and answers tool calls — nothing else — so it is
+   * safe to hand to a page. */
+  readonly shareKey: string;
 }
 
 export interface SessionEvent<Data = unknown> {

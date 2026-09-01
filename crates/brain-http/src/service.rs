@@ -49,6 +49,13 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
     /// already carried, by sequence. Falling behind loses records rather than holding up
     /// a turn — the journal is the record, and `after` reads it back.
     fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, LiveEvent)>;
+    /// The session's share key: the scoped credential that authorizes the serve feed
+    /// and the tool-results endpoint for this session, and nothing else. Deterministic
+    /// for the session's life, so it can be recomputed on every request.
+    fn share_key(&self, session_id: &SessionId) -> String;
+    /// Names of the session's client-hosted tools — the vocabulary the serve feed
+    /// accepts in its `tools` filter.
+    async fn client_tool_names(&self, session_id: SessionId) -> Result<Vec<String>, ApiError>;
     /// Answers a parked client-hosted tool call with its outcome.
     async fn resolve_tool_call(
         &self,

@@ -17,7 +17,7 @@ export interface ProvisionedToolManifest {
   readonly output_schema?: Readonly<Record<string, unknown>>;
   readonly requires: readonly CapabilityName[];
   readonly binding_names: readonly string[];
-  readonly hosting?: "provisioned" | "callback";
+  readonly hosting?: "provisioned";
   readonly payload?: { readonly kind: "esm" | "component"; readonly identity: string };
 }
 

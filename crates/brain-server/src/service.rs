@@ -29,6 +29,9 @@ pub struct ServerResources {
     /// What the server knows about a session that its records do not: the journal it was
     /// given. Written when the session is created so a restart can restore it.
     pub metadata: Arc<crate::metadata::ServerMetadata>,
+    /// Keys every session's share key. Derived from the API token when one is
+    /// configured — so share keys survive a restart — and random in open mode.
+    pub serve_secret: [u8; 32],
 }
 
 #[derive(Clone)]
@@ -125,6 +128,13 @@ impl ServerApi {
     fn replay<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, ApiError> {
         serde_json::from_value(value).map_err(|error| internal(error.to_string()))
     }
+
+    /// Stamps the share key onto a session leaving the API. The kernel mints sessions
+    /// without one — the key is this serving layer's credential, not session state.
+    fn branded(&self, mut session: Session) -> Session {
+        session.share_key = BrainApi::share_key(self, &session.session_id);
+        session
+    }
 }
 
 #[async_trait]
@@ -205,7 +215,7 @@ impl BrainApi for ServerApi {
             .idempotency_get("create_session", &idempotency_key, &request)
             .map_err(api_error)?
         {
-            return Self::replay(saved);
+            return Self::replay(saved).map(|session| self.branded(session));
         }
         if !self
             .resources
@@ -297,7 +307,7 @@ impl BrainApi for ServerApi {
                 &serde_json::to_value(&session).map_err(|error| internal(error.to_string()))?,
             )
             .map_err(api_error)?;
-        Ok(session)
+        Ok(self.branded(session))
     }
 
     async fn get_session(&self, session_id: SessionId) -> Result<Session, ApiError> {
@@ -305,11 +315,19 @@ impl BrainApi for ServerApi {
             .kernel
             .session(&session_id)
             .map_err(api_error)
+            .map(|session| self.branded(session))
     }
 
     async fn list_sessions(&self) -> Result<SessionList, ApiError> {
         Ok(SessionList {
-            sessions: self.resources.kernel.sessions().map_err(api_error)?,
+            sessions: self
+                .resources
+                .kernel
+                .sessions()
+                .map_err(api_error)?
+                .into_iter()
+                .map(|session| self.branded(session))
+                .collect(),
         })
     }
 
@@ -332,7 +350,7 @@ impl BrainApi for ServerApi {
             .idempotency_get(&scope, &idempotency_key, &request)
             .map_err(api_error)?
         {
-            return Self::replay(saved);
+            return Self::replay(saved).map(|session| self.branded(session));
         }
         let session = self
             .resources
@@ -351,7 +369,7 @@ impl BrainApi for ServerApi {
                 &serde_json::to_value(&session).map_err(|error| internal(error.to_string()))?,
             )
             .map_err(api_error)?;
-        Ok(session)
+        Ok(self.branded(session))
     }
 
     async fn call_environment(
@@ -422,6 +440,28 @@ impl BrainApi for ServerApi {
         &self,
     ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
         self.resources.kernel.subscribe()
+    }
+
+    fn share_key(&self, session_id: &SessionId) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"brain.share-key.v1\0");
+        digest.update(self.resources.serve_secret);
+        digest.update(b"\0");
+        digest.update(session_id.as_str().as_bytes());
+        format!("sk.{session_id}.{}", hex::encode(digest.finalize()))
+    }
+
+    async fn client_tool_names(&self, session_id: SessionId) -> Result<Vec<String>, ApiError> {
+        Ok(self
+            .resources
+            .kernel
+            .sealed_config(&session_id)
+            .map_err(api_error)?
+            .tool_bindings
+            .into_iter()
+            .filter(|binding| matches!(binding.hosting, brain_protocol::ToolHosting::Client))
+            .map(|binding| binding.name)
+            .collect())
     }
 
     async fn resolve_tool_call(
@@ -513,7 +553,7 @@ impl BrainApi for ServerApi {
             .idempotency_get(&scope, &idempotency_key, &request)
             .map_err(api_error)?
         {
-            return Self::replay(saved);
+            return Self::replay(saved).map(|session| self.branded(session));
         }
         let sealed = self
             .resources
@@ -539,7 +579,7 @@ impl BrainApi for ServerApi {
                 &serde_json::to_value(&session).map_err(|error| internal(error.to_string()))?,
             )
             .map_err(api_error)?;
-        Ok(session)
+        Ok(self.branded(session))
     }
 
     async fn delete_session(

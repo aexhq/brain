@@ -54,8 +54,9 @@ remote can be trusted to stop on its own.
 
 ## Addressed by object, not by connection
 
-The exact Environment object used by `tool().useIn(environment)` identifies one logical attachment.
-Several Tools using the same object share it; calling the factory again creates another attachment.
+The exact Environment object a tool factory's `env` option names identifies one logical
+attachment. Several Tools using the same object share it; calling the environment factory
+again creates another attachment.
 The generated private identity resolves to provider state rather than whichever process happens to
 hold a socket.
 
@@ -67,10 +68,11 @@ Every operation carries a stable identifier and the identity of its request. Whe
 the adapter can tell "this is the same call again" from "this is a new call that looks similar", and
 Brain never replays an ambiguous effect against a replacement target.
 
-## The official adapters
+## The official adapter
 
-`@aexhq/env-app` is a language-neutral HTTP environment — bring your own runtime.
-`@aexhq/env-aws-microvm` runs tools in an AWS MicroVM.
-
-Both use the public contract, so a third-party adapter is not a second-class one. See
+`@aexhq/env-aws-microvm` runs tools in an AWS MicroVM. It uses only the public
+contract, so a third-party adapter is not a second-class one. See
 [Write an environment](/brain/docs/guides/write-an-environment).
+
+An application process answering tools is not an environment at all — Brain routes
+those itself over the serve feed (see [App tools](/brain/docs/guides/app-tools)).

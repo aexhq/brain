@@ -977,19 +977,16 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
             "Environment or Tool binding has an invalid identity".into(),
         ));
     }
-    // A callback or client tool's code stays in the author's process; a payload beside
+    // A client-hosted tool's code stays in the author's process; a payload beside
     // it would be an artifact nothing is allowed to run.
     if request.tool_bindings().iter().any(|binding| {
-        matches!(
-            binding.hosting(),
-            ToolHosting::Callback | ToolHosting::Client
-        ) && binding.payload().is_some()
+        matches!(binding.hosting(), ToolHosting::Client) && binding.payload().is_some()
     }) {
         return Err(KernelError::InvalidState(
-            "a callback or client Tool binding cannot carry a payload".into(),
+            "a client Tool binding cannot carry a payload".into(),
         ));
     }
-    // A client-hosted tool is served off the event feed by the session's creator: no
+    // A client-hosted tool is served off the event feed by an application process: no
     // environment is on its path, so binding one (or requiring capabilities only an
     // environment could provide) is a contradiction the caller should hear about.
     for binding in request.tool_bindings() {
@@ -1006,7 +1003,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
         }
         if !client && binding.environment_id().is_none() {
             return Err(KernelError::InvalidState(
-                "every provisioned or callback Tool binding must name a bound Environment".into(),
+                "every provisioned Tool binding must name a bound Environment".into(),
             ));
         }
     }
@@ -1335,9 +1332,11 @@ mod tests {
                 "invalid identity",
             ),
             (
-                "a callback Tool carrying a payload",
+                "a client Tool carrying a payload",
                 |request| {
-                    request.tool_bindings[0].hosting = ToolHosting::Callback;
+                    request.tool_bindings[0].hosting = ToolHosting::Client;
+                    request.tool_bindings[0].environment_id = None;
+                    request.tool_bindings[0].requires = Vec::new();
                     request.tool_bindings[0].payload = Some(ToolPayload {
                         kind: brain_protocol::PayloadKind::Esm,
                         identity: Identity::of(&"payload").unwrap(),

@@ -199,14 +199,14 @@ npm install @aexhq/brain @aexhq/agentloop-pi zod
 Save as `order.mjs` and run with `node order.mjs`:
 
 ```js
-import { Brain, appTool } from "@aexhq/brain";
+import { Brain, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
 // One declaration: the contract the model sees and the function that answers it,
 // closing over your app's state.
 const orders = { "A-1001": { status: "shipped", eta: "Thursday" } };
-const lookupOrder = appTool({
+const lookupOrder = tool({
   name: "lookup_order",
   description: "Look up an order's status by id.",
   input: z.object({ id: z.string() }),

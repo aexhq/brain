@@ -1,16 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-import { AppToolRegistry } from "./app.js";
-import { ClientToolPump } from "./client-pump.js";
-import { assertEnvironmentBindable, bindEnvironment, endEnvironment, inspectAgentloop, inspectBoundTool, inspectClientTool, inspectEnvironment } from "./extensions.js";
+import { AppToolRegistry, type AppToolCall } from "./app.js";
+import { ClientToolPump, type PumpTransport } from "./client-pump.js";
+import { assertEnvironmentBindable, bindEnvironment, endEnvironment, inspectAgentloop, inspectBoundTool, inspectClientTool, inspectEnvironment, inspectServedTool } from "./extensions.js";
 import { BrainError } from "./errors.js";
 import type {
   AgentloopAdmission, BoundTool as WireBoundTool, CreateSessionRequest, EnvironmentRequirement,
   EventPage, Session as WireSession, SessionList,
 } from "./generated/session.js";
 import type {
-  Agentloop, BoundTool, CreateSessionOptions, Environment, OperationOptions, SessionEvent, SessionState, SessionStreamEvent, UserInput,
+  Agentloop, BoundTool, CreateSessionOptions, Environment, OperationOptions, ServedTool, SessionEvent, SessionState, SessionStreamEvent, UserInput,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -44,6 +44,12 @@ export class BrainClient {
     Object.freeze(this.sessions);
   }
 
+  /** A client on the same server and transport, presenting a different bearer —
+   * how a join speaks with the share key instead of the API token. */
+  withToken(token: string): BrainClient {
+    return new BrainClient({ baseUrl: this.baseUrl, token, timeoutMs: this.timeoutMs, fetch: this.transport });
+  }
+
   async callEnvironment(sessionId: string, environmentId: string, name: string, input: unknown, operation: OperationOptions = {}): Promise<unknown> {
     const response = await this.request<{ output: unknown }>("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/environments/${encodeURIComponent(environmentId)}/calls/${encodeURIComponent(name)}`, { input }, keyOf(operation));
     return response.output;
@@ -71,9 +77,15 @@ export class BrainClient {
    * Ends when the session ends or the server drops a lagging subscriber — iterate
    * again from the last seen sequence to resume. */
   async *stream(sessionId: string, after = 0, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent> {
+    yield* this.streamPath(`/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, signal);
+  }
+
+  /** The SSE reader behind `stream`, on any feed path — the events feed and the
+   * serve feed carry the same frames. */
+  async *streamPath(path: string, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent> {
     const headers = new Headers({ accept: "text/event-stream" });
     if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
-    const response = await this.transport(`${this.baseUrl}/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, { headers, signal });
+    const response = await this.transport(`${this.baseUrl}${path}`, { headers, signal });
     if (!response.ok || response.body === null) {
       const error = (await response.json().catch(() => ({}))) as Partial<BrainError>;
       throw new BrainError(response.status, error.code ?? "http_error", error.message ?? response.statusText, error.retryable ?? false, error.details);
@@ -159,15 +171,90 @@ export class Sessions {
     return new SessionHandle(this.client, toSessionState(session), []);
   }
 
+  /**
+   * Join a session from another process to serve its tools. The share key —
+   * `session.shareKey` in the process that created it — is the whole address: it
+   * names the session and authorizes serving, nothing else. Register handlers with
+   * `serve`; the SDK holds the session's serve feed open, answers each call, and
+   * reconnects with backoff after a drop.
+   */
+  join(shareKey: string): ServeHandle {
+    return new ServeHandle(this.client, shareKey);
+  }
+
   async list(): Promise<SessionState[]> {
     const response = await this.client.request<SessionList>("GET", "/v1/sessions");
     return response.sessions.map(toSessionState);
   }
 }
 
+const shareKeyPattern = /^sk\.(ses_[A-Za-z0-9]{20,32})\.[0-9a-f]{64}$/u;
+
+/**
+ * One joined session: the registration surface for serving its tools from this
+ * process. Each `serve` claims that tool's seat on the session's serve feed —
+ * last connection wins, so a reloaded page displaces its own dead predecessor.
+ */
+export class ServeHandle {
+  readonly sessionId: string;
+  private readonly serveClient: BrainClient;
+  private readonly registry = new AppToolRegistry();
+  private pump: ClientToolPump | undefined;
+  private cursor = 0;
+  private closed = false;
+
+  constructor(client: BrainClient, shareKey: string) {
+    const match = shareKeyPattern.exec(shareKey);
+    if (match === null) throw new TypeError("join needs a session share key (sk.<session>.<mac>)");
+    this.sessionId = match[1]!;
+    this.serveClient = client.withToken(shareKey);
+  }
+
+  /** Register the function that answers this served tool, and (re)connect the feed
+   * claiming it. Several `serve` calls share one connection. */
+  serve<Input, Output>(tool: ServedTool<Input, Output>, handler: (input: Input, call: AppToolCall) => Output | Promise<Output>): this {
+    const served = inspectServedTool(tool);
+    if (served === undefined) throw new TypeError("serve takes a served tool — one declared with tool({...}) and no execute");
+    if (this.closed) throw new Error("this join is closed");
+    this.registry.register(served.contract, handler as (input: unknown, call: AppToolCall) => unknown);
+    this.connect();
+    return this;
+  }
+
+  /** Stop serving: the feed closes and in-flight handlers are cancelled. */
+  close(): void {
+    this.closed = true;
+    this.pump?.stop();
+    this.pump = undefined;
+  }
+
+  private connect(): void {
+    if (this.pump !== undefined) {
+      // Reconnect with the wider tool set, keeping the cursor so nothing replays.
+      this.cursor = this.pump.position();
+      this.pump.stop();
+    }
+    const client = this.serveClient;
+    const sessionId = this.sessionId;
+    const tools = encodeURIComponent(this.registry.names().join(","));
+    const transport: PumpTransport = {
+      // `after=0` means "never seen anything": the serve feed's pending mode. A real
+      // cursor resumes exactly, like the events feed.
+      stream: (_, after, signal) => client.streamPath(`/v1/sessions/${encodeURIComponent(sessionId)}/serve?tools=${tools}${after > 0 ? `&after=${after}` : ""}`, signal),
+      request: (method, path, body, idempotencyKey) => client.request(method, path, body, idempotencyKey),
+    };
+    this.pump = new ClientToolPump(transport, sessionId, this.registry, this.cursor);
+    this.pump.start();
+  }
+}
+
 export class SessionHandle {
   constructor(private readonly client: BrainClient, public state: SessionState, private readonly environments: readonly Environment[], private readonly pump?: ClientToolPump) {}
   get id(): string { return this.state.id; }
+  /** The scoped credential another process joins with (`sessions.join`) to serve
+   * this session's tools. It opens the serve feed and answers tool calls — nothing
+   * else — so it is safe to hand to a page. */
+  get shareKey(): string { return this.state.shareKey; }
 
   async send(input: UserInput | string, operation: OperationOptions = {}): Promise<SessionState> {
     const normalized = typeof input === "string" ? { message: input } : input;
@@ -240,6 +327,23 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
       clientTools.push(client);
       continue;
     }
+    // A served tool is client-hosted on the wire — parked and answered over the API —
+    // but this process registers no handler: whoever joins with the share key does.
+    const served = inspectServedTool(selected);
+    if (served !== undefined) {
+      if (names.has(served.definition.name)) throw new TypeError(`Tool name ${served.definition.name} is duplicated`);
+      names.add(served.definition.name);
+      tools.push({
+        name: served.definition.name,
+        description: served.definition.description,
+        input_schema: structuredClone(served.definition.inputSchema),
+        ...(served.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(served.definition.outputSchema) }),
+        requires: [],
+        binding_names: [],
+        hosting: "client",
+      });
+      continue;
+    }
     const bound = inspectBoundTool(selected as BoundTool);
     if (names.has(bound.definition.name)) throw new TypeError(`Tool name ${bound.definition.name} is duplicated`);
     names.add(bound.definition.name);
@@ -256,7 +360,6 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
       ...(bound.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(bound.definition.outputSchema) }),
       requires: [...bound.requires],
       binding_names: [...bound.bindingNames],
-      ...(bound.hosting === undefined ? {} : { hosting: bound.hosting }),
       environment_id: environmentId,
     });
   }
@@ -293,5 +396,5 @@ function keyOf(options: OperationOptions): string {
   return options.idempotencyKey ?? randomUUID();
 }
 function toSessionState(session: WireSession): SessionState {
-  return Object.freeze({ id: session.session_id, journalId: session.journal_id, status: session.status, lastSequence: session.last_sequence, configHash: session.config_hash });
+  return Object.freeze({ id: session.session_id, journalId: session.journal_id, status: session.status, lastSequence: session.last_sequence, configHash: session.config_hash, shareKey: session.share_key });
 }
