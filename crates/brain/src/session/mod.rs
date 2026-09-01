@@ -77,10 +77,7 @@ impl PendingToolCalls {
     ) -> tokio::sync::oneshot::Receiver<Outcome> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         if let Ok(mut inner) = self.inner.lock() {
-            inner.insert(
-                operation_id,
-                PendingToolCall { session_id, sender },
-            );
+            inner.insert(operation_id, PendingToolCall { session_id, sender });
         }
         receiver
     }
@@ -100,9 +97,7 @@ impl PendingToolCalls {
                 .lock()
                 .map_err(|_| KernelError::InvalidState("pending Tool map poisoned".into()))?;
             match inner.get(operation_id) {
-                Some(pending) if &pending.session_id == session_id => {
-                    inner.remove(operation_id)
-                }
+                Some(pending) if &pending.session_id == session_id => inner.remove(operation_id),
                 _ => None,
             }
         };
@@ -847,7 +842,9 @@ impl ToolBindingView for ToolBinding {
     }
 
     fn environment_id(&self) -> Option<&EnvironmentId> {
-        self.environment.as_ref().map(|binding| &binding.environment_id)
+        self.environment
+            .as_ref()
+            .map(|binding| &binding.environment_id)
     }
 
     fn requires(&self) -> &[Capability] {
@@ -983,8 +980,10 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
     // A callback or client tool's code stays in the author's process; a payload beside
     // it would be an artifact nothing is allowed to run.
     if request.tool_bindings().iter().any(|binding| {
-        matches!(binding.hosting(), ToolHosting::Callback | ToolHosting::Client)
-            && binding.payload().is_some()
+        matches!(
+            binding.hosting(),
+            ToolHosting::Callback | ToolHosting::Client
+        ) && binding.payload().is_some()
     }) {
         return Err(KernelError::InvalidState(
             "a callback or client Tool binding cannot carry a payload".into(),
@@ -1428,8 +1427,11 @@ mod tests {
                 "an Environment identity that is not an identifier",
                 |sealed| {
                     sealed.environments[0].binding.environment_id = EnvironmentId::new("../escape");
-                    sealed.tool_bindings[0].environment.as_mut().unwrap().environment_id =
-                        EnvironmentId::new("../escape");
+                    sealed.tool_bindings[0]
+                        .environment
+                        .as_mut()
+                        .unwrap()
+                        .environment_id = EnvironmentId::new("../escape");
                 },
                 "invalid identity",
             ),
@@ -1459,8 +1461,11 @@ mod tests {
             (
                 "a binding naming an Environment that was not sealed",
                 |sealed| {
-                    sealed.tool_bindings[0].environment.as_mut().unwrap().environment_id =
-                        EnvironmentId::new("elsewhere");
+                    sealed.tool_bindings[0]
+                        .environment
+                        .as_mut()
+                        .unwrap()
+                        .environment_id = EnvironmentId::new("elsewhere");
                 },
                 "must name a bound Environment",
             ),

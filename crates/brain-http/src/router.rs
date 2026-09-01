@@ -10,8 +10,8 @@ use axum::{
 };
 use brain_protocol::{
     AgentloopAdmission, AgentloopIdentity, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentId, MessageRequest, OperationId, Outcome, Session,
-    SessionId, SessionList,
+    EnvironmentCallResult, EnvironmentId, MessageRequest, OperationId, Outcome, Session, SessionId,
+    SessionList,
 };
 
 use futures_util::StreamExt as _;
@@ -192,9 +192,14 @@ async fn resolve_tool_call<A: BrainApi>(
     headers: HeaderMap,
     Json(outcome): Json<Outcome>,
 ) -> Result<StatusCode, HttpError> {
-    api.resolve_tool_call(session_id, operation_id, idempotency_key(&headers)?, outcome)
-        .await
-        .map_err(HttpError)?;
+    api.resolve_tool_call(
+        session_id,
+        operation_id,
+        idempotency_key(&headers)?,
+        outcome,
+    )
+    .await
+    .map_err(HttpError)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

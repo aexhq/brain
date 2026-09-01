@@ -1325,7 +1325,10 @@ async fn a_client_tool_call_parks_until_its_outcome_is_posted() {
         .find(|event| event.event_type == "tool_result")
         .expect("the answered call must journal a tool result");
     assert_eq!(result.data["result"]["is_error"], false);
-    assert_eq!(result.data["result"]["output"]["content"], "from the client");
+    assert_eq!(
+        result.data["result"]["output"]["content"],
+        "from the client"
+    );
 
     drop(handle);
     drop(kernel);

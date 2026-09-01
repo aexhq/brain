@@ -227,7 +227,10 @@ fn a_client_tool_binds_no_environment_and_ships_no_payload() {
     );
     // And a non-client tool without an environment stays rejected.
     let mut bare = session.clone();
-    bare["tools"][0].as_object_mut().unwrap().remove("environment_id");
+    bare["tools"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("environment_id");
     assert!(!definition_is_valid(
         "contracts/session/v1/schemas.json",
         "CreateSessionRequest",
