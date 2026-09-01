@@ -57,6 +57,11 @@ pub struct SessionActor {
     journalled_messages: usize,
     /// Where client-hosted tool calls wait for their POSTed outcome.
     pending_tools: Arc<PendingToolCalls>,
+    /// The context the running turn opened with. A turn that ends normally clears it
+    /// and journals the terminal context; every abnormal end restores it — under a
+    /// residency-holding executor the mid-turn copy is a placeholder, and the opening
+    /// state is the honest answer either way.
+    turn_opening_context: Option<ContextEnvelope>,
 }
 
 impl SessionActor {
@@ -111,6 +116,7 @@ impl SessionActor {
             // messages whole and every one after that is a delta again.
             journalled_messages: 0,
             pending_tools,
+            turn_opening_context: None,
         })
     }
 
@@ -160,6 +166,13 @@ impl SessionActor {
         let mut observation = Observation::UserMessage {
             input: request.input,
         };
+        // Hashed once per turn, not once per decision: the turn's decisions all derive
+        // from this opening context plus the observations between them, so hashing the
+        // whole envelope again on every activation re-read the conversation for a value
+        // that only its opening state and the per-decision observation distinguish.
+        let turn_context_identity =
+            Identity::of_bytes(&serde_json::to_vec(&self.context).map_err(json_error)?);
+        self.turn_opening_context = Some(self.context.clone());
         for decision_index in 0..self.max_decisions_per_turn {
             if self.cancel_requested.load(Ordering::Acquire) {
                 return self.finish_turn(vec![AppendRecord::new(
@@ -174,17 +187,23 @@ impl SessionActor {
             );
             // The sealed presentation is the same on every decision of the session, so
             // take the identity it was sealed with instead of reading its bytes again.
-            // What is left is hashed from Brain's own encoding: nothing outside Brain
-            // recomputes this one, so it does not have to be canonical.
+            // The identity of an activation is (presentation, turn-opening context,
+            // observation, position): nothing outside Brain recomputes this one, so it
+            // does not have to be canonical — it has to be deterministic and cheap.
             let activation_identity = Identity::over(&[
                 self.presentation.identity,
+                turn_context_identity,
                 Identity::of_bytes(
-                    &serde_json::to_vec(&(&self.context, &observation, &runtime))
-                        .map_err(json_error)?,
+                    &serde_json::to_vec(&(&observation, &runtime)).map_err(json_error)?,
                 ),
             ]);
+            // Moved, not cloned: nothing reads `self.context` while the activation is in
+            // flight, and every executor returns the turn's context in its output — the
+            // worker-backed one echoes what it holds resident, a scripted one passes the
+            // input through — so the envelope makes the round trip without a copy.
+            let context = std::mem::take(&mut self.context);
             let activation = ActivationInput {
-                context: self.context.clone(),
+                context,
                 observation,
                 configuration: self.sealed.brain_configuration.clone(),
                 presentation: self.presentation.clone(),
@@ -467,6 +486,7 @@ impl SessionActor {
                     }
                 }
                 Decision::Finish { result } => {
+                    self.turn_opening_context = None;
                     return self.finish_turn(vec![AppendRecord::new(
                         "turn_finished",
                         serde_json::json!({"result":result}),
@@ -477,6 +497,7 @@ impl SessionActor {
                     message,
                     retryable,
                 } => {
+                    self.turn_opening_context = None;
                     return self.finish_turn(vec![AppendRecord::new(
                         "turn_failed",
                         serde_json::json!({"code":code,"message":message,"retryable":retryable}),
@@ -529,6 +550,12 @@ impl SessionActor {
     /// turn with `turn_interrupted` rather than resuming it, and the row is read back only
     /// when an Idle session is rehydrated — which is to say, here.
     fn finish_turn(&mut self, records: Vec<AppendRecord>) -> Result<Session, KernelError> {
+        // An abnormal end rolls the context back to the turn's opening state; the
+        // decisions the turn did make stay journaled as events. Normal completion
+        // cleared this and keeps the terminal context.
+        if let Some(opening) = self.turn_opening_context.take() {
+            self.context = opening;
+        }
         let context = serde_json::to_value(&self.context).map_err(json_error)?;
         self.commit(
             records,
