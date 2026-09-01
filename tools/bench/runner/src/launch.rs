@@ -67,13 +67,40 @@ pub async fn start(
     model_base_url: &str,
     environment_base_url: &str,
 ) -> Result<Running> {
+    start_in(
+        launch,
+        subject,
+        run_id,
+        model_base_url,
+        environment_base_url,
+        None,
+    )
+    .await
+}
+
+/// Like [`start`], but the caller may supply the data directory. `Some(dir)` reuses it
+/// as-is — the recovery probe's whole point — while `None` gets the usual fresh one.
+pub async fn start_in(
+    launch: &Launch,
+    subject: &str,
+    run_id: &str,
+    model_base_url: &str,
+    environment_base_url: &str,
+    reuse_data_dir: Option<PathBuf>,
+) -> Result<Running> {
     let port = free_port()?;
-    let data_dir = std::env::temp_dir().join(format!("brain-bench-{run_id}-{subject}"));
-    // Removed first in case a previous interrupted run left one behind: on spot capacity
-    // the teardown does not always get to run.
-    let _ = std::fs::remove_dir_all(&data_dir);
-    std::fs::create_dir_all(&data_dir)
-        .with_context(|| format!("creating data directory {}", data_dir.display()))?;
+    let data_dir = match reuse_data_dir {
+        Some(existing) => existing,
+        None => {
+            let fresh = std::env::temp_dir().join(format!("brain-bench-{run_id}-{subject}"));
+            // Removed first in case a previous interrupted run left one behind: on spot
+            // capacity the teardown does not always get to run.
+            let _ = std::fs::remove_dir_all(&fresh);
+            std::fs::create_dir_all(&fresh)
+                .with_context(|| format!("creating data directory {}", fresh.display()))?;
+            fresh
+        }
+    };
 
     let placeholders = Placeholders {
         port,
@@ -179,6 +206,20 @@ impl Running {
             }
             text[start..].to_owned()
         })
+    }
+
+    /// Kills the subject the way a crash does — no grace, no flush — and keeps its data
+    /// directory, so a relaunch can find out what survived. The recovery probe's kill.
+    pub async fn kill_hard(&mut self) {
+        #[cfg(unix)]
+        {
+            // Signal the whole group, so loop workers and other children go too.
+            unsafe {
+                libc::kill(-(self.pid as i32), libc::SIGKILL);
+            }
+        }
+        let _ = self.child.kill().await;
+        let _ = self.child.wait().await;
     }
 
     /// Stops the subject and removes its data directory.

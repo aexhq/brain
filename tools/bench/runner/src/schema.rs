@@ -48,6 +48,19 @@ pub enum Probe {
     Reclaim,
     /// Money per unit-hour.
     Cost,
+    /// Process launch on a fresh data directory, until the first turn is served.
+    ///
+    /// The redeploy definition: process artifact caches (compiled Wasm, bytecode, module
+    /// caches) may persist across samples; session data may not. One-time installation
+    /// (uploading an agentloop, creating a project) is excluded, matching `prepare`'s
+    /// never-timed contract.
+    ColdStart,
+    /// Kill -9 mid-conversation, relaunch on the same data, until the *same session*
+    /// serves the next turn with its history intact.
+    ///
+    /// Three honest outcomes: a time, a recorded "conversation lost", or an error. Most
+    /// subjects lose the conversation, and that is the result.
+    Recovery,
     /// Bytes written to durable storage per turn, against turn index.
     ///
     /// The probe that separates an append-only log from a snapshot-per-step: Agno rewrites
@@ -69,6 +82,8 @@ impl Probe {
             Self::Resident => "resident",
             Self::Reclaim => "reclaim",
             Self::Cost => "cost",
+            Self::ColdStart => "cold_start",
+            Self::Recovery => "recovery",
             Self::Persistence => "persistence",
         }
     }

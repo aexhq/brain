@@ -14,6 +14,12 @@
     "linux": false
   },
   "probes": {
+    "cold_start": {
+      "definition": "process launch on a fresh data directory until the first turn is served; one-time installation untimed"
+    },
+    "recovery": {
+      "definition": "kill -9 after 50 turns, relaunch on the same data, until the same session serves a turn whose model request carries its history"
+    },
     "ttfb": {
       "definition": "turn submitted to /process until the first content event on its SSE stream — the first model token, after the created and in_progress bookkeeping events that precede any model output. The stream is opened by submitting the turn, so the subscribe cost is inside this number by construction. The probe drains the stream to completion after taking the measurement: hanging up early cancels the handler mid-save and truncates the session's JSON file, poisoning every turn after it"
     },
