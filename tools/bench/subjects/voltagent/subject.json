@@ -1,0 +1,50 @@
+{
+  "name": "voltagent",
+  "class": "session-kernel",
+  "version": "@voltagent/core@2.10.0",
+  "notes": [
+    "VoltAgent's Hono server, measured as a running server the way LangGraph Server, Letta, and AgentOS are. One agent at the framework's defaults, its model pointed at the scripted provider through @ai-sdk/openai-compatible so the calls land on /chat/completions.",
+    "Run at defaults means in-memory storage: VoltAgent v2 ships InMemoryStorageAdapter unless an adapter is configured, so sessions cost memory rather than disk here — the resident probe is the interesting one, and no persistence probe is declared because the default writes nothing durable to measure.",
+    "A conversation is the unit of work: memory is scoped by userId + conversationId, created explicitly through the memory API so the create probe measures the same moment it does elsewhere.",
+    "Request options are pinned in the driver (temperature 0, maxOutputTokens 512, maxSteps 5) because the server fills schema defaults for anything unstated, and an unstated default is still configuration.",
+    "No VoltOps keys are set, so the server-side VoltOps exporter never activates; observability stays local.",
+    "Requires: node >= 20 and `npm ci` in tools/bench/subjects/voltagent/app — provisioning installs it; the launch block runs the app with tsx."
+  ],
+  "requires": {
+    "linux": false
+  },
+  "probes": {
+    "create": {
+      "definition": "POST /api/memory/conversations until the response carries the conversation id — the explicit form of the conversation VoltAgent would otherwise create lazily on first use"
+    },
+    "ttfb": {
+      "definition": "turn submitted to /agents/{id}/stream until the first text-delta part on its SSE stream. As with LangGraph Server, Letta, and AgentOS, the stream is opened by submitting the turn, so the subscribe cost is inside this number by construction"
+    },
+    "round_trip": {
+      "definition": "turn submitted to /agents/{id}/text until the JSON response carries success with non-empty text, one complete turn against the conversation's history"
+    },
+    "throughput": {
+      "definition": "complete text turns per second across N concurrent conversations, unpaced"
+    },
+    "idle": {
+      "definition": "private memory across the whole process tree with no conversations created, sampled for 20s after 10s of settling"
+    },
+    "resident": {
+      "definition": "Private_Clean + Private_Dirty + Private_Hugetlb across the node process tree, per conversation held. VoltAgent's default storage is in memory, so the slope is the cost of a conversation's history living in the process"
+    }
+  },
+  "launch": {
+    "command": "bash",
+    "args": [
+      "tools/bench/subjects/voltagent/launch.sh"
+    ],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}",
+      "VOLTAGENT_TELEMETRY_DISABLED": "1"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health",
+    "ready_timeout_secs": 120
+  }
+}

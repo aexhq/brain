@@ -1,0 +1,50 @@
+{
+  "name": "agentscope-runtime",
+  "class": "session-kernel",
+  "version": "agentscope-runtime==1.1.6.post2",
+  "notes": [
+    "Alibaba's Agent-as-a-Service runtime, measured as a running server. Pinned to 1.1.6.post2 with agentscope==1.0.21, and that is the end of the line rather than a snapshot of a moving target: the repository was archived into AgentScope 2.0 (issue #519), and later agentscope releases delete the modules its documented API imports. The same standing Letta holds in this set — a frozen final release of a real product.",
+    "One ReActAgent per request at the cookbook's defaults, model pointed at the scripted provider, session state in JSONSession files under the run's data directory — the offline, restart-surviving backend among the ones the 1.x line ships (the quickstart's fakeredis is in-process and lost on restart).",
+    "Sessions are implicit: the client mints a session_id and the first turn creates it, with no explicit create endpoint at all — so no create probe is declared, because there is no create moment to measure.",
+    "/process answers only as an SSE stream, so the round-trip probe reads its own stream to the terminal completed event; there is no blocking JSON form to time instead.",
+    "No sandboxed tools are configured, so Docker is never touched; tracing stays on the local log handler, and nothing phones home.",
+    "Requires: pip install 'agentscope-runtime==1.1.6.post2' 'agentscope==1.0.21' — provisioning installs it; the launch block assumes python3 can import both."
+  ],
+  "requires": {
+    "linux": false
+  },
+  "probes": {
+    "ttfb": {
+      "definition": "turn submitted to /process until the first content event on its SSE stream — the first model token, after the created and in_progress bookkeeping events that precede any model output. The stream is opened by submitting the turn, so the subscribe cost is inside this number by construction. The probe drains the stream to completion after taking the measurement: hanging up early cancels the handler mid-save and truncates the session's JSON file, poisoning every turn after it"
+    },
+    "round_trip": {
+      "definition": "turn submitted to /process until the stream's terminal response event reports completed, one complete text turn including the session state save behind it"
+    },
+    "throughput": {
+      "definition": "complete text turns per second across N concurrent sessions, unpaced"
+    },
+    "idle": {
+      "definition": "private memory across the whole process tree with no sessions created, sampled for 20s after 10s of settling"
+    },
+    "resident": {
+      "definition": "Private_Clean + Private_Dirty + Private_Hugetlb across the uvicorn process tree, per session held. The runtime builds a fresh agent per request and keeps session state in JSON files, so a near-zero slope is the expected result and is itself the finding"
+    },
+    "persistence": {
+      "definition": "bytes on disk in the run's data directory after N turns of one session, sampled per turn; JSONSession rewrites the session's file with the full history each save, so the cost of turn N is the size of everything before it"
+    }
+  },
+  "launch": {
+    "command": "python3",
+    "args": [
+      "tools/bench/subjects/agentscope-runtime/app.py"
+    ],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}",
+      "BENCH_DATA_DIR": "{data_dir}"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health",
+    "ready_timeout_secs": 120
+  }
+}

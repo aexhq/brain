@@ -1,0 +1,21 @@
+{
+  "name": "voltagent-bench-subject",
+  "private": true,
+  "type": "module",
+  "description": "The VoltAgent server this benchmark measures: one agent at defaults, model pointed at the scripted provider.",
+  "dependencies": {
+    "@voltagent/core": "2.10.0",
+    "@voltagent/server-hono": "2.0.14",
+    "@voltagent/logger": "2.0.2",
+    "@ai-sdk/openai-compatible": "2.0.74",
+    "ai": "6.0.272",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "tsx": "4.19.2",
+    "typescript": "5.9.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

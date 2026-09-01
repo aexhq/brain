@@ -1,0 +1,54 @@
+{
+  "name": "mastra",
+  "class": "session-kernel",
+  "version": "@mastra/core@1.63.2",
+  "notes": [
+    "Mastra's production server (`mastra build` output, a bundled Hono app run with plain node), measured as a running server the way LangGraph Server, Letta, AgentOS, and VoltAgent are. The dev server with its Studio playground is deliberately not the subject.",
+    "One agent at the framework's defaults, its model pointed at the scripted provider through Mastra's own model router (`custom/<name>` with an explicit base URL), so requests are plain chat-completions against the fixture.",
+    "Storage is explicit because Mastra ships no default persistent store — memory features refuse to run without one — so the closest thing to a default is the LibSQL file store from Mastra's own quickstart, under the run's data directory. Threads accumulate there, which is what the persistence probe measures; the resident probe's near-zero slope is likewise expected and is itself the finding.",
+    "A thread is the unit of work: memory is scoped by thread + resource, created explicitly through the memory API so the create probe measures the same moment it does elsewhere.",
+    "MASTRA_TELEMETRY_DISABLED=1 is set in the launch environment; the built server runs no OTEL instrumentation unless launched with its instrumentation preload, which this subject is not.",
+    "Requires: node >= 22.13 and `npm install && npm run build` in tools/bench/subjects/mastra/app — provisioning runs both (the build needs the network once); the launch block only runs node."
+  ],
+  "requires": {
+    "linux": false
+  },
+  "probes": {
+    "create": {
+      "definition": "POST /api/memory/threads until the response carries the thread id — the explicit form of the thread Mastra would otherwise create lazily on first use"
+    },
+    "ttfb": {
+      "definition": "turn submitted to /api/agents/{id}/stream until the first text-delta chunk on its SSE stream. As with LangGraph Server, Letta, AgentOS, and VoltAgent, the stream is opened by submitting the turn, so the subscribe cost is inside this number by construction"
+    },
+    "round_trip": {
+      "definition": "turn submitted to /api/agents/{id}/generate until the JSON response carries non-empty assistant text, one complete turn against the thread's history"
+    },
+    "throughput": {
+      "definition": "complete text turns per second across N concurrent threads, unpaced"
+    },
+    "idle": {
+      "definition": "private memory across the whole process tree with no threads created, sampled for 20s after 10s of settling"
+    },
+    "resident": {
+      "definition": "Private_Clean + Private_Dirty + Private_Hugetlb across the node process tree, per thread held. Mastra keeps thread state in LibSQL rather than in memory, so a near-zero slope is the expected result and is itself the finding"
+    },
+    "persistence": {
+      "definition": "bytes on disk in the run's data directory after N turns of one thread, sampled per turn; Mastra writes messages and thread metadata into its LibSQL store"
+    }
+  },
+  "launch": {
+    "command": "bash",
+    "args": [
+      "tools/bench/subjects/mastra/launch.sh"
+    ],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "MASTRA_TELEMETRY_DISABLED": "1"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health",
+    "ready_timeout_secs": 120
+  }
+}
