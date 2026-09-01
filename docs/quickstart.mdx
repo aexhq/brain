@@ -6,7 +6,8 @@ description: Run a Brain server and give a session a tool that answers from your
 ## Run a server
 
 ```sh
-docker run --rm -p 127.0.0.1:8080:8080 -e BRAIN_LISTEN=0.0.0.0:8080 \
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -e BRAIN_LISTEN=0.0.0.0:8080 -e BRAIN_API_TOKEN=quickstart \
   -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
 
@@ -20,7 +21,9 @@ BRAIN_LOOP_WORKER="$PWD/target/release/brain-loop-worker" \
 ```
 
 Brain listens on loopback and needs no token there. Set `BRAIN_API_TOKEN` to listen anywhere else —
-it refuses to start on a non-loopback address without one.
+it refuses to start on a non-loopback address without one. That is why the docker line carries a
+token: inside the container Brain must listen on `0.0.0.0` for the published port to work, even
+though docker only exposes it to your host's loopback.
 
 ## Give the agent a tool
 
@@ -49,7 +52,7 @@ const lookupOrder = appTool({
   execute: ({ id }) => orders[id] ?? { status: "unknown order" },
 });
 
-const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
+const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 const session = await brain.sessions.create({
   model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
   agentloop: pi(),
