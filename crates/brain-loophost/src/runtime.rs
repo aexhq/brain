@@ -102,33 +102,99 @@ impl AdmissionEngine {
     }
 }
 
+/// Warm instances, keyed by session and component: the guest that answered a session's
+/// last activation, kept alive so the next one skips instantiation — and, for a runtime
+/// that caches its own parsed state, re-reading the whole conversation.
+///
+/// This is a cache, not a contract: an entry can vanish at any moment (eviction, a trap,
+/// a worker restart), so a correct agentloop must keep everything it needs in the state
+/// the activation contract carries. That has always been the documented model; a loop
+/// that hoards data in module scope was relying on nothing.
+#[derive(Default)]
+pub struct WarmInstances {
+    entries: std::sync::Mutex<Vec<WarmEntry>>,
+}
+
+/// Sessions kept warm at once. Each entry is a live JS engine whose heap holds one
+/// conversation, so this bounds worker memory the way `running` bounds instances.
+const WARM_SESSIONS: usize = 8;
+
+struct WarmEntry {
+    session: String,
+    digest: AgentloopIdentity,
+    store: Store<StoreLimits>,
+    bindings: bindings::Agentloop,
+}
+
+impl WarmInstances {
+    fn take(&self, session: &str, digest: &AgentloopIdentity) -> Option<WarmEntry> {
+        let mut entries = self.entries.lock().ok()?;
+        let at = entries
+            .iter()
+            .position(|entry| entry.session == session && &entry.digest == digest)?;
+        Some(entries.remove(at))
+    }
+
+    fn keep(&self, entry: WarmEntry) {
+        let Ok(mut entries) = self.entries.lock() else {
+            return;
+        };
+        entries.retain(|kept| kept.session != entry.session);
+        if entries.len() >= WARM_SESSIONS {
+            entries.remove(0);
+        }
+        entries.push(entry);
+    }
+}
+
 impl AdmittedAgentloop {
     pub fn activate(
         &self,
         engine: &Engine,
         limits: &LoopLimits,
+        warm: &WarmInstances,
+        session: &str,
         input: ActivationInput,
     ) -> Result<ActivationOutput, String> {
-        let store_limits = StoreLimitsBuilder::new()
-            .memory_size(limits.linear_memory_bytes)
-            .instances(1)
-            .build();
-        let mut store = Store::new(engine, store_limits);
-        store.limiter(|limits| limits);
-        // The guest's own wall-clock bound. Until this was driven, `epoch_deadline(1)`
-        // could never be reached — nothing advanced the epoch — so the only limit on an
-        // activation was the supervisor's IPC timeout, which abandons the worker and
-        // every warm instance in it. A trap here costs one instance.
-        store.set_epoch_deadline(epoch_deadline_ticks(limits.wall_time));
-        let linker = Linker::<StoreLimits>::new(engine);
-        let bindings = bindings::Agentloop::instantiate(&mut store, &self.component, &linker)
-            .map_err(|error| error.to_string())?;
+        let mut entry = match warm.take(session, &self.digest) {
+            Some(entry) => entry,
+            None => {
+                let store_limits = StoreLimitsBuilder::new()
+                    .memory_size(limits.linear_memory_bytes)
+                    .instances(1)
+                    .build();
+                let mut store = Store::new(engine, store_limits);
+                store.limiter(|limits| limits);
+                let linker = Linker::<StoreLimits>::new(engine);
+                let bindings =
+                    bindings::Agentloop::instantiate(&mut store, &self.component, &linker)
+                        .map_err(|error| error.to_string())?;
+                WarmEntry {
+                    session: session.to_owned(),
+                    digest: self.digest.clone(),
+                    store,
+                    bindings,
+                }
+            }
+        };
+        // The guest's own wall-clock bound, re-armed per activation. Until this was
+        // driven, `epoch_deadline(1)` could never be reached — nothing advanced the
+        // epoch — so the only limit on an activation was the supervisor's IPC timeout,
+        // which abandons the worker and every warm instance in it. A trap here costs
+        // one instance: the entry is dropped rather than kept, because a trapped guest's
+        // heap is not a state anyone can vouch for.
+        entry
+            .store
+            .set_epoch_deadline(epoch_deadline_ticks(limits.wall_time));
         let input = to_wit_input(input)?;
-        let output = bindings
-            .call_step(&mut store, &input)
+        let output = entry
+            .bindings
+            .call_step(&mut entry.store, &input)
             .map_err(activation_error)?
             .map_err(|error| format!("{}: {}", error.code, error.message))?;
-        from_wit_output(output)
+        let output = from_wit_output(output)?;
+        warm.keep(entry);
+        Ok(output)
     }
 }
 

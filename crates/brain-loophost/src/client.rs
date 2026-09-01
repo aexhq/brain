@@ -43,6 +43,7 @@ impl WorkerClient {
     /// once rather than once to measure and once to send.
     pub async fn activate(
         &self,
+        session: String,
         digest: AgentloopIdentity,
         input: ActivationInput,
         max_input_bytes: usize,
@@ -51,6 +52,7 @@ impl WorkerClient {
             .call_bounded(
                 WorkerRequest::Activate {
                     digest,
+                    session,
                     input: Box::new(input),
                 },
                 max_input_bytes,

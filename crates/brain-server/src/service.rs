@@ -645,11 +645,12 @@ pub struct WorkerLoopExecutor(pub Arc<WorkerPool>);
 impl LoopExecutor for WorkerLoopExecutor {
     async fn activate(
         &self,
+        session: &brain_protocol::SessionId,
         agentloop: &AgentloopIdentity,
         input: brain_protocol::ActivationInput,
     ) -> Result<brain_protocol::ActivationOutput, KernelError> {
         self.0
-            .activate(agentloop.clone(), input)
+            .activate(session.as_str().to_owned(), agentloop.clone(), input)
             .await
             .map_err(KernelError::Executor)
     }

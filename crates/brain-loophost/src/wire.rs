@@ -15,6 +15,8 @@ pub enum WorkerRequest {
     },
     Activate {
         digest: AgentloopIdentity,
+        /// Cache key for a warm instance; never handed to the guest.
+        session: String,
         input: Box<ActivationInput>,
     },
 }

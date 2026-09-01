@@ -16,7 +16,9 @@ use std::{
 
 use tokio::sync::Semaphore;
 
-use crate::{AdmissionEngine, AdmittedAgentloop, LoopLimits, WorkerRequest, WorkerResponse};
+use crate::{
+    AdmissionEngine, AdmittedAgentloop, LoopLimits, WarmInstances, WorkerRequest, WorkerResponse,
+};
 
 pub struct WorkerService {
     engine: Arc<AdmissionEngine>,
@@ -26,6 +28,9 @@ pub struct WorkerService {
     /// rather than being refused: the supervisor already refused everything beyond its
     /// own queue, so whatever reaches this point is worth a slot.
     running: Semaphore,
+    /// Warm instances, one per recently active session, so a turn's activations do not
+    /// pay instantiation and state re-parsing for a conversation this worker just held.
+    warm: Arc<WarmInstances>,
 }
 
 impl WorkerService {
@@ -35,6 +40,7 @@ impl WorkerService {
             engine: Arc::new(AdmissionEngine::new(limits, allowed_imports)?),
             admitted: RwLock::new(HashMap::new()),
             running,
+            warm: Arc::new(WarmInstances::default()),
         })
     }
 
@@ -56,8 +62,13 @@ impl WorkerService {
         match request {
             WorkerRequest::Ping => WorkerResponse::Pong,
             WorkerRequest::Admit { package_json } => self.admit(package_json).await,
-            WorkerRequest::Activate { digest, input } => {
-                self.activate(digest.as_str().to_owned(), *input).await
+            WorkerRequest::Activate {
+                digest,
+                session,
+                input,
+            } => {
+                self.activate(digest.as_str().to_owned(), session, *input)
+                    .await
             }
         }
     }
@@ -86,6 +97,7 @@ impl WorkerService {
     async fn activate(
         &self,
         digest: String,
+        session: String,
         input: brain_protocol::ActivationInput,
     ) -> WorkerResponse {
         let component = self
@@ -105,10 +117,11 @@ impl WorkerService {
             return failed("activation_failed", "the worker is shutting down".into());
         };
         let engine = self.engine.clone();
+        let warm = self.warm.clone();
         // Wasmtime executes synchronously. Left on a runtime thread it blocks every other
         // connection this worker is serving for as long as the guest runs.
         let activated = tokio::task::spawn_blocking(move || {
-            component.activate(engine.engine(), engine.limits(), input)
+            component.activate(engine.engine(), engine.limits(), &warm, &session, input)
         })
         .await;
         match activated {
@@ -170,6 +183,7 @@ mod tests {
                 service.clone().handle(WorkerRequest::Ping),
                 service.clone().handle(WorkerRequest::Ping),
                 service.clone().handle(WorkerRequest::Activate {
+                    session: "ses_test".into(),
                     digest: brain_protocol::AgentloopIdentity::new("agl_missing"),
                     input: Box::new(input()),
                 }),

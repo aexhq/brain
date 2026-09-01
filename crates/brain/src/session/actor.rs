@@ -199,8 +199,9 @@ impl SessionActor {
             )?;
             let loop_executor = self.loop_executor.clone();
             let agentloop_identity = self.sealed.agentloop_identity.clone();
+            let session_id = self.row.session_id.clone();
             let output = match self
-                .interruptible(loop_executor.activate(&agentloop_identity, activation))
+                .interruptible(loop_executor.activate(&session_id, &agentloop_identity, activation))
                 .await
             {
                 Err(()) => return self.cancel_turn(),
@@ -698,7 +699,11 @@ impl SessionActor {
         };
         let output = self
             .loop_executor
-            .activate(&self.sealed.agentloop_identity, activation)
+            .activate(
+                &self.row.session_id,
+                &self.sealed.agentloop_identity,
+                activation,
+            )
             .await?;
         if output.context.protocol_version != self.context.protocol_version {
             return Err(KernelError::InvalidState(
