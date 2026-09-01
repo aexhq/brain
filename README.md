@@ -38,7 +38,6 @@ No model latency in any number. ★ marks Brain in each chart.
 Brain      █                                        40 ms ★
 ZeroClaw   ███                                      53 ms
 OpenFang   ██████████                              128 ms
-AgentScope ██████████████████                      338 ms
 Letta      ███████████████████████                 678 ms
 LangGraph  ████████████████████████████            1.22 s
 Awaken     █████████████████████████████████       2.23 s
@@ -52,7 +51,6 @@ ZeroClaw   █                                        11 ms
 Brain      ██████████                               40 ms ★
 OpenFang   ██████████████                           70 ms
 LangGraph  █████████████████████                   207 ms
-AgentScope ████████████████████████                332 ms
 Letta      ██████████████████████████              407 ms
 OpenClaw   █████████████████████████████████       1.33 s
 Awaken     ████████████████████████████████████    1.93 s
@@ -73,10 +71,9 @@ Letta      ███████████████████████
 **Journal growth per 100 turns**
 
 ```text
-AgentScope █                                       37 KiB
-OpenFang   ██████████                            0.10 MiB
-Brain      █████████████████                     0.23 MiB ★
-Awaken     ███████████████████████████████████   1.77 MiB
+OpenFang   █                                     0.10 MiB
+Brain      ███████████                           0.23 MiB ★
+Awaken     ██████████████████████████████████    1.77 MiB
 Letta      ████████████████████████████████████  2.03 MiB
 ```
 
