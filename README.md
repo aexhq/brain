@@ -27,6 +27,10 @@ agent loop and the tools, and Brain runs the session. Tools run anywhere, from a
 to a server sandbox. Agent loops run in a Wasm sandbox, so the runtime is secure by design.
 Each session uses very little memory, and every step is an event you can watch in real time.
 
+> [!NOTE]
+> **Early preview.** The API and functionality may change without backward compatibility or
+> notice until we cut 1.0.0.
+
 ## Features
 
 - **Tools run anywhere.** A tool is a typed function. It can run in your own process, in a
