@@ -282,7 +282,7 @@ async fn the_started_record_precedes_the_model_effect() {
         .unwrap();
     let finished = kinds
         .iter()
-        .position(|kind| *kind == "model_call_finished")
+        .position(|kind| *kind == "model_call_ended")
         .unwrap();
     assert!(started < finished);
     // The loop said nothing about the prompt or the tools, so the call carries what the
@@ -362,7 +362,7 @@ async fn cancel_interrupts_an_inflight_model_request() {
     assert!(
         !events
             .iter()
-            .any(|event| event.event_type == "model_call_finished")
+            .any(|event| event.event_type == "model_call_ended")
     );
     drop(handle);
     drop(runtime);
@@ -417,7 +417,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
         .map(|event| event.event_type)
         .collect();
     assert!(kinds.iter().any(|kind| kind == "tool_cancel_started"));
-    assert!(kinds.iter().any(|kind| kind == "tool_cancel_finished"));
+    assert!(kinds.iter().any(|kind| kind == "tool_cancel_ended"));
     assert_eq!(kinds.last().unwrap(), "turn_failed");
     drop(handle);
     drop(runtime);
@@ -616,7 +616,7 @@ async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
                 streamed.push(streaming);
             }
             brain_protocol::LiveEvent::Recorded(record) => {
-                if seen_delta && record.event_type == "model_call_finished" {
+                if seen_delta && record.event_type == "model_call_ended" {
                     recorded_after_the_first_delta = true;
                 }
             }
@@ -912,7 +912,7 @@ async fn history_cannot_forge_a_lifecycle_record() {
         Arc::new(NoTools),
     );
 
-    for forged in ["session_ended", "turn_started", "session_created"] {
+    for forged in ["session_ended", "turn_started", "session_creation_ended"] {
         let history = vec![brain_protocol::HistoryEvent {
             sequence: 1,
             recorded_at_ms: None,
@@ -1121,7 +1121,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
         let events = runtime.events(&session_id, 0, 100).events;
         let result = events
             .iter()
-            .find(|event| event.event_type == "tool_call_finished")
+            .find(|event| event.event_type == "tool_call_ended")
             .expect("the invoke must record a tool result");
         assert_eq!(
             result.data["result"]["is_error"], is_error,
@@ -1180,7 +1180,7 @@ async fn an_overdue_invoke_is_killed_and_recorded_as_timeout() {
     let events = runtime.events(&session_id, 0, 100).events;
     let result = events
         .iter()
-        .find(|event| event.event_type == "tool_call_finished")
+        .find(|event| event.event_type == "tool_call_ended")
         .expect("the expired invoke must still record a tool result");
     assert_eq!(result.data["result"]["is_error"], true);
     assert_eq!(result.data["result"]["output"]["code"], "timeout");
@@ -1219,7 +1219,7 @@ impl ToolExecutor for RefusesDispatch {
 /// A client-hosted tool call parks the turn on its `tool_call_started` and finishes when
 /// the outcome is POSTed back: no environment executor is on the path, the record's
 /// sequence is what the answer is correlated by, and the answered value lands in the
-/// journalled `tool_call_finished` untouched.
+/// journalled `tool_call_ended` untouched.
 #[tokio::test]
 async fn a_client_tool_call_parks_until_its_outcome_is_posted() {
     let data_dir = temporary_directory();
@@ -1281,7 +1281,7 @@ async fn a_client_tool_call_parks_until_its_outcome_is_posted() {
     let events = runtime.events(&session_id, 0, 100).events;
     let result = events
         .iter()
-        .find(|event| event.event_type == "tool_call_finished")
+        .find(|event| event.event_type == "tool_call_ended")
         .expect("the answered call must journal a tool result");
     assert_eq!(result.data["result"]["is_error"], false);
     assert_eq!(
@@ -1353,15 +1353,14 @@ async fn an_unanswered_client_call_times_out_and_journals_the_cancellation() {
     let events = runtime.events(&session_id, 0, 100).events;
     let result = events
         .iter()
-        .find(|event| event.event_type == "tool_call_finished")
+        .find(|event| event.event_type == "tool_call_ended")
         .expect("the expired call must still record a tool result");
     assert_eq!(result.data["result"]["is_error"], true);
     assert_eq!(result.data["result"]["output"]["code"], "timeout");
-    let cancel = events
+    events
         .iter()
-        .find(|event| event.event_type == "tool_cancel_finished")
+        .find(|event| event.event_type == "tool_cancel_ended")
         .expect("dropping the park must be journalled as the cancellation");
-    assert_eq!(cancel.data["cancelled"], true);
 
     drop(handle);
     drop(runtime);

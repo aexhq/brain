@@ -653,14 +653,14 @@ mod tests {
         let directory = temporary();
         let (log, seen) = collect(&directory);
         assert!(seen.is_empty());
-        let body = payload("session_created");
+        let body = payload("session_creation_ended");
         let location = log
-            .append(append("ses_test", 1, "session_created", &body))
+            .append(append("ses_test", 1, "session_creation_ended", &body))
             .unwrap();
         let kinds = log
             .read_many(&[location], |frame| Ok(frame.kind.to_string()))
             .unwrap();
-        assert_eq!(kinds, ["session_created"]);
+        assert_eq!(kinds, ["session_creation_ended"]);
         drop(log);
         fs::remove_dir_all(directory).unwrap();
     }
@@ -669,9 +669,9 @@ mod tests {
     fn reopening_replays_every_frame_in_write_order() {
         let directory = temporary();
         let (log, _) = collect(&directory);
-        let body = payload("turn_finished");
+        let body = payload("turn_ended");
         for sequence in 1..=32 {
-            log.append(append("ses_test", sequence, "turn_finished", &body))
+            log.append(append("ses_test", sequence, "turn_ended", &body))
                 .unwrap();
         }
         drop(log);
@@ -729,7 +729,7 @@ mod tests {
             let log = log.clone();
             thread::spawn(move || {
                 for sequence in 1..=frames {
-                    log.append(append("ses_test", sequence, "turn_finished", &body))
+                    log.append(append("ses_test", sequence, "turn_ended", &body))
                         .unwrap();
                 }
             })
@@ -778,7 +778,7 @@ mod tests {
         });
 
         let location = log
-            .append(append("ses_test", 1, "turn_finished", &body))
+            .append(append("ses_test", 1, "turn_ended", &body))
             .unwrap();
         assert!(u64::from(location.length) > MAX_QUEUED_BYTES);
 
@@ -795,9 +795,9 @@ mod tests {
         let log = SegmentLog::open_stalled(&directory, released()).unwrap();
         fail(&log.backlog, "the disk went away".to_owned());
 
-        let body = payload("turn_finished");
+        let body = payload("turn_ended");
         let error = log
-            .append(append("ses_test", 1, "turn_finished", &body))
+            .append(append("ses_test", 1, "turn_ended", &body))
             .expect_err("an append after a writer failure must not report success");
         assert!(
             error.to_string().contains("the disk went away"),
@@ -812,9 +812,9 @@ mod tests {
     fn a_torn_tail_is_dropped_and_its_space_reused() {
         let directory = temporary();
         let (log, _) = collect(&directory);
-        let body = payload("turn_finished");
+        let body = payload("turn_ended");
         for sequence in 1..=4 {
-            log.append(append("ses_test", sequence, "turn_finished", &body))
+            log.append(append("ses_test", sequence, "turn_ended", &body))
                 .unwrap();
         }
         drop(log);
@@ -822,7 +822,7 @@ mod tests {
         // Simulate a crash partway through the fifth frame.
         let path = segment_path(&directory, 0);
         let length = fs::metadata(&path).unwrap().len();
-        let torn = encode(&append("ses_test", 5, "turn_finished", &body)).unwrap();
+        let torn = encode(&append("ses_test", 5, "turn_ended", &body)).unwrap();
         OpenOptions::new()
             .append(true)
             .open(&path)
@@ -834,7 +834,7 @@ mod tests {
         assert_eq!(seen.len(), 4);
         assert_eq!(fs::metadata(&path).unwrap().len(), length);
         let location = log
-            .append(append("ses_test", 5, "turn_finished", &body))
+            .append(append("ses_test", 5, "turn_ended", &body))
             .unwrap();
         assert_eq!(location.offset, length);
         drop(log);
@@ -854,8 +854,8 @@ mod tests {
     fn reclaim_removes_only_segments_below_the_floor() {
         let directory = temporary();
         let (log, _) = collect(&directory);
-        let body = payload("turn_finished");
-        log.append(append("ses_test", 1, "turn_finished", &body))
+        let body = payload("turn_ended");
+        log.append(append("ses_test", 1, "turn_ended", &body))
             .unwrap();
         drop(log);
         fs::copy(segment_path(&directory, 0), segment_path(&directory, 1)).unwrap();

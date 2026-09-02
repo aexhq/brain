@@ -8,10 +8,14 @@ A session is a conversation plus everything Brain did on its behalf, recorded as
 ## Writes land before effects
 
 Before Brain calls a model, activates the agent loop, or dispatches a tool call, it writes a
-`*_started` record to the log. Before the loop sees a result, a `*_finished` record is written
-too, naming the started record by its sequence. A record is named by the session id and its
-sequence, and those are the only ids there are: a client-hosted tool call is answered at the
-sequence of its `tool_call_started`, and an environment sees the same pair on the wire.
+`*_started` record to the log. Before the loop sees a result, a `*_ended` record is written too,
+naming the started record by its sequence; an effect that did not come back with a result gets a
+`*_failed` record instead, which says whether the effect may have happened anyway. Every
+lifecycle uses the same three words: `turn_started`, `turn_ended`, `turn_failed`;
+`session_creation_started`, `session_creation_ended`, `session_creation_failed`. A record is
+named by the session id and its sequence, and those are the only ids there are: a client-hosted
+tool call is answered at the sequence of its `tool_call_started`, and an environment sees the
+same pair on the wire.
 
 A `model_call_started` record carries what changed since the last one: the messages after the
 longest prefix the two requests share, with the system prompt as position zero. The log stays
@@ -20,8 +24,8 @@ because a rewrite is recorded from the point it happened rather than hidden.
 
 The log is written behind the turn — no fsync on the hot path — so a crash may lose its tail. On
 restart Brain rebuilds every session from the records that reached the disk: a session whose last
-turn finished comes back idle with its history readable, and one that was mid-turn comes back with
-a `turn_interrupted` event and returns to idle. Whether the in-flight call reached the model or a
+turn ended comes back idle with its history readable, and one that was mid-turn comes back with
+a `turn_failed` record whose code is `interrupted` and returns to idle. Whether the in-flight call reached the model or a
 tool is not knowable from here, so Brain records exactly that and lets the client resume or
 abandon on its own terms.
 

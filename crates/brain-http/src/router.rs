@@ -514,7 +514,7 @@ async fn serve_feed<A: BrainApi>(
 }
 
 /// What the serve stream opens with. Without a cursor: the still-pending calls —
-/// every matching `tool_call_started` with no `tool_call_finished` yet whose deadline
+/// every matching `tool_call_started` with no `tool_call_ended` yet whose deadline
 /// has not already passed (the session would have timed those out; replaying them
 /// would run side effects nothing is waiting for). With a cursor: an exact replay of
 /// matching records after it, the same resume contract as the events feed.
@@ -559,7 +559,7 @@ async fn serve_backlog<A: BrainApi>(
                 // Backlog cancellations target calls that resolve moments later; only
                 // the live tail needs them.
             } else if !replay_all
-                && event.event_type == "tool_call_finished"
+                && event.event_type == "tool_call_ended"
                 && let Some(started) = event
                     .data
                     .get("sequence")

@@ -454,7 +454,7 @@ async fn the_serve_feed_opens_with_pending_intents_only() {
             event_id: EventId::new("evt_2"),
             sequence: 2,
             recorded_at_ms: now_ms(),
-            event_type: "tool_call_finished".into(),
+            event_type: "tool_call_ended".into(),
             data: serde_json::json!({"sequence": 1, "result": {}}),
         },
         started(3, "highlight_row", "call_pending"),
@@ -680,7 +680,7 @@ async fn the_event_stream_carries_model_output_before_the_turn_finishes() {
             event_id: EventId::new("evt_done"),
             sequence: 2,
             recorded_at_ms: 1_787_846_400_003,
-            event_type: "model_call_finished".into(),
+            event_type: "model_call_ended".into(),
             data: serde_json::json!({ "result": "whole thought" }),
         }),
     ))

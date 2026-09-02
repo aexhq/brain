@@ -23,15 +23,15 @@ await session.send("second turn");
 const complete = [];
 for await (const event of session.events()) complete.push(event);
 assert.equal(complete.at(-1)?.sequence, session.state.lastSequence);
-const finished = complete.filter(({ type }) => type === "turn_finished");
-assert.equal(finished.length, 2);
+const ended = complete.filter(({ type }) => type === "turn_ended");
+assert.equal(ended.length, 2);
 
-const cursor = finished[0].sequence;
+const cursor = ended[0].sequence;
 const suffix = [];
 for await (const event of session.events(cursor)) suffix.push(event);
 assert.deepEqual(
   suffix.map(({ type }) => type),
-  ["turn_started", "activation_started", "activation_finished", "turn_finished"],
+  ["turn_started", "activation_started", "activation_ended", "turn_ended"],
 );
 assert.equal(suffix.at(-1)?.sequence, session.state.lastSequence);
 

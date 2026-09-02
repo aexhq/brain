@@ -97,7 +97,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         )),
     ));
     // Every session's journal, rebuilt from disk. A session that was mid-turn when the
-    // last process stopped is closed with `turn_interrupted` before anything is served.
+    // last process stopped is failed with code `interrupted` before anything is served.
     let journal_dir = config.data_dir.join("journal").join("journal");
     std::fs::create_dir_all(&journal_dir)?;
     let journal: Arc<dyn JournalStore> = Arc::new(SegmentJournal::open(&journal_dir)?);

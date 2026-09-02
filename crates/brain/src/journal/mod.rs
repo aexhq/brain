@@ -21,7 +21,8 @@ use crate::Error;
 /// process stopped. Whether the model call or the tool call actually happened is not
 /// knowable from here, so Brain says exactly that and returns the session to Idle rather
 /// than deciding on the client's behalf. Agentloops, tools and SDK clients see
-/// `turn_interrupted` on the event stream and resume or abandon as suits them.
+/// `turn_failed` with code `interrupted` on the event stream and resume or abandon as
+/// suits them.
 ///
 /// The host calls this once, after opening the store and before serving anything.
 pub fn interrupt_unfinished_turns(store: &dyn JournalStore) -> Result<(), Error> {
@@ -33,8 +34,9 @@ pub fn interrupt_unfinished_turns(store: &dyn JournalStore) -> Result<(), Error>
             &session.session_id,
             session.last_sequence,
             &[AppendRecord::new(
-                "turn_interrupted",
+                "turn_failed",
                 serde_json::json!({
+                    "code": "interrupted",
                     "message": "Brain restarted while this turn was in flight; whether its effects reached the model or a tool is not recorded"
                 }),
             )],

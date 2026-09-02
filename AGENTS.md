@@ -7,8 +7,8 @@
   on a Hands implementation crate or product-specific runtime.
 - Journal every decision. The journal is written behind the turn and is not a durability fence:
   Brain does not fsync, and a crash may lose its tail. Seal the session's tool catalogue and
-  bindings for its lifetime, preserve absent usage counters as absent, and record `*_finished`
-  results before the next Agentloop activation. A record is named by session id and sequence and
+  bindings for its lifetime, preserve absent usage counters as absent, and record `*_ended` or
+  `*_failed` results before the next Agentloop activation. A record is named by session id and sequence and
   nothing else; redelivery must preserve that pair and the logical binding, and never replay an
   ambiguous effect to a replacement physical target. `DECISIONS.md` records why.
 - Keep the `brain` core independent of cloud SDKs. Put storage, custody, and runtime behaviour behind

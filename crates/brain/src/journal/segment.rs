@@ -362,14 +362,15 @@ fn restored_row(frame: &Frame<'_>) -> Result<SessionRow, Error> {
     })
 }
 
-/// Folds one record into the session's status and, at `session_created`, its configuration.
+/// Folds one record into the session's status and, at `session_creation_ended`, its
+/// configuration.
 ///
-/// Last write wins, which is what the records mean: both `turn_finished` and `turn_failed`
+/// Last write wins, which is what the records mean: both `turn_ended` and `turn_failed`
 /// go through `finish_turn` and leave a session Idle, so neither implies a failed session —
 /// only a failed creation does that.
 fn apply_lifecycle(row: &mut SessionRow, frame: &Frame<'_>) {
     match frame.kind {
-        "session_created" => {
+        "session_creation_ended" => {
             #[derive(serde::Deserialize)]
             struct Created {
                 configuration: serde_json::Value,
@@ -381,7 +382,7 @@ fn apply_lifecycle(row: &mut SessionRow, frame: &Frame<'_>) {
         }
         "session_creation_failed" => row.status = SessionStatus::Failed,
         "turn_started" => row.status = SessionStatus::Running,
-        "turn_finished" | "turn_failed" => row.status = SessionStatus::Idle,
+        "turn_ended" | "turn_failed" => row.status = SessionStatus::Idle,
         "session_ended" => row.status = SessionStatus::Ended,
         _ => {}
     }

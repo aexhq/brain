@@ -390,7 +390,7 @@ fn start(runtime: &Runtime, sealed: SealedSessionConfig) -> Session {
 ///
 /// Whether the model call or the tool call actually happened is not in the journal, so
 /// Brain records exactly that and returns the session to Idle. It does not decide for the
-/// client: an agentloop, a tool or an SDK client sees `turn_interrupted` on the stream and
+/// client: an agentloop, a tool or an SDK client sees `turn_failed` on the stream and
 /// resumes or abandons on its own terms.
 #[tokio::test]
 async fn an_interrupted_turn_is_closed_and_recorded() {
@@ -442,9 +442,10 @@ async fn an_interrupted_turn_is_closed_and_recorded() {
         session.status
     );
     let events = reopened.events(&session_id, 0, 1_000).events;
+    let last = events.last().expect("the session has records");
+    assert_eq!(last.event_type, "turn_failed");
     assert_eq!(
-        events.last().map(|event| event.event_type.as_str()),
-        Some("turn_interrupted"),
+        last.data["code"], "interrupted",
         "the break must be in the record, so a client can see it and decide"
     );
 
@@ -729,7 +730,7 @@ impl ModelExecutor for ChattyModel {
 
 /// Model output is streamed, not stored.
 ///
-/// `model_call_finished` carried the whole list of deltas beside the assembled response, so a
+/// `model_call_ended` carried the whole list of deltas beside the assembled response, so a
 /// turn wrote its own output twice — once in pieces and once whole — and nothing ever read
 /// the pieces. A client that wants them takes them off the live stream as they arrive.
 #[tokio::test]

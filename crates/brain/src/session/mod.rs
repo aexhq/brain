@@ -98,11 +98,11 @@ impl PendingToolCalls {
 /// cannot supply as history.
 const RESERVED_KINDS: [&str; 7] = [
     "session_creation_started",
-    "session_created",
+    "session_creation_ended",
     "session_creation_failed",
     "session_ended",
     "turn_started",
-    "turn_finished",
+    "turn_ended",
     "turn_failed",
 ];
 
@@ -272,7 +272,8 @@ impl Session {
     /// Journals an effect the host is about to perform on the session's behalf outside a
     /// turn, such as calling one of its environments. Returns the record's sequence,
     /// which names the operation; the host records what came of it with
-    /// [`Session::record_call_finished`]. Refused while a turn is running.
+    /// [`Session::record_call_ended`] or [`Session::record_call_failed`]. Refused while a
+    /// turn is running.
     pub async fn record_call_started<T: serde::Serialize>(
         &self,
         kind: &str,
@@ -285,18 +286,29 @@ impl Session {
         .await
     }
 
-    pub async fn record_call_finished<T: serde::Serialize>(
+    pub async fn record_call_ended<T: serde::Serialize>(
         &self,
         kind: &str,
         sequence: u64,
         result: &T,
     ) -> Result<(), Error> {
         self.append(AppendRecord::new(
-            format!("{kind}_finished"),
+            format!("{kind}_ended"),
             serde_json::json!({"sequence": sequence, "result": result}),
         ))
         .await
         .map(|_| ())
+    }
+
+    pub async fn record_call_failed(
+        &self,
+        kind: &str,
+        sequence: u64,
+        error: &Error,
+    ) -> Result<(), Error> {
+        self.append(failed_record(kind, sequence, error))
+            .await
+            .map(|_| ())
     }
 
     async fn append(&self, record: AppendRecord) -> Result<u64, Error> {
@@ -327,17 +339,27 @@ impl CreatingSession {
         ))
     }
 
-    pub fn record_call_finished<T: serde::Serialize>(
+    pub fn record_call_ended<T: serde::Serialize>(
         &mut self,
         kind: &str,
         sequence: u64,
         result: &T,
     ) -> Result<(), Error> {
         self.append(AppendRecord::new(
-            format!("{kind}_finished"),
+            format!("{kind}_ended"),
             serde_json::json!({"sequence": sequence, "result": result}),
         ))
         .map(|_| ())
+    }
+
+    pub fn record_call_failed(
+        &mut self,
+        kind: &str,
+        sequence: u64,
+        error: &Error,
+    ) -> Result<(), Error> {
+        self.append(failed_record(kind, sequence, error))
+            .map(|_| ())
     }
 
     fn append(&mut self, record: AppendRecord) -> Result<u64, Error> {
@@ -360,7 +382,7 @@ impl CreatingSession {
             &self.row.session_id,
             self.row.through_sequence,
             &[AppendRecord::new(
-                "session_created",
+                "session_creation_ended",
                 serde_json::json!({"configuration":sealed}),
             )],
             SessionUpdate {
@@ -392,6 +414,19 @@ impl CreatingSession {
         self.row.through_sequence += saved.len() as u64;
         Ok(())
     }
+}
+
+/// The record of an effect that did not come back with a result. `ambiguous` says
+/// whether it may have happened anyway.
+fn failed_record(kind: &str, sequence: u64, error: &Error) -> AppendRecord {
+    AppendRecord::new(
+        format!("{kind}_failed"),
+        serde_json::json!({
+            "sequence": sequence,
+            "error": error.to_string(),
+            "ambiguous": matches!(error, Error::Ambiguous(_)),
+        }),
+    )
 }
 
 fn stopped() -> Error {

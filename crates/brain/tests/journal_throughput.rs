@@ -45,7 +45,7 @@ fn reports_what_the_journal_costs() {
                 configuration: serde_json::json!({}),
                 context: serde_json::json!({}),
             },
-            AppendRecord::new("session_created", serde_json::json!({})),
+            AppendRecord::new("session_creation_ended", serde_json::json!({})),
         )
         .unwrap();
 

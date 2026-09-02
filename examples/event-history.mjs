@@ -24,7 +24,7 @@ try {
 
   const complete = [];
   for await (const event of session.events()) complete.push(event);
-  const firstTurn = complete.find((event) => event.type === "turn_finished");
+  const firstTurn = complete.find((event) => event.type === "turn_ended");
   if (!firstTurn) throw new Error("the first turn did not finish");
 
   console.log(`Journal through sequence ${complete.at(-1)?.sequence ?? 0}`);

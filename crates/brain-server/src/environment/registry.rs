@@ -178,28 +178,20 @@ impl EnvironmentRegistry {
             attachment_id,
             request,
         };
-        let receipt = self
+        let sent = self
             .adapter
             .send(&entry.endpoint, &entry.binding, &operation)
-            .await?;
-        match &receipt {
-            EnvironmentReceipt::Ambiguous { message } => {
-                return Err(brain::Error::Ambiguous(message.clone()));
+            .await;
+        match sent.and_then(|receipt| terminal(receipt, "lifecycle")) {
+            Ok(receipt) => {
+                creation.record_call_ended(kind, sequence, &receipt)?;
+                Ok(receipt)
             }
-            EnvironmentReceipt::Failure { message, .. } => {
-                return Err(brain::Error::Executor(message.clone()));
+            Err(error) => {
+                creation.record_call_failed(kind, sequence, &error)?;
+                Err(error)
             }
-            EnvironmentReceipt::Progress { .. } => {
-                return Err(brain::Error::Executor(
-                    "Environment returned progress without a terminal lifecycle receipt".into(),
-                ));
-            }
-            EnvironmentReceipt::Accepted { .. }
-            | EnvironmentReceipt::Result { .. }
-            | EnvironmentReceipt::Outcome { .. } => {}
         }
-        creation.record_call_finished(kind, sequence, &receipt)?;
-        Ok(receipt)
     }
 
     pub async fn execute(
@@ -242,20 +234,32 @@ impl EnvironmentRegistry {
             attachment_id: Some(attachment.attachment_id.clone()),
             request,
         };
-        let receipt = self
+        let sent = self
             .adapter
             .send(&entry.endpoint, &entry.binding, &operation)
-            .await?;
-        session
-            .record_call_finished("environment_call", sequence, &receipt)
-            .await?;
-        match receipt {
-            EnvironmentReceipt::Result { output } => Ok(EnvironmentCallResult { output }),
-            EnvironmentReceipt::Failure { message, .. } => Err(brain::Error::Executor(message)),
-            EnvironmentReceipt::Ambiguous { message } => Err(brain::Error::Ambiguous(message)),
-            _ => Err(brain::Error::Executor(
-                "Environment returned a nonterminal call receipt".into(),
-            )),
+            .await;
+        match sent.and_then(|receipt| terminal(receipt, "call")) {
+            Ok(EnvironmentReceipt::Result { output }) => {
+                session
+                    .record_call_ended("environment_call", sequence, &output)
+                    .await?;
+                Ok(EnvironmentCallResult { output })
+            }
+            Ok(_) => {
+                let error = brain::Error::Executor(
+                    "Environment returned a nonterminal call receipt".into(),
+                );
+                session
+                    .record_call_failed("environment_call", sequence, &error)
+                    .await?;
+                Err(error)
+            }
+            Err(error) => {
+                session
+                    .record_call_failed("environment_call", sequence, &error)
+                    .await?;
+                Err(error)
+            }
         }
     }
 
@@ -307,25 +311,31 @@ impl EnvironmentRegistry {
             attachment_id,
             request,
         };
-        let receipt = self
+        let sent = self
             .adapter
             .send(&entry.endpoint, &entry.binding, &operation)
-            .await?;
-        match &receipt {
-            EnvironmentReceipt::Accepted { .. } | EnvironmentReceipt::Result { .. } => {}
-            EnvironmentReceipt::Ambiguous { message } => {
-                return Err(brain::Error::Ambiguous(message.clone()));
-            }
-            EnvironmentReceipt::Failure { message, .. } => {
-                return Err(brain::Error::Executor(message.clone()));
-            }
-            _ => {
-                return Err(brain::Error::Executor(
-                    "Environment returned a nonterminal lifecycle receipt".into(),
-                ));
+            .await;
+        match sent.and_then(|receipt| terminal(receipt, "lifecycle")) {
+            Ok(receipt) => session.record_call_ended(kind, sequence, &receipt).await,
+            Err(error) => {
+                session.record_call_failed(kind, sequence, &error).await?;
+                Err(error)
             }
         }
-        session.record_call_finished(kind, sequence, &receipt).await
+    }
+}
+
+/// A receipt that ended the operation, or the error it ended with. A failure receipt is
+/// the environment saying the effect failed; an ambiguous one says it does not know; a
+/// progress receipt where a terminal one was owed is a broken environment.
+fn terminal(receipt: EnvironmentReceipt, what: &str) -> Result<EnvironmentReceipt, brain::Error> {
+    match receipt {
+        EnvironmentReceipt::Ambiguous { message } => Err(brain::Error::Ambiguous(message)),
+        EnvironmentReceipt::Failure { message, .. } => Err(brain::Error::Executor(message)),
+        EnvironmentReceipt::Progress { .. } => Err(brain::Error::Executor(format!(
+            "Environment returned progress without a terminal {what} receipt"
+        ))),
+        receipt => Ok(receipt),
     }
 }
 

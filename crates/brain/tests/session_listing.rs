@@ -88,7 +88,7 @@ fn journal_with_sessions(directory: &Path) -> SegmentJournal {
         journal
             .create_session(
                 &row,
-                AppendRecord::new("session_created", serde_json::json!({})),
+                AppendRecord::new("session_creation_ended", serde_json::json!({})),
             )
             .unwrap();
     }

@@ -62,15 +62,19 @@ needs no identity check to trust it.
 
 ## 2026-09-02: Effect records are named for what happened, not for intent
 
-**Decided.** `model_intent` and `model_result` become `model_call_started` and
-`model_call_finished`. `tool_intent` and `tool_result` become `tool_call_started` and
-`tool_call_finished`. `activation_intent` and `activation_result` become `activation_started` and
-`activation_finished`. The write-ahead behaviour is unchanged: the started record lands before the
-effect, the finished record before the next activation.
+**Decided.** Every lifecycle on the feed uses the same three words: `started`, `ended`,
+`failed`. `model_intent` and `model_result` become `model_call_started` and `model_call_ended`,
+and a model call the session could not complete is `model_call_failed`. The same for tool calls,
+cancellations, activations, and environment operations. `turn_finished` becomes `turn_ended`, a
+turn cut off by a restart is `turn_failed` with code `interrupted`, and `session_created` becomes
+`session_creation_ended` beside `session_creation_started` and `session_creation_failed`. The
+`*_ambiguous` kinds go: a failed record carries `ambiguous: true` when the effect may have
+happened anyway. The write-ahead behaviour is unchanged: the started record lands before the
+effect, the ended or failed record before the next activation.
 
-**Why.** "Intent" describes the mechanism from the inside. A reader of the event feed wants to know
-what happened, and the session and turn records already say it that way (`turn_started`,
-`session_created`). One naming rule across the feed.
+**Why.** "Intent" describes the mechanism from the inside, and "finished" and "created" were two
+more words for the same thing. A reader of the event feed wants to know what happened, in one
+vocabulary.
 
 ## 2026-09-02: No request identity
 

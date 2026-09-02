@@ -198,7 +198,7 @@ impl SessionActor {
                 Err(()) => return self.cancel_turn(),
                 Ok(Ok(output)) => output,
                 Ok(Err(error)) => {
-                    return self.finish_turn(vec![AppendRecord::new("activation_finished", serde_json::json!({"error":error.to_string()})), AppendRecord::new("turn_failed", serde_json::json!({"code":"agentloop_failed","message":error.to_string()}))]);
+                    return self.finish_turn(vec![AppendRecord::new("activation_failed", serde_json::json!({"error":error.to_string()})), AppendRecord::new("turn_failed", serde_json::json!({"code":"agentloop_failed","message":error.to_string()}))]);
                 }
             };
             if output.context.protocol_version != "agentloop/v1" {
@@ -210,7 +210,7 @@ impl SessionActor {
             self.context = output.context;
             self.commit(
                 vec![AppendRecord::new(
-                    "activation_finished",
+                    "activation_ended",
                     serde_json::json!({"decision": decision_kind(&output.decision)}),
                 )],
                 SessionUpdate::default(),
@@ -240,7 +240,7 @@ impl SessionActor {
                         vec![AppendRecord::new("model_call_started", record)],
                         SessionUpdate::default(),
                     )?;
-                    // Model output is streamed and not stored. `model_call_finished` used
+                    // Model output is streamed and not stored. `model_call_ended` used
                     // to carry every delta beside the assembled response, so a turn wrote
                     // its own output twice -- once in pieces and once whole -- and nothing
                     // ever read the pieces. The assembled response is the durable truth; a
@@ -271,7 +271,7 @@ impl SessionActor {
                         Ok(Ok(result)) => {
                             self.commit(
                                 vec![AppendRecord::new(
-                                    "model_call_finished",
+                                    "model_call_ended",
                                     serde_json::json!({"sequence":sequence,"result":result}),
                                 )],
                                 SessionUpdate::default(),
@@ -401,7 +401,7 @@ impl SessionActor {
                             },
                         };
                         terminal.push(AppendRecord::new(
-                            "tool_call_finished",
+                            "tool_call_ended",
                             serde_json::json!({"sequence":sequence,"result":result}),
                         ));
                         results.push(serde_json::to_value(result).map_err(json_error)?);
@@ -437,7 +437,7 @@ impl SessionActor {
                 Decision::Finish { result } => {
                     self.turn_opening_context = None;
                     return self.finish_turn(vec![AppendRecord::new(
-                        "turn_finished",
+                        "turn_ended",
                         serde_json::json!({"result":result}),
                     )]);
                 }
@@ -533,21 +533,19 @@ impl SessionActor {
         Ok(record)
     }
 
+    /// The effect failed, so the turn does. `ambiguous` says whether the effect may have
+    /// happened anyway: a stream that broke mid-answer, a receipt that never came.
     fn executor_failure(
         &mut self,
         kind: &str,
         sequence: u64,
         error: Error,
     ) -> Result<SessionSummary, Error> {
-        let outcome = if matches!(error, Error::Ambiguous(_)) {
-            format!("{kind}_ambiguous")
-        } else {
-            format!("{kind}_finished")
-        };
+        let ambiguous = matches!(error, Error::Ambiguous(_));
         self.finish_turn(vec![
             AppendRecord::new(
-                outcome,
-                serde_json::json!({"sequence":sequence,"error":error.to_string()}),
+                format!("{kind}_failed"),
+                serde_json::json!({"sequence":sequence,"error":error.to_string(),"ambiguous":ambiguous}),
             ),
             AppendRecord::new(
                 "turn_failed",
@@ -569,7 +567,7 @@ impl SessionActor {
     /// turn the context is held in memory: it grows with every decision, so writing it
     /// per decision costs the sum of every intermediate size rather than the final one,
     /// and nothing ever reads those intermediate values. A restart closes an in-flight
-    /// turn with `turn_interrupted` rather than resuming it, and the row is read back only
+    /// turn with `turn_failed` (code `interrupted`) rather than resuming it, and the row is read back only
     /// when an Idle session is rehydrated — which is to say, here.
     fn finish_turn(&mut self, records: Vec<AppendRecord>) -> Result<SessionSummary, Error> {
         // An abnormal end rolls the context back to the turn's opening state; the
@@ -636,26 +634,28 @@ impl SessionActor {
         let records = match results {
             Ok(results) => results
                 .into_iter()
-                .map(|(sequence, result)| {
-                    AppendRecord::new(
-                        "tool_cancel_finished",
-                        match result {
-                            Ok(()) => serde_json::json!({"sequence":sequence,"cancelled":true}),
-                            Err(error) => {
-                                serde_json::json!({"sequence":sequence,"error":error.to_string()})
-                            }
-                        },
-                    )
+                .map(|(sequence, result)| match result {
+                    Ok(()) => AppendRecord::new(
+                        "tool_cancel_ended",
+                        serde_json::json!({"sequence":sequence}),
+                    ),
+                    Err(error) => AppendRecord::new(
+                        "tool_cancel_failed",
+                        serde_json::json!({"sequence":sequence,"error":error.to_string(),"ambiguous":false}),
+                    ),
                 })
                 .collect(),
+            // Nothing answered in time: whether the environment stopped the work is not
+            // known, and the record says so.
             Err(_) => sequences
                 .into_iter()
                 .map(|sequence| {
                     AppendRecord::new(
-                        "tool_cancel_ambiguous",
+                        "tool_cancel_failed",
                         serde_json::json!({
                             "sequence":sequence,
-                            "error":"Environment cancellation deadline exceeded"
+                            "error":"Environment cancellation deadline exceeded",
+                            "ambiguous":true
                         }),
                     )
                 })
@@ -809,8 +809,8 @@ fn decision_kind(decision: &Decision) -> &'static str {
 }
 
 /// What the agentloop was shown, without what it was shown. The detail is in the record
-/// before this one: the message in `turn_started`, the response in `model_call_finished`,
-/// the results in `tool_call_finished`.
+/// before this one: the message in `turn_started`, the response in `model_call_ended`,
+/// the results in `tool_call_ended`.
 fn observation_kind(observation: &Observation) -> &'static str {
     match observation {
         Observation::SessionStarted { .. } => "session_started",
@@ -825,7 +825,7 @@ fn observation_kind(observation: &Observation) -> &'static str {
 /// One piece of model output, as a client watching the turn should see it.
 ///
 /// Usage is left out: it is an accounting total that arrives at the end and is already in
-/// `model_call_finished`, and it is not something a reader is watching the stream for.
+/// `model_call_ended`, and it is not something a reader is watching the stream for.
 fn streaming_event(sequence: u64, event: &ModelStreamEvent) -> Option<StreamingEvent> {
     let (event_type, data) = match event {
         ModelStreamEvent::TextDelta { index, text } => (
