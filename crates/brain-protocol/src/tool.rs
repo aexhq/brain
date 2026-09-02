@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AttachmentId, Capability, EnvironmentBinding, EnvironmentId, Identity, OperationId, Outcome,
+    AttachmentId, EnvironmentBinding, EnvironmentId, Identity, OperationId, Outcome, Runtime,
     SessionId,
 };
 
@@ -15,8 +17,8 @@ pub struct ToolDefinition {
     pub output_schema: Option<serde_json::Value>,
 }
 
-/// Where a tool's implementation executes: a provisioned artifact the environment
-/// hosts, or an application process answering off the serve feed (`client`) — the
+/// Where a tool's implementation executes: a provisioned program the environment
+/// launches, or an application process answering off the serve feed (`client`) — the
 /// session's creator or anyone holding the session's share key.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,21 +28,53 @@ pub enum ToolHosting {
     Client,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PayloadKind {
-    Esm,
-    Component,
-}
-
-/// The deliverable artifact behind a provisioned tool, named by content identity so
-/// re-provisioning is idempotent. Absent for tools baked into the environment itself
-/// and for client-hosted tools, whose code never leaves the author's process.
+/// The request template of an `http` program: the environment fronts the endpoint,
+/// the tool's input travels as the JSON body, and the response body is the output.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ToolPayload {
-    pub kind: PayloadKind,
-    pub identity: Identity,
+pub struct HttpProgramRequest {
+    pub method: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<BTreeMap<String, String>>,
+}
+
+/// The program behind a provisioned tool, named by content identity so
+/// re-provisioning is idempotent. An `esm` bundle travels out of band under its
+/// identity; a `shell` script and an `http` request template travel inline.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Program {
+    Esm {
+        identity: Identity,
+    },
+    Shell {
+        identity: Identity,
+        script: String,
+    },
+    Http {
+        identity: Identity,
+        request: HttpProgramRequest,
+    },
+}
+
+impl Program {
+    /// The runtime an environment must offer to launch this program.
+    pub fn runtime(&self) -> Runtime {
+        match self {
+            Program::Esm { .. } => Runtime::Esm,
+            Program::Shell { .. } => Runtime::Shell,
+            Program::Http { .. } => Runtime::Http,
+        }
+    }
+
+    pub fn identity(&self) -> &Identity {
+        match self {
+            Program::Esm { identity }
+            | Program::Shell { identity, .. }
+            | Program::Http { identity, .. } => identity,
+        }
+    }
 }
 
 /// The `contracts/tool/v1` manifest: the only thing Brain and environments read about
@@ -54,12 +88,11 @@ pub struct ToolManifest {
     pub input_schema: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<serde_json::Value>,
-    pub requires: Vec<Capability>,
+    /// Resource names the program operates on; checked against the environment's
+    /// declared resources at session create.
+    pub needs: Vec<String>,
     pub binding_names: Vec<String>,
-    #[serde(default)]
-    pub hosting: ToolHosting,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<ToolPayload>,
+    pub program: Program,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -70,12 +103,15 @@ pub struct ToolBinding {
     pub environment: Option<EnvironmentBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_id: Option<AttachmentId>,
-    pub requires: Vec<Capability>,
+    #[serde(default)]
+    pub needs: Vec<String>,
     pub binding_names: Vec<String>,
     #[serde(default)]
     pub hosting: ToolHosting,
+    /// Absent for client-hosted tools and for tools the environment executes natively
+    /// without a provisioned program.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<ToolPayload>,
+    pub program: Option<Program>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -84,12 +120,13 @@ pub struct RequestedToolBinding {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_id: Option<EnvironmentId>,
-    pub requires: Vec<Capability>,
+    #[serde(default)]
+    pub needs: Vec<String>,
     pub binding_names: Vec<String>,
     #[serde(default)]
     pub hosting: ToolHosting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<ToolPayload>,
+    pub program: Option<Program>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

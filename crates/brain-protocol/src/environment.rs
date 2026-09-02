@@ -3,12 +3,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AttachmentId, Capability, EnvironmentId, GrantSet, Identity, OperationId, Outcome, SessionId,
+    AttachmentId, EnvironmentId, Identity, OperationId, Outcome, Resources, Runtime, SessionId,
     ToolManifest,
 };
 
 /// The contract identifier every command and response carries.
-pub const ENVIRONMENT_CONTRACT: &str = "environment/v2";
+pub const ENVIRONMENT_CONTRACT: &str = "environment/v1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,10 +30,13 @@ pub struct EnvironmentBinding {
 pub struct EnvironmentAttachment {
     pub binding: EnvironmentBinding,
     pub attachment_id: AttachmentId,
-    /// What the environment's setup/attach receipts said it provides. Sealed with the
-    /// session so the capability check holds however the session was admitted.
+    /// What the environment's setup/attach receipts declared it executes. Sealed with
+    /// the session so the bind check holds however the session was admitted.
     #[serde(default)]
-    pub provides: Vec<Capability>,
+    pub runtimes: Vec<Runtime>,
+    /// The resources the environment declared, verbatim. Brain reads the names.
+    #[serde(default)]
+    pub resources: Resources,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -78,7 +81,6 @@ pub enum EnvironmentRequest {
         configuration: serde_json::Value,
     },
     Attach {
-        grants: GrantSet,
         provisions: Vec<Provision>,
         /// Binding values by name, injected into hosted tools at runtime. Plaintext on
         /// this wire only: the journal carries their identities, never the values.
@@ -105,10 +107,14 @@ pub enum EnvironmentRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentReceipt {
     Accepted {
-        /// The capabilities this environment provides, reported on setup/attach
-        /// receipts and fed into the bind-time `requires ⊆ provides` check.
+        /// The program runtimes this environment launches, reported on setup/attach
+        /// receipts and fed into the bind-time check.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        provides: Vec<Capability>,
+        runtimes: Vec<Runtime>,
+        /// The resources this environment declares, reported on setup/attach receipts
+        /// and fed into the bind-time `needs ⊆ resources` check.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        resources: Resources,
     },
     Progress {
         data: serde_json::Value,

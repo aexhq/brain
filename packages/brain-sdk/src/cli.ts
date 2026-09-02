@@ -55,8 +55,8 @@ if (watching) {
 async function runBuild(): Promise<void> {
   const built = await build(options);
   for (const extension of built) {
-    process.stderr.write(`${extension.name} (${extension.kind})${extension.identity === undefined ? "" : ` -> ${extension.identity} (${extension.bytes} bytes)`}\n`);
-    for (const warning of extension.warnings ?? []) process.stderr.write(`warning: ${warning}\n`);
+    process.stderr.write(`${extension.name} (${extension.program === undefined ? extension.kind : `${extension.program} ${extension.kind}`})${extension.identity === undefined ? "" : ` -> ${extension.identity} (${extension.bytes} bytes)`}
+`);
   }
 }
 

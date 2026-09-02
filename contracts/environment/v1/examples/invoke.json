@@ -1,5 +1,5 @@
 {
-  "contract": "environment/v2",
+  "contract": "environment/v1",
   "binding": {
     "environment_id": "env_shared",
     "configuration_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -16,7 +16,9 @@
       "type": "invoke",
       "call_id": "call_example",
       "tool": "read",
-      "input": { "path": "README.md" },
+      "input": {
+        "path": "README.md"
+      },
       "deadline_ms": 120000
     }
   }

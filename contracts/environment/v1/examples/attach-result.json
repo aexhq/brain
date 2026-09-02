@@ -1,0 +1,21 @@
+{
+  "contract": "environment/v1",
+  "operation_id": "op_attach_example",
+  "request_identity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "receipt": {
+    "type": "accepted",
+    "runtimes": [
+      "esm",
+      "shell"
+    ],
+    "resources": {
+      "fs": {
+        "root": "/workspace"
+      },
+      "process": {
+        "timeout_ms_max": 120000,
+        "output_bytes_max": 1048576
+      }
+    }
+  }
+}

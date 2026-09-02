@@ -1,78 +1,96 @@
 ---
 title: Environment
-description: Where tool calls run, and the lifecycle Brain drives.
+description: Where tool programs run, and the lifecycle Brain drives.
 ---
 
-An environment is somewhere tool calls actually execute. Brain drives its lifecycle over the
-`environment/v2` HTTP contract:
+An environment is a place that executes programs. Brain drives its lifecycle over the
+`environment/v1` HTTP contract:
 
 `setup` · `attach` · `call` · `invoke` · `cancel` · `detach` · `teardown`
 
 The adapter implements them. Brain decides when they happen.
 
-## Capabilities: the typed vocabulary
+## One verb, declared once
 
-An environment *provides* capabilities — named, schema-fixed interfaces from a closed set:
+An environment does two things. It launches programs, and it declares what a program will
+find there.
 
-| Capability | What it is |
+**Runtimes** are the program kinds it can launch:
+
+| Runtime | The program is |
 | --- | --- |
-| `exec` | run a shell string; buffered, bounded `{exit_code, stdout, stderr}` |
-| `fs` | read/write/list under a workspace root; bytes as base64 |
-| `net` | one outbound HTTP fetch under a policy |
-| `js` | evaluate a source string in the environment's realm |
-| `page` | the non-eval browser residue: navigate, screenshot, trusted input, pulled console |
+| `esm` | a self-contained JavaScript module, built by `brain build` from an authored tool |
+| `shell` | a POSIX shell script |
+| `http` | a request to an endpoint the environment fronts |
 
-The setup and attach receipts report `provides: [...]`, and Brain checks every bound tool's
-`requires` against it at session create — a bash tool bound to a browser environment is a
-create-time rejection naming the capability, the tool, and the environment, not a runtime
-mystery. Growth of the set is a contract release, not an author convention.
+The list is closed only because Brain and the SDK must physically package and start the
+program. A language is not a runtime: a shell script runs python if the image has python.
 
-An environment authored with the SDK registers providers with `provide.exec(...)`,
-`provide.fs(...)`, and so on; the registered set is exactly what its receipts report. It
-can also host provisioned tools with `host.esm()` — the SDK owns the host runtime, wiring
-each hosted tool's handles to the environment's own providers in-process, so a capability
-call from a hosted tool never crosses a wire. See
+**Resources** are named facts about the place. The contract fixes the policy block of the
+named ones; vendor resources are namespaced (`aws:iam`, `bin:ffmpeg`) and opaque to Brain.
+
+| Resource | Policy block | Means |
+| --- | --- | --- |
+| `fs` | `{ root }` | a filesystem; every program starts with `root` as its working directory |
+| `process` | `{ timeout_ms_max?, output_bytes_max? }` | programs can start processes |
+| `net` | `{ allow }` | outbound network to these hosts |
+| `dom` | `{}` | a document the program can drive |
+| `secrets` | `{ names }` | named secrets the platform injects |
+
+The setup and attach receipts report `runtimes` and `resources`. Brain checks every bound
+tool's program kind and `needs` against them at session create, so a shell tool bound to a
+browser environment is a create-time rejection naming the tool, the environment, and what is
+missing, not a runtime mystery.
+
+Inside the environment a program reaches its resources through the platform's own APIs:
+`node:fs`, `child_process`, `fetch`, `document`. Brain wraps nothing. Policy is enforced
+where it can hold, in the mount, the user, the VM's egress rules, or the browser's origin,
+and the environment's declaration of what it enforces is journalled with the session.
+
+An environment authored with the SDK registers an executor per runtime with
+`execute.esm()`, `execute.shell(...)`, and `execute.http(...)`, and declares its resources
+once. What it registers is exactly what its receipts report. See
 [Write an environment](/brain/docs/guides/write-an-environment).
 
-## Attach carries the typed policy
+## Attach carries programs and bindings
 
-`attach` carries three typed fields, replacing the untyped grant and adapter blobs of v1:
+`attach` carries two typed fields:
 
-- **`grants`** — per-capability policy the environment enforces: `exec` time and output
-  bounds, an `fs` root, a `net` host allowlist. Tools cannot see grants, only hit them.
-- **`provisions`** — tool artifacts to host: each a `tool/v1` manifest plus the content
-  identity of its payload, so re-provisioning is idempotent.
-- **`bindings`** — named values injected into hosted tools at runtime. They travel on this
-  wire only; the journal records their identities, never the values.
+- **`provisions`**: the programs to launch, each a `tool/v1` manifest plus the content
+  identity of its payload, so re-provisioning is idempotent. An `esm` bundle travels out of
+  band by identity; a `shell` script and an `http` request template travel inline in the
+  manifest.
+- **`bindings`**: named values injected into programs at runtime. They travel on this wire
+  only; the journal records their identities, never the values.
 
 ## Invocation is one envelope
 
 A tool call arrives as `invoke {call_id, tool, input, deadline_ms}` and returns exactly one
-outcome: `ok | error | timeout | cancelled`. The deadline is Brain's to enforce — an overdue
+outcome: `ok | error | timeout | cancelled`. The deadline is Brain's to enforce. An overdue
 call is killed by the caller and recorded as a distinguished `timeout` outcome, because no
 remote can be trusted to stop on its own.
 
 ## Addressed by object, not by connection
 
 The exact Environment object a tool factory's `env` option names identifies one logical
-attachment. Several Tools using the same object share it; calling the environment factory
-again creates another attachment.
-The generated private identity resolves to provider state rather than whichever process happens to
-hold a socket.
+attachment. Several tools using the same object share it; calling the environment factory
+again creates another attachment. The generated private identity resolves to provider
+state rather than whichever process happens to hold a socket.
 
 Connections are caches. They never decide identity, and they never decide teardown.
 
 ## Replay is explicit
 
-Every operation carries a stable identifier and the identity of its request. When a redelivery arrives,
-the adapter can tell "this is the same call again" from "this is a new call that looks similar", and
-Brain never replays an ambiguous effect against a replacement target.
+Every operation carries a stable identifier and the identity of its request. When a
+redelivery arrives, the adapter can tell "this is the same call again" from "this is a new
+call that looks similar", and Brain never replays an ambiguous effect against a replacement
+target.
 
 ## The official adapter
 
-`@aexhq/env-aws-microvm` runs tools in an AWS MicroVM. It uses only the public
-contract, so a third-party adapter is not a second-class one. See
-[Write an environment](/brain/docs/guides/write-an-environment).
+`@aexhq/env-aws-microvm` launches `esm` and `shell` programs in an AWS MicroVM and declares
+`fs`, `process`, and `net`. It uses only the public contract, so a third-party adapter is
+not a second-class one. See [Write an environment](/brain/docs/guides/write-an-environment).
 
-An application process answering tools is not an environment at all — Brain routes
-those itself over the serve feed (see [App tools](/brain/docs/guides/app-tools)).
+An application process answering tools is not an environment at all. Brain routes those
+itself over the serve feed (see [App tools](/brain/docs/guides/app-tools)).

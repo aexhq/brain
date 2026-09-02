@@ -254,50 +254,46 @@ export type components = {
             name: string;
             api_key: string;
         };
-        /** @enum {unknown} */
-        CapabilityName: "exec" | "fs" | "net" | "js" | "page";
-        ToolPayload: {
-            /** @enum {unknown} */
-            kind: "esm" | "component";
+        ResourceName: string;
+        HttpProgramRequest: {
+            method: string;
+            url: string;
+            headers?: {
+                [key: string]: string;
+            };
+        };
+        Program: {
+            /** @constant */
+            kind: "esm";
             identity: components["schemas"]["Identity"];
+        } | {
+            /** @constant */
+            kind: "shell";
+            identity: components["schemas"]["Identity"];
+            script: string;
+        } | {
+            /** @constant */
+            kind: "http";
+            identity: components["schemas"]["Identity"];
+            request: components["schemas"]["HttpProgramRequest"];
         };
         BoundTool: {
             name: components["schemas"]["Identifier"];
             description: string;
             input_schema: Record<string, never>;
             output_schema?: Record<string, never>;
-            requires: components["schemas"]["CapabilityName"][];
+            needs: components["schemas"]["ResourceName"][];
             binding_names: components["schemas"]["Identifier"][];
             /** @enum {unknown} */
             hosting?: "provisioned" | "client";
-            payload?: components["schemas"]["ToolPayload"];
+            program?: components["schemas"]["Program"];
             environment_id?: components["schemas"]["Identifier"];
         } & (unknown & unknown);
-        ExecGrant: {
-            timeout_ms_max?: number;
-            output_bytes_max?: number;
-        };
-        FsGrant: {
-            root: string;
-        };
-        NetGrant: {
-            allow: string[];
-        };
-        JsGrant: Record<string, never>;
-        PageGrant: Record<string, never>;
-        GrantSet: {
-            exec?: components["schemas"]["ExecGrant"];
-            fs?: components["schemas"]["FsGrant"];
-            net?: components["schemas"]["NetGrant"];
-            js?: components["schemas"]["JsGrant"];
-            page?: components["schemas"]["PageGrant"];
-        };
         EnvironmentRequirement: {
             environment_id: components["schemas"]["Identifier"];
             configuration: unknown;
             /** @enum {unknown} */
             lifecycle_policy: "session" | "shared" | "external";
-            grants?: components["schemas"]["GrantSet"];
             bindings?: {
                 [key: string]: string;
             };

@@ -3,15 +3,27 @@
     "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "configuration": {}
   },
-  "model": { "provider": "vercel-ai-gateway", "name": "openai/gpt-5-mini", "api_key": "example-provider-key" },
+  "model": {
+    "provider": "vercel-ai-gateway",
+    "name": "openai/gpt-5-mini",
+    "api_key": "example-provider-key"
+  },
   "system": "Be useful.",
   "tools": [
     {
       "name": "read",
       "description": "Read a file from the workspace.",
-      "input_schema": { "type": "object" },
-      "requires": ["fs"],
+      "input_schema": {
+        "type": "object"
+      },
+      "needs": [
+        "fs"
+      ],
       "binding_names": [],
+      "program": {
+        "kind": "esm",
+        "identity": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
       "environment_id": "env_1"
     }
   ],
@@ -20,7 +32,6 @@
       "environment_id": "env_1",
       "configuration": {},
       "lifecycle_policy": "session",
-      "grants": { "fs": { "root": "/workspace" } },
       "bindings": {}
     }
   ]

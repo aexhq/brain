@@ -1,5 +1,5 @@
 {
-  "contract": "environment/v2",
+  "contract": "environment/v1",
   "binding": {
     "environment_id": "env_shared",
     "configuration_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -14,25 +14,29 @@
     "attachment_id": "att_example",
     "request": {
       "type": "attach",
-      "grants": {
-        "exec": { "timeout_ms_max": 120000, "output_bytes_max": 1048576 },
-        "fs": { "root": "/workspace" }
-      },
       "provisions": [
         {
           "manifest": {
             "name": "read",
             "description": "Read a file from the workspace.",
-            "input_schema": { "type": "object" },
-            "requires": ["fs"],
+            "input_schema": {
+              "type": "object"
+            },
+            "needs": [
+              "fs"
+            ],
             "binding_names": [],
-            "hosting": "provisioned",
-            "payload": { "kind": "esm", "identity": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+            "program": {
+              "kind": "esm",
+              "identity": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }
           },
           "payload_identity": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
         }
       ],
-      "bindings": { "API_BASE": "https://api.internal" }
+      "bindings": {
+        "API_BASE": "https://api.internal"
+      }
     }
   }
 }

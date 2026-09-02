@@ -11,10 +11,11 @@ use std::{
 };
 
 use brain_protocol::{
-    AgentloopIdentity, Capability, EnvironmentAttachment, EnvironmentId, EventPage, HistoryEvent,
-    Identity, JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId, Outcome,
-    RequestedToolBinding, ResolvedEnvironment, ResolvedSessionRequest, SealedSessionConfig,
-    Session, SessionId, SessionStatus, ToolBinding, ToolHosting, ToolPayload, operation_id,
+    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventPage, HistoryEvent, Identity,
+    JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId, Outcome, Program,
+    RequestedToolBinding, ResolvedEnvironment, ResolvedSessionRequest, Resources, Runtime,
+    SealedSessionConfig, Session, SessionId, SessionStatus, ToolBinding, ToolHosting, operation_id,
+    resource_name_valid,
 };
 use brain_telemetry::TelemetryPublisher;
 use rand::RngCore;
@@ -775,10 +776,10 @@ impl SessionHandle {
 /// created, so the bounds are stated once and both shapes are read through these views.
 trait EnvironmentView {
     fn environment_id(&self) -> &EnvironmentId;
-    /// What this environment provides, when that is already known. A resolved request
-    /// predates the setup/attach receipts that report it, so only a sealed attachment
-    /// answers — and only a sealed configuration is capability-checked.
-    fn provides(&self) -> Option<&[Capability]>;
+    /// What this environment declared it executes and offers, when that is already
+    /// known. A resolved request predates the setup/attach receipts that report it, so
+    /// only a sealed attachment answers — and only a sealed configuration is bind-checked.
+    fn declaration(&self) -> Option<(&[Runtime], &Resources)>;
 }
 
 impl EnvironmentView for ResolvedEnvironment {
@@ -786,7 +787,7 @@ impl EnvironmentView for ResolvedEnvironment {
         &self.environment_id
     }
 
-    fn provides(&self) -> Option<&[Capability]> {
+    fn declaration(&self) -> Option<(&[Runtime], &Resources)> {
         None
     }
 }
@@ -796,18 +797,18 @@ impl EnvironmentView for EnvironmentAttachment {
         &self.binding.environment_id
     }
 
-    fn provides(&self) -> Option<&[Capability]> {
-        Some(&self.provides)
+    fn declaration(&self) -> Option<(&[Runtime], &Resources)> {
+        Some((&self.runtimes, &self.resources))
     }
 }
 
 trait ToolBindingView {
     fn name(&self) -> &str;
     fn environment_id(&self) -> Option<&EnvironmentId>;
-    fn requires(&self) -> &[Capability];
+    fn needs(&self) -> &[String];
     fn binding_names(&self) -> &[String];
     fn hosting(&self) -> ToolHosting;
-    fn payload(&self) -> Option<&ToolPayload>;
+    fn program(&self) -> Option<&Program>;
 }
 
 impl ToolBindingView for RequestedToolBinding {
@@ -819,8 +820,8 @@ impl ToolBindingView for RequestedToolBinding {
         self.environment_id.as_ref()
     }
 
-    fn requires(&self) -> &[Capability] {
-        &self.requires
+    fn needs(&self) -> &[String] {
+        &self.needs
     }
 
     fn binding_names(&self) -> &[String] {
@@ -831,8 +832,8 @@ impl ToolBindingView for RequestedToolBinding {
         self.hosting
     }
 
-    fn payload(&self) -> Option<&ToolPayload> {
-        self.payload.as_ref()
+    fn program(&self) -> Option<&Program> {
+        self.program.as_ref()
     }
 }
 
@@ -847,8 +848,8 @@ impl ToolBindingView for ToolBinding {
             .map(|binding| &binding.environment_id)
     }
 
-    fn requires(&self) -> &[Capability] {
-        &self.requires
+    fn needs(&self) -> &[String] {
+        &self.needs
     }
 
     fn binding_names(&self) -> &[String] {
@@ -859,8 +860,8 @@ impl ToolBindingView for ToolBinding {
         self.hosting
     }
 
-    fn payload(&self) -> Option<&ToolPayload> {
-        self.payload.as_ref()
+    fn program(&self) -> Option<&Program> {
+        self.program.as_ref()
     }
 }
 
@@ -977,13 +978,29 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
             "Environment or Tool binding has an invalid identity".into(),
         ));
     }
-    // A client-hosted tool's code stays in the author's process; a payload beside
+    // Resource names are the bind check's vocabulary: an invalid or repeated one is
+    // rejected before it can silently match nothing.
+    for binding in request.tool_bindings() {
+        let needs = binding.needs();
+        if needs.iter().any(|name| !resource_name_valid(name))
+            || needs
+                .iter()
+                .enumerate()
+                .any(|(index, name)| needs[..index].contains(name))
+        {
+            return Err(KernelError::InvalidState(format!(
+                "Tool `{}` names an invalid or repeated resource",
+                binding.name()
+            )));
+        }
+    }
+    // A client-hosted tool's code stays in the author's process; a program beside
     // it would be an artifact nothing is allowed to run.
     if request.tool_bindings().iter().any(|binding| {
-        matches!(binding.hosting(), ToolHosting::Client) && binding.payload().is_some()
+        matches!(binding.hosting(), ToolHosting::Client) && binding.program().is_some()
     }) {
         return Err(KernelError::InvalidState(
-            "a client Tool binding cannot carry a payload".into(),
+            "a client Tool binding cannot carry a program".into(),
         ));
     }
     // A client-hosted tool is served off the event feed by an application process: no
@@ -996,9 +1013,9 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
                 "a client-hosted Tool binding cannot name an Environment".into(),
             ));
         }
-        if client && !binding.requires().is_empty() {
+        if client && !binding.needs().is_empty() {
             return Err(KernelError::InvalidState(
-                "a client-hosted Tool binding cannot require Environment capabilities".into(),
+                "a client-hosted Tool binding cannot need Environment resources".into(),
             ));
         }
         if !client && binding.environment_id().is_none() {
@@ -1047,28 +1064,41 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
             "every Tool binding must name a bound Environment".into(),
         ));
     }
-    // The bind-time capability check: what a tool requires must be provided by the
-    // environment it is bound to, so a mismatch is a create-time rejection naming all
-    // three parties instead of a runtime mystery. A tool with empty `requires` binds
-    // anywhere. Provides is known only once the environment has attached, so only the
-    // sealed shape is checked — every admitted session passes through it.
+    // The bind check: the environment a tool is bound to must launch the tool's
+    // program kind and declare every resource the tool needs, so a mismatch is a
+    // create-time rejection naming all three parties instead of a runtime mystery. A
+    // tool with no program and no needs binds anywhere. The declaration is known only
+    // once the environment has attached, so only the sealed shape is checked — every
+    // admitted session passes through it.
     for binding in request.tool_bindings() {
         let Some(environment_id) = binding.environment_id() else {
             continue;
         };
-        let provides = request
+        let declaration = request
             .environments()
             .iter()
             .find(|environment| environment.environment_id() == environment_id)
-            .and_then(EnvironmentView::provides);
-        let Some(provides) = provides else { continue };
-        if let Some(missing) = binding
-            .requires()
-            .iter()
-            .find(|capability| !provides.contains(capability))
+            .and_then(EnvironmentView::declaration);
+        let Some((runtimes, resources)) = declaration else {
+            continue;
+        };
+        if let Some(runtime) = binding
+            .program()
+            .map(Program::runtime)
+            .filter(|runtime| !runtimes.contains(runtime))
         {
             return Err(KernelError::InvalidState(format!(
-                "Tool `{}` requires capability `{missing}` that Environment `{environment_id}` does not provide",
+                "Tool `{}` needs runtime `{runtime}` that Environment `{environment_id}` does not provide",
+                binding.name(),
+            )));
+        }
+        if let Some(missing) = binding
+            .needs()
+            .iter()
+            .find(|name| !resources.contains_key(name.as_str()))
+        {
+            return Err(KernelError::InvalidState(format!(
+                "Tool `{}` needs resource `{missing}` that Environment `{environment_id}` does not provide",
                 binding.name(),
             )));
         }
@@ -1148,16 +1178,15 @@ mod tests {
                 environment_id: EnvironmentId::new("workspace"),
                 configuration: serde_json::json!({}),
                 lifecycle_policy: LifecyclePolicy::Shared,
-                grants: Default::default(),
                 binding_identities: Default::default(),
             }],
             tool_bindings: vec![RequestedToolBinding {
                 name: "search".into(),
                 environment_id: Some(EnvironmentId::new("workspace")),
-                requires: Vec::new(),
+                needs: Vec::new(),
                 binding_names: Vec::new(),
                 hosting: ToolHosting::Provisioned,
-                payload: None,
+                program: None,
             }],
         }
     }
@@ -1178,16 +1207,22 @@ mod tests {
             environments: vec![EnvironmentAttachment {
                 binding: environment_binding(),
                 attachment_id: AttachmentId::new("attachment"),
-                provides: vec![Capability::Exec, Capability::Fs],
+                runtimes: vec![Runtime::Esm],
+                resources: [
+                    ("process".to_string(), serde_json::json!({})),
+                    ("fs".to_string(), serde_json::json!({"root": "/workspace"})),
+                ]
+                .into_iter()
+                .collect(),
             }],
             tool_bindings: vec![ToolBinding {
                 name: "search".into(),
                 environment: Some(environment_binding()),
                 attachment_id: Some(AttachmentId::new("attachment")),
-                requires: vec![Capability::Exec],
+                needs: vec!["process".into()],
                 binding_names: Vec::new(),
                 hosting: ToolHosting::Provisioned,
-                payload: None,
+                program: None,
             }],
         }
     }
@@ -1332,17 +1367,16 @@ mod tests {
                 "invalid identity",
             ),
             (
-                "a client Tool carrying a payload",
+                "a client Tool carrying a program",
                 |request| {
                     request.tool_bindings[0].hosting = ToolHosting::Client;
                     request.tool_bindings[0].environment_id = None;
-                    request.tool_bindings[0].requires = Vec::new();
-                    request.tool_bindings[0].payload = Some(ToolPayload {
-                        kind: brain_protocol::PayloadKind::Esm,
+                    request.tool_bindings[0].needs = Vec::new();
+                    request.tool_bindings[0].program = Some(Program::Esm {
                         identity: Identity::of(&"payload").unwrap(),
                     });
                 },
-                "cannot carry a payload",
+                "cannot carry a program",
             ),
             (
                 "two Tool definitions sharing one name",
@@ -1440,9 +1474,24 @@ mod tests {
                 "invalid identity",
             ),
             (
-                "a Tool requiring a capability its Environment does not provide",
-                |sealed| sealed.tool_bindings[0].requires = vec![Capability::Page],
+                "a Tool needing a resource its Environment does not declare",
+                |sealed| sealed.tool_bindings[0].needs = vec!["dom".into()],
                 "does not provide",
+            ),
+            (
+                "a Tool whose program kind its Environment cannot launch",
+                |sealed| {
+                    sealed.tool_bindings[0].program = Some(Program::Shell {
+                        identity: Identity::of(&"script").unwrap(),
+                        script: "$command".into(),
+                    })
+                },
+                "does not provide",
+            ),
+            (
+                "a Tool naming a resource that is not a resource name",
+                |sealed| sealed.tool_bindings[0].needs = vec!["../fs".into()],
+                "invalid or repeated resource",
             ),
             (
                 "a Tool definition with no binding",

@@ -1,12 +1,14 @@
 {
-  "contract": "environment/v2",
+  "contract": "environment/v1",
   "operation_id": "op_example",
   "request_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "receipt": {
     "type": "outcome",
     "outcome": {
       "status": "ok",
-      "value": { "content": "README" }
+      "value": {
+        "content": "README"
+      }
     }
   }
 }

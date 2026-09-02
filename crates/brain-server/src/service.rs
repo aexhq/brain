@@ -724,10 +724,10 @@ fn split_tools(request: &CreateSessionRequest) -> (ModelPresentation, Vec<Reques
         bindings.push(RequestedToolBinding {
             name: tool.name.clone(),
             environment_id: tool.environment_id.clone(),
-            requires: tool.requires.clone(),
+            needs: tool.needs.clone(),
             binding_names: tool.binding_names.clone(),
             hosting: tool.hosting,
-            payload: tool.payload.clone(),
+            program: tool.program.clone(),
         });
     }
     (
@@ -758,7 +758,6 @@ fn seal_environments(
             environment_id: requirement.environment_id.clone(),
             configuration: requirement.configuration.clone(),
             lifecycle_policy: requirement.lifecycle_policy.clone(),
-            grants: requirement.grants.clone(),
             binding_identities: identities,
         });
         if !requirement.bindings.is_empty() {

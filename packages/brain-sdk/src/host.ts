@@ -1,11 +1,11 @@
-import { CapabilityError, type CapabilityHandles, type GrantSet } from "./capabilities.js";
-import type { CapabilityName, Outcome } from "./types.js";
+import type { Outcome, Program } from "./types.js";
 
 /**
- * The SDK-owned host runtime for provisioned ESM tools. An environment opts in
- * with one line (`host.esm()`); this module owns the dirty work — the payload
- * cache, provision-time validation, handle wiring, and mapping every result to
- * the one Outcome envelope — so environment authors never write it.
+ * The SDK-owned host runtime for provisioned programs. An environment opts in per
+ * program kind (`execute.esm()`, `execute.shell(...)`, `execute.http(...)`); this
+ * module owns the dirty work — the ESM payload cache, provision-time validation,
+ * script substitution, and mapping every result to the one Outcome envelope — so
+ * environment authors never write it.
  */
 
 /** A `tool/v1` manifest as `brain build` emits it — the only thing the host
@@ -15,14 +15,15 @@ export interface ProvisionedToolManifest {
   readonly description: string;
   readonly input_schema: Readonly<Record<string, unknown>>;
   readonly output_schema?: Readonly<Record<string, unknown>>;
-  readonly requires: readonly CapabilityName[];
+  readonly needs: readonly string[];
   readonly binding_names: readonly string[];
-  readonly hosting?: "provisioned";
-  readonly payload?: { readonly kind: "esm" | "component"; readonly identity: string };
+  readonly program: Program;
 }
 
-/** The build artifact: manifest plus the self-contained single-file ESM bundle
- * whose sha-256 is the manifest's payload identity. */
+/** The build artifact: manifest plus the program's payload — for `esm` the
+ * self-contained single-file bundle whose sha-256 is the program identity; for
+ * `shell` and `http` the same script or request template the manifest carries
+ * inline. */
 export interface ProvisionedToolArtifact {
   readonly manifest: ProvisionedToolManifest;
   readonly payload: string;
@@ -30,8 +31,8 @@ export interface ProvisionedToolArtifact {
 
 /** What a provisioned ESM bundle default-exports (`provisionedToolRuntime`
  * builds it). `parseInput` validates against the tool's own schema — the same
- * schema the manifest was generated from; `run` executes with the typed
- * context the host wires. */
+ * schema the manifest was generated from; `run` executes with the context the
+ * host wires. */
 export interface ProvisionedToolModule {
   readonly kind: "brain.provisioned-tool/v1";
   initialize?(context: { readonly signal: AbortSignal; readonly requestId: string }): void | Promise<void>;
@@ -44,20 +45,22 @@ export async function payloadIdentity(payload: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** Caches provisioned payloads by content identity: each payload is imported
+/** Caches provisioned ESM payloads by content identity: each payload is imported
  * and validated once per process, so a broken bundle fails the provision
  * receipt at attach, never the first model call. */
 export class EsmToolHost {
   private readonly artifacts = new Map<string, ProvisionedToolArtifact>();
   private readonly provisioned = new Map<string, Promise<ProvisionedToolModule>>();
 
+  /** Register an artifact this process can serve. Only `esm` programs carry a
+   * payload that travels out of band; artifacts of the other kinds are accepted
+   * and ignored, so a build directory can be registered whole. */
   register(artifact: ProvisionedToolArtifact): void {
-    const identity = artifact?.manifest?.payload?.identity;
-    if (typeof artifact?.payload !== "string" || typeof identity !== "string" || !/^[0-9a-f]{64}$/u.test(identity)) {
-      throw new TypeError("an ESM tool artifact needs a payload and its manifest's payload identity");
-    }
-    if (artifact.manifest.payload?.kind !== "esm") throw new TypeError("only esm payloads can be hosted by host.esm");
-    this.artifacts.set(identity, artifact);
+    const program = artifact?.manifest?.program;
+    if (program === undefined || typeof artifact?.payload !== "string") throw new TypeError("a tool artifact needs a manifest with a program and its payload");
+    if (program.kind !== "esm") return;
+    if (typeof program.identity !== "string" || !/^[0-9a-f]{64}$/u.test(program.identity)) throw new TypeError("an ESM tool artifact needs its program identity");
+    this.artifacts.set(program.identity, artifact);
   }
 
   /** Resolve one attach provision to its loaded module, importing and
@@ -77,12 +80,10 @@ export class EsmToolHost {
 
   private async load(artifact: ProvisionedToolArtifact, identity: string, context: { readonly signal: AbortSignal; readonly requestId: string }): Promise<ProvisionedToolModule> {
     if ((await payloadIdentity(artifact.payload)) !== identity) throw new Error(`payload for ${artifact.manifest.name} does not match its declared identity`);
-    // Trusted-artifact assumption, v1: the bundle is imported into the
-    // environment server's own process. Payload identity is checked above and
-    // the kernel admits artifacts, but there is no worker/vm confinement yet —
-    // handles are direct in-process closures over the environment's providers,
-    // and an RPC layer to carry them across a worker boundary is not worth its
-    // weight until an untrusted-tool story needs it.
+    // The bundle is imported into the environment's own process and reaches its
+    // resources through the platform's APIs directly. Payload identity is checked
+    // above and the kernel admits artifacts; confinement is the platform's job
+    // (the process, the VM, the browser), never a wrapper in this module.
     const loaded = (await import(`data:text/javascript;charset=utf-8,${encodeURIComponent(artifact.payload)}`)) as { readonly default?: unknown };
     const module = loaded.default as ProvisionedToolModule | undefined;
     if (module?.kind !== "brain.provisioned-tool/v1" || typeof module.parseInput !== "function" || typeof module.run !== "function") {
@@ -93,50 +94,21 @@ export class EsmToolHost {
   }
 }
 
-/** Wrap providers into the handles a tool receives: same interface, with every
- * thrown failure surfaced as a typed CapabilityError. */
-export function capabilityHandles(requires: readonly CapabilityName[], providers: Readonly<Partial<CapabilityHandles>>): Readonly<Partial<CapabilityHandles>> {
-  const handles: Record<string, unknown> = {};
-  for (const capability of requires) {
-    const provider = providers[capability] as Readonly<Record<string, unknown>> | undefined;
-    if (provider === undefined) throw new Error(`this environment does not provide the ${capability} capability`);
-    const handle: Record<string, unknown> = {};
-    for (const [name, member] of Object.entries(provider)) {
-      if (typeof member !== "function") continue;
-      handle[name] = async (...args: readonly unknown[]) => {
-        try {
-          return await (member as (...values: readonly unknown[]) => unknown).apply(provider, [...args]);
-        } catch (error) {
-          if (error instanceof CapabilityError) throw error;
-          throw new CapabilityError(capability, "capability_error", String(error instanceof Error ? error.message : error).slice(0, 4096));
-        }
-      };
-    }
-    handles[capability] = Object.freeze(handle);
-  }
-  return Object.freeze(handles) as Readonly<Partial<CapabilityHandles>>;
-}
-
 export interface HostedInvocation {
   readonly callId: string;
   readonly input: unknown;
   readonly deadlineMs: number;
   readonly signal: AbortSignal;
-  readonly handles: Readonly<Partial<CapabilityHandles>>;
   readonly bindings: Readonly<Record<string, string>>;
 }
 
-/** Run one hosted invocation and resolve to exactly one Outcome: input that
- * fails the tool's schema is an `invalid_input` error, a thrown error keeps an
- * identifier-shaped `code` (CapabilityErrors included), the caller-owned
+/** Run `work` under the caller-owned deadline and cancellation and resolve to
+ * exactly one Outcome: a thrown error keeps an identifier-shaped `code`, the
  * deadline maps to `timeout`, and a cancelled operation maps to `cancelled`. */
-export async function invokeProvisioned(module: ProvisionedToolModule, invocation: HostedInvocation): Promise<Outcome> {
-  let input: unknown;
-  try {
-    input = module.parseInput(invocation.input);
-  } catch (error) {
-    return { status: "error", error: { code: "invalid_input", message: messageOf(error) } };
-  }
+export async function invokeWithEnvelope(
+  invocation: Pick<HostedInvocation, "deadlineMs" | "signal">,
+  work: (call: { readonly signal: AbortSignal; readonly deadline: Date }) => unknown | Promise<unknown>,
+): Promise<Outcome> {
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -146,17 +118,9 @@ export async function invokeProvisioned(module: ProvisionedToolModule, invocatio
   const onCancel = () => controller.abort(invocation.signal.reason);
   invocation.signal.addEventListener("abort", onCancel, { once: true });
   if (invocation.signal.aborted) onCancel();
-  const context = Object.freeze({
-    ...invocation.handles,
-    bindings: Object.freeze({ ...invocation.bindings }),
-    signal: controller.signal,
-    deadline: new Date(Date.now() + invocation.deadlineMs),
-    callId: invocation.callId,
-    requestId: invocation.callId,
-    progress: () => {},
-  });
+  const deadline = new Date(Date.now() + invocation.deadlineMs);
   try {
-    const value = await Promise.race([Promise.resolve(module.run(input, context)), rejectOnAbort(controller.signal)]);
+    const value = await Promise.race([Promise.resolve().then(() => work({ signal: controller.signal, deadline })), rejectOnAbort(controller.signal)]);
     return { status: "ok", value: value ?? null };
   } catch (error) {
     if (timedOut) return { status: "timeout" };
@@ -168,9 +132,46 @@ export async function invokeProvisioned(module: ProvisionedToolModule, invocatio
   }
 }
 
-/** Resolves never, rejects on abort — so a tool that ignores its signal still
- * yields the invoke slot at the deadline (it keeps running in the background;
- * see the trusted-artifact note above). */
+/** Run one hosted ESM invocation: input that fails the tool's schema is an
+ * `invalid_input` error; everything else follows `invokeWithEnvelope`. */
+export function invokeProvisioned(module: ProvisionedToolModule, invocation: HostedInvocation): Promise<Outcome> {
+  let input: unknown;
+  try {
+    input = module.parseInput(invocation.input);
+  } catch (error) {
+    return Promise.resolve({ status: "error", error: { code: "invalid_input", message: messageOf(error) } });
+  }
+  return invokeWithEnvelope(invocation, ({ signal, deadline }) => module.run(input, Object.freeze({
+    bindings: Object.freeze({ ...invocation.bindings }),
+    signal,
+    deadline,
+    callId: invocation.callId,
+    requestId: invocation.callId,
+    progress: () => {},
+  })));
+}
+
+/** Substitute a shell program's input references. `$name` and `${name}` are
+ * replaced with the input property of that name, as text (strings verbatim,
+ * anything else as JSON, null and undefined as nothing). A reference to a name
+ * the input does not carry is left for the shell, so `$HOME` still means what
+ * it always did. */
+export function substituteScript(script: string, input: unknown): string {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw Object.assign(new TypeError("shell tool input must be an object"), { code: "invalid_input" });
+  }
+  const values = input as Readonly<Record<string, unknown>>;
+  return script.replace(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/gu, (reference: string, braced: string | undefined, bare: string | undefined) => {
+    const name = braced ?? bare ?? "";
+    if (!Object.hasOwn(values, name)) return reference;
+    const value = values[name];
+    if (value === undefined || value === null) return "";
+    return typeof value === "string" ? value : JSON.stringify(value);
+  });
+}
+
+/** Resolves never, rejects on abort — so a program that ignores its signal still
+ * yields the invoke slot at the deadline (it keeps running in the background). */
 function rejectOnAbort(signal: AbortSignal): Promise<never> {
   return new Promise((_, reject) => {
     if (signal.aborted) reject(reasonOf(signal));
@@ -184,6 +185,6 @@ function codeOf(error: unknown): string {
   const code = (error as { readonly code?: unknown } | null)?.code;
   return typeof code === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(code) ? code : "tool_error";
 }
-function messageOf(error: unknown): string {
+export function messageOf(error: unknown): string {
   return String(error instanceof Error ? error.message : error).slice(0, 4096);
 }
