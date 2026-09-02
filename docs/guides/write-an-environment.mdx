@@ -59,6 +59,30 @@ Every program starts with the `fs` root as its working directory. That conventio
 environment's to keep: an in-process `esm` executor runs where the host process runs, so an
 environment whose workspace is elsewhere changes directory in `open`.
 
+## The smallest environment
+
+An environment needs an `open`, a `close`, one executor, and its resource declaration.
+This one runs shell tools in a directory on the machine that hosts it, and returns no
+methods of its own.
+
+```ts
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { environment } from "@aexhq/brain";
+
+export const workspace = environment(
+  { resources: { fs: { root: "/workspace" }, process: {} } },
+  (author) => {
+    const local = author.open(() => ({ cwd: "/workspace" }));
+    local.execute.shell(({ instance, signal }, script) =>
+      promisify(execFile)("sh", ["-c", script], { cwd: instance.cwd, signal }),
+    );
+    local.close(() => {});
+    return {};
+  },
+);
+```
+
 ## Launching provisioned programs
 
 An attach carries each tool's manifest and the content identity of its program. For `esm`

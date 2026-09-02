@@ -1,0 +1,64 @@
+---
+title: Spawn a subagent
+description: A tool in your own process creates a child session and returns its answer.
+---
+
+A tool with an `execute` function runs in the process that created the session, so it can
+use the SDK. That is enough for a subagent today: the tool creates a child session, sends it
+the task, reads the reply from the child's event feed, and returns it as the tool's output.
+The parent's loop sees an ordinary tool result. Native parent and child links between
+sessions are on the roadmap.
+
+```ts
+import { tool } from "@aexhq/brain";
+import { z } from "zod";
+import { coder } from "./loops.js";
+import { sandbox } from "./environments.js";
+import { test } from "./tools.js";
+
+const delegate = tool({
+  name: "delegate",
+  description: "Hand a subtask to a fresh agent and return its answer.",
+  input: z.object({ task: z.string() }),
+  execute: async ({ task }) => {
+    const child = await brain.sessions.create({
+      model,
+      agentloop: coder(),
+      tools: [test({ env: sandbox({ image: "node:22" }) })],
+    });
+    await child.send(task);
+    let answer;
+    for await (const event of child.events()) {
+      if (event.type === "output_emitted" && event.data.type === "assistant_message") {
+        answer = event.data.message;
+        break;
+      }
+    }
+    await child.end();
+    return { answer };
+  },
+});
+```
+
+The child gets its own agent loop, model, and tools, and its own environment. An Environment
+object attaches to exactly one session, so the child calls the environment factory again
+instead of reusing the parent's instance.
+
+## Put it in a session
+
+The parent runs the same loop with the sandbox tools plus `delegate`. Brain routes the
+`delegate` call back to this process over the session's event feed, the function above
+answers it, and the child's whole run is journalled under its own session id.
+
+```ts
+const box = sandbox({ image: "node:22" });
+const session = await brain.sessions.create({
+  model,
+  agentloop: coder(),
+  tools: [test({ env: box }), bash({ env: box }), delegate],
+});
+```
+
+Every event the child produces is readable on its own session, so a trace of the parent and
+a trace of the child are the same kind of record. See [Serve a tool from another
+process](/brain/docs/guides/app-tools) for the wire shape of an `execute` tool.
