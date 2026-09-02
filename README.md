@@ -210,7 +210,7 @@ const delegate = tool({
     const child = await brain.sessions.create({ model, agentloop: coder(), tools: [test({ env: box })] });
     await child.send(task);
     let answer;
-    for await (const e of child.events()) if (e.type === "assistant_message") { answer = e.data.message; break; }
+    for await (const e of child.events()) if (e.type === "output_emitted" && e.data.type === "assistant_message") { answer = e.data.message; break; }
     await child.end();
     return { answer };
   },
