@@ -369,6 +369,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
     agentloop: { identity: agentloopIdentity, configuration: structuredClone(agentloop.configuration) },
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
     system: options.system ?? "",
+    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }),
     tools,
     environments: requirements,
     // The event id is left behind deliberately: it names an event in the session it came

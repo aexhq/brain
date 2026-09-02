@@ -154,6 +154,9 @@ export interface CreateSessionOptions {
   /** The system prompt the agent loop starts from. The loop sees it as `author.system`
    * and may send a different one on any model call. */
   readonly system?: string;
+  /** The provider's structured-output request, applied to every model call unless the
+   * loop sends its own. Rejected at create for a provider that cannot carry it. */
+  readonly responseFormat?: unknown;
   /**
    * Events from an earlier session, to carry a conversation forward.
    *

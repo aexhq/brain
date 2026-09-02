@@ -47,6 +47,11 @@ pub struct CreateSessionRequest {
     /// on any model call.
     #[serde(default)]
     pub system: String,
+    /// The provider's structured-output request, applied to every model call unless the
+    /// loop sends its own. Optional, and rejected at create for a provider that cannot
+    /// carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<serde_json::Value>,
     pub tools: Vec<BoundTool>,
     pub environments: Vec<EnvironmentRequirement>,
     /// Prior events for this conversation, if the caller kept them.
@@ -85,6 +90,8 @@ pub struct ResolvedSessionRequest {
     pub model: ModelBinding,
     #[serde(default)]
     pub system: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<serde_json::Value>,
     /// What the model may be told about each tool. Offered whole unless the agentloop
     /// names a subset on a model call; the bindings say where a call goes.
     pub tools: Vec<ToolDefinition>,
@@ -127,6 +134,8 @@ pub struct SealedSessionConfig {
     pub model: ModelBinding,
     #[serde(default)]
     pub system: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<serde_json::Value>,
     pub tools: Vec<ToolDefinition>,
     pub environments: Vec<EnvironmentAttachment>,
     pub tool_bindings: Vec<ToolBinding>,

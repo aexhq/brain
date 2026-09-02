@@ -306,6 +306,7 @@ export type components = {
             agentloop: components["schemas"]["AgentloopRef"];
             model: components["schemas"]["ModelSelection"];
             system?: string;
+            response_format?: unknown;
             tools: components["schemas"]["BoundTool"][];
             environments: components["schemas"]["EnvironmentRequirement"][];
             history?: components["schemas"]["HistoryEvent"][];

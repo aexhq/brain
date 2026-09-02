@@ -29,6 +29,7 @@ pub struct ModelRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
     pub messages: Vec<Message>,
+    /// Absent means the one the session was created with, if any. Filled in like `system`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

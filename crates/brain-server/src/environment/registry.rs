@@ -151,6 +151,7 @@ impl EnvironmentRegistry {
             brain_configuration: request.brain_configuration,
             model: request.model,
             system: request.system,
+            response_format: request.response_format,
             tools: request.tools,
             environments,
             tool_bindings,

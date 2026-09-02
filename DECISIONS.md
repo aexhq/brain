@@ -6,9 +6,10 @@ Every entry below was implemented in the pull request that added this file.
 
 ## 2026-09-02: The agent loop owns what the model sees
 
-**Decided.** The creator sets the system prompt and the tool catalogue at session create. The
-agent loop sees both and may change what the model is told on any call: a different system
-prompt, or a subset of the tools. Nothing about the prompt is pinned.
+**Decided.** The creator sets the system prompt, the response format, and the tool catalogue at
+session create. The agent loop sees the prompt and the tools and may change what the model is
+told on any call: a different system prompt, a subset of the tools, a different response format.
+Nothing about the prompt is pinned.
 
 **Today.** `ModelPresentation` (system prompt, tool definitions, response format) is supplied by
 the application at create, canonicalised and hashed into a session-lifetime identity, and rendered

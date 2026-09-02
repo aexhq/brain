@@ -919,6 +919,7 @@ mod tests {
                 model: "openai/test".into(),
             },
             system: "test".into(),
+            response_format: None,
             tools: vec![tool()],
             environments: vec![ResolvedEnvironment {
                 environment_id: EnvironmentId::new("workspace"),
@@ -946,6 +947,7 @@ mod tests {
                 model: "openai/test".into(),
             },
             system: "test".into(),
+            response_format: None,
             tools: vec![tool()],
             environments: vec![EnvironmentAttachment {
                 binding: environment_binding(),

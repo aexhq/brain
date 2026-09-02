@@ -434,6 +434,7 @@ fn request() -> SealedSessionConfig {
             model: "openai/test".into(),
         },
         system: "test".into(),
+        response_format: None,
         tools: Vec::new(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
@@ -465,6 +466,7 @@ fn tool_request_with(
             model: "openai/test".into(),
         },
         system: "test".into(),
+        response_format: None,
         tools: vec![ToolDefinition {
             name: tool_name.into(),
             description: "wait".into(),
@@ -502,6 +504,7 @@ fn client_tool_request(tool_name: &str) -> SealedSessionConfig {
             model: "openai/test".into(),
         },
         system: "test".into(),
+        response_format: None,
         tools: vec![ToolDefinition {
             name: tool_name.into(),
             description: "answered by the session's creator".into(),
@@ -545,6 +548,7 @@ fn resolved_from(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
         system: sealed.system.clone(),
+        response_format: sealed.response_format.clone(),
         tools: sealed.tools.clone(),
         environments: sealed
             .environments

@@ -230,6 +230,9 @@ impl SessionActor {
                                 .collect(),
                         );
                     }
+                    if request.response_format.is_none() {
+                        request.response_format = self.sealed.response_format.clone();
+                    }
                     let tools = match self.offered_tools(&request) {
                         Ok(tools) => tools,
                         Err(message) => return self.fail_turn("invalid_model_decision", &message),

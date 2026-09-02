@@ -152,6 +152,7 @@ export interface CreateSessionRequest {
   agentloop: AgentloopRef;
   model: ModelSelection;
   system?: string;
+  response_format?: unknown;
   /**
    * @maxItems 128
    */

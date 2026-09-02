@@ -33,6 +33,7 @@ export interface ModelTurnRequest {
    * given must be one of them. */
   readonly tools?: readonly string[];
   readonly messages: readonly ModelMessage[];
+  /** Omit for the session's response format, if it was created with one. */
   readonly response_format?: unknown;
   readonly max_output_tokens?: number;
 }

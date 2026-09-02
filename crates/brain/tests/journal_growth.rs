@@ -331,6 +331,7 @@ fn request() -> SealedSessionConfig {
             model: "openai/test".into(),
         },
         system: "test".into(),
+        response_format: None,
         tools: Vec::new(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
@@ -353,6 +354,7 @@ fn start(runtime: &Runtime, sealed: SealedSessionConfig) -> Session {
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
         system: sealed.system.clone(),
+        response_format: sealed.response_format.clone(),
         tools: sealed.tools.clone(),
         environments: sealed
             .environments

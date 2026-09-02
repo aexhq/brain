@@ -11,7 +11,7 @@ pub const TOOL_SCHEMA_DIGEST: &str =
     "b9110cf730c8a12ce59de55fbfd1e4e7fb492dac7912f72054d1f2e51d6494e7";
 pub const SESSION_SCHEMA: &str = include_str!("../../../contracts/session/v1/schemas.json");
 pub const SESSION_SCHEMA_DIGEST: &str =
-    "ac7f3dd5ae28350748f94700310569f46f9e9dc4aa8809716003fcc1689130f7";
+    "65edd150c6316234d9077487c937907e7253f22f9074b50beda8c46f70578130";
 pub const AGENTLOOP_WIT: &str = include_str!("../../../contracts/agentloop/v1/agentloop.wit");
 pub const AGENTLOOP_WIT_DIGEST: &str =
     "9845ebfef8c582b11a7402a20b5b69b8a3b9474174f0da020efbb5120b710072";

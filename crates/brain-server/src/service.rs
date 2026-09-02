@@ -306,6 +306,7 @@ impl BrainApi for ServerApi {
                 model: request.model.name.clone(),
             },
             system: request.system.clone(),
+            response_format: request.response_format.clone(),
             tools,
             environments,
             tool_bindings,
@@ -812,6 +813,14 @@ fn validate_model(
     if !valid {
         return Err(ApiError::invalid_request("model selection is invalid"));
     }
+    // Rejected here, at create, instead of failing the first turn.
+    if request.response_format.is_some()
+        && !providers.supports_response_format(&request.model.provider, &request.model.name)
+    {
+        return Err(ApiError::invalid_request(
+            "the selected model provider does not support response_format",
+        ));
+    }
     Ok(())
 }
 
@@ -895,7 +904,7 @@ mod tests {
     #[test]
     fn model_selection_is_admitted_against_the_composed_registry() {
         let registry = brain::model::ProviderRegistry::default_set();
-        let request = |provider: &str, name: &str| {
+        let request = |provider: &str, name: &str, response_format: bool| {
             serde_json::from_value::<brain_protocol::CreateSessionRequest>(serde_json::json!({
                 "agentloop": {
                     "identity": "a".repeat(64),
@@ -903,22 +912,29 @@ mod tests {
                 },
                 "model": { "provider": provider, "name": name, "api_key": "k" },
                 "tools": [],
+                "response_format": if response_format { Some(serde_json::json!({"type": "json_object"})) } else { None },
                 "environments": [],
             }))
             .unwrap()
         };
-        let validate =
-            |provider: &str, name: &str| super::validate_model(&request(provider, name), &registry);
-        assert!(validate("vercel-ai-gateway", "openai/gpt-5-mini").is_ok());
+        let validate = |provider: &str, name: &str, rf: bool| {
+            super::validate_model(&request(provider, name, rf), &registry)
+        };
+        assert!(validate("vercel-ai-gateway", "openai/gpt-5-mini", false).is_ok());
         assert!(
-            validate("vercel-ai-gateway", "gpt-5-mini").is_err(),
+            validate("vercel-ai-gateway", "gpt-5-mini", false).is_err(),
             "the gateway requires a provider namespace in the model name"
         );
         assert!(
-            validate("deepseek", "brand-new-model").is_ok(),
+            validate("deepseek", "brand-new-model", false).is_ok(),
             "open admission: an unknown model on a catalog provider passes"
         );
-        assert!(validate("bedrock", "some-model").is_err());
+        assert!(validate("bedrock", "some-model", false).is_err());
+        assert!(validate("openai", "gpt-5-mini", true).is_ok());
+        assert!(
+            validate("anthropic", "claude-sonnet-4-5", true).is_err(),
+            "response_format on a provider that cannot carry it is rejected at create"
+        );
     }
 
     #[test]
