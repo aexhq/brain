@@ -2,12 +2,11 @@
 //! transport half lives in `model::http`, shared by every dialect.
 
 use brain_protocol::{
-    ContentBlock, Message, ModelPresentation, ModelRequest, ModelStreamEvent, Role, StopReason,
-    Usage,
+    ContentBlock, Message, ModelRequest, ModelStreamEvent, Role, StopReason, ToolDefinition, Usage,
 };
 use serde_json::{Map, Value, json};
 
-use crate::KernelError;
+use crate::Error;
 use crate::model::MaxTokensField;
 
 pub fn path() -> &'static str {
@@ -23,7 +22,7 @@ pub fn headers(api_key: &str) -> Vec<(String, String)> {
 /// One neutral message is **not** always one element: a user message carrying
 /// N `tool_result` blocks becomes N `tool` messages, plus a separate `user`
 /// message if it also carried text.
-fn render_one(message: &Message) -> Result<Vec<Value>, KernelError> {
+fn render_one(message: &Message) -> Result<Vec<Value>, Error> {
     let mut rendered: Vec<Value> = Vec::new();
     match message.role {
         Role::Assistant => {
@@ -41,7 +40,7 @@ fn render_one(message: &Message) -> Result<Vec<Value>, KernelError> {
                         }
                     })),
                     ContentBlock::ToolResult { .. } => {
-                        return Err(KernelError::InvalidState(
+                        return Err(Error::InvalidState(
                             "a tool_result block cannot appear in an assistant message".into(),
                         ));
                     }
@@ -88,7 +87,7 @@ fn render_one(message: &Message) -> Result<Vec<Value>, KernelError> {
                     }
                     ContentBlock::Text { text: t } => text.push_str(t),
                     ContentBlock::ToolUse { .. } => {
-                        return Err(KernelError::InvalidState(
+                        return Err(Error::InvalidState(
                             "a tool_use block cannot appear in a user message".into(),
                         ));
                     }
@@ -111,19 +110,22 @@ fn stringify(content: &Value) -> String {
 
 pub fn body(
     model: &str,
-    presentation: &ModelPresentation,
+    tools: &[ToolDefinition],
     request: &ModelRequest,
     max_tokens_field: MaxTokensField,
-) -> Result<Value, KernelError> {
+) -> Result<Value, Error> {
     let mut messages: Vec<Value> = Vec::with_capacity(request.messages.len() + 1);
-    if !presentation.system.is_empty() {
-        messages.push(json!({"role": "system", "content": presentation.system}));
+    if let Some(system) = request
+        .system
+        .as_deref()
+        .filter(|system| !system.is_empty())
+    {
+        messages.push(json!({"role": "system", "content": system}));
     }
     for message in &request.messages {
         messages.extend(render_one(message)?);
     }
-    let tools: Vec<Value> = presentation
-        .tools
+    let tools: Vec<Value> = tools
         .iter()
         .map(|tool| {
             json!({
@@ -148,11 +150,7 @@ pub fn body(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
-    if let Some(format) = request
-        .response_format
-        .as_ref()
-        .or(presentation.response_format.as_ref())
-    {
+    if let Some(format) = &request.response_format {
         body["response_format"] = format.clone();
     }
     if let Some(tokens) = request.max_output_tokens {
@@ -168,17 +166,15 @@ pub fn body(
 }
 
 /// Turn one SSE frame into zero or more dialect-neutral events.
-pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, KernelError> {
+pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
     if data.trim() == "[DONE]" {
         return Ok(vec![]);
     }
     let value: Value = serde_json::from_str(data).map_err(|error| {
-        KernelError::Ambiguous(format!("model stream returned invalid JSON: {error}"))
+        Error::Ambiguous(format!("model stream returned invalid JSON: {error}"))
     })?;
     if let Some(error) = value.get("error") {
-        return Err(KernelError::Ambiguous(format!(
-            "provider error frame: {error}"
-        )));
+        return Err(Error::Ambiguous(format!("provider error frame: {error}")));
     }
     let mut out = Vec::new();
 
@@ -287,25 +283,19 @@ mod tests {
     use super::*;
     use crate::model::Accumulator;
     use crate::model::sse::SseDecoder;
-    use brain_protocol::ToolDefinition;
-
     #[test]
     fn the_output_token_cap_lands_in_the_field_the_provider_speaks() {
         let request = ModelRequest {
+            system: Some("sys".into()),
+            tools: Some(vec!["read".into()]),
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: Some(64),
         };
-        let modern = body(
-            "m",
-            &presentation(),
-            &request,
-            MaxTokensField::MaxCompletionTokens,
-        )
-        .unwrap();
+        let modern = body("m", &tools(), &request, MaxTokensField::MaxCompletionTokens).unwrap();
         assert_eq!(modern["max_completion_tokens"], 64);
         assert!(modern.get("max_tokens").is_none());
-        let compatible = body("m", &presentation(), &request, MaxTokensField::MaxTokens).unwrap();
+        let compatible = body("m", &tools(), &request, MaxTokensField::MaxTokens).unwrap();
         assert_eq!(compatible["max_tokens"], 64);
         assert!(
             compatible.get("max_completion_tokens").is_none(),
@@ -313,7 +303,7 @@ mod tests {
         );
     }
 
-    fn decode_stream(bytes: &[u8]) -> Result<Vec<ModelStreamEvent>, KernelError> {
+    fn decode_stream(bytes: &[u8]) -> Result<Vec<ModelStreamEvent>, Error> {
         let mut decoder = SseDecoder::new(256 * 1024);
         let mut out = Vec::new();
         for data in decoder.feed(bytes)? {
@@ -322,22 +312,20 @@ mod tests {
         Ok(out)
     }
 
-    fn presentation() -> ModelPresentation {
-        ModelPresentation {
-            system: "sys".into(),
-            tools: vec![ToolDefinition {
-                name: "read".into(),
-                description: "read".into(),
-                input_schema: serde_json::json!({"type": "object"}),
-                output_schema: None,
-            }],
-            response_format: None,
-        }
+    fn tools() -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            name: "read".into(),
+            description: "read".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: None,
+        }]
     }
 
     #[test]
     fn tool_results_become_tool_role_messages_and_keep_the_error_signal() {
         let request = ModelRequest {
+            system: Some("sys".into()),
+            tools: Some(vec!["read".into()]),
             messages: vec![
                 Message::user_text("go"),
                 Message::assistant(vec![ContentBlock::ToolUse {
@@ -354,13 +342,7 @@ mod tests {
             response_format: None,
             max_output_tokens: None,
         };
-        let body = body(
-            "test/model",
-            &presentation(),
-            &request,
-            MaxTokensField::default(),
-        )
-        .unwrap();
+        let body = body("test/model", &tools(), &request, MaxTokensField::default()).unwrap();
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[1]["role"], "user");
@@ -381,6 +363,8 @@ mod tests {
     #[test]
     fn structured_tool_result_content_is_stringified() {
         let request = ModelRequest {
+            system: Some("sys".into()),
+            tools: Some(vec!["read".into()]),
             messages: vec![Message::tool_results(vec![ContentBlock::ToolResult {
                 tool_use_id: "c1".into(),
                 content: serde_json::json!({"stdout": ""}),
@@ -389,13 +373,7 @@ mod tests {
             response_format: None,
             max_output_tokens: None,
         };
-        let body = body(
-            "test/model",
-            &presentation(),
-            &request,
-            MaxTokensField::default(),
-        )
-        .unwrap();
+        let body = body("test/model", &tools(), &request, MaxTokensField::default()).unwrap();
         assert_eq!(body["messages"][1]["content"], r#"{"stdout":""}"#);
     }
 

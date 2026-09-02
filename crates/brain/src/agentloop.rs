@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use brain_protocol::{ActivationInput, ActivationOutput, AgentloopIdentity, SessionId};
 
-use crate::KernelError;
+use crate::Error;
 
 #[async_trait]
 pub trait LoopExecutor: Send + Sync + 'static {
@@ -12,5 +12,5 @@ pub trait LoopExecutor: Send + Sync + 'static {
         session: &SessionId,
         agentloop: &AgentloopIdentity,
         input: ActivationInput,
-    ) -> Result<ActivationOutput, KernelError>;
+    ) -> Result<ActivationOutput, Error>;
 }

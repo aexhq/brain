@@ -1,5 +1,6 @@
+/// What a session, its journal, or one of its executors can fail with.
 #[derive(Debug, thiserror::Error)]
-pub enum KernelError {
+pub enum Error {
     #[error("invalid session state: {0}")]
     InvalidState(String),
     #[error("executor failed: {0}")]

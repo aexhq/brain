@@ -7,7 +7,7 @@
 
 use brain_protocol::{ContentBlock, Message, ModelStreamEvent, StopReason, Usage};
 
-use crate::KernelError;
+use crate::Error;
 
 pub const MAX_PROVIDER_ASSISTANT_BYTES: usize = 192 * 1024;
 pub const MAX_PROVIDER_DELTA_BYTES: usize = 64 * 1024;
@@ -49,7 +49,7 @@ impl Accumulator {
         self.saw_terminal
     }
 
-    pub fn push(&mut self, ev: ModelStreamEvent) -> Result<(), KernelError> {
+    pub fn push(&mut self, ev: ModelStreamEvent) -> Result<(), Error> {
         if self.saw_terminal && !matches!(ev, ModelStreamEvent::Usage { .. }) {
             return Err(protocol(
                 "provider emitted content or a second terminal event after message completion"
@@ -170,7 +170,7 @@ impl Accumulator {
         Ok(())
     }
 
-    fn push_text(&mut self, index: usize, text: String) -> Result<(), KernelError> {
+    fn push_text(&mut self, index: usize, text: String) -> Result<(), Error> {
         self.ensure(index);
         match &mut self.blocks[index] {
             PartialBlock::Empty => {
@@ -190,7 +190,7 @@ impl Accumulator {
         Ok(())
     }
 
-    fn merge_usage(&mut self, usage: &Usage) -> Result<(), KernelError> {
+    fn merge_usage(&mut self, usage: &Usage) -> Result<(), Error> {
         self.usage
             .merge(usage)
             .map_err(|message| protocol(message.into()))
@@ -206,7 +206,7 @@ impl Accumulator {
     /// accumulated JSON does not parse is surfaced as a typed error rather than
     /// being coerced to `{}` -- coercing would let the model's call silently
     /// become a different call.
-    pub fn finish(self) -> Result<(Message, StopReason, Usage), KernelError> {
+    pub fn finish(self) -> Result<(Message, StopReason, Usage), Error> {
         let mut content = Vec::with_capacity(self.blocks.len());
         for (index, block) in self.blocks.into_iter().enumerate() {
             match block {
@@ -244,7 +244,7 @@ impl Accumulator {
     }
 }
 
-fn block_type_conflict(index: usize) -> KernelError {
+fn block_type_conflict(index: usize) -> Error {
     protocol(format!(
         "provider changed the type of content block {index}"
     ))
@@ -253,8 +253,8 @@ fn block_type_conflict(index: usize) -> KernelError {
 /// A provider that violates its own stream protocol mid-stream leaves the
 /// operation's billing outcome unknown, which is exactly what `Ambiguous`
 /// means to the journal.
-fn protocol(message: String) -> KernelError {
-    KernelError::Ambiguous(message)
+fn protocol(message: String) -> Error {
+    Error::Ambiguous(message)
 }
 
 #[cfg(test)]
@@ -282,7 +282,7 @@ mod tests {
         .unwrap();
         let error = a.finish().unwrap_err();
         assert!(
-            matches!(error, KernelError::Ambiguous(_)),
+            matches!(error, Error::Ambiguous(_)),
             "a truncated tool input must be a typed error, got {error:?}"
         );
     }
@@ -339,7 +339,7 @@ mod tests {
                 },
             })
             .unwrap_err();
-        assert!(matches!(error, KernelError::Ambiguous(_)));
+        assert!(matches!(error, Error::Ambiguous(_)));
         assert_eq!(a.usage.input_tokens, Some(u64::MAX));
     }
 

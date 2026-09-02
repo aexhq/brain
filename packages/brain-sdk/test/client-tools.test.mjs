@@ -12,16 +12,15 @@ installExtensionIdentity(simple, "simple", new Uint8Array([1, 2, 3]));
 const SHARE_KEY = `sk.ses_12345678901234567890.${"f".repeat(64)}`;
 
 const session = () =>
-  Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", last_sequence: 0, config_hash: "b".repeat(64), share_key: SHARE_KEY });
+  Response.json({ session_id: "ses_12345678901234567890", status: "idle", last_sequence: 0, share_key: SHARE_KEY });
 
 const sse = (frames) => `${frames.map(({ id, event, data }) => `${id === undefined ? "" : `id: ${id}\n`}event: ${event}\ndata: ${JSON.stringify(data)}`).join("\n\n")}\n\n`;
 
-const intent = (operationId, name, input, id = 3) => ({
+const started = (name, input, id = 3) => ({
   id,
-  event: "tool_intent",
+  event: "tool_call_started",
   data: {
-    operation_id: operationId,
-    request_identity: "c".repeat(64),
+    sequence: id,
     session_id: "ses_12345678901234567890",
     binding: { name, hosting: "client", needs: [], binding_names: [] },
     invocation: { call_id: "call-1", name, input },
@@ -41,11 +40,11 @@ test("a client tool compiles without an environment and answers off the stream",
       requests.push(request);
       if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
       if (request.url.includes("/events")) {
-        // The feed: the parked call's intent; the session ends once it is answered.
+        // The feed: the parked call; the session ends once it is answered.
         return new Response(new ReadableStream({
           async start(controller) {
             const encoder = new TextEncoder();
-            controller.enqueue(encoder.encode(sse([intent(`op_${"d".repeat(32)}`, "lookup_order", { id: "A-1001" })])));
+            controller.enqueue(encoder.encode(sse([started("lookup_order", { id: "A-1001" })])));
             await answered;
             controller.enqueue(encoder.encode(sse([{ id: 6, event: "session_ended", data: {} }])));
             controller.close();
@@ -84,14 +83,14 @@ test("a client tool compiles without an environment and answers off the stream",
   await answered;
   const result = requests.find((request) => request.url.includes("/tool-results/"));
   assert.ok(result, "the outcome must be POSTed back");
-  assert.equal(new URL(result.url).pathname, `/v1/sessions/ses_12345678901234567890/tool-results/op_${"d".repeat(32)}`);
-  assert.equal(result.headers.get("idempotency-key"), `tool-result-op_${"d".repeat(32)}`);
+  assert.equal(new URL(result.url).pathname, "/v1/sessions/ses_12345678901234567890/tool-results/3");
+  assert.equal(result.headers.get("idempotency-key"), "tool-result-3");
   assert.deepEqual(await result.json(), { status: "ok", value: { status: "shipped" } });
 
   await handle.delete();
 });
 
-test("an intent for a tool this process does not serve is left for whoever does", async () => {
+test("a call for a tool this process does not serve is left for whoever does", async () => {
   const requests = [];
   const client = new Brain({
     baseUrl: "https://brain.example",
@@ -104,7 +103,7 @@ test("an intent for a tool this process does not serve is left for whoever does"
           start(controller) {
             const encoder = new TextEncoder();
             controller.enqueue(encoder.encode(sse([
-              intent(`op_${"e".repeat(32)}`, "someone_elses_tool", {}),
+              started("someone_elses_tool", {}),
               { id: 6, event: "session_ended", data: {} },
             ])));
             controller.close();
@@ -149,7 +148,7 @@ test("joining with the share key serves a tool off the serve feed", async () => 
       return new Response(new ReadableStream({
         async start(controller) {
           const encoder = new TextEncoder();
-          controller.enqueue(encoder.encode(sse([intent(`op_${"d".repeat(32)}`, "highlight_row", { row: 4 })])));
+          controller.enqueue(encoder.encode(sse([started("highlight_row", { row: 4 })])));
           await answered;
           controller.enqueue(encoder.encode(sse([{ id: 6, event: "session_ended", data: {} }])));
           controller.close();

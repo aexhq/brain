@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use brain_protocol::{
     AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentId, EventPage, LiveEvent, MessageRequest, OperationId,
-    Outcome, Session, SessionId, SessionList,
+    EnvironmentCallResult, EnvironmentId, EventPage, LiveEvent, MessageRequest, Outcome, SessionId,
+    SessionList, SessionSummary,
 };
 
 #[async_trait]
@@ -20,15 +20,15 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         &self,
         idempotency_key: String,
         request: CreateSessionRequest,
-    ) -> Result<Session, ApiError>;
-    async fn get_session(&self, session_id: SessionId) -> Result<Session, ApiError>;
+    ) -> Result<SessionSummary, ApiError>;
+    async fn get_session(&self, session_id: SessionId) -> Result<SessionSummary, ApiError>;
     async fn list_sessions(&self) -> Result<SessionList, ApiError>;
     async fn send_message(
         &self,
         session_id: SessionId,
         idempotency_key: String,
         request: MessageRequest,
-    ) -> Result<Session, ApiError>;
+    ) -> Result<SessionSummary, ApiError>;
     async fn call_environment(
         &self,
         session_id: SessionId,
@@ -56,11 +56,12 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
     /// Names of the session's client-hosted tools — the vocabulary the serve feed
     /// accepts in its `tools` filter.
     async fn client_tool_names(&self, session_id: SessionId) -> Result<Vec<String>, ApiError>;
-    /// Answers a parked client-hosted tool call with its outcome.
+    /// Answers a parked client-hosted tool call with its outcome. The call is named by
+    /// the sequence of its `tool_call_started` record.
     async fn resolve_tool_call(
         &self,
         session_id: SessionId,
-        operation_id: OperationId,
+        sequence: u64,
         idempotency_key: String,
         outcome: Outcome,
     ) -> Result<(), ApiError>;
@@ -73,7 +74,7 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         &self,
         session_id: SessionId,
         idempotency_key: String,
-    ) -> Result<Session, ApiError>;
+    ) -> Result<SessionSummary, ApiError>;
     async fn delete_session(
         &self,
         session_id: SessionId,

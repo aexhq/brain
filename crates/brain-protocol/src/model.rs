@@ -20,7 +20,16 @@ pub struct ModelSelection {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRequest {
+    /// The system prompt for this call. Absent means the one the session was created
+    /// with; empty means none. The session fills it in before the call is journalled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    /// The tools to offer on this call, by name. Absent means every tool the session was
+    /// created with; each name given must be one of them. Filled in like `system`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
     pub messages: Vec<Message>,
+    /// Absent means the one the session was created with, if any. Filled in like `system`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

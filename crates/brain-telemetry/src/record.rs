@@ -1,4 +1,4 @@
-use brain_protocol::{EventId, JournalId, OperationId, SessionId};
+use brain_protocol::{EventId, SessionId};
 use serde::{Deserialize, Serialize};
 
 pub const DELIVERY_DROPPED_NAME: &str = "telemetry_delivery_dropped";
@@ -18,9 +18,7 @@ pub struct TelemetryRecord {
     pub name: String,
     pub payload: Vec<u8>,
     pub session_id: Option<SessionId>,
-    pub journal_id: Option<JournalId>,
     pub event_id: Option<EventId>,
-    pub operation_id: Option<OperationId>,
 }
 
 impl TelemetryRecord {
@@ -34,9 +32,7 @@ impl TelemetryRecord {
             name: DELIVERY_DROPPED_NAME.into(),
             payload: self.name.as_bytes().to_vec(),
             session_id: self.session_id.clone(),
-            journal_id: self.journal_id.clone(),
             event_id: self.event_id.clone(),
-            operation_id: self.operation_id.clone(),
         }
     }
 }

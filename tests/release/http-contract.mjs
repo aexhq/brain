@@ -72,7 +72,6 @@ assert.deepEqual(admission.result, admitted.result);
 const createBody = {
   agentloop: { identity: admitted.result.identity, configuration: {} },
   model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", api_key: "release-smoke-key" },
-  system: "",
   tools: [],
   environments: [],
 };
@@ -83,7 +82,7 @@ assert.equal(created.result.status, "idle");
 const replayedCreate = await call("POST", "/v1/sessions", { body: createBody, key: "http-contract-create" });
 assert.deepEqual(replayedCreate.result, created.result);
 const conflictingCreate = await call("POST", "/v1/sessions", {
-  body: { ...createBody, system: "changed" },
+  body: { ...createBody, agentloop: { ...createBody.agentloop, configuration: { changed: true } } },
   key: "http-contract-create",
 });
 assert.equal(conflictingCreate.response.status, 409);
@@ -111,7 +110,7 @@ assert.deepEqual(replayedMessage.result, message.result);
 const page = await call("GET", `/v1/sessions/${sessionId}/events?after=0`);
 assert.equal(page.response.status, 200);
 assert.equal(page.result.next_cursor, message.result.last_sequence);
-assert.equal(page.result.events.at(-1).event_type, "turn_finished");
+assert.equal(page.result.events.at(-1).event_type, "turn_ended");
 // Read until the event we came for, not to the end of the body: the stream stays open
 // carrying records as they are appended, which is what makes a first-token measurement
 // possible. Reading it to EOF would wait for a close that only a session ending brings.
@@ -120,7 +119,7 @@ const sse = await fetch(`${baseUrl}/v1/sessions/${sessionId}/events?after=0`, {
 });
 assert.equal(sse.status, 200);
 assert.ok(sse.headers.get("content-type")?.startsWith("text/event-stream"));
-assert.ok(await streamCarries(sse, /event: turn_finished/u), "the stream never carried the finished turn");
+assert.ok(await streamCarries(sse, /event: turn_ended/u), "the stream never carried the finished turn");
 
 const cancelled = await call("POST", `/v1/sessions/${sessionId}/cancel`, { key: "http-contract-cancel" });
 assert.equal(cancelled.response.status, 204);

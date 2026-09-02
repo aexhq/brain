@@ -73,9 +73,9 @@ export type BoundTool = {
 };
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "OperationId".
+ * via the `definition` "Sequence".
  */
-export type OperationId = string;
+export type Sequence = number;
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "Outcome".
@@ -152,11 +152,11 @@ export interface CreateSessionRequest {
   agentloop: AgentloopRef;
   model: ModelSelection;
   system?: string;
+  response_format?: unknown;
   /**
    * @maxItems 128
    */
   tools: BoundTool[];
-  response_format?: unknown;
   /**
    * @maxItems 128
    */
@@ -219,10 +219,8 @@ export interface OutcomeError {
  */
 export interface Session {
   session_id: SessionId;
-  journal_id: Identifier;
   status: "creating" | "idle" | "running" | "ended" | "failed";
   last_sequence: number;
-  config_hash: Identity;
   share_key: ShareKey;
 }
 /**

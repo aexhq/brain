@@ -7,7 +7,7 @@ use brain_http::{BrainApi, router, router_with_bearer};
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, Event, EventId, EventPage,
-    LiveEvent, MessageRequest, OperationId, Session, SessionId, SessionList, SessionStatus,
+    LiveEvent, MessageRequest, SessionId, SessionList, SessionStatus, SessionSummary,
     StreamingEvent,
 };
 use tower::ServiceExt;
@@ -34,10 +34,10 @@ impl BrainApi for Api {
         &self,
         _: String,
         _: CreateSessionRequest,
-    ) -> Result<Session, ApiError> {
+    ) -> Result<SessionSummary, ApiError> {
         Ok(session())
     }
-    async fn get_session(&self, _: SessionId) -> Result<Session, ApiError> {
+    async fn get_session(&self, _: SessionId) -> Result<SessionSummary, ApiError> {
         Ok(session())
     }
     async fn list_sessions(&self) -> Result<SessionList, ApiError> {
@@ -50,7 +50,7 @@ impl BrainApi for Api {
         _: SessionId,
         _: String,
         _: MessageRequest,
-    ) -> Result<Session, ApiError> {
+    ) -> Result<SessionSummary, ApiError> {
         Ok(session())
     }
     async fn call_environment(
@@ -105,7 +105,7 @@ impl BrainApi for Api {
     async fn resolve_tool_call(
         &self,
         _: SessionId,
-        _: brain_protocol::OperationId,
+        _: u64,
         _: String,
         _: brain_protocol::Outcome,
     ) -> Result<(), ApiError> {
@@ -114,7 +114,7 @@ impl BrainApi for Api {
     async fn cancel_session(&self, _: SessionId, _: String) -> Result<(), ApiError> {
         Ok(())
     }
-    async fn end_session(&self, _: SessionId, _: String) -> Result<Session, ApiError> {
+    async fn end_session(&self, _: SessionId, _: String) -> Result<SessionSummary, ApiError> {
         Ok(session())
     }
     async fn delete_session(&self, _: SessionId, _: String) -> Result<(), ApiError> {
@@ -137,7 +137,6 @@ async fn exposes_every_v1_route_with_its_contract_status() {
     let create = serde_json::json!({
         "agentloop": {"identity": digest, "configuration": {}},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
-        "system": "",
         "tools": [{
             "name": "bash",
             "description": "Run a shell command.",
@@ -180,7 +179,7 @@ async fn exposes_every_v1_route_with_its_contract_status() {
         ),
         request(
             "POST",
-            &format!("/v1/sessions/{id}/tool-results/op_{}", "a".repeat(32)),
+            &format!("/v1/sessions/{id}/tool-results/7"),
             Some(br#"{"status":"ok","value":{"content":"done"}}"#.to_vec()),
             Some("application/json"),
         ),
@@ -221,7 +220,6 @@ async fn request_bodies_reject_unknown_fields() {
     let create = serde_json::json!({
         "agentloop": {"identity": digest, "configuration": {}},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
-        "system": "",
         "tools": [{
             "name": "bash",
             "description": "Run a shell command.",
@@ -330,29 +328,27 @@ fn admission() -> AgentloopAdmission {
     }
 }
 
-fn session() -> Session {
-    Session {
+fn session() -> SessionSummary {
+    SessionSummary {
         session_id: SessionId::new("ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-        journal_id: brain_protocol::JournalId::new("jrn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         status: SessionStatus::Idle,
         last_sequence: 1,
-        config_hash: brain_protocol::Identity::of(&"config").unwrap(),
         share_key: String::new(),
     }
 }
 
-fn intent(sequence: u64, tool: &str, operation: &str) -> Event {
+fn started(sequence: u64, tool: &str, call_id: &str) -> Event {
     Event {
         event_id: EventId::new(format!("evt_{sequence}")),
         sequence,
         // Freshly recorded, so the pending filter cannot see it as past its deadline.
         recorded_at_ms: now_ms(),
-        event_type: "tool_intent".into(),
+        event_type: "tool_call_started".into(),
         data: serde_json::json!({
-            "operation_id": operation,
+            "sequence": sequence,
             "deadline_ms": 60_000,
             "binding": {"name": tool, "hosting": "client"},
-            "invocation": {"call_id": "call_1", "name": tool, "input": {}},
+            "invocation": {"call_id": call_id, "name": tool, "input": {}},
         }),
     }
 }
@@ -370,7 +366,7 @@ fn now_ms() -> u64 {
 async fn the_share_key_opens_exactly_the_serve_surface() {
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let key = format!("sk.{id}.{}", "b".repeat(64));
-    let journal = vec![intent(1, "highlight_row", "op_1")];
+    let journal = vec![started(1, "highlight_row", "op_1")];
     let build = || {
         router_with_bearer(
             Api {
@@ -408,7 +404,7 @@ async fn the_share_key_opens_exactly_the_serve_surface() {
 
     let answer = build()
         .oneshot(authed(
-            &format!("/v1/sessions/{id}/tool-results/op_{}", "a".repeat(32)),
+            &format!("/v1/sessions/{id}/tool-results/7"),
             "POST",
             &key,
             Some(r#"{"status":"ok","value":null}"#),
@@ -453,16 +449,16 @@ async fn the_share_key_opens_exactly_the_serve_surface() {
 async fn the_serve_feed_opens_with_pending_intents_only() {
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let journal = vec![
-        intent(1, "highlight_row", "op_answered"),
+        started(1, "highlight_row", "call_answered"),
         Event {
             event_id: EventId::new("evt_2"),
             sequence: 2,
             recorded_at_ms: now_ms(),
-            event_type: "tool_result".into(),
-            data: serde_json::json!({"operation_id": "op_answered", "result": {}}),
+            event_type: "tool_call_ended".into(),
+            data: serde_json::json!({"sequence": 1, "result": {}}),
         },
-        intent(3, "highlight_row", "op_pending"),
-        intent(4, "pick_file", "op_other_tool"),
+        started(3, "highlight_row", "call_pending"),
+        started(4, "pick_file", "call_other_tool"),
         Event {
             event_id: EventId::new("evt_5"),
             sequence: 5,
@@ -490,16 +486,16 @@ async fn the_serve_feed_opens_with_pending_intents_only() {
         .unwrap();
     let body = String::from_utf8(body.to_vec()).unwrap();
     assert!(
-        body.contains("op_pending"),
-        "pending intent missing: {body}"
+        body.contains("call_pending"),
+        "pending call missing: {body}"
     );
     assert!(
-        !body.contains("op_answered"),
-        "an answered intent was replayed: {body}"
+        !body.contains("call_answered"),
+        "an answered call was replayed: {body}"
     );
     assert!(
-        !body.contains("op_other_tool"),
-        "another tool's intent leaked onto this stream: {body}"
+        !body.contains("call_other_tool"),
+        "another tool's call leaked onto this stream: {body}"
     );
     assert!(body.contains("session_ended"), "no end marker: {body}");
 
@@ -523,7 +519,7 @@ async fn a_new_serve_connection_displaces_the_seat_holder() {
     let live = tokio::sync::broadcast::Sender::new(8);
     let api = Api {
         live: Some(live.clone()),
-        journal: Some(vec![intent(1, "highlight_row", "op_1")]),
+        journal: Some(vec![started(1, "highlight_row", "op_1")]),
     };
     // One router, two connections: the seats live in the router's serve registry.
     let router = router(api);
@@ -661,7 +657,7 @@ async fn the_event_stream_carries_model_output_before_the_turn_finishes() {
     live.send((
         SessionId::new("ses_test"),
         LiveEvent::Streaming(StreamingEvent {
-            operation_id: OperationId::new("opr_test"),
+            sequence: 1,
             event_type: "assistant_delta".into(),
             data: serde_json::json!({ "text": "half a thought" }),
         }),
@@ -671,7 +667,7 @@ async fn the_event_stream_carries_model_output_before_the_turn_finishes() {
     live.send((
         SessionId::new("ses_other"),
         LiveEvent::Streaming(StreamingEvent {
-            operation_id: OperationId::new("opr_other"),
+            sequence: 1,
             event_type: "assistant_delta".into(),
             data: serde_json::json!({ "text": "not yours" }),
         }),
@@ -684,7 +680,7 @@ async fn the_event_stream_carries_model_output_before_the_turn_finishes() {
             event_id: EventId::new("evt_done"),
             sequence: 2,
             recorded_at_ms: 1_787_846_400_003,
-            event_type: "model_result".into(),
+            event_type: "model_call_ended".into(),
             data: serde_json::json!({ "result": "whole thought" }),
         }),
     ))

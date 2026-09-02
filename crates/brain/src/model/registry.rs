@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::KernelError;
+use crate::Error;
 
 use super::generated::{CATALOG, CatalogModel, CatalogProvider};
 
@@ -106,7 +106,7 @@ impl ProviderRegistry {
     pub fn compose(
         custom: Vec<ProviderDef>,
         base_url_overrides: &[(String, String)],
-    ) -> Result<Self, KernelError> {
+    ) -> Result<Self, Error> {
         let mut providers = BTreeMap::new();
         for row in CATALOG {
             let def = ProviderDef::from(row);
@@ -117,7 +117,7 @@ impl ProviderRegistry {
         }
         for def in custom {
             if !valid_provider_name(&def.name) {
-                return Err(KernelError::InvalidState(format!(
+                return Err(Error::InvalidState(format!(
                     "custom provider name {:?} is not a valid identifier",
                     def.name
                 )));
@@ -133,7 +133,7 @@ impl ProviderRegistry {
         for (name, url) in base_url_overrides {
             // A typo here would silently leave the default endpoint in place.
             let Some(def) = providers.get_mut(name) else {
-                return Err(KernelError::InvalidState(format!(
+                return Err(Error::InvalidState(format!(
                     "unknown model provider {name} in base URL overrides"
                 )));
             };
@@ -352,10 +352,10 @@ mod tests {
     fn custom_providers_are_validated_at_compose_time() {
         let bad_name =
             ProviderRegistry::compose(vec![custom("not valid!", "https://x.example")], &[]);
-        assert!(matches!(bad_name, Err(KernelError::InvalidState(_))));
+        assert!(matches!(bad_name, Err(Error::InvalidState(_))));
         let bad_url =
             ProviderRegistry::compose(vec![custom("fine", "https://user:pw@example.com/v1")], &[]);
-        assert!(matches!(bad_url, Err(KernelError::InvalidState(_))));
+        assert!(matches!(bad_url, Err(Error::InvalidState(_))));
     }
 
     #[test]
@@ -364,7 +364,7 @@ mod tests {
             Vec::new(),
             &[("open-ai".into(), "https://example.invalid".into())],
         );
-        assert!(matches!(result, Err(KernelError::InvalidState(_))));
+        assert!(matches!(result, Err(Error::InvalidState(_))));
         let patched = ProviderRegistry::compose(
             Vec::new(),
             &[("anthropic".into(), "https://alt.example.com/v1".into())],

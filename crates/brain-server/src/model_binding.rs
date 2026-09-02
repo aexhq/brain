@@ -2,12 +2,11 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use brain::{
-    KernelError, ModelExecutor,
+    ModelExecutor,
     model::{Dialect, MaxTokensField, ModelTransport, ProviderRegistry, RemoteModelClient},
 };
 use brain_protocol::{
-    Identity, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelSelection,
-    ModelStreamEvent, OperationId,
+    ModelBinding, ModelRequest, ModelResult, ModelSelection, ModelStreamEvent, ToolDefinition,
 };
 
 pub use crate::metadata::ModelCredential;
@@ -18,25 +17,25 @@ pub use crate::metadata::ModelCredential;
 /// the third-party catalog rows, so it must be exactly right.
 pub fn load_providers_file(
     path: &std::path::Path,
-) -> Result<Vec<brain::model::ProviderDef>, KernelError> {
+) -> Result<Vec<brain::model::ProviderDef>, brain::Error> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct ProvidersFile {
         providers: Vec<brain::model::ProviderDef>,
     }
     let raw = std::fs::read_to_string(path).map_err(|error| {
-        KernelError::InvalidState(format!("providers file {}: {error}", path.display()))
+        brain::Error::InvalidState(format!("providers file {}: {error}", path.display()))
     })?;
     let file: ProvidersFile = serde_json::from_str(&raw).map_err(|error| {
-        KernelError::InvalidState(format!("providers file {}: {error}", path.display()))
+        brain::Error::InvalidState(format!("providers file {}: {error}", path.display()))
     })?;
     Ok(file.providers)
 }
 
 pub trait ModelBindingStore: Send + Sync + 'static {
-    fn put(&self, binding_id: &str, selection: &ModelSelection) -> Result<(), KernelError>;
-    fn get(&self, binding_id: &str) -> Result<Option<ModelCredential>, KernelError>;
-    fn delete(&self, binding_id: &str) -> Result<(), KernelError>;
+    fn put(&self, binding_id: &str, selection: &ModelSelection) -> Result<(), brain::Error>;
+    fn get(&self, binding_id: &str) -> Result<Option<ModelCredential>, brain::Error>;
+    fn delete(&self, binding_id: &str) -> Result<(), brain::Error>;
 }
 
 /// The credential half of the server's session metadata.
@@ -54,15 +53,15 @@ impl LocalModelBindingStore {
 }
 
 impl ModelBindingStore for LocalModelBindingStore {
-    fn put(&self, binding_id: &str, selection: &ModelSelection) -> Result<(), KernelError> {
+    fn put(&self, binding_id: &str, selection: &ModelSelection) -> Result<(), brain::Error> {
         self.metadata.put_binding(binding_id, selection)
     }
 
-    fn get(&self, binding_id: &str) -> Result<Option<ModelCredential>, KernelError> {
+    fn get(&self, binding_id: &str) -> Result<Option<ModelCredential>, brain::Error> {
         self.metadata.binding(binding_id)
     }
 
-    fn delete(&self, binding_id: &str) -> Result<(), KernelError> {
+    fn delete(&self, binding_id: &str) -> Result<(), brain::Error> {
         self.metadata.forget_binding(binding_id)
     }
 }
@@ -86,7 +85,7 @@ impl ServerModelExecutor {
         bindings: Arc<dyn ModelBindingStore>,
         providers: &ProviderRegistry,
         timeout: Duration,
-    ) -> Result<Self, KernelError> {
+    ) -> Result<Self, brain::Error> {
         let mut transports = HashMap::new();
         for def in providers.iter() {
             match ModelTransport::new(&def.base_url, timeout) {
@@ -102,7 +101,7 @@ impl ServerModelExecutor {
             }
         }
         if transports.is_empty() {
-            return Err(KernelError::InvalidState(
+            return Err(brain::Error::InvalidState(
                 "no model provider transport could be built".into(),
             ));
         }
@@ -122,21 +121,19 @@ impl ServerModelExecutor {
 impl ModelExecutor for ServerModelExecutor {
     async fn execute(
         &self,
-        operation_id: &OperationId,
-        request_identity: &Identity,
         binding: &ModelBinding,
-        presentation: &ModelPresentation,
         request: ModelRequest,
+        tools: &[ToolDefinition],
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
-    ) -> Result<ModelResult, KernelError> {
+    ) -> Result<ModelResult, brain::Error> {
         let credential = self
             .bindings
             .get(&binding.binding_id)?
-            .ok_or_else(|| KernelError::Executor("model binding is unavailable".into()))?;
+            .ok_or_else(|| brain::Error::Executor("model binding is unavailable".into()))?;
         let Some((dialect, max_tokens_field, transport)) =
             self.transports.get(credential.provider.as_str())
         else {
-            return Err(KernelError::Executor(
+            return Err(brain::Error::Executor(
                 "model provider is unsupported".into(),
             ));
         };
@@ -146,16 +143,7 @@ impl ModelExecutor for ServerModelExecutor {
             *dialect,
             *max_tokens_field,
         )?;
-        client
-            .execute(
-                operation_id,
-                request_identity,
-                binding,
-                presentation,
-                request,
-                on_event,
-            )
-            .await
+        client.execute(binding, request, tools, on_event).await
     }
 }
 
@@ -216,7 +204,7 @@ mod tests {
     #[tokio::test]
     async fn a_providers_file_provider_serves_a_model_call_end_to_end() {
         use axum::{Router, body::Bytes, routing::post};
-        use brain_protocol::{Identity, Message, ModelPresentation, ModelRequest, OperationId};
+        use brain_protocol::{Message, ModelRequest};
         use tokio::sync::oneshot;
 
         let (observed_tx, observed_rx) = oneshot::channel();
@@ -271,22 +259,18 @@ mod tests {
         let executor = ServerModelExecutor::new(store, &registry, Duration::from_secs(2)).unwrap();
         let result = executor
             .execute(
-                &OperationId::new("op_custom"),
-                &Identity::of(&"request").unwrap(),
                 &ModelBinding {
                     binding_id: "model_local".into(),
                     model: "test-model".into(),
                 },
-                &ModelPresentation {
-                    system: String::new(),
-                    tools: Vec::new(),
-                    response_format: None,
-                },
                 ModelRequest {
+                    system: None,
+                    tools: None,
                     messages: vec![Message::user_text("hi")],
                     response_format: None,
                     max_output_tokens: Some(16),
                 },
+                &[],
                 &mut |_| {},
             )
             .await

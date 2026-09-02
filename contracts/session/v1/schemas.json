@@ -88,8 +88,8 @@
         "agentloop": { "$ref": "#/$defs/AgentloopRef" },
         "model": { "$ref": "#/$defs/ModelSelection" },
         "system": { "type": "string", "maxLength": 131072 },
-        "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/BoundTool" } },
         "response_format": {},
+        "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/BoundTool" } },
         "environments": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/EnvironmentRequirement" } },
         "history": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/HistoryEvent" } }
       }
@@ -129,7 +129,7 @@
       "required": ["output"],
       "properties": { "output": {} }
     },
-    "OperationId": { "type": "string", "pattern": "^op_[0-9a-f]{32}$" },
+    "Sequence": { "type": "integer", "minimum": 1 },
     "Outcome": {
       "oneOf": [
         { "type": "object", "additionalProperties": false, "required": ["status", "value"], "properties": { "status": { "const": "ok" }, "value": {} } },
@@ -152,13 +152,11 @@
     "Session": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["session_id", "journal_id", "status", "last_sequence", "config_hash", "share_key"],
+      "required": ["session_id", "status", "last_sequence", "share_key"],
       "properties": {
         "session_id": { "$ref": "#/$defs/SessionId" },
-        "journal_id": { "$ref": "#/$defs/Identifier" },
         "status": { "enum": ["creating", "idle", "running", "ended", "failed"] },
         "last_sequence": { "type": "integer", "minimum": 0 },
-        "config_hash": { "$ref": "#/$defs/Identity" },
         "share_key": { "$ref": "#/$defs/ShareKey" }
       }
     },

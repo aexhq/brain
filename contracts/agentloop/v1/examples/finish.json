@@ -4,10 +4,8 @@
     "context": { "protocol_version": "agentloop/v1", "items": [] },
     "observation": { "type": "session_started", "history": [] },
     "configuration": {},
-    "presentation": {
-      "bytes": [],
-      "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    },
+    "system": "",
+    "tools": [],
     "runtime": {
       "logical_time_ms": 1,
       "deterministic_seed": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]

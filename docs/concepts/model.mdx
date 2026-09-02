@@ -66,6 +66,10 @@ when it was written.
 
 Change models by starting a new session.
 
+The system prompt, the tools, and the response format are set at create and are not pinned: the
+agent loop may replace the prompt, offer a subset of the tools, or send a different response format
+on any model call. A response format is rejected at create for a provider that cannot carry it.
+
 ## Keys
 
 Keys are yours. Brain holds the binding for the session's lifetime and uses it to make calls; it

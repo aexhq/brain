@@ -18,11 +18,6 @@ interface types {
     cancelled,
   }
 
-  record presentation {
-    bytes: list<u8>,
-    identity: string,
-  }
-
   record runtime-envelope {
     logical-time-ms: u64,
     deterministic-seed: list<u8>,
@@ -32,7 +27,10 @@ interface types {
     context: context-envelope,
     observation: observation,
     configuration-json: string,
-    presentation: presentation,
+    // The system prompt the session was created with.
+    system: string,
+    // JSON array of the tool definitions the session was created with.
+    tools-json: string,
     runtime: runtime-envelope,
   }
 

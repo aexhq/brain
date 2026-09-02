@@ -369,8 +369,8 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
     agentloop: { identity: agentloopIdentity, configuration: structuredClone(agentloop.configuration) },
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
     system: options.system ?? "",
-    tools,
     ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }),
+    tools,
     environments: requirements,
     // The event id is left behind deliberately: it names an event in the session it came
     // from, and this is a different session, so Brain mints them again.
@@ -397,5 +397,5 @@ function keyOf(options: OperationOptions): string {
   return options.idempotencyKey ?? randomUUID();
 }
 function toSessionState(session: WireSession): SessionState {
-  return Object.freeze({ id: session.session_id, journalId: session.journal_id, status: session.status, lastSequence: session.last_sequence, configHash: session.config_hash, shareKey: session.share_key });
+  return Object.freeze({ id: session.session_id, status: session.status, lastSequence: session.last_sequence, shareKey: session.share_key });
 }

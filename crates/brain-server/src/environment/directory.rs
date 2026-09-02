@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Mutex};
 
 use async_trait::async_trait;
-use brain::KernelError;
 use brain_protocol::{EnvironmentBinding, EnvironmentId, Identity, ResolvedEnvironment};
 
 #[derive(Clone, Debug)]
@@ -15,8 +14,8 @@ pub trait EnvironmentDirectory: Send + Sync + 'static {
     async fn resolve(
         &self,
         requirement: &ResolvedEnvironment,
-    ) -> Result<DirectoryEntry, KernelError>;
-    async fn get(&self, binding: &EnvironmentBinding) -> Result<DirectoryEntry, KernelError>;
+    ) -> Result<DirectoryEntry, brain::Error>;
+    async fn get(&self, binding: &EnvironmentBinding) -> Result<DirectoryEntry, brain::Error>;
 }
 
 pub struct InMemoryEnvironmentDirectory {
@@ -38,21 +37,21 @@ impl EnvironmentDirectory for InMemoryEnvironmentDirectory {
     async fn resolve(
         &self,
         requirement: &ResolvedEnvironment,
-    ) -> Result<DirectoryEntry, KernelError> {
+    ) -> Result<DirectoryEntry, brain::Error> {
         if self.endpoint.trim().is_empty() {
-            return Err(KernelError::InvalidState(
+            return Err(brain::Error::InvalidState(
                 "no Environment endpoint is configured".into(),
             ));
         }
         let digest = Identity::of(&requirement.configuration)
-            .map_err(|error| KernelError::InvalidState(error.to_string()))?;
+            .map_err(|error| brain::Error::InvalidState(error.to_string()))?;
         let mut entries = self
             .entries
             .lock()
-            .map_err(|_| KernelError::InvalidState("Environment directory poisoned".into()))?;
+            .map_err(|_| brain::Error::InvalidState("Environment directory poisoned".into()))?;
         if let Some(existing) = entries.get(&requirement.environment_id) {
             if existing.binding.configuration_identity != digest {
-                return Err(KernelError::InvalidState(
+                return Err(brain::Error::InvalidState(
                     "Environment identity already has a different configuration digest".into(),
                 ));
             }
@@ -71,9 +70,9 @@ impl EnvironmentDirectory for InMemoryEnvironmentDirectory {
         Ok(entry)
     }
 
-    async fn get(&self, binding: &EnvironmentBinding) -> Result<DirectoryEntry, KernelError> {
+    async fn get(&self, binding: &EnvironmentBinding) -> Result<DirectoryEntry, brain::Error> {
         if self.endpoint.trim().is_empty() {
-            return Err(KernelError::InvalidState(
+            return Err(brain::Error::InvalidState(
                 "no Environment endpoint is configured".into(),
             ));
         }

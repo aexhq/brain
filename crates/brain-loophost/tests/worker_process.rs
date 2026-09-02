@@ -3,9 +3,7 @@
 use std::sync::Arc;
 
 use brain_loophost::{LoopLimits, WorkerPool};
-use brain_protocol::{
-    ActivationInput, ContextEnvelope, Decision, Observation, Presentation, RuntimeEnvelope,
-};
+use brain_protocol::{ActivationInput, ContextEnvelope, Decision, Observation, RuntimeEnvelope};
 
 #[tokio::test]
 async fn real_worker_admits_and_activates_the_typescript_diagnostic_loop() {
@@ -35,11 +33,9 @@ async fn real_worker_admits_and_activates_the_typescript_diagnostic_loop() {
                     input: "tools scenario".into(),
                 },
                 configuration: serde_json::json!({}),
-                presentation: Presentation {
-                    bytes: Vec::new(),
-                    identity: brain_protocol::Identity::of(&"presentation").unwrap(),
-                },
-                runtime: RuntimeEnvelope::at(&brain_protocol::JournalId::new("jrn_test"), 1, 0),
+                system: String::new(),
+                tools: Vec::new(),
+                runtime: RuntimeEnvelope::at(&brain_protocol::SessionId::new("ses_test"), 1, 0),
             },
         )
         .await
@@ -117,10 +113,8 @@ fn activation(index: usize) -> ActivationInput {
             input: format!("tools scenario {index}").into(),
         },
         configuration: serde_json::json!({}),
-        presentation: Presentation {
-            bytes: Vec::new(),
-            identity: brain_protocol::Identity::of(&"presentation").unwrap(),
-        },
-        runtime: RuntimeEnvelope::at(&brain_protocol::JournalId::new("jrn_test"), 1, 0),
+        system: String::new(),
+        tools: Vec::new(),
+        runtime: RuntimeEnvelope::at(&brain_protocol::SessionId::new("ses_test"), 1, 0),
     }
 }

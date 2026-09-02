@@ -1,7 +1,6 @@
 {
   "contract": "environment/v1",
-  "operation_id": "op_example",
-  "request_identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sequence": 7,
   "receipt": {
     "type": "outcome",
     "outcome": {

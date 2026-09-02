@@ -1,4 +1,4 @@
-use crate::KernelError;
+use crate::Error;
 
 /// Splits a model's byte stream into SSE frames.
 ///
@@ -34,7 +34,7 @@ impl SseDecoder {
         }
     }
 
-    pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<String>, KernelError> {
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<String>, Error> {
         self.pending.extend_from_slice(chunk);
         let mut events = Vec::new();
         let overflowed;
@@ -53,9 +53,8 @@ impl SseDecoder {
                 break;
             };
             let content = &self.pending[self.consumed..self.consumed + end.content];
-            let text = std::str::from_utf8(content).map_err(|error| {
-                KernelError::Executor(format!("model SSE is not UTF-8: {error}"))
-            })?;
+            let text = std::str::from_utf8(content)
+                .map_err(|error| Error::Executor(format!("model SSE is not UTF-8: {error}")))?;
             let data = text
                 .lines()
                 .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
@@ -73,7 +72,7 @@ impl SseDecoder {
             self.consumed = 0;
         }
         if overflowed {
-            return Err(KernelError::Executor(format!(
+            return Err(Error::Executor(format!(
                 "model SSE frame exceeded {} bytes",
                 self.max_frame
             )));

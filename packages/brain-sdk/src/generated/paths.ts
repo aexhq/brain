@@ -106,7 +106,7 @@ export type paths = {
             path?: never;
             cookie?: never;
         };
-        /** @description The serve feed: an SSE stream of this session's client-hosted `tool_intent` and `tool_cancel_intent` records, filtered to the tools named in `tools`, plus `session_ended`. It opens with the still-pending backlog (intents with no recorded result) and then carries records as they are appended. Authorized by the session's share key as a bearer token (the API token also works). One live consumer per tool: a new connection claiming a tool displaces the stream that held it, so a reconnecting client replaces its own dead connection instead of racing it. */
+        /** @description The serve feed: an SSE stream of this session's client-hosted `tool_call_started` and `tool_cancel_started` records, filtered to the tools named in `tools`, plus `session_ended`. It opens with the still-pending backlog (calls with no finished record) and then carries records as they are appended. Authorized by the session's share key as a bearer token (the API token also works). One live consumer per tool: a new connection claiming a tool displaces the stream that held it, so a reconnecting client replaces its own dead connection instead of racing it. */
         get: operations["serveSessionTools"];
         put?: never;
         post?: never;
@@ -116,7 +116,7 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{session_id}/tool-results/{operation_id}": {
+    "/v1/sessions/{session_id}/tool-results/{sequence}": {
         parameters: {
             query?: never;
             header?: never;
@@ -125,7 +125,7 @@ export type paths = {
         };
         get?: never;
         put?: never;
-        /** @description Answers a client-hosted tool call. The `tool_intent` record on the event feed carries the operation id; the body is the call's outcome. Idempotent per operation: a retry with the same key replays the first answer, and a call that is no longer pending is a conflict. Authorized by the API token or by the session's share key. */
+        /** @description Answers a client-hosted tool call. The call is named by the sequence of its `tool_call_started` record on the event feed; the body is the call's outcome. Idempotent per call: a retry with the same key replays the first answer, and a call that is no longer pending is a conflict. Authorized by the API token or by the session's share key. */
         post: operations["resolveToolCall"];
         delete?: never;
         options?: never;
@@ -235,11 +235,9 @@ export type components = {
         ShareKey: string;
         Session: {
             session_id: components["schemas"]["SessionId"];
-            journal_id: components["schemas"]["Identifier"];
             /** @enum {unknown} */
             status: "creating" | "idle" | "running" | "ended" | "failed";
             last_sequence: number;
-            config_hash: components["schemas"]["Identity"];
             share_key: components["schemas"]["ShareKey"];
         };
         SessionList: {
@@ -308,8 +306,8 @@ export type components = {
             agentloop: components["schemas"]["AgentloopRef"];
             model: components["schemas"]["ModelSelection"];
             system?: string;
-            tools: components["schemas"]["BoundTool"][];
             response_format?: unknown;
+            tools: components["schemas"]["BoundTool"][];
             environments: components["schemas"]["EnvironmentRequirement"][];
             history?: components["schemas"]["HistoryEvent"][];
         };
@@ -325,7 +323,7 @@ export type components = {
         EnvironmentCallResult: {
             output: unknown;
         };
-        OperationId: string;
+        Sequence: number;
         OutcomeError: {
             code: components["schemas"]["Identifier"];
             message: string;
@@ -619,7 +617,7 @@ export interface operations {
             };
             path: {
                 session_id: components["parameters"]["SessionId"];
-                operation_id: components["schemas"]["OperationId"];
+                sequence: components["schemas"]["Sequence"];
             };
             cookie?: never;
         };

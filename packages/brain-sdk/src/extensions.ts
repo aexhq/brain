@@ -16,12 +16,24 @@ export interface AgentloopInput {
     | { readonly type: "emitted"; readonly event: unknown }
     | { readonly type: "cancelled" };
   readonly configuration: unknown;
+  /** The system prompt the session was created with. */
+  readonly system: string;
+  /** The tools the session was created with. */
+  readonly tools: readonly ToolDefinition[];
   readonly runtime: { readonly logicalTimeMs: bigint };
 }
 
 export interface ToolCall { readonly callId: string; readonly name: string; readonly input: unknown }
+/** One model call, as the loop decides it. The loop owns what the model is told: what it
+ * leaves out is what the session was created with. */
 export interface ModelTurnRequest {
+  /** The system prompt for this call. Omit for `author.system`; empty for none. */
+  readonly system?: string;
+  /** Tools to offer on this call, by name. Omit for all of `author.tools`; each name
+   * given must be one of them. */
+  readonly tools?: readonly string[];
   readonly messages: readonly ModelMessage[];
+  /** Omit for the session's response format, if it was created with one. */
   readonly response_format?: unknown;
   readonly max_output_tokens?: number;
 }
@@ -47,6 +59,10 @@ export interface AgentloopTurn {
 type AgentloopHandler<Input> = (input: Input, turn: AgentloopTurn) => AgentloopAction;
 export interface AgentloopAuthor<Options> {
   readonly options: Options;
+  /** The system prompt the session was created with. Used unless a model call sends its own. */
+  readonly system: string;
+  /** The tools the session was created with. All are offered unless a model call names a subset. */
+  readonly tools: readonly ToolDefinition[];
   readonly on: {
     start(handler: AgentloopHandler<{ readonly type: "session_started" }>): void;
     message(handler: AgentloopHandler<{ readonly type: "user_message"; readonly input: UserInput }>): void;
@@ -515,21 +531,21 @@ export function createEnvironmentHandler(factory: unknown): EnvironmentHandler {
   const runtimes = (["esm", "shell", "http"] as const).filter((name) => source.executors[name] !== undefined);
   const declaration = { runtimes, resources: structuredClone(source.resources) };
   const instances = new Map<string, EnvironmentInstanceState>();
-  const receipts = new Map<string, { readonly identity: string; readonly response: unknown }>();
+  // Answers already given, by operation. A redelivery carries the same session and
+  // sequence and gets the same answer instead of running the effect again.
+  const receipts = new Map<string, unknown>();
   const active = new Map<string, AbortController>();
   const handler = async (raw: unknown) => {
     const command = environmentCommand(raw);
     const operation = command.operation;
-    const prior = receipts.get(operation.operation_id);
-    if (prior !== undefined) {
-      if (prior.identity !== operation.request_identity) return environmentResponse(operation, { type: "conflict", expected_identity: prior.identity, actual_identity: operation.request_identity });
-      return prior.response;
-    }
+    const key = operationKey(operation.session_id, operation.sequence);
+    const prior = receipts.get(key);
+    if (prior !== undefined) return prior;
     const controller = new AbortController();
-    active.set(operation.operation_id, controller);
+    active.set(key, controller);
     let receipt: unknown;
     try {
-      const context = { signal: controller.signal, requestId: operation.operation_id };
+      const context = { signal: controller.signal, requestId: key };
       switch (operation.request.type) {
         case "setup": {
           if (!plainObject(operation.request.configuration)) throw new TypeError("Environment configuration must be an object");
@@ -572,7 +588,7 @@ export function createEnvironmentHandler(factory: unknown): EnvironmentHandler {
             signal: controller.signal,
             bindings: pickBindings(hostedTool.manifest.binding_names, attachment.bindings),
           };
-          const call = (signal: AbortSignal, deadlineAt: Date) => ({ instance: instance.value, callId: invocation.callId, deadline: deadlineAt, signal, bindings: invocation.bindings, sessionId: operation.session_id, requestId: operation.operation_id });
+          const call = (signal: AbortSignal, deadlineAt: Date) => ({ instance: instance.value, callId: invocation.callId, deadline: deadlineAt, signal, bindings: invocation.bindings, sessionId: operation.session_id, requestId: key });
           let outcome;
           if (hostedTool.kind === "esm") {
             outcome = await invokeProvisioned(hostedTool.module, invocation);
@@ -605,8 +621,8 @@ export function createEnvironmentHandler(factory: unknown): EnvironmentHandler {
           break;
         }
         case "cancel": {
-          if (typeof operation.request.target_operation_id !== "string") throw new TypeError("Environment cancellation target is invalid");
-          active.get(operation.request.target_operation_id)?.abort(new Error("Environment operation cancelled"));
+          if (!positiveInteger(operation.request.target_sequence)) throw new TypeError("Environment cancellation target is invalid");
+          active.get(operationKey(operation.session_id, operation.request.target_sequence))?.abort(new Error("Environment operation cancelled"));
           const instance = instances.get(operation.environment_id);
           if (instance !== undefined) await source.registration.cancel?.({ ...context, instance: instance.value });
           receipt = { type: "accepted" };
@@ -633,28 +649,33 @@ export function createEnvironmentHandler(factory: unknown): EnvironmentHandler {
     } catch (error) {
       receipt = { type: "failure", code: "environment_error", message: messageOf(error), retryable: false };
     } finally {
-      active.delete(operation.operation_id);
+      active.delete(key);
     }
     const response = environmentResponse(operation, receipt);
-    receipts.set(operation.operation_id, { identity: operation.request_identity, response });
+    receipts.set(key, response);
     return response;
   };
   return handler;
 }
 
 interface RuntimeEnvironmentOperation {
-  readonly operation_id: string;
-  readonly request_identity: string;
+  /** The sequence of the journal record that started this operation. With the
+   * session id, its name. */
+  readonly sequence: number;
   readonly environment_id: string;
   readonly session_id: string;
   readonly attachment_id?: string;
   readonly request: Record<string, unknown> & { readonly type: string };
 }
 
+function operationKey(sessionId: string, sequence: number): string { return `${sessionId}:${sequence}`; }
+function positiveInteger(value: unknown): value is number { return typeof value === "number" && Number.isInteger(value) && value > 0; }
+
 function environmentCommand(raw: unknown): { readonly operation: RuntimeEnvironmentOperation } {
   if (!plainObject(raw) || raw.contract !== ENVIRONMENT_CONTRACT || !plainObject(raw.operation)) throw new TypeError(`invalid ${ENVIRONMENT_CONTRACT} command`);
   const operation = raw.operation;
-  for (const name of ["operation_id", "request_identity", "environment_id", "session_id"] as const) if (typeof operation[name] !== "string" || operation[name].length === 0) throw new TypeError(`Environment operation ${name} is required`);
+  if (!positiveInteger(operation.sequence)) throw new TypeError("Environment operation sequence is required");
+  for (const name of ["environment_id", "session_id"] as const) if (typeof operation[name] !== "string" || operation[name].length === 0) throw new TypeError(`Environment operation ${name} is required`);
   if (!plainObject(operation.request) || typeof operation.request.type !== "string") throw new TypeError("Environment operation request is invalid");
   return { operation: operation as unknown as RuntimeEnvironmentOperation };
 }
@@ -718,7 +739,7 @@ function pickBindings(names: readonly string[], values: Readonly<Record<string, 
 }
 
 function environmentResponse(operation: RuntimeEnvironmentOperation, receipt: unknown) {
-  return { contract: ENVIRONMENT_CONTRACT, operation_id: operation.operation_id, request_identity: operation.request_identity, receipt };
+  return { contract: ENVIRONMENT_CONTRACT, sequence: operation.sequence, receipt };
 }
 
 function requireEmptyCallInput(value: unknown): Record<string, never> {
@@ -937,6 +958,8 @@ export function activateAgentloop(factory: unknown, input: AgentloopInput): { re
   };
   const author: AgentloopAuthor<unknown> = {
     options,
+    system: input.system,
+    tools: input.tools,
     on: { start: on("session_started"), message: on("user_message"), model: on("model_completed"), tools: on("tools_completed"), event: on("emitted"), cancel: on("cancelled") } as AgentloopAuthor<unknown>["on"],
     state(schema, initial) {
       const index = schemas.length;

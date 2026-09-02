@@ -5,56 +5,64 @@ use std::sync::{
 use std::{future::Future, time::Duration};
 
 use brain_protocol::{
-    ActivationInput, ContextEnvelope, Decision, EnvironmentRequest, Event, EventId, Identity,
-    LiveEvent, MessageRequest, ModelStreamEvent, Observation, OperationId, Outcome, Presentation,
-    RuntimeEnvelope, SealedSessionConfig, Session, SessionId, SessionStatus, StreamingEvent,
-    ToolCancellation, ToolDispatch, ToolHosting, ToolResult, operation_id,
+    ActivationInput, ContextEnvelope, Decision, Event, EventId, LiveEvent, MessageRequest,
+    ModelRequest, ModelStreamEvent, Observation, Outcome, RuntimeEnvelope, SealedSessionConfig,
+    SessionStatus, SessionSummary, StreamingEvent, ToolCancellation, ToolDefinition, ToolDispatch,
+    ToolHosting, ToolResult,
 };
 use futures_util::future::join_all;
 use tokio::sync::{mpsc, oneshot};
 
-use super::PendingToolCalls;
+use super::{PendingToolCalls, SessionConfig};
 use crate::{
-    KernelError, LoopExecutor, ModelExecutor, ToolExecutor,
+    Error,
     journal::{AppendRecord, JournalRecord, JournalStore, SessionRow, SessionUpdate},
 };
 
 pub enum SessionCommand {
     Message {
         request: MessageRequest,
-        reply: oneshot::Sender<Result<Session, KernelError>>,
+        reply: oneshot::Sender<Result<SessionSummary, Error>>,
     },
     Cancel,
     End {
-        reply: oneshot::Sender<Result<Session, KernelError>>,
+        reply: oneshot::Sender<Result<SessionSummary, Error>>,
     },
+    /// A record the host writes between turns, for an effect it performs on the
+    /// session's behalf. Goes through the actor so the sequence stays one counter.
+    Append {
+        record: AppendRecord,
+        reply: oneshot::Sender<Result<u64, Error>>,
+    },
+}
+
+/// The model request the journal last recorded whole or in part: enough to say which
+/// prefix of the next one is already written.
+struct Journalled {
+    system: u64,
+    messages: Vec<u64>,
 }
 
 pub struct SessionActor {
     row: SessionRow,
     sealed: SealedSessionConfig,
     context: ContextEnvelope,
-    presentation: Presentation,
     store: Arc<dyn JournalStore>,
-    loop_executor: Arc<dyn LoopExecutor>,
-    model_executor: Arc<dyn ModelExecutor>,
-    tool_executor: Arc<dyn ToolExecutor>,
-    max_decisions_per_turn: usize,
-    tool_deadline_ms: u64,
+    config: Arc<SessionConfig>,
     receiver: mpsc::Receiver<SessionCommand>,
     cancel_requested: Arc<AtomicBool>,
     /// Events the session opened with, waiting to be handed to the agentloop. Taken once,
     /// before the first message.
     opening_history: Vec<serde_json::Value>,
-    /// Where model output goes while a turn is still running. Not the journal.
-    live: tokio::sync::broadcast::Sender<(SessionId, brain_protocol::LiveEvent)>,
-    /// How many of the model request's messages the journal already holds.
+    /// What of the last model request the journal already holds.
     ///
     /// A model request carries the whole conversation, and recording it whole on every
     /// decision wrote the transcript again each turn -- the journal grew with the square
-    /// of the turn count, 5 MiB at 250 turns and 73 MiB at 1000. Only the messages past
-    /// this point are recorded now.
-    journalled_messages: usize,
+    /// of the turn count, 5 MiB at 250 turns and 73 MiB at 1000. Only what changed since
+    /// the last record is written: the messages after the longest prefix both share,
+    /// with the system prompt as position zero. `None` after a restart, so the first
+    /// request is recorded whole and every one after it is a delta again.
+    journalled: Option<Journalled>,
     /// Where client-hosted tool calls wait for their POSTed outcome.
     pending_tools: Arc<PendingToolCalls>,
     /// The context the running turn opened with. A turn that ends normally clears it
@@ -65,56 +73,33 @@ pub struct SessionActor {
 }
 
 impl SessionActor {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         mut row: SessionRow,
         store: Arc<dyn JournalStore>,
-        loop_executor: Arc<dyn LoopExecutor>,
-        model_executor: Arc<dyn ModelExecutor>,
-        tool_executor: Arc<dyn ToolExecutor>,
-        max_decisions_per_turn: usize,
-        tool_deadline_ms: u64,
+        config: Arc<SessionConfig>,
         receiver: mpsc::Receiver<SessionCommand>,
         cancel_requested: Arc<AtomicBool>,
-        live: tokio::sync::broadcast::Sender<(SessionId, brain_protocol::LiveEvent)>,
         opening_history: Vec<serde_json::Value>,
         pending_tools: Arc<PendingToolCalls>,
-    ) -> Result<Self, KernelError> {
+    ) -> Result<Self, Error> {
         // The row is owned, and neither value is read again after this: `sealed` and
         // `context` replace them. Cloning first deep-copied the whole configuration and
         // the whole context on every rehydration.
         let sealed: SealedSessionConfig =
             serde_json::from_value(std::mem::take(&mut row.configuration))
-                .map_err(|error| KernelError::Journal(error.to_string()))?;
+                .map_err(|error| Error::Journal(error.to_string()))?;
         let context = serde_json::from_value(std::mem::take(&mut row.context))
-            .map_err(|error| KernelError::Journal(error.to_string()))?;
-        let presentation_bytes = brain_protocol::canonical_json(&serde_json::json!({
-            "brain_configuration": sealed.brain_configuration,
-            "presentation": sealed.presentation,
-        }))
-        .map_err(|error| KernelError::Journal(error.to_string()))?;
+            .map_err(|error| Error::Journal(error.to_string()))?;
         Ok(Self {
-            presentation: Presentation {
-                bytes: presentation_bytes,
-                identity: row.presentation_identity,
-            },
             row,
             sealed,
             context,
             store,
-            loop_executor,
-            model_executor,
-            tool_executor,
-            max_decisions_per_turn,
-            tool_deadline_ms,
+            config,
             receiver,
             cancel_requested,
-            live,
             opening_history,
-            // A restored session has journalled messages it cannot count without reading
-            // its own history back, so the first request after a restart records its
-            // messages whole and every one after that is a delta again.
-            journalled_messages: 0,
+            journalled: None,
             pending_tools,
             turn_opening_context: None,
         })
@@ -143,13 +128,16 @@ impl SessionActor {
                 SessionCommand::End { reply } => {
                     let _ = reply.send(self.end());
                 }
+                SessionCommand::Append { record, reply } => {
+                    let _ = reply.send(self.append_between_turns(record));
+                }
             }
         }
     }
 
-    async fn turn(&mut self, request: MessageRequest) -> Result<Session, KernelError> {
+    async fn turn(&mut self, request: MessageRequest) -> Result<SessionSummary, Error> {
         if !matches!(self.row.status, SessionStatus::Idle) {
-            return Err(KernelError::InvalidState("session is not idle".into()));
+            return Err(Error::InvalidState("session is not idle".into()));
         }
         self.cancel_requested.store(false, Ordering::Release);
         self.commit(
@@ -166,14 +154,8 @@ impl SessionActor {
         let mut observation = Observation::UserMessage {
             input: request.input,
         };
-        // Hashed once per turn, not once per decision: the turn's decisions all derive
-        // from this opening context plus the observations between them, so hashing the
-        // whole envelope again on every activation re-read the conversation for a value
-        // that only its opening state and the per-decision observation distinguish.
-        let turn_context_identity =
-            Identity::of_bytes(&serde_json::to_vec(&self.context).map_err(json_error)?);
         self.turn_opening_context = Some(self.context.clone());
-        for decision_index in 0..self.max_decisions_per_turn {
+        for decision_index in 0..self.config.max_decisions_per_turn {
             if self.cancel_requested.load(Ordering::Acquire) {
                 return self.finish_turn(vec![AppendRecord::new(
                     "turn_failed",
@@ -181,22 +163,11 @@ impl SessionActor {
                 )]);
             }
             let runtime = RuntimeEnvelope::at(
-                &self.row.journal_id,
+                &self.row.session_id,
                 self.row.through_sequence,
                 decision_index,
             );
-            // The sealed presentation is the same on every decision of the session, so
-            // take the identity it was sealed with instead of reading its bytes again.
-            // The identity of an activation is (presentation, turn-opening context,
-            // observation, position): nothing outside Brain recomputes this one, so it
-            // does not have to be canonical — it has to be deterministic and cheap.
-            let activation_identity = Identity::over(&[
-                self.presentation.identity,
-                turn_context_identity,
-                Identity::of_bytes(
-                    &serde_json::to_vec(&(&observation, &runtime)).map_err(json_error)?,
-                ),
-            ]);
+            let observation_kind = observation_kind(&observation);
             // Moved, not cloned: nothing reads `self.context` while the activation is in
             // flight, and every executor returns the turn's context in its output — the
             // worker-backed one echoes what it holds resident, a scripted one passes the
@@ -206,17 +177,18 @@ impl SessionActor {
                 context,
                 observation,
                 configuration: self.sealed.brain_configuration.clone(),
-                presentation: self.presentation.clone(),
+                system: self.sealed.system.clone(),
+                tools: self.sealed.tools.clone(),
                 runtime,
             };
             self.commit(
                 vec![AppendRecord::new(
-                    "activation_intent",
-                    serde_json::json!({"request_identity":activation_identity}),
+                    "activation_started",
+                    serde_json::json!({"observation": observation_kind}),
                 )],
                 SessionUpdate::default(),
             )?;
-            let loop_executor = self.loop_executor.clone();
+            let loop_executor = self.config.loop_executor.clone();
             let agentloop_identity = self.sealed.agentloop_identity.clone();
             let session_id = self.row.session_id.clone();
             let output = match self
@@ -226,7 +198,7 @@ impl SessionActor {
                 Err(()) => return self.cancel_turn(),
                 Ok(Ok(output)) => output,
                 Ok(Err(error)) => {
-                    return self.finish_turn(vec![AppendRecord::new("activation_result", serde_json::json!({"error":error.to_string()})), AppendRecord::new("turn_failed", serde_json::json!({"code":"agentloop_failed","message":error.to_string()}))]);
+                    return self.finish_turn(vec![AppendRecord::new("activation_failed", serde_json::json!({"error":error.to_string()})), AppendRecord::new("turn_failed", serde_json::json!({"code":"agentloop_failed","message":error.to_string()}))]);
                 }
             };
             if output.context.protocol_version != "agentloop/v1" {
@@ -238,62 +210,57 @@ impl SessionActor {
             self.context = output.context;
             self.commit(
                 vec![AppendRecord::new(
-                    "activation_result",
+                    "activation_ended",
                     serde_json::json!({"decision": decision_kind(&output.decision)}),
                 )],
                 SessionUpdate::default(),
             )?;
             observation = match output.decision {
-                Decision::Model { request } => {
-                    let intent_sequence = self.row.through_sequence + 1;
-                    let operation_id = operation_id(&self.row.journal_id, intent_sequence);
-                    let identity = Identity::of(&request).map_err(identity_error)?;
-                    // Only the messages this decision added. `request_identity` still
-                    // covers the whole request, so a reader that rebuilds the messages by
-                    // concatenation can check that what it rebuilt is what was sent: if an
-                    // agentloop rewrote what it had already said, the identity will not
-                    // match and the reader knows it, rather than being handed a
-                    // conversation that never happened.
-                    let sent = request.messages.len();
-                    let from = self.journalled_messages.min(sent);
+                Decision::Model { mut request } => {
+                    // What the loop left unsaid is what the session was created with.
+                    if request.system.is_none() {
+                        request.system = Some(self.sealed.system.clone());
+                    }
+                    if request.tools.is_none() {
+                        request.tools = Some(
+                            self.sealed
+                                .tools
+                                .iter()
+                                .map(|tool| tool.name.clone())
+                                .collect(),
+                        );
+                    }
+                    if request.response_format.is_none() {
+                        request.response_format = self.sealed.response_format.clone();
+                    }
+                    let tools = match self.offered_tools(&request) {
+                        Ok(tools) => tools,
+                        Err(message) => return self.fail_turn("invalid_model_decision", &message),
+                    };
+                    let sequence = self.row.through_sequence + 1;
+                    let record = self.model_call_record(&request)?;
                     self.commit(
-                        vec![AppendRecord::new(
-                            "model_intent",
-                            serde_json::json!({
-                                "operation_id": operation_id,
-                                "request_identity": identity,
-                                "messages_from": from,
-                                "messages_total": sent,
-                                "messages": &request.messages[from..],
-                                "response_format": request.response_format,
-                                "max_output_tokens": request.max_output_tokens,
-                            }),
-                        )],
+                        vec![AppendRecord::new("model_call_started", record)],
                         SessionUpdate::default(),
                     )?;
-                    self.journalled_messages = sent;
-                    // Model output is streamed and not stored. `model_result` used to
-                    // carry every delta beside the assembled response, so a turn wrote its
-                    // own output twice -- once in pieces and once whole -- and nothing ever
-                    // read the pieces. The assembled response is the durable truth; a
+                    // Model output is streamed and not stored. `model_call_ended` used
+                    // to carry every delta beside the assembled response, so a turn wrote
+                    // its own output twice -- once in pieces and once whole -- and nothing
+                    // ever read the pieces. The assembled response is the durable truth; a
                     // client that wants the pieces takes them off the stream as they
                     // arrive. Sending is non-blocking and drops for a subscriber that has
                     // fallen behind, so watching a turn cannot slow it down.
-                    let live = self.live.clone();
+                    let live = self.config.live.clone();
                     let live_session = self.row.session_id.clone();
-                    let live_operation = operation_id.clone();
-                    let model_executor = self.model_executor.clone();
+                    let model_executor = self.config.model_executor.clone();
                     let model_binding = self.sealed.model.clone();
-                    let model_presentation = self.sealed.presentation.clone();
                     match self
                         .interruptible(model_executor.execute(
-                            &operation_id,
-                            &identity,
                             &model_binding,
-                            &model_presentation,
                             request,
+                            &tools,
                             &mut |event| {
-                                if let Some(streaming) = streaming_event(&live_operation, &event) {
+                                if let Some(streaming) = streaming_event(sequence, &event) {
                                     let _ = live.send((
                                         live_session.clone(),
                                         LiveEvent::Streaming(streaming),
@@ -305,13 +272,19 @@ impl SessionActor {
                     {
                         Err(()) => return self.cancel_turn(),
                         Ok(Ok(result)) => {
-                            self.commit(vec![AppendRecord::new("model_result", serde_json::json!({"operation_id":operation_id,"result":result}))], SessionUpdate::default())?;
+                            self.commit(
+                                vec![AppendRecord::new(
+                                    "model_call_ended",
+                                    serde_json::json!({"sequence":sequence,"result":result}),
+                                )],
+                                SessionUpdate::default(),
+                            )?;
                             Observation::ModelCompleted {
                                 response: serde_json::to_value(result).map_err(json_error)?,
                             }
                         }
                         Ok(Err(error)) => {
-                            return self.executor_failure("model", operation_id, error);
+                            return self.executor_failure("model_call", sequence, error);
                         }
                     }
                 }
@@ -323,7 +296,7 @@ impl SessionActor {
                         );
                     }
                     let mut dispatches = Vec::with_capacity(calls.len());
-                    let mut intents = Vec::with_capacity(calls.len());
+                    let mut started = Vec::with_capacity(calls.len());
                     for (offset, invocation) in calls.into_iter().enumerate() {
                         let binding = self
                             .sealed
@@ -332,55 +305,34 @@ impl SessionActor {
                             .find(|binding| binding.name == invocation.name)
                             .cloned()
                             .ok_or_else(|| {
-                                KernelError::InvalidState(format!(
-                                    "unsealed Tool {}",
-                                    invocation.name
-                                ))
+                                Error::InvalidState(format!("unsealed Tool {}", invocation.name))
                             })?;
-                        let operation_id = operation_id(
-                            &self.row.journal_id,
-                            self.row.through_sequence + offset as u64 + 1,
-                        );
-                        // The Environment recomputes this to decide whether a
-                        // redelivery is the same effect, so it must be canonical.
-                        let identity = Identity::of(&EnvironmentRequest::Invoke {
-                            call_id: invocation.call_id.clone(),
-                            tool: binding.name.clone(),
-                            input: invocation.input.clone(),
-                            deadline_ms: self.tool_deadline_ms,
-                        })
-                        .map_err(identity_error)?;
                         let dispatch = ToolDispatch {
-                            operation_id: operation_id.clone(),
-                            request_identity: identity,
+                            sequence: self.row.through_sequence + offset as u64 + 1,
                             session_id: self.row.session_id.clone(),
                             binding,
                             invocation,
-                            deadline_ms: self.tool_deadline_ms,
+                            deadline_ms: self.config.tool_deadline_ms,
                         };
-                        intents.push(AppendRecord::new(
-                            "tool_intent",
+                        started.push(AppendRecord::new(
+                            "tool_call_started",
                             serde_json::to_value(&dispatch).map_err(json_error)?,
                         ));
                         dispatches.push(dispatch);
                     }
-                    // A client-hosted call parks before the intent commit: the commit is
-                    // what puts `tool_intent` on the live feed, so a client answering off
-                    // that feed must never find the park missing.
+                    // A client-hosted call parks before the started commit: the commit is
+                    // what puts `tool_call_started` on the live feed, so a client
+                    // answering off that feed must never find the park missing.
                     let mut receivers: Vec<Option<oneshot::Receiver<Outcome>>> = dispatches
                         .iter()
                         .map(|dispatch| {
-                            matches!(dispatch.binding.hosting, ToolHosting::Client).then(|| {
-                                self.pending_tools.park(
-                                    dispatch.session_id.clone(),
-                                    dispatch.operation_id.clone(),
-                                )
-                            })
+                            matches!(dispatch.binding.hosting, ToolHosting::Client)
+                                .then(|| self.pending_tools.park(dispatch.sequence))
                         })
                         .collect();
-                    if let Err(error) = self.commit(intents, SessionUpdate::default()) {
+                    if let Err(error) = self.commit(started, SessionUpdate::default()) {
                         for dispatch in &dispatches {
-                            self.pending_tools.discard(&dispatch.operation_id);
+                            self.pending_tools.discard(dispatch.sequence);
                         }
                         return Err(error);
                     }
@@ -390,11 +342,11 @@ impl SessionActor {
                             .cloned()
                             .enumerate()
                             .map(|(index, dispatch)| {
-                                let executor = self.tool_executor.clone();
+                                let executor = self.config.tool_executor.clone();
                                 let pending = self.pending_tools.clone();
                                 let receiver = receivers[index].take();
                                 async move {
-                                    let operation_id = dispatch.operation_id.clone();
+                                    let sequence = dispatch.sequence;
                                     let call_id = dispatch.invocation.call_id.clone();
                                     let deadline = Duration::from_millis(dispatch.deadline_ms);
                                     // The deadline is enforced here, on the calling side: the
@@ -409,7 +361,7 @@ impl SessionActor {
                                                 // cancellation does.
                                                 Ok(Err(_)) => Ok((Outcome::Cancelled, false)),
                                                 Err(_) => {
-                                                    pending.discard(&operation_id);
+                                                    pending.discard(sequence);
                                                     Ok((Outcome::Timeout, true))
                                                 }
                                             }
@@ -424,7 +376,7 @@ impl SessionActor {
                                             Err(_) => Ok((Outcome::Timeout, true)),
                                         },
                                     };
-                                    (index, operation_id, call_id, result)
+                                    (index, sequence, call_id, result)
                                 }
                             });
                     let completed = match self.interruptible(join_all(futures)).await {
@@ -437,7 +389,7 @@ impl SessionActor {
                     let mut terminal = Vec::with_capacity(completed.len());
                     let mut results = Vec::with_capacity(completed.len());
                     let mut expired = Vec::new();
-                    for (index, operation_id, call_id, result) in completed {
+                    for (index, sequence, call_id, result) in completed {
                         let result = match result {
                             Ok((outcome, timed_out)) => {
                                 if timed_out {
@@ -452,8 +404,8 @@ impl SessionActor {
                             },
                         };
                         terminal.push(AppendRecord::new(
-                            "tool_result",
-                            serde_json::json!({"operation_id":operation_id,"result":result}),
+                            "tool_call_ended",
+                            serde_json::json!({"sequence":sequence,"result":result}),
                         ));
                         results.push(serde_json::to_value(result).map_err(json_error)?);
                     }
@@ -488,7 +440,7 @@ impl SessionActor {
                 Decision::Finish { result } => {
                     self.turn_opening_context = None;
                     return self.finish_turn(vec![AppendRecord::new(
-                        "turn_finished",
+                        "turn_ended",
                         serde_json::json!({"result":result}),
                     )]);
                 }
@@ -511,21 +463,92 @@ impl SessionActor {
         )
     }
 
+    /// The definitions of the tools a model request offers, in the request's order.
+    ///
+    /// The loop chooses by name from what the session was created with: a name outside
+    /// that set would be a tool nothing admitted and nothing can dispatch, and a repeated
+    /// name would offer the model the same tool twice. Both fail the decision.
+    fn offered_tools(&self, request: &ModelRequest) -> Result<Vec<ToolDefinition>, String> {
+        if request
+            .system
+            .as_deref()
+            .is_some_and(|system| system.len() > 131_072)
+        {
+            return Err("system prompt exceeds 128 KiB".into());
+        }
+        let names = request.tools.as_deref().unwrap_or(&[]);
+        let mut tools = Vec::with_capacity(names.len());
+        for (index, name) in names.iter().enumerate() {
+            if names[..index].contains(name) {
+                return Err(format!("Tool `{name}` is offered twice"));
+            }
+            let definition = self
+                .sealed
+                .tools
+                .iter()
+                .find(|tool| &tool.name == name)
+                .ok_or_else(|| format!("Tool `{name}` is not one the session was created with"))?;
+            tools.push(definition.clone());
+        }
+        Ok(tools)
+    }
+
+    /// The `model_call_started` record: the request, less the prefix the journal holds.
+    ///
+    /// The system prompt is position zero and the messages follow it. The record carries
+    /// everything from the first position that differs from the last recorded request to
+    /// the end, and `messages_from` says where that is. A record starting at zero carries
+    /// the system prompt; a later one is continuing the system prompt already written.
+    /// Nothing already written is touched, and a reader rebuilds the request by keeping
+    /// the previous one up to `messages_from` and appending this record's messages.
+    fn model_call_record(&mut self, request: &ModelRequest) -> Result<serde_json::Value, Error> {
+        let system = xxhash_rust::xxh3::xxh3_64(request.system.as_deref().unwrap_or("").as_bytes());
+        let messages = request
+            .messages
+            .iter()
+            .map(|message| {
+                serde_json::to_vec(message).map(|bytes| xxhash_rust::xxh3::xxh3_64(&bytes))
+            })
+            .collect::<Result<Vec<u64>, _>>()
+            .map_err(json_error)?;
+        let from = match &self.journalled {
+            Some(journalled) if journalled.system == system => journalled
+                .messages
+                .iter()
+                .zip(&messages)
+                .take_while(|(previous, current)| previous == current)
+                .count(),
+            _ => 0,
+        };
+        let mut record = serde_json::json!({
+            "tools": request.tools,
+            "messages_from": from,
+            "messages_total": request.messages.len(),
+            "messages": &request.messages[from..],
+            "response_format": request.response_format,
+            "max_output_tokens": request.max_output_tokens,
+        });
+        if from == 0 {
+            record["system"] =
+                serde_json::Value::String(request.system.clone().unwrap_or_default());
+        }
+        self.journalled = Some(Journalled { system, messages });
+        Ok(record)
+    }
+
+    /// The effect failed, so the turn does. `ambiguous` says whether the effect may have
+    /// happened anyway: a stream that broke mid-answer, a receipt that never came.
     fn executor_failure(
         &mut self,
         kind: &str,
-        operation_id: brain_protocol::OperationId,
-        error: KernelError,
-    ) -> Result<Session, KernelError> {
-        let outcome = if matches!(error, KernelError::Ambiguous(_)) {
-            format!("{kind}_ambiguous")
-        } else {
-            format!("{kind}_result")
-        };
+        sequence: u64,
+        error: Error,
+    ) -> Result<SessionSummary, Error> {
+        let ambiguous = matches!(error, Error::Ambiguous(_));
         self.finish_turn(vec![
             AppendRecord::new(
-                outcome,
-                serde_json::json!({"operation_id":operation_id,"error":error.to_string()}),
+                format!("{kind}_failed"),
+                serde_json::json!({"sequence":sequence,"error":error.to_string(),"ambiguous":ambiguous}),
             ),
             AppendRecord::new(
                 "turn_failed",
@@ -534,7 +557,7 @@ impl SessionActor {
         ])
     }
 
-    fn fail_turn(&mut self, code: &str, message: &str) -> Result<Session, KernelError> {
+    fn fail_turn(&mut self, code: &str, message: &str) -> Result<SessionSummary, Error> {
         self.finish_turn(vec![AppendRecord::new(
             "turn_failed",
             serde_json::json!({"code":code,"message":message}),
@@ -547,9 +570,9 @@ impl SessionActor {
     /// turn the context is held in memory: it grows with every decision, so writing it
     /// per decision costs the sum of every intermediate size rather than the final one,
     /// and nothing ever reads those intermediate values. A restart closes an in-flight
-    /// turn with `turn_interrupted` rather than resuming it, and the row is read back only
+    /// turn with `turn_failed` (code `interrupted`) rather than resuming it, and the row is read back only
     /// when an Idle session is rehydrated — which is to say, here.
-    fn finish_turn(&mut self, records: Vec<AppendRecord>) -> Result<Session, KernelError> {
+    fn finish_turn(&mut self, records: Vec<AppendRecord>) -> Result<SessionSummary, Error> {
         // An abnormal end rolls the context back to the turn's opening state; the
         // decisions the turn did make stay journaled as events. Normal completion
         // cleared this and keeps the terminal context.
@@ -568,77 +591,74 @@ impl SessionActor {
         Ok(self.public())
     }
 
-    fn cancel_turn(&mut self) -> Result<Session, KernelError> {
+    fn cancel_turn(&mut self) -> Result<SessionSummary, Error> {
         self.fail_turn("cancelled", "turn cancelled")
     }
 
-    async fn cancel_tools(&mut self, dispatches: &[ToolDispatch]) -> Result<(), KernelError> {
+    async fn cancel_tools(&mut self, dispatches: &[ToolDispatch]) -> Result<(), Error> {
         let mut cancellations = Vec::with_capacity(dispatches.len());
-        let mut intents = Vec::with_capacity(dispatches.len());
+        let mut started = Vec::with_capacity(dispatches.len());
         for (offset, dispatch) in dispatches.iter().enumerate() {
-            let request = EnvironmentRequest::Cancel {
-                target_operation_id: dispatch.operation_id.clone(),
-            };
             let cancellation = ToolCancellation {
-                operation_id: operation_id(
-                    &self.row.journal_id,
-                    self.row.through_sequence + offset as u64 + 1,
-                ),
-                request_identity: Identity::of(&request).map_err(identity_error)?,
-                target_operation_id: dispatch.operation_id.clone(),
+                sequence: self.row.through_sequence + offset as u64 + 1,
+                target_sequence: dispatch.sequence,
                 session_id: dispatch.session_id.clone(),
                 binding: dispatch.binding.clone(),
             };
-            intents.push(AppendRecord::new(
-                "tool_cancel_intent",
+            started.push(AppendRecord::new(
+                "tool_cancel_started",
                 serde_json::to_value(&cancellation).map_err(json_error)?,
             ));
             cancellations.push(cancellation);
         }
-        self.commit(intents, SessionUpdate::default())?;
-        let cancellation_ids: Vec<_> = cancellations
+        self.commit(started, SessionUpdate::default())?;
+        let sequences: Vec<u64> = cancellations
             .iter()
-            .map(|cancellation| cancellation.operation_id.clone())
+            .map(|cancellation| cancellation.sequence)
             .collect();
         let futures = cancellations.into_iter().map(|cancellation| {
-            let executor = self.tool_executor.clone();
+            let executor = self.config.tool_executor.clone();
             let pending = self.pending_tools.clone();
             async move {
-                let operation_id = cancellation.operation_id.clone();
+                let sequence = cancellation.sequence;
                 // A client-hosted call has no environment to tell: dropping the park is
-                // the cancellation, and the journaled `tool_cancel_intent` above is the
+                // the cancellation, and the journaled `tool_cancel_started` above is the
                 // signal the client aborts its local handler on.
                 let result = if matches!(cancellation.binding.hosting, ToolHosting::Client) {
-                    pending.discard(&cancellation.target_operation_id);
+                    pending.discard(cancellation.target_sequence);
                     Ok(())
                 } else {
                     executor.cancel(cancellation).await
                 };
-                (operation_id, result)
+                (sequence, result)
             }
         });
         let results = tokio::time::timeout(Duration::from_secs(5), join_all(futures)).await;
         let records = match results {
             Ok(results) => results
                 .into_iter()
-                .map(|(operation_id, result)| {
-                    AppendRecord::new(
-                        "tool_cancel_result",
-                        match result {
-                            Ok(()) => serde_json::json!({"operation_id":operation_id,"cancelled":true}),
-                            Err(error) => serde_json::json!({"operation_id":operation_id,"error":error.to_string()}),
-                        },
-                    )
+                .map(|(sequence, result)| match result {
+                    Ok(()) => AppendRecord::new(
+                        "tool_cancel_ended",
+                        serde_json::json!({"sequence":sequence}),
+                    ),
+                    Err(error) => AppendRecord::new(
+                        "tool_cancel_failed",
+                        serde_json::json!({"sequence":sequence,"error":error.to_string(),"ambiguous":false}),
+                    ),
                 })
                 .collect(),
-            Err(_) => cancellation_ids
+            // Nothing answered in time: whether the environment stopped the work is not
+            // known, and the record says so.
+            Err(_) => sequences
                 .into_iter()
-                .map(|operation_id| {
+                .map(|sequence| {
                     AppendRecord::new(
-                        "tool_cancel_ambiguous",
+                        "tool_cancel_failed",
                         serde_json::json!({
-                            "operation_id":operation_id,
-                            "error":"Environment cancellation deadline exceeded"
+                            "sequence":sequence,
+                            "error":"Environment cancellation deadline exceeded",
+                            "ambiguous":true
                         }),
                     )
                 })
@@ -664,11 +684,9 @@ impl SessionActor {
         }
     }
 
-    fn end(&mut self) -> Result<Session, KernelError> {
+    fn end(&mut self) -> Result<SessionSummary, Error> {
         if matches!(self.row.status, SessionStatus::Running) {
-            return Err(KernelError::InvalidState(
-                "cannot end a running session".into(),
-            ));
+            return Err(Error::InvalidState("cannot end a running session".into()));
         }
         if !matches!(self.row.status, SessionStatus::Ended) {
             self.commit(
@@ -683,11 +701,21 @@ impl SessionActor {
         Ok(self.public())
     }
 
+    /// A record for something the host did to the session between turns. Refused while
+    /// a turn is running: the turn owns the sequence until it ends.
+    fn append_between_turns(&mut self, record: AppendRecord) -> Result<u64, Error> {
+        if !matches!(self.row.status, SessionStatus::Idle) {
+            return Err(Error::InvalidState("session is not idle".into()));
+        }
+        self.commit(vec![record], SessionUpdate::default())?;
+        Ok(self.row.through_sequence)
+    }
+
     fn commit(
         &mut self,
         records: Vec<AppendRecord>,
         update: SessionUpdate<'_>,
-    ) -> Result<Vec<JournalRecord>, KernelError> {
+    ) -> Result<Vec<JournalRecord>, Error> {
         let status = update.status.clone();
         let saved = self.store.append(
             &self.row.session_id,
@@ -709,22 +737,24 @@ impl SessionActor {
     ///
     /// One activation, journalled like any other, and no decision is acted on: this is not
     /// a turn, it is the loop reading what came before one.
-    async fn announce_history(&mut self) -> Result<(), KernelError> {
+    async fn announce_history(&mut self) -> Result<(), Error> {
         let history = std::mem::take(&mut self.opening_history);
         if history.is_empty() {
             return Ok(());
         }
         // Derived the same way every other activation's is, so an agentloop that depends
         // on it sees nothing unusual about this one.
-        let runtime = RuntimeEnvelope::at(&self.row.journal_id, self.row.through_sequence, 0);
+        let runtime = RuntimeEnvelope::at(&self.row.session_id, self.row.through_sequence, 0);
         let activation = ActivationInput {
             context: self.context.clone(),
             observation: Observation::SessionStarted { history },
             configuration: self.sealed.brain_configuration.clone(),
-            presentation: self.presentation.clone(),
+            system: self.sealed.system.clone(),
+            tools: self.sealed.tools.clone(),
             runtime,
         };
         let output = self
+            .config
             .loop_executor
             .activate(
                 &self.row.session_id,
@@ -733,7 +763,7 @@ impl SessionActor {
             )
             .await?;
         if output.context.protocol_version != self.context.protocol_version {
-            return Err(KernelError::InvalidState(
+            return Err(Error::InvalidState(
                 "Agentloop returned an unsupported context version".into(),
             ));
         }
@@ -753,13 +783,11 @@ impl SessionActor {
         Ok(())
     }
 
-    fn public(&self) -> Session {
-        Session {
+    fn public(&self) -> SessionSummary {
+        SessionSummary {
             session_id: self.row.session_id.clone(),
-            journal_id: self.row.journal_id.clone(),
             status: self.row.status.clone(),
             last_sequence: self.row.through_sequence,
-            config_hash: self.row.presentation_identity,
             share_key: String::new(),
         }
     }
@@ -769,10 +797,10 @@ impl SessionActor {
 ///
 /// This record carried the decision whole, and a model decision holds the entire request:
 /// the conversation was written here on every turn, and then written again by the
-/// `model_intent` that followed it. Between them the journal grew with the square of the
-/// turn count. Every variant is followed by a record carrying its detail -- a model
-/// decision by `model_intent`, an emit by `output_emitted`, a failure by `turn_failed` --
-/// so the kind is all this one has to add.
+/// `model_call_started` that followed it. Between them the journal grew with the square
+/// of the turn count. Every variant is followed by a record carrying its detail -- a model
+/// decision by `model_call_started`, an emit by `output_emitted`, a failure by
+/// `turn_failed` -- so the kind is all this one has to add.
 fn decision_kind(decision: &Decision) -> &'static str {
     match decision {
         Decision::Model { .. } => "model",
@@ -783,11 +811,25 @@ fn decision_kind(decision: &Decision) -> &'static str {
     }
 }
 
+/// What the agentloop was shown, without what it was shown. The detail is in the record
+/// before this one: the message in `turn_started`, the response in `model_call_ended`,
+/// the results in `tool_call_ended`.
+fn observation_kind(observation: &Observation) -> &'static str {
+    match observation {
+        Observation::SessionStarted { .. } => "session_started",
+        Observation::UserMessage { .. } => "user_message",
+        Observation::ModelCompleted { .. } => "model_completed",
+        Observation::ToolsCompleted { .. } => "tools_completed",
+        Observation::Emitted { .. } => "emitted",
+        Observation::Cancelled => "cancelled",
+    }
+}
+
 /// One piece of model output, as a client watching the turn should see it.
 ///
 /// Usage is left out: it is an accounting total that arrives at the end and is already in
-/// `model_result`, and it is not something a reader is watching the stream for.
-fn streaming_event(operation_id: &OperationId, event: &ModelStreamEvent) -> Option<StreamingEvent> {
+/// `model_call_ended`, and it is not something a reader is watching the stream for.
+fn streaming_event(sequence: u64, event: &ModelStreamEvent) -> Option<StreamingEvent> {
     let (event_type, data) = match event {
         ModelStreamEvent::TextDelta { index, text } => (
             "assistant_delta",
@@ -813,15 +855,12 @@ fn streaming_event(operation_id: &OperationId, event: &ModelStreamEvent) -> Opti
         | ModelStreamEvent::MessageDone { .. } => return None,
     };
     Some(StreamingEvent {
-        operation_id: operation_id.clone(),
+        sequence,
         event_type: event_type.to_owned(),
         data,
     })
 }
 
-fn json_error(error: serde_json::Error) -> KernelError {
-    KernelError::InvalidState(error.to_string())
-}
-fn identity_error(error: brain_protocol::IdentityError) -> KernelError {
-    KernelError::InvalidState(error.to_string())
+fn json_error(error: serde_json::Error) -> Error {
+    Error::InvalidState(error.to_string())
 }

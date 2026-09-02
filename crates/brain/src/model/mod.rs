@@ -1,7 +1,5 @@
 use async_trait::async_trait;
-use brain_protocol::{
-    ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent, OperationId,
-};
+use brain_protocol::{ModelBinding, ModelRequest, ModelResult, ModelStreamEvent, ToolDefinition};
 
 mod accumulator;
 mod anthropic;
@@ -22,19 +20,17 @@ pub use registry::{
     valid_provider_name,
 };
 
-use brain_protocol::Identity;
-
-use crate::KernelError;
+use crate::Error;
 
 #[async_trait]
 pub trait ModelExecutor: Send + Sync + 'static {
+    /// Makes one model call. `tools` are the definitions of the tools the request names,
+    /// resolved by the session from what it was created with, in the request's order.
     async fn execute(
         &self,
-        operation_id: &OperationId,
-        request_identity: &Identity,
         binding: &ModelBinding,
-        presentation: &ModelPresentation,
         request: ModelRequest,
+        tools: &[ToolDefinition],
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
-    ) -> Result<ModelResult, KernelError>;
+    ) -> Result<ModelResult, Error>;
 }

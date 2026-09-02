@@ -1,20 +1,82 @@
 //! Reproduces brain#124: turn round-trip degrading as sessions accumulate.
 //!
-//! Pure kernel, scripted executors — if latency scales with resident session count
-//! here, the cost is in the kernel or journal, not the HTTP or loophost layers.
+//! Pure runtime, scripted executors — if latency scales with resident session count
+//! here, the cost is in the runtime or journal, not the HTTP or loophost layers.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use brain::{Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor, ToolExecutor};
+use brain::{
+    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionConfig,
+    ToolExecutor,
+};
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopIdentity, Decision, Identity, MessageRequest,
-    ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent, Observation,
-    OperationId, Outcome, ResolvedSessionRequest, SealedSessionConfig, ToolCancellation,
-    ToolDispatch,
+    ActivationInput, ActivationOutput, AgentloopIdentity, Decision, MessageRequest, ModelBinding,
+    ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, ResolvedSessionRequest,
+    SealedSessionConfig, SessionId, ToolCancellation, ToolDefinition, ToolDispatch,
 };
 use brain_telemetry::telemetry_channel;
+/// What the host gives every session: the store it journals to and the executors it
+/// performs effects with. Built the way the server builds it.
+struct Runtime {
+    store: Arc<ObservedJournal>,
+    config: Arc<SessionConfig>,
+}
+
+#[allow(dead_code)]
+impl Runtime {
+    fn open(
+        data_dir: &Path,
+        telemetry: brain_telemetry::TelemetryPublisher,
+        max_decisions_per_turn: usize,
+        tool_deadline_ms: u64,
+        loop_executor: Arc<dyn LoopExecutor>,
+        model_executor: Arc<dyn ModelExecutor>,
+        tool_executor: Arc<dyn ToolExecutor>,
+    ) -> Self {
+        let journal: Arc<dyn brain::JournalStore> =
+            Arc::new(brain::SegmentJournal::open(&data_dir.join("journal")).unwrap());
+        let store = Arc::new(ObservedJournal::new(journal, telemetry));
+        brain::interrupt_unfinished_turns(&*store).unwrap();
+        let config = Arc::new(SessionConfig {
+            max_decisions_per_turn,
+            tool_deadline_ms,
+            loop_executor,
+            model_executor,
+            tool_executor,
+            live: store.live_sender(),
+        });
+        Self { store, config }
+    }
+
+    fn store(&self) -> Arc<dyn brain::JournalStore> {
+        self.store.clone()
+    }
+
+    fn events(
+        &self,
+        session_id: &SessionId,
+        after: u64,
+        limit: usize,
+    ) -> brain_protocol::EventPage {
+        brain::event_page(
+            self.store.records_after(session_id, after, limit).unwrap(),
+            after,
+        )
+    }
+
+    fn session(&self, session_id: &SessionId) -> brain_protocol::SessionSummary {
+        self.store.session_summary(session_id).unwrap().unwrap()
+    }
+
+    fn subscribe(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
+        self.store.subscribe()
+    }
+}
 
 struct OneModelTurn;
 
@@ -25,11 +87,13 @@ impl LoopExecutor for OneModelTurn {
         _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
-    ) -> Result<ActivationOutput, KernelError> {
+    ) -> Result<ActivationOutput, Error> {
         let decision = match input.observation {
             Observation::ModelCompleted { .. } => Decision::Finish { result: None },
             _ => Decision::Model {
                 request: ModelRequest {
+                    system: None,
+                    tools: None,
                     messages: vec![brain_protocol::Message::user_text("hello")],
                     response_format: None,
                     max_output_tokens: Some(16),
@@ -49,13 +113,11 @@ struct InstantModel;
 impl ModelExecutor for InstantModel {
     async fn execute(
         &self,
-        _operation_id: &OperationId,
-        _request_digest: &Identity,
         _binding: &ModelBinding,
-        _presentation: &ModelPresentation,
         _request: ModelRequest,
+        _tools: &[ToolDefinition],
         _on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
-    ) -> Result<ModelResult, KernelError> {
+    ) -> Result<ModelResult, Error> {
         Ok(ModelResult {
             message: brain_protocol::Message::assistant(vec![brain_protocol::ContentBlock::text(
                 "hi",
@@ -70,10 +132,10 @@ struct NoTools;
 
 #[async_trait]
 impl ToolExecutor for NoTools {
-    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, KernelError> {
+    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, Error> {
         unreachable!()
     }
-    async fn cancel(&self, _cancellation: ToolCancellation) -> Result<(), KernelError> {
+    async fn cancel(&self, _cancellation: ToolCancellation) -> Result<(), Error> {
         unreachable!()
     }
 }
@@ -86,11 +148,9 @@ fn sealed() -> SealedSessionConfig {
             binding_id: "gateway".into(),
             model: "openai/test".into(),
         },
-        presentation: ModelPresentation {
-            system: "test".into(),
-            tools: Vec::new(),
-            response_format: None,
-        },
+        system: "test".into(),
+        response_format: None,
+        tools: Vec::new(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
     }
@@ -102,7 +162,9 @@ fn resolved(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
         agentloop_identity: sealed.agentloop_identity.clone(),
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
-        presentation: sealed.presentation.clone(),
+        system: sealed.system.clone(),
+        response_format: sealed.response_format.clone(),
+        tools: sealed.tools.clone(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
     }
@@ -117,28 +179,28 @@ async fn turn_latency_versus_resident_sessions() {
     let data_dir = std::env::temp_dir().join(format!("brain-scaling-{}", rand::random::<u64>()));
     std::fs::create_dir(&data_dir).unwrap();
     let (publisher, _worker) = telemetry_channel();
-    let kernel = Kernel::open(
-        KernelConfig {
-            data_dir: data_dir.clone(),
-            max_decisions_per_turn: 8,
-            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-            loop_executor: Arc::new(OneModelTurn),
-            model_executor: Arc::new(InstantModel),
-            tool_executor: Arc::new(NoTools),
-        },
+    let runtime = Runtime::open(
+        &data_dir,
         publisher,
-    )
-    .unwrap();
+        8,
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+        Arc::new(OneModelTurn),
+        Arc::new(InstantModel),
+        Arc::new(NoTools),
+    );
 
     let mut created = 0_u64;
     for checkpoint in [10_u64, 250, 500, 1000, 2000, 4000] {
         // Accumulate sessions, one settled turn each, like the bench box does.
         while created < checkpoint {
-            let handle = kernel
-                .begin_session(&resolved(&sealed()))
-                .unwrap()
-                .complete(sealed())
-                .unwrap();
+            let handle = Session::begin(
+                runtime.store(),
+                runtime.config.clone(),
+                &resolved(&sealed()),
+            )
+            .unwrap()
+            .complete(sealed())
+            .unwrap();
             handle
                 .message(MessageRequest {
                     input: "warm".into(),
@@ -148,11 +210,14 @@ async fn turn_latency_versus_resident_sessions() {
             created += 1;
         }
         // Measure fresh turns on one new session at this population.
-        let probe = kernel
-            .begin_session(&resolved(&sealed()))
-            .unwrap()
-            .complete(sealed())
-            .unwrap();
+        let probe = Session::begin(
+            runtime.store(),
+            runtime.config.clone(),
+            &resolved(&sealed()),
+        )
+        .unwrap()
+        .complete(sealed())
+        .unwrap();
         created += 1;
         let mut samples = Vec::with_capacity(100);
         for turn in 0..100 {
@@ -172,7 +237,7 @@ async fn turn_latency_versus_resident_sessions() {
         );
     }
 
-    drop(kernel);
+    drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let _ = std::fs::remove_dir_all(data_dir);
 }

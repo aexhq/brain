@@ -41,5 +41,12 @@ hidden JavaScript continuation.
 for that one model request. An extension can summarize or drop old messages without rewriting the
 append-only journal.
 
+The loop owns what the model is told. A session is created with a system prompt and a set of
+tools, and the loop sees them as `author.system` and `author.tools`. Every `turn.model()` uses
+them unless it says otherwise: `system` replaces the prompt for that call, and `tools` names which
+of the session's tools to offer. A name outside `author.tools` fails the turn. So a loop can swap
+the prompt for a subtask, offer fewer tools, or keep a stable prefix for prompt caching, and a loop
+that does none of that gets what the creator asked for.
+
 The compiled extension runs as a WebAssembly component with no filesystem, network, process,
 ambient clock, environment variables, or secrets. Pi and Codex use the same public API and runtime.

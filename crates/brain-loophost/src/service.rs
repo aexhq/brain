@@ -186,12 +186,10 @@ mod tests {
                 history: Vec::new(),
             },
             configuration: serde_json::json!({}),
-            presentation: brain_protocol::Presentation {
-                bytes: Vec::new(),
-                identity: brain_protocol::Identity::of_bytes(b"presentation"),
-            },
+            system: String::new(),
+            tools: Vec::new(),
             runtime: brain_protocol::RuntimeEnvelope::at(
-                &brain_protocol::JournalId::new("jrn_test"),
+                &brain_protocol::SessionId::new("ses_test"),
                 1,
                 0,
             ),

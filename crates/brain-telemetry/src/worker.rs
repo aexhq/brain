@@ -132,12 +132,10 @@ mod tests {
     fn record() -> TelemetryRecord {
         TelemetryRecord {
             kind: TelemetryKind::Event,
-            name: "turn_finished".into(),
+            name: "turn_ended".into(),
             payload: Vec::new(),
             session_id: None,
-            journal_id: None,
             event_id: None,
-            operation_id: None,
         }
     }
 
@@ -192,7 +190,7 @@ mod tests {
         let dead_letters = drain(&worker);
         assert_eq!(dead_letters.len(), 2);
         assert_eq!(dead_letters[0].record.name, DELIVERY_DROPPED_NAME);
-        assert_eq!(dead_letters[0].record.payload, b"turn_finished");
+        assert_eq!(dead_letters[0].record.payload, b"turn_ended");
 
         worker.deliver(&sink, dead_letters, Duration::ZERO).await;
         assert_eq!(publisher.metrics().dropped_records(), 4);

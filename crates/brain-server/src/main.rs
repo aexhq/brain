@@ -1,10 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use brain::{Kernel, KernelConfig};
+use brain::{JournalStore, ObservedJournal, SegmentJournal, SessionConfig};
 use brain_loophost::{LoopLimits, WorkerPool};
 use brain_server::{
-    EnvironmentRegistry, HttpEnvironmentAdapter, InMemoryEnvironmentDirectory,
+    EnvironmentRegistry, HttpEnvironmentAdapter, IdempotencyStore, InMemoryEnvironmentDirectory,
     LocalModelBindingStore, ServerApi, ServerConfig, ServerModelExecutor, ServerResources,
     ServerToolExecutor, WorkerLoopExecutor,
 };
@@ -52,8 +52,8 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         .ready()
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
-    // The server's one-off record of each session: the journal it was given, and the
-    // credential it calls a model with. Appended, never fsynced.
+    // The server's one-off record of each session: the credential it calls a model
+    // with. Appended, never fsynced.
     let metadata = Arc::new(brain_server::metadata::ServerMetadata::open(
         &brain_server::metadata::metadata_directory(&config.data_dir),
     )?);
@@ -96,22 +96,25 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
             config.environment_api_key.clone(),
         )),
     ));
-    let kernel = Kernel::open(
-        KernelConfig {
-            data_dir: config.data_dir.join("journal"),
-            max_decisions_per_turn: config.max_decisions_per_turn,
-            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-            loop_executor: Arc::new(WorkerLoopExecutor(loops.clone())),
-            model_executor: model,
-            tool_executor: Arc::new(ServerToolExecutor::new(environments.clone())),
-        },
-        telemetry,
-    )?;
-    // Restored sessions get back the journal ids this server minted for them. Best effort:
-    // one the metadata lost stays readable and refuses further turns.
-    kernel.adopt_journal_ids(&metadata.journals()?)?;
+    // Every session's journal, rebuilt from disk. A session that was mid-turn when the
+    // last process stopped is failed with code `interrupted` before anything is served.
+    let journal_dir = config.data_dir.join("journal").join("journal");
+    std::fs::create_dir_all(&journal_dir)?;
+    let journal: Arc<dyn JournalStore> = Arc::new(SegmentJournal::open(&journal_dir)?);
+    let store = Arc::new(ObservedJournal::new(journal, telemetry));
+    brain::interrupt_unfinished_turns(&*store)?;
+    let session_config = Arc::new(SessionConfig {
+        max_decisions_per_turn: config.max_decisions_per_turn,
+        tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
+        loop_executor: Arc::new(WorkerLoopExecutor(loops.clone())),
+        model_executor: model,
+        tool_executor: Arc::new(ServerToolExecutor::new(environments.clone())),
+        live: store.live_sender(),
+    });
     Ok(ServerApi::new(ServerResources {
-        kernel,
+        store,
+        session_config,
+        idempotency: IdempotencyStore::new(brain_server::idempotency::DEFAULT_RETENTION),
         loops,
         environments,
         models,
@@ -216,9 +219,7 @@ impl TelemetrySink for LogSink {
                 telemetry_kind = ?record.kind,
                 telemetry_name = %record.name,
                 session_id = record.session_id.as_ref().map(ToString::to_string),
-                journal_id = record.journal_id.as_ref().map(ToString::to_string),
                 event_id = record.event_id.as_ref().map(ToString::to_string),
-                operation_id = record.operation_id.as_ref().map(ToString::to_string),
                 payload_bytes = record.payload.len(),
                 "Brain telemetry"
             );

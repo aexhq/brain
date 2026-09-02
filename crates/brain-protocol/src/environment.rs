@@ -3,8 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AttachmentId, EnvironmentId, Identity, OperationId, Outcome, Resources, Runtime, SessionId,
-    ToolManifest,
+    AttachmentId, EnvironmentId, Identity, Outcome, Resources, Runtime, SessionId, ToolManifest,
 };
 
 /// The contract identifier every command and response carries.
@@ -41,8 +40,10 @@ pub struct EnvironmentAttachment {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentOperation<T> {
-    pub operation_id: OperationId,
-    pub request_identity: Identity,
+    /// The sequence of the journal record that started this operation. With
+    /// `session_id` it names the operation: a redelivery carries the same pair, so a
+    /// receiver that already answered it can say so.
+    pub sequence: u64,
     pub environment_id: EnvironmentId,
     pub session_id: SessionId,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -60,8 +61,7 @@ pub struct EnvironmentCommand<T> {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentResponse {
     pub contract: String,
-    pub operation_id: OperationId,
-    pub request_identity: Identity,
+    pub sequence: u64,
     pub receipt: EnvironmentReceipt,
 }
 
@@ -97,7 +97,7 @@ pub enum EnvironmentRequest {
         deadline_ms: u64,
     },
     Cancel {
-        target_operation_id: OperationId,
+        target_sequence: u64,
     },
     Detach,
     Teardown,
@@ -129,10 +129,6 @@ pub enum EnvironmentReceipt {
         code: String,
         message: String,
         retryable: bool,
-    },
-    Conflict {
-        expected_identity: Identity,
-        actual_identity: Identity,
     },
     Ambiguous {
         message: String,

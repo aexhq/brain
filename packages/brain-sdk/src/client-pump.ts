@@ -9,28 +9,28 @@ export interface PumpTransport {
   request<T>(method: string, path: string, body?: unknown, idempotencyKey?: string): Promise<T>;
 }
 
-interface ToolIntentData {
-  readonly operation_id?: string;
+interface ToolCallData {
   readonly deadline_ms?: number;
   readonly binding?: { readonly hosting?: string };
   readonly invocation?: { readonly call_id?: string; readonly name?: string; readonly input?: unknown };
-  readonly target_operation_id?: string;
+  readonly target_sequence?: number;
 }
 
 /**
- * Serves a session's client-hosted tools off its event feed: watches `tool_intent`
+ * Serves a session's client-hosted tools off its event feed: watches `tool_call_started`
  * records whose binding says `client`, runs the registered handler, and POSTs the
- * outcome back under the intent's operation id. Cancellation intents abort the local
- * handler; the stream reconnects from the last seen sequence until the session ends
- * or the handle stops the pump. Delivery is best effort by design — the kernel's
+ * outcome back under the record's sequence. `tool_cancel_started` records abort the
+ * local handler; the stream reconnects from the last seen sequence until the session
+ * ends or the handle stops the pump. Delivery is best effort by design — the session's
  * deadline is the backstop for anything this process fails to answer.
  */
 export class ClientToolPump {
   private stopped = false;
   private readonly controller = new AbortController();
-  /** operation_id -> call_id for in-flight handlers, so a cancel intent (which names
-   * the operation) can abort the local call (which the registry names by call id). */
-  private readonly inFlight = new Map<string, string>();
+  /** sequence -> call_id for in-flight handlers, so a cancellation (which names the
+   * call's started record) can abort the local call (which the registry names by call
+   * id). */
+  private readonly inFlight = new Map<number, string>();
 
   constructor(
     private readonly transport: PumpTransport,
@@ -79,33 +79,33 @@ export class ClientToolPump {
   }
 
   private async handle(event: SessionStreamEvent): Promise<void> {
-    const data = event.data as ToolIntentData | undefined;
+    const data = event.data as ToolCallData | undefined;
     if (data?.binding?.hosting !== "client") return;
-    if (event.type === "tool_cancel_intent") {
-      const callId = typeof data.target_operation_id === "string" ? this.inFlight.get(data.target_operation_id) : undefined;
+    if (event.type === "tool_cancel_started") {
+      const callId = typeof data.target_sequence === "number" ? this.inFlight.get(data.target_sequence) : undefined;
       if (callId !== undefined) this.registry.cancel(callId);
       return;
     }
-    if (event.type !== "tool_intent") return;
-    const operationId = data.operation_id;
+    if (event.type !== "tool_call_started") return;
+    const sequence = event.sequence;
     const invocation = data.invocation;
-    if (typeof operationId !== "string" || typeof invocation?.call_id !== "string" || typeof invocation.name !== "string") return;
+    if (sequence === undefined || typeof invocation?.call_id !== "string" || typeof invocation.name !== "string") return;
     // A client-hosted tool this pump has no handler for is someone else's to serve.
     if (!this.registry.has(invocation.name)) return;
-    this.inFlight.set(operationId, invocation.call_id);
+    this.inFlight.set(sequence, invocation.call_id);
     const outcome = await this.registry.run({
       call_id: invocation.call_id,
       name: invocation.name,
       arguments: invocation.input,
       deadline_ms: typeof data.deadline_ms === "number" ? data.deadline_ms : 0,
     });
-    this.inFlight.delete(operationId);
+    this.inFlight.delete(sequence);
     if (this.stopped) return;
     try {
-      await this.transport.request("POST", `/v1/sessions/${encodeURIComponent(this.sessionId)}/tool-results/${encodeURIComponent(operationId)}`, outcome, `tool-result-${operationId}`);
+      await this.transport.request("POST", `/v1/sessions/${encodeURIComponent(this.sessionId)}/tool-results/${sequence}`, outcome, `tool-result-${sequence}`);
     } catch (error) {
       // A conflict means nobody is waiting any more — the call timed out or was
-      // answered — and anything else is equally unactionable from here: the kernel's
+      // answered — and anything else is equally unactionable from here: the session's
       // deadline records the failure as a timeout the loop can read.
       if (!(error instanceof BrainError)) throw error;
     }

@@ -1,16 +1,13 @@
 use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use brain_protocol::{
-    Identity, ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent,
-    OperationId,
-};
+use brain_protocol::{ModelBinding, ModelRequest, ModelResult, ModelStreamEvent, ToolDefinition};
 use futures_util::StreamExt;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
 use crate::{
-    KernelError, ModelExecutor,
+    Error, ModelExecutor,
     model::{Accumulator, Dialect, MaxTokensField, anthropic, openai, sse::SseDecoder},
 };
 
@@ -59,15 +56,12 @@ pub struct RemoteModelClient {
 /// The endpoint rules every provider base URL must satisfy, wherever it comes
 /// from: the generated catalog (checked again at generation time), a custom
 /// providers file, or an override flag.
-pub fn validate_base_url(base_url: &str) -> Result<(), KernelError> {
+pub fn validate_base_url(base_url: &str) -> Result<(), Error> {
     if base_url.trim().is_empty() {
-        return Err(KernelError::InvalidState(
-            "model base URL is required".into(),
-        ));
+        return Err(Error::InvalidState("model base URL is required".into()));
     }
-    let url = reqwest::Url::parse(base_url).map_err(|error| {
-        KernelError::InvalidState(format!("model base URL is invalid: {error}"))
-    })?;
+    let url = reqwest::Url::parse(base_url)
+        .map_err(|error| Error::InvalidState(format!("model base URL is invalid: {error}")))?;
     let loopback_http = url.scheme() == "http"
         && url
             .host_str()
@@ -79,7 +73,7 @@ pub fn validate_base_url(base_url: &str) -> Result<(), KernelError> {
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err(KernelError::InvalidState(
+        return Err(Error::InvalidState(
             "model base URL must use HTTPS or literal loopback HTTP and cannot contain credentials, query, or fragment"
                 .into(),
         ));
@@ -88,7 +82,7 @@ pub fn validate_base_url(base_url: &str) -> Result<(), KernelError> {
 }
 
 impl ModelTransport {
-    pub fn new(base_url: &str, timeout: Duration) -> Result<Self, KernelError> {
+    pub fn new(base_url: &str, timeout: Duration) -> Result<Self, Error> {
         validate_base_url(base_url)?;
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -96,7 +90,7 @@ impl ModelTransport {
             .connect_timeout(timeout.min(Duration::from_secs(10)))
             .timeout(timeout)
             .build()
-            .map_err(|error| KernelError::Executor(error.to_string()))?;
+            .map_err(|error| Error::Executor(error.to_string()))?;
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_owned(),
@@ -106,7 +100,7 @@ impl ModelTransport {
 
 impl RemoteModelClient {
     /// Builds a transport of its own. For a caller that makes one call, or a test.
-    pub fn new(config: RemoteModelConfig) -> Result<Self, KernelError> {
+    pub fn new(config: RemoteModelConfig) -> Result<Self, Error> {
         let transport = ModelTransport::new(&config.base_url, config.timeout)?;
         Self::bound(
             Arc::new(transport),
@@ -123,11 +117,9 @@ impl RemoteModelClient {
         api_key: String,
         dialect: Dialect,
         max_tokens_field: MaxTokensField,
-    ) -> Result<Self, KernelError> {
+    ) -> Result<Self, Error> {
         if api_key.trim().is_empty() {
-            return Err(KernelError::InvalidState(
-                "model API key is required".into(),
-            ));
+            return Err(Error::InvalidState("model API key is required".into()));
         }
         Ok(Self {
             transport,
@@ -140,30 +132,25 @@ impl RemoteModelClient {
     fn body(
         &self,
         binding: &ModelBinding,
-        presentation: &ModelPresentation,
         request: &ModelRequest,
-    ) -> Result<Value, KernelError> {
+        tools: &[ToolDefinition],
+    ) -> Result<Value, Error> {
         match self.dialect {
             Dialect::OpenAiChat => {
-                openai::body(&binding.model, presentation, request, self.max_tokens_field)
+                openai::body(&binding.model, tools, request, self.max_tokens_field)
             }
-            Dialect::AnthropicMessages => anthropic::body(&binding.model, presentation, request),
+            Dialect::AnthropicMessages => anthropic::body(&binding.model, tools, request),
         }
     }
 
-    fn decode(&self, data: &str) -> Result<Vec<ModelStreamEvent>, KernelError> {
+    fn decode(&self, data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
         match self.dialect {
             Dialect::OpenAiChat => openai::decode(data),
             Dialect::AnthropicMessages => anthropic::decode(data),
         }
     }
 
-    fn request(
-        &self,
-        operation_id: &OperationId,
-        request_identity: &Identity,
-        body: &Value,
-    ) -> reqwest::RequestBuilder {
+    fn request(&self, body: &Value) -> reqwest::RequestBuilder {
         let (path, headers) = match self.dialect {
             Dialect::OpenAiChat => (openai::path(), openai::headers(self.api_key.as_str())),
             Dialect::AnthropicMessages => {
@@ -175,9 +162,7 @@ impl RemoteModelClient {
             .client
             .post(format!("{}{path}", self.transport.base_url))
             .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
-            .header("x-idempotency-key", operation_id.as_str())
-            .header("x-request-identity", request_identity.to_string());
+            .header("accept", "text/event-stream");
         for (name, value) in headers {
             request = request.header(name, value);
         }
@@ -189,23 +174,17 @@ impl RemoteModelClient {
 impl ModelExecutor for RemoteModelClient {
     async fn execute(
         &self,
-        operation_id: &OperationId,
-        request_identity: &Identity,
         binding: &ModelBinding,
-        presentation: &ModelPresentation,
         request: ModelRequest,
+        tools: &[ToolDefinition],
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
-    ) -> Result<ModelResult, KernelError> {
-        let body = self.body(binding, presentation, &request)?;
+    ) -> Result<ModelResult, Error> {
+        let body = self.body(binding, &request, tools)?;
         let mut attempt = 0;
         let response = loop {
-            let response = self
-                .request(operation_id, request_identity, &body)
-                .send()
-                .await
-                .map_err(|error| {
-                    KernelError::Executor(format!("model request failed before response: {error}"))
-                })?;
+            let response = self.request(&body).send().await.map_err(|error| {
+                Error::Executor(format!("model request failed before response: {error}"))
+            })?;
             if response.status().is_success() {
                 break response;
             }
@@ -219,9 +198,9 @@ impl ModelExecutor for RemoteModelClient {
             let bytes = response
                 .bytes()
                 .await
-                .map_err(|error| KernelError::Executor(error.to_string()))?;
+                .map_err(|error| Error::Executor(error.to_string()))?;
             let bounded = &bytes[..bytes.len().min(MAX_ERROR_BYTES)];
-            let error = KernelError::ProviderStatus {
+            let error = Error::ProviderStatus {
                 status,
                 body: String::from_utf8_lossy(bounded).into_owned(),
                 retry_after_ms,
@@ -239,14 +218,11 @@ impl ModelExecutor for RemoteModelClient {
         let mut total = 0_usize;
         let mut accumulator = Accumulator::new();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| {
-                KernelError::Ambiguous(format!("model stream interrupted: {error}"))
-            })?;
+            let chunk = chunk
+                .map_err(|error| Error::Ambiguous(format!("model stream interrupted: {error}")))?;
             total = total.saturating_add(chunk.len());
             if total > MAX_STREAM_BYTES {
-                return Err(KernelError::Ambiguous(
-                    "model stream exceeded 32 MiB".into(),
-                ));
+                return Err(Error::Ambiguous("model stream exceeded 32 MiB".into()));
             }
             for data in decoder.feed(&chunk)? {
                 for event in self.decode(&data)? {
@@ -256,7 +232,7 @@ impl ModelExecutor for RemoteModelClient {
             }
         }
         if !accumulator.saw_terminal() || decoder.pending_bytes() != 0 {
-            return Err(KernelError::Ambiguous(
+            return Err(Error::Ambiguous(
                 "model stream ended without a terminal event".into(),
             ));
         }
@@ -271,8 +247,8 @@ impl ModelExecutor for RemoteModelClient {
 
 /// The pause before live-retry number `attempt` (0-based) of a clean failure, or `None`
 /// when the failure class must not be retried in place.
-fn live_retry_delay(error: &KernelError, attempt: u32) -> Option<Duration> {
-    let KernelError::ProviderStatus {
+fn live_retry_delay(error: &Error, attempt: u32) -> Option<Duration> {
+    let Error::ProviderStatus {
         status,
         body,
         retry_after_ms,
@@ -305,8 +281,8 @@ fn live_retry_delay(error: &KernelError, attempt: u32) -> Option<Duration> {
 mod retry_tests {
     use super::*;
 
-    fn status(status: u16, body: &str, retry_after_ms: Option<u64>) -> KernelError {
-        KernelError::ProviderStatus {
+    fn status(status: u16, body: &str, retry_after_ms: Option<u64>) -> Error {
+        Error::ProviderStatus {
             status,
             body: body.into(),
             retry_after_ms,
@@ -323,7 +299,7 @@ mod retry_tests {
         assert!(live_retry_delay(&status(401, "bad key", None), 0).is_none());
         assert!(live_retry_delay(&status(404, "no model", None), 0).is_none());
         assert!(
-            live_retry_delay(&KernelError::Ambiguous("mid-stream loss".into()), 0).is_none(),
+            live_retry_delay(&Error::Ambiguous("mid-stream loss".into()), 0).is_none(),
             "ambiguous losses are never retried in place"
         );
     }
@@ -368,7 +344,7 @@ mod tests {
         http::{HeaderMap, StatusCode},
         routing::post,
     };
-    use brain_protocol::{Message, ModelPresentation, StopReason, ToolDefinition};
+    use brain_protocol::{Message, StopReason};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::oneshot;
@@ -422,35 +398,26 @@ mod tests {
         let mut events = Vec::new();
         let result = client
             .execute(
-                &OperationId::new("op_test"),
-                &Identity::of(&"request").unwrap(),
                 &binding(),
-                &ModelPresentation {
-                    system: "system".into(),
-                    tools: vec![ToolDefinition {
-                        name: "read".into(),
-                        description: "read a file".into(),
-                        input_schema: json!({"type":"object"}),
-                        output_schema: None,
-                    }],
-                    response_format: None,
-                },
                 ModelRequest {
+                    system: Some("system".into()),
+                    tools: Some(vec!["read".into()]),
                     messages: vec![Message::user_text("hi")],
                     response_format: None,
                     max_output_tokens: Some(12),
                 },
+                &[ToolDefinition {
+                    name: "read".into(),
+                    description: "read a file".into(),
+                    input_schema: json!({"type":"object"}),
+                    output_schema: None,
+                }],
                 &mut |event| events.push(event),
             )
             .await
             .unwrap();
         let (headers, body) = observed_rx.await.unwrap();
         assert_eq!(headers["authorization"], "Bearer test-key");
-        assert_eq!(headers["x-idempotency-key"], "op_test");
-        assert_eq!(
-            headers["x-request-identity"],
-            Identity::of(&"request").unwrap().to_string()
-        );
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["messages"][0]["content"], "system");
         assert_eq!(body["max_completion_tokens"], 12);
@@ -514,22 +481,18 @@ mod tests {
         .unwrap();
         let result = client
             .execute(
-                &OperationId::new("op_test"),
-                &Identity::of(&"request").unwrap(),
                 &ModelBinding {
                     binding_id: "direct".into(),
                     model: "claude-test".into(),
                 },
-                &ModelPresentation {
-                    system: "system".into(),
-                    tools: Vec::new(),
-                    response_format: None,
-                },
                 ModelRequest {
+                    system: Some("system".into()),
+                    tools: None,
                     messages: vec![Message::user_text("hi")],
                     response_format: None,
                     max_output_tokens: None,
                 },
+                &[],
                 &mut |_| {},
             )
             .await
@@ -587,24 +550,14 @@ mod tests {
         })
         .unwrap();
         let request = ModelRequest {
+            system: None,
+            tools: None,
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: None,
         };
-        let presentation = ModelPresentation {
-            system: String::new(),
-            tools: Vec::new(),
-            response_format: None,
-        };
         let result = client
-            .execute(
-                &OperationId::new("op_retry"),
-                &Identity::of(&"request").unwrap(),
-                &binding(),
-                &presentation,
-                request.clone(),
-                &mut |_| {},
-            )
+            .execute(&binding(), request.clone(), &[], &mut |_| {})
             .await
             .unwrap();
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
@@ -624,18 +577,11 @@ mod tests {
         })
         .unwrap();
         let error = client
-            .execute(
-                &OperationId::new("op_denied"),
-                &Identity::of(&"request").unwrap(),
-                &binding(),
-                &presentation,
-                request,
-                &mut |_| {},
-            )
+            .execute(&binding(), request, &[], &mut |_| {})
             .await
             .unwrap_err();
         assert!(
-            matches!(error, KernelError::ProviderStatus { status: 400, .. }),
+            matches!(error, Error::ProviderStatus { status: 400, .. }),
             "a deterministic 4xx must surface as a typed status, got {error:?}"
         );
     }
@@ -662,23 +608,19 @@ mod tests {
         .unwrap();
         let error = client
             .execute(
-                &OperationId::new("op_partial"),
-                &Identity::of(&"request").unwrap(),
                 &binding(),
-                &ModelPresentation {
-                    system: String::new(),
-                    tools: Vec::new(),
-                    response_format: None,
-                },
                 ModelRequest {
+                    system: None,
+                    tools: None,
                     messages: vec![Message::user_text("hi")],
                     response_format: None,
                     max_output_tokens: None,
                 },
+                &[],
                 &mut |_| {},
             )
             .await
             .unwrap_err();
-        assert!(matches!(error, KernelError::Ambiguous(_)));
+        assert!(matches!(error, Error::Ambiguous(_)));
     }
 }

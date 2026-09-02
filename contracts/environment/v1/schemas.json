@@ -123,10 +123,9 @@
     "OperationEnvelope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["operation_id", "request_identity", "environment_id", "session_id", "request"],
+      "required": ["sequence", "environment_id", "session_id", "request"],
       "properties": {
-        "operation_id": { "$ref": "#/$defs/Identifier" },
-        "request_identity": { "$ref": "#/$defs/Identity" },
+        "sequence": { "type": "integer", "minimum": 1 },
         "environment_id": { "$ref": "#/$defs/Identifier" },
         "session_id": { "$ref": "#/$defs/Identifier" },
         "attachment_id": { "$ref": "#/$defs/Identifier" },
@@ -139,7 +138,7 @@
         { "type": "object", "additionalProperties": false, "required": ["type", "provisions", "bindings"], "properties": { "type": { "const": "attach" }, "provisions": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/Provision" } }, "bindings": { "$ref": "#/$defs/BindingValues" } } },
         { "type": "object", "additionalProperties": false, "required": ["type", "name", "input"], "properties": { "type": { "const": "call" }, "name": { "$ref": "#/$defs/Identifier" }, "input": {} } },
         { "type": "object", "additionalProperties": false, "required": ["type", "call_id", "tool", "input", "deadline_ms"], "properties": { "type": { "const": "invoke" }, "call_id": { "$ref": "#/$defs/Identifier" }, "tool": { "$ref": "#/$defs/Identifier" }, "input": {}, "deadline_ms": { "type": "integer", "minimum": 1 } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "target_operation_id"], "properties": { "type": { "const": "cancel" }, "target_operation_id": { "$ref": "#/$defs/Identifier" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "target_sequence"], "properties": { "type": { "const": "cancel" }, "target_sequence": { "type": "integer", "minimum": 1 } } },
         { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "detach" } } },
         { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "teardown" } } }
       ]
@@ -151,7 +150,6 @@
         { "type": "object", "additionalProperties": false, "required": ["type", "output"], "properties": { "type": { "const": "result" }, "output": {} } },
         { "type": "object", "additionalProperties": false, "required": ["type", "outcome"], "properties": { "type": { "const": "outcome" }, "outcome": { "$ref": "#/$defs/Outcome" } } },
         { "type": "object", "additionalProperties": false, "required": ["type", "code", "message", "retryable"], "properties": { "type": { "const": "failure" }, "code": { "$ref": "#/$defs/Identifier" }, "message": { "type": "string", "maxLength": 4096 }, "retryable": { "type": "boolean" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "expected_identity", "actual_identity"], "properties": { "type": { "const": "conflict" }, "expected_identity": { "$ref": "#/$defs/Identity" }, "actual_identity": { "$ref": "#/$defs/Identity" } } },
         { "type": "object", "additionalProperties": false, "required": ["type", "message"], "properties": { "type": { "const": "ambiguous" }, "message": { "type": "string", "maxLength": 4096 } } }
       ]
     }
@@ -170,11 +168,10 @@
     {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contract", "operation_id", "request_identity", "receipt"],
+      "required": ["contract", "sequence", "receipt"],
       "properties": {
         "contract": { "const": "environment/v1" },
-        "operation_id": { "$ref": "#/$defs/Identifier" },
-        "request_identity": { "$ref": "#/$defs/Identity" },
+        "sequence": { "type": "integer", "minimum": 1 },
         "receipt": { "$ref": "#/$defs/Receipt" }
       }
     }

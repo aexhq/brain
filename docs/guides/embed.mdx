@@ -6,20 +6,26 @@ description: Run sessions inside a Rust service you already own.
 Use the server when you want a process to talk to. Use the crate when another Rust service already
 owns startup, configuration, and deployment, and you want sessions inside it.
 
+The crate is one session at a time. Your service opens the store, builds the configuration every
+session shares, and starts each session with both:
+
 ```rust
-let kernel = brain::Kernel::open(
-    brain::KernelConfig {
-        data_dir,
-        max_decisions_per_turn: 128,
-        loop_executor,
-        model_executor,
-        tool_executor,
-    },
-    telemetry,
-)?;
+let journal: Arc<dyn brain::JournalStore> = Arc::new(brain::SegmentJournal::open(&journal_dir)?);
+let store = Arc::new(brain::ObservedJournal::new(journal, telemetry));
+// Sessions that were mid-turn when the last process stopped are closed before anything runs.
+brain::interrupt_unfinished_turns(&*store)?;
+
+let config = Arc::new(brain::SessionConfig {
+    max_decisions_per_turn: 128,
+    tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
+    loop_executor,
+    model_executor,
+    tool_executor,
+    live: store.live_sender(),
+});
 
 // Admitting the request bounds its authority before anything is journalled.
-let creating = kernel.begin_session(&resolved_session_request)?;
+let creating = brain::Session::begin(store.clone(), config.clone(), &resolved_session_request)?;
 
 // Attach the Environments the request named, then seal what was actually granted.
 let session = creating.complete(sealed_session_config)?;
@@ -31,6 +37,9 @@ session
     .await?;
 ```
 
+A session that already exists in the store, after a restart, is started with
+`brain::Session::open(store, config, &session_id)`. Which sessions to open, and when, is yours.
+
 ## You supply the ports
 
 `loop_executor`, `model_executor`, and `tool_executor` are the same seams the server fills in. Fill
@@ -40,14 +49,15 @@ your own transport, your own placement.
 ## What the runtime keeps
 
 Writes still land before effects, and recovery still works the same way. The runtime does not become
-more permissive because it is embedded: `begin_session` and `complete` are the only ways a session
+more permissive because it is embedded: `Session::begin` and `complete` are the only ways a session
 is admitted, and both hold the request to the same contract the server's callers meet.
 
 ## What stays yours
 
-When a session is admitted, when it is resident, when it is recovered, when it is evicted. Where
-environments live and how they are found. Everything about product policy. The runtime has opinions
-about correctness, not about your architecture.
+Which sessions exist, which are running, what to do with them after a restart, and when to forget
+them. Where environments live and how they are found. Credentials, and how HTTP retries are
+answered. Everything about product policy. The runtime has opinions about correctness, not about
+your architecture.
 
 ## Telemetry delivery
 
