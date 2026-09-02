@@ -20,16 +20,15 @@
   <a href="https://github.com/aexhq/extensions">Official extensions</a>
 </p>
 
-## What is it
-
-**Brain** is a minimal, *blazingly fast*, extensible agent runtime server. You write the
-agent loop and the tools, and Brain runs the session. Tools run anywhere, from a browser tab
-to a server sandbox. Agent loops run in a Wasm sandbox, so the runtime is secure by design.
-Each session uses very little memory, and every step is an event you can watch in real time.
-
 > [!NOTE]
 > **Early preview.** The API and functionality may change without backward compatibility or
 > notice until we cut 1.0.0.
+
+## What is it
+
+**Brain** is a minimal, *blazingly fast*, extensible agent runtime server. You write the
+agent loop and the tools, and Brain runs the session in provided environments. Its decoupled architecture allows you to customize tools that runs anywhere from a browser tab
+to a server sandbox; and agentloop in flavour of pi or codex. It provides a secured, isolated wasm-based environment for plug-and-play.
 
 ## Features
 
