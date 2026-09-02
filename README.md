@@ -17,7 +17,8 @@
   <a href="https://aex.dev/brain/docs"><strong>Docs</strong></a> ·
   <a href="https://aex.dev/brain/docs/reference/api">API Reference</a> ·
   <a href="https://aex.dev/brain">Website</a> ·
-  <a href="https://github.com/aexhq/extensions">Official extensions</a>
+  <a href="https://github.com/aexhq/extensions">Official extensions</a> ·
+  <a href="README.cn.md">中文</a>
 </p>
 
 ## What is it
