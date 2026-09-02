@@ -3,8 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AttachmentId, EnvironmentBinding, EnvironmentId, Identity, OperationId, Outcome, Runtime,
-    SessionId,
+    AttachmentId, EnvironmentBinding, EnvironmentId, Identity, Outcome, Runtime, SessionId,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -138,8 +137,10 @@ pub struct ToolInvocation {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolDispatch {
-    pub operation_id: OperationId,
-    pub request_identity: Identity,
+    /// The sequence of the `tool_call_started` record. With `session_id`, the name of
+    /// this call everywhere: on the environment wire, in the finished record, and on
+    /// the endpoint a client answers a client-hosted call through.
+    pub sequence: u64,
     pub session_id: SessionId,
     pub binding: ToolBinding,
     pub invocation: ToolInvocation,
@@ -150,9 +151,10 @@ pub struct ToolDispatch {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolCancellation {
-    pub operation_id: OperationId,
-    pub request_identity: Identity,
-    pub target_operation_id: OperationId,
+    /// The sequence of the `tool_cancel_started` record.
+    pub sequence: u64,
+    /// The sequence of the `tool_call_started` record being cancelled.
+    pub target_sequence: u64,
     pub session_id: SessionId,
     pub binding: ToolBinding,
 }

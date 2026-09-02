@@ -1,9 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use brain_loophost::{AdmissionEngine, LoopLimits, RUNTIME_SHIM_IMPORTS};
-use brain_protocol::{
-    ActivationInput, ContextEnvelope, Observation, Presentation, RuntimeEnvelope,
-};
+use brain_protocol::{ActivationInput, ContextEnvelope, Observation, RuntimeEnvelope};
 
 fn main() -> Result<(), String> {
     let path = std::env::args_os()
@@ -38,10 +36,7 @@ fn main() -> Result<(), String> {
                 history: Vec::new(),
             },
             configuration: serde_json::json!({}),
-            presentation: Presentation {
-                bytes: Vec::new(),
-                identity: brain_protocol::Identity::of(&"example").unwrap(),
-            },
+            tools: Vec::new(),
             runtime: RuntimeEnvelope {
                 logical_time_ms: 1,
                 deterministic_seed: vec![0; 32],

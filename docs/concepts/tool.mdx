@@ -5,8 +5,9 @@ description: What the model sees, and where the call actually goes.
 
 A tool is two separate things that happen to share a name.
 
-**What the model sees** is presentation: a name, a description, and an input schema. This is the
-part that shapes behaviour, and it is stable for the life of the session.
+**What the model may be told** is the definition: a name, a description, and an input schema.
+The session is created with a set of these, and the agent loop chooses which of them to offer on
+each model call.
 
 **Where the call goes** is a binding: the tool's manifest bound to one environment.
 
@@ -102,8 +103,8 @@ change.
 
 - **Client**: the code stays in an application process, declared with
   [`tool`](/brain/docs/guides/app-tools) and no environment at all. The call is journalled
-  as a `tool_intent`, parks the turn, and surfaces on a feed; whichever process holds the
-  function runs it and POSTs the outcome back under the call's operation id, idempotently.
+  as a `tool_call_started`, parks the turn, and surfaces on a feed; whichever process holds
+  the function runs it and POSTs the outcome back under that record's sequence, idempotently.
   With an `execute` on the declaration that process is the session's creator, the
   quickstart's shape, automatic. Without one it is whoever joins the session with its
   share key and `serve`s the tool: a browser page the backend opened the session for, a
@@ -113,7 +114,7 @@ change.
 - **Provisioned** (the default for built tools): the tool is a program the environment
   launches, placed with the factory's `env` option.
 
-## Splitting presentation from execution
+## Splitting definition from execution
 
 Because the two halves are independent, the same `read` the model sees can be bound to a
 MicroVM in production and to a local directory in a test, with no change to what the model

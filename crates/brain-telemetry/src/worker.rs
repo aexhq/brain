@@ -135,9 +135,7 @@ mod tests {
             name: "turn_finished".into(),
             payload: Vec::new(),
             session_id: None,
-            journal_id: None,
             event_id: None,
-            operation_id: None,
         }
     }
 

@@ -252,6 +252,7 @@ export function step(input) {
     context: { state: incoming === undefined ? undefined : incoming === warm.stateJson ? warm.state : JSON.parse(incoming) },
     observation: decodeObservation(input.observation),
     configuration: JSON.parse(input.configurationJson),
+    tools: JSON.parse(input.toolsJson),
     runtime: { logicalTimeMs: input.runtime.logicalTimeMs },
   });
   const stateJson = JSON.stringify(output.context.state);

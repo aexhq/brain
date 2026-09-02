@@ -6,10 +6,11 @@
 - `hands` and downstream products consume immutable Brain tags or revisions. Brain must not depend
   on a Hands implementation crate or product-specific runtime.
 - Journal every decision. The journal is written behind the turn and is not a durability fence:
-  Brain does not fsync, and a crash may lose its tail. Seal the session presentation and bindings
-  for its lifetime, preserve absent usage counters as absent, and record terminal results before
-  the next Agentloop activation. Redelivery must preserve the operation ID, request identity, and
-  logical binding; never replay an ambiguous effect to a replacement physical target.
+  Brain does not fsync, and a crash may lose its tail. Seal the session's tool catalogue and
+  bindings for its lifetime, preserve absent usage counters as absent, and record `*_finished`
+  results before the next Agentloop activation. A record is named by session id and sequence and
+  nothing else; redelivery must preserve that pair and the logical binding, and never replay an
+  ambiguous effect to a replacement physical target. `DECISIONS.md` records why.
 - Keep the `brain` core independent of cloud SDKs. Put storage, custody, and runtime behaviour behind
   public adapters, and do not weaken production invariants for local development.
 - Real Linux Loophost, image, HTTP, journal recovery, remote-model, and remote-Environment gates run

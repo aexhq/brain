@@ -2,12 +2,11 @@
 //! half lives in `model::http`, shared by every dialect.
 
 use brain_protocol::{
-    ContentBlock, Message, ModelPresentation, ModelRequest, ModelStreamEvent, Role, StopReason,
-    Usage,
+    ContentBlock, Message, ModelRequest, ModelStreamEvent, Role, StopReason, ToolDefinition, Usage,
 };
 use serde_json::{Value, json};
 
-use crate::KernelError;
+use crate::Error;
 
 /// The wire requires `max_tokens`; a request that did not choose one gets this.
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 8_192;
@@ -25,7 +24,7 @@ pub fn headers(api_key: &str) -> Vec<(String, String)> {
 
 /// Render ONE provider-neutral message into the dialect's array element.
 /// Anthropic is 1:1 -- tool results ride in the user message they arrived in.
-fn render_one(message: &Message) -> Result<Value, KernelError> {
+fn render_one(message: &Message) -> Result<Value, Error> {
     let role = match message.role {
         Role::User => "user",
         Role::Assistant => "assistant",
@@ -36,7 +35,7 @@ fn render_one(message: &Message) -> Result<Value, KernelError> {
             ContentBlock::Text { text } => json!({"type": "text", "text": text}),
             ContentBlock::ToolUse { id, name, input } => {
                 if message.role != Role::Assistant {
-                    return Err(KernelError::InvalidState(
+                    return Err(Error::InvalidState(
                         "a tool_use block cannot appear in a user message".into(),
                     ));
                 }
@@ -48,7 +47,7 @@ fn render_one(message: &Message) -> Result<Value, KernelError> {
                 is_error,
             } => {
                 if message.role != Role::User {
-                    return Err(KernelError::InvalidState(
+                    return Err(Error::InvalidState(
                         "a tool_result block cannot appear in an assistant message".into(),
                     ));
                 }
@@ -72,15 +71,11 @@ fn stringify(content: &Value) -> String {
     }
 }
 
-pub fn body(
-    model: &str,
-    presentation: &ModelPresentation,
-    request: &ModelRequest,
-) -> Result<Value, KernelError> {
-    if request.response_format.is_some() || presentation.response_format.is_some() {
-        // Rejected rather than silently dropped: a caller that sealed a response
+pub fn body(model: &str, tools: &[ToolDefinition], request: &ModelRequest) -> Result<Value, Error> {
+    if request.response_format.is_some() {
+        // Rejected rather than silently dropped: a loop that asked for a response
         // format is owed the format or an error, never prose that ignores it.
-        return Err(KernelError::InvalidState(
+        return Err(Error::InvalidState(
             "response_format is not supported by the anthropic provider".into(),
         ));
     }
@@ -88,8 +83,7 @@ pub fn body(
     for message in &request.messages {
         messages.push(render_one(message)?);
     }
-    let mut tools: Vec<Value> = presentation
-        .tools
+    let mut tools: Vec<Value> = tools
         .iter()
         .map(|tool| {
             json!({
@@ -110,10 +104,10 @@ pub fn body(
     // block. System prompt before tools before messages is the order the cache
     // keys on.
     if tools.is_empty() {
-        if !presentation.system.is_empty() {
+        if !request.system.is_empty() {
             body["system"] = json!([{
                 "type": "text",
-                "text": presentation.system,
+                "text": request.system,
                 "cache_control": {"type": "ephemeral"},
             }]);
         }
@@ -123,8 +117,8 @@ pub fn body(
             .and_then(Value::as_object_mut)
             .expect("tool is an object")
             .insert("cache_control".into(), json!({"type": "ephemeral"}));
-        if !presentation.system.is_empty() {
-            body["system"] = json!(presentation.system);
+        if !request.system.is_empty() {
+            body["system"] = json!(request.system);
         }
         body["tools"] = Value::Array(tools);
     }
@@ -133,12 +127,12 @@ pub fn body(
 
 /// Turn one SSE frame into zero or more dialect-neutral events. The frame's
 /// JSON carries its own `type`, so the SSE `event:` line is not needed.
-pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, KernelError> {
+pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
     let value: Value = match serde_json::from_str(data) {
         Ok(value) => value,
         Err(_) if data == "[DONE]" => return Ok(vec![]),
         Err(error) => {
-            return Err(KernelError::Ambiguous(format!(
+            return Err(Error::Ambiguous(format!(
                 "model stream returned invalid JSON: {error}"
             )));
         }
@@ -218,7 +212,7 @@ pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, KernelError> {
             }
         }
         "error" => {
-            return Err(KernelError::Ambiguous(format!(
+            return Err(Error::Ambiguous(format!(
                 "provider error frame: {}",
                 value.get("error").unwrap_or(&value)
             )));
@@ -262,7 +256,7 @@ mod tests {
     use crate::model::sse::SseDecoder;
     use brain_protocol::ToolDefinition;
 
-    fn decode_stream(bytes: &[u8]) -> Result<Vec<ModelStreamEvent>, KernelError> {
+    fn decode_stream(bytes: &[u8]) -> Result<Vec<ModelStreamEvent>, Error> {
         let mut decoder = SseDecoder::new(256 * 1024);
         let mut out = Vec::new();
         for data in decoder.feed(bytes)? {
@@ -271,27 +265,25 @@ mod tests {
         Ok(out)
     }
 
-    fn presentation() -> ModelPresentation {
-        ModelPresentation {
-            system: "sys".into(),
-            tools: vec![ToolDefinition {
-                name: "read".into(),
-                description: "read".into(),
-                input_schema: serde_json::json!({"type": "object"}),
-                output_schema: None,
-            }],
-            response_format: None,
-        }
+    fn tools() -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            name: "read".into(),
+            description: "read".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_schema: None,
+        }]
     }
 
     #[test]
     fn the_body_is_well_formed_and_the_cache_breakpoint_sits_on_the_last_tool() {
         let request = ModelRequest {
+            system: "sys".into(),
+            tools: vec!["read".into()],
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: None,
         };
-        let body = body("claude-test", &presentation(), &request).unwrap();
+        let body = body("claude-test", &tools(), &request).unwrap();
         assert_eq!(body["model"], "claude-test");
         assert_eq!(body["max_tokens"], DEFAULT_MAX_OUTPUT_TOKENS);
         assert_eq!(body["system"], "sys");
@@ -304,16 +296,18 @@ mod tests {
     #[test]
     fn a_toolless_request_caches_the_system_block() {
         let request = ModelRequest {
+            system: "sys".into(),
+            tools: vec!["read".into()],
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: Some(64),
         };
-        let toolless = ModelPresentation {
+        let request = ModelRequest {
             system: "be terse".into(),
             tools: Vec::new(),
-            response_format: None,
+            ..request
         };
-        let body = body("claude-test", &toolless, &request).unwrap();
+        let body = body("claude-test", &[], &request).unwrap();
         assert_eq!(body["max_tokens"], 64);
         assert_eq!(body["system"][0]["text"], "be terse");
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
@@ -323,18 +317,22 @@ mod tests {
     #[test]
     fn response_format_is_rejected_instead_of_silently_dropped() {
         let request = ModelRequest {
+            system: "sys".into(),
+            tools: vec!["read".into()],
             messages: vec![Message::user_text("hi")],
             response_format: Some(serde_json::json!({"type": "json_object"})),
             max_output_tokens: None,
         };
-        let error = body("claude-test", &presentation(), &request).unwrap_err();
-        assert!(matches!(error, KernelError::InvalidState(_)));
+        let error = body("claude-test", &tools(), &request).unwrap_err();
+        assert!(matches!(error, Error::InvalidState(_)));
         assert!(error.to_string().contains("response_format"));
     }
 
     #[test]
     fn tool_result_always_carries_is_error() {
         let request = ModelRequest {
+            system: "sys".into(),
+            tools: vec!["read".into()],
             messages: vec![Message::tool_results(vec![ContentBlock::ToolResult {
                 tool_use_id: "t1".into(),
                 content: serde_json::json!({"stderr": "boom"}),
@@ -343,7 +341,7 @@ mod tests {
             response_format: None,
             max_output_tokens: None,
         };
-        let body = body("claude-test", &presentation(), &request).unwrap();
+        let body = body("claude-test", &tools(), &request).unwrap();
         assert_eq!(body["messages"][0]["content"][0]["is_error"], true);
         assert_eq!(
             body["messages"][0]["content"][0]["content"],

@@ -44,7 +44,6 @@ const session = await request("POST", "/v1/sessions", {
     name: "openai/gpt-5-mini",
     api_key: "release-smoke-key",
   },
-  system: "",
   tools: [],
   environments: [],
 });

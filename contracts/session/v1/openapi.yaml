@@ -128,10 +128,10 @@ paths:
     get:
       operationId: serveSessionTools
       description: >-
-        The serve feed: an SSE stream of this session's client-hosted `tool_intent`
-        and `tool_cancel_intent` records, filtered to the tools named in `tools`,
-        plus `session_ended`. It opens with the still-pending backlog (intents with
-        no recorded result) and then carries records as they are appended. Authorized
+        The serve feed: an SSE stream of this session's client-hosted
+        `tool_call_started` and `tool_cancel_started` records, filtered to the tools
+        named in `tools`, plus `session_ended`. It opens with the still-pending backlog
+        (calls with no finished record) and then carries records as they are appended. Authorized
         by the session's share key as a bearer token (the API token also works). One
         live consumer per tool: a new connection claiming a tool displaces the
         stream that held it, so a reconnecting client replaces its own dead
@@ -156,21 +156,21 @@ paths:
             text/event-stream:
               schema: { type: string }
         default: { $ref: '#/components/responses/Error' }
-  /v1/sessions/{session_id}/tool-results/{operation_id}:
+  /v1/sessions/{session_id}/tool-results/{sequence}:
     post:
       operationId: resolveToolCall
       description: >-
-        Answers a client-hosted tool call. The `tool_intent` record on the event feed
-        carries the operation id; the body is the call's outcome. Idempotent per
-        operation: a retry with the same key replays the first answer, and a call that
-        is no longer pending is a conflict. Authorized by the API token or by the
-        session's share key.
+        Answers a client-hosted tool call. The call is named by the sequence of its
+        `tool_call_started` record on the event feed; the body is the call's outcome.
+        Idempotent per call: a retry with the same key replays the first answer, and a
+        call that is no longer pending is a conflict. Authorized by the API token or by
+        the session's share key.
       parameters:
         - $ref: '#/components/parameters/SessionId'
-        - name: operation_id
+        - name: sequence
           in: path
           required: true
-          schema: { $ref: './schemas.json#/$defs/OperationId' }
+          schema: { $ref: './schemas.json#/$defs/Sequence' }
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true

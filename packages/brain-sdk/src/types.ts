@@ -151,8 +151,6 @@ export interface CreateSessionOptions {
   readonly model: ModelSelection;
   readonly agentloop: Agentloop;
   readonly tools?: readonly SessionTool[];
-  readonly system?: string;
-  readonly responseFormat?: unknown;
   /**
    * Events from an earlier session, to carry a conversation forward.
    *
@@ -168,14 +166,10 @@ export interface OperationOptions { readonly idempotencyKey?: string }
 
 export interface SessionState {
   readonly id: string;
-  readonly journalId: string;
   readonly status: "creating" | "idle" | "running" | "ended" | "failed";
   /** Sequence of the last journal record committed for this session — where an
    * events cursor starts. */
   readonly lastSequence: number;
-  /** Hash of everything the session was sealed with: agentloop configuration, system
-   * prompt, tool definitions, and response format. Stable for the session's life. */
-  readonly configHash: string;
   /** The scoped credential another process joins with to serve this session's
    * tools. It opens the serve feed and answers tool calls — nothing else — so it is
    * safe to hand to a page. */

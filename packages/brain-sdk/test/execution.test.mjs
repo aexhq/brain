@@ -24,11 +24,10 @@ const toolPayload = (members) => `export default { kind: "brain.provisioned-tool
 let sequence = 0;
 const command = (request, attachment_id) => {
   sequence += 1;
-  const id = `op_${sequence}`;
   return {
     contract: "environment/v1",
     binding: {},
-    operation: { operation_id: id, request_identity: id.padEnd(64, "a"), environment_id: "env_1", session_id: "ses_test", ...(attachment_id === undefined ? {} : { attachment_id }), request },
+    operation: { sequence, environment_id: "env_1", session_id: "ses_test", ...(attachment_id === undefined ? {} : { attachment_id }), request },
   };
 };
 const attachRequest = (provisions, bindings = { API_BASE: "https://api.internal" }) => ({ type: "attach", provisions, bindings });

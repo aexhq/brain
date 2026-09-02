@@ -5,29 +5,37 @@ use std::{
 };
 
 use async_trait::async_trait;
-use brain::{Kernel, KernelError, LoopExecutor};
+use brain::{JournalStore, LoopExecutor, ObservedJournal, Session, SessionConfig};
 use brain_http::BrainApi;
 use brain_loophost::WorkerPool;
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage, Identity,
-    MessageRequest, ModelBinding, ModelPresentation, OperationId, Outcome, RequestedToolBinding,
-    ResolvedEnvironment, ResolvedSessionRequest, Session, SessionId, SessionList, ToolDefinition,
+    MessageRequest, ModelBinding, Outcome, RequestedToolBinding, ResolvedEnvironment,
+    ResolvedSessionRequest, SessionId, SessionList, SessionSummary, ToolDefinition,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Mutex;
 
-use crate::{EnvironmentRegistry, LocalSessionOwnership, ModelBindingStore, SessionOwnership};
+use crate::{
+    EnvironmentRegistry, IdempotencyStore, LocalSessionOwnership, ModelBindingStore,
+    SessionOwnership,
+};
 
 pub struct ServerResources {
-    pub kernel: Kernel,
+    /// Every session's journal, and the live feed of everything appended to it.
+    pub store: Arc<ObservedJournal>,
+    /// What every session runs with: executors, limits, and where live output goes.
+    pub session_config: Arc<SessionConfig>,
+    /// Answers already given to keyed requests, so a retry replays instead of repeats.
+    pub idempotency: IdempotencyStore,
     pub loops: Arc<WorkerPool>,
     pub environments: Arc<EnvironmentRegistry>,
     pub models: Arc<dyn ModelBindingStore>,
     /// The composed provider set this deployment admits sessions against.
     pub providers: Arc<brain::model::ProviderRegistry>,
-    /// What the server knows about a session that its records do not: the journal it was
-    /// given. Written when the session is created so a restart can restore it.
+    /// What the server knows about a session that its records do not: the credential it
+    /// calls a model with.
     pub metadata: Arc<crate::metadata::ServerMetadata>,
     /// Keys every session's share key. Derived from the API token when one is
     /// configured — so share keys survive a restart — and random in open mode.
@@ -37,6 +45,9 @@ pub struct ServerResources {
 #[derive(Clone)]
 pub struct ServerApi {
     resources: Arc<ServerResources>,
+    /// The sessions running in this process. A session is started the first time it is
+    /// touched after a restart, and forgotten when it ends.
+    sessions: Arc<StdMutex<HashMap<SessionId, Session>>>,
     idempotency_locks: Arc<KeyedLocks<String>>,
     session_locks: Arc<KeyedLocks<SessionId>>,
     ownership: Arc<dyn SessionOwnership>,
@@ -94,6 +105,7 @@ impl ServerApi {
     pub fn new(resources: ServerResources) -> Self {
         Self {
             resources: Arc::new(resources),
+            sessions: Arc::default(),
             idempotency_locks: Arc::new(KeyedLocks::default()),
             session_locks: Arc::new(KeyedLocks::default()),
             ownership: Arc::new(LocalSessionOwnership),
@@ -106,10 +118,60 @@ impl ServerApi {
     ) -> Self {
         Self {
             resources: Arc::new(resources),
+            sessions: Arc::default(),
             idempotency_locks: Arc::new(KeyedLocks::default()),
             session_locks: Arc::new(KeyedLocks::default()),
             ownership,
         }
+    }
+
+    fn store(&self) -> Arc<dyn JournalStore> {
+        self.resources.store.clone()
+    }
+
+    /// The running session, started from its journal if this process has not touched it
+    /// yet.
+    fn session(&self, session_id: &SessionId) -> Result<Session, ApiError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| internal("session table is poisoned"))?;
+        if let Some(session) = sessions.get(session_id) {
+            return Ok(session.clone());
+        }
+        let session = Session::open(
+            self.store(),
+            self.resources.session_config.clone(),
+            session_id,
+        )
+        .map_err(api_error)?;
+        sessions.insert(session_id.clone(), session.clone());
+        Ok(session)
+    }
+
+    fn remember(&self, session: Session) -> Result<(), ApiError> {
+        self.sessions
+            .lock()
+            .map_err(|_| internal("session table is poisoned"))?
+            .insert(session.id().clone(), session);
+        Ok(())
+    }
+
+    fn forget(&self, session_id: &SessionId) -> Result<(), ApiError> {
+        self.sessions
+            .lock()
+            .map_err(|_| internal("session table is poisoned"))?
+            .remove(session_id);
+        Ok(())
+    }
+
+    fn summary(&self, session_id: &SessionId) -> Result<SessionSummary, ApiError> {
+        self.resources
+            .store
+            .session_summary(session_id)
+            .map_err(api_error)?
+            .ok_or_else(|| not_found("session not found"))
+            .map(|session| self.branded(session))
     }
 
     fn session_lock(&self, session_id: &SessionId) -> Result<Arc<Mutex<()>>, ApiError> {
@@ -129,9 +191,9 @@ impl ServerApi {
         serde_json::from_value(value).map_err(|error| internal(error.to_string()))
     }
 
-    /// Stamps the share key onto a session leaving the API. The kernel mints sessions
-    /// without one — the key is this serving layer's credential, not session state.
-    fn branded(&self, mut session: Session) -> Session {
+    /// Stamps the share key onto a session leaving the API. A session is minted without
+    /// one — the key is this serving layer's credential, not session state.
+    fn branded(&self, mut session: SessionSummary) -> SessionSummary {
         session.share_key = BrainApi::share_key(self, &session.session_id);
         session
     }
@@ -148,8 +210,8 @@ impl BrainApi for ServerApi {
         let _guard = lock.lock().await;
         if let Some(saved) = self
             .resources
-            .kernel
-            .idempotency_get("admit_agentloop", &idempotency_key, &package)
+            .idempotency
+            .get("admit_agentloop", &idempotency_key, &package)
             .map_err(api_error)?
         {
             return Self::replay(saved);
@@ -166,8 +228,8 @@ impl BrainApi for ServerApi {
             error: None,
         };
         self.resources
-            .kernel
-            .idempotency_put(
+            .idempotency
+            .put(
                 "admit_agentloop",
                 &idempotency_key,
                 &package,
@@ -206,13 +268,13 @@ impl BrainApi for ServerApi {
         &self,
         idempotency_key: String,
         request: CreateSessionRequest,
-    ) -> Result<Session, ApiError> {
+    ) -> Result<SessionSummary, ApiError> {
         let lock = self.idempotency_lock("create_session", &idempotency_key)?;
         let _guard = lock.lock().await;
         if let Some(saved) = self
             .resources
-            .kernel
-            .idempotency_get("create_session", &idempotency_key, &request)
+            .idempotency
+            .get("create_session", &idempotency_key, &request)
             .map_err(api_error)?
         {
             return Self::replay(saved).map(|session| self.branded(session));
@@ -234,7 +296,7 @@ impl BrainApi for ServerApi {
             .models
             .put(&binding_id, &request.model)
             .map_err(api_error)?;
-        let (presentation, tool_bindings) = split_tools(&request);
+        let (tools, tool_bindings) = split_tools(&request);
         let (environments, binding_values) = seal_environments(&request)?;
         let resolved = ResolvedSessionRequest {
             agentloop_identity: request.agentloop.identity.clone(),
@@ -243,27 +305,21 @@ impl BrainApi for ServerApi {
                 binding_id: binding_id.clone(),
                 model: request.model.name.clone(),
             },
-            presentation,
+            tools,
             environments,
             tool_bindings,
             history: request.history.clone(),
         };
-        let creation = self
-            .resources
-            .kernel
-            .begin_session(&resolved)
-            .map_err(|error| {
-                let _ = self.resources.models.delete(&binding_id);
-                api_error(error)
-            })?;
+        let creation = Session::begin(
+            self.store(),
+            self.resources.session_config.clone(),
+            &resolved,
+        )
+        .map_err(|error| {
+            let _ = self.resources.models.delete(&binding_id);
+            api_error(error)
+        })?;
         let session_id = creation.session_id().clone();
-        // The one thing about a session that its own records never carry. Written now so a
-        // restart can give the session back the journal it has been writing to; best
-        // effort, like everything else here.
-        self.resources
-            .metadata
-            .put_journal(session_id.as_str(), creation.journal_id().as_str())
-            .map_err(api_error)?;
         if let Err(error) = self.ownership.claim_new(creation.session_id()).await {
             creation
                 .fail("session_ownership_failed", &error.to_string())
@@ -279,7 +335,7 @@ impl BrainApi for ServerApi {
             .environments
             .prepare_session(creation, resolved, binding_values)
             .await;
-        let (handle, _) = match prepared {
+        let (session, _) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.ownership
@@ -293,14 +349,11 @@ impl BrainApi for ServerApi {
                 return Err(api_error(error));
             }
         };
-        let session = self
-            .resources
-            .kernel
-            .session(handle.id())
-            .map_err(api_error)?;
+        self.remember(session)?;
+        let session = self.summary(&session_id)?;
         self.resources
-            .kernel
-            .idempotency_put(
+            .idempotency
+            .put(
                 "create_session",
                 &idempotency_key,
                 &request,
@@ -310,20 +363,16 @@ impl BrainApi for ServerApi {
         Ok(self.branded(session))
     }
 
-    async fn get_session(&self, session_id: SessionId) -> Result<Session, ApiError> {
-        self.resources
-            .kernel
-            .session(&session_id)
-            .map_err(api_error)
-            .map(|session| self.branded(session))
+    async fn get_session(&self, session_id: SessionId) -> Result<SessionSummary, ApiError> {
+        self.summary(&session_id)
     }
 
     async fn list_sessions(&self) -> Result<SessionList, ApiError> {
         Ok(SessionList {
             sessions: self
                 .resources
-                .kernel
-                .sessions()
+                .store
+                .session_summaries()
                 .map_err(api_error)?
                 .into_iter()
                 .map(|session| self.branded(session))
@@ -336,7 +385,7 @@ impl BrainApi for ServerApi {
         session_id: SessionId,
         idempotency_key: String,
         request: MessageRequest,
-    ) -> Result<Session, ApiError> {
+    ) -> Result<SessionSummary, ApiError> {
         self.ownership
             .authorize_mutation(&session_id)
             .await
@@ -346,23 +395,20 @@ impl BrainApi for ServerApi {
         let scope = format!("session:{session_id}:message");
         if let Some(saved) = self
             .resources
-            .kernel
-            .idempotency_get(&scope, &idempotency_key, &request)
+            .idempotency
+            .get(&scope, &idempotency_key, &request)
             .map_err(api_error)?
         {
             return Self::replay(saved).map(|session| self.branded(session));
         }
         let session = self
-            .resources
-            .kernel
-            .handle(&session_id)
-            .map_err(api_error)?
+            .session(&session_id)?
             .message(request.clone())
             .await
             .map_err(api_error)?;
         self.resources
-            .kernel
-            .idempotency_put(
+            .idempotency
+            .put(
                 &scope,
                 &idempotency_key,
                 &request,
@@ -395,18 +441,19 @@ impl BrainApi for ServerApi {
         let call = (environment_id.clone(), name.clone(), request.clone());
         if let Some(saved) = self
             .resources
-            .kernel
-            .idempotency_get(&scope, &idempotency_key, &call)
+            .idempotency
+            .get(&scope, &idempotency_key, &call)
             .map_err(api_error)?
         {
             return Self::replay(saved);
         }
+        let session = self.session(&session_id)?;
         let result = self
             .resources
             .environments
             .call(
-                &self.resources.kernel,
-                &session_id,
+                &session,
+                &*self.resources.store,
                 &environment_id,
                 name,
                 request.input,
@@ -414,8 +461,8 @@ impl BrainApi for ServerApi {
             .await
             .map_err(api_error)?;
         self.resources
-            .kernel
-            .idempotency_put(
+            .idempotency
+            .put(
                 &scope,
                 &idempotency_key,
                 &call,
@@ -430,16 +477,19 @@ impl BrainApi for ServerApi {
         session_id: SessionId,
         after: Option<u64>,
     ) -> Result<EventPage, ApiError> {
-        self.resources
-            .kernel
-            .events(&session_id, after.unwrap_or(0), 1_000)
-            .map_err(api_error)
+        let after = after.unwrap_or(0);
+        let records = self
+            .resources
+            .store
+            .records_after(&session_id, after, 1_000)
+            .map_err(api_error)?;
+        Ok(brain::event_page(records, after))
     }
 
     fn subscribe(
         &self,
     ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
-        self.resources.kernel.subscribe()
+        self.resources.store.subscribe()
     }
 
     fn share_key(&self, session_id: &SessionId) -> String {
@@ -452,10 +502,7 @@ impl BrainApi for ServerApi {
     }
 
     async fn client_tool_names(&self, session_id: SessionId) -> Result<Vec<String>, ApiError> {
-        Ok(self
-            .resources
-            .kernel
-            .sealed_config(&session_id)
+        Ok(brain::sealed_config(&*self.resources.store, &session_id)
             .map_err(api_error)?
             .tool_bindings
             .into_iter()
@@ -467,7 +514,7 @@ impl BrainApi for ServerApi {
     async fn resolve_tool_call(
         &self,
         session_id: SessionId,
-        operation_id: OperationId,
+        sequence: u64,
         idempotency_key: String,
         outcome: Outcome,
     ) -> Result<(), ApiError> {
@@ -477,25 +524,24 @@ impl BrainApi for ServerApi {
             .map_err(api_error)?;
         // No session lock here on purpose: `send_message` holds it for the whole turn,
         // and this is the request that lets that turn finish.
-        let scope = format!("session:{session_id}:tool_result:{operation_id}");
+        let scope = format!("session:{session_id}:tool_result:{sequence}");
         let lock = self.idempotency_lock(&scope, &idempotency_key)?;
         let _guard = lock.lock().await;
         if self
             .resources
-            .kernel
-            .idempotency_get::<_>(&scope, &idempotency_key, &outcome)
+            .idempotency
+            .get::<_>(&scope, &idempotency_key, &outcome)
             .map_err(api_error)?
             .is_some()
         {
             return Ok(());
         }
-        self.resources
-            .kernel
-            .resolve_tool_call(&session_id, &operation_id, outcome.clone())
+        self.session(&session_id)?
+            .resolve_tool_call(sequence, outcome.clone())
             .map_err(api_error)?;
         self.resources
-            .kernel
-            .idempotency_put(&scope, &idempotency_key, &outcome, &serde_json::json!({}))
+            .idempotency
+            .put(&scope, &idempotency_key, &outcome, &serde_json::json!({}))
             .map_err(api_error)
     }
 
@@ -514,23 +560,20 @@ impl BrainApi for ServerApi {
         let _guard = lock.lock().await;
         if self
             .resources
-            .kernel
-            .idempotency_get::<_>(&scope, &idempotency_key, &request)
+            .idempotency
+            .get::<_>(&scope, &idempotency_key, &request)
             .map_err(api_error)?
             .is_some()
         {
             return Ok(());
         }
-        self.resources
-            .kernel
-            .handle(&session_id)
-            .map_err(api_error)?
+        self.session(&session_id)?
             .cancel()
             .await
             .map_err(api_error)?;
         self.resources
-            .kernel
-            .idempotency_put(&scope, &idempotency_key, &request, &serde_json::json!({}))
+            .idempotency
+            .put(&scope, &idempotency_key, &request, &serde_json::json!({}))
             .map_err(api_error)
     }
 
@@ -538,7 +581,7 @@ impl BrainApi for ServerApi {
         &self,
         session_id: SessionId,
         idempotency_key: String,
-    ) -> Result<Session, ApiError> {
+    ) -> Result<SessionSummary, ApiError> {
         self.ownership
             .authorize_mutation(&session_id)
             .await
@@ -549,30 +592,25 @@ impl BrainApi for ServerApi {
         let scope = format!("session:{session_id}:end");
         if let Some(saved) = self
             .resources
-            .kernel
-            .idempotency_get(&scope, &idempotency_key, &request)
+            .idempotency
+            .get(&scope, &idempotency_key, &request)
             .map_err(api_error)?
         {
             return Self::replay(saved).map(|session| self.branded(session));
         }
-        let sealed = self
-            .resources
-            .kernel
-            .sealed_config(&session_id)
-            .map_err(api_error)?;
+        let sealed =
+            brain::sealed_config(&*self.resources.store, &session_id).map_err(api_error)?;
+        let running = self.session(&session_id)?;
         self.resources
             .environments
-            .release_session(&self.resources.kernel, &session_id, &sealed)
+            .release_session(&running, &sealed)
             .await
             .map_err(api_error)?;
-        let session = self
-            .resources
-            .kernel
-            .end_after_lifecycle(&session_id)
-            .map_err(api_error)?;
+        let session = running.end().await.map_err(api_error)?;
+        self.forget(&session_id)?;
         self.resources
-            .kernel
-            .idempotency_put(
+            .idempotency
+            .put(
                 &scope,
                 &idempotency_key,
                 &request,
@@ -597,17 +635,14 @@ impl BrainApi for ServerApi {
         let scope = format!("session:{session_id}:delete");
         if self
             .resources
-            .kernel
-            .idempotency_get::<_>(&scope, &idempotency_key, &request)
+            .idempotency
+            .get::<_>(&scope, &idempotency_key, &request)
             .map_err(api_error)?
             .is_some()
         {
             return Ok(());
         }
-        let binding_id = self
-            .resources
-            .kernel
-            .sealed_config(&session_id)
+        let binding_id = brain::sealed_config(&*self.resources.store, &session_id)
             .map_err(api_error)?
             .model
             .binding_id;
@@ -616,12 +651,13 @@ impl BrainApi for ServerApi {
             .delete(&binding_id)
             .map_err(api_error)?;
         self.resources
-            .kernel
+            .store
             .delete_ended(&session_id)
             .map_err(api_error)?;
+        self.forget(&session_id)?;
         self.resources
-            .kernel
-            .idempotency_put(&scope, &idempotency_key, &request, &serde_json::json!({}))
+            .idempotency
+            .put(&scope, &idempotency_key, &request, &serde_json::json!({}))
             .map_err(api_error)?;
         self.ownership
             .release(&session_id)
@@ -650,7 +686,7 @@ impl LoopExecutor for WorkerLoopExecutor {
     /// carries the context to the worker, which holds it resident between the turn's
     /// legs; mid-turn legs send and receive a placeholder envelope, and the terminal
     /// decision (finish, fail) brings the real context home for `finish_turn` to
-    /// journal. The kernel's own mid-turn copy is therefore a placeholder — its error
+    /// journal. The session's own mid-turn copy is therefore a placeholder — its error
     /// and cancel paths journal the turn-opening context they snapshot, which is the
     /// same "effects may or may not have happened" honesty a worker restart already
     /// has.
@@ -663,7 +699,7 @@ impl LoopExecutor for WorkerLoopExecutor {
         session: &brain_protocol::SessionId,
         agentloop: &AgentloopIdentity,
         input: brain_protocol::ActivationInput,
-    ) -> Result<brain_protocol::ActivationOutput, KernelError> {
+    ) -> Result<brain_protocol::ActivationOutput, brain::Error> {
         let context_attached = matches!(
             input.observation,
             brain_protocol::Observation::UserMessage { .. }
@@ -678,9 +714,9 @@ impl LoopExecutor for WorkerLoopExecutor {
                 input,
             )
             .await
-            .map_err(KernelError::Executor)?;
+            .map_err(brain::Error::Executor)?;
         if !output_attached {
-            // Mid-turn: the context stays in the worker. The kernel only needs the
+            // Mid-turn: the context stays in the worker. The session only needs the
             // envelope's version to accept the leg; the real context returns on the
             // terminal decision.
             output.context = brain_protocol::ContextEnvelope {
@@ -708,10 +744,10 @@ fn valid_identifier(value: &str) -> bool {
         })
 }
 
-/// Splits each wire tool back into its two internal halves: what the model sees
-/// (`ModelPresentation`) and where the call goes (`RequestedToolBinding`). The kernel
-/// still validates the split result against the session contract.
-fn split_tools(request: &CreateSessionRequest) -> (ModelPresentation, Vec<RequestedToolBinding>) {
+/// Splits each wire tool back into its two internal halves: what the model may be told
+/// (`ToolDefinition`) and where the call goes (`RequestedToolBinding`). The session still
+/// validates the split result against the session contract.
+fn split_tools(request: &CreateSessionRequest) -> (Vec<ToolDefinition>, Vec<RequestedToolBinding>) {
     let mut definitions = Vec::with_capacity(request.tools.len());
     let mut bindings = Vec::with_capacity(request.tools.len());
     for tool in &request.tools {
@@ -730,14 +766,7 @@ fn split_tools(request: &CreateSessionRequest) -> (ModelPresentation, Vec<Reques
             program: tool.program.clone(),
         });
     }
-    (
-        ModelPresentation {
-            system: request.system.clone(),
-            tools: definitions,
-            response_format: request.response_format.clone(),
-        },
-        bindings,
-    )
+    (definitions, bindings)
 }
 
 /// Seals each environment's binding values the way model credentials are sealed: the
@@ -782,14 +811,6 @@ fn validate_model(
     if !valid {
         return Err(ApiError::invalid_request("model selection is invalid"));
     }
-    // Rejected here, at create, instead of as a kernel error on the first turn.
-    if request.response_format.is_some()
-        && !providers.supports_response_format(&request.model.provider, &request.model.name)
-    {
-        return Err(ApiError::invalid_request(
-            "the selected model provider does not support response_format",
-        ));
-    }
     Ok(())
 }
 
@@ -813,30 +834,30 @@ fn loop_error(message: String) -> ApiError {
     }
 }
 
-fn api_error(error: KernelError) -> ApiError {
+fn api_error(error: brain::Error) -> ApiError {
     let message = error.to_string();
     match error {
-        KernelError::InvalidState(_) if message.contains("not found") => not_found(message),
-        KernelError::InvalidState(_) if message.contains("idempotency key") => ApiError {
+        brain::Error::InvalidState(_) if message.contains("not found") => not_found(message),
+        brain::Error::InvalidState(_) if message.contains("idempotency key") => ApiError {
             code: "conflict".into(),
             message,
             retryable: false,
             details: None,
         },
-        KernelError::InvalidState(_) => ApiError::invalid_request(message),
-        KernelError::Ambiguous(_) => ApiError {
+        brain::Error::InvalidState(_) => ApiError::invalid_request(message),
+        brain::Error::Ambiguous(_) => ApiError {
             code: "ambiguous".into(),
             message,
             retryable: false,
             details: None,
         },
-        KernelError::Executor(_) => ApiError {
+        brain::Error::Executor(_) => ApiError {
             code: "executor_failed".into(),
             message,
             retryable: true,
             details: None,
         },
-        KernelError::ProviderStatus { status, .. } => ApiError {
+        brain::Error::ProviderStatus { status, .. } => ApiError {
             code: "model_provider_failed".into(),
             message,
             // The executor already retried what was worth retrying in place; a
@@ -844,7 +865,7 @@ fn api_error(error: KernelError) -> ApiError {
             retryable: matches!(status, 408 | 429) || status >= 500,
             details: None,
         },
-        KernelError::Journal(_) => internal(message),
+        brain::Error::Journal(_) => internal(message),
     }
 }
 
@@ -873,38 +894,30 @@ mod tests {
     #[test]
     fn model_selection_is_admitted_against_the_composed_registry() {
         let registry = brain::model::ProviderRegistry::default_set();
-        let request = |provider: &str, name: &str, response_format: bool| {
+        let request = |provider: &str, name: &str| {
             serde_json::from_value::<brain_protocol::CreateSessionRequest>(serde_json::json!({
                 "agentloop": {
                     "identity": "a".repeat(64),
                     "configuration": {},
                 },
                 "model": { "provider": provider, "name": name, "api_key": "k" },
-                "system": "",
                 "tools": [],
-                "response_format": if response_format { Some(serde_json::json!({"type": "json_object"})) } else { None },
                 "environments": [],
             }))
             .unwrap()
         };
-        let validate = |provider: &str, name: &str, rf: bool| {
-            super::validate_model(&request(provider, name, rf), &registry)
-        };
-        assert!(validate("vercel-ai-gateway", "openai/gpt-5-mini", false).is_ok());
+        let validate =
+            |provider: &str, name: &str| super::validate_model(&request(provider, name), &registry);
+        assert!(validate("vercel-ai-gateway", "openai/gpt-5-mini").is_ok());
         assert!(
-            validate("vercel-ai-gateway", "gpt-5-mini", false).is_err(),
+            validate("vercel-ai-gateway", "gpt-5-mini").is_err(),
             "the gateway requires a provider namespace in the model name"
         );
         assert!(
-            validate("deepseek", "brand-new-model", false).is_ok(),
+            validate("deepseek", "brand-new-model").is_ok(),
             "open admission: an unknown model on a catalog provider passes"
         );
-        assert!(validate("bedrock", "some-model", false).is_err());
-        assert!(validate("openai", "gpt-5-mini", true).is_ok());
-        assert!(
-            validate("anthropic", "claude-sonnet-4-5", true).is_err(),
-            "response_format on a provider that cannot carry it is rejected at create"
-        );
+        assert!(validate("bedrock", "some-model").is_err());
     }
 
     #[test]

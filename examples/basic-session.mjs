@@ -15,8 +15,7 @@ const session = await brain.sessions.create({
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
     apiKey,
   },
-  agentloop: example(),
-  system: "Answer briefly and directly.",
+  agentloop: example({ system: "Answer briefly and directly." }),
 });
 
 try {

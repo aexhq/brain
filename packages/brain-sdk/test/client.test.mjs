@@ -35,7 +35,7 @@ test("composes extensions through sessions, env placement, and object identity",
       requests.push(request);
       if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
       if (request.url.includes("/calls/suspend")) return Response.json({ output: null });
-      return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", last_sequence: 1, config_hash: "b".repeat(64), share_key: "sk.ses_12345678901234567890." + "f".repeat(64) });
+      return Response.json({ session_id: "ses_12345678901234567890", status: "idle", last_sequence: 1, share_key: "sk.ses_12345678901234567890." + "f".repeat(64) });
     },
   });
   const vm = workspace();
@@ -54,7 +54,7 @@ test("composes extensions through sessions, env placement, and object identity",
   assert.equal(body.environments.length, 1);
   assert.equal(body.environments[0].environment_id, "env_1");
   assert.deepEqual(body.tools.map(({ name, environment_id, needs, binding_names, program }) => [name, environment_id, needs, binding_names, program.kind]), [["read", "env_1", [], [], "esm"]]);
-  assert.equal(body.system, "");
+  assert.equal(body.system, undefined, "the system prompt is the loop's, not the create request's");
 
   await vm.suspend();
   assert.match(requests[2].url, /\/environments\/env_1\/calls\/suspend$/u);
@@ -119,10 +119,11 @@ test("runs async Environment lifecycle, methods, and streams through the generat
   });
   installExtensionIdentity(managed, "managed", undefined, "managed");
   const handle = createEnvironmentHandler(managed);
-  const command = (id, request, attachment_id) => ({
+  let sequence = 0;
+  const command = (_name, request, attachment_id) => ({
     contract: "environment/v1",
     binding: {},
-    operation: { operation_id: id, request_identity: id.padEnd(64, "a"), environment_id: "env_1", session_id: "ses_test", ...(attachment_id === undefined ? {} : { attachment_id }), request },
+    operation: { sequence: (sequence += 1), environment_id: "env_1", session_id: "ses_test", ...(attachment_id === undefined ? {} : { attachment_id }), request },
   });
   assert.equal((await handle(command("setup", { type: "setup", configuration: { driver: "managed", prefix: ">" } }))).receipt.type, "accepted");
   const attached = await handle(command("attach", { type: "attach", provisions: [], bindings: {} }, "att_1"));
@@ -140,7 +141,7 @@ test("admits any identifier-shaped provider client-side and leaves admission to 
   const fetchStub = async (input, init) => {
     const request = new Request(input, init);
     if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
-    return Response.json({ session_id: "ses_12345678901234567890", journal_id: "jrn_test", status: "idle", last_sequence: 1, config_hash: "b".repeat(64), share_key: "sk.ses_12345678901234567890." + "f".repeat(64) });
+    return Response.json({ session_id: "ses_12345678901234567890", status: "idle", last_sequence: 1, share_key: "sk.ses_12345678901234567890." + "f".repeat(64) });
   };
   const client = new Brain({ baseUrl: "https://brain.example/", token: "t", fetch: fetchStub });
   // A custom provider the SDK has never heard of passes shape validation.

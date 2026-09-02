@@ -1,7 +1,6 @@
 {
   "contract": "environment/v1",
-  "operation_id": "op_attach_example",
-  "request_identity": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "sequence": 3,
   "receipt": {
     "type": "accepted",
     "runtimes": [

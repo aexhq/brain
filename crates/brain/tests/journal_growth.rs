@@ -1,13 +1,13 @@
 //! The journal must not grow with the *square* of a turn's decision count.
 //!
-//! The context envelope grows monotonically within a turn, so anything the kernel writes
+//! The context envelope grows monotonically within a turn, so anything the runtime writes
 //! per decision costs the sum of every intermediate size, not the final one. At the
 //! production ceiling of `BRAIN_MAX_DECISIONS=128` that turns a megabyte of conversation
 //! into tens of megabytes of permanently retained journal, on an EFS-backed database that
 //! is never vacuumed and is replayed in full on every restart.
 //!
 //! These tests pin the bound and the two correctness properties a fix must not break: the
-//! session row still carries the final context, and reopening the kernel rehydrates it.
+//! session row still carries the final context, and reopening the runtime rehydrates it.
 
 use std::{
     fs,
@@ -20,15 +20,75 @@ use std::{
 
 use async_trait::async_trait;
 use brain::{
-    Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor, SessionHandle, ToolExecutor,
+    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionConfig,
+    ToolExecutor,
 };
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopIdentity, Decision, Identity, MessageRequest,
-    ModelBinding, ModelPresentation, ModelRequest, ModelResult, ModelStreamEvent, Observation,
-    OperationId, Outcome, RequestedToolBinding, ResolvedEnvironment, ResolvedSessionRequest,
-    SealedSessionConfig, SessionId, ToolCancellation, ToolDispatch,
+    ActivationInput, ActivationOutput, AgentloopIdentity, Decision, MessageRequest, ModelBinding,
+    ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, RequestedToolBinding,
+    ResolvedEnvironment, ResolvedSessionRequest, SealedSessionConfig, SessionId, ToolCancellation,
+    ToolDefinition, ToolDispatch,
 };
 use brain_telemetry::telemetry_channel;
+/// What the host gives every session: the store it journals to and the executors it
+/// performs effects with. Built the way the server builds it.
+struct Runtime {
+    store: Arc<ObservedJournal>,
+    config: Arc<SessionConfig>,
+}
+
+#[allow(dead_code)]
+impl Runtime {
+    fn open(
+        data_dir: &Path,
+        telemetry: brain_telemetry::TelemetryPublisher,
+        max_decisions_per_turn: usize,
+        tool_deadline_ms: u64,
+        loop_executor: Arc<dyn LoopExecutor>,
+        model_executor: Arc<dyn ModelExecutor>,
+        tool_executor: Arc<dyn ToolExecutor>,
+    ) -> Self {
+        let journal: Arc<dyn brain::JournalStore> =
+            Arc::new(brain::SegmentJournal::open(&data_dir.join("journal")).unwrap());
+        let store = Arc::new(ObservedJournal::new(journal, telemetry));
+        brain::interrupt_unfinished_turns(&*store).unwrap();
+        let config = Arc::new(SessionConfig {
+            max_decisions_per_turn,
+            tool_deadline_ms,
+            loop_executor,
+            model_executor,
+            tool_executor,
+            live: store.live_sender(),
+        });
+        Self { store, config }
+    }
+
+    fn store(&self) -> Arc<dyn brain::JournalStore> {
+        self.store.clone()
+    }
+
+    fn events(
+        &self,
+        session_id: &SessionId,
+        after: u64,
+        limit: usize,
+    ) -> brain_protocol::EventPage {
+        brain::event_page(
+            self.store.records_after(session_id, after, limit).unwrap(),
+            after,
+        )
+    }
+
+    fn session(&self, session_id: &SessionId) -> brain_protocol::SessionSummary {
+        self.store.session_summary(session_id).unwrap().unwrap()
+    }
+
+    fn subscribe(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
+        self.store.subscribe()
+    }
+}
 
 /// Bytes each activation appends to the context. Large enough that the quadratic term
 /// dominates fixed per-record overhead, small enough to keep the test quick.
@@ -58,7 +118,7 @@ impl LoopExecutor for GrowingLoop {
         _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
-    ) -> Result<ActivationOutput, KernelError> {
+    ) -> Result<ActivationOutput, Error> {
         let activation = self.activations.fetch_add(1, Ordering::Relaxed);
         let mut context = input.context;
         context.items.push(serde_json::json!({
@@ -70,6 +130,8 @@ impl LoopExecutor for GrowingLoop {
         let decision = if activation + 1 < DECISIONS {
             Decision::Model {
                 request: ModelRequest {
+                    system: String::new(),
+                    tools: Vec::new(),
                     messages: vec![brain_protocol::Message::user_text("next")],
                     response_format: None,
                     max_output_tokens: Some(16),
@@ -90,13 +152,11 @@ struct TinyModel;
 impl ModelExecutor for TinyModel {
     async fn execute(
         &self,
-        _operation_id: &OperationId,
-        _request_digest: &Identity,
         _binding: &ModelBinding,
-        _presentation: &ModelPresentation,
         _request: ModelRequest,
+        _tools: &[ToolDefinition],
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
-    ) -> Result<ModelResult, KernelError> {
+    ) -> Result<ModelResult, Error> {
         on_event(ModelStreamEvent::TextDelta {
             index: 0,
             text: "ok".into(),
@@ -115,11 +175,11 @@ struct NoTools;
 
 #[async_trait]
 impl ToolExecutor for NoTools {
-    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, KernelError> {
+    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, Error> {
         panic!("unexpected Tool dispatch")
     }
 
-    async fn cancel(&self, _cancellation: ToolCancellation) -> Result<(), KernelError> {
+    async fn cancel(&self, _cancellation: ToolCancellation) -> Result<(), Error> {
         panic!("unexpected Tool cancellation")
     }
 }
@@ -128,21 +188,18 @@ impl ToolExecutor for NoTools {
 /// alongside the session it wrote.
 async fn measure_one_turn(data_dir: &Path) -> (u64, SessionId) {
     let (publisher, _worker) = telemetry_channel();
-    let kernel = Kernel::open(
-        KernelConfig {
-            data_dir: data_dir.to_path_buf(),
-            max_decisions_per_turn: DECISIONS,
-            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-            loop_executor: Arc::new(GrowingLoop {
-                activations: AtomicUsize::new(0),
-            }),
-            model_executor: Arc::new(TinyModel),
-            tool_executor: Arc::new(NoTools),
-        },
+    let runtime = Runtime::open(
+        data_dir,
         publisher,
-    )
-    .unwrap();
-    let handle = start(&kernel, request());
+        DECISIONS,
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+        Arc::new(GrowingLoop {
+            activations: AtomicUsize::new(0),
+        }),
+        Arc::new(TinyModel),
+        Arc::new(NoTools),
+    );
+    let handle = start(&runtime, request());
     let session_id = handle.id().clone();
     let finished = handle
         .message(MessageRequest { input: "go".into() })
@@ -153,8 +210,8 @@ async fn measure_one_turn(data_dir: &Path) -> (u64, SessionId) {
         "the turn must reach its Finish decision, not the decision limit"
     );
     drop(handle);
-    drop(kernel);
-    // Dropping the kernel drains the journal writer, so the segments on disk are the
+    drop(runtime);
+    // Dropping the runtime drains the journal writer, so the segments on disk are the
     // whole journal.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let bytes = fs::read_dir(data_dir.join("journal"))
@@ -174,7 +231,7 @@ async fn a_turn_does_not_journal_one_context_copy_per_decision() {
     assert!(
         journal_bytes <= context_bytes * MAX_JOURNAL_TO_CONTEXT_RATIO,
         "journal grew to {journal_bytes} bytes for a {context_bytes}-byte context \
-         ({ratio:.1}x, bound {MAX_JOURNAL_TO_CONTEXT_RATIO}x): the kernel is writing the \
+         ({ratio:.1}x, bound {MAX_JOURNAL_TO_CONTEXT_RATIO}x): the runtime is writing the \
          context once per decision instead of once per turn"
     );
 
@@ -185,21 +242,18 @@ async fn a_turn_does_not_journal_one_context_copy_per_decision() {
 async fn the_event_stream_does_not_carry_a_context_copy_per_decision() {
     let data_dir = temporary_directory();
     let (publisher, _worker) = telemetry_channel();
-    let kernel = Kernel::open(
-        KernelConfig {
-            data_dir: data_dir.clone(),
-            max_decisions_per_turn: DECISIONS,
-            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-            loop_executor: Arc::new(GrowingLoop {
-                activations: AtomicUsize::new(0),
-            }),
-            model_executor: Arc::new(TinyModel),
-            tool_executor: Arc::new(NoTools),
-        },
+    let runtime = Runtime::open(
+        &data_dir,
         publisher,
-    )
-    .unwrap();
-    let handle = start(&kernel, request());
+        DECISIONS,
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+        Arc::new(GrowingLoop {
+            activations: AtomicUsize::new(0),
+        }),
+        Arc::new(TinyModel),
+        Arc::new(NoTools),
+    );
+    let handle = start(&runtime, request());
     let session_id = handle.id().clone();
     handle
         .message(MessageRequest { input: "go".into() })
@@ -208,7 +262,7 @@ async fn the_event_stream_does_not_carry_a_context_copy_per_decision() {
 
     // `events` is client-facing and pages by record count, never by bytes, so any
     // per-decision context record is materialised in full on every poll.
-    let page = kernel.events(&session_id, 0, 1_000).unwrap();
+    let page = runtime.events(&session_id, 0, 1_000);
     let page_bytes = serde_json::to_vec(&page).unwrap().len() as u64;
     let context_bytes = (DECISIONS * ITEM_BYTES) as u64;
     let ratio = page_bytes as f64 / context_bytes as f64;
@@ -220,7 +274,7 @@ async fn the_event_stream_does_not_carry_a_context_copy_per_decision() {
     );
 
     drop(handle);
-    drop(kernel);
+    drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     fs::remove_dir_all(data_dir).unwrap();
 }
@@ -229,29 +283,19 @@ async fn the_event_stream_does_not_carry_a_context_copy_per_decision() {
 async fn the_session_row_holds_the_final_context_after_the_turn() {
     let data_dir = temporary_directory();
     let (publisher, _worker) = telemetry_channel();
-    let store: Arc<dyn brain::JournalStore> = Arc::new(
-        brain::SegmentJournal::open(
-            &data_dir.join("journal"),
-            brain::DEFAULT_IDEMPOTENCY_RETENTION,
-        )
-        .unwrap(),
-    );
-    let kernel = Kernel::with_store(
-        KernelConfig {
-            data_dir: data_dir.clone(),
-            max_decisions_per_turn: DECISIONS,
-            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-            loop_executor: Arc::new(GrowingLoop {
-                activations: AtomicUsize::new(0),
-            }),
-            model_executor: Arc::new(TinyModel),
-            tool_executor: Arc::new(NoTools),
-        },
-        Arc::clone(&store),
+    let runtime = Runtime::open(
+        &data_dir,
         publisher,
-    )
-    .unwrap();
-    let handle = start(&kernel, request());
+        DECISIONS,
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+        Arc::new(GrowingLoop {
+            activations: AtomicUsize::new(0),
+        }),
+        Arc::new(TinyModel),
+        Arc::new(NoTools),
+    );
+    let store = runtime.store();
+    let handle = start(&runtime, request());
     let session_id = handle.id().clone();
     handle
         .message(MessageRequest {
@@ -273,7 +317,7 @@ async fn the_session_row_holds_the_final_context_after_the_turn() {
     );
 
     drop(handle);
-    drop(kernel);
+    drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     fs::remove_dir_all(data_dir).unwrap();
 }
@@ -286,11 +330,7 @@ fn request() -> SealedSessionConfig {
             binding_id: "gateway".into(),
             model: "openai/test".into(),
         },
-        presentation: ModelPresentation {
-            system: "test".into(),
-            tools: Vec::new(),
-            response_format: None,
-        },
+        tools: Vec::new(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
     }
@@ -303,15 +343,15 @@ fn temporary_directory() -> PathBuf {
 }
 
 /// Sessions are created the way the server creates them: a resolved request is admitted,
-/// then the sealed configuration completes it. There is no shortcut past `begin_session`,
+/// then the sealed configuration completes it. There is no shortcut past `Session::begin`,
 /// so these tests exercise the same validation the production path enforces.
-fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
+fn start(runtime: &Runtime, sealed: SealedSessionConfig) -> Session {
     let resolved = ResolvedSessionRequest {
         history: Vec::new(),
         agentloop_identity: sealed.agentloop_identity.clone(),
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
-        presentation: sealed.presentation.clone(),
+        tools: sealed.tools.clone(),
         environments: sealed
             .environments
             .iter()
@@ -338,8 +378,7 @@ fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
             })
             .collect(),
     };
-    kernel
-        .begin_session(&resolved)
+    Session::begin(runtime.store(), runtime.config.clone(), &resolved)
         .unwrap()
         .complete(sealed)
         .unwrap()
@@ -358,11 +397,7 @@ async fn an_interrupted_turn_is_closed_and_recorded() {
 
     // Leave the session mid-turn, the way a process that died during one would.
     {
-        let store = brain::SegmentJournal::open(
-            &data_dir.join("journal"),
-            brain::DEFAULT_IDEMPOTENCY_RETENTION,
-        )
-        .unwrap();
+        let store = brain::SegmentJournal::open(&data_dir.join("journal")).unwrap();
         let row = brain::JournalStore::session_row(&store, &session_id)
             .unwrap()
             .unwrap();
@@ -386,28 +421,25 @@ async fn an_interrupted_turn_is_closed_and_recorded() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let (publisher, _worker) = telemetry_channel();
-    let reopened = Kernel::open(
-        KernelConfig {
-            data_dir: data_dir.clone(),
-            max_decisions_per_turn: 4,
-            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-            loop_executor: Arc::new(GrowingLoop {
-                activations: AtomicUsize::new(0),
-            }),
-            model_executor: Arc::new(TinyModel),
-            tool_executor: Arc::new(NoTools),
-        },
+    let reopened = Runtime::open(
+        &data_dir,
         publisher,
-    )
-    .unwrap();
+        4,
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+        Arc::new(GrowingLoop {
+            activations: AtomicUsize::new(0),
+        }),
+        Arc::new(TinyModel),
+        Arc::new(NoTools),
+    );
 
-    let session = reopened.session(&session_id).unwrap();
+    let session = reopened.session(&session_id);
     assert!(
         matches!(session.status, brain_protocol::SessionStatus::Idle),
         "an interrupted turn must leave the session able to take another, not stuck: {:?}",
         session.status
     );
-    let events = reopened.events(&session_id, 0, 1_000).unwrap().events;
+    let events = reopened.events(&session_id, 0, 1_000).events;
     assert_eq!(
         events.last().map(|event| event.event_type.as_str()),
         Some("turn_interrupted"),
@@ -422,20 +454,16 @@ async fn an_interrupted_turn_is_closed_and_recorded() {
 /// A session comes back from its own journal, best effort.
 ///
 /// The journal is the record of the session, so folding it back in write order rebuilds
-/// everything except two things the records never held: the agentloop's context, which is
-/// handed back to the loop to rebuild, and the `journal_id`, which the server minted and
-/// holds. Nothing is fsynced to make this true — a crash can lose the tail and a session
-/// can return a few records behind, which is the trade this design accepts.
+/// everything except the one thing the records never held: the agentloop's context, which
+/// is handed back to the loop to rebuild. Nothing is fsynced to make this true — a crash
+/// can lose the tail and a session can return a few records behind, which is the trade
+/// this design accepts.
 #[tokio::test]
 async fn a_session_comes_back_from_its_journal() {
     let data_dir = temporary_directory();
     let (_, session_id) = measure_one_turn(&data_dir).await;
 
-    let store = brain::SegmentJournal::open(
-        &data_dir.join("journal"),
-        brain::DEFAULT_IDEMPOTENCY_RETENTION,
-    )
-    .unwrap();
+    let store = brain::SegmentJournal::open(&data_dir.join("journal")).unwrap();
     let row = brain::JournalStore::session_row(&store, &session_id)
         .unwrap()
         .expect("a session must be rebuilt from the records it left behind");
@@ -475,22 +503,19 @@ async fn a_session_does_not_journal_one_context_copy_per_turn() {
 
     let data_dir = temporary_directory();
     let (publisher, _worker) = telemetry_channel();
-    let kernel = Kernel::open(
-        KernelConfig {
-            data_dir: data_dir.clone(),
-            max_decisions_per_turn: 4,
-            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-            loop_executor: Arc::new(GrowingLoop {
-                // One activation per turn, so the growth measured is turns.
-                activations: AtomicUsize::new(DECISIONS - 1),
-            }),
-            model_executor: Arc::new(TinyModel),
-            tool_executor: Arc::new(NoTools),
-        },
+    let runtime = Runtime::open(
+        &data_dir,
         publisher,
-    )
-    .unwrap();
-    let handle = start(&kernel, request());
+        4,
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+        Arc::new(GrowingLoop {
+            // One activation per turn, so the growth measured is turns.
+            activations: AtomicUsize::new(DECISIONS - 1),
+        }),
+        Arc::new(TinyModel),
+        Arc::new(NoTools),
+    );
+    let handle = start(&runtime, request());
     for _ in 0..TURNS {
         handle
             .message(MessageRequest { input: "go".into() })
@@ -498,7 +523,7 @@ async fn a_session_does_not_journal_one_context_copy_per_turn() {
             .unwrap();
     }
     drop(handle);
-    drop(kernel);
+    drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let journal_bytes: u64 = fs::read_dir(data_dir.join("journal"))
@@ -512,7 +537,7 @@ async fn a_session_does_not_journal_one_context_copy_per_turn() {
     assert!(
         held,
         "a {TURNS}-turn session journalled {journal_bytes} bytes for a {context_bytes}-byte \
-         context ({ratio:.1}x, bound {MAX_RATIO}x): the kernel is writing the whole context \
+         context ({ratio:.1}x, bound {MAX_RATIO}x): the runtime is writing the whole context \
          once per turn, so the log grows with the square of the turn count"
     );
 }
@@ -537,7 +562,7 @@ impl LoopExecutor for ResendingLoop {
         _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
-    ) -> Result<ActivationOutput, KernelError> {
+    ) -> Result<ActivationOutput, Error> {
         // Branch on what happened, not on the context: a marker left in the items would
         // still be there on the next turn and every turn after the first would finish
         // without ever reaching the model.
@@ -557,6 +582,8 @@ impl LoopExecutor for ResendingLoop {
                     context,
                     decision: Decision::Model {
                         request: ModelRequest {
+                            system: String::new(),
+                            tools: Vec::new(),
                             messages,
                             response_format: None,
                             max_output_tokens: Some(16),
@@ -585,27 +612,24 @@ impl LoopExecutor for ResendingLoop {
 async fn a_session_does_not_journal_the_whole_transcript_once_per_turn() {
     const TURNS: usize = 48;
     /// Measured at `TURNS = 48`: the journal was 49.4x the transcript when both the
-    /// activation result and the model intent carried the whole request, 25.8x with one of
+    /// activation record and the model call record carried the whole request, 25.8x with one of
     /// them fixed, and is 1.2x with neither. The bound sits between the regimes.
     const MAX_RATIO: u64 = 6;
 
     let data_dir = temporary_directory();
     let (publisher, _worker) = telemetry_channel();
-    let kernel = Kernel::open(
-        KernelConfig {
-            data_dir: data_dir.clone(),
-            max_decisions_per_turn: 4,
-            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-            loop_executor: Arc::new(ResendingLoop {
-                turns: AtomicUsize::new(0),
-            }),
-            model_executor: Arc::new(TinyModel),
-            tool_executor: Arc::new(NoTools),
-        },
+    let runtime = Runtime::open(
+        &data_dir,
         publisher,
-    )
-    .unwrap();
-    let handle = start(&kernel, request());
+        4,
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+        Arc::new(ResendingLoop {
+            turns: AtomicUsize::new(0),
+        }),
+        Arc::new(TinyModel),
+        Arc::new(NoTools),
+    );
+    let handle = start(&runtime, request());
     for _ in 0..TURNS {
         handle
             .message(MessageRequest { input: "go".into() })
@@ -613,7 +637,7 @@ async fn a_session_does_not_journal_the_whole_transcript_once_per_turn() {
             .unwrap();
     }
     drop(handle);
-    drop(kernel);
+    drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let journal_bytes: u64 = fs::read_dir(data_dir.join("journal"))
@@ -629,7 +653,7 @@ async fn a_session_does_not_journal_the_whole_transcript_once_per_turn() {
     assert!(
         held,
         "a {TURNS}-turn session journalled {journal_bytes} bytes for a {transcript_bytes}-byte \
-         transcript ({ratio:.1}x, bound {MAX_RATIO}x): the kernel is recording the whole \
+         transcript ({ratio:.1}x, bound {MAX_RATIO}x): the runtime is recording the whole \
          conversation once per turn, so the journal grows with the square of the turn count"
     );
 }
@@ -648,13 +672,15 @@ impl LoopExecutor for AskOnce {
         _session: &brain_protocol::SessionId,
         _agentloop: &AgentloopIdentity,
         input: ActivationInput,
-    ) -> Result<ActivationOutput, KernelError> {
+    ) -> Result<ActivationOutput, Error> {
         let context = input.context;
         match input.observation {
             Observation::UserMessage { .. } => Ok(ActivationOutput {
                 context,
                 decision: Decision::Model {
                     request: ModelRequest {
+                        system: String::new(),
+                        tools: Vec::new(),
                         messages: vec![brain_protocol::Message::user_text("go")],
                         response_format: None,
                         max_output_tokens: Some(16),
@@ -678,13 +704,11 @@ struct ChattyModel;
 impl ModelExecutor for ChattyModel {
     async fn execute(
         &self,
-        _operation_id: &OperationId,
-        _request_digest: &Identity,
         _binding: &ModelBinding,
-        _presentation: &ModelPresentation,
         _request: ModelRequest,
+        _tools: &[ToolDefinition],
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
-    ) -> Result<ModelResult, KernelError> {
+    ) -> Result<ModelResult, Error> {
         for _ in 0..DELTAS {
             on_event(ModelStreamEvent::TextDelta {
                 index: 0,
@@ -703,32 +727,29 @@ impl ModelExecutor for ChattyModel {
 
 /// Model output is streamed, not stored.
 ///
-/// `model_result` carried the whole list of deltas beside the assembled response, so a
+/// `model_call_finished` carried the whole list of deltas beside the assembled response, so a
 /// turn wrote its own output twice — once in pieces and once whole — and nothing ever read
 /// the pieces. A client that wants them takes them off the live stream as they arrive.
 #[tokio::test]
 async fn a_turn_does_not_journal_the_pieces_its_answer_arrived_in() {
     let data_dir = temporary_directory();
     let (publisher, _worker) = telemetry_channel();
-    let kernel = Kernel::open(
-        KernelConfig {
-            data_dir: data_dir.clone(),
-            max_decisions_per_turn: 4,
-            tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-            loop_executor: Arc::new(AskOnce),
-            model_executor: Arc::new(ChattyModel),
-            tool_executor: Arc::new(NoTools),
-        },
+    let runtime = Runtime::open(
+        &data_dir,
         publisher,
-    )
-    .unwrap();
-    let handle = start(&kernel, request());
+        4,
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+        Arc::new(AskOnce),
+        Arc::new(ChattyModel),
+        Arc::new(NoTools),
+    );
+    let handle = start(&runtime, request());
     handle
         .message(MessageRequest { input: "go".into() })
         .await
         .unwrap();
     drop(handle);
-    drop(kernel);
+    drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let journal_bytes: u64 = fs::read_dir(data_dir.join("journal"))

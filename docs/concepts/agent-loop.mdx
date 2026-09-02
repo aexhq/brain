@@ -15,7 +15,11 @@ export const simple = agentloop((author) => {
 
   author.on.message(({ input }, turn) => {
     memory.messages.push({ role: "user", content: [{ type: "text", text: input.message }] });
-    return turn.model({ messages: memory.messages });
+    return turn.model({
+      system: "Be useful.",
+      tools: author.tools.map((tool) => tool.name),
+      messages: memory.messages,
+    });
   });
 
   author.on.model((completed, turn) => {
@@ -40,6 +44,12 @@ hidden JavaScript continuation.
 `author.state()` is durable extension state. The messages passed to `turn.model()` are the context
 for that one model request. An extension can summarize or drop old messages without rewriting the
 append-only journal.
+
+The loop owns what the model is told. Each `turn.model()` carries the system prompt, the tools to
+offer by name, the messages, and an optional response format. `author.tools` is the set the session
+was created with; a call may offer any subset of it, and a name outside it fails the turn. Nothing
+about the prompt is fixed at create: a loop can swap the prompt for a subtask, offer fewer tools,
+or keep a stable prefix for prompt caching.
 
 The compiled extension runs as a WebAssembly component with no filesystem, network, process,
 ambient clock, environment variables, or secrets. Pi and Codex use the same public API and runtime.

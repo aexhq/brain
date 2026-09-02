@@ -23,6 +23,17 @@
         { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "cancelled" } } }
       ]
     },
+    "ToolDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "input_schema"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+        "description": { "type": "string", "maxLength": 8192 },
+        "input_schema": { "type": "object" },
+        "output_schema": { "type": "object" }
+      }
+    },
     "ToolInvocation": {
       "type": "object",
       "additionalProperties": false,
@@ -45,20 +56,12 @@
     "ActivationInput": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["context", "observation", "configuration", "presentation", "runtime"],
+      "required": ["context", "observation", "configuration", "tools", "runtime"],
       "properties": {
         "context": { "$ref": "#/$defs/ContextEnvelope" },
         "observation": { "$ref": "#/$defs/Observation" },
         "configuration": {},
-        "presentation": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["bytes", "identity"],
-          "properties": {
-            "bytes": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
-            "identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
-          }
-        },
+        "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/ToolDefinition" } },
         "runtime": {
           "type": "object",
           "additionalProperties": false,

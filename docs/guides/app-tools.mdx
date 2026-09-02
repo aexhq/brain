@@ -78,10 +78,10 @@ as above, and it cannot drift.
 ## What this is on the wire
 
 Nothing new. A served tool is `hosting: "client"` in the manifest, exactly like an
-`execute` tool: the kernel journals `invoke {call_id, tool, input, deadline_ms}` as a
-`tool_intent`, parks the turn, and accepts one `ok | error | timeout | cancelled`
-outcome at `POST /tool-results/{operation_id}`. The serve feed
-(`GET /v1/sessions/{id}/serve?tools=...`) is a server-side-filtered view of the journal:
-a share key sees its tools' intents and the session's end, and nothing else. A tool that
+`execute` tool: the session journals `invoke {call_id, tool, input, deadline_ms}` as a
+`tool_call_started`, parks the turn, and accepts one `ok | error | timeout | cancelled`
+outcome at `POST /tool-results/{sequence}`, where the sequence is that record's. The serve
+feed (`GET /v1/sessions/{id}/serve?tools=...`) is a server-side-filtered view of the
+journal: a share key sees its tools' calls and the session's end, and nothing else. A tool that
 needs another service — a billing API, a Lambda — is just code inside some process's
 handler; Brain never dials out.

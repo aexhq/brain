@@ -29,7 +29,7 @@ use std::{
     time::Duration,
 };
 
-use crate::KernelError;
+use crate::Error;
 
 /// Rotate to a new segment once the open one reaches this size. Reclamation frees
 /// whole segments, so this is also the granularity at which disk comes back.
@@ -91,16 +91,15 @@ pub(crate) struct Frame<'a> {
 }
 
 impl Frame<'_> {
-    pub(crate) fn payload(&self) -> Result<serde_json::Value, KernelError> {
+    pub(crate) fn payload(&self) -> Result<serde_json::Value, Error> {
         self.decode()
     }
 
     /// The payload as whatever shape the caller wants. Replay reads frames it will
     /// mostly discard, and building a `Value` for one only to pull two fields out of it
     /// materialises the whole payload twice.
-    pub(crate) fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, KernelError> {
-        serde_json::from_slice(self.payload)
-            .map_err(|error| KernelError::Journal(error.to_string()))
+    pub(crate) fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, Error> {
+        serde_json::from_slice(self.payload).map_err(|error| Error::Journal(error.to_string()))
     }
 
     pub(crate) fn is_sequenced(&self) -> bool {
@@ -142,8 +141,8 @@ impl SegmentLog {
     /// frame over in the order it was written, and to stop at a torn tail.
     pub(crate) fn open(
         directory: &Path,
-        visit: impl FnMut(Frame<'_>, Location) -> Result<(), KernelError>,
-    ) -> Result<Self, KernelError> {
+        visit: impl FnMut(Frame<'_>, Location) -> Result<(), Error>,
+    ) -> Result<Self, Error> {
         Self::open_inner(directory, visit, None)
     }
 
@@ -155,15 +154,15 @@ impl SegmentLog {
     pub(crate) fn open_stalled(
         directory: &Path,
         release: Arc<std::sync::atomic::AtomicBool>,
-    ) -> Result<Self, KernelError> {
+    ) -> Result<Self, Error> {
         Self::open_inner(directory, |_, _| Ok(()), Some(release))
     }
 
     fn open_inner(
         directory: &Path,
-        mut visit: impl FnMut(Frame<'_>, Location) -> Result<(), KernelError>,
+        mut visit: impl FnMut(Frame<'_>, Location) -> Result<(), Error>,
         release: Option<Arc<std::sync::atomic::AtomicBool>>,
-    ) -> Result<Self, KernelError> {
+    ) -> Result<Self, Error> {
         fs::create_dir_all(directory).map_err(log_error)?;
         let mut segments = Vec::new();
         for entry in fs::read_dir(directory).map_err(log_error)? {
@@ -235,12 +234,12 @@ impl SegmentLog {
     /// Wait until the writer is far enough ahead to accept `bytes`, and refuse outright
     /// if it has already failed. A frame larger than the whole allowance goes through
     /// once the queue is empty rather than waiting for room that can never appear.
-    fn reserve(&self, bytes: u64) -> Result<(), KernelError> {
+    fn reserve(&self, bytes: u64) -> Result<(), Error> {
         let (queue, room) = &*self.backlog;
         let mut queue = queue.lock().map_err(|_| poisoned())?;
         loop {
             if let Some(failure) = &queue.failure {
-                return Err(KernelError::Journal(format!(
+                return Err(Error::Journal(format!(
                     "journal writer failed and the log is no longer being written: {failure}"
                 )));
             }
@@ -254,7 +253,7 @@ impl SegmentLog {
 
     /// Assign a location, hand the bytes to the writer, and return. Does not block on
     /// the disk.
-    pub(crate) fn append(&self, append: Append<'_>) -> Result<Location, KernelError> {
+    pub(crate) fn append(&self, append: Append<'_>) -> Result<Location, Error> {
         // `Arc<Vec<u8>>` rather than `Arc<[u8]>`: converting a `Vec` into `Arc<[u8]>`
         // allocates a second buffer and copies the frame into it.
         let frame = Arc::new(encode(&append)?);
@@ -287,8 +286,8 @@ impl SegmentLog {
     pub(crate) fn read_many<T>(
         &self,
         locations: &[Location],
-        mut read: impl FnMut(Frame<'_>) -> Result<T, KernelError>,
-    ) -> Result<Vec<T>, KernelError> {
+        mut read: impl FnMut(Frame<'_>) -> Result<T, Error>,
+    ) -> Result<Vec<T>, Error> {
         // Only the frames this call asks for, so the lock is held for a bounded moment
         // and never across the reads below.
         let staged = {
@@ -338,25 +337,25 @@ impl SegmentLog {
     }
 
     /// The segment currently being appended to. Never reclaimed.
-    pub(crate) fn current_segment(&self) -> Result<u64, KernelError> {
+    pub(crate) fn current_segment(&self) -> Result<u64, Error> {
         Ok(self.tail.lock().map_err(|_| poisoned())?.segment)
     }
 
     /// Delete every segment older than `keep_from`. Reclamation is a file unlink: the
     /// log never rewrites live data to free dead data.
-    pub(crate) fn reclaim(&self, keep_from: u64) -> Result<(), KernelError> {
+    pub(crate) fn reclaim(&self, keep_from: u64) -> Result<(), Error> {
         if keep_from == 0 {
             return Ok(());
         }
         self.send(Message::Reclaim(keep_from))
     }
 
-    fn send(&self, message: Message) -> Result<(), KernelError> {
+    fn send(&self, message: Message) -> Result<(), Error> {
         self.sender
             .as_ref()
-            .ok_or_else(|| KernelError::Journal("journal writer is shut down".into()))?
+            .ok_or_else(|| Error::Journal("journal writer is shut down".into()))?
             .send(message)
-            .map_err(|_| KernelError::Journal("journal writer stopped".into()))
+            .map_err(|_| Error::Journal("journal writer stopped".into()))
     }
 }
 
@@ -496,10 +495,10 @@ fn reclaim_segments(directory: &Path, keep_from: u64) {
 
 /// Builds the whole frame in one buffer: header space first, then the body written
 /// straight into it, then the header patched once the body's length and check value are
-/// known. A record's payload is the largest thing the kernel handles, so serialising it
+/// known. A record's payload is the largest thing the journal handles, so serialising it
 /// into a payload buffer, copying that into a body buffer, and copying that into a frame
 /// buffer meant three copies of it before the frame existed.
-fn encode(append: &Append<'_>) -> Result<Vec<u8>, KernelError> {
+fn encode(append: &Append<'_>) -> Result<Vec<u8>, Error> {
     let session = append.session_id.as_bytes();
     let kind = append.kind.as_bytes();
 
@@ -512,7 +511,7 @@ fn encode(append: &Append<'_>) -> Result<Vec<u8>, KernelError> {
     frame.extend_from_slice(&(kind.len() as u16).to_le_bytes());
     frame.extend_from_slice(kind);
     serde_json::to_writer(&mut frame, append.payload)
-        .map_err(|error| KernelError::Journal(error.to_string()))?;
+        .map_err(|error| Error::Journal(error.to_string()))?;
 
     let body = &frame[HEADER_BYTES..];
     let length = (body.len() as u32).to_le_bytes();
@@ -557,10 +556,10 @@ fn decode(bytes: &[u8]) -> Option<(Frame<'_>, usize)> {
     ))
 }
 
-fn decoded(bytes: &[u8]) -> Result<Frame<'_>, KernelError> {
+fn decoded(bytes: &[u8]) -> Result<Frame<'_>, Error> {
     decode(bytes)
         .map(|(frame, _)| frame)
-        .ok_or_else(|| KernelError::Journal("journal frame failed its check".into()))
+        .ok_or_else(|| Error::Journal("journal frame failed its check".into()))
 }
 
 fn take<'a>(bytes: &'a [u8], cursor: &mut usize, length: usize) -> Option<&'a [u8]> {
@@ -581,12 +580,12 @@ fn segment_id(path: &Path) -> Option<u64> {
     path.file_stem()?.to_str()?.parse().ok()
 }
 
-fn poisoned() -> KernelError {
-    KernelError::Journal("journal tail mutex poisoned".into())
+fn poisoned() -> Error {
+    Error::Journal("journal tail mutex poisoned".into())
 }
 
-fn log_error(error: std::io::Error) -> KernelError {
-    KernelError::Journal(error.to_string())
+fn log_error(error: std::io::Error) -> Error {
+    Error::Journal(error.to_string())
 }
 
 #[cfg(test)]

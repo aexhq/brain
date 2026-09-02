@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use brain_protocol::{Event, Identity, LiveEvent, Session, SessionId};
+use brain_protocol::{Event, LiveEvent, SessionId, SessionSummary};
 use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
 use tokio::sync::broadcast;
 
 use crate::{
-    KernelError,
+    Error,
     journal::{AppendRecord, JournalRecord, JournalStore, SessionRow, SessionUpdate},
 };
 
@@ -17,14 +17,18 @@ use crate::{
 /// journal is the record, and the stream is a notification that it moved.
 const LIVE_BACKLOG: usize = 1_024;
 
-pub(crate) struct ObservedJournal {
+/// A store that tells subscribers about every record as it is appended.
+///
+/// Wraps whatever store the host brings: being a store does not include having live
+/// subscribers, and this is the one place that sees every append and can serve them.
+pub struct ObservedJournal {
     inner: Arc<dyn JournalStore>,
     telemetry: TelemetryPublisher,
     live: broadcast::Sender<(SessionId, LiveEvent)>,
 }
 
 impl ObservedJournal {
-    pub(crate) fn new(inner: Arc<dyn JournalStore>, telemetry: TelemetryPublisher) -> Self {
+    pub fn new(inner: Arc<dyn JournalStore>, telemetry: TelemetryPublisher) -> Self {
         Self {
             inner,
             telemetry,
@@ -37,7 +41,7 @@ impl ObservedJournal {
     /// Subscribing before reading a page is what closes the gap between the two: a record
     /// appended in between arrives on the subscription, and the reader drops what it has
     /// already seen by sequence.
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<(SessionId, LiveEvent)> {
+    pub fn subscribe(&self) -> broadcast::Receiver<(SessionId, LiveEvent)> {
         self.live.subscribe()
     }
 
@@ -46,7 +50,7 @@ impl ObservedJournal {
     /// Handed to a session's actor so that a turn in progress can be watched. It goes to
     /// subscribers and nowhere else: nothing here is written to the journal, because the
     /// journal's business is what a turn produced and a token is not that yet.
-    pub(crate) fn live_sender(&self) -> broadcast::Sender<(SessionId, LiveEvent)> {
+    pub fn live_sender(&self) -> broadcast::Sender<(SessionId, LiveEvent)> {
         self.live.clone()
     }
 
@@ -69,9 +73,7 @@ impl ObservedJournal {
             payload: serde_json::to_vec(&record.payload)
                 .expect("journal payload is valid telemetry JSON"),
             session_id: Some(record.session_id.clone()),
-            journal_id: Some(record.journal_id.clone()),
             event_id: Some(record.event_id()),
-            operation_id: None,
         });
     }
 }
@@ -81,7 +83,7 @@ impl JournalStore for ObservedJournal {
         &self,
         row: &SessionRow,
         record: AppendRecord,
-    ) -> Result<JournalRecord, KernelError> {
+    ) -> Result<JournalRecord, Error> {
         let saved = self.inner.create_session(row, record)?;
         self.publish(&saved);
         Ok(saved)
@@ -93,7 +95,7 @@ impl JournalStore for ObservedJournal {
         expected_through: u64,
         records: &[AppendRecord],
         update: SessionUpdate<'_>,
-    ) -> Result<Vec<JournalRecord>, KernelError> {
+    ) -> Result<Vec<JournalRecord>, Error> {
         let saved = self
             .inner
             .append(session_id, expected_through, records, update)?;
@@ -103,15 +105,15 @@ impl JournalStore for ObservedJournal {
         Ok(saved)
     }
 
-    fn session_row(&self, session_id: &SessionId) -> Result<Option<SessionRow>, KernelError> {
+    fn session_row(&self, session_id: &SessionId) -> Result<Option<SessionRow>, Error> {
         self.inner.session_row(session_id)
     }
 
-    fn session_summary(&self, session_id: &SessionId) -> Result<Option<Session>, KernelError> {
+    fn session_summary(&self, session_id: &SessionId) -> Result<Option<SessionSummary>, Error> {
         self.inner.session_summary(session_id)
     }
 
-    fn session_summaries(&self) -> Result<Vec<Session>, KernelError> {
+    fn session_summaries(&self) -> Result<Vec<SessionSummary>, Error> {
         self.inner.session_summaries()
     }
 
@@ -120,41 +122,15 @@ impl JournalStore for ObservedJournal {
         session_id: &SessionId,
         after: u64,
         limit: usize,
-    ) -> Result<Vec<JournalRecord>, KernelError> {
+    ) -> Result<Vec<JournalRecord>, Error> {
         self.inner.records_after(session_id, after, limit)
     }
 
-    fn adopt_journal_ids(
-        &self,
-        journals: &std::collections::HashMap<String, String>,
-    ) -> Result<(), KernelError> {
-        self.inner.adopt_journal_ids(journals)
-    }
-
-    fn take_restored(&self, session_id: &SessionId) -> Result<bool, KernelError> {
+    fn take_restored(&self, session_id: &SessionId) -> Result<bool, Error> {
         self.inner.take_restored(session_id)
     }
 
-    fn delete_ended(&self, session_id: &SessionId) -> Result<(), KernelError> {
+    fn delete_ended(&self, session_id: &SessionId) -> Result<(), Error> {
         self.inner.delete_ended(session_id)
-    }
-
-    fn idempotency_get(
-        &self,
-        scope: &str,
-        key: &str,
-        request: &Identity,
-    ) -> Result<Option<serde_json::Value>, KernelError> {
-        self.inner.idempotency_get(scope, key, request)
-    }
-
-    fn idempotency_put(
-        &self,
-        scope: &str,
-        key: &str,
-        request: &Identity,
-        response: &serde_json::Value,
-    ) -> Result<(), KernelError> {
-        self.inner.idempotency_put(scope, key, request, response)
     }
 }

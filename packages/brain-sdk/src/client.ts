@@ -368,9 +368,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
   return { request: {
     agentloop: { identity: agentloopIdentity, configuration: structuredClone(agentloop.configuration) },
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
-    system: options.system ?? "",
     tools,
-    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }),
     environments: requirements,
     // The event id is left behind deliberately: it names an event in the session it came
     // from, and this is a different session, so Brain mints them again.
@@ -389,7 +387,6 @@ function validateSessionOptions(options: CreateSessionOptions): void {
   if (typeof options.model.name !== "string" || options.model.name.length === 0 || options.model.name.length > 256 || /\s/u.test(options.model.name)) throw new TypeError("model name is invalid");
   if (typeof options.model.apiKey !== "string" || options.model.apiKey.trim() === "") throw new TypeError("model apiKey is required");
   if (options.tools !== undefined && !Array.isArray(options.tools)) throw new TypeError("tools must be an array");
-  if (options.system !== undefined && (typeof options.system !== "string" || options.system.length > 131_072)) throw new TypeError("system exceeds its contract bound");
 }
 
 function keyOf(options: OperationOptions): string {
@@ -397,5 +394,5 @@ function keyOf(options: OperationOptions): string {
   return options.idempotencyKey ?? randomUUID();
 }
 function toSessionState(session: WireSession): SessionState {
-  return Object.freeze({ id: session.session_id, journalId: session.journal_id, status: session.status, lastSequence: session.last_sequence, configHash: session.config_hash, shareKey: session.share_key });
+  return Object.freeze({ id: session.session_id, status: session.status, lastSequence: session.last_sequence, shareKey: session.share_key });
 }

@@ -3,19 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, Identity, JournalId,
-    LifecyclePolicy, ModelBinding, ModelSelection, OperationId, Program, RequestedToolBinding,
-    SessionId, ToolBinding, ToolDefinition, ToolHosting,
+    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, Identity, LifecyclePolicy,
+    ModelBinding, ModelSelection, Program, RequestedToolBinding, SessionId, ToolBinding,
+    ToolDefinition, ToolHosting,
 };
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelPresentation {
-    pub system: String,
-    pub tools: Vec<ToolDefinition>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_format: Option<serde_json::Value>,
-}
 
 /// The admitted loop package a session runs: which one, and how it is configured.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -52,11 +43,7 @@ pub struct BoundTool {
 pub struct CreateSessionRequest {
     pub agentloop: AgentloopRef,
     pub model: ModelSelection,
-    #[serde(default)]
-    pub system: String,
     pub tools: Vec<BoundTool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response_format: Option<serde_json::Value>,
     pub environments: Vec<EnvironmentRequirement>,
     /// Prior events for this conversation, if the caller kept them.
     ///
@@ -92,7 +79,9 @@ pub struct ResolvedSessionRequest {
     pub agentloop_identity: AgentloopIdentity,
     pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
-    pub presentation: ModelPresentation,
+    /// What the model may be told about each tool. The agentloop chooses which of these
+    /// to offer on each model call; the bindings say where a call goes.
+    pub tools: Vec<ToolDefinition>,
     pub environments: Vec<ResolvedEnvironment>,
     pub tool_bindings: Vec<RequestedToolBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -101,7 +90,7 @@ pub struct ResolvedSessionRequest {
 
 /// What a session create names about one environment, as it arrives on the wire.
 /// `bindings` carries plaintext values and exists only here: the resolved request the
-/// kernel journals carries their identities instead.
+/// session journals carries their identities instead.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentRequirement {
@@ -130,7 +119,7 @@ pub struct SealedSessionConfig {
     pub agentloop_identity: AgentloopIdentity,
     pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
-    pub presentation: ModelPresentation,
+    pub tools: Vec<ToolDefinition>,
     pub environments: Vec<EnvironmentAttachment>,
     pub tool_bindings: Vec<ToolBinding>,
 }
@@ -169,21 +158,18 @@ pub enum SessionStatus {
     Failed,
 }
 
+/// What the API says about a session: its id, where it is, and how far its journal goes.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Session {
+pub struct SessionSummary {
     pub session_id: SessionId,
-    pub journal_id: JournalId,
     pub status: SessionStatus,
     /// Sequence of the last journal record committed for this session — the journal is
     /// complete through here, so it is where a `GET /events` cursor starts.
     pub last_sequence: u64,
-    /// Hash of everything this session was sealed with: agentloop configuration, system
-    /// prompt, tool definitions, and response format. Stable for the session's life.
-    pub config_hash: Identity,
     /// The scoped credential that authorizes answering this session's client-hosted
     /// tools: the serve feed and the tool-results endpoint, nothing else. Hand it to
     /// the process that serves a tool; it spends nothing and reads nothing else.
-    /// Minted by the serving layer — the kernel leaves it empty.
+    /// Minted by the serving layer — the session leaves it empty.
     #[serde(default)]
     pub share_key: String,
 }
@@ -219,8 +205,8 @@ pub enum LiveEvent {
 /// One piece of model output, mid-turn.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StreamingEvent {
-    /// The model call this came from, so a client can tell two concurrent ones apart.
-    pub operation_id: OperationId,
+    /// The sequence of the `model_call_started` record this output belongs to.
+    pub sequence: u64,
     /// `assistant_delta` for text, `tool_call_delta` for a tool call being assembled.
     pub event_type: String,
     pub data: serde_json::Value,
@@ -234,7 +220,7 @@ pub struct EventPage {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionList {
-    pub sessions: Vec<Session>,
+    pub sessions: Vec<SessionSummary>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

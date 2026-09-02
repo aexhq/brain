@@ -20,6 +20,13 @@ pub struct ModelSelection {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRequest {
+    /// The system prompt for this call. Empty is no system prompt.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub system: String,
+    /// The tools to offer the model on this call, by name. Each must be one of the
+    /// tools the session was created with; Brain renders their definitions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
     pub messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<serde_json::Value>,

@@ -12,7 +12,7 @@
 use std::time::Instant;
 
 use brain::{AppendRecord, JournalStore, SegmentJournal, SessionUpdate, journal::SessionRow};
-use brain_protocol::{Identity, JournalId, SessionId, SessionStatus};
+use brain_protocol::{SessionId, SessionStatus};
 
 const RECORDS: u64 = 20_000;
 const PAYLOAD_BYTES: usize = 1024;
@@ -33,19 +33,17 @@ fn reports_what_the_journal_costs() {
             .unwrap()
             .as_nanos()
     ));
-    let store = SegmentJournal::open(&directory, brain::DEFAULT_IDEMPOTENCY_RETENTION).unwrap();
+    let store = SegmentJournal::open(&directory).unwrap();
 
     let session_id = SessionId::new("ses_throughput");
     store
         .create_session(
             &SessionRow {
                 session_id: session_id.clone(),
-                journal_id: JournalId::new("jrn_throughput"),
                 status: SessionStatus::Idle,
                 through_sequence: 1,
                 configuration: serde_json::json!({}),
                 context: serde_json::json!({}),
-                presentation_identity: Identity::of(&"presentation").unwrap(),
             },
             AppendRecord::new("session_created", serde_json::json!({})),
         )
@@ -76,7 +74,7 @@ fn reports_what_the_journal_costs() {
     drop(store);
 
     let at = Instant::now();
-    let reopened = SegmentJournal::open(&directory, brain::DEFAULT_IDEMPOTENCY_RETENTION).unwrap();
+    let reopened = SegmentJournal::open(&directory).unwrap();
     let replay = at.elapsed().as_secs_f64() * 1e3;
     assert_eq!(
         reopened

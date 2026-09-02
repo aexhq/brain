@@ -15,8 +15,8 @@ use axum::{
 };
 use brain_protocol::{
     AgentloopAdmission, AgentloopIdentity, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentId, MessageRequest, OperationId, Outcome, Session, SessionId,
-    SessionList,
+    EnvironmentCallResult, EnvironmentId, MessageRequest, Outcome, SessionId, SessionList,
+    SessionSummary,
 };
 
 use futures_util::StreamExt as _;
@@ -174,7 +174,7 @@ fn serve_routes<A: BrainApi>(access: Access<A>) -> Router {
     Router::new()
         .route("/v1/sessions/{session_id}/serve", get(serve_feed::<A>))
         .route(
-            "/v1/sessions/{session_id}/tool-results/{operation_id}",
+            "/v1/sessions/{session_id}/tool-results/{sequence}",
             post(resolve_tool_call::<A>),
         )
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
@@ -260,7 +260,7 @@ async fn create_session<A: BrainApi>(
     State(api): State<A>,
     headers: HeaderMap,
     Json(request): Json<CreateSessionRequest>,
-) -> Result<Json<Session>, HttpError> {
+) -> Result<Json<SessionSummary>, HttpError> {
     Ok(Json(
         api.create_session(idempotency_key(&headers)?, request)
             .await
@@ -271,7 +271,7 @@ async fn create_session<A: BrainApi>(
 async fn get_session<A: BrainApi>(
     State(api): State<A>,
     Path(session_id): Path<SessionId>,
-) -> Result<Json<Session>, HttpError> {
+) -> Result<Json<SessionSummary>, HttpError> {
     Ok(Json(api.get_session(session_id).await.map_err(HttpError)?))
 }
 
@@ -284,7 +284,7 @@ async fn send_message<A: BrainApi>(
     Path(session_id): Path<SessionId>,
     headers: HeaderMap,
     Json(request): Json<MessageRequest>,
-) -> Result<Json<Session>, HttpError> {
+) -> Result<Json<SessionSummary>, HttpError> {
     Ok(Json(
         api.send_message(session_id, idempotency_key(&headers)?, request)
             .await
@@ -294,7 +294,7 @@ async fn send_message<A: BrainApi>(
 
 async fn resolve_tool_call<A: BrainApi>(
     State(access): State<Access<A>>,
-    Path((session_id, operation_id)): Path<(SessionId, OperationId)>,
+    Path((session_id, sequence)): Path<(SessionId, u64)>,
     headers: HeaderMap,
     Json(outcome): Json<Outcome>,
 ) -> Result<StatusCode, HttpError> {
@@ -303,12 +303,7 @@ async fn resolve_tool_call<A: BrainApi>(
     }
     access
         .api
-        .resolve_tool_call(
-            session_id,
-            operation_id,
-            idempotency_key(&headers)?,
-            outcome,
-        )
+        .resolve_tool_call(session_id, sequence, idempotency_key(&headers)?, outcome)
         .await
         .map_err(HttpError)?;
     Ok(StatusCode::NO_CONTENT)
@@ -397,7 +392,7 @@ async fn events<A: BrainApi>(
                         return Some((streaming_sse(streaming), carry));
                     }
                     Ok(_) => continue,
-                    // Lagged, or the kernel is gone. The stream ends rather than
+                    // Lagged, or the session is gone. The stream ends rather than
                     // silently skipping records: a client reconnects with the cursor it
                     // last saw and the journal hands back exactly what it missed.
                     Err(_) => return None,
@@ -408,7 +403,7 @@ async fn events<A: BrainApi>(
     Ok(Sse::new(backlog.chain(following)).into_response())
 }
 
-/// The serve feed: pending client-hosted `tool_intent` records for the claimed
+/// The serve feed: pending client-hosted `tool_call_started` records for the claimed
 /// tools, then matching records as they are appended. Always SSE. See the OpenAPI
 /// description for the full contract.
 async fn serve_feed<A: BrainApi>(
@@ -518,11 +513,11 @@ async fn serve_feed<A: BrainApi>(
     Ok(Sse::new(backlog.chain(following)).into_response())
 }
 
-/// What the serve stream opens with. Without a cursor: the still-pending intents —
-/// every matching `tool_intent` with no `tool_result` yet whose deadline has not
-/// already passed (the kernel would have timed those out; replaying them would run
-/// side effects nothing is waiting for). With a cursor: an exact replay of matching
-/// records after it, the same resume contract as the events feed.
+/// What the serve stream opens with. Without a cursor: the still-pending calls —
+/// every matching `tool_call_started` with no `tool_call_finished` yet whose deadline
+/// has not already passed (the session would have timed those out; replaying them
+/// would run side effects nothing is waiting for). With a cursor: an exact replay of
+/// matching records after it, the same resume contract as the events feed.
 async fn serve_backlog<A: BrainApi>(
     api: &A,
     session_id: &SessionId,
@@ -532,7 +527,7 @@ async fn serve_backlog<A: BrainApi>(
     let replay_all = after.is_some();
     let mut cursor = after.unwrap_or(0);
     let mut kept: Vec<brain_protocol::Event> = Vec::new();
-    let mut pending: HashMap<String, usize> = HashMap::new();
+    let mut pending: HashMap<u64, usize> = HashMap::new();
     let mut ended = false;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -550,28 +545,26 @@ async fn serve_backlog<A: BrainApi>(
                     kept.push(event);
                     continue;
                 }
-                if event.event_type == "tool_intent" {
+                if event.event_type == "tool_call_started" {
                     let alive = event
                         .data
                         .get("deadline_ms")
                         .and_then(serde_json::Value::as_u64)
                         .is_none_or(|deadline| event.recorded_at_ms + deadline > now_ms);
-                    if let Some(operation) = operation_id_of(&event)
-                        && alive
-                    {
-                        pending.insert(operation, kept.len());
+                    if alive {
+                        pending.insert(event.sequence, kept.len());
                         kept.push(event);
                     }
                 }
-                // Backlog cancel intents target calls that resolve moments later; only
+                // Backlog cancellations target calls that resolve moments later; only
                 // the live tail needs them.
             } else if !replay_all
-                && event.event_type == "tool_result"
-                && let Some(operation) = event
+                && event.event_type == "tool_call_finished"
+                && let Some(started) = event
                     .data
-                    .get("operation_id")
-                    .and_then(serde_json::Value::as_str)
-                && let Some(index) = pending.remove(operation)
+                    .get("sequence")
+                    .and_then(serde_json::Value::as_u64)
+                && let Some(index) = pending.remove(&started)
             {
                 kept[index].sequence = 0; // answered: marked for removal below
             }
@@ -587,21 +580,13 @@ async fn serve_backlog<A: BrainApi>(
     Ok((kept, cursor, ended))
 }
 
-fn operation_id_of(event: &brain_protocol::Event) -> Option<String> {
-    event
-        .data
-        .get("operation_id")
-        .and_then(serde_json::Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
 /// Whether a record belongs on a serve stream claiming these tools: the session's
-/// end, and client-hosted intents (and their cancellations) for the claimed names.
+/// end, and client-hosted calls (and their cancellations) for the claimed names.
 fn serves_event(event: &brain_protocol::Event, served: &HashSet<String>) -> bool {
     if event.event_type == "session_ended" {
         return true;
     }
-    if event.event_type != "tool_intent" && event.event_type != "tool_cancel_intent" {
+    if event.event_type != "tool_call_started" && event.event_type != "tool_cancel_started" {
         return false;
     }
     let Some(binding) = event.data.get("binding") else {
@@ -660,7 +645,7 @@ async fn end_session<A: BrainApi>(
     State(api): State<A>,
     Path(session_id): Path<SessionId>,
     headers: HeaderMap,
-) -> Result<Json<Session>, HttpError> {
+) -> Result<Json<SessionSummary>, HttpError> {
     Ok(Json(
         api.end_session(session_id, idempotency_key(&headers)?)
             .await

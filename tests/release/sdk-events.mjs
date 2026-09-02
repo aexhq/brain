@@ -31,7 +31,7 @@ const suffix = [];
 for await (const event of session.events(cursor)) suffix.push(event);
 assert.deepEqual(
   suffix.map(({ type }) => type),
-  ["turn_started", "activation_intent", "activation_result", "turn_finished"],
+  ["turn_started", "activation_started", "activation_finished", "turn_finished"],
 );
 assert.equal(suffix.at(-1)?.sequence, session.state.lastSequence);
 

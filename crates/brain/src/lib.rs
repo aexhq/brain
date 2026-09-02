@@ -1,20 +1,21 @@
-//! Minimal durable session runtime. Runtime composition belongs to `brain-server`.
+//! One durable session at a time. Which sessions exist, which run, and what happens to
+//! them after a restart belongs to the host; `brain-server` is one.
 
 pub mod agentloop;
-pub mod context;
 pub mod error;
 pub mod journal;
 pub mod model;
-pub mod operation;
 pub mod session;
 pub mod tool;
 
 pub use agentloop::LoopExecutor;
-pub use error::KernelError;
+pub use error::Error;
 pub use journal::{
-    AppendRecord, DEFAULT_IDEMPOTENCY_RETENTION, JournalRecord, JournalStore, SegmentJournal,
-    SessionUpdate,
+    AppendRecord, JournalRecord, JournalStore, ObservedJournal, SegmentJournal, SessionUpdate,
+    event_page, interrupt_unfinished_turns,
 };
 pub use model::ModelExecutor;
-pub use session::{CreatingSession, DEFAULT_TOOL_DEADLINE_MS, Kernel, KernelConfig, SessionHandle};
+pub use session::{
+    CreatingSession, DEFAULT_TOOL_DEADLINE_MS, Session, SessionConfig, empty_context, sealed_config,
+};
 pub use tool::ToolExecutor;

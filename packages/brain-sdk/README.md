@@ -24,5 +24,5 @@ await session.send("Read README.md and summarize it.");
 for await (const event of session.events()) console.log(event);
 ```
 
-The SDK admits Brain artifacts, preserves explicit Tool-to-Environment placement, and supplies operation keys.
+The SDK admits Brain artifacts, preserves explicit Tool-to-Environment placement, and supplies idempotency keys.
 An explicit `idempotencyKey` remains available on mutating calls for durable caller retries.

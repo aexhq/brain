@@ -21,7 +21,11 @@ export const assistant = agentloop({ options }, (author) => {
 
   author.on.message(({ input }, turn) => {
     memory.messages.push({ role: "user", content: [{ type: "text", text: input.message }] });
-    return turn.model({ messages: memory.messages });
+    return turn.model({
+      system: author.options.instructions,
+      tools: author.tools.map((tool) => tool.name),
+      messages: memory.messages,
+    });
   });
 
   author.on.model((completed, turn) => {
@@ -53,3 +57,7 @@ const session = await client.sessions.create({
 Registration and agent loop handlers are synchronous. Return `turn.model`, `turn.tools`, `turn.emit`,
 `turn.reply`, `turn.done`, or `turn.fail`. Ordinary deterministic packages can be bundled. I/O and
 async work belong in Tools and Environments.
+
+The loop decides what the model is told on every call: `system` is the system prompt for that call,
+and `tools` names which of `author.tools` (the tools the session was created with) to offer. Leave
+`tools` out and the model sees none.

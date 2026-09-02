@@ -3,7 +3,6 @@ mod config;
 
 use std::{
     collections::HashMap,
-    fs,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -11,54 +10,41 @@ use std::{
 };
 
 use brain_protocol::{
-    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventPage, HistoryEvent, Identity,
-    JournalId, MessageRequest, ModelBinding, ModelPresentation, OperationId, Outcome, Program,
-    RequestedToolBinding, ResolvedEnvironment, ResolvedSessionRequest, Resources, Runtime,
-    SealedSessionConfig, Session, SessionId, SessionStatus, ToolBinding, ToolHosting, operation_id,
-    resource_name_valid,
+    AgentloopIdentity, ContextEnvelope, EnvironmentAttachment, EnvironmentId, HistoryEvent,
+    MessageRequest, ModelBinding, Outcome, Program, RequestedToolBinding, ResolvedEnvironment,
+    ResolvedSessionRequest, Resources, Runtime, SealedSessionConfig, SessionId, SessionStatus,
+    SessionSummary, ToolBinding, ToolDefinition, ToolHosting, resource_name_valid,
 };
-use brain_telemetry::TelemetryPublisher;
 use rand::RngCore;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    KernelError, context,
-    journal::{
-        AppendRecord, JournalStore, ObservedJournal, SegmentJournal, SessionRow, SessionUpdate,
-        event_page,
-    },
+    Error,
+    journal::{AppendRecord, JournalStore, SessionRow, SessionUpdate},
 };
 use actor::{SessionActor, SessionCommand};
 
-pub use config::{DEFAULT_TOOL_DEADLINE_MS, KernelConfig};
+pub use config::{DEFAULT_TOOL_DEADLINE_MS, SessionConfig};
 
+/// One running session: a task that drives its turns, and this handle to it.
+///
+/// A session owns nothing across sessions. It is given its store, its executors, and its
+/// limits, it numbers its own records, and it journals everything it does. Which sessions
+/// exist, which are running, and what to do with them after a restart is the host's.
 #[derive(Clone)]
-pub struct Kernel {
-    inner: Arc<KernelInner>,
-}
-
-struct KernelInner {
-    /// Concrete rather than `dyn JournalStore`, because the live subscription is not part
-    /// of being a store: a journal an embedder brings has no reason to know about HTTP
-    /// subscribers, and the wrapper that observes every append is the only thing that
-    /// can serve them.
-    store: Arc<ObservedJournal>,
-    config: KernelConfig,
-    sessions: Mutex<HashMap<SessionId, SessionRuntime>>,
+pub struct Session {
+    session_id: SessionId,
+    sender: mpsc::Sender<SessionCommand>,
+    cancelled: Arc<AtomicBool>,
     pending_tools: Arc<PendingToolCalls>,
 }
 
 /// Client-hosted tool calls parked mid-turn, waiting for an outcome the session's
 /// creator POSTs back. In-memory on purpose: a restart interrupts the turn exactly like
-/// any other in-flight tool call, and the `tool_intent` record on the feed is the
+/// any other in-flight tool call, and the `tool_call_started` record on the feed is the
 /// durable statement of what was asked.
 pub(crate) struct PendingToolCalls {
-    inner: Mutex<HashMap<OperationId, PendingToolCall>>,
-}
-
-struct PendingToolCall {
-    session_id: SessionId,
-    sender: tokio::sync::oneshot::Sender<Outcome>,
+    inner: Mutex<HashMap<u64, oneshot::Sender<Outcome>>>,
 }
 
 impl PendingToolCalls {
@@ -69,70 +55,43 @@ impl PendingToolCalls {
     }
 
     /// Registers a parked call and hands back the receiver the turn awaits. Called
-    /// before the `tool_intent` commit so a client that answers off the live feed can
-    /// never race an empty map.
-    pub(crate) fn park(
-        &self,
-        session_id: SessionId,
-        operation_id: OperationId,
-    ) -> tokio::sync::oneshot::Receiver<Outcome> {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
+    /// before the `tool_call_started` commit so a client that answers off the live feed
+    /// can never race an empty map.
+    pub(crate) fn park(&self, sequence: u64) -> oneshot::Receiver<Outcome> {
+        let (sender, receiver) = oneshot::channel();
         if let Ok(mut inner) = self.inner.lock() {
-            inner.insert(operation_id, PendingToolCall { session_id, sender });
+            inner.insert(sequence, sender);
         }
         receiver
     }
 
     /// Delivers an outcome to a parked call. A call that is not pending — unknown,
-    /// already answered, expired, or belonging to another session — is a conflict the
-    /// caller hears about; the idempotency layer above turns retries into replays.
-    pub(crate) fn resolve(
-        &self,
-        session_id: &SessionId,
-        operation_id: &OperationId,
-        outcome: Outcome,
-    ) -> Result<(), KernelError> {
-        let entry = {
-            let mut inner = self
-                .inner
-                .lock()
-                .map_err(|_| KernelError::InvalidState("pending Tool map poisoned".into()))?;
-            match inner.get(operation_id) {
-                Some(pending) if &pending.session_id == session_id => inner.remove(operation_id),
-                _ => None,
-            }
-        };
-        let Some(entry) = entry else {
-            return Err(KernelError::InvalidState(
-                "no client Tool call is pending under this operation".into(),
+    /// already answered, or expired — is a conflict the caller hears about; the
+    /// idempotency layer above turns retries into replays.
+    pub(crate) fn resolve(&self, sequence: u64, outcome: Outcome) -> Result<(), Error> {
+        let entry = self
+            .inner
+            .lock()
+            .map_err(|_| Error::InvalidState("pending Tool map poisoned".into()))?
+            .remove(&sequence);
+        let Some(sender) = entry else {
+            return Err(Error::InvalidState(
+                "no client Tool call is pending under this sequence".into(),
             ));
         };
         // A dropped receiver means the turn stopped waiting (timeout or cancellation)
         // between our lookup and the send; the caller is told the same thing.
-        entry.sender.send(outcome).map_err(|_| {
-            KernelError::InvalidState("no client Tool call is pending under this operation".into())
+        sender.send(outcome).map_err(|_| {
+            Error::InvalidState("no client Tool call is pending under this sequence".into())
         })
     }
 
     /// Forgets a parked call without answering it (timeout, cancellation, failed commit).
-    pub(crate) fn discard(&self, operation_id: &OperationId) {
+    pub(crate) fn discard(&self, sequence: u64) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.remove(operation_id);
+            inner.remove(&sequence);
         }
     }
-}
-
-#[derive(Clone)]
-struct SessionRuntime {
-    sender: mpsc::Sender<SessionCommand>,
-    cancelled: Arc<AtomicBool>,
-}
-
-#[derive(Clone)]
-pub struct SessionHandle {
-    session_id: SessionId,
-    sender: mpsc::Sender<SessionCommand>,
-    cancelled: Arc<AtomicBool>,
 }
 
 /// Record kinds a restart reads a session's state out of, and which a caller therefore
@@ -147,8 +106,12 @@ const RESERVED_KINDS: [&str; 7] = [
     "turn_failed",
 ];
 
+/// A session between its first record and its admission. The host attaches the
+/// environments the request named, journalling each step here, and then seals what was
+/// actually granted with [`CreatingSession::complete`].
 pub struct CreatingSession {
-    kernel: Kernel,
+    store: Arc<dyn JournalStore>,
+    config: Arc<SessionConfig>,
     row: SessionRow,
     /// The events this session opened with, carried in memory to the actor so the
     /// agentloop can be told about them. They are already in the journal; this is not a
@@ -156,99 +119,47 @@ pub struct CreatingSession {
     history: Vec<serde_json::Value>,
 }
 
-impl Kernel {
-    pub fn open(config: KernelConfig, telemetry: TelemetryPublisher) -> Result<Self, KernelError> {
-        fs::create_dir_all(&config.data_dir)
-            .map_err(|error| KernelError::Journal(error.to_string()))?;
-        let store = Arc::new(SegmentJournal::open(
-            &config.data_dir.join("journal"),
-            crate::journal::DEFAULT_IDEMPOTENCY_RETENTION,
-        )?);
-        Self::with_store(config, store, telemetry)
+pub fn empty_context() -> ContextEnvelope {
+    ContextEnvelope {
+        protocol_version: "agentloop/v1".into(),
+        items: Vec::new(),
+        state: None,
     }
+}
 
-    pub fn with_store(
-        config: KernelConfig,
+/// The sealed configuration a session was admitted with, read from its row.
+pub fn sealed_config(
+    store: &dyn JournalStore,
+    session_id: &SessionId,
+) -> Result<SealedSessionConfig, Error> {
+    let row = store
+        .session_row(session_id)?
+        .ok_or_else(|| Error::InvalidState("session not found".into()))?;
+    serde_json::from_value(row.configuration).map_err(|error| Error::Journal(error.to_string()))
+}
+
+impl Session {
+    /// Writes a session's first record and hands back the creation to finish.
+    ///
+    /// Admitting the request bounds its authority before anything is journalled: the
+    /// contract is checked here and again at `complete`, so a session can only ever do
+    /// what it was granted.
+    pub fn begin(
         store: Arc<dyn JournalStore>,
-        telemetry: TelemetryPublisher,
-    ) -> Result<Self, KernelError> {
-        let kernel = Self {
-            inner: Arc::new(KernelInner {
-                store: Arc::new(ObservedJournal::new(store, telemetry)),
-                config,
-                sessions: Mutex::new(HashMap::new()),
-                pending_tools: Arc::new(PendingToolCalls::new()),
-            }),
-        };
-        kernel.interrupt_unfinished_turns()?;
-        Ok(kernel)
-    }
-
-    /// Closes turns that the previous process did not finish.
-    ///
-    /// A session still `Running` after the journal has been read was mid-turn when that
-    /// process stopped. Whether the model call or the tool call actually happened is not
-    /// knowable from here, so Brain says exactly that and returns the session to Idle
-    /// rather than deciding on the client's behalf. Agentloops, tools and SDK clients see
-    /// `turn_interrupted` on the event stream and resume or abandon as suits them.
-    fn interrupt_unfinished_turns(&self) -> Result<(), KernelError> {
-        for session in self.inner.store.session_summaries()? {
-            if !matches!(session.status, SessionStatus::Running) {
-                continue;
-            }
-            self.inner.store.append(
-                &session.session_id,
-                session.last_sequence,
-                &[AppendRecord::new(
-                    "turn_interrupted",
-                    serde_json::json!({
-                        "message": "Brain restarted while this turn was in flight; whether its effects reached the model or a tool is not recorded"
-                    }),
-                )],
-                SessionUpdate {
-                    status: Some(SessionStatus::Idle),
-                    context: None,
-                    configuration: None,
-                },
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Hands restored sessions the journal ids the server kept for them.
-    ///
-    /// Called once at startup, before anything is served. A session the server has no
-    /// record of stays readable and refuses turns rather than taking them against a
-    /// journal it cannot name.
-    pub fn adopt_journal_ids(
-        &self,
-        journals: &std::collections::HashMap<String, String>,
-    ) -> Result<(), KernelError> {
-        self.inner.store.adopt_journal_ids(journals)
-    }
-
-    pub fn begin_session(
-        &self,
+        config: Arc<SessionConfig>,
         request: &ResolvedSessionRequest,
-    ) -> Result<CreatingSession, KernelError> {
+    ) -> Result<CreatingSession, Error> {
         validate_session_contract(request)?;
-        let session_id = SessionId::new(random_id("ses"));
-        let journal_id = JournalId::new(random_id("jrn"));
-        let presentation =
-            context::presentation(&request.presentation, &request.brain_configuration)?;
-        let context = context::empty_context();
         let row = SessionRow {
-            session_id,
-            journal_id,
+            session_id: SessionId::new(random_id("ses")),
             status: SessionStatus::Creating,
             through_sequence: 1,
             configuration: serde_json::to_value(request).map_err(json_error)?,
-            context: serde_json::to_value(context).map_err(json_error)?,
-            presentation_identity: presentation.identity,
+            context: serde_json::to_value(empty_context()).map_err(json_error)?,
         };
         // The creation record is the session's own genesis and comes first; the events the
         // caller handed back are what happened before it, and follow.
-        self.inner.store.create_session(
+        store.create_session(
             &row,
             AppendRecord::new(
                 "session_creation_started",
@@ -256,370 +167,145 @@ impl Kernel {
             ),
         )?;
         let mut row = row;
-        let history = self.replay_history(&mut row, &request.history)?;
+        let history = replay_history(&*store, &mut row, &request.history)?;
         Ok(CreatingSession {
-            kernel: self.clone(),
+            store,
+            config,
             row,
             history,
         })
     }
 
-    pub fn session(&self, session_id: &SessionId) -> Result<Session, KernelError> {
-        self.inner
-            .store
-            .session_summary(session_id)?
-            .ok_or_else(|| KernelError::InvalidState("session not found".into()))
-    }
-
-    pub fn sessions(&self) -> Result<Vec<Session>, KernelError> {
-        self.inner.store.session_summaries()
-    }
-
-    pub fn handle(&self, session_id: &SessionId) -> Result<SessionHandle, KernelError> {
-        if let Some(runtime) = self
-            .inner
-            .sessions
-            .lock()
-            .map_err(|_| KernelError::InvalidState("session map poisoned".into()))?
-            .get(session_id)
-            .cloned()
-        {
-            return Ok(SessionHandle {
-                session_id: session_id.clone(),
-                sender: runtime.sender,
-                cancelled: runtime.cancelled,
-            });
-        }
-        let row = self
-            .inner
-            .store
+    /// Starts a session that is already in the store.
+    ///
+    /// A session rebuilt from the journal after a restart has an agentloop that has never
+    /// seen any of it, so it is handed its own records once, before its first message. A
+    /// session this process created was told at creation and is not told again.
+    pub fn open(
+        store: Arc<dyn JournalStore>,
+        config: Arc<SessionConfig>,
+        session_id: &SessionId,
+    ) -> Result<Self, Error> {
+        let row = store
             .session_row(session_id)?
-            .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
-        // A session this process created was told about its history when it was created,
-        // and telling it again would replay a conversation it is already holding. One
-        // rebuilt from the journal has an agentloop that has never seen any of it.
-        if row.journal_id.as_str().is_empty() {
-            return Err(KernelError::InvalidState(
-                "this session was restored from the journal but the server no longer has the \
-                 metadata it needs to continue it; its history can be read, and a new session \
-                 can be created with that history"
-                    .into(),
-            ));
-        }
-        let history = if self.inner.store.take_restored(session_id)? {
-            self.restored_history(session_id)?
+            .ok_or_else(|| Error::InvalidState("session not found".into()))?;
+        let history = if store.take_restored(session_id)? {
+            restored_history(&*store, session_id)?
         } else {
             Vec::new()
         };
-        self.spawn(row, history)
-    }
-
-    /// A restored session's own records, to hand back to its agentloop.
-    ///
-    /// Bounded at the same count the create API accepts as history. A conversation longer
-    /// than that restores and can be read, but is not replayed into a loop: handing over
-    /// part of a conversation as though it were the whole of it would be a worse answer
-    /// than declining to.
-    fn restored_history(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Vec<serde_json::Value>, KernelError> {
-        const MOST: usize = 10_000;
-        let mut history = Vec::new();
-        let mut after = 0;
-        loop {
-            let page = self.inner.store.records_after(session_id, after, 1_000)?;
-            let Some(last) = page.last() else { break };
-            after = last.sequence;
-            history.extend(page.into_iter().map(|record| record.payload));
-            if history.len() > MOST {
-                return Ok(Vec::new());
-            }
-        }
-        Ok(history)
-    }
-
-    /// Every record appended from now on, across every session.
-    ///
-    /// Subscribe before reading a page, then drop what the page already carried: a record
-    /// appended between the two arrives here rather than being lost in the gap. A
-    /// subscriber that falls further behind than the buffer loses records and is told so
-    /// by the channel — the journal is the record and `after` reads it back, while this is
-    /// a notification that it moved. A slow reader must never be able to hold up a turn.
-    pub fn subscribe(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
-        self.inner.store.subscribe()
-    }
-
-    pub fn events(
-        &self,
-        session_id: &SessionId,
-        after: u64,
-        limit: usize,
-    ) -> Result<EventPage, KernelError> {
-        if limit == 0 || limit > 1_000 {
-            return Err(KernelError::InvalidState(
-                "event limit must be 1..=1000".into(),
-            ));
-        }
-        Ok(event_page(
-            self.inner.store.records_after(session_id, after, limit)?,
-            after,
-        ))
-    }
-
-    pub fn delete_ended(&self, session_id: &SessionId) -> Result<(), KernelError> {
-        self.inner.store.delete_ended(session_id)?;
-        self.inner
-            .sessions
-            .lock()
-            .map_err(|_| KernelError::InvalidState("session map poisoned".into()))?
-            .remove(session_id);
-        Ok(())
-    }
-
-    pub fn sealed_config(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<SealedSessionConfig, KernelError> {
-        let row = self
-            .inner
-            .store
-            .session_row(session_id)?
-            .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
-        serde_json::from_value(row.configuration)
-            .map_err(|error| KernelError::Journal(error.to_string()))
-    }
-
-    pub fn record_external_intent<T: serde::Serialize>(
-        &self,
-        session_id: &SessionId,
-        kind: &str,
-        request: &T,
-    ) -> Result<(OperationId, Identity), KernelError> {
-        self.inner
-            .sessions
-            .lock()
-            .map_err(|_| KernelError::InvalidState("session map poisoned".into()))?
-            .remove(session_id);
-        let row = self
-            .inner
-            .store
-            .session_summary(session_id)?
-            .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
-        if !matches!(row.status, SessionStatus::Idle) {
-            return Err(KernelError::InvalidState("session is not idle".into()));
-        }
-        let operation_id = operation_id(&row.journal_id, row.last_sequence + 1);
-        let identity =
-            Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
-        self.inner.store.append(
-            session_id,
-            row.last_sequence,
-            &[AppendRecord::new(
-                format!("{kind}_intent"),
-                serde_json::json!({"operation_id":operation_id,"request_identity":identity,"request":request}),
-            )],
-            SessionUpdate::default(),
-        )?;
-        Ok((operation_id, identity))
-    }
-
-    pub fn record_external_result<T: serde::Serialize>(
-        &self,
-        session_id: &SessionId,
-        kind: &str,
-        operation_id: &OperationId,
-        result: &T,
-    ) -> Result<(), KernelError> {
-        let row = self
-            .inner
-            .store
-            .session_summary(session_id)?
-            .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
-        self.inner.store.append(
-            session_id,
-            row.last_sequence,
-            &[AppendRecord::new(
-                format!("{kind}_result"),
-                serde_json::json!({"operation_id":operation_id,"result":result}),
-            )],
-            SessionUpdate::default(),
-        )?;
-        Ok(())
-    }
-
-    pub fn end_after_lifecycle(&self, session_id: &SessionId) -> Result<Session, KernelError> {
-        let mut row = self
-            .inner
-            .store
-            .session_summary(session_id)?
-            .ok_or_else(|| KernelError::InvalidState("session not found".into()))?;
-        if matches!(row.status, SessionStatus::Ended) {
-            return Ok(row);
-        }
-        if !matches!(row.status, SessionStatus::Idle) {
-            return Err(KernelError::InvalidState("session is not idle".into()));
-        }
-        self.inner.store.append(
-            session_id,
-            row.last_sequence,
-            &[AppendRecord::new("session_ended", serde_json::json!({}))],
-            SessionUpdate {
-                status: Some(SessionStatus::Ended),
-                context: None,
-                configuration: None,
-            },
-        )?;
-        row.last_sequence += 1;
-        row.status = SessionStatus::Ended;
-        self.inner
-            .sessions
-            .lock()
-            .map_err(|_| KernelError::InvalidState("session map poisoned".into()))?
-            .remove(session_id);
-        Ok(row)
-    }
-
-    /// Answers a parked client-hosted tool call. Deliberately lock-free at the session
-    /// level: the turn holding the park is inside `message`, which holds the session
-    /// lock — this is the call that lets it finish.
-    pub fn resolve_tool_call(
-        &self,
-        session_id: &SessionId,
-        operation_id: &OperationId,
-        outcome: Outcome,
-    ) -> Result<(), KernelError> {
-        self.inner
-            .pending_tools
-            .resolve(session_id, operation_id, outcome)
-    }
-
-    pub fn idempotency_get<T: serde::Serialize>(
-        &self,
-        scope: &str,
-        key: &str,
-        request: &T,
-    ) -> Result<Option<serde_json::Value>, KernelError> {
-        let identity =
-            Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
-        self.inner.store.idempotency_get(scope, key, &identity)
-    }
-
-    pub fn idempotency_put<T: serde::Serialize>(
-        &self,
-        scope: &str,
-        key: &str,
-        request: &T,
-        response: &serde_json::Value,
-    ) -> Result<(), KernelError> {
-        let identity =
-            Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
-        self.inner
-            .store
-            .idempotency_put(scope, key, &identity, response)
-    }
-
-    /// Writes the caller's events into the new session's journal, and hands back what the
-    /// agentloop should be told.
-    ///
-    /// The sequences the caller supplies are checked but not kept: they name positions in
-    /// the session those events came from, and this is a different session, whose records
-    /// are numbered densely from its own beginning. What they are good for is catching a
-    /// caller that has lost or reordered part of the conversation, which is worth failing
-    /// on rather than silently writing down.
-    fn replay_history(
-        &self,
-        row: &mut SessionRow,
-        history: &[HistoryEvent],
-    ) -> Result<Vec<serde_json::Value>, KernelError> {
-        if history.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut previous = 0;
-        for event in history {
-            // A caller's history cannot wear a lifecycle kind. These are the records the
-            // journal is read back by -- a restart derives a session's status from them --
-            // so accepting `session_ended` or `turn_started` from a client would let it
-            // describe a session that never happened, and a later restart would believe it.
-            if RESERVED_KINDS.contains(&event.event_type.as_str()) {
-                return Err(KernelError::InvalidState(format!(
-                    "session history may not contain `{}`: lifecycle records are Brain's own, \
-                     and a restart reads a session's state back out of them",
-                    event.event_type
-                )));
-            }
-            if event.sequence <= previous {
-                return Err(KernelError::InvalidState(format!(
-                    "session history is out of order at sequence {}: events must ascend, and \
-                     one that does not is a conversation with a piece missing or moved",
-                    event.sequence
-                )));
-            }
-            previous = event.sequence;
-        }
-
-        let records: Vec<AppendRecord> = history
-            .iter()
-            .map(|event| AppendRecord::new(&event.event_type, event.data.clone()))
-            .collect();
-        let saved = self.inner.store.append(
-            &row.session_id,
-            row.through_sequence,
-            &records,
-            SessionUpdate::default(),
-        )?;
-        row.through_sequence += saved.len() as u64;
-        Ok(history.iter().map(|event| event.data.clone()).collect())
+        Self::spawn(store, config, row, history)
     }
 
     fn spawn(
-        &self,
+        store: Arc<dyn JournalStore>,
+        config: Arc<SessionConfig>,
         row: SessionRow,
         history: Vec<serde_json::Value>,
-    ) -> Result<SessionHandle, KernelError> {
-        let mut sessions = self
-            .inner
-            .sessions
-            .lock()
-            .map_err(|_| KernelError::InvalidState("session map poisoned".into()))?;
-        if let Some(runtime) = sessions.get(&row.session_id).cloned() {
-            return Ok(SessionHandle {
-                session_id: row.session_id,
-                sender: runtime.sender,
-                cancelled: runtime.cancelled,
-            });
-        }
+    ) -> Result<Self, Error> {
+        let session_id = row.session_id.clone();
         let (sender, receiver) = mpsc::channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
+        let pending_tools = Arc::new(PendingToolCalls::new());
         let actor = SessionActor::new(
-            row.clone(),
-            self.inner.store.clone(),
-            self.inner.config.loop_executor.clone(),
-            self.inner.config.model_executor.clone(),
-            self.inner.config.tool_executor.clone(),
-            self.inner.config.max_decisions_per_turn,
-            self.inner.config.tool_deadline_ms,
+            row,
+            store,
+            config,
             receiver,
             cancelled.clone(),
-            self.inner.store.live_sender(),
             history,
-            self.inner.pending_tools.clone(),
+            pending_tools.clone(),
         )?;
         tokio::spawn(actor.run());
-        sessions.insert(
-            row.session_id.clone(),
-            SessionRuntime {
-                sender: sender.clone(),
-                cancelled: cancelled.clone(),
-            },
-        );
-        Ok(SessionHandle {
-            session_id: row.session_id,
+        Ok(Self {
+            session_id,
             sender,
             cancelled,
+            pending_tools,
         })
+    }
+
+    pub fn id(&self) -> &SessionId {
+        &self.session_id
+    }
+
+    /// Runs one turn and returns when it is finished.
+    pub async fn message(&self, request: MessageRequest) -> Result<SessionSummary, Error> {
+        if request.input.message.is_empty() {
+            return Err(Error::InvalidState("message cannot be empty".into()));
+        }
+        if serde_json::to_vec(&request).map_err(json_error)?.len() > 2 * 1024 * 1024 {
+            return Err(Error::InvalidState("message request exceeds 2 MiB".into()));
+        }
+        let (reply, response) = oneshot::channel();
+        self.sender
+            .send(SessionCommand::Message { request, reply })
+            .await
+            .map_err(|_| stopped())?;
+        response.await.map_err(|_| stopped())?
+    }
+
+    pub async fn cancel(&self) -> Result<(), Error> {
+        self.cancelled.store(true, Ordering::Release);
+        match self.sender.try_send(SessionCommand::Cancel) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(stopped()),
+        }
+    }
+
+    pub async fn end(&self) -> Result<SessionSummary, Error> {
+        let (reply, response) = oneshot::channel();
+        self.sender
+            .send(SessionCommand::End { reply })
+            .await
+            .map_err(|_| stopped())?;
+        response.await.map_err(|_| stopped())?
+    }
+
+    /// Answers a parked client-hosted tool call. Deliberately lock-free at the session
+    /// level: the turn holding the park is inside `message` — this is the call that lets
+    /// it finish.
+    pub fn resolve_tool_call(&self, sequence: u64, outcome: Outcome) -> Result<(), Error> {
+        self.pending_tools.resolve(sequence, outcome)
+    }
+
+    /// Journals an effect the host is about to perform on the session's behalf outside a
+    /// turn, such as calling one of its environments. Returns the record's sequence,
+    /// which names the operation; the host records what came of it with
+    /// [`Session::record_call_finished`]. Refused while a turn is running.
+    pub async fn record_call_started<T: serde::Serialize>(
+        &self,
+        kind: &str,
+        request: &T,
+    ) -> Result<u64, Error> {
+        self.append(AppendRecord::new(
+            format!("{kind}_started"),
+            serde_json::json!({"request": request}),
+        ))
+        .await
+    }
+
+    pub async fn record_call_finished<T: serde::Serialize>(
+        &self,
+        kind: &str,
+        sequence: u64,
+        result: &T,
+    ) -> Result<(), Error> {
+        self.append(AppendRecord::new(
+            format!("{kind}_finished"),
+            serde_json::json!({"sequence": sequence, "result": result}),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    async fn append(&self, record: AppendRecord) -> Result<u64, Error> {
+        let (reply, response) = oneshot::channel();
+        self.sender
+            .send(SessionCommand::Append { record, reply })
+            .await
+            .map_err(|_| stopped())?;
+        response.await.map_err(|_| stopped())?
     }
 }
 
@@ -627,65 +313,50 @@ impl CreatingSession {
     pub fn session_id(&self) -> &SessionId {
         &self.row.session_id
     }
-    pub fn journal_id(&self) -> &JournalId {
-        &self.row.journal_id
-    }
 
-    pub fn record_intent<T: serde::Serialize>(
+    /// Journals an effect performed while the session is being created, before its
+    /// actor exists. Returns the record's sequence, which names the operation.
+    pub fn record_call_started<T: serde::Serialize>(
         &mut self,
         kind: &str,
         request: &T,
-    ) -> Result<(OperationId, Identity), KernelError> {
-        self.record_intent_redacted(kind, request, request)
+    ) -> Result<u64, Error> {
+        self.append(AppendRecord::new(
+            format!("{kind}_started"),
+            serde_json::json!({"request": request}),
+        ))
     }
 
-    /// Journals the intent as `journal_view` while the operation identity still covers
-    /// the wire request. This is how a request carrying values the journal must not
-    /// hold — attach binding values — is recorded: the view replaces each value with
-    /// its identity.
-    pub fn record_intent_redacted<T: serde::Serialize, V: serde::Serialize>(
+    pub fn record_call_finished<T: serde::Serialize>(
         &mut self,
         kind: &str,
-        request: &T,
-        journal_view: &V,
-    ) -> Result<(OperationId, Identity), KernelError> {
-        let operation_id = operation_id(&self.row.journal_id, self.row.through_sequence + 1);
-        let identity =
-            Identity::of(request).map_err(|error| KernelError::InvalidState(error.to_string()))?;
-        let saved = self.kernel.inner.store.append(
-            &self.row.session_id,
-            self.row.through_sequence,
-            &[AppendRecord::new(format!("{kind}_intent"), serde_json::json!({"operation_id":operation_id,"request_identity":identity,"request":journal_view}))],
-            SessionUpdate::default(),
-        )?;
-        self.row.through_sequence += saved.len() as u64;
-        Ok((operation_id, identity))
-    }
-
-    pub fn record_result<T: serde::Serialize>(
-        &mut self,
-        kind: &str,
-        operation_id: &OperationId,
+        sequence: u64,
         result: &T,
-    ) -> Result<(), KernelError> {
-        let saved = self.kernel.inner.store.append(
+    ) -> Result<(), Error> {
+        self.append(AppendRecord::new(
+            format!("{kind}_finished"),
+            serde_json::json!({"sequence": sequence, "result": result}),
+        ))
+        .map(|_| ())
+    }
+
+    fn append(&mut self, record: AppendRecord) -> Result<u64, Error> {
+        let saved = self.store.append(
             &self.row.session_id,
             self.row.through_sequence,
-            &[AppendRecord::new(
-                format!("{kind}_result"),
-                serde_json::json!({"operation_id":operation_id,"result":result}),
-            )],
+            &[record],
             SessionUpdate::default(),
         )?;
         self.row.through_sequence += saved.len() as u64;
-        Ok(())
+        Ok(self.row.through_sequence)
     }
 
-    pub fn complete(mut self, sealed: SealedSessionConfig) -> Result<SessionHandle, KernelError> {
+    /// Seals what was granted and starts the session.
+    pub fn complete(mut self, sealed: SealedSessionConfig) -> Result<Session, Error> {
         validate_session_contract(&sealed)?;
         let configuration = serde_json::to_value(&sealed).map_err(json_error)?;
         let context = self.row.context.clone();
-        let saved = self.kernel.inner.store.append(
+        let saved = self.store.append(
             &self.row.session_id,
             self.row.through_sequence,
             &[AppendRecord::new(
@@ -701,11 +372,11 @@ impl CreatingSession {
         self.row.through_sequence += saved.len() as u64;
         self.row.status = SessionStatus::Idle;
         self.row.configuration = configuration;
-        self.kernel.spawn(self.row, self.history)
+        Session::spawn(self.store, self.config, self.row, self.history)
     }
 
-    pub fn fail(mut self, code: &str, message: &str) -> Result<(), KernelError> {
-        let saved = self.kernel.inner.store.append(
+    pub fn fail(mut self, code: &str, message: &str) -> Result<(), Error> {
+        let saved = self.store.append(
             &self.row.session_id,
             self.row.through_sequence,
             &[AppendRecord::new(
@@ -723,53 +394,89 @@ impl CreatingSession {
     }
 }
 
-impl SessionHandle {
-    pub fn id(&self) -> &SessionId {
-        &self.session_id
-    }
-
-    pub async fn message(&self, request: MessageRequest) -> Result<Session, KernelError> {
-        if request.input.message.is_empty() {
-            return Err(KernelError::InvalidState("message cannot be empty".into()));
-        }
-        if serde_json::to_vec(&request).map_err(json_error)?.len() > 2 * 1024 * 1024 {
-            return Err(KernelError::InvalidState(
-                "message request exceeds 2 MiB".into(),
-            ));
-        }
-        let (reply, response) = oneshot::channel();
-        self.sender
-            .send(SessionCommand::Message { request, reply })
-            .await
-            .map_err(|_| KernelError::InvalidState("session actor stopped".into()))?;
-        response
-            .await
-            .map_err(|_| KernelError::InvalidState("session actor stopped".into()))?
-    }
-
-    pub async fn cancel(&self) -> Result<(), KernelError> {
-        self.cancelled.store(true, Ordering::Release);
-        match self.sender.try_send(SessionCommand::Cancel) {
-            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                Err(KernelError::InvalidState("session actor stopped".into()))
-            }
-        }
-    }
-
-    pub async fn end(&self) -> Result<Session, KernelError> {
-        let (reply, response) = oneshot::channel();
-        self.sender
-            .send(SessionCommand::End { reply })
-            .await
-            .map_err(|_| KernelError::InvalidState("session actor stopped".into()))?;
-        response
-            .await
-            .map_err(|_| KernelError::InvalidState("session actor stopped".into()))?
-    }
+fn stopped() -> Error {
+    Error::InvalidState("session actor stopped".into())
 }
 
-/// The two request shapes the kernel admits differ only in where an Environment identity
+/// Writes the caller's events into the new session's journal, and hands back what the
+/// agentloop should be told.
+///
+/// The sequences the caller supplies are checked but not kept: they name positions in
+/// the session those events came from, and this is a different session, whose records
+/// are numbered densely from its own beginning. What they are good for is catching a
+/// caller that has lost or reordered part of the conversation, which is worth failing
+/// on rather than silently writing down.
+fn replay_history(
+    store: &dyn JournalStore,
+    row: &mut SessionRow,
+    history: &[HistoryEvent],
+) -> Result<Vec<serde_json::Value>, Error> {
+    if history.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut previous = 0;
+    for event in history {
+        // A caller's history cannot wear a lifecycle kind. These are the records the
+        // journal is read back by -- a restart derives a session's status from them --
+        // so accepting `session_ended` or `turn_started` from a client would let it
+        // describe a session that never happened, and a later restart would believe it.
+        if RESERVED_KINDS.contains(&event.event_type.as_str()) {
+            return Err(Error::InvalidState(format!(
+                "session history may not contain `{}`: lifecycle records are Brain's own, \
+                 and a restart reads a session's state back out of them",
+                event.event_type
+            )));
+        }
+        if event.sequence <= previous {
+            return Err(Error::InvalidState(format!(
+                "session history is out of order at sequence {}: events must ascend, and \
+                 one that does not is a conversation with a piece missing or moved",
+                event.sequence
+            )));
+        }
+        previous = event.sequence;
+    }
+
+    let records: Vec<AppendRecord> = history
+        .iter()
+        .map(|event| AppendRecord::new(&event.event_type, event.data.clone()))
+        .collect();
+    let saved = store.append(
+        &row.session_id,
+        row.through_sequence,
+        &records,
+        SessionUpdate::default(),
+    )?;
+    row.through_sequence += saved.len() as u64;
+    Ok(history.iter().map(|event| event.data.clone()).collect())
+}
+
+/// A restored session's own records, to hand back to its agentloop.
+///
+/// Bounded at the same count the create API accepts as history. A conversation longer
+/// than that restores and can be read, but is not replayed into a loop: handing over
+/// part of a conversation as though it were the whole of it would be a worse answer
+/// than declining to.
+fn restored_history(
+    store: &dyn JournalStore,
+    session_id: &SessionId,
+) -> Result<Vec<serde_json::Value>, Error> {
+    const MOST: usize = 10_000;
+    let mut history = Vec::new();
+    let mut after = 0;
+    loop {
+        let page = store.records_after(session_id, after, 1_000)?;
+        let Some(last) = page.last() else { break };
+        after = last.sequence;
+        history.extend(page.into_iter().map(|record| record.payload));
+        if history.len() > MOST {
+            return Ok(Vec::new());
+        }
+    }
+    Ok(history)
+}
+
+/// The two request shapes a session admits differ only in where an Environment identity
 /// lives: a resolved request names it directly, a sealed configuration carries it inside
 /// the binding it resolved to. Every other term of the contract is identical, and core
 /// principle 3 requires that authority be bounded identically however a session is
@@ -871,7 +578,7 @@ trait SessionContract: serde::Serialize {
 
     fn agentloop_identity(&self) -> &AgentloopIdentity;
     fn model(&self) -> &ModelBinding;
-    fn presentation(&self) -> &ModelPresentation;
+    fn tools(&self) -> &[ToolDefinition];
     fn environments(&self) -> &[Self::Environment];
     fn tool_bindings(&self) -> &[Self::ToolBinding];
 }
@@ -888,8 +595,8 @@ impl SessionContract for ResolvedSessionRequest {
         &self.model
     }
 
-    fn presentation(&self) -> &ModelPresentation {
-        &self.presentation
+    fn tools(&self) -> &[ToolDefinition] {
+        &self.tools
     }
 
     fn environments(&self) -> &[Self::Environment] {
@@ -913,8 +620,8 @@ impl SessionContract for SealedSessionConfig {
         &self.model
     }
 
-    fn presentation(&self) -> &ModelPresentation {
-        &self.presentation
+    fn tools(&self) -> &[ToolDefinition] {
+        &self.tools
     }
 
     fn environments(&self) -> &[Self::Environment] {
@@ -926,26 +633,23 @@ impl SessionContract for SealedSessionConfig {
     }
 }
 
-fn validate_session_contract(request: &impl SessionContract) -> Result<(), KernelError> {
+fn validate_session_contract(request: &impl SessionContract) -> Result<(), Error> {
     if serde_json::to_vec(request).map_err(json_error)?.len() > 2 * 1024 * 1024 {
-        return Err(KernelError::InvalidState(
-            "session request exceeds 2 MiB".into(),
-        ));
+        return Err(Error::InvalidState("session request exceeds 2 MiB".into()));
     }
     if !identity_valid(request.agentloop_identity().as_str())
         || !identifier_valid(&request.model().binding_id)
         || request.model().model.is_empty()
         || request.model().model.len() > 256
-        || request.presentation().system.len() > 131_072
-        || request.presentation().tools.len() > 128
+        || request.tools().len() > 128
         || request.environments().len() > 128
         || request.tool_bindings().len() > 128
     {
-        return Err(KernelError::InvalidState(
+        return Err(Error::InvalidState(
             "session request violates a contract size or identity bound".into(),
         ));
     }
-    for tool in &request.presentation().tools {
+    for tool in request.tools() {
         if !identifier_valid(&tool.name)
             || tool.description.len() > 8_192
             || !tool.input_schema.is_object()
@@ -954,7 +658,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
                 .as_ref()
                 .is_some_and(|value| !value.is_object())
         {
-            return Err(KernelError::InvalidState(
+            return Err(Error::InvalidState(
                 "Tool definition violates the session contract".into(),
             ));
         }
@@ -974,7 +678,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
                     .any(|name| !identifier_valid(name))
         })
     {
-        return Err(KernelError::InvalidState(
+        return Err(Error::InvalidState(
             "Environment or Tool binding has an invalid identity".into(),
         ));
     }
@@ -988,7 +692,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
                 .enumerate()
                 .any(|(index, name)| needs[..index].contains(name))
         {
-            return Err(KernelError::InvalidState(format!(
+            return Err(Error::InvalidState(format!(
                 "Tool `{}` names an invalid or repeated resource",
                 binding.name()
             )));
@@ -999,7 +703,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
     if request.tool_bindings().iter().any(|binding| {
         matches!(binding.hosting(), ToolHosting::Client) && binding.program().is_some()
     }) {
-        return Err(KernelError::InvalidState(
+        return Err(Error::InvalidState(
             "a client Tool binding cannot carry a program".into(),
         ));
     }
@@ -1009,24 +713,23 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
     for binding in request.tool_bindings() {
         let client = matches!(binding.hosting(), ToolHosting::Client);
         if client && binding.environment_id().is_some() {
-            return Err(KernelError::InvalidState(
+            return Err(Error::InvalidState(
                 "a client-hosted Tool binding cannot name an Environment".into(),
             ));
         }
         if client && !binding.needs().is_empty() {
-            return Err(KernelError::InvalidState(
+            return Err(Error::InvalidState(
                 "a client-hosted Tool binding cannot need Environment resources".into(),
             ));
         }
         if !client && binding.environment_id().is_none() {
-            return Err(KernelError::InvalidState(
+            return Err(Error::InvalidState(
                 "every provisioned Tool binding must name a bound Environment".into(),
             ));
         }
     }
     let mut definitions: Vec<&str> = request
-        .presentation()
-        .tools
+        .tools()
         .iter()
         .map(|tool| tool.name.as_str())
         .collect();
@@ -1041,7 +744,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
         || bindings.windows(2).any(|pair| pair[0] == pair[1])
         || definitions != bindings
     {
-        return Err(KernelError::InvalidState(
+        return Err(Error::InvalidState(
             "every unique Tool definition must have exactly one binding".into(),
         ));
     }
@@ -1051,7 +754,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
         .map(EnvironmentView::environment_id)
         .collect();
     if environment_ids.len() != request.environments().len() {
-        return Err(KernelError::InvalidState(
+        return Err(Error::InvalidState(
             "Environment identities must be unique".into(),
         ));
     }
@@ -1060,7 +763,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
             .environment_id()
             .is_some_and(|id| !environment_ids.contains(id))
     }) {
-        return Err(KernelError::InvalidState(
+        return Err(Error::InvalidState(
             "every Tool binding must name a bound Environment".into(),
         ));
     }
@@ -1087,7 +790,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
             .map(Program::runtime)
             .filter(|runtime| !runtimes.contains(runtime))
         {
-            return Err(KernelError::InvalidState(format!(
+            return Err(Error::InvalidState(format!(
                 "Tool `{}` needs runtime `{runtime}` that Environment `{environment_id}` does not provide",
                 binding.name(),
             )));
@@ -1097,7 +800,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Kerne
             .iter()
             .find(|name| !resources.contains_key(name.as_str()))
         {
-            return Err(KernelError::InvalidState(format!(
+            return Err(Error::InvalidState(format!(
                 "Tool `{}` needs resource `{missing}` that Environment `{environment_id}` does not provide",
                 binding.name(),
             )));
@@ -1129,12 +832,13 @@ fn random_id(prefix: &str) -> String {
     format!("{prefix}_{}", hex::encode(bytes))
 }
 
-fn json_error(error: serde_json::Error) -> KernelError {
-    KernelError::InvalidState(error.to_string())
+fn json_error(error: serde_json::Error) -> Error {
+    Error::InvalidState(error.to_string())
 }
+
 #[cfg(test)]
 mod tests {
-    use brain_protocol::{AttachmentId, EnvironmentBinding, LifecyclePolicy, ToolDefinition};
+    use brain_protocol::{AttachmentId, EnvironmentBinding, Identity, LifecyclePolicy};
 
     use super::*;
 
@@ -1169,11 +873,7 @@ mod tests {
                 binding_id: "gateway".into(),
                 model: "openai/test".into(),
             },
-            presentation: ModelPresentation {
-                system: "test".into(),
-                tools: vec![tool()],
-                response_format: None,
-            },
+            tools: vec![tool()],
             environments: vec![ResolvedEnvironment {
                 environment_id: EnvironmentId::new("workspace"),
                 configuration: serde_json::json!({}),
@@ -1199,11 +899,7 @@ mod tests {
                 binding_id: "gateway".into(),
                 model: "openai/test".into(),
             },
-            presentation: ModelPresentation {
-                system: "test".into(),
-                tools: vec![tool()],
-                response_format: None,
-            },
+            tools: vec![tool()],
             environments: vec![EnvironmentAttachment {
                 binding: environment_binding(),
                 attachment_id: AttachmentId::new("attachment"),
@@ -1293,15 +989,10 @@ mod tests {
                 "size or identity bound",
             ),
             (
-                "a system prompt over 128 KiB",
-                |request| request.presentation.system = "s".repeat(131_073),
-                "size or identity bound",
-            ),
-            (
                 "more than 128 Tool definitions",
                 |request| {
                     let binding = request.tool_bindings[0].clone();
-                    request.presentation.tools = (0..129)
+                    request.tools = (0..129)
                         .map(|index| ToolDefinition {
                             name: format!("tool{index}"),
                             ..tool()
@@ -1333,24 +1024,24 @@ mod tests {
             (
                 "a Tool name that is not an identifier",
                 |request| {
-                    request.presentation.tools[0].name = "../escape".into();
+                    request.tools[0].name = "../escape".into();
                     request.tool_bindings[0].name = "../escape".into();
                 },
                 "Tool definition violates",
             ),
             (
                 "a Tool description over 8 KiB",
-                |request| request.presentation.tools[0].description = "d".repeat(8_193),
+                |request| request.tools[0].description = "d".repeat(8_193),
                 "Tool definition violates",
             ),
             (
                 "a Tool input schema that is not an object",
-                |request| request.presentation.tools[0].input_schema = serde_json::json!("string"),
+                |request| request.tools[0].input_schema = serde_json::json!("string"),
                 "Tool definition violates",
             ),
             (
                 "a Tool output schema that is not an object",
-                |request| request.presentation.tools[0].output_schema = Some(serde_json::json!([])),
+                |request| request.tools[0].output_schema = Some(serde_json::json!([])),
                 "Tool definition violates",
             ),
             (
@@ -1381,7 +1072,7 @@ mod tests {
             (
                 "two Tool definitions sharing one name",
                 |request| {
-                    request.presentation.tools.push(tool());
+                    request.tools.push(tool());
                     let binding = request.tool_bindings[0].clone();
                     request.tool_bindings.push(binding);
                 },
@@ -1394,7 +1085,7 @@ mod tests {
             ),
             (
                 "a binding with no Tool definition",
-                |request| request.presentation.tools.clear(),
+                |request| request.tools.clear(),
                 "exactly one binding",
             ),
             (
@@ -1421,8 +1112,8 @@ mod tests {
     }
 
     /// A sealed configuration reaches the journal through `CreatingSession::complete`,
-    /// the only other way a session is admitted. It is held to the same bounds, so the
-    /// kernel does not become more permissive by being driven from inside a service.
+    /// the only other way a session is admitted. It is held to the same bounds, so a
+    /// session does not become more permissive by being driven from inside a service.
     #[test]
     fn every_bound_rejects_a_sealed_configuration_that_breaches_it() {
         let cases: Vec<Breach<SealedSessionConfig>> = vec![
@@ -1444,14 +1135,9 @@ mod tests {
                 "size or identity bound",
             ),
             (
-                "a system prompt over 128 KiB",
-                |sealed| sealed.presentation.system = "s".repeat(131_073),
-                "size or identity bound",
-            ),
-            (
                 "a Tool name that is not an identifier",
                 |sealed| {
-                    sealed.presentation.tools[0].name = "../escape".into();
+                    sealed.tools[0].name = "../escape".into();
                     sealed.tool_bindings[0].name = "../escape".into();
                 },
                 "Tool definition violates",

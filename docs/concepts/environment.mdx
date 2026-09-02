@@ -81,10 +81,10 @@ Connections are caches. They never decide identity, and they never decide teardo
 
 ## Replay is explicit
 
-Every operation carries a stable identifier and the identity of its request. When a
-redelivery arrives, the adapter can tell "this is the same call again" from "this is a new
-call that looks similar", and Brain never replays an ambiguous effect against a replacement
-target.
+Every operation carries the session id and the sequence of the journal record that started
+it. A redelivery carries the same pair, so the adapter answers it the way it did the first
+time instead of running the effect again, and Brain never replays an ambiguous effect
+against a replacement target.
 
 ## The official adapter
 

@@ -1,19 +1,17 @@
 //! What the server knows about a session that the session's own records do not.
 //!
-//! Two things are decided once, when a session is created, and never appear in the
-//! conversation that follows: the `journal_id` the kernel minted, and the provider
-//! credential the caller supplied. The journal is the record of what happened; this is the
-//! record of what the session *is*. Restoring a session after a restart needs both.
+//! One thing is decided once, when a session is created, and never appears in the
+//! conversation that follows: the provider credential the caller supplied. The journal is
+//! the record of what happened; this is the record of what the session calls its model
+//! with. Restoring a session after a restart needs both.
 //!
 //! Written on the same terms as the journal: appended, **never fsynced**, and best effort.
-//! A create returns as soon as the bytes are handed to the kernel's page cache, which is
+//! A create returns as soon as the bytes are handed to the page cache, which is
 //! what took four milliseconds out of it — the previous version was a SQLite table opened
 //! `synchronous = FULL`, so every session create waited for a disk. A crash can lose the
 //! tail, and a session whose metadata went with it comes back readable but cannot take
 //! another turn. That is the trade this design accepts everywhere else, made here too.
 //!
-//! Credentials are encrypted at rest; `journal_id` is not, because it names a session and
-//! reveals nothing that the session's own records do not.
 
 use std::{
     collections::HashMap,
@@ -27,7 +25,6 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, Payload},
 };
-use brain::KernelError;
 use brain_protocol::ModelSelection;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -46,11 +43,6 @@ pub struct ModelCredential {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 enum Entry {
-    /// The journal id the kernel minted for a session.
-    Session {
-        session_id: String,
-        journal_id: String,
-    },
     /// A provider credential, sealed to a binding identity.
     Binding {
         binding_id: String,
@@ -64,7 +56,6 @@ enum Entry {
 }
 
 pub struct ServerMetadata {
-    journals: RwLock<HashMap<String, String>>,
     credentials: RwLock<HashMap<String, ModelCredential>>,
     /// Held only across a small buffered append. The old store held a process-global lock
     /// across an fsync and an AES-GCM round trip, which serialised every session create in
@@ -74,39 +65,21 @@ pub struct ServerMetadata {
 }
 
 impl ServerMetadata {
-    pub fn open(directory: &Path) -> Result<Self, KernelError> {
+    pub fn open(directory: &Path) -> Result<Self, brain::Error> {
         fs::create_dir_all(directory).map_err(storage_error)?;
         let key = load_or_create_key(&directory.join("master.key"))?;
         let path = directory.join("metadata.log");
-        let (journals, credentials) = replay(&path, &key)?;
+        let credentials = replay(&path, &key)?;
         let log = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
             .map_err(storage_error)?;
         Ok(Self {
-            journals: RwLock::new(journals),
             credentials: RwLock::new(credentials),
             log: Mutex::new(log),
             key: Zeroizing::new(key),
         })
-    }
-
-    /// Remembers which journal a session was given.
-    pub fn put_journal(&self, session_id: &str, journal_id: &str) -> Result<(), KernelError> {
-        self.journals
-            .write()
-            .map_err(poisoned)?
-            .insert(session_id.to_owned(), journal_id.to_owned());
-        self.append(&Entry::Session {
-            session_id: session_id.to_owned(),
-            journal_id: journal_id.to_owned(),
-        })
-    }
-
-    /// Every session this process knows a journal id for, for restoring rows at startup.
-    pub fn journals(&self) -> Result<HashMap<String, String>, KernelError> {
-        Ok(self.journals.read().map_err(poisoned)?.clone())
     }
 
     /// Seals a credential to an identity. The same credential again is the idempotent
@@ -116,7 +89,7 @@ impl ServerMetadata {
         &self,
         binding_id: &str,
         selection: &ModelSelection,
-    ) -> Result<(), KernelError> {
+    ) -> Result<(), brain::Error> {
         {
             let mut credentials = self.credentials.write().map_err(poisoned)?;
             if let Some(existing) = credentials.get(binding_id) {
@@ -125,7 +98,7 @@ impl ServerMetadata {
                 {
                     return Ok(());
                 }
-                return Err(KernelError::InvalidState(
+                return Err(brain::Error::InvalidState(
                     "model binding identity is already sealed to different credentials".into(),
                 ));
             }
@@ -146,7 +119,7 @@ impl ServerMetadata {
         })
     }
 
-    pub fn binding(&self, binding_id: &str) -> Result<Option<ModelCredential>, KernelError> {
+    pub fn binding(&self, binding_id: &str) -> Result<Option<ModelCredential>, brain::Error> {
         Ok(self
             .credentials
             .read()
@@ -155,7 +128,7 @@ impl ServerMetadata {
             .cloned())
     }
 
-    pub fn forget_binding(&self, binding_id: &str) -> Result<(), KernelError> {
+    pub fn forget_binding(&self, binding_id: &str) -> Result<(), brain::Error> {
         self.credentials
             .write()
             .map_err(poisoned)?
@@ -167,13 +140,13 @@ impl ServerMetadata {
 
     /// Appends one line. No fsync, on purpose: this is best effort, and waiting for a disk
     /// here is the cost the whole design exists to avoid.
-    fn append(&self, entry: &Entry) -> Result<(), KernelError> {
+    fn append(&self, entry: &Entry) -> Result<(), brain::Error> {
         let mut line = serde_json::to_vec(entry).map_err(|error| storage_json(&error))?;
         line.push(b'\n');
         let mut log = self
             .log
             .lock()
-            .map_err(|_| KernelError::Executor("server metadata log is poisoned".into()))?;
+            .map_err(|_| brain::Error::Executor("server metadata log is poisoned".into()))?;
         log.write_all(&line).map_err(storage_error)?;
         Ok(())
     }
@@ -182,9 +155,9 @@ impl ServerMetadata {
         &self,
         binding_id: &str,
         selection: &ModelSelection,
-    ) -> Result<(String, String), KernelError> {
+    ) -> Result<(String, String), brain::Error> {
         let cipher = Aes256Gcm::new_from_slice(self.key.as_slice())
-            .map_err(|error| KernelError::Executor(error.to_string()))?;
+            .map_err(|error| brain::Error::Executor(error.to_string()))?;
         let nonce: [u8; NONCE_BYTES] = rand::rng().random();
         // The binding id is authenticated but not encrypted: a credential lifted from one
         // identity must not decrypt under another.
@@ -196,24 +169,23 @@ impl ServerMetadata {
                     aad: binding_id.as_bytes(),
                 },
             )
-            .map_err(|error| KernelError::Executor(error.to_string()))?;
+            .map_err(|error| brain::Error::Executor(error.to_string()))?;
         Ok((encode(&nonce), encode(&sealed)))
     }
 }
-
-/// What one read of the log recovered: journal ids by session, credentials by binding.
-type Recovered = (HashMap<String, String>, HashMap<String, ModelCredential>);
 
 /// Reads back what reached the disk.
 ///
 /// A line that will not parse ends the read. The last write of a crashed process is the one
 /// most likely to be half a line, and everything before it is whole — so the log is taken up
 /// to the tear and no further, rather than refusing to start over a partial record.
-fn replay(path: &Path, key: &[u8; KEY_BYTES]) -> Result<Recovered, KernelError> {
-    let mut journals = HashMap::new();
+fn replay(
+    path: &Path,
+    key: &[u8; KEY_BYTES],
+) -> Result<HashMap<String, ModelCredential>, brain::Error> {
     let mut credentials = HashMap::new();
     let Ok(file) = File::open(path) else {
-        return Ok((journals, credentials));
+        return Ok(credentials);
     };
     for line in BufReader::new(file).lines() {
         let Ok(line) = line else { break };
@@ -221,12 +193,6 @@ fn replay(path: &Path, key: &[u8; KEY_BYTES]) -> Result<Recovered, KernelError> 
             break;
         };
         match entry {
-            Entry::Session {
-                session_id,
-                journal_id,
-            } => {
-                journals.insert(session_id, journal_id);
-            }
             Entry::Binding {
                 binding_id,
                 provider,
@@ -251,7 +217,7 @@ fn replay(path: &Path, key: &[u8; KEY_BYTES]) -> Result<Recovered, KernelError> 
             }
         }
     }
-    Ok((journals, credentials))
+    Ok(credentials)
 }
 
 fn unseal(
@@ -289,7 +255,7 @@ fn decode(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn load_or_create_key(path: &Path) -> Result<[u8; KEY_BYTES], KernelError> {
+fn load_or_create_key(path: &Path) -> Result<[u8; KEY_BYTES], brain::Error> {
     match fs::read(path) {
         Ok(bytes) => return key_from_bytes(bytes),
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
@@ -319,21 +285,21 @@ fn load_or_create_key(path: &Path) -> Result<[u8; KEY_BYTES], KernelError> {
     }
 }
 
-fn key_from_bytes(bytes: Vec<u8>) -> Result<[u8; KEY_BYTES], KernelError> {
+fn key_from_bytes(bytes: Vec<u8>) -> Result<[u8; KEY_BYTES], brain::Error> {
     <[u8; KEY_BYTES]>::try_from(bytes.as_slice())
-        .map_err(|_| KernelError::Executor("the master key is not 32 bytes".into()))
+        .map_err(|_| brain::Error::Executor("the master key is not 32 bytes".into()))
 }
 
-fn storage_error(error: std::io::Error) -> KernelError {
-    KernelError::Executor(format!("server metadata store: {error}"))
+fn storage_error(error: std::io::Error) -> brain::Error {
+    brain::Error::Executor(format!("server metadata store: {error}"))
 }
 
-fn storage_json(error: &serde_json::Error) -> KernelError {
-    KernelError::Executor(format!("server metadata store: {error}"))
+fn storage_json(error: &serde_json::Error) -> brain::Error {
+    brain::Error::Executor(format!("server metadata store: {error}"))
 }
 
-fn poisoned<T>(_: T) -> KernelError {
-    KernelError::Executor("server metadata store is poisoned".into())
+fn poisoned<T>(_: T) -> brain::Error {
+    brain::Error::Executor("server metadata store is poisoned".into())
 }
 
 pub fn metadata_directory(data_dir: &Path) -> PathBuf {

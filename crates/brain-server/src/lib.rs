@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod environment;
+pub mod idempotency;
 pub mod metadata;
 pub mod model_binding;
 mod service;
@@ -13,6 +14,7 @@ pub use environment::{
     EnvironmentAdapter, EnvironmentDirectory, EnvironmentRegistry, HttpEnvironmentAdapter,
     InMemoryEnvironmentDirectory, SessionBindingValues,
 };
+pub use idempotency::IdempotencyStore;
 pub use model_binding::{
     LocalModelBindingStore, ModelBindingStore, ServerModelExecutor, load_providers_file,
 };

@@ -1,7 +1,7 @@
 //! Reading a session must not copy the conversation it is not returning.
 //!
 //! A session row holds the whole sealed configuration and the whole context. What a
-//! caller outside the kernel can see is five small fields. When the journal answered
+//! caller outside the session can see is a few small fields. When the journal answered
 //! `sessions()` with cloned rows, every list of N sessions deep-copied N configurations
 //! and N conversations and then dropped them: a page of the session list allocated
 //! proportionally to how much the sessions had been used, and startup recovery — which
@@ -18,7 +18,7 @@ use std::{
 };
 
 use brain::{AppendRecord, JournalStore, SegmentJournal, journal::SessionRow};
-use brain_protocol::{Identity, JournalId, SessionId, SessionStatus};
+use brain_protocol::{SessionId, SessionStatus};
 
 /// Counts bytes handed out, so a test can measure one call rather than a whole process.
 ///
@@ -75,17 +75,15 @@ const CONTEXT_BYTES: usize = 256 * 1024;
 const MAX_LISTING_BYTES: usize = CONTEXT_BYTES / 4;
 
 fn journal_with_sessions(directory: &Path) -> SegmentJournal {
-    let journal = SegmentJournal::open(directory, brain::DEFAULT_IDEMPOTENCY_RETENTION).unwrap();
+    let journal = SegmentJournal::open(directory).unwrap();
     let filler = serde_json::Value::String("x".repeat(CONTEXT_BYTES));
     for index in 0..SESSIONS {
         let row = SessionRow {
             session_id: SessionId::new(format!("ses_{index:04}")),
-            journal_id: JournalId::new(format!("jrn_{index:04}")),
             status: SessionStatus::Idle,
             through_sequence: 1,
             configuration: serde_json::json!({ "sealed": filler }),
             context: serde_json::json!({ "items": filler }),
-            presentation_identity: Identity::of_bytes(b"presentation"),
         };
         journal
             .create_session(

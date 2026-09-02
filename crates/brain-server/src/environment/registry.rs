@@ -3,11 +3,11 @@ use std::{
     sync::Arc,
 };
 
-use brain::{CreatingSession, Kernel, KernelError, SessionHandle};
+use brain::{CreatingSession, JournalStore, Session};
 use brain_protocol::{
     AttachmentId, EnvironmentAttachment, EnvironmentCallResult, EnvironmentId,
     EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, Identity, Provision,
-    ResolvedSessionRequest, SealedSessionConfig, SessionId, ToolBinding, ToolManifest,
+    ResolvedSessionRequest, SealedSessionConfig, ToolBinding, ToolManifest,
 };
 
 use super::{DirectoryEntry, EnvironmentAdapter, EnvironmentDirectory};
@@ -35,11 +35,11 @@ impl EnvironmentRegistry {
         mut creation: CreatingSession,
         request: ResolvedSessionRequest,
         binding_values: SessionBindingValues,
-    ) -> Result<(SessionHandle, SealedSessionConfig), KernelError> {
+    ) -> Result<(Session, SealedSessionConfig), brain::Error> {
         match self.prepare(&mut creation, request, binding_values).await {
             Ok(sealed) => {
-                let handle = creation.complete(sealed.clone())?;
-                Ok((handle, sealed))
+                let session = creation.complete(sealed.clone())?;
+                Ok((session, sealed))
             }
             Err(error) => {
                 let message = error.to_string();
@@ -54,7 +54,7 @@ impl EnvironmentRegistry {
         creation: &mut CreatingSession,
         request: ResolvedSessionRequest,
         mut binding_values: SessionBindingValues,
-    ) -> Result<SealedSessionConfig, KernelError> {
+    ) -> Result<SealedSessionConfig, brain::Error> {
         let mut environments = Vec::with_capacity(request.environments.len());
         let mut attachments = std::collections::HashMap::new();
         for requirement in &request.environments {
@@ -125,7 +125,7 @@ impl EnvironmentRegistry {
                     });
                 };
                 let attachment_id = attachments.get(&environment_id).cloned().ok_or_else(|| {
-                    KernelError::InvalidState("Tool requested an unresolved Environment".into())
+                    brain::Error::InvalidState("Tool requested an unresolved Environment".into())
                 })?;
                 Ok(ToolBinding {
                     name: tool.name,
@@ -134,7 +134,7 @@ impl EnvironmentRegistry {
                         .find(|environment| environment.binding.environment_id == environment_id)
                         .map(|environment| Some(environment.binding.clone()))
                         .ok_or_else(|| {
-                            KernelError::InvalidState(
+                            brain::Error::InvalidState(
                                 "Tool requested an unresolved Environment".into(),
                             )
                         })?,
@@ -145,12 +145,12 @@ impl EnvironmentRegistry {
                     program: tool.program,
                 })
             })
-            .collect::<Result<Vec<_>, KernelError>>()?;
+            .collect::<Result<Vec<_>, brain::Error>>()?;
         Ok(SealedSessionConfig {
             agentloop_identity: request.agentloop_identity,
             brain_configuration: request.brain_configuration,
             model: request.model,
-            presentation: request.presentation,
+            tools: request.tools,
             environments,
             tool_bindings,
         })
@@ -163,16 +163,15 @@ impl EnvironmentRegistry {
         request: EnvironmentRequest,
         attachment_id: Option<AttachmentId>,
         kind: &str,
-    ) -> Result<EnvironmentReceipt, KernelError> {
+    ) -> Result<EnvironmentReceipt, brain::Error> {
         // An attach carries binding values in plaintext, and plaintext never enters
-        // the journal: the recorded intent replaces each value with its identity.
-        let (operation_id, request_identity) = match redacted(&request)? {
-            Some(journal_view) => creation.record_intent_redacted(kind, &request, &journal_view)?,
-            None => creation.record_intent(kind, &request)?,
+        // the journal: the record replaces each value with its identity.
+        let sequence = match redacted(&request)? {
+            Some(journal_view) => creation.record_call_started(kind, &journal_view)?,
+            None => creation.record_call_started(kind, &request)?,
         };
         let operation = EnvironmentOperation {
-            operation_id: operation_id.clone(),
-            request_identity,
+            sequence,
             environment_id: entry.binding.environment_id.clone(),
             session_id: creation.session_id().clone(),
             attachment_id,
@@ -183,19 +182,14 @@ impl EnvironmentRegistry {
             .send(&entry.endpoint, &entry.binding, &operation)
             .await?;
         match &receipt {
-            EnvironmentReceipt::Conflict { .. } => {
-                return Err(KernelError::InvalidState(
-                    "Environment rejected a lifecycle digest conflict".into(),
-                ));
-            }
             EnvironmentReceipt::Ambiguous { message } => {
-                return Err(KernelError::Ambiguous(message.clone()));
+                return Err(brain::Error::Ambiguous(message.clone()));
             }
             EnvironmentReceipt::Failure { message, .. } => {
-                return Err(KernelError::Executor(message.clone()));
+                return Err(brain::Error::Executor(message.clone()));
             }
             EnvironmentReceipt::Progress { .. } => {
-                return Err(KernelError::Executor(
+                return Err(brain::Error::Executor(
                     "Environment returned progress without a terminal lifecycle receipt".into(),
                 ));
             }
@@ -203,7 +197,7 @@ impl EnvironmentRegistry {
             | EnvironmentReceipt::Result { .. }
             | EnvironmentReceipt::Outcome { .. } => {}
         }
-        creation.record_result(kind, &operation_id, &receipt)?;
+        creation.record_call_finished(kind, sequence, &receipt)?;
         Ok(receipt)
     }
 
@@ -211,7 +205,7 @@ impl EnvironmentRegistry {
         &self,
         binding: &brain_protocol::EnvironmentBinding,
         operation: &EnvironmentOperation<EnvironmentRequest>,
-    ) -> Result<EnvironmentReceipt, KernelError> {
+    ) -> Result<EnvironmentReceipt, brain::Error> {
         let entry = self.directory.get(binding).await?;
         self.adapter
             .send(&entry.endpoint, &entry.binding, operation)
@@ -220,27 +214,28 @@ impl EnvironmentRegistry {
 
     pub async fn call(
         &self,
-        kernel: &Kernel,
-        session_id: &SessionId,
+        session: &Session,
+        store: &dyn JournalStore,
         environment_id: &EnvironmentId,
         name: String,
         input: serde_json::Value,
-    ) -> Result<EnvironmentCallResult, KernelError> {
-        let sealed = kernel.sealed_config(session_id)?;
+    ) -> Result<EnvironmentCallResult, brain::Error> {
+        let session_id = session.id();
+        let sealed = brain::sealed_config(store, session_id)?;
         let attachment = sealed
             .environments
             .iter()
             .find(|attachment| &attachment.binding.environment_id == environment_id)
             .ok_or_else(|| {
-                KernelError::InvalidState("Environment is not attached to this session".into())
+                brain::Error::InvalidState("Environment is not attached to this session".into())
             })?;
         let entry = self.directory.get(&attachment.binding).await?;
         let request = EnvironmentRequest::Call { name, input };
-        let (operation_id, request_identity) =
-            kernel.record_external_intent(session_id, "environment_call", &request)?;
+        let sequence = session
+            .record_call_started("environment_call", &request)
+            .await?;
         let operation = EnvironmentOperation {
-            operation_id: operation_id.clone(),
-            request_identity,
+            sequence,
             environment_id: environment_id.clone(),
             session_id: session_id.clone(),
             attachment_id: Some(attachment.attachment_id.clone()),
@@ -250,15 +245,14 @@ impl EnvironmentRegistry {
             .adapter
             .send(&entry.endpoint, &entry.binding, &operation)
             .await?;
-        kernel.record_external_result(session_id, "environment_call", &operation_id, &receipt)?;
+        session
+            .record_call_finished("environment_call", sequence, &receipt)
+            .await?;
         match receipt {
             EnvironmentReceipt::Result { output } => Ok(EnvironmentCallResult { output }),
-            EnvironmentReceipt::Failure { message, .. } => Err(KernelError::Executor(message)),
-            EnvironmentReceipt::Ambiguous { message } => Err(KernelError::Ambiguous(message)),
-            EnvironmentReceipt::Conflict { .. } => Err(KernelError::InvalidState(
-                "Environment rejected a call digest conflict".into(),
-            )),
-            _ => Err(KernelError::Executor(
+            EnvironmentReceipt::Failure { message, .. } => Err(brain::Error::Executor(message)),
+            EnvironmentReceipt::Ambiguous { message } => Err(brain::Error::Ambiguous(message)),
+            _ => Err(brain::Error::Executor(
                 "Environment returned a nonterminal call receipt".into(),
             )),
         }
@@ -266,15 +260,13 @@ impl EnvironmentRegistry {
 
     pub async fn release_session(
         &self,
-        kernel: &Kernel,
-        session_id: &brain_protocol::SessionId,
+        session: &Session,
         sealed: &SealedSessionConfig,
-    ) -> Result<(), KernelError> {
+    ) -> Result<(), brain::Error> {
         for attachment in sealed.environments.iter().rev() {
             let entry = self.directory.get(&attachment.binding).await?;
             self.session_lifecycle(
-                kernel,
-                session_id,
+                session,
                 &entry,
                 Some(attachment.attachment_id.clone()),
                 EnvironmentRequest::Detach,
@@ -286,8 +278,7 @@ impl EnvironmentRegistry {
                 brain_protocol::LifecyclePolicy::Session
             ) {
                 self.session_lifecycle(
-                    kernel,
-                    session_id,
+                    session,
                     &entry,
                     None,
                     EnvironmentRequest::Teardown,
@@ -301,19 +292,17 @@ impl EnvironmentRegistry {
 
     async fn session_lifecycle(
         &self,
-        kernel: &Kernel,
-        session_id: &brain_protocol::SessionId,
+        session: &Session,
         entry: &DirectoryEntry,
         attachment_id: Option<AttachmentId>,
         request: EnvironmentRequest,
         kind: &str,
-    ) -> Result<(), KernelError> {
-        let (operation_id, digest) = kernel.record_external_intent(session_id, kind, &request)?;
+    ) -> Result<(), brain::Error> {
+        let sequence = session.record_call_started(kind, &request).await?;
         let operation = EnvironmentOperation {
-            operation_id: operation_id.clone(),
-            request_identity: digest,
+            sequence,
             environment_id: entry.binding.environment_id.clone(),
-            session_id: session_id.clone(),
+            session_id: session.id().clone(),
             attachment_id,
             request,
         };
@@ -323,24 +312,19 @@ impl EnvironmentRegistry {
             .await?;
         match &receipt {
             EnvironmentReceipt::Accepted { .. } | EnvironmentReceipt::Result { .. } => {}
-            EnvironmentReceipt::Conflict { .. } => {
-                return Err(KernelError::InvalidState(
-                    "Environment rejected a lifecycle digest conflict".into(),
-                ));
-            }
             EnvironmentReceipt::Ambiguous { message } => {
-                return Err(KernelError::Ambiguous(message.clone()));
+                return Err(brain::Error::Ambiguous(message.clone()));
             }
             EnvironmentReceipt::Failure { message, .. } => {
-                return Err(KernelError::Executor(message.clone()));
+                return Err(brain::Error::Executor(message.clone()));
             }
             _ => {
-                return Err(KernelError::Executor(
+                return Err(brain::Error::Executor(
                     "Environment returned a nonterminal lifecycle receipt".into(),
                 ));
             }
         }
-        kernel.record_external_result(session_id, kind, &operation_id, &receipt)
+        session.record_call_finished(kind, sequence, &receipt).await
     }
 }
 
@@ -358,7 +342,6 @@ fn provisions_for(
         .filter_map(|tool| {
             let program = tool.program.clone()?;
             let definition = request
-                .presentation
                 .tools
                 .iter()
                 .find(|definition| definition.name == tool.name)?;
@@ -393,7 +376,7 @@ fn receipt_declaration(
 /// The journal view of a request whose wire form carries plaintext binding values:
 /// the same request with each value replaced by its identity. `None` when the request
 /// carries nothing the journal must not hold.
-fn redacted(request: &EnvironmentRequest) -> Result<Option<EnvironmentRequest>, KernelError> {
+fn redacted(request: &EnvironmentRequest) -> Result<Option<EnvironmentRequest>, brain::Error> {
     let EnvironmentRequest::Attach {
         provisions,
         bindings,
@@ -404,7 +387,7 @@ fn redacted(request: &EnvironmentRequest) -> Result<Option<EnvironmentRequest>, 
     let mut identities = BTreeMap::new();
     for (name, value) in bindings {
         let identity =
-            Identity::of(value).map_err(|error| KernelError::InvalidState(error.to_string()))?;
+            Identity::of(value).map_err(|error| brain::Error::InvalidState(error.to_string()))?;
         identities.insert(name.clone(), identity.to_string());
     }
     Ok(Some(EnvironmentRequest::Attach {
@@ -416,9 +399,9 @@ fn redacted(request: &EnvironmentRequest) -> Result<Option<EnvironmentRequest>, 
 fn attachment_id(
     session_id: &brain_protocol::SessionId,
     environment_id: &brain_protocol::EnvironmentId,
-) -> Result<AttachmentId, KernelError> {
+) -> Result<AttachmentId, brain::Error> {
     let identity = Identity::of(&(session_id, environment_id))
-        .map_err(|error| KernelError::InvalidState(error.to_string()))?;
+        .map_err(|error| brain::Error::InvalidState(error.to_string()))?;
     Ok(AttachmentId::new(format!(
         "att_{}",
         &identity.to_string()[..24]

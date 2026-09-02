@@ -68,9 +68,9 @@ process.exit(0);
 ```
 
 The model reads the question and calls `lookup_order`: the call is journalled as a
-`tool_intent` record and surfaces on the session's event feed, your `execute` answers it
-beside the `orders` object it closes over, and the SDK posts the outcome back under the
-call's operation id — idempotently, so a retry is the same effect. The whole exchange
+`tool_call_started` record and surfaces on the session's event feed, your `execute` answers
+it beside the `orders` object it closes over, and the SDK posts the outcome back under that
+record's sequence — idempotently, so a retry is the same effect. The whole exchange
 lands in the feed, tool call and result included.
 
 Under the hood this is `hosting: "client"` on the tool's manifest. When the function

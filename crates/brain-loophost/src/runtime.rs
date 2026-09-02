@@ -125,7 +125,7 @@ struct WarmEntry {
     store: Store<StoreLimits>,
     bindings: bindings::Agentloop,
     /// The state the guest returned last activation: its parsed value beside the exact
-    /// bytes the guest produced. The kernel round-trips state through `serde_json::Value`,
+    /// bytes the guest produced. The session round-trips state through `serde_json::Value`,
     /// which re-serializes with different bytes (sorted keys), so without this the guest's
     /// own byte-equality cache could never hit. When the incoming value is structurally
     /// equal to what the guest returned, it is handed back verbatim.
@@ -161,13 +161,13 @@ impl WarmInstances {
 /// The context of every turn currently mid-flight in this worker, keyed by session.
 ///
 /// Residency is what lets a turn's later activations cross the wire without the
-/// conversation: the kernel attaches the context on the turn's opening observation, the
+/// conversation: the session attaches the context on the turn's opening observation, the
 /// worker holds it here between legs, and hands it back on the terminal decision. It is
 /// deliberately NOT part of [`WarmInstances`]: instance eviction is a memory policy, but
 /// dropping a mid-turn context fails a live turn — including turns legitimately parked
 /// for minutes on a client-hosted tool call.
 ///
-/// Entries are freed at terminal decisions. A turn the kernel abandons without a
+/// Entries are freed at terminal decisions. A turn the session abandons without a
 /// terminal leg (cancel, failure, deadline) leaks its entry until the next turn's
 /// opening leg overwrites it, or the TTL sweep collects it.
 #[derive(Default)]
@@ -181,7 +181,7 @@ struct ResidentContext {
 }
 
 /// Sweep bound: a resident context older than this belongs to a turn nothing will
-/// finish — kernel deadlines are minutes, not hours. Checked amortized on insert.
+/// finish — session deadlines are minutes, not hours. Checked amortized on insert.
 const RESIDENT_TTL: Duration = Duration::from_secs(3600);
 const RESIDENT_SWEEP_AT: usize = 256;
 
@@ -254,8 +254,8 @@ impl AdmittedAgentloop {
         // The turn's context: attached on its opening observation, resident here for the
         // legs between, returned on the terminal decision. A mid-turn leg that finds
         // nothing resident means this worker restarted with the turn in flight — the
-        // kernel's copy is the turn's opening state, so continuing from it would replay
-        // effects; the kernel fails the turn honestly instead.
+        // session's copy is the turn's opening state, so continuing from it would replay
+        // effects; the session fails the turn honestly instead.
         let mut input = input;
         if context_attached {
             // The opening leg's context is authoritative: it overwrites whatever a
@@ -292,7 +292,7 @@ impl AdmittedAgentloop {
             Ok((output, true))
         } else {
             let context = std::mem::take(&mut output.context);
-            // The placeholder keeps the version so the kernel's per-leg contract check
+            // The placeholder keeps the version so the session's per-leg contract check
             // still holds; everything else stays resident here.
             output.context.protocol_version = context.protocol_version.clone();
             resident.put(session, context);
@@ -377,10 +377,7 @@ fn to_wit_input(
         observation,
         configuration_json: serde_json::to_string(&input.configuration)
             .map_err(|error| error.to_string())?,
-        presentation: wit::Presentation {
-            bytes: input.presentation.bytes,
-            identity: input.presentation.identity.to_string(),
-        },
+        tools_json: serde_json::to_string(&input.tools).map_err(|error| error.to_string())?,
         runtime: wit::RuntimeEnvelope {
             logical_time_ms: input.runtime.logical_time_ms,
             deterministic_seed: input.runtime.deterministic_seed,
