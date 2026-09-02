@@ -100,8 +100,8 @@ impl LoopExecutor for ScriptedLoop {
             assert!(matches!(input.observation, Observation::UserMessage { .. }));
             Decision::Model {
                 request: ModelRequest {
-                    system: String::new(),
-                    tools: Vec::new(),
+                    system: None,
+                    tools: None,
                     messages: vec![brain_protocol::Message::user_text("hello")],
                     response_format: None,
                     max_output_tokens: Some(16),
@@ -285,6 +285,11 @@ async fn the_started_record_precedes_the_model_effect() {
         .position(|kind| *kind == "model_call_finished")
         .unwrap();
     assert!(started < finished);
+    // The loop said nothing about the prompt or the tools, so the call carries what the
+    // session was created with.
+    let call = &events.events[started].data;
+    assert_eq!(call["system"], "test");
+    assert_eq!(call["tools"], serde_json::json!([]));
     assert!(
         events
             .events
@@ -428,6 +433,7 @@ fn request() -> SealedSessionConfig {
             binding_id: "gateway".into(),
             model: "openai/test".into(),
         },
+        system: "test".into(),
         tools: Vec::new(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
@@ -458,6 +464,7 @@ fn tool_request_with(
             binding_id: "gateway".into(),
             model: "openai/test".into(),
         },
+        system: "test".into(),
         tools: vec![ToolDefinition {
             name: tool_name.into(),
             description: "wait".into(),
@@ -494,6 +501,7 @@ fn client_tool_request(tool_name: &str) -> SealedSessionConfig {
             binding_id: "gateway".into(),
             model: "openai/test".into(),
         },
+        system: "test".into(),
         tools: vec![ToolDefinition {
             name: tool_name.into(),
             description: "answered by the session's creator".into(),
@@ -536,6 +544,7 @@ fn resolved_from(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
         agentloop_identity: sealed.agentloop_identity.clone(),
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
+        system: sealed.system.clone(),
         tools: sealed.tools.clone(),
         environments: sealed
             .environments
@@ -860,8 +869,8 @@ impl LoopExecutor for OrdinaryTurn {
                 context.items.push(serde_json::to_value(&input).unwrap());
                 Decision::Model {
                     request: ModelRequest {
-                        system: String::new(),
-                        tools: Vec::new(),
+                        system: None,
+                        tools: None,
                         messages: vec![brain_protocol::Message::user_text("hello")],
                         response_format: None,
                         max_output_tokens: Some(16),
@@ -1377,8 +1386,8 @@ impl LoopExecutor for RewritingLoop {
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
         let user = brain_protocol::Message::user_text;
         let request = |system: &str, messages: Vec<brain_protocol::Message>| ModelRequest {
-            system: system.into(),
-            tools: Vec::new(),
+            system: Some(system.into()),
+            tools: None,
             messages,
             response_format: None,
             max_output_tokens: None,

@@ -33,6 +33,7 @@ async fn real_worker_admits_and_activates_the_typescript_diagnostic_loop() {
                     input: "tools scenario".into(),
                 },
                 configuration: serde_json::json!({}),
+                system: String::new(),
                 tools: Vec::new(),
                 runtime: RuntimeEnvelope::at(&brain_protocol::SessionId::new("ses_test"), 1, 0),
             },
@@ -112,6 +113,7 @@ fn activation(index: usize) -> ActivationInput {
             input: format!("tools scenario {index}").into(),
         },
         configuration: serde_json::json!({}),
+        system: String::new(),
         tools: Vec::new(),
         runtime: RuntimeEnvelope::at(&brain_protocol::SessionId::new("ses_test"), 1, 0),
     }

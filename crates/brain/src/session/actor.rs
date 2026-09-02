@@ -177,6 +177,7 @@ impl SessionActor {
                 context,
                 observation,
                 configuration: self.sealed.brain_configuration.clone(),
+                system: self.sealed.system.clone(),
                 tools: self.sealed.tools.clone(),
                 runtime,
             };
@@ -215,7 +216,20 @@ impl SessionActor {
                 SessionUpdate::default(),
             )?;
             observation = match output.decision {
-                Decision::Model { request } => {
+                Decision::Model { mut request } => {
+                    // What the loop left unsaid is what the session was created with.
+                    if request.system.is_none() {
+                        request.system = Some(self.sealed.system.clone());
+                    }
+                    if request.tools.is_none() {
+                        request.tools = Some(
+                            self.sealed
+                                .tools
+                                .iter()
+                                .map(|tool| tool.name.clone())
+                                .collect(),
+                        );
+                    }
                     let tools = match self.offered_tools(&request) {
                         Ok(tools) => tools,
                         Err(message) => return self.fail_turn("invalid_model_decision", &message),
@@ -452,12 +466,17 @@ impl SessionActor {
     /// that set would be a tool nothing admitted and nothing can dispatch, and a repeated
     /// name would offer the model the same tool twice. Both fail the decision.
     fn offered_tools(&self, request: &ModelRequest) -> Result<Vec<ToolDefinition>, String> {
-        if request.system.len() > 131_072 {
+        if request
+            .system
+            .as_deref()
+            .is_some_and(|system| system.len() > 131_072)
+        {
             return Err("system prompt exceeds 128 KiB".into());
         }
-        let mut tools = Vec::with_capacity(request.tools.len());
-        for (index, name) in request.tools.iter().enumerate() {
-            if request.tools[..index].contains(name) {
+        let names = request.tools.as_deref().unwrap_or(&[]);
+        let mut tools = Vec::with_capacity(names.len());
+        for (index, name) in names.iter().enumerate() {
+            if names[..index].contains(name) {
                 return Err(format!("Tool `{name}` is offered twice"));
             }
             let definition = self
@@ -480,7 +499,7 @@ impl SessionActor {
     /// Nothing already written is touched, and a reader rebuilds the request by keeping
     /// the previous one up to `messages_from` and appending this record's messages.
     fn model_call_record(&mut self, request: &ModelRequest) -> Result<serde_json::Value, Error> {
-        let system = xxhash_rust::xxh3::xxh3_64(request.system.as_bytes());
+        let system = xxhash_rust::xxh3::xxh3_64(request.system.as_deref().unwrap_or("").as_bytes());
         let messages = request
             .messages
             .iter()
@@ -507,7 +526,8 @@ impl SessionActor {
             "max_output_tokens": request.max_output_tokens,
         });
         if from == 0 {
-            record["system"] = serde_json::Value::String(request.system.clone());
+            record["system"] =
+                serde_json::Value::String(request.system.clone().unwrap_or_default());
         }
         self.journalled = Some(Journalled { system, messages });
         Ok(record)
@@ -726,6 +746,7 @@ impl SessionActor {
             context: self.context.clone(),
             observation: Observation::SessionStarted { history },
             configuration: self.sealed.brain_configuration.clone(),
+            system: self.sealed.system.clone(),
             tools: self.sealed.tools.clone(),
             runtime,
         };

@@ -92,8 +92,8 @@ impl LoopExecutor for OneModelTurn {
             Observation::ModelCompleted { .. } => Decision::Finish { result: None },
             _ => Decision::Model {
                 request: ModelRequest {
-                    system: String::new(),
-                    tools: Vec::new(),
+                    system: None,
+                    tools: None,
                     messages: vec![brain_protocol::Message::user_text("hello")],
                     response_format: None,
                     max_output_tokens: Some(16),
@@ -148,6 +148,7 @@ fn sealed() -> SealedSessionConfig {
             binding_id: "gateway".into(),
             model: "openai/test".into(),
         },
+        system: "test".into(),
         tools: Vec::new(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
@@ -160,6 +161,7 @@ fn resolved(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
         agentloop_identity: sealed.agentloop_identity.clone(),
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
+        system: sealed.system.clone(),
         tools: sealed.tools.clone(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),

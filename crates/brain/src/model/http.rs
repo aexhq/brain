@@ -400,8 +400,8 @@ mod tests {
             .execute(
                 &binding(),
                 ModelRequest {
-                    system: "system".into(),
-                    tools: vec!["read".into()],
+                    system: Some("system".into()),
+                    tools: Some(vec!["read".into()]),
                     messages: vec![Message::user_text("hi")],
                     response_format: None,
                     max_output_tokens: Some(12),
@@ -486,8 +486,8 @@ mod tests {
                     model: "claude-test".into(),
                 },
                 ModelRequest {
-                    system: "system".into(),
-                    tools: Vec::new(),
+                    system: Some("system".into()),
+                    tools: None,
                     messages: vec![Message::user_text("hi")],
                     response_format: None,
                     max_output_tokens: None,
@@ -550,8 +550,8 @@ mod tests {
         })
         .unwrap();
         let request = ModelRequest {
-            system: String::new(),
-            tools: Vec::new(),
+            system: None,
+            tools: None,
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: None,
@@ -610,8 +610,8 @@ mod tests {
             .execute(
                 &binding(),
                 ModelRequest {
-                    system: String::new(),
-                    tools: Vec::new(),
+                    system: None,
+                    tools: None,
                     messages: vec![Message::user_text("hi")],
                     response_format: None,
                     max_output_tokens: None,

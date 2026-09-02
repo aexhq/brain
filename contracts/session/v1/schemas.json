@@ -87,6 +87,7 @@
       "properties": {
         "agentloop": { "$ref": "#/$defs/AgentloopRef" },
         "model": { "$ref": "#/$defs/ModelSelection" },
+        "system": { "type": "string", "maxLength": 131072 },
         "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/BoundTool" } },
         "environments": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/EnvironmentRequirement" } },
         "history": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/HistoryEvent" } }

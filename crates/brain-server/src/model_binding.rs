@@ -264,8 +264,8 @@ mod tests {
                     model: "test-model".into(),
                 },
                 ModelRequest {
-                    system: String::new(),
-                    tools: Vec::new(),
+                    system: None,
+                    tools: None,
                     messages: vec![Message::user_text("hi")],
                     response_format: None,
                     max_output_tokens: Some(16),

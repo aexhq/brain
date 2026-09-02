@@ -66,8 +66,9 @@ when it was written.
 
 Change models by starting a new session.
 
-The system prompt, the tools offered, and the response format are not pinned. They belong to the
-agent loop, which decides them on every model call.
+The system prompt and the tools are set at create and are not pinned: the agent loop may replace
+the prompt or offer a subset of the tools on any model call. The response format is the loop's,
+per call.
 
 ## Keys
 

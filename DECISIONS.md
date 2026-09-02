@@ -6,8 +6,9 @@ Every entry below was implemented in the pull request that added this file.
 
 ## 2026-09-02: The agent loop owns what the model sees
 
-**Decided.** The system prompt, the tools offered on a call, and the response format are the
-agent loop's decision, made per model call. They are not fixed at session create.
+**Decided.** The creator sets the system prompt and the tool catalogue at session create. The
+agent loop sees both and may change what the model is told on any call: a different system
+prompt, or a subset of the tools. Nothing about the prompt is pinned.
 
 **Today.** `ModelPresentation` (system prompt, tool definitions, response format) is supplied by
 the application at create, canonicalised and hashed into a session-lifetime identity, and rendered
@@ -16,8 +17,9 @@ It cannot change the system prompt, offer a subset of tools, or reorder tools fo
 
 **Change.**
 
-- `ModelRequest` carries `system` and the list of tools to offer alongside `messages`. The loop
-  decides all of them on every `turn.model`. There is no session-level default the kernel fills in.
+- `ModelRequest` may carry `system` and the list of tools to offer alongside `messages`. What
+  the loop leaves out, the session fills in from what it was created with, so a loop that says
+  nothing sends exactly what the creator asked for, and a loop that wants to differ can.
 - The application still supplies the tool catalogue at create: name, schemas, program, `needs`,
   and environment binding. That set is admitted, validated, and provisioned into environments at
   attach. It is a dispatch and trust boundary, not presentation. The loop offers the model a subset

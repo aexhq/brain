@@ -305,6 +305,7 @@ impl BrainApi for ServerApi {
                 binding_id: binding_id.clone(),
                 model: request.model.name.clone(),
             },
+            system: request.system.clone(),
             tools,
             environments,
             tool_bindings,

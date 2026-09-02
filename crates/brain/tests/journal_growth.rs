@@ -130,8 +130,8 @@ impl LoopExecutor for GrowingLoop {
         let decision = if activation + 1 < DECISIONS {
             Decision::Model {
                 request: ModelRequest {
-                    system: String::new(),
-                    tools: Vec::new(),
+                    system: None,
+                    tools: None,
                     messages: vec![brain_protocol::Message::user_text("next")],
                     response_format: None,
                     max_output_tokens: Some(16),
@@ -330,6 +330,7 @@ fn request() -> SealedSessionConfig {
             binding_id: "gateway".into(),
             model: "openai/test".into(),
         },
+        system: "test".into(),
         tools: Vec::new(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
@@ -351,6 +352,7 @@ fn start(runtime: &Runtime, sealed: SealedSessionConfig) -> Session {
         agentloop_identity: sealed.agentloop_identity.clone(),
         brain_configuration: sealed.brain_configuration.clone(),
         model: sealed.model.clone(),
+        system: sealed.system.clone(),
         tools: sealed.tools.clone(),
         environments: sealed
             .environments
@@ -582,8 +584,8 @@ impl LoopExecutor for ResendingLoop {
                     context,
                     decision: Decision::Model {
                         request: ModelRequest {
-                            system: String::new(),
-                            tools: Vec::new(),
+                            system: None,
+                            tools: None,
                             messages,
                             response_format: None,
                             max_output_tokens: Some(16),
@@ -679,8 +681,8 @@ impl LoopExecutor for AskOnce {
                 context,
                 decision: Decision::Model {
                     request: ModelRequest {
-                        system: String::new(),
-                        tools: Vec::new(),
+                        system: None,
+                        tools: None,
                         messages: vec![brain_protocol::Message::user_text("go")],
                         response_format: None,
                         max_output_tokens: Some(16),

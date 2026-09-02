@@ -1,13 +1,12 @@
 import { agentloop } from "@aexhq/brain";
 import { z } from "zod";
 
-// The loop owns what the model is told: the system prompt comes in as an option, and
-// every tool the session was created with is offered on each call.
-export const example = agentloop({ options: z.object({ system: z.string().default("") }) }, (author) => {
+export const example = agentloop((author) => {
   const state = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
   author.on.message(({ input }, turn) => {
     state.messages.push({ role: "user", content: [{ type: "text", text: input.message }] });
-    return turn.model({ system: author.options.system, tools: author.tools.map((tool) => tool.name), messages: state.messages });
+    // The session's system prompt and tools apply unless the call says otherwise.
+    return turn.model({ messages: state.messages });
   });
   author.on.model((completed, turn) => {
     const { message } = completed.response;

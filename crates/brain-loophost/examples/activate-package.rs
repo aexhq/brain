@@ -36,6 +36,7 @@ fn main() -> Result<(), String> {
                 history: Vec::new(),
             },
             configuration: serde_json::json!({}),
+            system: String::new(),
             tools: Vec::new(),
             runtime: RuntimeEnvelope {
                 logical_time_ms: 1,

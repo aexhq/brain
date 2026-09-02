@@ -33,12 +33,13 @@ const packageBytes = new Uint8Array(await readFile(new URL("./dist/example.brain
 
 const admission = await request("POST", "/v1/agentloops", packageBytes, "application/octet-stream");
 const session = await request("POST", "/v1/sessions", {
-  agentloop: { identity: admission.identity, configuration: { system: "Answer briefly." } },
+  agentloop: { identity: admission.identity, configuration: {} },
   model: {
     provider: "vercel-ai-gateway",
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
     api_key: apiKey,
   },
+  system: "Answer briefly.",
   tools: [],
   environments: [],
 });

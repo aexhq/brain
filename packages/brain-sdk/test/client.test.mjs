@@ -54,7 +54,7 @@ test("composes extensions through sessions, env placement, and object identity",
   assert.equal(body.environments.length, 1);
   assert.equal(body.environments[0].environment_id, "env_1");
   assert.deepEqual(body.tools.map(({ name, environment_id, needs, binding_names, program }) => [name, environment_id, needs, binding_names, program.kind]), [["read", "env_1", [], [], "esm"]]);
-  assert.equal(body.system, undefined, "the system prompt is the loop's, not the create request's");
+  assert.equal(body.system, "");
 
   await vm.suspend();
   assert.match(requests[2].url, /\/environments\/env_1\/calls\/suspend$/u);

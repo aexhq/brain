@@ -137,12 +137,10 @@ const text = (m) => m.content.filter((b) => b.type === "text").map((b) => b.text
 export const coder = agentloop({}, (author) => {
   const memory = author.state(state, () => ({ messages: [] }));
   const push = (role, content) => memory.messages.push({ role, content });
-  // The loop decides what the model is told: the prompt, and which of the session's tools to offer.
-  const ask = (turn) => turn.model({ system: "You are a coding agent.", tools: author.tools.map((t) => t.name), messages: memory.messages });
 
   author.on.message(({ input }, turn) => {
     push("user", [{ type: "text", text: input.message }]);
-    return ask(turn);
+    return turn.model({ messages: memory.messages });
   });
 
   author.on.model(({ response }, turn) => {
@@ -154,7 +152,7 @@ export const coder = agentloop({}, (author) => {
 
   author.on.tools(({ results }, turn) => {
     push("user", results.map((r) => ({ type: "tool_result", tool_use_id: r.call_id, content: r.output, is_error: r.is_error })));
-    return ask(turn);
+    return turn.model({ messages: memory.messages });
   });
 });
 ```

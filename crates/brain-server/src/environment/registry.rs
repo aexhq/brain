@@ -150,6 +150,7 @@ impl EnvironmentRegistry {
             agentloop_identity: request.agentloop_identity,
             brain_configuration: request.brain_configuration,
             model: request.model,
+            system: request.system,
             tools: request.tools,
             environments,
             tool_bindings,

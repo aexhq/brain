@@ -368,6 +368,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
   return { request: {
     agentloop: { identity: agentloopIdentity, configuration: structuredClone(agentloop.configuration) },
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
+    system: options.system ?? "",
     tools,
     environments: requirements,
     // The event id is left behind deliberately: it names an event in the session it came
@@ -387,6 +388,7 @@ function validateSessionOptions(options: CreateSessionOptions): void {
   if (typeof options.model.name !== "string" || options.model.name.length === 0 || options.model.name.length > 256 || /\s/u.test(options.model.name)) throw new TypeError("model name is invalid");
   if (typeof options.model.apiKey !== "string" || options.model.apiKey.trim() === "") throw new TypeError("model apiKey is required");
   if (options.tools !== undefined && !Array.isArray(options.tools)) throw new TypeError("tools must be an array");
+  if (options.system !== undefined && (typeof options.system !== "string" || options.system.length > 131_072)) throw new TypeError("system exceeds its contract bound");
 }
 
 function keyOf(options: OperationOptions): string {

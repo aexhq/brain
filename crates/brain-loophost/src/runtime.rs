@@ -377,6 +377,7 @@ fn to_wit_input(
         observation,
         configuration_json: serde_json::to_string(&input.configuration)
             .map_err(|error| error.to_string())?,
+        system: input.system,
         tools_json: serde_json::to_string(&input.tools).map_err(|error| error.to_string())?,
         runtime: wit::RuntimeEnvelope {
             logical_time_ms: input.runtime.logical_time_ms,

@@ -578,6 +578,7 @@ trait SessionContract: serde::Serialize {
 
     fn agentloop_identity(&self) -> &AgentloopIdentity;
     fn model(&self) -> &ModelBinding;
+    fn system(&self) -> &str;
     fn tools(&self) -> &[ToolDefinition];
     fn environments(&self) -> &[Self::Environment];
     fn tool_bindings(&self) -> &[Self::ToolBinding];
@@ -593,6 +594,10 @@ impl SessionContract for ResolvedSessionRequest {
 
     fn model(&self) -> &ModelBinding {
         &self.model
+    }
+
+    fn system(&self) -> &str {
+        &self.system
     }
 
     fn tools(&self) -> &[ToolDefinition] {
@@ -620,6 +625,10 @@ impl SessionContract for SealedSessionConfig {
         &self.model
     }
 
+    fn system(&self) -> &str {
+        &self.system
+    }
+
     fn tools(&self) -> &[ToolDefinition] {
         &self.tools
     }
@@ -641,6 +650,7 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Error
         || !identifier_valid(&request.model().binding_id)
         || request.model().model.is_empty()
         || request.model().model.len() > 256
+        || request.system().len() > 131_072
         || request.tools().len() > 128
         || request.environments().len() > 128
         || request.tool_bindings().len() > 128
@@ -873,6 +883,7 @@ mod tests {
                 binding_id: "gateway".into(),
                 model: "openai/test".into(),
             },
+            system: "test".into(),
             tools: vec![tool()],
             environments: vec![ResolvedEnvironment {
                 environment_id: EnvironmentId::new("workspace"),
@@ -899,6 +910,7 @@ mod tests {
                 binding_id: "gateway".into(),
                 model: "openai/test".into(),
             },
+            system: "test".into(),
             tools: vec![tool()],
             environments: vec![EnvironmentAttachment {
                 binding: environment_binding(),
@@ -986,6 +998,11 @@ mod tests {
             (
                 "a model name over 256 bytes",
                 |request| request.model.model = "m".repeat(257),
+                "size or identity bound",
+            ),
+            (
+                "a system prompt over 128 KiB",
+                |request| request.system = "s".repeat(131_073),
                 "size or identity bound",
             ),
             (
@@ -1132,6 +1149,11 @@ mod tests {
             (
                 "an empty model binding",
                 |sealed| sealed.model.binding_id = String::new(),
+                "size or identity bound",
+            ),
+            (
+                "a system prompt over 128 KiB",
+                |sealed| sealed.system = "s".repeat(131_073),
                 "size or identity bound",
             ),
             (

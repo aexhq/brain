@@ -43,6 +43,10 @@ pub struct BoundTool {
 pub struct CreateSessionRequest {
     pub agentloop: AgentloopRef,
     pub model: ModelSelection,
+    /// The system prompt the agent loop starts from. The loop may send a different one
+    /// on any model call.
+    #[serde(default)]
+    pub system: String,
     pub tools: Vec<BoundTool>,
     pub environments: Vec<EnvironmentRequirement>,
     /// Prior events for this conversation, if the caller kept them.
@@ -79,8 +83,10 @@ pub struct ResolvedSessionRequest {
     pub agentloop_identity: AgentloopIdentity,
     pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
-    /// What the model may be told about each tool. The agentloop chooses which of these
-    /// to offer on each model call; the bindings say where a call goes.
+    #[serde(default)]
+    pub system: String,
+    /// What the model may be told about each tool. Offered whole unless the agentloop
+    /// names a subset on a model call; the bindings say where a call goes.
     pub tools: Vec<ToolDefinition>,
     pub environments: Vec<ResolvedEnvironment>,
     pub tool_bindings: Vec<RequestedToolBinding>,
@@ -119,6 +125,8 @@ pub struct SealedSessionConfig {
     pub agentloop_identity: AgentloopIdentity,
     pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
+    #[serde(default)]
+    pub system: String,
     pub tools: Vec<ToolDefinition>,
     pub environments: Vec<EnvironmentAttachment>,
     pub tool_bindings: Vec<ToolBinding>,

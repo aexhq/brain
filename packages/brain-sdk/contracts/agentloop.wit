@@ -27,6 +27,8 @@ interface types {
     context: context-envelope,
     observation: observation,
     configuration-json: string,
+    // The system prompt the session was created with.
+    system: string,
     // JSON array of the tool definitions the session was created with.
     tools-json: string,
     runtime: runtime-envelope,

@@ -186,6 +186,7 @@ mod tests {
                 history: Vec::new(),
             },
             configuration: serde_json::json!({}),
+            system: String::new(),
             tools: Vec::new(),
             runtime: brain_protocol::RuntimeEnvelope::at(
                 &brain_protocol::SessionId::new("ses_test"),

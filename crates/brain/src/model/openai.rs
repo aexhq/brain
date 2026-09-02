@@ -115,8 +115,12 @@ pub fn body(
     max_tokens_field: MaxTokensField,
 ) -> Result<Value, Error> {
     let mut messages: Vec<Value> = Vec::with_capacity(request.messages.len() + 1);
-    if !request.system.is_empty() {
-        messages.push(json!({"role": "system", "content": request.system}));
+    if let Some(system) = request
+        .system
+        .as_deref()
+        .filter(|system| !system.is_empty())
+    {
+        messages.push(json!({"role": "system", "content": system}));
     }
     for message in &request.messages {
         messages.extend(render_one(message)?);
@@ -282,8 +286,8 @@ mod tests {
     #[test]
     fn the_output_token_cap_lands_in_the_field_the_provider_speaks() {
         let request = ModelRequest {
-            system: "sys".into(),
-            tools: vec!["read".into()],
+            system: Some("sys".into()),
+            tools: Some(vec!["read".into()]),
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: Some(64),
@@ -320,8 +324,8 @@ mod tests {
     #[test]
     fn tool_results_become_tool_role_messages_and_keep_the_error_signal() {
         let request = ModelRequest {
-            system: "sys".into(),
-            tools: vec!["read".into()],
+            system: Some("sys".into()),
+            tools: Some(vec!["read".into()]),
             messages: vec![
                 Message::user_text("go"),
                 Message::assistant(vec![ContentBlock::ToolUse {
@@ -359,8 +363,8 @@ mod tests {
     #[test]
     fn structured_tool_result_content_is_stringified() {
         let request = ModelRequest {
-            system: "sys".into(),
-            tools: vec!["read".into()],
+            system: Some("sys".into()),
+            tools: Some(vec!["read".into()]),
             messages: vec![Message::tool_results(vec![ContentBlock::ToolResult {
                 tool_use_id: "c1".into(),
                 content: serde_json::json!({"stdout": ""}),

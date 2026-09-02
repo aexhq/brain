@@ -6,8 +6,8 @@ description: What the model sees, and where the call actually goes.
 A tool is two separate things that happen to share a name.
 
 **What the model may be told** is the definition: a name, a description, and an input schema.
-The session is created with a set of these, and the agent loop chooses which of them to offer on
-each model call.
+The session is created with a set of these. They are all offered on every model call unless the
+agent loop names a subset.
 
 **Where the call goes** is a binding: the tool's manifest bound to one environment.
 

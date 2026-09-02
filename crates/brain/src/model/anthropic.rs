@@ -103,11 +103,15 @@ pub fn body(model: &str, tools: &[ToolDefinition], request: &ModelRequest) -> Re
     // of the immutable prefix: the last tool when present, otherwise the system
     // block. System prompt before tools before messages is the order the cache
     // keys on.
+    let system = request
+        .system
+        .as_deref()
+        .filter(|system| !system.is_empty());
     if tools.is_empty() {
-        if !request.system.is_empty() {
+        if let Some(system) = system {
             body["system"] = json!([{
                 "type": "text",
-                "text": request.system,
+                "text": system,
                 "cache_control": {"type": "ephemeral"},
             }]);
         }
@@ -117,8 +121,8 @@ pub fn body(model: &str, tools: &[ToolDefinition], request: &ModelRequest) -> Re
             .and_then(Value::as_object_mut)
             .expect("tool is an object")
             .insert("cache_control".into(), json!({"type": "ephemeral"}));
-        if !request.system.is_empty() {
-            body["system"] = json!(request.system);
+        if let Some(system) = system {
+            body["system"] = json!(system);
         }
         body["tools"] = Value::Array(tools);
     }
@@ -277,8 +281,8 @@ mod tests {
     #[test]
     fn the_body_is_well_formed_and_the_cache_breakpoint_sits_on_the_last_tool() {
         let request = ModelRequest {
-            system: "sys".into(),
-            tools: vec!["read".into()],
+            system: Some("sys".into()),
+            tools: Some(vec!["read".into()]),
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: None,
@@ -296,15 +300,15 @@ mod tests {
     #[test]
     fn a_toolless_request_caches_the_system_block() {
         let request = ModelRequest {
-            system: "sys".into(),
-            tools: vec!["read".into()],
+            system: Some("sys".into()),
+            tools: Some(vec!["read".into()]),
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: Some(64),
         };
         let request = ModelRequest {
-            system: "be terse".into(),
-            tools: Vec::new(),
+            system: Some("be terse".into()),
+            tools: None,
             ..request
         };
         let body = body("claude-test", &[], &request).unwrap();
@@ -317,8 +321,8 @@ mod tests {
     #[test]
     fn response_format_is_rejected_instead_of_silently_dropped() {
         let request = ModelRequest {
-            system: "sys".into(),
-            tools: vec!["read".into()],
+            system: Some("sys".into()),
+            tools: Some(vec!["read".into()]),
             messages: vec![Message::user_text("hi")],
             response_format: Some(serde_json::json!({"type": "json_object"})),
             max_output_tokens: None,
@@ -331,8 +335,8 @@ mod tests {
     #[test]
     fn tool_result_always_carries_is_error() {
         let request = ModelRequest {
-            system: "sys".into(),
-            tools: vec!["read".into()],
+            system: Some("sys".into()),
+            tools: Some(vec!["read".into()]),
             messages: vec![Message::tool_results(vec![ContentBlock::ToolResult {
                 tool_use_id: "t1".into(),
                 content: serde_json::json!({"stderr": "boom"}),

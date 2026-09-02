@@ -16,18 +16,21 @@ export interface AgentloopInput {
     | { readonly type: "emitted"; readonly event: unknown }
     | { readonly type: "cancelled" };
   readonly configuration: unknown;
-  /** The tools the session was created with: what a model call may offer, by name. */
+  /** The system prompt the session was created with. */
+  readonly system: string;
+  /** The tools the session was created with. */
   readonly tools: readonly ToolDefinition[];
   readonly runtime: { readonly logicalTimeMs: bigint };
 }
 
 export interface ToolCall { readonly callId: string; readonly name: string; readonly input: unknown }
-/** One model call, as the loop decides it. The loop owns everything the model is told:
- * the system prompt, which of the session's tools to offer, and the messages. */
+/** One model call, as the loop decides it. The loop owns what the model is told: what it
+ * leaves out is what the session was created with. */
 export interface ModelTurnRequest {
-  /** The system prompt for this call. Omit or leave empty for none. */
+  /** The system prompt for this call. Omit for `author.system`; empty for none. */
   readonly system?: string;
-  /** Tools to offer on this call, by name. Each must be one of `author.tools`. */
+  /** Tools to offer on this call, by name. Omit for all of `author.tools`; each name
+   * given must be one of them. */
   readonly tools?: readonly string[];
   readonly messages: readonly ModelMessage[];
   readonly response_format?: unknown;
@@ -55,7 +58,9 @@ export interface AgentloopTurn {
 type AgentloopHandler<Input> = (input: Input, turn: AgentloopTurn) => AgentloopAction;
 export interface AgentloopAuthor<Options> {
   readonly options: Options;
-  /** The tools the session was created with. Offer any subset to the model by name. */
+  /** The system prompt the session was created with. Used unless a model call sends its own. */
+  readonly system: string;
+  /** The tools the session was created with. All are offered unless a model call names a subset. */
   readonly tools: readonly ToolDefinition[];
   readonly on: {
     start(handler: AgentloopHandler<{ readonly type: "session_started" }>): void;
@@ -952,6 +957,7 @@ export function activateAgentloop(factory: unknown, input: AgentloopInput): { re
   };
   const author: AgentloopAuthor<unknown> = {
     options,
+    system: input.system,
     tools: input.tools,
     on: { start: on("session_started"), message: on("user_message"), model: on("model_completed"), tools: on("tools_completed"), event: on("emitted"), cancel: on("cancelled") } as AgentloopAuthor<unknown>["on"],
     state(schema, initial) {

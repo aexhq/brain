@@ -151,6 +151,9 @@ export interface CreateSessionOptions {
   readonly model: ModelSelection;
   readonly agentloop: Agentloop;
   readonly tools?: readonly SessionTool[];
+  /** The system prompt the agent loop starts from. The loop sees it as `author.system`
+   * and may send a different one on any model call. */
+  readonly system?: string;
   /**
    * Events from an earlier session, to carry a conversation forward.
    *

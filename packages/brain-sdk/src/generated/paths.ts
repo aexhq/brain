@@ -305,6 +305,7 @@ export type components = {
         CreateSessionRequest: {
             agentloop: components["schemas"]["AgentloopRef"];
             model: components["schemas"]["ModelSelection"];
+            system?: string;
             tools: components["schemas"]["BoundTool"][];
             environments: components["schemas"]["EnvironmentRequirement"][];
             history?: components["schemas"]["HistoryEvent"][];

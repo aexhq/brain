@@ -4,6 +4,7 @@
     "context": { "protocol_version": "agentloop/v1", "items": [] },
     "observation": { "type": "session_started", "history": [] },
     "configuration": {},
+    "system": "",
     "tools": [],
     "runtime": {
       "logical_time_ms": 1,
