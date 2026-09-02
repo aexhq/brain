@@ -38,7 +38,7 @@ fn definition_is_valid(schema_path: &str, definition: &str, value: &Value) -> bo
 fn contract_schemas_are_valid_draft_2020_12() {
     for path in [
         "contracts/agentloop/v1/contract.json",
-        "contracts/environment/v2/schemas.json",
+        "contracts/environment/v1/schemas.json",
         "contracts/tool/v1/schemas.json",
         "contracts/session/v1/schemas.json",
     ] {
@@ -56,12 +56,12 @@ fn checked_in_examples_validate() {
         .unwrap();
 
     let environment_schema =
-        jsonschema::draft202012::new(&read_json("contracts/environment/v2/schemas.json")).unwrap();
+        jsonschema::draft202012::new(&read_json("contracts/environment/v1/schemas.json")).unwrap();
     for example in [
-        "contracts/environment/v2/examples/invoke.json",
-        "contracts/environment/v2/examples/invoke-result.json",
-        "contracts/environment/v2/examples/attach.json",
-        "contracts/environment/v2/examples/attach-result.json",
+        "contracts/environment/v1/examples/invoke.json",
+        "contracts/environment/v1/examples/invoke-result.json",
+        "contracts/environment/v1/examples/attach.json",
+        "contracts/environment/v1/examples/attach-result.json",
     ] {
         environment_schema
             .validate(&read_json(example))
@@ -82,17 +82,22 @@ fn checked_in_examples_validate() {
     );
 }
 
-/// The hosting axis is closed: `callback` left the contract when dispatch channels
-/// landed in Brain itself, so a manifest still saying it is rejected outright.
+/// A manifest always describes a provisioned program: a hosting axis is not a manifest
+/// field, and a manifest without a program is rejected outright.
 #[test]
-fn a_callback_manifest_is_rejected() {
+fn a_manifest_without_a_program_is_rejected() {
     let schema =
         jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json")).unwrap();
     let mut manifest = read_json("contracts/tool/v1/examples/manifest.json");
-    manifest["hosting"] = serde_json::json!("callback");
+    manifest["hosting"] = serde_json::json!("client");
     assert!(schema.validate(&manifest).is_err());
-    manifest.as_object_mut().unwrap().remove("payload");
+    manifest.as_object_mut().unwrap().remove("hosting");
+    schema.validate(&manifest).unwrap();
+    manifest.as_object_mut().unwrap().remove("program");
     assert!(schema.validate(&manifest).is_err());
+    let mut needs = read_json("contracts/tool/v1/examples/manifest.json");
+    needs["needs"] = serde_json::json!(["../fs"]);
+    assert!(schema.validate(&needs).is_err());
 }
 
 #[test]
@@ -119,26 +124,23 @@ fn rust_views_round_trip_contract_examples() {
         session.tools[0].environment_id.as_ref(),
         Some(&session.environments[0].environment_id)
     );
-    assert_eq!(
-        session.tools[0].requires,
-        vec![brain_protocol::Capability::Fs]
-    );
-    assert!(session.environments[0].grants.fs.is_some());
+    assert_eq!(session.tools[0].needs, vec!["fs"]);
+    assert!(session.tools[0].program.is_some());
 
     let command: EnvironmentCommand<EnvironmentRequest> =
-        serde_json::from_value(read_json("contracts/environment/v2/examples/invoke.json")).unwrap();
+        serde_json::from_value(read_json("contracts/environment/v1/examples/invoke.json")).unwrap();
     assert!(matches!(
         command.operation.request,
         EnvironmentRequest::Invoke { .. }
     ));
     let attach: EnvironmentCommand<EnvironmentRequest> =
-        serde_json::from_value(read_json("contracts/environment/v2/examples/attach.json")).unwrap();
+        serde_json::from_value(read_json("contracts/environment/v1/examples/attach.json")).unwrap();
     assert!(matches!(
         attach.operation.request,
         EnvironmentRequest::Attach { .. }
     ));
     let response: EnvironmentResponse = serde_json::from_value(read_json(
-        "contracts/environment/v2/examples/invoke-result.json",
+        "contracts/environment/v1/examples/invoke-result.json",
     ))
     .unwrap();
     assert!(matches!(
@@ -193,22 +195,15 @@ fn model_selection_names_are_validated_per_provider() {
 }
 
 /// A client-hosted tool is answered by an application process off the serve feed: it
-/// can carry no payload, and unlike provisioned hosting it names no environment — the
-/// schema enforces both directions of the environment rule.
+/// can carry no program, needs no resources, and unlike provisioned hosting it names no
+/// environment — the schema enforces both directions of the environment rule.
 #[test]
-fn a_client_tool_binds_no_environment_and_ships_no_payload() {
-    let schema =
-        jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json")).unwrap();
-    let mut manifest = read_json("contracts/tool/v1/examples/manifest.json");
-    manifest["hosting"] = serde_json::json!("client");
-    assert!(schema.validate(&manifest).is_err());
-    manifest.as_object_mut().unwrap().remove("payload");
-    schema.validate(&manifest).unwrap();
-
+fn a_client_tool_binds_no_environment_and_ships_no_program() {
     let session = read_json("contracts/session/v1/examples/create-session.json");
     let mut tool = session["tools"][0].clone();
     tool["hosting"] = serde_json::json!("client");
-    tool.as_object_mut().unwrap().remove("payload");
+    tool["needs"] = serde_json::json!([]);
+    tool.as_object_mut().unwrap().remove("program");
     let mut request = session.clone();
     // A client tool still naming an environment is contradictory.
     request["tools"][0] = tool.clone();

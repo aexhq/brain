@@ -12,11 +12,11 @@ use brain::{
     Kernel, KernelConfig, KernelError, LoopExecutor, ModelExecutor, SessionHandle, ToolExecutor,
 };
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopIdentity, AttachmentId, Capability, Decision,
+    ActivationInput, ActivationOutput, AgentloopIdentity, AttachmentId, Decision,
     EnvironmentAttachment, EnvironmentBinding, EnvironmentId, EnvironmentRequest, Identity,
     LifecyclePolicy, MessageRequest, ModelBinding, ModelPresentation, ModelRequest, ModelResult,
     ModelStreamEvent, Observation, OperationId, Outcome, OutcomeError, RequestedToolBinding,
-    ResolvedEnvironment, ResolvedSessionRequest, SealedSessionConfig, ToolBinding,
+    ResolvedEnvironment, ResolvedSessionRequest, Runtime, SealedSessionConfig, ToolBinding,
     ToolCancellation, ToolDefinition, ToolDispatch, ToolHosting, ToolInvocation,
 };
 use brain_telemetry::telemetry_channel;
@@ -395,12 +395,12 @@ fn tool_request() -> SealedSessionConfig {
     tool_request_with("slow", Vec::new(), Vec::new())
 }
 
-/// A sealed configuration binding one tool with the given `requires` to one
-/// environment reporting the given `provides`.
+/// A sealed configuration binding one tool with the given `needs` to one
+/// environment declaring the given resources.
 fn tool_request_with(
     tool_name: &str,
-    requires: Vec<Capability>,
-    provides: Vec<Capability>,
+    needs: Vec<&str>,
+    declares: Vec<&str>,
 ) -> SealedSessionConfig {
     let environment = EnvironmentBinding {
         environment_id: EnvironmentId::new("workspace"),
@@ -428,16 +428,20 @@ fn tool_request_with(
         environments: vec![EnvironmentAttachment {
             binding: environment.clone(),
             attachment_id: AttachmentId::new("attachment"),
-            provides,
+            runtimes: vec![Runtime::Esm],
+            resources: declares
+                .into_iter()
+                .map(|name| (name.to_string(), serde_json::json!({})))
+                .collect(),
         }],
         tool_bindings: vec![ToolBinding {
             name: tool_name.into(),
             environment: Some(environment),
             attachment_id: Some(AttachmentId::new("attachment")),
-            requires,
+            needs: needs.into_iter().map(String::from).collect(),
             binding_names: Vec::new(),
             hosting: ToolHosting::Provisioned,
-            payload: None,
+            program: None,
         }],
     }
 }
@@ -466,10 +470,10 @@ fn client_tool_request(tool_name: &str) -> SealedSessionConfig {
             name: tool_name.into(),
             environment: None,
             attachment_id: None,
-            requires: Vec::new(),
+            needs: Vec::new(),
             binding_names: Vec::new(),
             hosting: ToolHosting::Client,
-            payload: None,
+            program: None,
         }],
     }
 }
@@ -506,7 +510,6 @@ fn resolved_from(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
                 environment_id: environment.binding.environment_id.clone(),
                 configuration: serde_json::json!({}),
                 lifecycle_policy: environment.binding.lifecycle_policy.clone(),
-                grants: Default::default(),
                 binding_identities: Default::default(),
             })
             .collect(),
@@ -519,10 +522,10 @@ fn resolved_from(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
                     .environment
                     .as_ref()
                     .map(|environment| environment.environment_id.clone()),
-                requires: binding.requires.clone(),
+                needs: binding.needs.clone(),
                 binding_names: binding.binding_names.clone(),
                 hosting: binding.hosting,
-                payload: binding.payload.clone(),
+                program: binding.program.clone(),
             })
             .collect(),
     }
@@ -1045,12 +1048,12 @@ fn kernel_with(
     .unwrap()
 }
 
-/// The bind-time capability check: a tool whose `requires` is not covered by its
-/// environment's `provides` is rejected at create, and the error names the capability,
-/// the tool, and the environment — the bash-on-a-browser mistake surfaces before a
-/// session exists instead of at runtime.
+/// The bind check: a tool whose `needs` is not covered by its environment's declared
+/// resources is rejected at create, and the error names the resource, the tool, and
+/// the environment — the bash-on-a-browser mistake surfaces before a session exists
+/// instead of at runtime.
 #[tokio::test]
-async fn requires_beyond_provides_rejects_create_naming_all_three_parties() {
+async fn needs_beyond_declared_resources_rejects_create_naming_all_three_parties() {
     let data_dir = temporary_directory();
     let kernel = kernel_with(
         &data_dir,
@@ -1059,16 +1062,16 @@ async fn requires_beyond_provides_rejects_create_naming_all_three_parties() {
         brain::DEFAULT_TOOL_DEADLINE_MS,
     );
 
-    let sealed = tool_request_with("bash", vec![Capability::Exec], vec![Capability::Js]);
+    let sealed = tool_request_with("bash", vec!["process"], vec!["dom"]);
     let resolved = resolved_from(&sealed);
     let error = match kernel.begin_session(&resolved).unwrap().complete(sealed) {
         Ok(_) => {
-            panic!("a tool requiring `exec` must not bind to an environment providing only `js`")
+            panic!("a tool needing `process` must not bind to an environment declaring only `dom`")
         }
         Err(error) => error,
     };
     let message = error.to_string();
-    for named in ["exec", "bash", "workspace"] {
+    for named in ["process", "bash", "workspace"] {
         assert!(
             message.contains(named),
             "the rejection must name {named:?}: {message}"
@@ -1081,9 +1084,9 @@ async fn requires_beyond_provides_rejects_create_naming_all_three_parties() {
 }
 
 /// A tool that declares nothing binds anywhere — including to an environment that
-/// provides nothing at all.
+/// declares nothing at all.
 #[tokio::test]
-async fn empty_requires_binds_to_any_environment() {
+async fn empty_needs_binds_to_any_environment() {
     let data_dir = temporary_directory();
     let kernel = kernel_with(
         &data_dir,

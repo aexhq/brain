@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopIdentity, Capability, EnvironmentAttachment, EnvironmentId, EventId, GrantSet,
-    Identity, JournalId, LifecyclePolicy, ModelBinding, ModelSelection, OperationId,
-    RequestedToolBinding, SessionId, ToolBinding, ToolDefinition, ToolHosting, ToolPayload,
+    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, Identity, JournalId,
+    LifecyclePolicy, ModelBinding, ModelSelection, OperationId, Program, RequestedToolBinding,
+    SessionId, ToolBinding, ToolDefinition, ToolHosting,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -35,12 +35,13 @@ pub struct BoundTool {
     pub input_schema: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<serde_json::Value>,
-    pub requires: Vec<Capability>,
+    #[serde(default)]
+    pub needs: Vec<String>,
     pub binding_names: Vec<String>,
     #[serde(default)]
     pub hosting: ToolHosting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub payload: Option<ToolPayload>,
+    pub program: Option<Program>,
     /// Required unless `hosting` is `client`; a client-hosted tool binds no environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_id: Option<EnvironmentId>,
@@ -108,8 +109,6 @@ pub struct EnvironmentRequirement {
     pub configuration: serde_json::Value,
     pub lifecycle_policy: LifecyclePolicy,
     #[serde(default)]
-    pub grants: GrantSet,
-    #[serde(default)]
     pub bindings: BTreeMap<String, String>,
 }
 
@@ -122,8 +121,6 @@ pub struct ResolvedEnvironment {
     pub environment_id: EnvironmentId,
     pub configuration: serde_json::Value,
     pub lifecycle_policy: LifecyclePolicy,
-    #[serde(default)]
-    pub grants: GrantSet,
     #[serde(default)]
     pub binding_identities: BTreeMap<String, Identity>,
 }

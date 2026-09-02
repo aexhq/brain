@@ -5,33 +5,38 @@
   "$defs": {
     "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
     "Identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "CapabilityName": { "enum": ["exec", "fs", "net", "js", "page"] },
-    "ToolPayload": {
+    "Runtime": { "enum": ["esm", "shell", "http"] },
+    "ResourceName": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$" },
+    "HttpProgramRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "identity"],
+      "required": ["method", "url"],
       "properties": {
-        "kind": { "enum": ["esm", "component"] },
-        "identity": { "$ref": "#/$defs/Identity" }
+        "method": { "type": "string", "pattern": "^[A-Z]{3,16}$" },
+        "url": { "type": "string", "minLength": 1, "maxLength": 8192 },
+        "headers": { "type": "object", "propertyNames": { "maxLength": 256 }, "additionalProperties": { "type": "string", "maxLength": 16384 } }
       }
+    },
+    "Program": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind", "identity"], "properties": { "kind": { "const": "esm" }, "identity": { "$ref": "#/$defs/Identity" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "identity", "script"], "properties": { "kind": { "const": "shell" }, "identity": { "$ref": "#/$defs/Identity" }, "script": { "type": "string", "minLength": 1, "maxLength": 262144 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "identity", "request"], "properties": { "kind": { "const": "http" }, "identity": { "$ref": "#/$defs/Identity" }, "request": { "$ref": "#/$defs/HttpProgramRequest" } } }
+      ]
     },
     "ToolManifest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "input_schema", "requires", "binding_names"],
+      "required": ["name", "description", "input_schema", "needs", "binding_names", "program"],
       "properties": {
         "name": { "$ref": "#/$defs/Identifier" },
         "description": { "type": "string", "maxLength": 8192 },
         "input_schema": { "type": "object" },
         "output_schema": { "type": "object" },
-        "requires": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/CapabilityName" } },
+        "needs": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/ResourceName" } },
         "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
-        "hosting": { "enum": ["provisioned", "client"] },
-        "payload": { "$ref": "#/$defs/ToolPayload" }
-      },
-      "allOf": [
-        { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "client" } } }, "then": { "not": { "required": ["payload"] } } }
-      ]
+        "program": { "$ref": "#/$defs/Program" }
+      }
     }
   },
   "$ref": "#/$defs/ToolManifest"

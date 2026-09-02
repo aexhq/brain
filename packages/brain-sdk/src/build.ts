@@ -8,12 +8,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build as bundle } from "esbuild";
 import { z } from "zod";
 
-import { extensionSource } from "./extensions.js";
+import { extensionSource, inspectToolProgram } from "./extensions.js";
+import type { Program } from "./types.js";
 
 export const BUILDER_TOOLCHAIN = "brain-build-1 componentize-js-0.19.3";
 
 export interface BuildOptions { readonly entry?: string; readonly out?: string }
-export interface BuiltExtension { readonly name: string; readonly kind: "agentloop" | "tool" | "environment"; readonly artifact?: string; readonly identity?: string; readonly bytes?: number; readonly warnings?: readonly string[] }
+export interface BuiltExtension { readonly name: string; readonly kind: "agentloop" | "tool" | "environment"; readonly artifact?: string; readonly identity?: string; readonly bytes?: number; readonly program?: Program["kind"] }
 
 export async function build(options: BuildOptions = {}): Promise<readonly BuiltExtension[]> {
   const entry = resolve(options.entry ?? "src/index.ts");
@@ -30,7 +31,7 @@ export async function build(options: BuildOptions = {}): Promise<readonly BuiltE
   const built: BuiltExtension[] = [];
   const toolRegistry: Record<string, { readonly contract_digest: string; readonly filename: string }> = {};
   const environmentRuntimeNames = new Map<string, string>();
-  let authoredCheckSource: string | undefined;
+  const programs = new Map<string, Program>();
   for (const [name, definition] of definitions) {
     if (!validIdentifier(name)) throw new Error(`extension export ${JSON.stringify(name)} is not a stable identifier`);
     const kind = definition[extensionSource].kind;
@@ -39,36 +40,43 @@ export async function build(options: BuildOptions = {}): Promise<readonly BuiltE
       const packageValue = await buildAgentloop(entry, name, join(out, artifact));
       built.push({ name, kind, artifact, identity: packageValue.manifest.component_identity, bytes: packageValue.manifest.component_bytes });
     } else if (kind === "tool") {
-      const source = definition[extensionSource] as unknown as { contract: { description: string; input: z.ZodType; output?: z.ZodType; requires?: readonly string[]; bindings?: Readonly<Record<string, z.ZodType>> } };
+      const source = definition[extensionSource] as unknown as { contract: { description: string; input: z.ZodType; output?: z.ZodType; needs?: readonly string[]; bindings?: Readonly<Record<string, z.ZodType>> } };
+      const programSource = inspectToolProgram(definition);
       const contract = {
         name,
         description: source.contract.description,
         input_schema: z.toJSONSchema(source.contract.input),
         ...(source.contract.output === undefined ? {} : { output_schema: z.toJSONSchema(source.contract.output) }),
       };
-      const contractDigest = createHash("sha256").update(canonical(contract)).digest("hex");
-      await buildTool(entry, name, join(out, "runtime", `${name}.mjs`), contractDigest);
-      toolRegistry[name] = { contract_digest: contractDigest, filename: `${name}.mjs` };
-      // The provisioned artifact: a self-contained single-file ESM bundle plus
-      // the tool/v1 manifest naming it by content identity. Binding values are
-      // structurally impossible here — only the names enter the manifest.
-      const payload = await buildProvisionedPayload(entry, name);
-      const identity = createHash("sha256").update(payload).digest("hex");
+      // The program: for esm a self-contained single-file bundle named by its
+      // sha-256; for shell and http the script or request template itself, named
+      // the same way. Binding values are structurally impossible in any of them —
+      // only the names enter the manifest.
+      let payload: string;
+      let program: Program;
+      if (programSource.kind === "esm") {
+        payload = await buildProvisionedPayload(entry, name);
+        program = { kind: "esm", identity: identityOf(payload) };
+        const contractDigest = createHash("sha256").update(canonical(contract)).digest("hex");
+        await buildTool(entry, name, join(out, "runtime", `${name}.mjs`), contractDigest);
+        toolRegistry[name] = { contract_digest: contractDigest, filename: `${name}.mjs` };
+      } else if (programSource.kind === "shell") {
+        payload = programSource.script;
+        program = { kind: "shell", identity: identityOf(payload), script: programSource.script };
+      } else {
+        payload = canonical(programSource.request);
+        program = { kind: "http", identity: identityOf(payload), request: programSource.request };
+      }
       const manifest = {
-        name,
-        description: contract.description,
-        input_schema: contract.input_schema,
-        ...(source.contract.output === undefined ? {} : { output_schema: z.toJSONSchema(source.contract.output) }),
-        requires: [...(source.contract.requires ?? [])],
+        ...contract,
+        needs: [...(source.contract.needs ?? [])],
         binding_names: Object.keys(source.contract.bindings ?? {}),
-        hosting: "provisioned",
-        payload: { kind: "esm", identity },
+        program,
       };
       const artifact = `${name}.tool.json`;
       await writeFile(join(out, artifact), `${JSON.stringify({ manifest, payload })}\n`);
-      authoredCheckSource ??= await authoredSource(entry);
-      const warnings = unusedRequiresWarnings(name, manifest.requires, authoredCheckSource);
-      built.push({ name, kind, artifact, identity, bytes: Buffer.byteLength(payload), ...(warnings.length === 0 ? {} : { warnings }) });
+      programs.set(name, program);
+      built.push({ name, kind, artifact, identity: program.identity, bytes: Buffer.byteLength(payload), program: program.kind });
     } else {
       environmentRuntimeNames.set(name, await packageRuntimeName(entry));
       await buildEnvironment(entry, name, join(out, "runtime", `${name}.mjs`));
@@ -82,14 +90,21 @@ export async function build(options: BuildOptions = {}): Promise<readonly BuiltE
   await bundle({ entryPoints: [entry], outfile: sourcePath, bundle: true, format: "esm", platform: "node", target: "node22", legalComments: "none", external: ["@aexhq/brain"] });
   const imports = built.map(({ name, artifact }) => {
     const runtimeName = environmentRuntimeNames.get(name);
-    const identityArguments = artifact !== undefined
-      ? `, new URL(${JSON.stringify(`./${artifact}`)}, import.meta.url)`
-      : runtimeName === undefined ? "" : `, undefined, ${JSON.stringify(runtimeName)}`;
+    const program = programs.get(name);
+    const identityArguments = program !== undefined
+      ? `, new URL(${JSON.stringify(`./${artifact}`)}, import.meta.url), undefined, ${JSON.stringify(program)}`
+      : artifact !== undefined
+        ? `, new URL(${JSON.stringify(`./${artifact}`)}, import.meta.url)`
+        : runtimeName === undefined ? "" : `, undefined, ${JSON.stringify(runtimeName)}`;
     return `export const ${name} = definitions.${name};\ninstallExtensionIdentity(${name}, ${JSON.stringify(name)}${identityArguments});`;
   }).join("\n");
   const index = `import { installExtensionIdentity } from "@aexhq/brain";\nimport * as definitions from "./source.mjs";\n\n${imports}\n`;
   await writeFile(join(out, "index.mjs"), index);
   return built;
+}
+
+function identityOf(payload: string): string {
+  return createHash("sha256").update(payload).digest("hex");
 }
 
 async function emitDeclarations(entry: string, out: string): Promise<void> {
@@ -163,25 +178,6 @@ export default provisionedToolRuntime(definition);
   const output = compiled.outputFiles[0];
   if (output === undefined) throw new Error(`esbuild produced no provisioned payload for tool ${name}`);
   return output.text;
-}
-
-/** The authored code alone (dependencies stay external), so the unused-requires
- * heuristic below is not defeated by capability names appearing inside the SDK
- * or third-party packages that would be bundled into the payload. */
-async function authoredSource(entry: string): Promise<string> {
-  const compiled = await bundle({ entryPoints: [entry], bundle: true, format: "esm", platform: "node", target: "node22", write: false, legalComments: "none", packages: "external" });
-  return compiled.outputFiles[0]?.text ?? "";
-}
-
-/** Warn on a declared capability whose handle never appears in the authored
- * code as a property access or destructured key. Aliasing — a context passed
- * whole into a helper or library — can false-alarm, which is why this is a
- * warning, not an error: over-declaring is conservative and only makes the
- * bind-time check stricter. */
-export function unusedRequiresWarnings(name: string, requires: readonly string[], authored: string): readonly string[] {
-  return requires
-    .filter((capability) => !new RegExp(`[.{,(]\\s*${capability}\\b`, "u").test(authored))
-    .map((capability) => `tool ${name} declares capability "${capability}" but its handle never appears in the bundle`);
 }
 
 async function buildAgentloop(entry: string, name: string, out: string): Promise<AgentloopPackage> {

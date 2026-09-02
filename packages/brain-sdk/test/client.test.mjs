@@ -15,7 +15,6 @@ installExtensionIdentity(simple, "simple", new Uint8Array([1, 2, 3]));
 
 const workspace = environment((author) => {
   const instance = author.open(async () => ({}));
-  instance.run(async () => undefined);
   instance.close(async () => undefined);
   return { suspend: instance.method(async () => undefined) };
 });
@@ -24,7 +23,7 @@ installExtensionIdentity(workspace, "workspace");
 const read = tool({ description: "Read a file.", input: z.object({ path: z.string() }) }, (author) => {
   author.run(async ({ path }) => path);
 });
-installExtensionIdentity(read, "read");
+installExtensionIdentity(read, "read", undefined, undefined, { kind: "esm", identity: "c".repeat(64) });
 
 test("composes extensions through sessions, env placement, and object identity", async () => {
   const requests = [];
@@ -54,7 +53,7 @@ test("composes extensions through sessions, env placement, and object identity",
   assert.deepEqual(body.agentloop, { identity: "a".repeat(64), configuration: {} });
   assert.equal(body.environments.length, 1);
   assert.equal(body.environments[0].environment_id, "env_1");
-  assert.deepEqual(body.tools.map(({ name, environment_id, requires, binding_names }) => [name, environment_id, requires, binding_names]), [["read", "env_1", [], []]]);
+  assert.deepEqual(body.tools.map(({ name, environment_id, needs, binding_names, program }) => [name, environment_id, needs, binding_names, program.kind]), [["read", "env_1", [], [], "esm"]]);
   assert.equal(body.system, "");
 
   await vm.suspend();
@@ -112,7 +111,6 @@ test("surfaces structured errors and rejects detached Environment calls", async 
 test("runs async Environment lifecycle, methods, and streams through the generated adapter", async () => {
   const managed = environment({ options: z.object({ prefix: z.string() }) }, (author) => {
     const instance = author.open(async ({ options }) => ({ prefix: options.prefix }));
-    instance.run(async (request, context) => ({ prefix: context.instance.prefix, request }));
     instance.close(async () => undefined);
     return {
       echo: instance.method({ input: z.string(), output: z.string() }, async (input, context) => `${context.instance.prefix}${input}`),
@@ -122,20 +120,20 @@ test("runs async Environment lifecycle, methods, and streams through the generat
   installExtensionIdentity(managed, "managed", undefined, "managed");
   const handle = createEnvironmentHandler(managed);
   const command = (id, request, attachment_id) => ({
-    contract: "environment/v2",
+    contract: "environment/v1",
     binding: {},
     operation: { operation_id: id, request_identity: id.padEnd(64, "a"), environment_id: "env_1", session_id: "ses_test", ...(attachment_id === undefined ? {} : { attachment_id }), request },
   });
   assert.equal((await handle(command("setup", { type: "setup", configuration: { driver: "managed", prefix: ">" } }))).receipt.type, "accepted");
-  const attached = await handle(command("attach", { type: "attach", grants: {}, provisions: [], bindings: {} }, "att_1"));
+  const attached = await handle(command("attach", { type: "attach", provisions: [], bindings: {} }, "att_1"));
   assert.equal(attached.receipt.type, "accepted");
-  assert.deepEqual(attached.receipt.provides, [], "a generated environment provides no capabilities yet");
+  assert.deepEqual(attached.receipt.runtimes, [], "an environment with no executors launches nothing");
+  assert.deepEqual(attached.receipt.resources, {});
   assert.equal((await handle(command("call", { type: "call", name: "echo", input: "ok" }, "att_1"))).receipt.output, ">ok");
   assert.deepEqual((await handle(command("stream", { type: "call", name: "values", input: 3 }, "att_1"))).receipt.output, [0, 1, 2]);
   const invoked = await handle(command("invoke", { type: "invoke", call_id: "call_1", tool: "anything", input: { x: 1 }, deadline_ms: 1000 }, "att_1"));
-  assert.equal(invoked.receipt.type, "outcome");
-  assert.equal(invoked.receipt.outcome.status, "ok");
-  assert.deepEqual(invoked.receipt.outcome.value, { prefix: ">", request: { type: "invoke", call_id: "call_1", tool: "anything", input: { x: 1 }, deadline_ms: 1000 } });
+  assert.equal(invoked.receipt.type, "failure", "a tool that was never provisioned has nothing to run");
+  assert.match(invoked.receipt.message, /no provisioned tool named anything/u);
 });
 
 test("admits any identifier-shaped provider client-side and leaves admission to the server", async () => {

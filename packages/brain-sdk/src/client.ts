@@ -320,7 +320,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
         description: client.definition.description,
         input_schema: structuredClone(client.definition.inputSchema),
         ...(client.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(client.definition.outputSchema) }),
-        requires: [],
+        needs: [],
         binding_names: [],
         hosting: "client",
       });
@@ -338,7 +338,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
         description: served.definition.description,
         input_schema: structuredClone(served.definition.inputSchema),
         ...(served.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(served.definition.outputSchema) }),
-        requires: [],
+        needs: [],
         binding_names: [],
         hosting: "client",
       });
@@ -358,8 +358,9 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
       description: bound.definition.description,
       input_schema: structuredClone(bound.definition.inputSchema),
       ...(bound.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(bound.definition.outputSchema) }),
-      requires: [...bound.requires],
+      needs: [...bound.needs],
       binding_names: [...bound.bindingNames],
+      program: structuredClone(bound.program),
       environment_id: environmentId,
     });
   }

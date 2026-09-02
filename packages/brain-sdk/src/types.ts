@@ -38,11 +38,49 @@ export interface ToolDefinition {
   readonly outputSchema?: Readonly<Record<string, unknown>>;
 }
 
-/** The closed set of capabilities an environment can provide and a tool can require.
- * Growth is a contract release, not an author convention. */
-export type CapabilityName = "exec" | "fs" | "net" | "js" | "page";
+/** The closed set of program kinds an environment can launch — closed only because
+ * Brain and the SDK must physically package and start the program. */
+export type Runtime = "esm" | "shell" | "http";
 
-/** The one envelope every capability call and tool invocation resolves to.
+/** A resource name: a lowercase word, optionally namespaced with one colon (`fs`,
+ * `process`, `bin:ffmpeg`). The contract fixes the policy shape of the named
+ * resources; vendor resources are opaque to Brain. */
+export type ResourceName = string;
+
+export interface FsResource { readonly root: string }
+export interface ProcessResource { readonly timeout_ms_max?: number; readonly output_bytes_max?: number }
+export interface NetResource { readonly allow: readonly string[] }
+export type DomResource = Record<never, never>;
+export interface SecretsResource { readonly names: readonly string[] }
+/** What an environment declares a program will find there, keyed by resource name.
+ * Brain compares the names against each bound tool's `needs` at session create and
+ * never interprets the policy blocks; enforcement is the platform's, behind the
+ * environment. */
+export interface Resources {
+  readonly fs?: FsResource;
+  readonly process?: ProcessResource;
+  readonly net?: NetResource;
+  readonly dom?: DomResource;
+  readonly secrets?: SecretsResource;
+  readonly [vendor: `${string}:${string}`]: Readonly<Record<string, unknown>> | undefined;
+}
+
+/** The request template of an `http` program: the environment fronts the endpoint,
+ * the tool's input travels as the JSON body, and the response body is the output. */
+export interface HttpProgramRequest {
+  readonly method: string;
+  readonly url: string;
+  readonly headers?: Readonly<Record<string, string>>;
+}
+/** The program behind a provisioned tool, named by content identity. An `esm`
+ * bundle travels out of band under its identity; a `shell` script and an `http`
+ * request template travel inline. */
+export type Program =
+  | { readonly kind: "esm"; readonly identity: string }
+  | { readonly kind: "shell"; readonly identity: string; readonly script: string }
+  | { readonly kind: "http"; readonly identity: string; readonly request: HttpProgramRequest };
+
+/** The one envelope every tool invocation resolves to.
  * `timeout` is the caller-owned deadline firing — distinguished, never an exit
  * code. */
 export type Outcome<Value = unknown> =

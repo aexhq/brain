@@ -159,7 +159,7 @@ impl Driver for BrainDriver {
                 "name": "echo",
                 "description": "Returns its input unchanged.",
                 "input_schema": {"type": "object", "properties": {}},
-                "requires": [],
+                "needs": [],
                 "binding_names": [],
                 "environment_id": "bench",
             }],

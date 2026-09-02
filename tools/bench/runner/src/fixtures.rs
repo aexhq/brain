@@ -497,7 +497,7 @@ async fn operations(
         _ => json!({ "type": "accepted" }),
     };
     Json(json!({
-        "contract": "environment/v2",
+        "contract": "environment/v1",
         "operation_id": operation.get("operation_id").cloned().unwrap_or(json!("op_unknown")),
         // Echoed back, not invented: Brain checks the receipt names the request it sent,
         // and a receipt that carries the wrong field fails the whole session with

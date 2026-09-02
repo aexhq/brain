@@ -5,7 +5,7 @@ use std::{
 
 use brain::{CreatingSession, Kernel, KernelError, SessionHandle};
 use brain_protocol::{
-    AttachmentId, Capability, EnvironmentAttachment, EnvironmentCallResult, EnvironmentId,
+    AttachmentId, EnvironmentAttachment, EnvironmentCallResult, EnvironmentId,
     EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, Identity, Provision,
     ResolvedSessionRequest, SealedSessionConfig, SessionId, ToolBinding, ToolManifest,
 };
@@ -75,7 +75,6 @@ impl EnvironmentRegistry {
                 .remove(&requirement.environment_id)
                 .unwrap_or_default();
             let attach = EnvironmentRequest::Attach {
-                grants: requirement.grants.clone(),
                 provisions: provisions_for(&request, &requirement.environment_id),
                 bindings,
             };
@@ -88,20 +87,24 @@ impl EnvironmentRegistry {
                     "environment_attach",
                 )
                 .await?;
-            // What the environment says it provides feeds the sealed configuration's
-            // `requires ⊆ provides` check; setup and attach both may report it.
-            let mut provides = receipt_provides(&setup);
-            for capability in receipt_provides(&attached) {
-                if !provides.contains(&capability) {
-                    provides.push(capability);
+            // What the environment declares it executes and offers feeds the sealed
+            // configuration's bind check; setup and attach both may report it, and a
+            // resource attach declares again replaces the setup's block.
+            let (mut runtimes, mut resources) = receipt_declaration(&setup);
+            let (attach_runtimes, attach_resources) = receipt_declaration(&attached);
+            for runtime in attach_runtimes {
+                if !runtimes.contains(&runtime) {
+                    runtimes.push(runtime);
                 }
             }
-            provides.sort_unstable();
+            runtimes.sort_unstable();
+            resources.extend(attach_resources);
             attachments.insert(requirement.environment_id.clone(), attachment_id.clone());
             environments.push(EnvironmentAttachment {
                 binding: entry.binding,
                 attachment_id,
-                provides,
+                runtimes,
+                resources,
             });
         }
         let tool_bindings = request
@@ -115,10 +118,10 @@ impl EnvironmentRegistry {
                         name: tool.name,
                         environment: None,
                         attachment_id: None,
-                        requires: tool.requires,
+                        needs: tool.needs,
                         binding_names: tool.binding_names,
                         hosting: tool.hosting,
-                        payload: tool.payload,
+                        program: tool.program,
                     });
                 };
                 let attachment_id = attachments.get(&environment_id).cloned().ok_or_else(|| {
@@ -136,10 +139,10 @@ impl EnvironmentRegistry {
                             )
                         })?,
                     attachment_id: Some(attachment_id),
-                    requires: tool.requires,
+                    needs: tool.needs,
                     binding_names: tool.binding_names,
                     hosting: tool.hosting,
-                    payload: tool.payload,
+                    program: tool.program,
                 })
             })
             .collect::<Result<Vec<_>, KernelError>>()?;
@@ -353,33 +356,37 @@ fn provisions_for(
         .iter()
         .filter(|tool| tool.environment_id.as_ref() == Some(environment_id))
         .filter_map(|tool| {
-            let payload = tool.payload.clone()?;
+            let program = tool.program.clone()?;
             let definition = request
                 .presentation
                 .tools
                 .iter()
                 .find(|definition| definition.name == tool.name)?;
             Some(Provision {
-                payload_identity: payload.identity,
+                payload_identity: *program.identity(),
                 manifest: ToolManifest {
                     name: tool.name.clone(),
                     description: definition.description.clone(),
                     input_schema: definition.input_schema.clone(),
                     output_schema: definition.output_schema.clone(),
-                    requires: tool.requires.clone(),
+                    needs: tool.needs.clone(),
                     binding_names: tool.binding_names.clone(),
-                    hosting: tool.hosting,
-                    payload: Some(payload),
+                    program,
                 },
             })
         })
         .collect()
 }
 
-fn receipt_provides(receipt: &EnvironmentReceipt) -> Vec<Capability> {
+fn receipt_declaration(
+    receipt: &EnvironmentReceipt,
+) -> (Vec<brain_protocol::Runtime>, brain_protocol::Resources) {
     match receipt {
-        EnvironmentReceipt::Accepted { provides } => provides.clone(),
-        _ => Vec::new(),
+        EnvironmentReceipt::Accepted {
+            runtimes,
+            resources,
+        } => (runtimes.clone(), resources.clone()),
+        _ => Default::default(),
     }
 }
 
@@ -388,7 +395,6 @@ fn receipt_provides(receipt: &EnvironmentReceipt) -> Vec<Capability> {
 /// carries nothing the journal must not hold.
 fn redacted(request: &EnvironmentRequest) -> Result<Option<EnvironmentRequest>, KernelError> {
     let EnvironmentRequest::Attach {
-        grants,
         provisions,
         bindings,
     } = request
@@ -402,7 +408,6 @@ fn redacted(request: &EnvironmentRequest) -> Result<Option<EnvironmentRequest>, 
         identities.insert(name.clone(), identity.to_string());
     }
     Ok(Some(EnvironmentRequest::Attach {
-        grants: grants.clone(),
         provisions: provisions.clone(),
         bindings: identities,
     }))

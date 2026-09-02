@@ -23,7 +23,7 @@ const intent = (operationId, name, input, id = 3) => ({
     operation_id: operationId,
     request_identity: "c".repeat(64),
     session_id: "ses_12345678901234567890",
-    binding: { name, hosting: "client", requires: [], binding_names: [] },
+    binding: { name, hosting: "client", needs: [], binding_names: [] },
     invocation: { call_id: "call-1", name, input },
     deadline_ms: 120_000,
   },
@@ -79,7 +79,7 @@ test("a client tool compiles without an environment and answers off the stream",
   assert.equal(create.tools[0].hosting, "client");
   assert.equal(create.tools[0].environment_id, undefined);
   assert.equal(create.tools[0].name, "lookup_order");
-  assert.deepEqual(create.tools[0].requires, []);
+  assert.deepEqual(create.tools[0].needs, []);
 
   await answered;
   const result = requests.find((request) => request.url.includes("/tool-results/"));

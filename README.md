@@ -22,11 +22,27 @@
 
 ## What is it
 
-**Brain** is a minimal, *blazingly fast*, extensible agent runtime server. Deploy and build
-your own AI-native apps, write customized agentloop, tools that run in any environment from
-client browser to server sandbox. Secure by design, with Wasm-isolated agentloop and
-execution. Scale easily with minimal memory overhead. Instant observability with real-time
-events.
+**Brain** is a minimal, *blazingly fast*, extensible agent runtime server. You write the
+agent loop and the tools, and Brain runs the session. Tools run anywhere, from a browser tab
+to a server sandbox. Agent loops run in a Wasm sandbox, so the runtime is secure by design.
+Each session uses very little memory, and every step is an event you can watch in real time.
+
+## Features
+
+- **Tools run anywhere.** A tool is a typed function. It can run in your own process, in a
+  microVM sandbox, in a browser page, or on your backend, and one session can use several of
+  these at once.
+- **Low overhead.** Session state stays in memory and the journal is written after the turn.
+  An idle session uses about 14 KiB and a round trip takes 40 ms. CI checks these numbers on
+  every build.
+- **Bring your model, spawn your agents.** Brain has built-in bindings for 70+ LLM providers
+  through [models.dev](https://models.dev). The model is pinned per session, and a session can
+  create other sessions for subagent work.
+- **Isolated agent loops.** An agent loop compiles to WebAssembly and runs in its own
+  sandbox. Brain does the I/O on its behalf, so every decision is deterministic and
+  replayable.
+- **Observable end to end.** Every observation, decision, model call, and tool result is an
+  event. You can stream them live or read them back later.
 
 ## Benchmarks
 
@@ -79,14 +95,168 @@ ZeroClaw   ███████████████████████
 OpenClaw   ████████████████████████████████████    490 MiB
 ```
 
-<sub>Medians from the harness in <a href="tools/bench">tools/bench</a>, every subject on the same
-AWS <code>c7g.xlarge</code>; bars are log-scaled, and charted subjects are agent runtimes that own
-sessions behind an API. Methodology and subject versions: <a href="BENCHMARKS.md">BENCHMARKS.md</a>.</sub>
+<sub>Each number is the median from the harness in <a href="tools/bench">tools/bench</a>, run on
+the same AWS <code>c7g.xlarge</code> for every subject. Bars use a log scale. The chart includes
+only agent runtimes that own sessions behind an API. <a href="BENCHMARKS.md">BENCHMARKS.md</a> has
+the method and the subject versions.</sub>
+
+## Extensions
+
+Brain owns the session. You write the rest as extensions with the same SDK. Export a
+definition, run `npx brain build`, and pass the generated factory to a session. There are
+three kinds of extension:
+
+- **Agent loops** decide what happens next. A loop is a set of synchronous hooks compiled to
+  a Wasm component, and Brain does the I/O it asks for.
+- **Tools** do the work. A tool is a program, a bundled function, a shell script, or an HTTP
+  request, that declares which resources it operates on.
+- **Environments** run programs. An environment can be a local process, a browser page, or a
+  sandbox service, and it declares the resources a program finds there.
+
+### Agent loops
+
+An agent loop registers one handler per observation (`start`, `message`, `model`, `tools`,
+`event`, `cancel`). Each handler returns one action (`turn.model`, `turn.tools`, `turn.emit`,
+`turn.reply`, `turn.done`, `turn.fail`). Loop state is declared with a schema and can be
+replayed from the journal. The loop below runs a full turn. When the model asks for several
+tools at once, it hands the whole batch to Brain, which runs them in parallel and returns all
+the results in one observation. See the
+[guide](https://aex.dev/brain/docs/guides/write-a-loop) for details.
+
+```ts
+import { agentloop } from "@aexhq/brain";
+import { z } from "zod";
+
+const state = z.object({ messages: z.array(z.unknown()) });
+const text = (m) => m.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+
+export const coder = agentloop({}, (author) => {
+  const memory = author.state(state, () => ({ messages: [] }));
+  const push = (role, content) => memory.messages.push({ role, content });
+
+  author.on.message(({ input }, turn) => {
+    push("user", [{ type: "text", text: input.message }]);
+    return turn.model({ messages: memory.messages });
+  });
+
+  author.on.model(({ response }, turn) => {
+    push("assistant", response.message.content);
+    const calls = response.message.content.filter((b) => b.type === "tool_use").map((b) => ({ callId: b.id, name: b.name, input: b.input }));
+    // One batch: Brain runs every call in parallel and reports back once.
+    return calls.length ? turn.tools(calls) : turn.reply(text(response.message));
+  });
+
+  author.on.tools(({ results }, turn) => {
+    push("user", results.map((r) => ({ type: "tool_result", tool_use_id: r.call_id, content: r.output, is_error: r.is_error })));
+    return turn.model({ messages: memory.messages });
+  });
+});
+```
+
+### Tools
+
+A tool declares its input and output schemas and the resources it operates on (`fs`,
+`process`, `net`, `dom`, `secrets`). Inside, it is plain code on the platform it runs on:
+`node:fs`, `child_process`, `fetch`. At run time it receives its binding values, a
+`deadline`, a `signal`, and a `progress` callback. If the environment does not declare what
+the tool needs, Brain rejects the session at create time. See the
+[guide](https://aex.dev/brain/docs/guides/write-a-tool) for the build output.
+
+```ts
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
+import { tool } from "@aexhq/brain";
+import { z } from "zod";
+
+export const test = tool(
+  {
+    description: "Run the test suite and return the report.",
+    input: z.object({ filter: z.string().optional() }),
+    output: z.object({ passed: z.boolean(), report: z.string() }),
+    needs: ["process", "fs"],
+  },
+  (author) => {
+    author.run(async ({ filter }, context) => {
+      context.progress({ stage: "running" });
+      const passed = await promisify(execFile)("npm", ["test", "--", filter ?? ""], { signal: context.signal }).then(() => true, () => false);
+      return { passed, report: await readFile("reports/junit.xml", "utf8") };
+    });
+  },
+);
+```
+
+A tool that is one command needs no code at all:
+
+```ts
+export const bash = tool.shell({
+  description: "Run a shell command in the workspace.",
+  input: z.object({ command: z.string() }),
+  needs: ["process"],
+  script: "$command",
+});
+```
+
+A tool with an `execute` function runs in your own process instead. There it can use the SDK
+directly, for example to create a child session for a subtask and read the child's events
+while it runs:
+
+```ts
+const delegate = tool({
+  name: "delegate",
+  description: "Hand a subtask to a fresh agent and return its answer.",
+  input: z.object({ task: z.string() }),
+  execute: async ({ task }) => {
+    const child = await brain.sessions.create({ model, agentloop: coder(), tools: [test({ env: box })] });
+    await child.send(task);
+    let answer;
+    for await (const e of child.events()) if (e.type === "assistant_message") { answer = e.data.message; break; }
+    await child.end();
+    return { answer };
+  },
+});
+```
+
+### Environments
+
+An environment opens an instance, declares the resources a program finds there, and
+registers an executor for each program kind it can launch. The methods it returns become
+typed calls on the application object, and Brain journals each call. The example below wraps
+a sandbox service. Replace the vendor SDK with your own. See the
+[guide](https://aex.dev/brain/docs/guides/write-an-environment) for the details.
+
+```ts
+import { environment } from "@aexhq/brain";
+import { Sandbox } from "@vendor/sandbox";
+import { z } from "zod";
+
+export const sandbox = environment(
+  {
+    options: z.object({ image: z.string() }),
+    resources: { fs: { root: "/workspace" }, process: {}, net: { allow: ["registry.npmjs.org"] } },
+  },
+  (author) => {
+    const box = author.open(({ options, id }) => Sandbox.create({ name: id, image: options.image }));
+    box.execute.esm({ artifacts: builtTools });
+    box.execute.shell(({ instance, signal }, script) => instance.run(script, { cwd: "/workspace", signal }));
+    box.close(({ instance }) => instance.kill());
+    return { snapshot: box.method((_input, { instance }) => instance.snapshot()) };
+  },
+);
+```
+
+Put all three into one session:
+
+```ts
+const box = sandbox({ image: "node:22" });
+const session = await brain.sessions.create({ model, agentloop: coder(), tools: [test({ env: box }), bash({ env: box }), delegate] });
+```
 
 ## How it works
 
-One turn, end to end. The agent loop decides, Brain performs every effect on its behalf,
-journals the intent before it happens, and streams the result while the turn is still running:
+This is one turn from start to finish. The agent loop decides what to do next. Brain does the
+I/O, writes the intent to the journal before acting, and streams the result while the turn is
+still running.
 
 ```text
                     +-------------------------------+
@@ -96,13 +266,13 @@ journals the intent before it happens, and streams the result while the turn is 
                                     | activate
                                     v
                     +-------------------------------+
-                    | agent loop, a Wasm component  |   decides; performs no I/O
+                    | agent loop, a Wasm component  |   decides
                     +---------------+---------------+
                                     | decision
                                     v
                     +-------------------------------+        +-----------------+
-                    | Brain performs every effect   |<------>| append-only log |
-                    | on the loop's behalf          | intent | off the turn's  |
+                    | Brain does the I/O            |<------>| append-only log |
+                    | for the loop                  | intent | off the turn's  |
                     +---------------+---------------+ result | hot path        |
                                     |                        +-----------------+
                                     +--> model provider, streaming
@@ -110,46 +280,31 @@ journals the intent before it happens, and streams the result while the turn is 
                                     +--> tool, in any environment
 ```
 
-Brain owns the session; the agent loop, model, tools, and environment are yours to supply. The
-speed comes from four techniques:
+Brain owns the session. You supply the agent loop, the model, the tools, and the environment.
+Four design choices make it fast:
 
-- **Isolated WebAssembly agent loops** — a loop compiles from any language to a component on
-  [Wasmtime](https://wasmtime.dev/): secured, isolated, resource-limited, compiled once and
-  activated per decision at native speed. Brain performs every effect on the loop's behalf,
-  which makes each decision deterministic and replayable from its position in the log.
-- **Write-ahead log (WAL) persistence** — the runtime's only durable state is an append-only
-  write-ahead log, written behind the turn, off the hot path. Sessions are memory-resident and
-  rebuild from the WAL at boot, so a restart picks the conversation up where it left off.
-- **Bounded live streaming** — a model delta reaches subscribers the moment the provider emits
-  it. The live feed rides a fixed 1,024-event ring per subscriber, and a reader resumes from the
-  WAL at the exact record it left off, so streaming stays constant-cost per subscriber.
-- **Observability as the data model** — every observation, decision, model intent, token, and
-  tool outcome is an event in one feed; watching live and reading history back are the same
-  records, so tracing a session is replaying it.
+- **Isolated WebAssembly agent loops.** A loop compiles from any language to a
+  [Wasmtime](https://wasmtime.dev/) component. It is compiled once and activated for each
+  decision at native speed, fully sandboxed. Because Brain does the I/O, each decision is
+  deterministic and can be replayed from its position in the log.
+- **Write-ahead log.** The only durable state is an append-only log, written after the turn so
+  it stays off the hot path. Sessions live in memory and rebuild from the log at boot, so a
+  restart resumes the conversation where it stopped.
+- **Bounded live streaming.** A model delta reaches subscribers as soon as the provider emits
+  it. Each subscriber has a fixed ring of 1,024 events, and a reader that falls behind resumes
+  from the log at the record it last saw. The cost per subscriber stays constant.
+- **Events are the data model.** Every observation, decision, model call, token, and tool
+  result is an event in one feed. Watching live and reading history use the same records, so
+  tracing a session is the same as replaying it.
 
-One native Rust binary on [Tokio](https://tokio.rs/), serving the session API over
-[Axum](https://github.com/tokio-rs/axum) HTTP/SSE, with no external stores.
-
-## Features
-
-- **Tools run anywhere** — a tool is plain HTTP in an environment you choose: a microVM sandbox,
-  a browser driving the DOM, your own backend — and one session can span several at once.
-- **Built for low overhead** — memory-resident session state, appends behind the turn, ~14 KiB
-  per idle session, 25 ms round trips. The numbers above are measured, and CI holds them.
-- **Bring your model, spawn your agents** — built-in bindings for 70+ LLM providers via
-  [models.dev](https://models.dev), pinned per session, and sessions that create sessions for
-  subagent work.
-- **Isolated extension execution** — agent loops compile to WebAssembly and run in a
-  standalone, resource-limited runtime with no network, filesystem, secrets, or clock; Brain
-  performs every effect.
-- **Observable end to end** — every observation, decision, model intent, and tool result is an
-  event you can stream live or read back later while the turn runs.
+Brain is one native Rust binary on [Tokio](https://tokio.rs/). It serves the session API over
+HTTP and SSE with [Axum](https://github.com/tokio-rs/axum) and needs no external store.
 
 ## Quick start
 
-The session's tool is a plain function in your own process: declare it once, hand it to
-the session, and the SDK answers the model's calls off the session's own event feed. No
-server in your app, no ports, no channel.
+In this example the tool is a plain function in your own process. You declare it once and
+pass it to the session. The SDK answers the model's calls from the session's event feed, so
+your app needs no server, no open port, and no extra channel.
 
 Run a server:
 
@@ -193,12 +348,12 @@ await session.delete();
 process.exit(0);
 ```
 
-The model reads the question and calls `lookup_order`: the call arrives as a typed
-record on the session's event feed, your function answers it beside the `orders` object
-it closes over, and the SDK posts the result back — durable in the journal, tool call
-and result included. A tool that must live somewhere else — a browser page, a sandbox,
-another machine — declares a hosting environment instead, and the session API does not
-change: see the [app tools guide](https://aex.dev/brain/docs/guides/app-tools).
+The model reads the question and calls `lookup_order`. The call arrives as a typed record
+on the session's event feed, your function answers it using the `orders` object it closes
+over, and the SDK posts the result back. The journal keeps both the call and the result. If
+a tool has to run somewhere else, such as a browser page, a sandbox, or another machine, it
+declares a hosting environment instead and the session API stays the same. See the
+[app tools guide](https://aex.dev/brain/docs/guides/app-tools).
 
 ## Roadmap
 
@@ -209,7 +364,8 @@ change: see the [app tools guide](https://aex.dev/brain/docs/guides/app-tools).
 - [x] HTTP/SSE session API and the `@aexhq/brain` SDK
 - [x] Remote environment contract with `env-app` and `env-aws-microvm`
 - [ ] Cross-session isolation test
-- [ ] Multimodal input — images and files on `send`
+- [ ] Native subagent support, parent and child links between sessions
+- [ ] Multimodal input, images and files on `send`
 - [ ] Freeze a v1 API with tagged releases
 - [ ] File access and workspace sync
 - [ ] crates.io publication
@@ -219,6 +375,6 @@ change: see the [app tools guide](https://aex.dev/brain/docs/guides/app-tools).
 
 ## Contact
 
-Support and bug reports: open an [issue](https://github.com/aexhq/brain/issues) or write to
-[support@aex.dev](mailto:support@aex.dev). Collaboration and partnerships:
+For support and bug reports, open an [issue](https://github.com/aexhq/brain/issues) or write
+to [support@aex.dev](mailto:support@aex.dev). For collaboration and partnerships, write to
 [admin@aex.dev](mailto:admin@aex.dev).

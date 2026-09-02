@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aexhq/brain/contracts/environment/v1/schemas.json",
+  "title": "Brain Environment v1",
+  "$defs": {
+    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "Identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "Runtime": { "enum": ["esm", "shell", "http"] },
+    "ResourceName": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$" },
+    "Outcome": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "value"], "properties": { "status": { "const": "ok" }, "value": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "error"], "properties": { "status": { "const": "error" }, "error": { "$ref": "#/$defs/OutcomeError" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "timeout" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "cancelled" } } }
+      ]
+    },
+    "OutcomeError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "$ref": "#/$defs/Identifier" },
+        "message": { "type": "string", "maxLength": 4096 },
+        "details": {}
+      }
+    },
+    "FsResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root"],
+      "properties": { "root": { "type": "string", "minLength": 1, "maxLength": 4096 } }
+    },
+    "ProcessResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_ms_max": { "type": "integer", "minimum": 1 },
+        "output_bytes_max": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "NetResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow"],
+      "properties": { "allow": { "type": "array", "maxItems": 256, "items": { "type": "string", "minLength": 1, "maxLength": 256 } } }
+    },
+    "DomResource": { "type": "object", "additionalProperties": false, "properties": {} },
+    "SecretsResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["names"],
+      "properties": { "names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } } }
+    },
+    "Resources": {
+      "type": "object",
+      "properties": {
+        "fs": { "$ref": "#/$defs/FsResource" },
+        "process": { "$ref": "#/$defs/ProcessResource" },
+        "net": { "$ref": "#/$defs/NetResource" },
+        "dom": { "$ref": "#/$defs/DomResource" },
+        "secrets": { "$ref": "#/$defs/SecretsResource" }
+      },
+      "patternProperties": { "^[a-z][a-z0-9_]{0,63}:[A-Za-z0-9._-]{1,64}$": { "type": "object" } },
+      "additionalProperties": false
+    },
+    "HttpProgramRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "url"],
+      "properties": {
+        "method": { "type": "string", "pattern": "^[A-Z]{3,16}$" },
+        "url": { "type": "string", "minLength": 1, "maxLength": 8192 },
+        "headers": { "type": "object", "propertyNames": { "maxLength": 256 }, "additionalProperties": { "type": "string", "maxLength": 16384 } }
+      }
+    },
+    "Program": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind", "identity"], "properties": { "kind": { "const": "esm" }, "identity": { "$ref": "#/$defs/Identity" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "identity", "script"], "properties": { "kind": { "const": "shell" }, "identity": { "$ref": "#/$defs/Identity" }, "script": { "type": "string", "minLength": 1, "maxLength": 262144 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "identity", "request"], "properties": { "kind": { "const": "http" }, "identity": { "$ref": "#/$defs/Identity" }, "request": { "$ref": "#/$defs/HttpProgramRequest" } } }
+      ]
+    },
+    "ToolManifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "input_schema", "needs", "binding_names", "program"],
+      "properties": {
+        "name": { "$ref": "#/$defs/Identifier" },
+        "description": { "type": "string", "maxLength": 8192 },
+        "input_schema": { "type": "object" },
+        "output_schema": { "type": "object" },
+        "needs": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/ResourceName" } },
+        "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
+        "program": { "$ref": "#/$defs/Program" }
+      }
+    },
+    "Provision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest", "payload_identity"],
+      "properties": {
+        "manifest": { "$ref": "#/$defs/ToolManifest" },
+        "payload_identity": { "$ref": "#/$defs/Identity" }
+      }
+    },
+    "BindingValues": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/Identifier" },
+      "additionalProperties": { "type": "string", "maxLength": 32768 }
+    },
+    "Binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment_id", "configuration_identity", "directory_generation", "lifecycle_policy"],
+      "properties": {
+        "environment_id": { "$ref": "#/$defs/Identifier" },
+        "configuration_identity": { "$ref": "#/$defs/Identity" },
+        "directory_generation": { "type": "integer", "minimum": 1 },
+        "lifecycle_policy": { "enum": ["session", "shared", "external"] }
+      }
+    },
+    "OperationEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "request_identity", "environment_id", "session_id", "request"],
+      "properties": {
+        "operation_id": { "$ref": "#/$defs/Identifier" },
+        "request_identity": { "$ref": "#/$defs/Identity" },
+        "environment_id": { "$ref": "#/$defs/Identifier" },
+        "session_id": { "$ref": "#/$defs/Identifier" },
+        "attachment_id": { "$ref": "#/$defs/Identifier" },
+        "request": { "$ref": "#/$defs/Request" }
+      }
+    },
+    "Request": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type", "configuration"], "properties": { "type": { "const": "setup" }, "configuration": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "provisions", "bindings"], "properties": { "type": { "const": "attach" }, "provisions": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/Provision" } }, "bindings": { "$ref": "#/$defs/BindingValues" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "name", "input"], "properties": { "type": { "const": "call" }, "name": { "$ref": "#/$defs/Identifier" }, "input": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "call_id", "tool", "input", "deadline_ms"], "properties": { "type": { "const": "invoke" }, "call_id": { "$ref": "#/$defs/Identifier" }, "tool": { "$ref": "#/$defs/Identifier" }, "input": {}, "deadline_ms": { "type": "integer", "minimum": 1 } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "target_operation_id"], "properties": { "type": { "const": "cancel" }, "target_operation_id": { "$ref": "#/$defs/Identifier" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "detach" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "teardown" } } }
+      ]
+    },
+    "Receipt": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "accepted" }, "runtimes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Runtime" } }, "resources": { "$ref": "#/$defs/Resources" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "data"], "properties": { "type": { "const": "progress" }, "data": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "output"], "properties": { "type": { "const": "result" }, "output": {} } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "outcome"], "properties": { "type": { "const": "outcome" }, "outcome": { "$ref": "#/$defs/Outcome" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "code", "message", "retryable"], "properties": { "type": { "const": "failure" }, "code": { "$ref": "#/$defs/Identifier" }, "message": { "type": "string", "maxLength": 4096 }, "retryable": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "expected_identity", "actual_identity"], "properties": { "type": { "const": "conflict" }, "expected_identity": { "$ref": "#/$defs/Identity" }, "actual_identity": { "$ref": "#/$defs/Identity" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "message"], "properties": { "type": { "const": "ambiguous" }, "message": { "type": "string", "maxLength": 4096 } } }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "binding", "operation"],
+      "properties": {
+        "contract": { "const": "environment/v1" },
+        "binding": { "$ref": "#/$defs/Binding" },
+        "operation": { "$ref": "#/$defs/OperationEnvelope" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "operation_id", "request_identity", "receipt"],
+      "properties": {
+        "contract": { "const": "environment/v1" },
+        "operation_id": { "$ref": "#/$defs/Identifier" },
+        "request_identity": { "$ref": "#/$defs/Identity" },
+        "receipt": { "$ref": "#/$defs/Receipt" }
+      }
+    }
+  ]
+}

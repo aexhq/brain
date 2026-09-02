@@ -1,72 +1,81 @@
 ---
 title: Write an Environment extension
-description: Provide capabilities, host provisioned tools, and expose provider-specific methods.
+description: Declare resources, launch programs, and expose provider-specific methods.
 ---
 
-An Environment owns somewhere Tools run. It implements capability *providers* against its
-open instance, and may opt in to hosting provisioned tools with one line — the SDK owns
-the host runtime (payload cache, attach-time validation, handle wiring, the outcome
-envelope), so environment authors never write it:
+An environment is a place that executes programs. It opens an instance, declares the
+resources a program will find there, registers an executor for each program kind it can
+launch, and may expose provider-specific methods. The SDK owns the host runtime for
+provisioned programs: the ESM payload cache, attach-time validation, script substitution,
+and the outcome envelope. Environment authors never write it.
 
 ```ts
-import { clamp, environment } from "@aexhq/brain";
+import { environment } from "@aexhq/brain";
 import { z } from "zod";
-import Provider from "@vendor/cloud-sdk";
+import { Sandbox } from "@vendor/sandbox";
 
-const options = z.object({ region: z.string() });
+const options = z.object({ image: z.string() });
 
-export const cloudVm = environment({ options }, (author) => {
-  const vm = author.open(async ({ options, id }) => {
-    const provider = new Provider({ region: options.region });
-    return provider.getOrCreate({ id });
-  });
+export const sandbox = environment(
+  {
+    options,
+    // What a program finds here. Brain checks each bound tool's needs against
+    // these names at session create and journals the declaration with the
+    // session. Enforcement is the platform's: the mount, the user, the VM's
+    // egress rules.
+    resources: {
+      fs: { root: "/workspace" },
+      process: { timeout_ms_max: 600_000, output_bytes_max: 1_048_576 },
+      net: { allow: ["registry.npmjs.org"] },
+    },
+  },
+  (author) => {
+    const box = author.open(async ({ options, id }) => Sandbox.create({ name: id, image: options.image }));
 
-  // Capability providers: the factory sees the open instance and the
-  // attachment's grants. Enforcement is yours — the shared clamp helper
-  // covers exec bounds and fs-root confinement.
-  vm.provide.exec(({ instance, grants }) => ({
-    run: (command, opts) => instance.exec(command, clamp(opts, grants.exec)),
-  }));
-  vm.provide.fs(({ instance, grants }) => ({
-    read: (path) => instance.readFile(clamp.path(grants.fs.root, path)),
-    write: (path, data) => instance.writeFile(clamp.path(grants.fs.root, path), data),
-    list: (path) => instance.listDir(clamp.path(grants.fs.root, path)),
-  }));
+    // Launch esm programs: the SDK imports each built bundle once at attach and
+    // runs it in this process with its binding values.
+    box.execute.esm({ artifacts: builtTools });
+    // Launch shell programs: the script arrives with its input already
+    // substituted; what you return is the tool's output.
+    box.execute.shell(async ({ instance, signal }, script) => instance.run(script, { cwd: "/workspace", signal }));
+    // Launch http programs through the sandbox's own network path. Omit the
+    // handler to use the global fetch.
+    box.execute.http(async ({ instance, signal }, request) => instance.fetch(request.url, { method: request.method, headers: request.headers, body: request.body, signal }));
 
-  // Host provisioned ESM tools, wired in-process to the providers above.
-  vm.host.esm({ artifacts: myBuiltArtifacts });
+    box.close(async ({ instance }) => instance.kill());
 
-  vm.run(async (request, context) => context.instance.execute(request, { signal: context.signal }));
-  vm.close(async ({ instance }) => instance.close());
-
-  return {
-    suspend: vm.method(async (_input, context) => context.instance.suspend()),
-  };
-});
+    return {
+      snapshot: box.method(async (_input, { instance }) => instance.snapshot()),
+    };
+  },
+);
 ```
 
-What the environment `provide`s becomes the `provides` list on its setup and attach
-receipts — the other half of Brain's `requires ⊆ provides` check at session create.
-Anything ugly a capability needs — quoting `sh -c`, enforcing a timeout by kill,
-bridging fs over exec — lives inside the provider, never in a tool.
+What the environment registers with `execute` becomes the `runtimes` list on its setup
+and attach receipts, and what it declares under `resources` becomes the `resources` block.
+Together they are the environment's half of Brain's bind check at session create.
 
-## Hosting provisioned tools
+Every program starts with the `fs` root as its working directory. That convention is the
+environment's to keep: an in-process `esm` executor runs where the host process runs, so an
+environment whose workspace is elsewhere changes directory in `open`.
 
-`host.esm()` opts in. An attach carries each tool's manifest and the content identity of
-its payload; the bundle bytes themselves travel out of band and are registered through
-`host.esm({ artifacts })` (`brain build` output, one `<name>.tool.json` per tool). At
-attach the SDK host imports each bundle once per identity, resolves its run function, and
-checks that `requires` are provided and binding values are present — so a broken or
-mis-bound tool fails the attach receipt, never the first model call. At invoke it
-validates input against the tool's schema, wires handles to your providers in-process,
-injects binding values, and maps the result — return value, thrown error, deadline,
-cancellation — onto the one outcome envelope.
+## Launching provisioned programs
 
-An environment that does not call `host.esm()` still accepts provisions: their
-invocations stay on the environment's own `run` handler (the legacy runtime path).
-Environments only ever execute provisioned tools — a tool answered by an application
-process never touches one; Brain routes those itself (see
-[App tools](/brain/docs/guides/app-tools)).
+An attach carries each tool's manifest and the content identity of its program. For `esm`
+the bundle bytes travel out of band and are registered through
+`execute.esm({ artifacts })` (`brain build` output, one `<name>.tool.json` per tool). At
+attach the SDK checks that the program's kind has an executor, that every needed resource is
+declared, and that every binding has a value; it imports each `esm` bundle once per identity
+and resolves its run function. So a broken or mis-bound tool fails the attach receipt, never
+the first model call. At invoke it validates `esm` input against the tool's schema,
+substitutes a `shell` script's input references, serialises an `http` program's input as
+the request body, and maps the result, whether a return value, a thrown error, the deadline,
+or a cancellation, onto the one outcome envelope.
+
+An environment registers only the executors it means to offer. An attach that provisions a
+program kind the environment does not launch fails its receipt. Environments only ever
+execute provisioned tools; a tool answered by an application process never touches one.
+Brain routes those itself (see [App tools](/brain/docs/guides/app-tools)).
 
 ## The application object
 
@@ -74,16 +83,16 @@ Build it with `npx brain build`. The generated application object implements Bra
 Environment interface and keeps its own methods:
 
 ```ts
-const vm = cloudVm({ region: "eu-west-2" });
+const vm = sandbox({ image: "node:22" });
 const session = await client.sessions.create({
   agentloop: pi(),
   model,
   tools: [read({ env: vm }), bash({ env: vm })],
 });
 
-await vm.suspend();
+await vm.snapshot();
 ```
 
 The exact Environment object identifies the attachment. A generated method fails before the
-session attaches and after it ends. Brain journals the call intent, routes it to that attachment,
-and records the terminal receipt.
+session attaches and after it ends. Brain journals the call intent, routes it to that
+attachment, and records the terminal receipt.

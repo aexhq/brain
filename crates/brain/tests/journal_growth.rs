@@ -319,7 +319,6 @@ fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
                 environment_id: environment.binding.environment_id.clone(),
                 configuration: serde_json::json!({}),
                 lifecycle_policy: environment.binding.lifecycle_policy.clone(),
-                grants: Default::default(),
                 binding_identities: Default::default(),
             })
             .collect(),
@@ -332,10 +331,10 @@ fn start(kernel: &Kernel, sealed: SealedSessionConfig) -> SessionHandle {
                     .environment
                     .as_ref()
                     .map(|environment| environment.environment_id.clone()),
-                requires: binding.requires.clone(),
+                needs: binding.needs.clone(),
                 binding_names: binding.binding_names.clone(),
                 hosting: binding.hosting,
-                payload: binding.payload.clone(),
+                program: binding.program.clone(),
             })
             .collect(),
     };

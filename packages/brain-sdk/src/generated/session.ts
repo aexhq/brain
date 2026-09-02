@@ -21,9 +21,33 @@ export type Identity = string;
 export type SessionId = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "CapabilityName".
+ * via the `definition` "Runtime".
  */
-export type CapabilityName = "exec" | "fs" | "net" | "js" | "page";
+export type Runtime = "esm" | "shell" | "http";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ResourceName".
+ */
+export type ResourceName = string;
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "Program".
+ */
+export type Program =
+  | {
+      kind: "esm";
+      identity: Identity;
+    }
+  | {
+      kind: "shell";
+      identity: Identity;
+      script: string;
+    }
+  | {
+      kind: "http";
+      identity: Identity;
+      request: HttpProgramRequest;
+    };
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "BoundTool".
@@ -35,13 +59,16 @@ export type BoundTool = {
   description: string;
   input_schema: {};
   output_schema?: {};
-  requires: CapabilityName[];
+  /**
+   * @maxItems 64
+   */
+  needs: ResourceName[];
   /**
    * @maxItems 64
    */
   binding_names: Identifier[];
   hosting?: "provisioned" | "client";
-  payload?: ToolPayload;
+  program?: Program;
   environment_id?: Identifier;
 };
 /**
@@ -87,57 +114,14 @@ export interface AgentloopRef {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ToolPayload".
+ * via the `definition` "HttpProgramRequest".
  */
-export interface ToolPayload {
-  kind: "esm" | "component";
-  identity: Identity;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "ExecGrant".
- */
-export interface ExecGrant {
-  timeout_ms_max?: number;
-  output_bytes_max?: number;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "FsGrant".
- */
-export interface FsGrant {
-  root: string;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "NetGrant".
- */
-export interface NetGrant {
-  /**
-   * @maxItems 256
-   */
-  allow: string[];
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "JsGrant".
- */
-export interface JsGrant {}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "PageGrant".
- */
-export interface PageGrant {}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "GrantSet".
- */
-export interface GrantSet {
-  exec?: ExecGrant;
-  fs?: FsGrant;
-  net?: NetGrant;
-  js?: JsGrant;
-  page?: PageGrant;
+export interface HttpProgramRequest {
+  method: string;
+  url: string;
+  headers?: {
+    [k: string]: string | undefined;
+  };
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -147,7 +131,6 @@ export interface EnvironmentRequirement {
   environment_id: Identifier;
   configuration: unknown;
   lifecycle_policy: "session" | "shared" | "external";
-  grants?: GrantSet;
   bindings?: {
     [k: string]: string | undefined;
   };

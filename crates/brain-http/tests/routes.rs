@@ -132,8 +132,8 @@ impl BrainApi for Api {
 async fn exposes_every_v1_route_with_its_contract_status() {
     let digest = "a".repeat(64);
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    // A create request in the v2 capability shape: a tool declaring `requires` and
-    // `binding_names`, an environment carrying typed grants and sealed binding values.
+    // A create request in the execution shape: a tool declaring `needs`, `binding_names`,
+    // and its program, an environment carrying sealed binding values.
     let create = serde_json::json!({
         "agentloop": {"identity": digest, "configuration": {}},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
@@ -142,17 +142,16 @@ async fn exposes_every_v1_route_with_its_contract_status() {
             "name": "bash",
             "description": "Run a shell command.",
             "input_schema": {"type": "object"},
-            "requires": ["exec", "fs"],
+            "needs": ["process", "fs"],
             "binding_names": ["API_BASE"],
             "hosting": "provisioned",
-            "payload": {"kind": "esm", "identity": "d".repeat(64)},
+            "program": {"kind": "esm", "identity": "d".repeat(64)},
             "environment_id": "env_1"
         }],
         "environments": [{
             "environment_id": "env_1",
             "configuration": {},
             "lifecycle_policy": "session",
-            "grants": {"exec": {"timeout_ms_max": 120000}, "fs": {"root": "/workspace"}},
             "bindings": {"API_BASE": "https://api.internal"}
         }]
     });
@@ -227,7 +226,7 @@ async fn request_bodies_reject_unknown_fields() {
             "name": "bash",
             "description": "Run a shell command.",
             "input_schema": {"type": "object"},
-            "requires": [],
+            "needs": [],
             "binding_names": [],
             "environment_id": "env_1",
             "remote_tool_id": "bash",
