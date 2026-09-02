@@ -41,6 +41,11 @@ Build every named extension export with one command:
 npx brain build
 ```
 
+For an agent loop the output is a WebAssembly component. `brain build` bundles the module and
+compiles it with [componentize-js](https://github.com/bytecodealliance/componentize-js) against
+Brain's `agentloop.wit` world, with stdio, random, clocks, and HTTP disabled. Brain runs the
+component in Wasmtime, so the loop has no I/O of its own and every decision is deterministic.
+
 Applications import the generated factory and pass it under `agentloop`:
 
 ```ts
@@ -58,3 +63,45 @@ The loop decides what the model is told on every call. Leave `system` out and th
 prompt the session was created with, `author.system`; the loop above replaces it with its own
 option. Leave `tools` out and every tool the session was created with is offered; name a subset of
 `author.tools` to offer fewer.
+
+## Run tools
+
+A loop that uses tools handles one more observation. When the model asks for tools, hand the
+whole batch to Brain with `turn.tools`. Brain runs the calls in parallel and reports back once,
+in `tools`, with every result. The loop below runs a full coding turn.
+
+```ts
+import { agentloop } from "@aexhq/brain";
+import { z } from "zod";
+
+const state = z.object({ messages: z.array(z.unknown()) });
+const text = (message) => message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+
+export const coder = agentloop((author) => {
+  const memory = author.state(state, () => ({ messages: [] }));
+  const push = (role, content) => memory.messages.push({ role, content });
+
+  author.on.message(({ input }, turn) => {
+    push("user", [{ type: "text", text: input.message }]);
+    return turn.model({ messages: memory.messages });
+  });
+
+  author.on.model(({ response }, turn) => {
+    push("assistant", response.message.content);
+    const calls = response.message.content
+      .filter((block) => block.type === "tool_use")
+      .map((block) => ({ callId: block.id, name: block.name, input: block.input }));
+    // One batch: Brain runs every call in parallel and reports back once.
+    return calls.length ? turn.tools(calls) : turn.reply(text(response.message));
+  });
+
+  author.on.tools(({ results }, turn) => {
+    push("user", results.map((r) => ({ type: "tool_result", tool_use_id: r.call_id, content: r.output, is_error: r.is_error })));
+    return turn.model({ messages: memory.messages });
+  });
+});
+```
+
+The model sees every tool the session was created with unless the loop names a subset in
+`turn.model`. The official `@aexhq/agentloop-pi` and `@aexhq/agentloop-codex` loops are this
+shape with the prompt, context management, and retry policy of Pi and Codex on top.

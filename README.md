@@ -106,155 +106,37 @@ the method and the subject versions.</sub>
 
 ## Extensions
 
-Brain owns the session. You write the rest as extensions with the same SDK. Export a
-definition, run `npx brain build`, and pass the generated factory to a session. There are
-three kinds of extension:
+Brain owns the session. Everything else is an extension. You write it with the `@aexhq/brain`
+SDK, run `npx brain build`, and pass the generated factory to a session. There are three
+kinds, and each one is a small typed declaration.
 
-- **Agent loops** decide what happens next. A loop is a set of synchronous hooks compiled to
-  a Wasm component, and Brain does the I/O it asks for.
-- **Tools** do the work. A tool is a program, a bundled function, a shell script, or an HTTP
-  request, that declares which resources it operates on.
-- **Environments** run programs. An environment can be a local process, a browser page, or a
-  sandbox service, and it declares the resources a program finds there.
+- **Agent loop** decides what happens next. It registers one synchronous handler per
+  observation, and each handler returns one action: call the model, run tools, reply, or stop.
+  You write it in TypeScript. `npx brain build` compiles it to a WebAssembly component, and
+  Brain runs that component in a [Wasmtime](https://wasmtime.dev/) sandbox with no filesystem,
+  network, clock, or secrets. Brain performs every effect the loop asks for, so each decision is
+  deterministic and can be replayed from the journal.
+  [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop)
+- **Tool** does the work. It declares its input and output schemas and the resources it
+  operates on (`fs`, `process`, `net`, `dom`, `secrets`). Inside, it is plain code for the
+  platform it runs on. If the environment does not declare what the tool needs, Brain rejects
+  the session at create time. A tool that is one shell command or one HTTP request needs no
+  code at all. [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool)
+- **Environment** runs programs. It opens an instance, declares the resources a program finds
+  there, and registers how to launch each program kind. Brain journals every call to it.
+  [Write an environment](https://aex.dev/brain/docs/guides/write-an-environment)
 
-### Agent loops
+### Official extensions
 
-An agent loop registers one handler per observation (`start`, `message`, `model`, `tools`,
-`event`, `cancel`). Each handler returns one action (`turn.model`, `turn.tools`, `turn.emit`,
-`turn.reply`, `turn.done`, `turn.fail`). Loop state is declared with a schema and can be
-replayed from the journal. The loop below runs a full turn. When the model asks for several
-tools at once, it hands the whole batch to Brain, which runs them in parallel and returns all
-the results in one observation. See the
-[guide](https://aex.dev/brain/docs/guides/write-a-loop) for details.
+The packages in [aexhq/extensions](https://github.com/aexhq/extensions) use the same SDK and
+the same build. Nothing built in gets a shortcut.
 
-```ts
-import { agentloop } from "@aexhq/brain";
-import { z } from "zod";
-
-const state = z.object({ messages: z.array(z.unknown()) });
-const text = (m) => m.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-
-export const coder = agentloop({}, (author) => {
-  const memory = author.state(state, () => ({ messages: [] }));
-  const push = (role, content) => memory.messages.push({ role, content });
-
-  author.on.message(({ input }, turn) => {
-    push("user", [{ type: "text", text: input.message }]);
-    return turn.model({ messages: memory.messages });
-  });
-
-  author.on.model(({ response }, turn) => {
-    push("assistant", response.message.content);
-    const calls = response.message.content.filter((b) => b.type === "tool_use").map((b) => ({ callId: b.id, name: b.name, input: b.input }));
-    // One batch: Brain runs every call in parallel and reports back once.
-    return calls.length ? turn.tools(calls) : turn.reply(text(response.message));
-  });
-
-  author.on.tools(({ results }, turn) => {
-    push("user", results.map((r) => ({ type: "tool_result", tool_use_id: r.call_id, content: r.output, is_error: r.is_error })));
-    return turn.model({ messages: memory.messages });
-  });
-});
-```
-
-### Tools
-
-A tool declares its input and output schemas and the resources it operates on (`fs`,
-`process`, `net`, `dom`, `secrets`). Inside, it is plain code on the platform it runs on:
-`node:fs`, `child_process`, `fetch`. At run time it receives its binding values, a
-`deadline`, a `signal`, and a `progress` callback. If the environment does not declare what
-the tool needs, Brain rejects the session at create time. See the
-[guide](https://aex.dev/brain/docs/guides/write-a-tool) for the build output.
-
-```ts
-import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { promisify } from "node:util";
-import { tool } from "@aexhq/brain";
-import { z } from "zod";
-
-export const test = tool(
-  {
-    description: "Run the test suite and return the report.",
-    input: z.object({ filter: z.string().optional() }),
-    output: z.object({ passed: z.boolean(), report: z.string() }),
-    needs: ["process", "fs"],
-  },
-  (author) => {
-    author.run(async ({ filter }, context) => {
-      context.progress({ stage: "running" });
-      const passed = await promisify(execFile)("npm", ["test", "--", filter ?? ""], { signal: context.signal }).then(() => true, () => false);
-      return { passed, report: await readFile("reports/junit.xml", "utf8") };
-    });
-  },
-);
-```
-
-A tool that is one command needs no code at all:
-
-```ts
-export const bash = tool.shell({
-  description: "Run a shell command in the workspace.",
-  input: z.object({ command: z.string() }),
-  needs: ["process"],
-  script: "$command",
-});
-```
-
-A tool with an `execute` function runs in your own process instead. There it can use the SDK
-directly, for example to create a child session for a subtask and read the child's events
-while it runs:
-
-```ts
-const delegate = tool({
-  name: "delegate",
-  description: "Hand a subtask to a fresh agent and return its answer.",
-  input: z.object({ task: z.string() }),
-  execute: async ({ task }) => {
-    const child = await brain.sessions.create({ model, agentloop: coder(), tools: [test({ env: box })] });
-    await child.send(task);
-    let answer;
-    for await (const e of child.events()) if (e.type === "output_emitted" && e.data.type === "assistant_message") { answer = e.data.message; break; }
-    await child.end();
-    return { answer };
-  },
-});
-```
-
-### Environments
-
-An environment opens an instance, declares the resources a program finds there, and
-registers an executor for each program kind it can launch. The methods it returns become
-typed calls on the application object, and Brain journals each call. The example below wraps
-a sandbox service. Replace the vendor SDK with your own. See the
-[guide](https://aex.dev/brain/docs/guides/write-an-environment) for the details.
-
-```ts
-import { environment } from "@aexhq/brain";
-import { Sandbox } from "@vendor/sandbox";
-import { z } from "zod";
-
-export const sandbox = environment(
-  {
-    options: z.object({ image: z.string() }),
-    resources: { fs: { root: "/workspace" }, process: {}, net: { allow: ["registry.npmjs.org"] } },
-  },
-  (author) => {
-    const box = author.open(({ options, id }) => Sandbox.create({ name: id, image: options.image }));
-    box.execute.esm({ artifacts: builtTools });
-    box.execute.shell(({ instance, signal }, script) => instance.run(script, { cwd: "/workspace", signal }));
-    box.close(({ instance }) => instance.kill());
-    return { snapshot: box.method((_input, { instance }) => instance.snapshot()) };
-  },
-);
-```
-
-Put all three into one session:
-
-```ts
-const box = sandbox({ image: "node:22" });
-const session = await brain.sessions.create({ model, agentloop: coder(), tools: [test({ env: box }), bash({ env: box }), delegate] });
-```
+| Package | Kind | What it is |
+| --- | --- | --- |
+| [`@aexhq/agentloop-pi`](https://www.npmjs.com/package/@aexhq/agentloop-pi) | Agent loop | Pi-style coding loop. Tool calls run in parallel. |
+| [`@aexhq/agentloop-codex`](https://www.npmjs.com/package/@aexhq/agentloop-codex) | Agent loop | Codex-style coding loop. Tool calls run one at a time. |
+| [`@aexhq/tools`](https://www.npmjs.com/package/@aexhq/tools) | Tools | `read`, `write`, `edit`, `ls`, `glob`, `grep`, `bash`, `todo` |
+| [`@aexhq/env-aws-microvm`](https://www.npmjs.com/package/@aexhq/env-aws-microvm) | Environment | One AWS microVM per session, with `fs`, `process`, and `net` |
 
 ## How it works
 
@@ -376,6 +258,9 @@ declares a hosting environment instead and the session API stays the same. See t
 - [ ] Sessions spread across machines sharing environments
 - [ ] `checkpoint` and `restore`
 - [ ] Custom images with scoped credentials and network metering
+- [ ] Local environment: run tools in a directory or container on your own machine
+- [ ] Browser environment and DOM tools: a page as the place tools run
+- [ ] An agent loop written in Rust against the same `agentloop.wit` contract
 
 ## Contact
 
