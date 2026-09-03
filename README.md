@@ -28,16 +28,16 @@
 ## What is it
 
 **Brain** is a minimal, and extensible agent runtime server. You assemble or write your own
-extensions to control every aspect of the runtime. [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop).
+extensions to control every aspect of the runtime.
 
 ### Agentloop Extensions
-The core mechanism that bridge LLM, full control of context and dispatch tools. [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool).
+The core mechanism that bridge LLM, full control of context and dispatch tools.  [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop).
 - Pi
 - Opencode
 - Codex
 
 ### Tool Extensions
-The hand for LLM to actually do work, it declares resources it needs and provide ability to interact.
+The hand for LLM to actually do work, it declares resources it needs and provide ability to interact. [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool).
 - Bash
 - Inline function
 - Web_search/Web_fetch
