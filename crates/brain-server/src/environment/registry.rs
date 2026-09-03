@@ -4,6 +4,7 @@ use std::{
 };
 
 use brain::{CreatingSession, JournalStore, Session};
+use brain_protocol::codes;
 use brain_protocol::{
     AttachmentId, EnvironmentAttachment, EnvironmentCallResult, EnvironmentId,
     EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, Identity, Provision,
@@ -43,7 +44,7 @@ impl EnvironmentRegistry {
             }
             Err(error) => {
                 let message = error.to_string();
-                creation.fail("environment_preparation_failed", &message)?;
+                creation.fail(codes::failure::ENVIRONMENT_PREPARATION_FAILED, &message)?;
                 Err(error)
             }
         }
@@ -67,7 +68,7 @@ impl EnvironmentRegistry {
                         configuration: requirement.configuration.clone(),
                     },
                     None,
-                    "environment_setup",
+                    codes::event::call::ENVIRONMENT_SETUP,
                 )
                 .await?;
             let attachment_id = attachment_id(creation.session_id(), &requirement.environment_id)?;
@@ -84,7 +85,7 @@ impl EnvironmentRegistry {
                     &entry,
                     attach,
                     Some(attachment_id.clone()),
-                    "environment_attach",
+                    codes::event::call::ENVIRONMENT_ATTACH,
                 )
                 .await?;
             // What the environment declares it executes and offers feeds the sealed
@@ -226,7 +227,7 @@ impl EnvironmentRegistry {
         let entry = self.directory.get(&attachment.binding).await?;
         let request = EnvironmentRequest::Call { name, input };
         let sequence = session
-            .record_call_started("environment_call", &request)
+            .record_call_started(codes::event::call::ENVIRONMENT_CALL, &request)
             .await?;
         let operation = EnvironmentOperation {
             sequence,
@@ -242,7 +243,7 @@ impl EnvironmentRegistry {
         match sent.and_then(|receipt| terminal(receipt, "call")) {
             Ok(EnvironmentReceipt::Result { output }) => {
                 session
-                    .record_call_ended("environment_call", sequence, &output)
+                    .record_call_ended(codes::event::call::ENVIRONMENT_CALL, sequence, &output)
                     .await?;
                 Ok(EnvironmentCallResult { output })
             }
@@ -251,13 +252,13 @@ impl EnvironmentRegistry {
                     "Environment returned a nonterminal call receipt".into(),
                 );
                 session
-                    .record_call_failed("environment_call", sequence, &error)
+                    .record_call_failed(codes::event::call::ENVIRONMENT_CALL, sequence, &error)
                     .await?;
                 Err(error)
             }
             Err(error) => {
                 session
-                    .record_call_failed("environment_call", sequence, &error)
+                    .record_call_failed(codes::event::call::ENVIRONMENT_CALL, sequence, &error)
                     .await?;
                 Err(error)
             }
@@ -276,7 +277,7 @@ impl EnvironmentRegistry {
                 &entry,
                 Some(attachment.attachment_id.clone()),
                 EnvironmentRequest::Detach,
-                "environment_detach",
+                codes::event::call::ENVIRONMENT_DETACH,
             )
             .await?;
             if matches!(
@@ -288,7 +289,7 @@ impl EnvironmentRegistry {
                     &entry,
                     None,
                     EnvironmentRequest::Teardown,
-                    "environment_teardown",
+                    codes::event::call::ENVIRONMENT_TEARDOWN,
                 )
                 .await?;
             }

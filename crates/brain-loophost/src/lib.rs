@@ -12,7 +12,7 @@ pub use limits::LoopLimits;
 pub use package::{AgentloopManifest, AgentloopPackage};
 pub use runtime::{AdmissionEngine, AdmittedAgentloop, ResidentContexts, WarmInstances};
 pub use service::WorkerService;
-pub use supervisor::WorkerPool;
+pub use supervisor::{LoopError, WorkerPool};
 pub use wire::{WorkerRequest, WorkerResponse};
 
 pub const MAX_PACKAGE_BYTES: usize = 32 * 1024 * 1024;

@@ -9,6 +9,37 @@ use crate::{AgentloopPackage, LoopLimits, WorkerClient};
 /// itself. Covers the IPC round trip and anything an epoch cannot interrupt.
 const WORKER_BACKSTOP: Duration = Duration::from_secs(1);
 
+/// Why the pool could not run something. `Overloaded` is the one case a caller treats
+/// differently: it is transient and the request was never started.
+#[derive(Debug)]
+pub enum LoopError {
+    Overloaded,
+    Failed(String),
+}
+
+impl std::fmt::Display for LoopError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoopError::Overloaded => formatter.write_str("Loophost queue is full"),
+            LoopError::Failed(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for LoopError {}
+
+impl From<String> for LoopError {
+    fn from(message: String) -> Self {
+        LoopError::Failed(message)
+    }
+}
+
+impl From<&str> for LoopError {
+    fn from(message: &str) -> Self {
+        LoopError::Failed(message.to_owned())
+    }
+}
+
 pub struct WorkerPool {
     worker_binary: PathBuf,
     socket: PathBuf,
@@ -51,7 +82,7 @@ impl WorkerPool {
         }
     }
 
-    pub async fn admit(&self, package: Vec<u8>) -> Result<AgentloopIdentity, String> {
+    pub async fn admit(&self, package: Vec<u8>) -> Result<AgentloopIdentity, LoopError> {
         if package.len() > self.limits.package_bytes {
             return Err("Agentloop package exceeds the configured admission limit".into());
         }
@@ -60,7 +91,7 @@ impl WorkerPool {
             .permits
             .clone()
             .try_acquire_owned()
-            .map_err(|_| "Loophost queue is full".to_owned())?;
+            .map_err(|_| LoopError::Overloaded)?;
         let mut state = self.state.lock().await;
         self.ensure_worker(&mut state).await?;
         let digest = WorkerClient::new(&self.socket).admit(&package).await?;
@@ -69,21 +100,21 @@ impl WorkerPool {
         Ok(digest)
     }
 
-    pub async fn status(&self, digest: &AgentloopIdentity) -> Result<bool, String> {
+    pub async fn status(&self, digest: &AgentloopIdentity) -> Result<bool, LoopError> {
         tokio::fs::try_exists(package_path(&self.packages, digest))
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| LoopError::Failed(error.to_string()))
     }
 
-    pub async fn ready(&self) -> Result<(), String> {
+    pub async fn ready(&self) -> Result<(), LoopError> {
         let _permit = self
             .permits
             .clone()
             .try_acquire_owned()
-            .map_err(|_| "Loophost queue is full".to_owned())?;
+            .map_err(|_| LoopError::Overloaded)?;
         let mut state = self.state.lock().await;
         self.ensure_worker(&mut state).await?;
-        WorkerClient::new(&self.socket).ping().await
+        Ok(WorkerClient::new(&self.socket).ping().await?)
     }
 
     pub async fn activate(
@@ -92,7 +123,7 @@ impl WorkerPool {
         digest: AgentloopIdentity,
         context_attached: bool,
         input: ActivationInput,
-    ) -> Result<(ActivationOutput, bool), String> {
+    ) -> Result<(ActivationOutput, bool), LoopError> {
         // The input bound is enforced where the input is encoded, in `write_frame`
         // below. Encoding it here as well to measure its length meant serialising the
         // whole context twice per decision and throwing one copy away.
@@ -100,7 +131,7 @@ impl WorkerPool {
             .permits
             .clone()
             .try_acquire_owned()
-            .map_err(|_| "Loophost queue is full".to_owned())?;
+            .map_err(|_| LoopError::Overloaded)?;
         // Everything that needs the worker's identity happens under the lock; the
         // activation itself does not. Holding it across the call serialised every session
         // in the process onto one activation at a time, whatever the permits allowed.
@@ -145,7 +176,7 @@ impl WorkerPool {
                 }
                 Ok((output, context_attached))
             }
-            Ok(Err(error)) => Err(error),
+            Ok(Err(error)) => Err(error.into()),
             Err(_) => {
                 // The guest's own epoch deadline fires before this, so reaching here
                 // means the worker itself is not answering. That is the case this is

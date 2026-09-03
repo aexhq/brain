@@ -408,7 +408,7 @@ fn wall_clock_ms() -> Result<u64, Error> {
 }
 
 fn not_found() -> Error {
-    Error::InvalidState("session not found".into())
+    Error::NotFound("session not found".into())
 }
 
 fn ended_first() -> Error {

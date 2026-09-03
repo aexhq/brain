@@ -4,6 +4,7 @@ use std::sync::{
 };
 use std::{future::Future, time::Duration};
 
+use brain_protocol::codes::{self, Failure};
 use brain_protocol::{
     ActivationInput, ContextEnvelope, Decision, Event, EventId, LiveEvent, MessageRequest,
     ModelRequest, ModelStreamEvent, Observation, Outcome, RuntimeEnvelope, SealedSessionConfig,
@@ -114,7 +115,7 @@ impl SessionActor {
             // Recorded and then abandoned: a session that could not be told what it is
             // continuing cannot answer for that conversation, and pretending otherwise
             // would answer as though it had just begun.
-            let _ = self.fail_turn("session_history_rejected", &error.to_string());
+            let _ = self.fail_turn(codes::failure::SESSION_HISTORY_REJECTED, &error.to_string());
             return;
         }
         while let Some(command) = self.receiver.recv().await {
@@ -142,7 +143,7 @@ impl SessionActor {
         self.cancel_requested.store(false, Ordering::Release);
         self.commit(
             vec![AppendRecord::new(
-                "turn_started",
+                codes::event::TURN_STARTED,
                 serde_json::to_value(&request).map_err(json_error)?,
             )],
             SessionUpdate {
@@ -157,10 +158,7 @@ impl SessionActor {
         self.turn_opening_context = Some(self.context.clone());
         for decision_index in 0..self.config.max_decisions_per_turn {
             if self.cancel_requested.load(Ordering::Acquire) {
-                return self.finish_turn(vec![AppendRecord::new(
-                    "turn_failed",
-                    serde_json::json!({"code":"cancelled"}),
-                )]);
+                return self.cancel_turn();
             }
             let runtime = RuntimeEnvelope::at(
                 &self.row.session_id,
@@ -183,7 +181,7 @@ impl SessionActor {
             };
             self.commit(
                 vec![AppendRecord::new(
-                    "activation_started",
+                    codes::event::ACTIVATION_STARTED,
                     serde_json::json!({"observation": observation_kind}),
                 )],
                 SessionUpdate::default(),
@@ -198,19 +196,29 @@ impl SessionActor {
                 Err(()) => return self.cancel_turn(),
                 Ok(Ok(output)) => output,
                 Ok(Err(error)) => {
-                    return self.finish_turn(vec![AppendRecord::new("activation_failed", serde_json::json!({"error":error.to_string()})), AppendRecord::new("turn_failed", serde_json::json!({"code":"agentloop_failed","message":error.to_string()}))]);
+                    let failure = Failure::new(codes::failure::AGENTLOOP_FAILED, error.to_string());
+                    return self.finish_turn(vec![
+                        AppendRecord::new(
+                            codes::event::ACTIVATION_FAILED,
+                            failure_payload(None, &failure)?,
+                        ),
+                        AppendRecord::new(
+                            codes::event::TURN_FAILED,
+                            failure_payload(None, &failure)?,
+                        ),
+                    ]);
                 }
             };
             if output.context.protocol_version != "agentloop/v1" {
                 return self.fail_turn(
-                    "invalid_context_version",
+                    codes::failure::INVALID_CONTEXT_VERSION,
                     "Agentloop returned an unsupported context version",
                 );
             }
             self.context = output.context;
             self.commit(
                 vec![AppendRecord::new(
-                    "activation_ended",
+                    codes::event::ACTIVATION_ENDED,
                     serde_json::json!({"decision": decision_kind(&output.decision)}),
                 )],
                 SessionUpdate::default(),
@@ -235,12 +243,15 @@ impl SessionActor {
                     }
                     let tools = match self.offered_tools(&request) {
                         Ok(tools) => tools,
-                        Err(message) => return self.fail_turn("invalid_model_decision", &message),
+                        Err(message) => {
+                            return self
+                                .fail_turn(codes::failure::INVALID_MODEL_DECISION, &message);
+                        }
                     };
                     let sequence = self.row.through_sequence + 1;
                     let record = self.model_call_record(&request)?;
                     self.commit(
-                        vec![AppendRecord::new("model_call_started", record)],
+                        vec![AppendRecord::new(codes::event::MODEL_CALL_STARTED, record)],
                         SessionUpdate::default(),
                     )?;
                     // Model output is streamed and not stored. `model_call_ended` used
@@ -274,7 +285,7 @@ impl SessionActor {
                         Ok(Ok(result)) => {
                             self.commit(
                                 vec![AppendRecord::new(
-                                    "model_call_ended",
+                                    codes::event::MODEL_CALL_ENDED,
                                     serde_json::json!({"sequence":sequence,"result":result}),
                                 )],
                                 SessionUpdate::default(),
@@ -284,14 +295,18 @@ impl SessionActor {
                             }
                         }
                         Ok(Err(error)) => {
-                            return self.executor_failure("model_call", sequence, error);
+                            return self.executor_failure(
+                                codes::event::call::MODEL_CALL,
+                                sequence,
+                                error,
+                            );
                         }
                     }
                 }
                 Decision::Tools { calls } => {
                     if calls.is_empty() {
                         return self.fail_turn(
-                            "invalid_tools_decision",
+                            codes::failure::INVALID_TOOLS_DECISION,
                             "Agentloop returned no Tool calls",
                         );
                     }
@@ -315,7 +330,7 @@ impl SessionActor {
                             deadline_ms: self.config.tool_deadline_ms,
                         };
                         started.push(AppendRecord::new(
-                            "tool_call_started",
+                            codes::event::TOOL_CALL_STARTED,
                             serde_json::to_value(&dispatch).map_err(json_error)?,
                         ));
                         dispatches.push(dispatch);
@@ -399,12 +414,16 @@ impl SessionActor {
                             }
                             Err(error) => ToolResult {
                                 call_id,
-                                output: serde_json::json!({"code":"tool_error","message":error.to_string()}),
+                                output: serde_json::to_value(Failure::new(
+                                    codes::failure::TOOL_ERROR,
+                                    error.to_string(),
+                                ))
+                                .map_err(json_error)?,
                                 is_error: true,
                             },
                         };
                         terminal.push(AppendRecord::new(
-                            "tool_call_ended",
+                            codes::event::TOOL_CALL_ENDED,
                             serde_json::json!({"sequence":sequence,"result":result}),
                         ));
                         results.push(serde_json::to_value(result).map_err(json_error)?);
@@ -420,7 +439,7 @@ impl SessionActor {
                 Decision::Emit { event } => {
                     let record = self
                         .commit(
-                            vec![AppendRecord::new("output_emitted", event)],
+                            vec![AppendRecord::new(codes::event::OUTPUT_EMITTED, event)],
                             SessionUpdate::default(),
                         )?
                         .remove(0);
@@ -440,7 +459,7 @@ impl SessionActor {
                 Decision::Finish { result } => {
                     self.turn_opening_context = None;
                     return self.finish_turn(vec![AppendRecord::new(
-                        "turn_ended",
+                        codes::event::TURN_ENDED,
                         serde_json::json!({"result":result}),
                     )]);
                 }
@@ -451,14 +470,14 @@ impl SessionActor {
                 } => {
                     self.turn_opening_context = None;
                     return self.finish_turn(vec![AppendRecord::new(
-                        "turn_failed",
-                        serde_json::json!({"code":code,"message":message,"retryable":retryable}),
+                        codes::event::TURN_FAILED,
+                        failure_payload(None, &Failure::new(code, message).retryable(retryable))?,
                     )]);
                 }
             };
         }
         self.fail_turn(
-            "decision_limit",
+            codes::failure::DECISION_LIMIT,
             "Agentloop exceeded the turn decision limit",
         )
     }
@@ -544,23 +563,23 @@ impl SessionActor {
         sequence: u64,
         error: Error,
     ) -> Result<SessionSummary, Error> {
-        let ambiguous = matches!(error, Error::Ambiguous(_));
+        let effect = failure_of(&error);
+        let turn = Failure::new(format!("{kind}_failed"), error.to_string())
+            .retryable(effect.retryable)
+            .ambiguous(effect.ambiguous);
         self.finish_turn(vec![
             AppendRecord::new(
                 format!("{kind}_failed"),
-                serde_json::json!({"sequence":sequence,"error":error.to_string(),"ambiguous":ambiguous}),
+                failure_payload(Some(sequence), &effect)?,
             ),
-            AppendRecord::new(
-                "turn_failed",
-                serde_json::json!({"code":format!("{kind}_failed"),"message":error.to_string()}),
-            ),
+            AppendRecord::new(codes::event::TURN_FAILED, failure_payload(None, &turn)?),
         ])
     }
 
     fn fail_turn(&mut self, code: &str, message: &str) -> Result<SessionSummary, Error> {
         self.finish_turn(vec![AppendRecord::new(
-            "turn_failed",
-            serde_json::json!({"code":code,"message":message}),
+            codes::event::TURN_FAILED,
+            failure_payload(None, &Failure::new(code, message))?,
         )])
     }
 
@@ -592,7 +611,7 @@ impl SessionActor {
     }
 
     fn cancel_turn(&mut self) -> Result<SessionSummary, Error> {
-        self.fail_turn("cancelled", "turn cancelled")
+        self.fail_turn(codes::failure::CANCELLED, "turn cancelled")
     }
 
     async fn cancel_tools(&mut self, dispatches: &[ToolDispatch]) -> Result<(), Error> {
@@ -606,7 +625,7 @@ impl SessionActor {
                 binding: dispatch.binding.clone(),
             };
             started.push(AppendRecord::new(
-                "tool_cancel_started",
+                codes::event::TOOL_CANCEL_STARTED,
                 serde_json::to_value(&cancellation).map_err(json_error)?,
             ));
             cancellations.push(cancellation);
@@ -638,31 +657,34 @@ impl SessionActor {
             Ok(results) => results
                 .into_iter()
                 .map(|(sequence, result)| match result {
-                    Ok(()) => AppendRecord::new(
-                        "tool_cancel_ended",
+                    Ok(()) => Ok(AppendRecord::new(
+                        codes::event::TOOL_CANCEL_ENDED,
                         serde_json::json!({"sequence":sequence}),
-                    ),
-                    Err(error) => AppendRecord::new(
-                        "tool_cancel_failed",
-                        serde_json::json!({"sequence":sequence,"error":error.to_string(),"ambiguous":false}),
-                    ),
+                    )),
+                    Err(error) => Ok(AppendRecord::new(
+                        codes::event::TOOL_CANCEL_FAILED,
+                        failure_payload(Some(sequence), &failure_of(&error).ambiguous(false))?,
+                    )),
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, Error>>()?,
             // Nothing answered in time: whether the environment stopped the work is not
             // known, and the record says so.
             Err(_) => sequences
                 .into_iter()
                 .map(|sequence| {
-                    AppendRecord::new(
-                        "tool_cancel_failed",
-                        serde_json::json!({
-                            "sequence":sequence,
-                            "error":"Environment cancellation deadline exceeded",
-                            "ambiguous":true
-                        }),
-                    )
+                    Ok(AppendRecord::new(
+                        codes::event::TOOL_CANCEL_FAILED,
+                        failure_payload(
+                            Some(sequence),
+                            &Failure::new(
+                                codes::failure::TIMEOUT,
+                                "Environment cancellation deadline exceeded",
+                            )
+                            .ambiguous(true),
+                        )?,
+                    ))
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, Error>>()?,
         };
         self.commit(records, SessionUpdate::default())?;
         Ok(())
@@ -690,7 +712,10 @@ impl SessionActor {
         }
         if !matches!(self.row.status, SessionStatus::Ended) {
             self.commit(
-                vec![AppendRecord::new("session_ended", serde_json::json!({}))],
+                vec![AppendRecord::new(
+                    codes::event::SESSION_ENDED,
+                    serde_json::json!({}),
+                )],
                 SessionUpdate {
                     status: Some(SessionStatus::Ended),
                     context: None,
@@ -771,7 +796,7 @@ impl SessionActor {
         let context = serde_json::to_value(&self.context).map_err(json_error)?;
         self.commit(
             vec![AppendRecord::new(
-                "session_history_replayed",
+                codes::event::SESSION_HISTORY_REPLAYED,
                 serde_json::json!({"events": self.row.through_sequence}),
             )],
             SessionUpdate {
@@ -861,6 +886,27 @@ fn streaming_event(sequence: u64, event: &ModelStreamEvent) -> Option<StreamingE
     })
 }
 
-fn json_error(error: serde_json::Error) -> Error {
+/// The failure a runtime error records: its API code, its message, and whether the
+/// effect may have happened anyway.
+pub(crate) fn failure_of(error: &Error) -> Failure {
+    Failure::new(error.code(), error.to_string())
+        .retryable(error.retryable())
+        .ambiguous(matches!(error, Error::Ambiguous(_)))
+}
+
+/// The one shape every `*_failed` record carries; `sequence` names the effect record
+/// when there is one.
+pub(crate) fn failure_payload(
+    sequence: Option<u64>,
+    failure: &Failure,
+) -> Result<serde_json::Value, Error> {
+    let mut payload = serde_json::to_value(failure).map_err(json_error)?;
+    if let (Some(sequence), Some(object)) = (sequence, payload.as_object_mut()) {
+        object.insert("sequence".into(), serde_json::json!(sequence));
+    }
+    Ok(payload)
+}
+
+pub(crate) fn json_error(error: serde_json::Error) -> Error {
     Error::InvalidState(error.to_string())
 }

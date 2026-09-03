@@ -72,7 +72,7 @@ impl IdempotencyStore {
                 state.entries.remove(&entry);
                 Ok(None)
             }
-            Some(stored) if stored.request != request => Err(brain::Error::InvalidState(
+            Some(stored) if stored.request != request => Err(brain::Error::Conflict(
                 "idempotency key reused with different request".into(),
             )),
             Some(stored) => Ok(Some(stored.response.clone())),
@@ -97,7 +97,7 @@ impl IdempotencyStore {
             .get(&entry)
             .is_some_and(|stored| stored.expires_at_ms > now)
         {
-            return Err(brain::Error::InvalidState(
+            return Err(brain::Error::Conflict(
                 "idempotency key already recorded".into(),
             ));
         }
