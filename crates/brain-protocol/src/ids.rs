@@ -33,7 +33,6 @@ macro_rules! id_type {
 }
 
 id_type!(SessionId);
-id_type!(TurnId);
 id_type!(EventId);
 id_type!(EnvironmentId);
 id_type!(AttachmentId);
