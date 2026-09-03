@@ -21,37 +21,41 @@
   <a href="README.cn.md">中文</a>
 </p>
 
-## What is it
-
-**Brain** is a minimal, *blazingly fast*, extensible agent runtime server. You write the
-agent loop and the tools, and Brain runs the session. Tools run anywhere, from a browser tab
-to a server sandbox. Agent loops run in a Wasm sandbox, so the runtime is secure by design.
-Each session uses very little memory, and every step is an event you can watch in real time.
-
 > [!NOTE]
 > **Early preview.** The API and functionality may change without backward compatibility or
 > notice until we cut 1.0.0.
 
-## Features
+## What is it
 
-- **Tools run anywhere.** A tool is a typed function. It can run in your own process, in a
-  microVM sandbox, in a browser page, or on your backend, and one session can use several of
-  these at once.
-- **Low overhead.** Session state stays in memory and the journal is written after the turn.
-  An idle session uses about 14 KiB and a round trip takes 40 ms. CI checks these numbers on
-  every build.
-- **Bring your model, spawn your agents.** Brain has built-in bindings for 70+ LLM providers
-  through [models.dev](https://models.dev). The model is pinned per session, and a session can
-  create other sessions for subagent work.
-- **Isolated agent loops.** An agent loop compiles to WebAssembly and runs in its own
-  sandbox. Brain does the I/O on its behalf, so every decision is deterministic and
-  replayable.
-- **Observable end to end.** Every observation, decision, model call, and tool result is an
-  event. You can stream them live or read them back later.
+**Brain** is a minimal, and extensible agent runtime server. You assemble or write your own
+extensions to control every aspect of the runtime. [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop).
+
+### Agentloop Extensions
+The core mechanism that bridge LLM, full control of context and dispatch tools. [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool).
+- Pi
+- Opencode
+- Codex
+
+### Tool Extensions
+The hand for LLM to actually do work, it declares resources it needs and provide ability to interact.
+- Bash
+- Inline function
+- Web_search/Web_fetch
+
+### Environment Extensions
+An environment provide the resources a tool needs to complete its tasks. [Write an environment](https://aex.dev/brain/docs/guides/write-an-environment).
+- Sandbox
+- Browser
+- Filesystem
+
+### Official Extensions
+We provide a number of official extensions, written in the same way you would: [aexhq/extensions](https://github.com/aexhq/extensions).
+
 
 ## Benchmarks
-
-No model latency in any number. ★ marks Brain in each chart.
+Brain is minimal, so it runs faster than alternatives on the market.
+Be-aware that you normally add extensions to the runtime so that it can be useful, which means you don't normally see these benchmarks number in real use cases.
+★ marks Brain in each chart.
 
 **Turn round-trip**
 
@@ -105,39 +109,6 @@ the same AWS <code>c7g.xlarge</code> for every subject. Bars use a log scale. Th
 only agent runtimes that own sessions behind an API. <a href="BENCHMARKS.md">BENCHMARKS.md</a> has
 the method and the subject versions.</sub>
 
-## Extensions
-
-Brain owns the session. Everything else is an extension. You write it with the `@aexhq/brain`
-SDK, run `npx brain build`, and pass the generated factory to a session. There are three
-kinds, and each one is a small typed declaration.
-
-- **Agent loop** decides what happens next. It registers one synchronous handler per
-  observation, and each handler returns one action: call the model, run tools, reply, or stop.
-  You write it in TypeScript. `npx brain build` compiles it to a WebAssembly component, and
-  Brain runs that component in a [Wasmtime](https://wasmtime.dev/) sandbox with no filesystem,
-  network, clock, or secrets. Brain performs every effect the loop asks for, so each decision is
-  deterministic and can be replayed from the journal.
-  [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop)
-- **Tool** does the work. It declares its input and output schemas and the resources it
-  operates on (`fs`, `process`, `net`, `dom`, `secrets`). Inside, it is plain code for the
-  platform it runs on. If the environment does not declare what the tool needs, Brain rejects
-  the session at create time. A tool that is one shell command or one HTTP request needs no
-  code at all. [Write a tool](https://aex.dev/brain/docs/guides/write-a-tool)
-- **Environment** runs programs. It opens an instance, declares the resources a program finds
-  there, and registers how to launch each program kind. Brain journals every call to it.
-  [Write an environment](https://aex.dev/brain/docs/guides/write-an-environment)
-
-### Official extensions
-
-The packages in [aexhq/extensions](https://github.com/aexhq/extensions) use the same SDK and
-the same build. Nothing built in gets a shortcut.
-
-| Package | Kind | What it is |
-| --- | --- | --- |
-| [`@aexhq/agentloop-pi`](https://www.npmjs.com/package/@aexhq/agentloop-pi) | Agent loop | Pi-style coding loop. Tool calls run in parallel. |
-| [`@aexhq/agentloop-codex`](https://www.npmjs.com/package/@aexhq/agentloop-codex) | Agent loop | Codex-style coding loop. Tool calls run one at a time. |
-| [`@aexhq/tools`](https://www.npmjs.com/package/@aexhq/tools) | Tools | `read`, `write`, `edit`, `ls`, `glob`, `grep`, `bash`, `todo` |
-| [`@aexhq/env-aws-microvm`](https://www.npmjs.com/package/@aexhq/env-aws-microvm) | Environment | One AWS microVM per session, with `fs`, `process`, and `net` |
 
 ## How it works
 
@@ -153,9 +124,9 @@ still running.
                                     | activate
                                     v
                     +-------------------------------+
-                    | agent loop, a Wasm component  |   decides
+                    | agent loop, a Wasm component  |   
                     +---------------+---------------+
-                                    | decision
+                                    | 
                                     v
                     +-------------------------------+        +-----------------+
                     | Brain does the I/O            |<------>| append-only log |
@@ -177,14 +148,11 @@ Four design choices make it fast:
 - **Write-ahead log.** The only durable state is an append-only log, written after the turn so
   it stays off the hot path. Sessions live in memory and rebuild from the log at boot, so a
   restart resumes the conversation where it stopped.
-- **Bounded live streaming.** A model delta reaches subscribers as soon as the provider emits
-  it. Each subscriber has a fixed ring of 1,024 events, and a reader that falls behind resumes
-  from the log at the record it last saw. The cost per subscriber stays constant.
-- **Events are the data model.** Every observation, decision, model call, token, and tool
+- **Everything is observable.** Every decision, model call, token, and tool
   result is an event in one feed. Watching live and reading history use the same records, so
   tracing a session is the same as replaying it.
 
-Brain is one native Rust binary on [Tokio](https://tokio.rs/). It serves the session API over
+Brain comes with a server, one native Rust binary on [Tokio](https://tokio.rs/). It serves the session API over
 HTTP and SSE with [Axum](https://github.com/tokio-rs/axum) and needs no external store.
 
 ## Quick start
@@ -232,15 +200,7 @@ for await (const event of session.events()) console.log(event.sequence, event.ty
 
 await session.end();
 await session.delete();
-process.exit(0);
 ```
-
-The model reads the question and calls `lookup_order`. The call arrives as a typed record
-on the session's event feed, your function answers it using the `orders` object it closes
-over, and the SDK posts the result back. The journal keeps both the call and the result. If
-a tool has to run somewhere else, such as a browser page, a sandbox, or another machine, it
-declares a hosting environment instead and the session API stays the same. See the
-[app tools guide](https://aex.dev/brain/docs/guides/app-tools).
 
 ## Roadmap
 
