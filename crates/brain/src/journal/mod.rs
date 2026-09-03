@@ -12,6 +12,7 @@ pub use segment::SegmentJournal;
 pub use store::{JournalStore, SessionRow, SessionUpdate};
 
 use brain_protocol::SessionStatus;
+use brain_protocol::codes::{self, Failure};
 
 use crate::Error;
 
@@ -34,11 +35,15 @@ pub fn interrupt_unfinished_turns(store: &dyn JournalStore) -> Result<(), Error>
             &session.session_id,
             session.last_sequence,
             &[AppendRecord::new(
-                "turn_failed",
-                serde_json::json!({
-                    "code": "interrupted",
-                    "message": "Brain restarted while this turn was in flight; whether its effects reached the model or a tool is not recorded"
-                }),
+                codes::event::TURN_FAILED,
+                serde_json::to_value(
+                    Failure::new(
+                        codes::failure::INTERRUPTED,
+                        "Brain restarted while this turn was in flight; whether its effects reached the model or a tool is not recorded",
+                    )
+                    .ambiguous(true),
+                )
+                .map_err(|error| Error::Journal(error.to_string()))?,
             )],
             SessionUpdate {
                 status: Some(SessionStatus::Idle),

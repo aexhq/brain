@@ -1,6 +1,7 @@
 //! Types crossing Brain process, transport, or durable-storage boundaries.
 
 pub mod agentloop;
+pub mod codes;
 pub mod environment;
 pub mod error;
 pub mod execution;

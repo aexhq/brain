@@ -7,7 +7,9 @@ use std::{
 use async_trait::async_trait;
 use brain::{JournalStore, LoopExecutor, ObservedJournal, Session, SessionConfig};
 use brain_http::BrainApi;
+use brain_loophost::LoopError;
 use brain_loophost::WorkerPool;
+use brain_protocol::codes;
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage, Identity,
@@ -324,7 +326,7 @@ impl BrainApi for ServerApi {
         let session_id = creation.session_id().clone();
         if let Err(error) = self.ownership.claim_new(creation.session_id()).await {
             creation
-                .fail("session_ownership_failed", &error.to_string())
+                .fail(codes::failure::SESSION_OWNERSHIP_FAILED, &error.to_string())
                 .map_err(api_error)?;
             self.resources
                 .models
@@ -716,7 +718,10 @@ impl LoopExecutor for WorkerLoopExecutor {
                 input,
             )
             .await
-            .map_err(brain::Error::Executor)?;
+            .map_err(|error| match error {
+                LoopError::Overloaded => brain::Error::Overloaded(error.to_string()),
+                LoopError::Failed(message) => brain::Error::Executor(message),
+            })?;
         if !output_attached {
             // Mid-turn: the context stays in the worker. The session only needs the
             // envelope's version to accept the leg; the real context returns on the
@@ -831,70 +836,24 @@ fn model_binding_id(idempotency_key: &str) -> String {
     format!("model_{}", hex::encode(digest.finalize()))
 }
 
-fn loop_error(message: String) -> ApiError {
-    if message.contains("queue is full") {
-        ApiError {
-            code: "overloaded".into(),
-            message,
-            retryable: true,
-            details: None,
-        }
-    } else {
-        ApiError::invalid_request(message)
+fn loop_error(error: LoopError) -> ApiError {
+    match error {
+        LoopError::Overloaded => ApiError::overloaded(error.to_string()),
+        LoopError::Failed(message) => ApiError::invalid_request(message),
     }
 }
 
+/// A runtime error names its own API code; nothing here reads the message.
 fn api_error(error: brain::Error) -> ApiError {
-    let message = error.to_string();
-    match error {
-        brain::Error::InvalidState(_) if message.contains("not found") => not_found(message),
-        brain::Error::InvalidState(_) if message.contains("idempotency key") => ApiError {
-            code: "conflict".into(),
-            message,
-            retryable: false,
-            details: None,
-        },
-        brain::Error::InvalidState(_) => ApiError::invalid_request(message),
-        brain::Error::Ambiguous(_) => ApiError {
-            code: "ambiguous".into(),
-            message,
-            retryable: false,
-            details: None,
-        },
-        brain::Error::Executor(_) => ApiError {
-            code: "executor_failed".into(),
-            message,
-            retryable: true,
-            details: None,
-        },
-        brain::Error::ProviderStatus { status, .. } => ApiError {
-            code: "model_provider_failed".into(),
-            message,
-            // The executor already retried what was worth retrying in place; a
-            // whole-turn retry can still help for transient statuses.
-            retryable: matches!(status, 408 | 429) || status >= 500,
-            details: None,
-        },
-        brain::Error::Journal(_) => internal(message),
-    }
+    ApiError::new(error.code(), error.to_string(), error.retryable())
 }
 
 fn not_found(message: impl Into<String>) -> ApiError {
-    ApiError {
-        code: "not_found".into(),
-        message: message.into(),
-        retryable: false,
-        details: None,
-    }
+    ApiError::not_found(message)
 }
 
 fn internal(message: impl Into<String>) -> ApiError {
-    ApiError {
-        code: "internal".into(),
-        message: message.into(),
-        retryable: false,
-        details: None,
-    }
+    ApiError::internal(message)
 }
 
 #[cfg(test)]
