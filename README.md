@@ -60,13 +60,16 @@ Be-aware that you normally add extensions to the runtime so that it can be usefu
 **Turn round-trip**
 
 ```text
-Brain      █                                        40 ms ★
-ZeroClaw   ███                                      53 ms
-OpenFang   ██████████                              128 ms
-AgentScope ██████████████████                      338 ms
-Letta      ███████████████████████                 678 ms
-LangGraph  ████████████████████████████            1.22 s
-Awaken     █████████████████████████████████       2.23 s
+pi         █                                       5.1 ms
+Brain      ████████████                             40 ms ★
+Codex      █████████████                            47 ms
+ZeroClaw   ██████████████                           53 ms
+OpenFang   ██████████████████                      128 ms
+OpenCode   ███████████████████                     155 ms
+AgentScope ████████████████████████                338 ms
+Letta      ███████████████████████████             678 ms
+LangGraph  ███████████████████████████████         1.22 s
+Awaken     ██████████████████████████████████      2.23 s
 OpenClaw   ████████████████████████████████████    3.33 s
 ```
 
@@ -74,8 +77,11 @@ OpenClaw   ███████████████████████
 
 ```text
 Brain      █                                       2.9 ms ★
+pi         █████                                   6.3 ms
 ZeroClaw   ████████                                 11 ms
+Codex      ███████████████                          39 ms
 OpenFang   ██████████████████                       70 ms
+OpenCode   ████████████████████                     99 ms
 LangGraph  ████████████████████████                207 ms
 AgentScope ███████████████████████████             332 ms
 Letta      ████████████████████████████            407 ms
@@ -88,10 +94,13 @@ Awaken     ███████████████████████
 ```text
 LangGraph  █                                      0.66 ms
 Brain      ██                                     0.76 ms ★
+OpenCode   ██████████                              2.1 ms
 ZeroClaw   ██████████                              2.2 ms
 Awaken     ████████████████                        5.1 ms
 OpenClaw   █████████████████                       5.4 ms
+pi         ███████████████████                     7.0 ms
 OpenFang   █████████████████████                   9.8 ms
+Codex      ████████████████████████                 14 ms
 Letta      ████████████████████████████████████     67 ms
 ```
 

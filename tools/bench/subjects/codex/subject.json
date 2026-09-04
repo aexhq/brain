@@ -1,0 +1,49 @@
+{
+  "name": "codex",
+  "class": "session-kernel",
+  "version": "0.153.1",
+  "notes": [
+    "openai/codex, Rust, Apache-2.0. OpenAI's coding agent; the shipped `@openai/codex` package, run as `codex app-server`, the JSON-RPC surface the Codex desktop app and IDE extensions use: newline-delimited JSON-RPC 2.0 over stdio.",
+    "Pinned to npm `@openai/codex@0.153.1`, the `latest` dist-tag at 2026-09-04. Installed with `npm install --ignore-scripts`; the platform binary inside `@openai/codex-linux-arm64` is exec'd directly rather than through the package's Node launcher, which would otherwise sit beside it in the process tree and be counted as Codex's memory.",
+    "Reached through the benchmark's stdio bridge (`tools/bench/runner/src/bin/bridge.rs`), a small Rust process that owns the child and exposes its stdin as `POST /stdin` and its stdout as an event stream. The bridge knows nothing of the protocol — the `initialize` handshake, `thread/start`, `turn/start` and the notifications are all composed and read by the driver as `codex-rs/app-server/README.md` specifies — so a number here is Codex's handling of its own wire plus one loopback HTTP hop, the same hop every HTTP subject pays to its own server.",
+    "A single operator's tool: throughput and the per-session memory ramp are not declared, for the same reason as zeroclaw and openclaw. The app-server does hold several threads at once, but many concurrent conversations is not a goal the project claims, and measuring it would be a straw man.",
+    "Run with its tools on, at their defaults, in an empty git repository, with approvals off and a read-only sandbox. The scripted provider only ever answers with text, so no command runs, but the tool definitions are in every model request exactly as they are for a user.",
+    "Config differences from a stock install are listed at the top of launch.sh: the scripted provider as a `wire_api = \"responses\"` model provider — the only wire this Codex speaks, so the fixture grew a /v1/responses route for it, approvals never, sandbox read-only, update check and analytics off."
+  ],
+  "requires": { "linux": true },
+  "probes": {
+    "cold_start": {
+      "definition": "process launch on a fresh data directory until the first turn is served; one-time installation untimed"
+    },
+    "recovery": {
+      "definition": "kill -9 after 50 turns, relaunch on the same data, then `thread/resume` on the same thread and one turn, until the model request carries its history"
+    },
+    "create": {
+      "definition": "`thread/start` until the response carries the thread id; model, provider, approvals and sandbox from config.toml, working directory the process's own"
+    },
+    "idle": {
+      "definition": "private memory across the whole process tree (bridge included) with no threads started, sampled for 20s after 10s of settling"
+    },
+    "ttfb": {
+      "definition": "`turn/start` submitted until the first `item/agentMessage/delta` notification carrying text for the thread; scripted provider via a `model_providers` entry with `wire_api = \"responses\"`, served by the fixture's /v1/responses route"
+    },
+    "round_trip": {
+      "definition": "`turn/start` submitted until the `turn/completed` notification reporting the turn completed"
+    },
+    "persistence": {
+      "definition": "bytes on disk under CODEX_HOME after N turns of one conversation, sampled per turn; Codex appends the thread's rollout as JSONL under sessions/"
+    }
+  },
+  "launch": {
+    "command": "tools/bench/subjects/codex/launch.sh",
+    "args": [],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health",
+    "ready_timeout_secs": 120
+  }
+}

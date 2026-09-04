@@ -168,6 +168,10 @@ pub async fn scripted_provider_paced(
 
     let app = Router::new()
         .route("/v1/chat/completions", post(completions))
+        // The Responses API, for a subject that speaks nothing else: Codex dropped Chat
+        // Completions support in 0.153 and refuses a provider configured with it. Same
+        // scripted answer, same instant service, same pacing — only the wire differs.
+        .route("/v1/responses", post(responses))
         // Part of being an OpenAI-compatible endpoint, and not optional: a subject that
         // discovers models rather than being told one asks here first. Letta called it,
         // got a 404, and refused every agent with "must be one of []" — which reads as a
@@ -379,7 +383,88 @@ fn answer(state: &ProviderState, body: Value) -> impl IntoResponse + use<> {
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }));
     frames.push_str("data: [DONE]\n\n");
+    paced_sse(&state, frames)
+}
 
+/// The same scripted answer over the Responses API: `POST /v1/responses` with `stream:
+/// true`, answered with the event sequence a real response produces — created, the
+/// message item added, one text delta, the item done, completed with usage.
+///
+/// Tool calls are not scripted on this wire. No subject on it declares the dispatch
+/// probe, and a function_call item nobody reads would be an untested claim.
+async fn responses(
+    State(state): State<ProviderState>,
+    request: axum::extract::Request,
+) -> impl IntoResponse {
+    let arrived = Instant::now();
+    let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+        .await
+        .unwrap_or_default();
+    let read_ns = arrived.elapsed().as_nanos() as u64;
+    let request_bytes = bytes.len() as u64;
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    // `input` is the transcript on this wire, one item per message or tool exchange.
+    let messages = body
+        .get("input")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+
+    state.calls.fetch_add(1, Ordering::Relaxed);
+    let id = format!("resp-bench-{}", state.calls.load(Ordering::Relaxed));
+    let item = format!("msg-bench-{}", state.calls.load(Ordering::Relaxed));
+    let text = state.text.as_str();
+    let mut frames = String::new();
+    let mut push = |value: Value| {
+        frames.push_str("data: ");
+        frames.push_str(&value.to_string());
+        frames.push_str("\n\n");
+    };
+    push(json!({ "type": "response.created", "response": { "id": id } }));
+    push(json!({
+        "type": "response.output_item.added",
+        "item": { "type": "message", "role": "assistant", "id": item, "content": [] },
+    }));
+    push(json!({ "type": "response.output_text.delta", "item_id": item, "delta": text }));
+    push(json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "message",
+            "role": "assistant",
+            "id": item,
+            "content": [{ "type": "output_text", "text": text }],
+        },
+    }));
+    push(json!({
+        "type": "response.completed",
+        "response": {
+            "id": id,
+            "usage": {
+                "input_tokens": 0,
+                "input_tokens_details": null,
+                "output_tokens": 0,
+                "output_tokens_details": null,
+                "total_tokens": 0,
+            },
+        },
+    }));
+
+    if let Ok(mut timings) = state.timings.lock() {
+        timings.push(CallTiming {
+            service_ns: arrived.elapsed().as_nanos() as u64,
+            read_ns,
+            request_bytes,
+            messages,
+        });
+    }
+    paced_sse(&state, frames)
+}
+
+/// Streams prepared SSE frames one per tick.
+fn paced_sse(
+    state: &ProviderState,
+    frames: String,
+) -> ([(&'static str, &'static str); 2], Body) {
     // Paced, not dumped. Emitting every frame in one write is what a fixture does and no
     // provider does, and it makes first-token time unmeasurable for every subject at once:
     // the first token and the end of the turn leave within the same microsecond, so the gap
@@ -426,7 +511,7 @@ fn answer(state: &ProviderState, body: Value) -> impl IntoResponse + use<> {
 /// dispatch and journal cost with nothing else in it.
 ///
 /// It speaks the remote environment contract: `POST /v1/operations` carrying a binding and
-/// an operation, answered with a receipt echoing the operation id and request identity.
+/// an operation, answered with a receipt echoing the operation's sequence.
 pub async fn echo_environment() -> Result<Fixture> {
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await?;
     let address = listener.local_addr()?;
@@ -498,14 +583,12 @@ async fn operations(
     };
     Json(json!({
         "contract": "environment/v1",
-        "operation_id": operation.get("operation_id").cloned().unwrap_or(json!("op_unknown")),
-        // Echoed back, not invented: Brain checks the receipt names the request it sent,
-        // and a receipt that carries the wrong field fails the whole session with
-        // "operation outcome is ambiguous" rather than anything about this fixture.
-        "request_identity": operation
-            .get("request_identity")
-            .cloned()
-            .unwrap_or(json!("")),
+        // Echoed back, not invented: since the execution contract (0.13) an operation is
+        // named by the journal sequence that started it, and Brain checks the response
+        // carries the one it sent. A response naming anything else fails the whole
+        // session with "operation outcome is ambiguous" rather than anything about this
+        // fixture — which is exactly how the older `operation_id` shape failed.
+        "sequence": operation.get("sequence").cloned().unwrap_or(json!(0)),
         "receipt": receipt,
     }))
 }
