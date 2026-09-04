@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentloopIdentity, EnvironmentAttachRequest, EnvironmentAttachment, EnvironmentId, EventId,
-    ModelBinding, ModelSelection, Program, SessionId, ToolBinding, ToolDefinition, ToolHosting,
+    Message, ModelBinding, ModelSelection, Program, SessionId, ToolBinding, ToolDefinition,
+    ToolHosting,
 };
 
 /// The admitted loop package a session runs: which one, and how it is configured.
@@ -52,37 +53,16 @@ pub struct CreateSessionRequest {
     pub tools: Vec<BoundTool>,
     /// The environments this session attaches to, by id. Each must already exist.
     pub environments: Vec<EnvironmentAttachRequest>,
-    /// Prior events for this conversation, if the caller kept them.
-    ///
-    /// A session does not outlive the process that made it, so an application that wants
-    /// one to continue holds the events it was already receiving and hands them back here.
-    /// Brain writes them as the new session's opening records and tells the agentloop about
-    /// them, so `GET /events` reads the whole conversation and the loop can pick up where
-    /// it left off. Empty is an ordinary new session.
+    /// A transcript to carry forward, if the caller has one: the messages the new
+    /// session's first model call should already see. Brain journals them as the session's
+    /// opening transcript. Empty is an ordinary new session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub history: Vec<HistoryEvent>,
+    pub transcript: Vec<Message>,
     /// How long the session may sit idle before Brain suspends it: its task and memory
     /// are released and rebuilt from disk on the next request. Absent means the server's
     /// default; zero means never.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_ttl_ms: Option<u64>,
-}
-
-/// One event an application kept and is handing back.
-///
-/// The shape `GET /v1/sessions/{id}/events` returns, less `event_id`: an id names an event
-/// in a session, and this is being replayed into a different one, so Brain mints them
-/// again rather than taking one that points somewhere else.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HistoryEvent {
-    /// Where this sat in the conversation it came from. Kept because the caller has it and
-    /// because it is what makes a gap or a reordering visible instead of silent.
-    pub sequence: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recorded_at_ms: Option<u64>,
-    pub event_type: String,
-    pub data: serde_json::Value,
 }
 
 /// What a session was admitted with. Written at create and never changed afterwards: a

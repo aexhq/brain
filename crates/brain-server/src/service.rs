@@ -615,7 +615,7 @@ impl BrainApi for ServerApi {
             store.clone(),
             self.resources.session_runtime.clone(),
             &config,
-            &request.history,
+            &request.transcript,
         ) {
             Ok(creation) => creation,
             Err(error) => {
@@ -1103,57 +1103,91 @@ pub struct WorkerLoopExecutor(pub Arc<WorkerPool>);
 
 #[async_trait]
 impl LoopExecutor for WorkerLoopExecutor {
-    /// Context residency: the conversation crosses the wire twice per turn, not twice
-    /// per activation.
-    ///
-    /// The turn's opening observation (`user_message`, or `session_started` at create)
-    /// carries the context to the worker, which holds it resident between the turn's
-    /// legs; mid-turn legs send and receive a placeholder envelope, and the terminal
-    /// decision (finish, fail) brings the real context home for `finish_turn` to
-    /// journal. The session's own mid-turn copy is therefore a placeholder — its error
-    /// and cancel paths journal the turn-opening context they snapshot, which is the
-    /// same "effects may or may not have happened" honesty a worker restart already
-    /// has.
-    ///
-    /// A worker that restarts mid-turn holds nothing and answers `context_required`;
-    /// the turn fails honestly rather than replaying its effects from the opening
-    /// context.
-    async fn activate(
+    async fn turn(
         &self,
         session: &brain_protocol::SessionId,
         agentloop: &AgentloopIdentity,
-        input: brain_protocol::ActivationInput,
-    ) -> Result<brain_protocol::ActivationOutput, brain::Error> {
-        let context_attached = matches!(
-            input.observation,
-            brain_protocol::Observation::UserMessage { .. }
-                | brain_protocol::Observation::SessionStarted { .. }
-        );
-        let (mut output, output_attached) = self
-            .0
-            .activate(
+        input: brain_protocol::TurnInput,
+        services: Arc<dyn brain::TurnServices>,
+    ) -> Result<brain_protocol::TurnOutput, brain::Error> {
+        let bridge = ServicesBridge(services);
+        self.0
+            .turn(
                 session.as_str().to_owned(),
                 agentloop.clone(),
-                context_attached,
                 input,
+                &bridge,
             )
             .await
             .map_err(|error| match error {
                 LoopError::Overloaded => brain::Error::Overloaded(error.to_string()),
+                LoopError::Turn(error) if error.code == codes::failure::CANCELLED => {
+                    brain::Error::Cancelled(error.message)
+                }
+                LoopError::Turn(error) => brain::Error::Loop(error),
                 LoopError::Failed(message) => brain::Error::Executor(message),
-            })?;
-        if !output_attached {
-            // Mid-turn: the context stays in the worker. The session only needs the
-            // envelope's version to accept the leg; the real context returns on the
-            // terminal decision.
-            output.context = brain_protocol::ContextEnvelope {
-                protocol_version: output.context.protocol_version,
-                items: Vec::new(),
-                state: None,
-            };
-        }
-        Ok(output)
+            })
     }
+}
+
+/// Brain's services as the worker's guest reaches them: JSON in, JSON out, one call at a
+/// time.
+struct ServicesBridge(Arc<dyn brain::TurnServices>);
+
+#[async_trait]
+impl brain_loophost::TurnBridge for ServicesBridge {
+    async fn call(
+        &self,
+        call: brain_loophost::HostCall,
+    ) -> Result<String, brain_protocol::TurnError> {
+        use brain_loophost::HostCall;
+        let answer = match call {
+            HostCall::Model { request_json } => {
+                let request = serde_json::from_str(&request_json)
+                    .map_err(|error| bridge_error("invalid_request", error))?;
+                let result = self.0.model(request).await.map_err(turn_error)?;
+                serde_json::to_string(&result).map_err(|error| bridge_error("internal", error))?
+            }
+            HostCall::Dispatch { calls_json } => {
+                let calls = serde_json::from_str(&calls_json)
+                    .map_err(|error| bridge_error("invalid_request", error))?;
+                let results = self.0.dispatch(calls).await.map_err(turn_error)?;
+                serde_json::to_string(&results).map_err(|error| bridge_error("internal", error))?
+            }
+            HostCall::Append { kind, payload_json } => {
+                let payload = serde_json::from_str(&payload_json)
+                    .map_err(|error| bridge_error("invalid_request", error))?;
+                self.0
+                    .append(kind, payload)
+                    .await
+                    .map_err(turn_error)?
+                    .to_string()
+            }
+            HostCall::Telemetry { record_json } => {
+                if let Ok(record) = serde_json::from_str(&record_json) {
+                    self.0.telemetry(record);
+                }
+                String::new()
+            }
+        };
+        Ok(answer)
+    }
+
+    fn cancelled(&self) -> bool {
+        self.0.cancelled()
+    }
+}
+
+fn turn_error(error: brain::Error) -> brain_protocol::TurnError {
+    brain_protocol::TurnError {
+        code: error.code().to_owned(),
+        message: error.to_string(),
+        retryable: error.retryable(),
+    }
+}
+
+fn bridge_error(code: &str, error: impl std::fmt::Display) -> brain_protocol::TurnError {
+    brain_protocol::TurnError::new(code, error.to_string())
 }
 
 fn valid_identity(value: &str) -> bool {
@@ -1257,6 +1291,7 @@ fn model_binding_id(idempotency_key: &str) -> String {
 fn loop_error(error: LoopError) -> ApiError {
     match error {
         LoopError::Overloaded => ApiError::overloaded(error.to_string()),
+        LoopError::Turn(_) => ApiError::invalid_request(error.to_string()),
         LoopError::Failed(message) => ApiError::invalid_request(message),
     }
 }

@@ -1,11 +1,11 @@
-export { BrainClient as Brain, BrainClient, ServeHandle, SessionHandle, Sessions } from "./client.js";
+export { BrainClient as Brain, BrainClient, Environments, ServeHandle, SessionHandle, Sessions } from "./client.js";
 export type { BrainOptions } from "./client.js";
-export { activateAgentloop, agentloop, createEnvironmentHandler, environment, executeTool, inspectClientTool, inspectServedTool, installExtensionIdentity, provisionedToolRuntime, tool } from "./extensions.js";
+export { AgentloopFailure, agentloop, createEnvironmentHandler, environment, executeTool, inspectClientTool, inspectServedTool, installExtensionIdentity, provisionedToolRuntime, runTurn, tool } from "./extensions.js";
 export type {
-  AgentloopAction,
   AgentloopAuthor,
   AgentloopInput,
   AgentloopTurn,
+  AgentloopTurnHandler,
   EnvironmentAuthor,
   EnvironmentContract,
   EnvironmentHandler,
@@ -21,9 +21,13 @@ export type {
   ShellToolContract,
   ToolAuthor,
   ToolCall,
+  ToolCallResult,
   ToolContract,
   ToolPlacement,
   ToolRunContext,
+  TurnEvent,
+  TurnHost,
+  TurnResult,
 } from "./extensions.js";
 export type { AppToolCall, AppToolContract } from "./app.js";
 export { substituteScript } from "./host.js";
@@ -33,10 +37,12 @@ export type {
   Agentloop,
   BoundTool,
   ClientTool,
+  CreateEnvironmentOptions,
   CreateSessionOptions,
   CustomProviderModel,
   DomResource,
   Environment,
+  EnvironmentState,
   FsResource,
   HttpProgramRequest,
   KnownProviderId,

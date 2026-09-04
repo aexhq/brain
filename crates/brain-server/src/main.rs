@@ -102,14 +102,16 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     // last process stopped is failed with code `interrupted` before anything is served.
     let sessions_dir = brain_server::data_layout::prepare(&config.data_dir)?;
     let writer = Writer::spawn();
-    let feed = Arc::new(Feed::new(telemetry));
+    let feed = Arc::new(Feed::new(telemetry.clone()));
     let session_runtime = Arc::new(SessionRuntime {
-        max_decisions_per_turn: config.max_decisions_per_turn,
+        max_model_calls_per_turn: config.max_model_calls_per_turn,
+        max_turn_ms: config.max_turn_secs.saturating_mul(1_000),
         tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
         loop_executor: Arc::new(WorkerLoopExecutor(loops.clone())),
         model_executor: model,
         tool_executor: Arc::new(ServerToolExecutor::new(environments.clone())),
         live: feed.live_sender(),
+        telemetry: telemetry.clone(),
     });
     let api = ServerApi::new(ServerResources {
         sessions_dir,
@@ -186,7 +188,7 @@ fn validate(config: &ServerConfig) -> anyhow::Result<()> {
             );
         }
     }
-    if config.max_decisions_per_turn == 0 || config.max_decisions_per_turn > 1_024 {
+    if config.max_model_calls_per_turn == 0 || config.max_model_calls_per_turn > 1_024 {
         anyhow::bail!("BRAIN_MAX_DECISIONS must be in 1..=1024");
     }
     Ok(())

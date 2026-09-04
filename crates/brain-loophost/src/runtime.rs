@@ -1,27 +1,36 @@
-use std::{sync::Arc, time::Duration};
-
-use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopIdentity, ContextEnvelope, Decision, Observation,
-    ToolInvocation,
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
 };
+
+use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput, codes};
 use sha2::{Digest as _, Sha256};
-use wasmtime::component::{Component, Linker};
-use wasmtime::{Cache, Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap};
+use wasmtime::component::{Component, HasSelf, Linker};
+use wasmtime::{
+    Cache, Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap, UpdateDeadline,
+};
 
-use crate::{AgentloopPackage, LoopLimits};
+use crate::{AgentloopPackage, HostCall, LoopLimits};
 
-/// How often the engine's epoch advances. This is the granularity of a guest's
-/// wall-clock bound: an activation is trapped somewhere inside the last tick of its
-/// budget. Fine enough that a two-second budget is held to within half a percent,
-/// coarse enough that the ticker costs one atomic store every ten milliseconds for
-/// the whole process.
+/// How often the engine's epoch advances. This is the granularity of a guest's compute
+/// bound: a turn is trapped somewhere inside the last tick of its budget. Fine enough
+/// that a two-second budget is held to within half a percent, coarse enough that the
+/// ticker costs one atomic store every ten milliseconds for the whole process.
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 
 mod bindings {
     wasmtime::component::bindgen!({
-        path: "../../contracts/agentloop/v1",
+        path: "../../contracts/agentloop/v2",
         world: "agentloop",
     });
+}
+
+use bindings::aex::agentloop::types as wit;
+
+/// What answers the guest's host calls while a turn runs. Synchronous on purpose: the
+/// guest toolchain can only import synchronous functions, so the host thread waits.
+pub trait GuestHost: Send + Sync {
+    fn call(&self, call: HostCall) -> Result<String, TurnError>;
 }
 
 pub struct AdmissionEngine {
@@ -42,8 +51,7 @@ impl AdmissionEngine {
         // loop backedges and function entries — but fuel decrements and checks a counter
         // at each one, where an epoch check is a load and a compare against a value the
         // ticker below advances. Fuel cost 5-13% of an activation and bounded work
-        // rather than time, so its limit had no relationship to the wall-clock budget
-        // the supervisor enforces.
+        // rather than time.
         config.wasm_component_model(true).epoch_interruption(true);
         let cache = Cache::from_file(None).map_err(|error| {
             format!("failed to configure the Wasmtime compilation cache: {error}")
@@ -63,8 +71,12 @@ impl AdmissionEngine {
             return Err("Agentloop package exceeds the configured admission limit".into());
         }
         let (package, component_bytes) = AgentloopPackage::decode(package_bytes)?;
-        if package.manifest.contract_version != "agentloop/v1" {
-            return Err("Agentloop contract version is not supported".into());
+        if package.manifest.contract_version != brain_protocol::AGENTLOOP_CONTRACT_VERSION {
+            return Err(format!(
+                "Agentloop contract version {:?} is not supported; this Brain runs {}",
+                package.manifest.contract_version,
+                brain_protocol::AGENTLOOP_CONTRACT_VERSION
+            ));
         }
         let actual = AgentloopIdentity::new(hex_digest(&component_bytes));
         if actual != package.manifest.component_identity {
@@ -83,10 +95,10 @@ impl AdmissionEngine {
         }
         if component
             .component_type()
-            .get_export(&self.engine, "step")
+            .get_export(&self.engine, "turn")
             .is_none()
         {
-            return Err("Agentloop component does not export step".into());
+            return Err("Agentloop component does not export turn".into());
         }
         Ok(AdmittedAgentloop {
             digest: actual,
@@ -102,18 +114,84 @@ impl AdmissionEngine {
     }
 }
 
+/// The store's data: the memory limiter, the bridge for the turn in flight, and the
+/// clock the compute budget is kept against.
+pub struct HostState {
+    limits: StoreLimits,
+    bridge: Option<Arc<dyn GuestHost>>,
+    /// When the running turn started.
+    started: Instant,
+    /// Time the guest spent waiting on the host during this turn. Not the guest's own
+    /// time, so not charged against its compute budget.
+    host_elapsed: Duration,
+    budget: Duration,
+}
+
+impl HostState {
+    fn call(&mut self, call: HostCall) -> Result<String, TurnError> {
+        let Some(bridge) = &self.bridge else {
+            return Err(TurnError::new(
+                "no_turn",
+                "the guest called the host outside a turn",
+            ));
+        };
+        let at = Instant::now();
+        let result = bridge.call(call);
+        self.host_elapsed += at.elapsed();
+        result
+    }
+}
+
+impl bindings::aex::agentloop::host::Host for HostState {
+    fn model(&mut self, request_json: String) -> Result<String, wit::TurnError> {
+        self.call(HostCall::Model { request_json })
+            .map_err(wit_error)
+    }
+
+    fn dispatch(&mut self, calls_json: String) -> Result<String, wit::TurnError> {
+        self.call(HostCall::Dispatch { calls_json })
+            .map_err(wit_error)
+    }
+
+    fn append(&mut self, kind: String, payload_json: String) -> Result<u64, wit::TurnError> {
+        let answer = self
+            .call(HostCall::Append { kind, payload_json })
+            .map_err(wit_error)?;
+        answer.trim().parse().map_err(|_| {
+            wit_error(TurnError::new(
+                "internal",
+                "append answered without a sequence",
+            ))
+        })
+    }
+
+    fn telemetry(&mut self, record_json: String) {
+        let _ = self.call(HostCall::Telemetry { record_json });
+    }
+}
+
+fn wit_error(error: TurnError) -> wit::TurnError {
+    wit::TurnError {
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+    }
+}
+
 /// Warm instances, keyed by session and component: the guest that answered a session's
-/// last activation, kept alive so the next one skips instantiation — and, for a runtime
-/// that caches its own parsed state, re-reading the whole conversation.
+/// last turn, kept alive so the next one skips instantiation.
 ///
 /// This is a cache, not a contract: an entry can vanish at any moment (eviction, a trap,
-/// a worker restart), so a correct agentloop must keep everything it needs in the state
-/// the activation contract carries. That has always been the documented model; a loop
-/// that hoards data in module scope was relying on nothing.
+/// a worker restart), so a correct agentloop keeps everything it needs in its transcript
+/// and slots.
 #[derive(Default)]
 pub struct WarmInstances {
     entries: std::sync::Mutex<Vec<WarmEntry>>,
 }
+
+/// Core instances one guest may hold: its own modules plus the shims wasmtime builds
+/// for its imports.
+const MAX_CORE_INSTANCES: usize = 8;
 
 /// Sessions kept warm at once. Each entry is a live JS engine whose heap holds one
 /// conversation, so this bounds worker memory the way `running` bounds instances.
@@ -122,19 +200,8 @@ const WARM_SESSIONS: usize = 8;
 struct WarmEntry {
     session: String,
     digest: AgentloopIdentity,
-    store: Store<StoreLimits>,
+    store: Store<HostState>,
     bindings: bindings::Agentloop,
-    /// The state the guest returned last activation: its parsed value beside the exact
-    /// bytes the guest produced. The session round-trips state through `serde_json::Value`,
-    /// which re-serializes with different bytes (sorted keys), so without this the guest's
-    /// own byte-equality cache could never hit. When the incoming value is structurally
-    /// equal to what the guest returned, it is handed back verbatim.
-    last_state: Option<LastState>,
-}
-
-struct LastState {
-    value: serde_json::Value,
-    raw: String,
 }
 
 impl WarmInstances {
@@ -158,155 +225,123 @@ impl WarmInstances {
     }
 }
 
-/// The context of every turn currently mid-flight in this worker, keyed by session.
-///
-/// Residency is what lets a turn's later activations cross the wire without the
-/// conversation: the session attaches the context on the turn's opening observation, the
-/// worker holds it here between legs, and hands it back on the terminal decision. It is
-/// deliberately NOT part of [`WarmInstances`]: instance eviction is a memory policy, but
-/// dropping a mid-turn context fails a live turn — including turns legitimately parked
-/// for minutes on a client-hosted tool call.
-///
-/// Entries are freed at terminal decisions. A turn the session abandons without a
-/// terminal leg (cancel, failure, deadline) leaks its entry until the next turn's
-/// opening leg overwrites it, or the TTL sweep collects it.
-#[derive(Default)]
-pub struct ResidentContexts {
-    entries: std::sync::Mutex<std::collections::HashMap<String, ResidentContext>>,
-}
-
-struct ResidentContext {
-    context: ContextEnvelope,
-    held_since: std::time::Instant,
-}
-
-/// Sweep bound: a resident context older than this belongs to a turn nothing will
-/// finish — session deadlines are minutes, not hours. Checked amortized on insert.
-const RESIDENT_TTL: Duration = Duration::from_secs(3600);
-const RESIDENT_SWEEP_AT: usize = 256;
-
-impl ResidentContexts {
-    fn put(&self, session: &str, context: ContextEnvelope) {
-        let Ok(mut entries) = self.entries.lock() else {
-            return;
-        };
-        if entries.len() >= RESIDENT_SWEEP_AT {
-            entries.retain(|_, held| held.held_since.elapsed() < RESIDENT_TTL);
-        }
-        entries.insert(
-            session.to_owned(),
-            ResidentContext {
-                context,
-                held_since: std::time::Instant::now(),
-            },
-        );
-    }
-
-    fn take(&self, session: &str) -> Option<ContextEnvelope> {
-        let mut entries = self.entries.lock().ok()?;
-        entries.remove(session).map(|held| held.context)
-    }
-}
-
 impl AdmittedAgentloop {
-    #[allow(clippy::too_many_arguments)]
-    pub fn activate(
+    /// Runs one turn on the calling thread. The guest's host calls go to `bridge` and
+    /// block this thread until answered; only the guest's own compute counts against
+    /// `limits.wall_time`.
+    pub fn turn(
         &self,
         engine: &Engine,
         limits: &LoopLimits,
         warm: &WarmInstances,
-        resident: &ResidentContexts,
         session: &str,
-        context_attached: bool,
-        input: ActivationInput,
-    ) -> Result<(ActivationOutput, bool), String> {
+        input: TurnInput,
+        bridge: Arc<dyn GuestHost>,
+    ) -> Result<TurnOutput, TurnError> {
         let mut entry = match warm.take(session, &self.digest) {
             Some(entry) => entry,
             None => {
+                // A component that imports the host is more than one core instance:
+                // wasmtime lowers its imports into shim instances beside the guest's
+                // own modules. The count is fixed by the component's structure, not by
+                // anything the guest does at run time, so this only needs headroom.
                 let store_limits = StoreLimitsBuilder::new()
                     .memory_size(limits.linear_memory_bytes)
-                    .instances(1)
+                    .instances(MAX_CORE_INSTANCES)
                     .build();
-                let mut store = Store::new(engine, store_limits);
-                store.limiter(|limits| limits);
-                let linker = Linker::<StoreLimits>::new(engine);
+                let mut store = Store::new(
+                    engine,
+                    HostState {
+                        limits: store_limits,
+                        bridge: None,
+                        started: Instant::now(),
+                        host_elapsed: Duration::ZERO,
+                        budget: limits.wall_time,
+                    },
+                );
+                store.limiter(|state| &mut state.limits);
+                // The compute budget is kept against the guest's own time: when the
+                // epoch deadline fires, time the guest spent inside host calls is given
+                // back and the deadline is pushed out by that much.
+                store.epoch_deadline_callback(|context| {
+                    let state = context.data();
+                    let guest = state.started.elapsed().saturating_sub(state.host_elapsed);
+                    if guest >= state.budget {
+                        Err(wasmtime::Error::msg(WALL_TIME_EXCEEDED))
+                    } else {
+                        Ok(UpdateDeadline::Continue(epoch_deadline_ticks(
+                            state.budget - guest,
+                        )))
+                    }
+                });
+                let mut linker = Linker::<HostState>::new(engine);
+                bindings::aex::agentloop::host::add_to_linker::<_, HasSelf<HostState>>(
+                    &mut linker,
+                    |state| state,
+                )
+                .map_err(host_failure)?;
                 let bindings =
                     bindings::Agentloop::instantiate(&mut store, &self.component, &linker)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(host_failure)?;
                 WarmEntry {
                     session: session.to_owned(),
                     digest: self.digest.clone(),
                     store,
                     bindings,
-                    last_state: None,
                 }
             }
         };
-        // The guest's own wall-clock bound, re-armed per activation. Until this was
-        // driven, `epoch_deadline(1)` could never be reached — nothing advanced the
-        // epoch — so the only limit on an activation was the supervisor's IPC timeout,
-        // which abandons the worker and every warm instance in it. A trap here costs
-        // one instance: the entry is dropped rather than kept, because a trapped guest's
-        // heap is not a state anyone can vouch for.
+        {
+            let state = entry.store.data_mut();
+            state.bridge = Some(bridge);
+            state.started = Instant::now();
+            state.host_elapsed = Duration::ZERO;
+            state.budget = limits.wall_time;
+        }
         entry
             .store
             .set_epoch_deadline(epoch_deadline_ticks(limits.wall_time));
-        // The turn's context: attached on its opening observation, resident here for the
-        // legs between, returned on the terminal decision. A mid-turn leg that finds
-        // nothing resident means this worker restarted with the turn in flight — the
-        // session's copy is the turn's opening state, so continuing from it would replay
-        // effects; the session fails the turn honestly instead.
-        let mut input = input;
-        if context_attached {
-            // The opening leg's context is authoritative: it overwrites whatever a
-            // cancelled or failed earlier turn left behind.
-            let _ = resident.take(session);
-        } else {
-            input.context = resident.take(session).ok_or_else(|| {
-                "context_required: the worker holds no resident context for this session".to_owned()
-            })?;
-        }
-        let state_json = match (&entry.last_state, &input.context.state) {
-            (Some(last), Some(state)) if &last.value == state => Some(last.raw.clone()),
-            (_, Some(state)) => Some(serde_json::to_string(state).map_err(|e| e.to_string())?),
-            _ => None,
-        };
-        let input = to_wit_input(input, state_json)?;
-        let output = entry
-            .bindings
-            .call_step(&mut entry.store, &input)
-            .map_err(activation_error)?
-            .map_err(|error| format!("{}: {}", error.code, error.message))?;
-        let raw_state = output.context.state_json.clone();
-        let mut output = from_wit_output(output)?;
-        entry.last_state = match (raw_state, output.context.state.clone()) {
-            (Some(raw), Some(value)) => Some(LastState { value, raw }),
-            _ => None,
+        let input = to_wit_input(input).map_err(host_failure)?;
+        let called = entry.bindings.call_turn(&mut entry.store, &input);
+        entry.store.data_mut().bridge = None;
+        let output = match called {
+            Ok(Ok(output)) => output,
+            // The loop's own failure, with the code it chose.
+            Ok(Err(error)) => {
+                return Err(TurnError {
+                    code: error.code,
+                    message: error.message,
+                    retryable: error.retryable,
+                });
+            }
+            // A trapped guest's heap is not a state anyone can vouch for: the entry is
+            // dropped rather than kept.
+            Err(error) => return Err(host_failure(turn_error(error))),
         };
         warm.keep(entry);
-        let terminal = matches!(
-            output.decision,
-            Decision::Finish { .. } | Decision::Fail { .. }
-        );
-        if terminal {
-            Ok((output, true))
-        } else {
-            let context = std::mem::take(&mut output.context);
-            // The placeholder keeps the version so the session's per-leg contract check
-            // still holds; everything else stays resident here.
-            output.context.protocol_version = context.protocol_version.clone();
-            resident.put(session, context);
-            Ok((output, false))
-        }
+        let output = from_wit_output(output).map_err(host_failure)?;
+        validate_output(&output).map_err(host_failure)?;
+        Ok(output)
     }
 }
 
-/// A guest stopped by its epoch deadline reports the wall-time limit it exceeded, not
-/// the trap that stopped it. The message is the one the supervisor's timeout has always
-/// returned, so what a client sees is unchanged by where the bound is now enforced.
-fn activation_error(error: wasmtime::Error) -> String {
-    if error.downcast_ref::<Trap>() == Some(&Trap::Interrupt) {
-        return "Agentloop activation exceeded its wall-time limit".into();
+const WALL_TIME_EXCEEDED: &str = "Agentloop turn exceeded its compute budget";
+
+/// A turn that failed on this side of the guest: a trap, a budget, an output the
+/// contract refuses. The loop did not choose a code, so it gets the one that says so.
+fn host_failure(message: impl std::fmt::Display) -> TurnError {
+    TurnError::new(codes::failure::AGENTLOOP_FAILED, message.to_string())
+}
+
+/// A guest stopped by its epoch deadline reports the budget it exceeded, not the trap
+/// that stopped it.
+fn turn_error(error: wasmtime::Error) -> String {
+    if error.downcast_ref::<Trap>() == Some(&Trap::Interrupt)
+        || error
+            .chain()
+            .any(|cause| cause.to_string().contains(WALL_TIME_EXCEEDED))
+    {
+        return WALL_TIME_EXCEEDED.into();
     }
     error.to_string()
 }
@@ -321,9 +356,6 @@ fn spawn_epoch_ticker(engine: &Engine) -> Result<(), String> {
         .spawn(move || {
             loop {
                 match weak.upgrade() {
-                    // Dropped before sleeping: holding it across the sleep would keep the
-                    // engine alive for a tick past its last owner, and forever if the
-                    // upgrade were held in a binding that outlived the loop body.
                     Some(engine) => {
                         engine.increment_epoch();
                         drop(engine);
@@ -337,48 +369,24 @@ fn spawn_epoch_ticker(engine: &Engine) -> Result<(), String> {
     Ok(())
 }
 
-/// Ticks that cover `budget`, at least one. A guest is trapped after this many epoch
-/// increments, so it runs for at most `budget` plus the tick it was in.
+/// Ticks that cover `budget`, at least one.
 fn epoch_deadline_ticks(budget: Duration) -> u64 {
     let ticks = budget.as_nanos().div_ceil(EPOCH_TICK.as_nanos());
     u64::try_from(ticks).unwrap_or(u64::MAX).max(1)
 }
 
-fn to_wit_input(
-    input: ActivationInput,
-    state_json: Option<String>,
-) -> Result<bindings::aex::agentloop::types::ActivationInput, String> {
-    use bindings::aex::agentloop::types as wit;
-    let observation = match input.observation {
-        Observation::SessionStarted { history } => wit::Observation::SessionStarted(
-            serde_json::to_string(&history).map_err(|error| error.to_string())?,
-        ),
-        Observation::UserMessage { input } => wit::Observation::UserMessage(
-            serde_json::to_string(&input).map_err(|error| error.to_string())?,
-        ),
-        Observation::ModelCompleted { response } => wit::Observation::ModelCompleted(
-            serde_json::to_string(&response).map_err(|error| error.to_string())?,
-        ),
-        Observation::ToolsCompleted { results } => wit::Observation::ToolsCompleted(
-            serde_json::to_string(&results).map_err(|error| error.to_string())?,
-        ),
-        Observation::Emitted { event } => wit::Observation::Emitted(
-            serde_json::to_string(&event).map_err(|error| error.to_string())?,
-        ),
-        Observation::Cancelled => wit::Observation::Cancelled,
+fn to_wit_input(input: TurnInput) -> Result<wit::TurnInput, String> {
+    let json = |value: &dyn erased_serialize::Serialize| -> Result<String, String> {
+        value.to_json().map_err(|error| error.to_string())
     };
-    Ok(wit::ActivationInput {
-        context: wit::ContextEnvelope {
-            protocol_version: input.context.protocol_version,
-            items_json: serde_json::to_string(&input.context.items)
-                .map_err(|error| error.to_string())?,
-            state_json,
-        },
-        observation,
-        configuration_json: serde_json::to_string(&input.configuration)
-            .map_err(|error| error.to_string())?,
+    Ok(wit::TurnInput {
+        input_json: json(&input.input)?,
+        transcript_json: json(&input.transcript)?,
+        slots_json: json(&input.slots)?,
+        events_json: json(&input.events)?,
+        configuration_json: json(&input.configuration)?,
         system: input.system,
-        tools_json: serde_json::to_string(&input.tools).map_err(|error| error.to_string())?,
+        tools_json: json(&input.tools)?,
         runtime: wit::RuntimeEnvelope {
             logical_time_ms: input.runtime.logical_time_ms,
             deterministic_seed: input.runtime.deterministic_seed,
@@ -386,97 +394,42 @@ fn to_wit_input(
     })
 }
 
-fn from_wit_output(
-    output: bindings::aex::agentloop::types::ActivationOutput,
-) -> Result<ActivationOutput, String> {
-    use bindings::aex::agentloop::types as wit;
-    let context = ContextEnvelope {
-        protocol_version: output.context.protocol_version,
-        items: serde_json::from_str(&output.context.items_json)
-            .map_err(|error| format!("Agentloop context items are invalid JSON: {error}"))?,
-        state: output
-            .context
-            .state_json
-            .map(|state| serde_json::from_str(&state))
-            .transpose()
-            .map_err(|error| format!("Agentloop state is invalid JSON: {error}"))?,
-    };
-    let decision = match output.decision {
-        wit::Decision::Model(request) => Decision::Model {
-            request: serde_json::from_str(&request)
-                .map_err(|error| format!("Agentloop model request is invalid JSON: {error}"))?,
-        },
-        wit::Decision::Tools(calls) => Decision::Tools {
-            calls: calls
-                .into_iter()
-                .map(|call| {
-                    Ok(ToolInvocation {
-                        call_id: call.call_id,
-                        name: call.name,
-                        input: serde_json::from_str(&call.input_json).map_err(|error| {
-                            format!("Agentloop Tool input is invalid JSON: {error}")
-                        })?,
-                    })
-                })
-                .collect::<Result<Vec<_>, String>>()?,
-        },
-        wit::Decision::Emit(event) => Decision::Emit {
-            event: serde_json::from_str(&event)
-                .map_err(|error| format!("Agentloop event is invalid JSON: {error}"))?,
-        },
-        wit::Decision::Finish(result) => Decision::Finish {
-            result: result
-                .map(|value| serde_json::from_str(&value))
-                .transpose()
-                .map_err(|error| format!("Agentloop finish result is invalid JSON: {error}"))?,
-        },
-        wit::Decision::Fail((code, message, retryable)) => Decision::Fail {
-            code,
-            message,
-            retryable,
-        },
-    };
-    let output = ActivationOutput { context, decision };
-    validate_output(&output)?;
-    Ok(output)
+/// A tiny shim so `to_wit_input` can serialise fields of different types through one
+/// closure without a generic bound per call.
+mod erased_serialize {
+    pub trait Serialize {
+        fn to_json(&self) -> Result<String, serde_json::Error>;
+    }
+    impl<T: serde::Serialize> Serialize for T {
+        fn to_json(&self) -> Result<String, serde_json::Error> {
+            serde_json::to_string(self)
+        }
+    }
 }
 
-fn validate_output(output: &ActivationOutput) -> Result<(), String> {
-    if output.context.protocol_version != "agentloop/v1" {
-        return Err("Agentloop context protocol version is not supported".into());
+fn from_wit_output(output: wit::TurnOutput) -> Result<TurnOutput, String> {
+    Ok(TurnOutput {
+        transcript: serde_json::from_str(&output.transcript_json)
+            .map_err(|error| format!("Agentloop transcript is invalid JSON: {error}"))?,
+        slots: serde_json::from_str(&output.slots_json)
+            .map_err(|error| format!("Agentloop slots are invalid JSON: {error}"))?,
+        result: output
+            .result_json
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(|error| format!("Agentloop result is invalid JSON: {error}"))?,
+    })
+}
+
+fn validate_output(output: &TurnOutput) -> Result<(), String> {
+    if output.transcript.len() > brain_protocol::MAX_TRANSCRIPT_ITEMS {
+        return Err(format!(
+            "Agentloop transcript exceeds {} items",
+            brain_protocol::MAX_TRANSCRIPT_ITEMS
+        ));
     }
-    if output.context.items.len() > 4_096 {
-        return Err("Agentloop context exceeds 4096 items".into());
-    }
-    match &output.decision {
-        Decision::Model { request } => {
-            if request.messages.is_empty() || request.messages.len() > 4_096 {
-                return Err("Agentloop model request must contain 1..=4096 messages".into());
-            }
-            if request.max_output_tokens == Some(0) {
-                return Err("Agentloop model output token limit must be positive".into());
-            }
-        }
-        Decision::Tools { calls } => {
-            if calls.is_empty() || calls.len() > 128 {
-                return Err("Agentloop Tool decision must contain 1..=128 calls".into());
-            }
-            let mut call_ids = std::collections::HashSet::with_capacity(calls.len());
-            for call in calls {
-                if !valid_identifier(&call.call_id) || !valid_identifier(&call.name) {
-                    return Err("Agentloop Tool call identity is invalid".into());
-                }
-                if !call_ids.insert(&call.call_id) {
-                    return Err("Agentloop Tool call IDs must be unique in one decision".into());
-                }
-            }
-        }
-        Decision::Fail { code, message, .. } => {
-            if !valid_identifier(code) || message.is_empty() || message.len() > 4_096 {
-                return Err("Agentloop failure is invalid".into());
-            }
-        }
-        Decision::Emit { .. } | Decision::Finish { .. } => {}
+    if output.slots.len() > 128 || output.slots.keys().any(|name| !valid_identifier(name)) {
+        return Err("Agentloop slots must be at most 128 identifier-named values".into());
     }
     Ok(())
 }
@@ -528,7 +481,6 @@ mod tests {
         assert_eq!(epoch_deadline_ticks(Duration::ZERO), 1);
         assert_eq!(epoch_deadline_ticks(Duration::from_nanos(1)), 1);
         assert_eq!(epoch_deadline_ticks(EPOCH_TICK), 1);
-        // Rounded up, so the guest is never given less time than its budget.
         assert_eq!(
             epoch_deadline_ticks(EPOCH_TICK + Duration::from_nanos(1)),
             2
@@ -568,12 +520,8 @@ mod tests {
         module.finish()
     }
 
-    /// The engine was configured for epoch interruption, but nothing advanced the epoch,
-    /// so the deadline could not fire and fuel - a bound on work, not on time - was the
-    /// only limit inside the instance. This drives the mechanism directly rather than
-    /// through an Agentloop component: the guest is the smallest module that never
-    /// returns, so what it proves is that the epoch advances and that a deadline set
-    /// against it traps.
+    /// The epoch advances and a deadline set against it traps: the smallest module that
+    /// never returns is stopped within its budget.
     #[test]
     fn a_guest_that_never_returns_is_trapped_within_its_budget() {
         let admission = AdmissionEngine::new(
@@ -594,8 +542,6 @@ mod tests {
             .get_typed_func::<(), ()>(&mut store, "spin")
             .unwrap();
 
-        // Run the guest on its own thread and wait with a clock. If the deadline never
-        // fires this fails at `CEILING` instead of hanging until CI gives up.
         let (finished, waiting) = mpsc::channel();
         let started = Instant::now();
         thread::spawn(move || {
@@ -612,18 +558,66 @@ mod tests {
             Some(&Trap::Interrupt),
             "the guest must be stopped by the epoch deadline, not by anything else: {error}"
         );
-        assert_eq!(
-            activation_error(error),
-            "Agentloop activation exceeded its wall-time limit"
-        );
+        assert_eq!(turn_error(error), WALL_TIME_EXCEEDED);
         assert!(
             elapsed < CEILING,
             "the guest ran for {elapsed:?} against a {BUDGET:?} budget"
         );
     }
 
-    /// The ticker holds only a weak reference back, so building an engine and dropping it
-    /// leaves no thread running.
+    /// Time spent in a host call is given back: a guest whose budget would have expired
+    /// during a long host call keeps running afterwards.
+    #[test]
+    fn host_call_time_is_not_charged_to_the_guest() {
+        let admission = AdmissionEngine::new(
+            LoopLimits {
+                wall_time: BUDGET,
+                ..LoopLimits::default()
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let engine = admission.engine();
+        let mut store = Store::new(
+            engine,
+            HostState {
+                limits: StoreLimitsBuilder::new().build(),
+                bridge: None,
+                started: Instant::now(),
+                host_elapsed: Duration::ZERO,
+                budget: BUDGET,
+            },
+        );
+        store.epoch_deadline_callback(|context| {
+            let state = context.data();
+            let guest = state.started.elapsed().saturating_sub(state.host_elapsed);
+            if guest >= state.budget {
+                Err(wasmtime::Error::msg(WALL_TIME_EXCEEDED))
+            } else {
+                Ok(UpdateDeadline::Continue(epoch_deadline_ticks(
+                    state.budget - guest,
+                )))
+            }
+        });
+        store.set_epoch_deadline(epoch_deadline_ticks(BUDGET));
+        // Pretend the guest spent three budgets inside the host before running.
+        thread::sleep(BUDGET * 3);
+        store.data_mut().host_elapsed = BUDGET * 3;
+        let module = CoreModule::new(engine, spinning_module()).unwrap();
+        let instance = Instance::new(&mut store, &module, &[]).unwrap();
+        let spin = instance
+            .get_typed_func::<(), ()>(&mut store, "spin")
+            .unwrap();
+        let started = Instant::now();
+        let error = spin.call(&mut store, ()).unwrap_err();
+        let elapsed = started.elapsed();
+        assert_eq!(turn_error(error), WALL_TIME_EXCEEDED);
+        assert!(
+            elapsed >= BUDGET / 2,
+            "the guest was stopped after {elapsed:?}, before it had its own {BUDGET:?}"
+        );
+    }
+
     #[test]
     fn an_engine_can_be_dropped_while_its_epoch_is_being_driven() {
         for _ in 0..4 {

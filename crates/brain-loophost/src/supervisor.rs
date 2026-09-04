@@ -1,19 +1,23 @@
 use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
-use brain_protocol::{ActivationInput, ActivationOutput, AgentloopIdentity};
+use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput};
 use tokio::sync::{Mutex, Semaphore};
 
-use crate::{AgentloopPackage, LoopLimits, WorkerClient};
+use crate::{AgentloopPackage, LoopLimits, TurnBridge, WorkerClient};
 
-/// How long after a guest's own wall-clock bound the supervisor gives up on the worker
-/// itself. Covers the IPC round trip and anything an epoch cannot interrupt.
+/// How long the worker may go without a frame while the guest is computing before the
+/// supervisor gives up on it. Strictly more than the guest's own compute budget, which
+/// stops a runaway guest first and costs one instance; this stops a worker that is not
+/// answering at all and costs every warm instance in it.
 const WORKER_BACKSTOP: Duration = Duration::from_secs(1);
 
-/// Why the pool could not run something. `Overloaded` is the one case a caller treats
-/// differently: it is transient and the request was never started.
+/// Why the pool could not run something, or why a turn it ran did not finish.
+/// `Overloaded` is transient and the request was never started; `Turn` is the loop's
+/// own failure with the code it or the runtime gave it; `Failed` is this side's.
 #[derive(Debug)]
 pub enum LoopError {
     Overloaded,
+    Turn(TurnError),
     Failed(String),
 }
 
@@ -21,6 +25,7 @@ impl std::fmt::Display for LoopError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LoopError::Overloaded => formatter.write_str("Loophost queue is full"),
+            LoopError::Turn(error) => write!(formatter, "{}: {}", error.code, error.message),
             LoopError::Failed(message) => formatter.write_str(message),
         }
     }
@@ -73,8 +78,8 @@ impl WorkerPool {
             // flight or waiting for one of those slots before the pool refuses.
             permits: Arc::new(Semaphore::new(
                 limits
-                    .concurrent_activations_per_worker
-                    .saturating_add(limits.queued_activations_per_worker)
+                    .concurrent_turns_per_worker
+                    .saturating_add(limits.queued_turns_per_worker)
                     .max(1),
             )),
             limits,
@@ -117,24 +122,23 @@ impl WorkerPool {
         Ok(WorkerClient::new(&self.socket).ping().await?)
     }
 
-    pub async fn activate(
+    /// Runs one turn. The bridge answers the guest's host calls for as long as the turn
+    /// runs; a worker that stops answering between them is restarted.
+    pub async fn turn(
         &self,
         session: String,
         digest: AgentloopIdentity,
-        context_attached: bool,
-        input: ActivationInput,
-    ) -> Result<(ActivationOutput, bool), LoopError> {
-        // The input bound is enforced where the input is encoded, in `write_frame`
-        // below. Encoding it here as well to measure its length meant serialising the
-        // whole context twice per decision and throwing one copy away.
+        input: TurnInput,
+        bridge: &dyn TurnBridge,
+    ) -> Result<TurnOutput, LoopError> {
         let _permit = self
             .permits
             .clone()
             .try_acquire_owned()
             .map_err(|_| LoopError::Overloaded)?;
-        // Everything that needs the worker's identity happens under the lock; the
-        // activation itself does not. Holding it across the call serialised every session
-        // in the process onto one activation at a time, whatever the permits allowed.
+        // Everything that needs the worker's identity happens under the lock; the turn
+        // itself does not. Holding it across the call would serialise every session in
+        // the process onto one turn at a time, whatever the permits allowed.
         {
             let mut state = self.state.lock().await;
             self.ensure_worker(&mut state).await?;
@@ -150,41 +154,34 @@ impl WorkerPool {
             }
         }
         let client = WorkerClient::new(&self.socket);
-        let call = client.activate(
-            session,
-            digest,
-            context_attached,
-            input,
-            self.limits.activation_input_bytes,
-        );
-        // The guest is stopped by its own epoch deadline at `wall_time`, which costs one
-        // instance. This timeout is the backstop for what an epoch cannot interrupt — a
-        // worker blocked in a host call, a crashed worker, a socket that never answers —
-        // and it stops the worker, taking every warm component with it. It must therefore
-        // be strictly later than the bound the guest enforces on itself, or it fires
-        // first and pays the expensive price for the cheap failure.
-        match tokio::time::timeout(self.limits.wall_time + WORKER_BACKSTOP, call).await {
-            Ok(Ok((output, context_attached))) => {
+        let outcome = client
+            .turn(
+                session,
+                digest,
+                input,
+                self.limits.turn_input_bytes,
+                bridge,
+                self.limits.wall_time + WORKER_BACKSTOP,
+            )
+            .await;
+        match outcome {
+            Ok(output) => {
                 let output_bytes =
                     serde_json::to_vec(&output).map_err(|error| error.to_string())?;
-                if output_bytes.len() > self.limits.activation_output_bytes {
-                    // The frame that carried it was already bounded on the way in, and
-                    // the instance that produced it is gone. Stopping the worker for this
-                    // would take every other session's warm component with it, which is
-                    // a far larger price than the violation.
-                    return Err("Agentloop activation output exceeds the configured limit".into());
+                if output_bytes.len() > self.limits.turn_output_bytes {
+                    return Err("Agentloop turn output exceeds the configured limit".into());
                 }
-                Ok((output, context_attached))
+                Ok(output)
             }
-            Ok(Err(error)) => Err(error.into()),
-            Err(_) => {
-                // The guest's own epoch deadline fires before this, so reaching here
-                // means the worker itself is not answering. That is the case this is
-                // for, and restarting it is the only thing left.
+            Err(LoopError::Failed(message)) if message == "brain-loop-worker stopped answering" => {
+                // The guest's own compute budget fires before this, so reaching here
+                // means the worker itself is not answering. Restarting it is the only
+                // thing left.
                 let mut state = self.state.lock().await;
                 self.stop_worker(&mut state).await;
-                Err("brain-loop-worker stopped answering".into())
+                Err(LoopError::Failed(message))
             }
+            Err(error) => Err(error),
         }
     }
 

@@ -78,7 +78,6 @@ fn stores_with_sessions(directory: &Path) -> (Vec<Arc<SessionStore>>, Arc<Writer
     let (publisher, _worker) = brain_telemetry::telemetry_channel();
     let feed = Arc::new(Feed::new(publisher));
     let filler = serde_json::Value::String("x".repeat(CONTEXT_BYTES));
-    let context = serde_json::json!({ "items": filler });
     let mut stores = Vec::with_capacity(SESSIONS);
     for index in 0..SESSIONS {
         let session_id = SessionId::new(format!("ses_{index:04}"));
@@ -99,7 +98,6 @@ fn stores_with_sessions(directory: &Path) -> (Vec<Arc<SessionStore>>, Arc<Writer
                 )],
                 SessionUpdate {
                     status: Some(SessionStatus::Idle),
-                    context: Some(&context),
                     configuration: None,
                 },
             )
@@ -175,7 +173,6 @@ fn the_full_row_is_still_reachable_for_rehydration() {
 
     let row = stores[5].session_row().unwrap();
 
-    assert_eq!(row.context["items"].as_str().unwrap().len(), CONTEXT_BYTES);
     assert_eq!(
         row.configuration["configuration"].as_str().unwrap().len(),
         CONTEXT_BYTES

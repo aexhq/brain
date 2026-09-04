@@ -353,12 +353,6 @@ export type components = {
                 [key: string]: string;
             };
         };
-        HistoryEvent: {
-            sequence: number;
-            recorded_at_ms?: number;
-            event_type: components["schemas"]["Identifier"];
-            data: unknown;
-        };
         CreateSessionRequest: {
             agentloop: components["schemas"]["AgentloopRef"];
             model: components["schemas"]["ModelSelection"];
@@ -366,7 +360,8 @@ export type components = {
             response_format?: unknown;
             tools: components["schemas"]["BoundTool"][];
             environments: components["schemas"]["EnvironmentAttachRequest"][];
-            history?: components["schemas"]["HistoryEvent"][];
+            /** @description A transcript to carry forward: the messages the first model call should already see. */
+            transcript?: Record<string, never>[];
             /** @description How long the session may sit idle before Brain suspends its task and memory to disk. Absent means the server default; zero means never. */
             idle_ttl_ms?: number;
         };

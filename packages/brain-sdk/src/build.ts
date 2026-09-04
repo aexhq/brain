@@ -11,7 +11,7 @@ import { z } from "zod";
 import { extensionSource, inspectToolProgram } from "./extensions.js";
 import type { Program } from "./types.js";
 
-export const BUILDER_TOOLCHAIN = "brain-build-1 componentize-js-0.19.3";
+export const BUILDER_TOOLCHAIN = "brain-build-2 componentize-js-0.19.3";
 
 export interface BuildOptions { readonly entry?: string; readonly out?: string }
 export interface BuiltExtension { readonly name: string; readonly kind: "agentloop" | "tool" | "environment"; readonly artifact?: string; readonly identity?: string; readonly bytes?: number; readonly program?: Program["kind"] }
@@ -183,7 +183,7 @@ export default provisionedToolRuntime(definition);
 async function buildAgentloop(entry: string, name: string, out: string): Promise<AgentloopPackage> {
   const compiled = await bundle({
     stdin: { contents: componentWrapper(entry, name), resolveDir: dirname(entry), sourcefile: `${name}.brain-entry.js`, loader: "js" },
-    bundle: true, format: "esm", platform: "neutral", write: false, legalComments: "none", external: ["node:*"],
+    bundle: true, format: "esm", platform: "neutral", write: false, legalComments: "none", external: ["node:*", "aex:agentloop/*"],
   });
   const output = compiled.outputFiles[0];
   if (output === undefined) throw new Error(`esbuild produced no output for Agentloop ${name}`);
@@ -200,7 +200,7 @@ async function buildAgentloop(entry: string, name: string, out: string): Promise
     await rm(work, { recursive: true, force: true });
   }
   const packageValue: AgentloopPackage = {
-    manifest: { contract_version: "agentloop/v1", component_identity: createHash("sha256").update(component).digest("hex"), component_bytes: component.byteLength, toolchain: BUILDER_TOOLCHAIN },
+    manifest: { contract_version: "agentloop/v2", component_identity: createHash("sha256").update(component).digest("hex"), component_bytes: component.byteLength, toolchain: BUILDER_TOOLCHAIN },
     component_base64: Buffer.from(component).toString("base64"),
   };
   await writeFile(out, `${JSON.stringify(packageValue)}\n`);
@@ -208,7 +208,7 @@ async function buildAgentloop(entry: string, name: string, out: string): Promise
 }
 
 interface AgentloopPackage {
-  readonly manifest: { readonly contract_version: "agentloop/v1"; readonly component_identity: string; readonly component_bytes: number; readonly toolchain: string };
+  readonly manifest: { readonly contract_version: "agentloop/v2"; readonly component_identity: string; readonly component_bytes: number; readonly toolchain: string };
   readonly component_base64: string;
 }
 
@@ -216,52 +216,57 @@ function componentWrapper(entry: string, name: string): string {
   const specifier = relative(dirname(entry), entry).replaceAll("\\", "/");
   const normalized = specifier.startsWith(".") ? specifier : `./${specifier}`;
   return `
-import { activateAgentloop } from "@aexhq/brain";
+import { runTurn } from "@aexhq/brain";
+import * as host from "aex:agentloop/host@2.0.0";
 import { ${name} as definition } from ${JSON.stringify(normalized)};
 
-const decodeObservation = (observation) => {
-  switch (observation.tag) {
-    case "session-started": return { type: "session_started" };
-    case "user-message": return { type: "user_message", input: JSON.parse(observation.val) };
-    case "model-completed": return { type: "model_completed", response: JSON.parse(observation.val) };
-    case "tools-completed": return { type: "tools_completed", results: JSON.parse(observation.val) };
-    case "emitted": return { type: "emitted", event: JSON.parse(observation.val) };
-    case "cancelled": return { type: "cancelled" };
-    default: throw new Error("unknown observation " + observation.tag);
+// A host import that fails throws a ComponentError whose payload is the turn-error
+// record; it is rethrown as an Error the loop can read the code off.
+const hosted = (call) => {
+  try {
+    return call();
+  } catch (error) {
+    const payload = error !== null && typeof error === "object" && "payload" in error ? error.payload : undefined;
+    const failure = new Error(payload?.message ?? String(error?.message ?? error));
+    failure.code = payload?.code ?? "host_error";
+    failure.retryable = payload?.retryable ?? false;
+    throw failure;
   }
 };
-const encodeDecision = (decision) => {
-  switch (decision.type) {
-    case "model": return { tag: "model", val: JSON.stringify(decision.request) };
-    case "tools": return { tag: "tools", val: decision.calls.map((call) => ({ callId: call.callId, name: call.name, inputJson: JSON.stringify(call.input) })) };
-    case "emit": return { tag: "emit", val: JSON.stringify(decision.event) };
-    case "finish": return { tag: "finish", val: decision.result === undefined ? undefined : JSON.stringify(decision.result) };
-    case "fail": return { tag: "fail", val: [decision.code, decision.message, decision.retryable] };
-    default: throw new Error("unknown Agentloop action " + decision.type);
+
+export async function turn(input) {
+  try {
+    const output = await runTurn(definition, {
+      input: JSON.parse(input.inputJson),
+      transcript: JSON.parse(input.transcriptJson),
+      slots: JSON.parse(input.slotsJson),
+      events: JSON.parse(input.eventsJson),
+      configuration: JSON.parse(input.configurationJson),
+      system: input.system,
+      tools: JSON.parse(input.toolsJson),
+      runtime: { logicalTimeMs: input.runtime.logicalTimeMs },
+    }, {
+      model: (requestJson) => hosted(() => host.model(requestJson)),
+      dispatch: (callsJson) => hosted(() => host.dispatch(callsJson)),
+      append: (kind, payloadJson) => hosted(() => host.append(kind, payloadJson)),
+      telemetry: (recordJson) => host.telemetry(recordJson),
+    });
+    return {
+      transcriptJson: JSON.stringify(output.transcript),
+      slotsJson: JSON.stringify(output.slots),
+      resultJson: output.result === undefined ? undefined : JSON.stringify(output.result),
+    };
+  } catch (error) {
+    // Thrown with a payload so the component answers with the contract's error variant
+    // instead of trapping.
+    const failure = new Error(String(error?.message ?? error));
+    failure.payload = {
+      code: typeof error?.code === "string" && error.code.length > 0 ? error.code : "agentloop_failed",
+      message: String(error?.message ?? error) || "Agentloop turn failed",
+      retryable: Boolean(error?.retryable),
+    };
+    throw failure;
   }
-};
-// The state this instance produced last activation, kept beside its serialized form.
-// When the host keeps the instance warm across a session's activations, the incoming
-// state is byte-identical to what step just returned, and handing back the same object
-// lets the runtime skip re-reading a conversation it already holds. A cold instance
-// misses and parses — the cache is an optimization, never a source of truth.
-let warm = { stateJson: undefined, state: undefined };
-export function step(input) {
-  const incoming = input.context.stateJson;
-  const output = activateAgentloop(definition, {
-    context: { state: incoming === undefined ? undefined : incoming === warm.stateJson ? warm.state : JSON.parse(incoming) },
-    observation: decodeObservation(input.observation),
-    configuration: JSON.parse(input.configurationJson),
-    system: input.system,
-    tools: JSON.parse(input.toolsJson),
-    runtime: { logicalTimeMs: input.runtime.logicalTimeMs },
-  });
-  const stateJson = JSON.stringify(output.context.state);
-  warm = { stateJson, state: output.context.state };
-  return {
-    context: { protocolVersion: output.context.protocolVersion, itemsJson: JSON.stringify(output.context.items), stateJson },
-    decision: encodeDecision(output.decision),
-  };
 }
 `;
 }

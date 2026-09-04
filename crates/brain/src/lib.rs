@@ -16,7 +16,8 @@ pub use journal::{
 };
 pub use model::ModelExecutor;
 pub use session::{
-    CreatingSession, DEFAULT_TOOL_DEADLINE_MS, Session, SessionRuntime, empty_context, random_id,
-    session_config,
+    CreatingSession, DEFAULT_MAX_MODEL_CALLS_PER_TURN, DEFAULT_MAX_TURN_MS,
+    DEFAULT_TOOL_DEADLINE_MS, LAST_ACTIVATION_SLOT, Session, SessionRuntime, TurnServices,
+    random_id, session_config,
 };
 pub use tool::ToolExecutor;

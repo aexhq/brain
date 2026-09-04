@@ -17,10 +17,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -45,7 +42,6 @@ pub struct SessionStore {
     events: SegmentLog,
     journal: SegmentLog,
     feed: Arc<Feed>,
-    restored: AtomicBool,
     state: Mutex<State>,
 }
 
@@ -92,15 +88,12 @@ impl SessionStore {
             events,
             journal,
             feed,
-            restored: AtomicBool::new(false),
             state: Mutex::new(State {
                 row: SessionRow {
                     session_id,
                     status: SessionStatus::Creating,
                     through_sequence: 0,
                     configuration: configuration.clone(),
-                    context: serde_json::to_value(crate::session::empty_context())
-                        .map_err(json_error)?,
                 },
                 last_recorded_at_ms: 0,
                 events: Vec::new(),
@@ -139,8 +132,6 @@ impl SessionStore {
                 status: SessionStatus::Creating,
                 through_sequence: 0,
                 configuration,
-                context: serde_json::to_value(crate::session::empty_context())
-                    .map_err(json_error)?,
             },
             last_recorded_at_ms: 0,
             events: Vec::new(),
@@ -226,7 +217,6 @@ impl SessionStore {
             events,
             journal,
             feed,
-            restored: AtomicBool::new(true),
             state: Mutex::new(state),
         }))
     }
@@ -294,7 +284,6 @@ impl SessionStore {
             )],
             SessionUpdate {
                 status: Some(SessionStatus::Idle),
-                context: None,
                 configuration: None,
             },
         )?;
@@ -436,9 +425,6 @@ impl JournalStore for SessionStore {
         if let Some(status) = update.status {
             state.row.status = status;
         }
-        if let Some(context) = update.context {
-            state.row.context = context.clone();
-        }
         if let Some(configuration) = update.configuration {
             state.row.configuration = configuration.clone();
         }
@@ -562,10 +548,6 @@ impl JournalStore for SessionStore {
                 payload: frame.payload()?,
             })
         })
-    }
-
-    fn take_restored(&self) -> bool {
-        self.restored.swap(false, Ordering::AcqRel)
     }
 
     fn sync(&self) -> Result<(), Error> {

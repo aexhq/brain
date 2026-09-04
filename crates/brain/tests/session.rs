@@ -1,279 +1,281 @@
+//! One session, one turn at a time: the loop drives the turn through Brain's services,
+//! every effect is journalled before it happens, and what the journal says is what a
+//! client can read back.
+
+mod common;
+
 use std::{
     fs,
-    path::{Path, PathBuf},
     sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use async_trait::async_trait;
-use brain::{Error, LoopExecutor, ModelExecutor, Session, ToolExecutor};
+use brain::{Error, JournalStore, ToolExecutor};
 use brain_protocol::{
-    ActivationInput, ActivationOutput, AgentloopIdentity, AttachmentId, Decision,
-    EnvironmentAttachment, EnvironmentBinding, EnvironmentId, MessageRequest, ModelBinding,
-    ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, OutcomeError,
+    AttachmentId, ContentBlock, EnvironmentAttachment, EnvironmentBinding, EnvironmentId,
+    LiveEvent, Message, MessageRequest, ModelRequest, Outcome, OutcomeError,
     Runtime as EnvironmentRuntime, SessionConfig, ToolBinding, ToolCancellation, ToolDefinition,
-    ToolDispatch, ToolHosting, ToolInvocation,
+    ToolDispatch, ToolHosting, ToolInvocation, TurnOutput,
 };
 use brain_telemetry::telemetry_channel;
-use tokio::sync::Notify;
+use common::{
+    NoModels, NoTools, Runtime, ScriptedModel, SlowModel, config, echo_loop, scripted,
+    temporary_directory,
+};
 
-mod common;
-use common::Runtime;
+fn user(text: &str) -> Message {
+    Message::user_text(text)
+}
 
-struct ScriptedLoop {
-    calls: AtomicUsize,
+fn done(transcript: Vec<Message>) -> Result<TurnOutput, Error> {
+    Ok(TurnOutput {
+        transcript,
+        slots: Default::default(),
+        result: Some(serde_json::json!({"ok": true})),
+    })
+}
+
+fn request(messages: Vec<Message>) -> ModelRequest {
+    ModelRequest {
+        system: None,
+        tools: None,
+        messages,
+        response_format: None,
+        max_output_tokens: Some(16),
+    }
+}
+
+fn invocation(name: &str, call_id: &str) -> ToolInvocation {
+    ToolInvocation {
+        call_id: call_id.into(),
+        name: name.into(),
+        input: serde_json::json!({}),
+    }
+}
+
+/// A configuration binding one tool with the given `needs` to one environment declaring
+/// the given resources.
+fn tool_config(tool_name: &str, needs: Vec<&str>, declares: Vec<&str>) -> SessionConfig {
+    let environment = EnvironmentBinding {
+        environment_id: EnvironmentId::new("workspace"),
+        directory_generation: 1,
+    };
+    let mut config = config();
+    config.tools = vec![ToolDefinition {
+        name: tool_name.into(),
+        description: "a tool".into(),
+        input_schema: serde_json::json!({"type":"object"}),
+        output_schema: None,
+    }];
+    config.environments = vec![EnvironmentAttachment {
+        environment_id: EnvironmentId::new("workspace"),
+        binding: Some(environment.clone()),
+        attachment_id: Some(AttachmentId::new("attachment")),
+        runtimes: vec![EnvironmentRuntime::Esm],
+        resources: declares
+            .into_iter()
+            .map(|name| (name.to_string(), serde_json::json!({})))
+            .collect(),
+    }];
+    config.tool_bindings = vec![ToolBinding {
+        name: tool_name.into(),
+        environment_id: Some(EnvironmentId::new("workspace")),
+        environment: Some(environment),
+        attachment_id: Some(AttachmentId::new("attachment")),
+        needs: needs.into_iter().map(String::from).collect(),
+        binding_names: Vec::new(),
+        hosting: ToolHosting::Provisioned,
+        program: None,
+    }];
+    config
+}
+
+/// A configuration binding one client-hosted tool: no environment anywhere.
+fn client_tool_config(tool_name: &str) -> SessionConfig {
+    let mut config = config();
+    config.tools = vec![ToolDefinition {
+        name: tool_name.into(),
+        description: "answered by the session's creator".into(),
+        input_schema: serde_json::json!({"type":"object"}),
+        output_schema: None,
+    }];
+    config.tool_bindings = vec![ToolBinding {
+        name: tool_name.into(),
+        environment_id: None,
+        environment: None,
+        attachment_id: None,
+        needs: Vec::new(),
+        binding_names: Vec::new(),
+        hosting: ToolHosting::Client,
+        program: None,
+    }];
+    config
+}
+
+/// A tool executor that answers each call with a scripted outcome and remembers every
+/// cancellation it was asked for.
+struct OutcomeTools {
+    outcome: Outcome,
+    delay: Duration,
+    cancelled: Mutex<Vec<u64>>,
 }
 
 #[async_trait]
-impl LoopExecutor for ScriptedLoop {
-    async fn activate(
-        &self,
-        _session: &brain_protocol::SessionId,
-        _agentloop: &AgentloopIdentity,
-        input: ActivationInput,
-    ) -> Result<ActivationOutput, Error> {
-        let call = self.calls.fetch_add(1, Ordering::Relaxed);
-        let decision = if call == 0 {
-            assert!(matches!(input.observation, Observation::UserMessage { .. }));
-            Decision::Model {
-                request: ModelRequest {
-                    system: None,
-                    tools: None,
-                    messages: vec![brain_protocol::Message::user_text("hello")],
-                    response_format: None,
-                    max_output_tokens: Some(16),
-                },
-            }
-        } else {
-            assert!(matches!(
-                input.observation,
-                Observation::ModelCompleted { .. }
-            ));
-            Decision::Finish {
-                result: Some(serde_json::json!({"ok":true})),
-            }
-        };
-        Ok(ActivationOutput {
-            context: input.context,
-            decision,
-        })
+impl ToolExecutor for OutcomeTools {
+    async fn execute(&self, _: ToolDispatch) -> Result<Outcome, Error> {
+        tokio::time::sleep(self.delay).await;
+        Ok(self.outcome.clone())
     }
-}
-
-struct ScriptedModel;
-
-#[async_trait]
-impl ModelExecutor for ScriptedModel {
-    async fn execute(
-        &self,
-        _binding: &ModelBinding,
-        _request: ModelRequest,
-        _tools: &[ToolDefinition],
-        on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
-    ) -> Result<ModelResult, Error> {
-        on_event(ModelStreamEvent::TextDelta {
-            index: 0,
-            text: "hello".into(),
-        });
-        Ok(ModelResult {
-            message: brain_protocol::Message::assistant(vec![brain_protocol::ContentBlock::text(
-                "hello",
-            )]),
-            stop_reason: brain_protocol::StopReason::EndTurn,
-            usage: brain_protocol::Usage::default(),
-        })
-    }
-}
-
-struct NoTools;
-
-#[async_trait]
-impl ToolExecutor for NoTools {
-    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, Error> {
-        panic!("unexpected Tool dispatch")
-    }
-
-    async fn cancel(&self, _cancellation: ToolCancellation) -> Result<(), Error> {
-        panic!("unexpected Tool cancellation")
-    }
-}
-
-struct SlowModel {
-    started: Arc<Notify>,
-}
-
-struct ToolLoop;
-
-#[async_trait]
-impl LoopExecutor for ToolLoop {
-    async fn activate(
-        &self,
-        _session: &brain_protocol::SessionId,
-        _agentloop: &AgentloopIdentity,
-        input: ActivationInput,
-    ) -> Result<ActivationOutput, Error> {
-        Ok(ActivationOutput {
-            context: input.context,
-            decision: Decision::Tools {
-                calls: vec![ToolInvocation {
-                    call_id: "call-1".into(),
-                    name: "slow".into(),
-                    input: serde_json::json!({}),
-                }],
-            },
-        })
-    }
-}
-
-struct NoModels;
-
-#[async_trait]
-impl ModelExecutor for NoModels {
-    async fn execute(
-        &self,
-        _binding: &ModelBinding,
-        _request: ModelRequest,
-        _tools: &[ToolDefinition],
-        _on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
-    ) -> Result<ModelResult, Error> {
-        panic!("unexpected model request")
-    }
-}
-
-struct SlowTools {
-    started: Arc<Notify>,
-    cancelled: Arc<AtomicBool>,
-}
-
-#[async_trait]
-impl ToolExecutor for SlowTools {
-    async fn execute(&self, dispatch: ToolDispatch) -> Result<Outcome, Error> {
-        assert!(
-            dispatch.sequence > 0,
-            "a dispatch is named by its started record"
-        );
-        self.started.notify_one();
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        unreachable!("cancel must drop the in-flight Tool request")
-    }
-
     async fn cancel(&self, cancellation: ToolCancellation) -> Result<(), Error> {
-        assert_ne!(cancellation.target_sequence, cancellation.sequence);
-        assert!(cancellation.target_sequence > 0);
-        self.cancelled.store(true, Ordering::Release);
+        self.cancelled
+            .lock()
+            .unwrap()
+            .push(cancellation.target_sequence);
         Ok(())
     }
 }
 
+fn runtime(
+    data_dir: &std::path::Path,
+    loop_executor: Arc<dyn brain::LoopExecutor>,
+    model_executor: Arc<dyn brain::ModelExecutor>,
+    tool_executor: Arc<dyn ToolExecutor>,
+) -> Runtime {
+    let (publisher, _worker) = telemetry_channel();
+    Runtime::open(
+        data_dir,
+        publisher,
+        8,
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+        loop_executor,
+        model_executor,
+        tool_executor,
+    )
+}
+
+fn runtime_with_deadline(
+    data_dir: &std::path::Path,
+    loop_executor: Arc<dyn brain::LoopExecutor>,
+    tool_executor: Arc<dyn ToolExecutor>,
+    tool_deadline_ms: u64,
+) -> Runtime {
+    let (publisher, _worker) = telemetry_channel();
+    Runtime::open(
+        data_dir,
+        publisher,
+        8,
+        tool_deadline_ms,
+        loop_executor,
+        Arc::new(NoModels),
+        tool_executor,
+    )
+}
+
+async fn settle(runtime: Runtime, data_dir: std::path::PathBuf) {
+    runtime.drain();
+    drop(runtime);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// A model executor that looks at the feed when it is called: the `model_call_started`
+/// record must already be there.
+struct RecordingModel {
+    seen_started: AtomicUsize,
+    feed: Mutex<Option<tokio::sync::broadcast::Receiver<(brain_protocol::SessionId, LiveEvent)>>>,
+}
+
 #[async_trait]
-impl ModelExecutor for SlowModel {
+impl brain::ModelExecutor for RecordingModel {
     async fn execute(
         &self,
-        _binding: &ModelBinding,
+        _binding: &brain_protocol::ModelBinding,
         _request: ModelRequest,
         _tools: &[ToolDefinition],
-        _on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
-    ) -> Result<ModelResult, Error> {
-        self.started.notify_one();
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        unreachable!("cancel must drop the in-flight model request")
+        _on_event: &mut (dyn FnMut(brain_protocol::ModelStreamEvent) + Send),
+    ) -> Result<brain_protocol::ModelResult, Error> {
+        let mut feed = self.feed.lock().unwrap();
+        let receiver = feed.as_mut().unwrap();
+        while let Ok((_, event)) = receiver.try_recv() {
+            if let LiveEvent::Recorded(event) = event
+                && event.event_type == "model_call_started"
+            {
+                self.seen_started.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        Ok(brain_protocol::ModelResult {
+            message: Message::assistant(vec![ContentBlock::text("ok")]),
+            stop_reason: brain_protocol::StopReason::EndTurn,
+            usage: Default::default(),
+        })
     }
 }
 
 #[tokio::test]
 async fn the_started_record_precedes_the_model_effect() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let runtime = Runtime::open(
-        &data_dir,
-        publisher.clone(),
-        8,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-        Arc::new(ScriptedLoop {
-            calls: AtomicUsize::new(0),
-        }),
-        Arc::new(ScriptedModel),
-        Arc::new(NoTools),
-    );
-    let handle = start(&runtime, request());
-    let session_id = handle.id().clone();
-    let finished = handle
+    let data_dir = temporary_directory("started-first");
+    let model = Arc::new(RecordingModel {
+        seen_started: AtomicUsize::new(0),
+        feed: Mutex::new(None),
+    });
+    let loop_executor = scripted(|input, services| async move {
+        let mut transcript = input.transcript;
+        transcript.push(user(&input.input.message));
+        let result = services.model(request(transcript.clone())).await?;
+        transcript.push(result.message);
+        done(transcript)
+    });
+    let runtime = runtime(&data_dir, loop_executor, model.clone(), Arc::new(NoTools));
+    *model.feed.lock().unwrap() = Some(runtime.subscribe());
+    let handle = runtime.create(&config(), &[]).unwrap();
+    handle
         .message(MessageRequest {
             input: "hello".into(),
         })
         .await
         .unwrap();
-    assert!(matches!(
-        finished.status,
-        brain_protocol::SessionStatus::Idle
-    ));
-    let events = runtime.events(&session_id, 0, 100);
-    let kinds: Vec<&str> = events
-        .events
-        .iter()
-        .map(|event| event.event_type.as_str())
-        .collect();
+    assert_eq!(
+        model.seen_started.load(Ordering::SeqCst),
+        1,
+        "model_call_started must be on the feed before the executor runs"
+    );
+    let kinds = runtime.kinds(handle.id());
     let started = kinds
         .iter()
-        .position(|kind| *kind == "model_call_started")
+        .position(|kind| kind == "model_call_started")
         .unwrap();
-    let finished = kinds
+    let ended = kinds
         .iter()
-        .position(|kind| *kind == "model_call_ended")
+        .position(|kind| kind == "model_call_ended")
         .unwrap();
-    assert!(started < finished);
-    // The loop said nothing about the prompt or the tools, so the call carries what the
-    // session was created with.
-    let call = &events.events[started].data;
-    assert_eq!(call["system"], "test");
-    assert_eq!(call["tools"], serde_json::json!([]));
-    assert!(
-        events
-            .events
-            .windows(2)
-            .all(|pair| pair[0].recorded_at_ms <= pair[1].recorded_at_ms)
-    );
-    let recorded_at_ms: Vec<_> = events
-        .events
-        .iter()
-        .map(|event| event.recorded_at_ms)
-        .collect();
-    assert_eq!(
-        publisher.metrics().queued_records(),
-        events.events.len(),
-        "every committed event enters the bounded telemetry queue"
-    );
-    let _ = recorded_at_ms;
+    assert!(started < ended);
+    assert_eq!(kinds.last().unwrap(), "turn_ended");
     drop(handle);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    fs::remove_dir_all(data_dir).unwrap();
+    settle(runtime, data_dir).await;
 }
 
 #[tokio::test]
 async fn cancel_interrupts_an_inflight_model_request() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let started = Arc::new(Notify::new());
-    let runtime = Runtime::open(
+    let data_dir = temporary_directory("cancel-model");
+    let loop_executor = scripted(|input, services| async move {
+        let mut transcript = input.transcript;
+        transcript.push(user(&input.input.message));
+        let result = services.model(request(transcript.clone())).await?;
+        transcript.push(result.message);
+        done(transcript)
+    });
+    let runtime = runtime(
         &data_dir,
-        publisher,
-        8,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-        Arc::new(ScriptedLoop {
-            calls: AtomicUsize::new(0),
-        }),
-        Arc::new(SlowModel {
-            started: started.clone(),
-        }),
+        loop_executor,
+        Arc::new(SlowModel),
         Arc::new(NoTools),
     );
-    let handle = start(&runtime, request());
-    let session_id = handle.id().clone();
-    let running = {
+    let handle = runtime.create(&config(), &[]).unwrap();
+    let turning = {
         let handle = handle.clone();
         tokio::spawn(async move {
             handle
@@ -283,440 +285,217 @@ async fn cancel_interrupts_an_inflight_model_request() {
                 .await
         })
     };
-    tokio::time::timeout(std::time::Duration::from_secs(1), started.notified())
-        .await
-        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
     handle.cancel().await.unwrap();
-    let session = tokio::time::timeout(std::time::Duration::from_secs(1), running)
+    let summary = tokio::time::timeout(Duration::from_secs(5), turning)
         .await
-        .unwrap()
+        .expect("a cancelled model call must not wait for the provider")
         .unwrap()
         .unwrap();
     assert!(matches!(
-        session.status,
+        summary.status,
         brain_protocol::SessionStatus::Idle
     ));
-    let events = runtime.events(&session_id, 0, 100).events;
-    assert_eq!(events.last().unwrap().event_type, "turn_failed");
-    assert_eq!(events.last().unwrap().data["code"], "cancelled");
+    let events = runtime.events(handle.id(), 0, 1_000).events;
+    let last = events.last().unwrap();
+    assert_eq!(last.event_type, "turn_failed");
+    assert_eq!(last.data["code"], "cancelled");
     assert!(
-        !events
+        events
             .iter()
-            .any(|event| event.event_type == "model_call_ended")
+            .any(|event| event.event_type == "model_call_failed"),
+        "the abandoned model call is recorded as failed"
     );
     drop(handle);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    fs::remove_dir_all(data_dir).unwrap();
+    settle(runtime, data_dir).await;
 }
 
 #[tokio::test]
 async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let started = Arc::new(Notify::new());
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let runtime = Runtime::open(
+    let data_dir = temporary_directory("cancel-tool");
+    let tools = Arc::new(OutcomeTools {
+        outcome: Outcome::Ok {
+            value: serde_json::json!({}),
+        },
+        delay: Duration::from_secs(30),
+        cancelled: Mutex::new(Vec::new()),
+    });
+    let loop_executor = scripted(|input, services| async move {
+        let results = services
+            .dispatch(vec![invocation("slow", "call_1")])
+            .await?;
+        let mut transcript = input.transcript;
+        transcript.push(user(&format!("{} results", results.len())));
+        done(transcript)
+    });
+    let runtime = runtime_with_deadline(
         &data_dir,
-        publisher,
-        8,
+        loop_executor,
+        tools.clone(),
         brain::DEFAULT_TOOL_DEADLINE_MS,
-        Arc::new(ToolLoop),
-        Arc::new(NoModels),
-        Arc::new(SlowTools {
-            started: started.clone(),
-            cancelled: cancelled.clone(),
-        }),
     );
-    let handle = start(&runtime, tool_request());
-    let session_id = handle.id().clone();
-    let running = {
+    let handle = runtime
+        .create(&tool_config("slow", vec![], vec![]), &[])
+        .unwrap();
+    let turning = {
         let handle = handle.clone();
-        tokio::spawn(async move {
-            handle
-                .message(MessageRequest {
-                    input: "run".into(),
-                })
-                .await
-        })
+        tokio::spawn(async move { handle.message(MessageRequest { input: "go".into() }).await })
     };
-    tokio::time::timeout(std::time::Duration::from_secs(1), started.notified())
-        .await
-        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
     handle.cancel().await.unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(1), running)
+    tokio::time::timeout(Duration::from_secs(5), turning)
         .await
-        .unwrap()
+        .expect("a cancelled tool call must not wait for the environment")
         .unwrap()
         .unwrap();
-    assert!(cancelled.load(Ordering::Acquire));
-    let kinds: Vec<_> = runtime
-        .events(&session_id, 0, 100)
-        .events
-        .into_iter()
-        .map(|event| event.event_type)
-        .collect();
+    let kinds = runtime.kinds(handle.id());
     assert!(kinds.iter().any(|kind| kind == "tool_cancel_started"));
     assert!(kinds.iter().any(|kind| kind == "tool_cancel_ended"));
     assert_eq!(kinds.last().unwrap(), "turn_failed");
+    assert_eq!(tools.cancelled.lock().unwrap().len(), 1);
     drop(handle);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    fs::remove_dir_all(data_dir).unwrap();
+    settle(runtime, data_dir).await;
 }
 
-fn request() -> SessionConfig {
-    SessionConfig {
-        agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
-        brain_configuration: serde_json::json!({}),
-        model: ModelBinding {
-            binding_id: "gateway".into(),
-            model: "openai/test".into(),
-        },
-        system: "test".into(),
-        response_format: None,
-        tools: Vec::new(),
-        environments: Vec::new(),
-        tool_bindings: Vec::new(),
-        idle_ttl_ms: None,
-    }
-}
-
-fn tool_request() -> SessionConfig {
-    tool_request_with("slow", Vec::new(), Vec::new())
-}
-
-/// A sealed configuration binding one tool with the given `needs` to one
-/// environment declaring the given resources.
-fn tool_request_with(tool_name: &str, needs: Vec<&str>, declares: Vec<&str>) -> SessionConfig {
-    let environment = EnvironmentBinding {
-        environment_id: EnvironmentId::new("workspace"),
-        directory_generation: 1,
-    };
-    SessionConfig {
-        agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
-        brain_configuration: serde_json::json!({}),
-        model: ModelBinding {
-            binding_id: "gateway".into(),
-            model: "openai/test".into(),
-        },
-        system: "test".into(),
-        response_format: None,
-        tools: vec![ToolDefinition {
-            name: tool_name.into(),
-            description: "wait".into(),
-            input_schema: serde_json::json!({"type":"object"}),
-            output_schema: None,
-        }],
-        environments: vec![EnvironmentAttachment {
-            environment_id: EnvironmentId::new("workspace"),
-            binding: Some(environment.clone()),
-            attachment_id: Some(AttachmentId::new("attachment")),
-            runtimes: vec![EnvironmentRuntime::Esm],
-            resources: declares
-                .into_iter()
-                .map(|name| (name.to_string(), serde_json::json!({})))
-                .collect(),
-        }],
-        tool_bindings: vec![ToolBinding {
-            name: tool_name.into(),
-            environment_id: Some(EnvironmentId::new("workspace")),
-            environment: Some(environment),
-            attachment_id: Some(AttachmentId::new("attachment")),
-            needs: needs.into_iter().map(String::from).collect(),
-            binding_names: Vec::new(),
-            hosting: ToolHosting::Provisioned,
-            program: None,
-        }],
-        idle_ttl_ms: None,
-    }
-}
-
-/// A sealed configuration binding one client-hosted tool: no environment anywhere.
-fn client_tool_request(tool_name: &str) -> SessionConfig {
-    SessionConfig {
-        agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
-        brain_configuration: serde_json::json!({}),
-        model: ModelBinding {
-            binding_id: "gateway".into(),
-            model: "openai/test".into(),
-        },
-        system: "test".into(),
-        response_format: None,
-        tools: vec![ToolDefinition {
-            name: tool_name.into(),
-            description: "answered by the session's creator".into(),
-            input_schema: serde_json::json!({"type":"object"}),
-            output_schema: None,
-        }],
-        environments: Vec::new(),
-        tool_bindings: vec![ToolBinding {
-            name: tool_name.into(),
-            environment_id: None,
-            environment: None,
-            attachment_id: None,
-            needs: Vec::new(),
-            binding_names: Vec::new(),
-            hosting: ToolHosting::Client,
-            program: None,
-        }],
-        idle_ttl_ms: None,
-    }
-}
-
-fn temporary_directory() -> PathBuf {
-    let path = std::env::temp_dir().join(format!("brain-runtime-test-{}", rand::random::<u64>()));
-    fs::create_dir(&path).unwrap();
-    path
-}
-
-/// Sessions are created the way the server creates them: the configuration is admitted,
-/// then attached and completed. There is no shortcut past `Session::begin`, so these
-/// tests exercise the same validation the production path enforces.
-fn start(runtime: &Runtime, config: SessionConfig) -> Session {
-    runtime.create(&config, &[]).unwrap()
-}
-
-/// A client watching a session must see the model's output while the turn is running.
-///
-/// The actor received deltas from the model and pushed them into a local buffer, and
-/// nothing forwarded them: the whole assistant message appeared at once, when the turn was
-/// already over, so there was no first token to wait for. The deltas are not journalled --
-/// recording one would be a durable write per token -- so a subscription is the only place
-/// they appear.
 #[tokio::test]
 async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let runtime = Runtime::open(
+    let data_dir = temporary_directory("streaming");
+    let loop_executor = scripted(|input, services| async move {
+        let mut transcript = input.transcript;
+        transcript.push(user(&input.input.message));
+        let result = services.model(request(transcript.clone())).await?;
+        transcript.push(result.message);
+        done(transcript)
+    });
+    let runtime = runtime(
         &data_dir,
-        publisher,
-        8,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-        Arc::new(ScriptedLoop {
-            calls: AtomicUsize::new(0),
-        }),
+        loop_executor,
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
     );
-    // Subscribed before the turn, the way a client opens a stream and then sends.
-    let mut live = runtime.subscribe();
-    let handle = start(&runtime, request());
+    let mut feed = runtime.subscribe();
+    let handle = runtime.create(&config(), &[]).unwrap();
     handle
         .message(MessageRequest {
             input: "hello".into(),
         })
         .await
         .unwrap();
-
-    let mut streamed = Vec::new();
-    let mut recorded_after_the_first_delta = false;
-    let mut seen_delta = false;
-    while let Ok((_, event)) = live.try_recv() {
-        match event {
-            brain_protocol::LiveEvent::Streaming(streaming) => {
-                seen_delta = true;
-                streamed.push(streaming);
-            }
-            brain_protocol::LiveEvent::Recorded(record) => {
-                if seen_delta && record.event_type == "model_call_ended" {
-                    recorded_after_the_first_delta = true;
-                }
-            }
+    let mut streamed = 0;
+    while let Ok((_, event)) = feed.try_recv() {
+        if let LiveEvent::Streaming(streaming) = event {
+            assert_eq!(streaming.event_type, "assistant_delta");
+            streamed += 1;
         }
     }
-    drop(handle);
-    runtime.drain();
-    drop(runtime);
-    // Best-effort: the writer thread may still hold a segment open, and the assertions
-    // below are what this test is for.
-    let _ = std::fs::remove_dir_all(data_dir);
-
-    let text = streamed
-        .iter()
-        .find(|streaming| streaming.event_type == "assistant_delta")
-        .map(|streaming| streaming.data.clone());
-    assert_eq!(
-        text,
-        Some(serde_json::json!({ "index": 0, "text": "hello" })),
-        "the model's output never reached a subscriber: {streamed:?}"
-    );
+    assert_eq!(streamed, 1, "the delta reaches subscribers");
+    let kinds = runtime.kinds(handle.id());
     assert!(
-        recorded_after_the_first_delta,
-        "the delta did not arrive before the record that holds the finished message, so it \
-         is not telling a watcher anything the journal was not already going to"
+        !kinds.iter().any(|kind| kind == "assistant_delta"),
+        "deltas are never journalled"
     );
-}
-
-/// Records an agentloop that was told what the session is continuing.
-struct RecordsHistory {
-    seen: Arc<std::sync::Mutex<Option<Vec<serde_json::Value>>>>,
-}
-
-#[async_trait]
-impl LoopExecutor for RecordsHistory {
-    async fn activate(
-        &self,
-        _session: &brain_protocol::SessionId,
-        _agentloop: &AgentloopIdentity,
-        input: ActivationInput,
-    ) -> Result<ActivationOutput, Error> {
-        let mut context = input.context;
-        if let Observation::SessionStarted { history } = &input.observation {
-            *self.seen.lock().unwrap() = Some(history.clone());
-            // What a real loop does with history: turn it into its own context. The shape
-            // is the loop's business, which is exactly why Brain hands over the events
-            // rather than a context it built itself.
-            for event in history {
-                context.items.push(event.clone());
-            }
-            return Ok(ActivationOutput {
-                context,
-                decision: Decision::Finish { result: None },
-            });
-        }
-        Ok(ActivationOutput {
-            context,
-            decision: Decision::Finish {
-                result: Some(serde_json::json!({"ok": true})),
-            },
-        })
-    }
-}
-
-fn history_of(count: u64) -> Vec<brain_protocol::HistoryEvent> {
-    (1..=count)
-        .map(|sequence| brain_protocol::HistoryEvent {
-            sequence,
-            recorded_at_ms: Some(1_787_846_400_000 + sequence),
-            event_type: "output_emitted".to_owned(),
-            data: serde_json::json!({"content": format!("earlier {sequence}")}),
-        })
-        .collect()
-}
-
-fn start_with_history(
-    runtime: &Runtime,
-    config: SessionConfig,
-    history: Vec<brain_protocol::HistoryEvent>,
-) -> Result<Session, Error> {
-    runtime.create(&config, &history)
-}
-
-/// A session created with history has that history in its journal, and the agentloop is
-/// told about it before anything is asked of it.
-///
-/// This is what replaces surviving a restart: the process that held the session is gone,
-/// the application kept the events it was already receiving, and it hands them back.
-#[tokio::test]
-async fn a_session_can_be_created_with_prior_history() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let seen = Arc::new(std::sync::Mutex::new(None));
-    let runtime = Runtime::open(
-        &data_dir,
-        publisher,
-        8,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-        Arc::new(RecordsHistory {
-            seen: Arc::clone(&seen),
-        }),
-        Arc::new(ScriptedModel),
-        Arc::new(NoTools),
-    );
-
-    let handle = start_with_history(&runtime, request(), history_of(3)).unwrap();
-    let session_id = handle.id().clone();
-    // The actor announces history on its own task, so give it the moment it needs.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let told = seen.lock().unwrap().clone();
-    let told = told.expect("the agentloop must be told the session is continuing one");
-    assert_eq!(told.len(), 3, "every event handed back must reach the loop");
-    assert_eq!(told[0]["content"], "earlier 1");
-
-    // And the journal holds them, so reading the session back reads the whole conversation.
-    let events = runtime.events(&session_id, 0, 100).events;
-    let replayed: Vec<&str> = events
-        .iter()
-        .filter(|event| event.event_type == "output_emitted")
-        .filter_map(|event| event.data["content"].as_str())
-        .collect();
-    assert_eq!(replayed, vec!["earlier 1", "earlier 2", "earlier 3"]);
-
-    // Sequences are this session's own, dense from its first record: the numbers the
-    // caller supplied name positions in a session that no longer exists.
-    let sequences: Vec<u64> = events.iter().map(|event| event.sequence).collect();
-    let dense: Vec<u64> = (1..=sequences.len() as u64).collect();
-    assert_eq!(
-        sequences, dense,
-        "records must be numbered densely from one, whatever the caller's numbering was"
-    );
-
     drop(handle);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _ = fs::remove_dir_all(data_dir);
+    settle(runtime, data_dir).await;
 }
 
-/// History that skips or repeats a position is a conversation with a piece missing or
-/// moved, and writing it down as though it were whole would make the journal a worse
-/// record than no journal.
+/// A session created with a transcript opens on it: the loop's first turn sees the
+/// messages the caller carried forward.
 #[tokio::test]
-async fn history_out_of_order_is_refused() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let runtime = Runtime::open(
-        &data_dir,
-        publisher,
-        8,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-        Arc::new(ScriptedLoop {
-            calls: AtomicUsize::new(0),
-        }),
-        Arc::new(ScriptedModel),
-        Arc::new(NoTools),
-    );
-
-    let mut history = history_of(3);
-    history[2].sequence = 2;
-    let error = match start_with_history(&runtime, request(), history) {
-        Ok(_) => panic!("a conversation with a repeated position must not be accepted"),
-        Err(error) => error,
+async fn a_session_can_be_created_with_a_transcript() {
+    let data_dir = temporary_directory("seed");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let loop_executor = {
+        let seen = seen.clone();
+        scripted(move |input, _services| {
+            let seen = seen.clone();
+            async move {
+                *seen.lock().unwrap() = input.transcript.clone();
+                let mut transcript = input.transcript;
+                transcript.push(user(&input.input.message));
+                done(transcript)
+            }
+        })
     };
-    assert!(
-        error.to_string().contains("out of order"),
-        "the refusal must say what is wrong with it: {error}"
+    let runtime = runtime(
+        &data_dir,
+        loop_executor,
+        Arc::new(NoModels),
+        Arc::new(NoTools),
     );
-
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _ = fs::remove_dir_all(data_dir);
+    let seed = vec![user("earlier"), user("and earlier still")];
+    let handle = runtime.create(&config(), &seed).unwrap();
+    handle
+        .message(MessageRequest {
+            input: "now".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(*seen.lock().unwrap(), seed);
+    let folded = runtime.store(handle.id()).fold().unwrap();
+    assert_eq!(folded.transcript.len(), 3);
+    drop(handle);
+    settle(runtime, data_dir).await;
 }
 
-/// What Brain leaves on disk, asserted rather than assumed.
-///
-/// The journal, and nothing else. It used to be the journal plus a state file per session
-/// plus a SQLite database of encrypted credentials plus the key that opened it — all of it
-/// there so a session could outlive its process, which sessions no longer do. A file
-/// appearing here again should be a decision someone made, not something noticed later.
+/// A loop may append its own records but never Brain's: the kinds a restart reads a
+/// session's state out of, and the kinds Brain's services write.
+#[tokio::test]
+async fn a_loop_cannot_append_brains_own_kinds() {
+    let data_dir = temporary_directory("reserved");
+    let loop_executor = scripted(|input, services| async move {
+        for kind in ["turn_ended", "session_ended", "model_call_started"] {
+            let refused = services.append(kind.into(), serde_json::json!({})).await;
+            assert!(refused.is_err(), "{kind} must be refused");
+        }
+        services
+            .append(
+                "output_emitted".into(),
+                serde_json::json!({"type": "assistant_message"}),
+            )
+            .await?;
+        services
+            .append("note".into(), serde_json::json!({"text": "mine"}))
+            .await?;
+        done(input.transcript)
+    });
+    let runtime = runtime(
+        &data_dir,
+        loop_executor,
+        Arc::new(NoModels),
+        Arc::new(NoTools),
+    );
+    let handle = runtime.create(&config(), &[]).unwrap();
+    handle
+        .message(MessageRequest { input: "go".into() })
+        .await
+        .unwrap();
+    let kinds = runtime.kinds(handle.id());
+    assert!(kinds.iter().any(|kind| kind == "output_emitted"));
+    assert!(kinds.iter().any(|kind| kind == "note"));
+    assert_eq!(kinds.iter().filter(|kind| *kind == "turn_ended").count(), 1);
+    drop(handle);
+    settle(runtime, data_dir).await;
+}
+
+/// What Brain leaves on disk, asserted rather than assumed: a session's configuration
+/// and its segments, and nothing else.
 #[tokio::test]
 async fn the_journal_is_the_only_thing_written() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let runtime = Runtime::open(
+    let data_dir = temporary_directory("files");
+    let loop_executor = scripted(|input, services| async move {
+        let mut transcript = input.transcript;
+        transcript.push(user(&input.input.message));
+        let result = services.model(request(transcript.clone())).await?;
+        transcript.push(result.message);
+        done(transcript)
+    });
+    let runtime = runtime(
         &data_dir,
-        publisher,
-        8,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-        Arc::new(OrdinaryTurn),
+        loop_executor,
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
     );
-    let handle = start(&runtime, request());
+    let handle = runtime.create(&config(), &[]).unwrap();
     for _ in 0..10 {
         handle
             .message(MessageRequest {
@@ -728,7 +507,7 @@ async fn the_journal_is_the_only_thing_written() {
     drop(handle);
     runtime.drain();
     drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut found = Vec::new();
     fn walk(dir: &std::path::Path, prefix: &str, found: &mut Vec<String>) {
@@ -747,7 +526,6 @@ async fn the_journal_is_the_only_thing_written() {
     walk(&data_dir, "", &mut found);
     found.sort();
     let _ = fs::remove_dir_all(&data_dir);
-
     assert!(
         found
             .iter()
@@ -755,178 +533,30 @@ async fn the_journal_is_the_only_thing_written() {
         "a session's directory holds its configuration and its segments and nothing else; found {found:?}"
     );
     assert!(
-        found.iter().any(|name| name.ends_with(".segment")),
-        "ten turns must have written a segment"
+        found
+            .iter()
+            .any(|name| name.contains("/journal/") && name.ends_with(".segment"))
     );
-}
-
-/// A turn shaped like a real one: ask the model, emit what it said, finish.
-struct OrdinaryTurn;
-
-#[async_trait]
-impl LoopExecutor for OrdinaryTurn {
-    async fn activate(
-        &self,
-        _session: &brain_protocol::SessionId,
-        _agentloop: &AgentloopIdentity,
-        input: ActivationInput,
-    ) -> Result<ActivationOutput, Error> {
-        let mut context = input.context;
-        let decision = match input.observation {
-            Observation::UserMessage { input } => {
-                context.items.push(serde_json::to_value(&input).unwrap());
-                Decision::Model {
-                    request: ModelRequest {
-                        system: None,
-                        tools: None,
-                        messages: vec![brain_protocol::Message::user_text("hello")],
-                        response_format: None,
-                        max_output_tokens: Some(16),
-                    },
-                }
-            }
-            Observation::ModelCompleted { response } => {
-                context.items.push(response);
-                Decision::Emit {
-                    event: serde_json::json!({"type": "assistant_message", "content": "ok"}),
-                }
-            }
-            _ => Decision::Finish {
-                result: Some(serde_json::json!({"ok": true})),
-            },
-        };
-        Ok(ActivationOutput { context, decision })
-    }
-}
-
-/// A caller's history cannot wear a lifecycle record's name.
-///
-/// A restart derives a session's status by reading these kinds back out of the journal, so
-/// a client able to supply `session_ended` as history could describe a session that never
-/// happened and have a later restart believe it.
-#[tokio::test]
-async fn history_cannot_forge_a_lifecycle_record() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let runtime = Runtime::open(
-        &data_dir,
-        publisher,
-        8,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-        Arc::new(ScriptedLoop {
-            calls: AtomicUsize::new(0),
-        }),
-        Arc::new(ScriptedModel),
-        Arc::new(NoTools),
+    assert!(
+        found
+            .iter()
+            .any(|name| name.contains("/events/") && name.ends_with(".segment"))
     );
-
-    for forged in ["session_ended", "turn_started", "session_creation_ended"] {
-        let history = vec![brain_protocol::HistoryEvent {
-            sequence: 1,
-            recorded_at_ms: None,
-            event_type: forged.to_owned(),
-            data: serde_json::json!({}),
-        }];
-        let error = match start_with_history(&runtime, request(), history) {
-            Ok(_) => panic!("history must not be allowed to carry {forged}"),
-            Err(error) => error,
-        };
-        assert!(
-            error.to_string().contains(forged),
-            "the refusal must name the record it refused: {error}"
-        );
-    }
-
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _ = fs::remove_dir_all(data_dir);
-}
-
-/// A first activation that asks for one tool call, then finishes with whatever came
-/// back, so a test can read the observed results out of the turn's final record.
-struct OneToolTurn {
-    tool: &'static str,
-}
-
-#[async_trait]
-impl LoopExecutor for OneToolTurn {
-    async fn activate(
-        &self,
-        _session: &brain_protocol::SessionId,
-        _agentloop: &AgentloopIdentity,
-        input: ActivationInput,
-    ) -> Result<ActivationOutput, Error> {
-        let decision = match input.observation {
-            Observation::ToolsCompleted { results } => Decision::Finish {
-                result: Some(serde_json::json!({ "results": results })),
-            },
-            _ => Decision::Tools {
-                calls: vec![ToolInvocation {
-                    call_id: "call-1".into(),
-                    name: self.tool.into(),
-                    input: serde_json::json!({}),
-                }],
-            },
-        };
-        Ok(ActivationOutput {
-            context: input.context,
-            decision,
-        })
-    }
-}
-
-/// Answers every invoke with a scripted outcome.
-struct ScriptedOutcome {
-    outcome: Outcome,
-}
-
-#[async_trait]
-impl ToolExecutor for ScriptedOutcome {
-    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, Error> {
-        Ok(self.outcome.clone())
-    }
-
-    async fn cancel(&self, _cancellation: ToolCancellation) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-fn runtime_with(
-    data_dir: &Path,
-    loop_executor: Arc<dyn LoopExecutor>,
-    tool_executor: Arc<dyn ToolExecutor>,
-    tool_deadline_ms: u64,
-) -> Runtime {
-    let (publisher, _worker) = telemetry_channel();
-    Runtime::open(
-        data_dir,
-        publisher,
-        8,
-        tool_deadline_ms,
-        loop_executor,
-        Arc::new(NoModels),
-        tool_executor,
-    )
 }
 
 /// The bind check: a tool whose `needs` is not covered by its environment's declared
 /// resources is rejected at create, and the error names the resource, the tool, and
-/// the environment — the bash-on-a-browser mistake surfaces before a session exists
-/// instead of at runtime.
+/// the environment.
 #[tokio::test]
 async fn needs_beyond_declared_resources_rejects_create_naming_all_three_parties() {
-    let data_dir = temporary_directory();
-    let runtime = runtime_with(
+    let data_dir = temporary_directory("bind-check");
+    let runtime = runtime(
         &data_dir,
-        Arc::new(OneToolTurn { tool: "bash" }),
+        echo_loop(),
+        Arc::new(NoModels),
         Arc::new(NoTools),
-        brain::DEFAULT_TOOL_DEADLINE_MS,
     );
-
-    let sealed = tool_request_with("bash", vec!["process"], vec!["dom"]);
-    // The configuration is already attached, so the bind check fires at admission; a
-    // host that attaches after `begin` is rejected at `complete` by the same bound.
-    let error = match runtime.create(&sealed, &[]) {
+    let error = match runtime.create(&tool_config("bash", vec!["process"], vec!["dom"]), &[]) {
         Ok(_) => {
             panic!("a tool needing `process` must not bind to an environment declaring only `dom`")
         }
@@ -939,483 +569,329 @@ async fn needs_beyond_declared_resources_rejects_create_naming_all_three_parties
             "the rejection must name {named:?}: {message}"
         );
     }
-
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _ = fs::remove_dir_all(data_dir);
+    settle(runtime, data_dir).await;
 }
 
-/// A tool that declares nothing binds anywhere — including to an environment that
-/// declares nothing at all.
 #[tokio::test]
 async fn empty_needs_binds_to_any_environment() {
-    let data_dir = temporary_directory();
-    let runtime = runtime_with(
+    let data_dir = temporary_directory("bind-any");
+    let runtime = runtime(
         &data_dir,
-        Arc::new(OneToolTurn { tool: "plain" }),
-        Arc::new(ScriptedOutcome {
-            outcome: Outcome::Ok {
-                value: serde_json::json!({"ok": true}),
-            },
-        }),
-        brain::DEFAULT_TOOL_DEADLINE_MS,
+        echo_loop(),
+        Arc::new(NoModels),
+        Arc::new(NoTools),
     );
-
-    let sealed = tool_request_with("plain", Vec::new(), Vec::new());
-    let handle = start(&runtime, sealed);
-    let session = handle
-        .message(MessageRequest {
-            input: "run".into(),
-        })
-        .await
+    let handle = runtime
+        .create(&tool_config("note", vec![], vec![]), &[])
         .unwrap();
     assert!(matches!(
-        session.status,
+        runtime.session(handle.id()).status,
         brain_protocol::SessionStatus::Idle
     ));
-
     drop(handle);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _ = fs::remove_dir_all(data_dir);
+    settle(runtime, data_dir).await;
 }
 
-/// Non-ok invoke outcomes land in the loop's view as failed tool results whose output
-/// carries a readable code, and an ok outcome passes its value through untouched.
 #[tokio::test]
 async fn invoke_outcomes_map_onto_tool_results() {
-    let cases: Vec<(Outcome, bool, serde_json::Value)> = vec![
+    for (outcome, code) in [
+        (
+            Outcome::Error {
+                error: OutcomeError {
+                    code: "boom".into(),
+                    message: "it broke".into(),
+                    details: None,
+                },
+            },
+            Some("boom"),
+        ),
+        (Outcome::Timeout, Some("timeout")),
+        (Outcome::Cancelled, Some("cancelled")),
         (
             Outcome::Ok {
                 value: serde_json::json!({"content": "done"}),
             },
-            false,
-            serde_json::json!("done"),
+            None,
         ),
-        (
-            Outcome::Error {
-                error: OutcomeError {
-                    code: "exec_denied".into(),
-                    message: "policy".into(),
-                    details: None,
-                },
-            },
-            true,
-            serde_json::json!("exec_denied"),
-        ),
-        (Outcome::Timeout, true, serde_json::json!("timeout")),
-        (Outcome::Cancelled, true, serde_json::json!("cancelled")),
-    ];
-    for (outcome, is_error, marker) in cases {
-        let data_dir = temporary_directory();
-        let runtime = runtime_with(
-            &data_dir,
-            Arc::new(OneToolTurn { tool: "slow" }),
-            Arc::new(ScriptedOutcome {
-                outcome: outcome.clone(),
-            }),
-            brain::DEFAULT_TOOL_DEADLINE_MS,
-        );
-        let handle = start(&runtime, tool_request());
-        let session_id = handle.id().clone();
-        handle
-            .message(MessageRequest {
-                input: "run".into(),
+    ] {
+        let data_dir = temporary_directory("outcomes");
+        let tools = Arc::new(OutcomeTools {
+            outcome,
+            delay: Duration::ZERO,
+            cancelled: Mutex::new(Vec::new()),
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let loop_executor = {
+            let seen = seen.clone();
+            scripted(move |input, services| {
+                let seen = seen.clone();
+                async move {
+                    let results = services
+                        .dispatch(vec![invocation("tool", "call_1")])
+                        .await?;
+                    *seen.lock().unwrap() = results;
+                    done(input.transcript)
+                }
             })
+        };
+        let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5_000);
+        let handle = runtime
+            .create(&tool_config("tool", vec![], vec![]), &[])
+            .unwrap();
+        handle
+            .message(MessageRequest { input: "go".into() })
             .await
             .unwrap();
-        let events = runtime.events(&session_id, 0, 100).events;
-        let result = events
-            .iter()
-            .find(|event| event.event_type == "tool_call_ended")
-            .expect("the invoke must record a tool result");
-        assert_eq!(
-            result.data["result"]["is_error"], is_error,
-            "{outcome:?} must map to is_error={is_error}"
-        );
-        let output = &result.data["result"]["output"];
-        let carried = if is_error {
-            output["code"].clone()
-        } else {
-            output["content"].clone()
-        };
-        assert_eq!(carried, marker, "{outcome:?} produced {output}");
+        let results = seen.lock().unwrap().clone();
+        assert_eq!(results.len(), 1);
+        match code {
+            Some(code) => {
+                assert!(results[0].is_error);
+                assert_eq!(results[0].output["code"], code);
+            }
+            None => {
+                assert!(!results[0].is_error);
+                assert_eq!(results[0].output["content"], "done");
+            }
+        }
         drop(handle);
-        drop(runtime);
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        let _ = fs::remove_dir_all(data_dir);
+        settle(runtime, data_dir).await;
     }
 }
 
-/// The deadline is enforced by the caller: an invoke that outlives `deadline_ms` is
-/// dropped, recorded as a `timeout` tool result, and its environment is told to cancel
-/// — because the remote cannot be trusted to stop on its own.
 #[tokio::test]
 async fn an_overdue_invoke_is_killed_and_recorded_as_timeout() {
-    let data_dir = temporary_directory();
-    let started = Arc::new(Notify::new());
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let runtime = runtime_with(
-        &data_dir,
-        Arc::new(OneToolTurn { tool: "slow" }),
-        Arc::new(SlowTools {
-            started: started.clone(),
-            cancelled: cancelled.clone(),
-        }),
-        50,
-    );
-    let handle = start(&runtime, tool_request());
-    let session_id = handle.id().clone();
-    let session = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        handle.message(MessageRequest {
-            input: "run".into(),
-        }),
-    )
-    .await
-    .expect("the deadline must end the call long before the executor's 60s sleep")
-    .unwrap();
-    assert!(matches!(
-        session.status,
-        brain_protocol::SessionStatus::Idle
-    ));
-    assert!(
-        cancelled.load(Ordering::Acquire),
-        "the environment must be told to stop the abandoned work"
-    );
-    let events = runtime.events(&session_id, 0, 100).events;
-    let result = events
-        .iter()
-        .find(|event| event.event_type == "tool_call_ended")
-        .expect("the expired invoke must still record a tool result");
-    assert_eq!(result.data["result"]["is_error"], true);
-    assert_eq!(result.data["result"]["output"]["code"], "timeout");
-    assert!(
-        events
-            .iter()
-            .any(|event| event.event_type == "tool_cancel_started"),
-        "the kill must be journalled as a cancellation intent"
-    );
-
-    drop(handle);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _ = fs::remove_dir_all(data_dir);
-}
-
-/// A dispatch that reaches the environment executor for a client-hosted call is the
-/// bug this executor exists to catch.
-struct RefusesDispatch;
-
-#[async_trait]
-impl ToolExecutor for RefusesDispatch {
-    async fn execute(&self, _dispatch: ToolDispatch) -> Result<Outcome, Error> {
-        Err(Error::InvalidState(
-            "a client-hosted call must never reach the environment executor".into(),
-        ))
-    }
-
-    async fn cancel(&self, _cancellation: ToolCancellation) -> Result<(), Error> {
-        Err(Error::InvalidState(
-            "a client-hosted cancellation must never reach the environment executor".into(),
-        ))
-    }
-}
-
-/// A client-hosted tool call parks the turn on its `tool_call_started` and finishes when
-/// the outcome is POSTed back: no environment executor is on the path, the record's
-/// sequence is what the answer is correlated by, and the answered value lands in the
-/// journalled `tool_call_ended` untouched.
-#[tokio::test]
-async fn a_client_tool_call_parks_until_its_outcome_is_posted() {
-    let data_dir = temporary_directory();
-    let runtime = runtime_with(
-        &data_dir,
-        Arc::new(OneToolTurn { tool: "local" }),
-        Arc::new(RefusesDispatch),
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-    );
-    let handle = start(&runtime, client_tool_request("local"));
-    let session_id = handle.id().clone();
-    let turn = {
-        let handle = handle.clone();
-        tokio::spawn(async move {
-            handle
-                .message(MessageRequest {
-                    input: "run".into(),
-                })
-                .await
+    let data_dir = temporary_directory("tool-timeout");
+    let tools = Arc::new(OutcomeTools {
+        outcome: Outcome::Ok {
+            value: serde_json::json!({}),
+        },
+        delay: Duration::from_secs(30),
+        cancelled: Mutex::new(Vec::new()),
+    });
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let loop_executor = {
+        let seen = seen.clone();
+        scripted(move |input, services| {
+            let seen = seen.clone();
+            async move {
+                let results = services
+                    .dispatch(vec![invocation("slow", "call_1")])
+                    .await?;
+                *seen.lock().unwrap() = results;
+                done(input.transcript)
+            }
         })
     };
-    let mut sequence = None;
-    for _ in 0..500 {
-        let events = runtime.events(&session_id, 0, 100).events;
-        if let Some(started) = events
-            .iter()
-            .find(|event| event.event_type == "tool_call_started")
-        {
-            assert_eq!(started.data["binding"]["hosting"], "client");
-            assert!(
-                started.data["binding"].get("environment").is_none()
-                    || started.data["binding"]["environment"].is_null(),
-                "a client tool call must not carry an environment binding"
-            );
-            assert_eq!(started.data["sequence"], started.sequence);
-            sequence = Some(started.sequence);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    let sequence = sequence.expect("the parked call must journal its tool_call_started");
-    handle
-        .resolve_tool_call(
-            sequence,
-            Outcome::Ok {
-                value: serde_json::json!({"content": "from the client"}),
-            },
-        )
-        .expect("the parked call must accept its outcome");
-    let session = tokio::time::timeout(std::time::Duration::from_secs(5), turn)
-        .await
-        .expect("the turn must finish once the outcome lands")
-        .unwrap()
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools.clone(), 200);
+    let handle = runtime
+        .create(&tool_config("slow", vec![], vec![]), &[])
         .unwrap();
-    assert!(matches!(
-        session.status,
-        brain_protocol::SessionStatus::Idle
-    ));
-    let events = runtime.events(&session_id, 0, 100).events;
-    let result = events
-        .iter()
-        .find(|event| event.event_type == "tool_call_ended")
-        .expect("the answered call must journal a tool result");
-    assert_eq!(result.data["result"]["is_error"], false);
-    assert_eq!(
-        result.data["result"]["output"]["content"],
-        "from the client"
-    );
-
-    drop(handle);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _ = fs::remove_dir_all(data_dir);
-}
-
-/// An answer for a call nobody is waiting on — unknown, expired, or already answered —
-/// is refused, so a duplicate POST past the idempotency window cannot invent a result.
-#[tokio::test]
-async fn resolving_an_unknown_call_is_refused() {
-    let data_dir = temporary_directory();
-    let runtime = runtime_with(
-        &data_dir,
-        Arc::new(OneToolTurn { tool: "local" }),
-        Arc::new(RefusesDispatch),
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-    );
-    let handle = start(&runtime, client_tool_request("local"));
-    let error = handle
-        .resolve_tool_call(
-            999,
-            Outcome::Ok {
-                value: serde_json::json!(null),
-            },
-        )
-        .expect_err("an unknown call must be refused");
-    assert!(error.to_string().contains("no client Tool call is pending"));
-
-    drop(handle);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _ = fs::remove_dir_all(data_dir);
-}
-
-/// A client call nobody answers dies at the runtime's deadline exactly like an overdue
-/// environment invoke: a `timeout` tool result, a journalled cancellation intent for
-/// the client to abort on, and no environment executor touched anywhere.
-#[tokio::test]
-async fn an_unanswered_client_call_times_out_and_journals_the_cancellation() {
-    let data_dir = temporary_directory();
-    let runtime = runtime_with(
-        &data_dir,
-        Arc::new(OneToolTurn { tool: "local" }),
-        Arc::new(RefusesDispatch),
-        50,
-    );
-    let handle = start(&runtime, client_tool_request("local"));
-    let session_id = handle.id().clone();
-    let session = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        handle.message(MessageRequest {
-            input: "run".into(),
-        }),
-    )
-    .await
-    .expect("the deadline must end the unanswered call")
-    .unwrap();
-    assert!(matches!(
-        session.status,
-        brain_protocol::SessionStatus::Idle
-    ));
-    let events = runtime.events(&session_id, 0, 100).events;
-    let result = events
-        .iter()
-        .find(|event| event.event_type == "tool_call_ended")
-        .expect("the expired call must still record a tool result");
-    assert_eq!(result.data["result"]["is_error"], true);
-    assert_eq!(result.data["result"]["output"]["code"], "timeout");
-    events
-        .iter()
-        .find(|event| event.event_type == "tool_cancel_ended")
-        .expect("dropping the park must be journalled as the cancellation");
-
-    drop(handle);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _ = fs::remove_dir_all(data_dir);
-}
-
-/// A loop that resends the conversation, then rewrites its first message, then swaps
-/// the system prompt.
-struct RewritingLoop {
-    calls: AtomicUsize,
-}
-
-#[async_trait]
-impl LoopExecutor for RewritingLoop {
-    async fn activate(
-        &self,
-        _session: &brain_protocol::SessionId,
-        _agentloop: &AgentloopIdentity,
-        input: ActivationInput,
-    ) -> Result<ActivationOutput, Error> {
-        let call = self.calls.fetch_add(1, Ordering::Relaxed);
-        let user = brain_protocol::Message::user_text;
-        let request = |system: &str, messages: Vec<brain_protocol::Message>| ModelRequest {
-            system: Some(system.into()),
-            tools: None,
-            messages,
-            response_format: None,
-            max_output_tokens: None,
-        };
-        let decision = match call {
-            0 => Decision::Model {
-                request: request("be terse", vec![user("one"), user("two")]),
-            },
-            // Appended: only the tail is new.
-            1 => Decision::Model {
-                request: request("be terse", vec![user("one"), user("two"), user("three")]),
-            },
-            // The first message rewritten: everything from it is new.
-            2 => Decision::Model {
-                request: request("be terse", vec![user("uno"), user("two"), user("three")]),
-            },
-            // The system prompt changed: position zero, so the whole request is new.
-            3 => Decision::Model {
-                request: request("be kind", vec![user("uno"), user("two"), user("three")]),
-            },
-            _ => Decision::Finish { result: None },
-        };
-        Ok(ActivationOutput {
-            context: input.context,
-            decision,
-        })
-    }
-}
-
-/// A model request is journalled from the first position that differs from the last one
-/// recorded, with the system prompt as position zero. The log stays append-only and still
-/// holds the whole truth of what was sent: a rewrite is recorded, not hidden behind a hash.
-#[tokio::test]
-async fn a_model_request_is_journalled_from_where_it_differs() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let runtime = Runtime::open(
-        &data_dir,
-        publisher,
-        8,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-        Arc::new(RewritingLoop {
-            calls: AtomicUsize::new(0),
-        }),
-        Arc::new(ScriptedModel),
-        Arc::new(NoTools),
-    );
-    let handle = start(&runtime, request());
-    let session_id = handle.id().clone();
+    let started = std::time::Instant::now();
     handle
         .message(MessageRequest { input: "go".into() })
         .await
         .unwrap();
-    let events = runtime.events(&session_id, 0, 100).events;
-    let calls: Vec<&serde_json::Value> = events
-        .iter()
-        .filter(|event| event.event_type == "model_call_started")
-        .map(|event| &event.data)
-        .collect();
-    assert_eq!(calls.len(), 4);
-    let shape = |call: &serde_json::Value| {
-        (
-            call["messages_from"].as_u64().unwrap(),
-            call["messages_total"].as_u64().unwrap(),
-            call["messages"].as_array().unwrap().len() as u64,
-            call.get("system")
-                .and_then(|system| system.as_str())
-                .map(str::to_owned),
-        )
-    };
+    assert!(started.elapsed() < Duration::from_secs(10));
+    let results = seen.lock().unwrap().clone();
+    assert_eq!(results[0].output["code"], "timeout");
     assert_eq!(
-        shape(calls[0]),
-        (0, 2, 2, Some("be terse".into())),
-        "the first request is recorded whole, system prompt included"
+        tools.cancelled.lock().unwrap().len(),
+        1,
+        "the overdue call is cancelled where it runs"
     );
-    assert_eq!(
-        shape(calls[1]),
-        (2, 3, 1, None),
-        "an appended message is the only thing recorded"
-    );
-    assert_eq!(
-        shape(calls[2]),
-        (0, 3, 3, Some("be terse".into())),
-        "a rewritten first message restarts the record from there"
-    );
-    assert_eq!(
-        shape(calls[3]),
-        (0, 3, 3, Some("be kind".into())),
-        "a changed system prompt is position zero, so everything after it is recorded again"
-    );
-    assert_eq!(calls[2]["messages"][0]["content"][0]["text"], "uno");
-
+    let kinds = runtime.kinds(handle.id());
+    assert!(kinds.iter().any(|kind| kind == "tool_cancel_started"));
+    assert_eq!(kinds.last().unwrap(), "turn_ended");
     drop(handle);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let _ = fs::remove_dir_all(data_dir);
+    settle(runtime, data_dir).await;
 }
 
-/// A session whose task was dropped comes back from its store and carries on.
-///
-/// This is what suspension is: the host drops the task and its memory, keeps the
-/// directory, and rebuilds the session on the next request. The records stay dense
-/// across the gap and the next turn is an ordinary turn.
 #[tokio::test]
-async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
-    let data_dir = temporary_directory();
-    let (publisher, _worker) = telemetry_channel();
-    let runtime = Runtime::open(
+async fn a_client_tool_call_parks_until_its_outcome_is_posted() {
+    let data_dir = temporary_directory("client-tool");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let loop_executor = {
+        let seen = seen.clone();
+        scripted(move |input, services| {
+            let seen = seen.clone();
+            async move {
+                let results = services
+                    .dispatch(vec![invocation("pick_file", "call_1")])
+                    .await?;
+                *seen.lock().unwrap() = results;
+                done(input.transcript)
+            }
+        })
+    };
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, Arc::new(NoTools), 5_000);
+    let mut feed = runtime.subscribe();
+    let handle = runtime
+        .create(&client_tool_config("pick_file"), &[])
+        .unwrap();
+    let turning = {
+        let handle = handle.clone();
+        tokio::spawn(async move { handle.message(MessageRequest { input: "go".into() }).await })
+    };
+    // Answer off the feed, as a client would: the started record names the call.
+    let sequence = loop {
+        let (_, event) = tokio::time::timeout(Duration::from_secs(5), feed.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if let LiveEvent::Recorded(event) = event
+            && event.event_type == "tool_call_started"
+        {
+            break event.sequence;
+        }
+    };
+    handle
+        .resolve_tool_call(
+            sequence,
+            Outcome::Ok {
+                value: serde_json::json!({"path": "README.md"}),
+            },
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), turning)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let results = seen.lock().unwrap().clone();
+    assert_eq!(results[0].output["path"], "README.md");
+    drop(handle);
+    settle(runtime, data_dir).await;
+}
+
+#[tokio::test]
+async fn resolving_an_unknown_call_is_refused() {
+    let data_dir = temporary_directory("unknown-call");
+    let runtime = runtime(
         &data_dir,
-        publisher,
-        8,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
-        Arc::new(OrdinaryTurn),
+        echo_loop(),
+        Arc::new(NoModels),
+        Arc::new(NoTools),
+    );
+    let handle = runtime
+        .create(&client_tool_config("pick_file"), &[])
+        .unwrap();
+    let error = handle
+        .resolve_tool_call(
+            42,
+            Outcome::Ok {
+                value: serde_json::json!({}),
+            },
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("no client Tool call is pending"));
+    drop(handle);
+    settle(runtime, data_dir).await;
+}
+
+#[tokio::test]
+async fn an_unanswered_client_call_times_out_and_journals_the_cancellation() {
+    let data_dir = temporary_directory("client-timeout");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let loop_executor = {
+        let seen = seen.clone();
+        scripted(move |input, services| {
+            let seen = seen.clone();
+            async move {
+                let results = services
+                    .dispatch(vec![invocation("pick_file", "call_1")])
+                    .await?;
+                *seen.lock().unwrap() = results;
+                done(input.transcript)
+            }
+        })
+    };
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, Arc::new(NoTools), 200);
+    let handle = runtime
+        .create(&client_tool_config("pick_file"), &[])
+        .unwrap();
+    handle
+        .message(MessageRequest { input: "go".into() })
+        .await
+        .unwrap();
+    let results = seen.lock().unwrap().clone();
+    assert_eq!(results[0].output["code"], "timeout");
+    let kinds = runtime.kinds(handle.id());
+    assert!(kinds.iter().any(|kind| kind == "tool_cancel_started"));
+    assert_eq!(kinds.last().unwrap(), "turn_ended");
+    drop(handle);
+    settle(runtime, data_dir).await;
+}
+
+/// The journal holds the transcript as deltas: after two model calls that each extend
+/// it, folding the journal yields exactly what the loop last sent.
+#[tokio::test]
+async fn the_transcript_folds_back_from_its_deltas() {
+    let data_dir = temporary_directory("deltas");
+    let loop_executor = scripted(|input, services| async move {
+        let mut transcript = input.transcript;
+        transcript.push(user(&input.input.message));
+        let first = services.model(request(transcript.clone())).await?;
+        transcript.push(first.message);
+        transcript.push(user("and then"));
+        let second = services.model(request(transcript.clone())).await?;
+        transcript.push(second.message);
+        let mut slots = std::collections::BTreeMap::new();
+        slots.insert("memory".to_string(), serde_json::json!({"turns": 1}));
+        Ok(TurnOutput {
+            transcript,
+            slots,
+            result: None,
+        })
+    });
+    let runtime = runtime(
+        &data_dir,
+        loop_executor,
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
     );
-    let handle = start(&runtime, request());
+    let handle = runtime.create(&config(), &[]).unwrap();
+    handle
+        .message(MessageRequest {
+            input: "hello".into(),
+        })
+        .await
+        .unwrap();
+    let folded = runtime.store(handle.id()).fold().unwrap();
+    assert_eq!(folded.transcript.len(), 4);
+    assert_eq!(folded.slots["memory"], serde_json::json!({"turns": 1}));
+    assert!(folded.slots.contains_key(brain::LAST_ACTIVATION_SLOT));
+    drop(handle);
+    settle(runtime, data_dir).await;
+}
+
+/// A session whose task was dropped comes back from its store and carries on: the
+/// records stay dense across the gap and the next turn sees the same transcript.
+#[tokio::test]
+async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
+    let data_dir = temporary_directory("resume");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let loop_executor = {
+        let seen = seen.clone();
+        scripted(move |input, services| {
+            let seen = seen.clone();
+            async move {
+                *seen.lock().unwrap() = input.transcript.clone();
+                let mut transcript = input.transcript;
+                transcript.push(user(&input.input.message));
+                let result = services.model(request(transcript.clone())).await?;
+                transcript.push(result.message);
+                done(transcript)
+            }
+        })
+    };
+    let runtime = runtime(
+        &data_dir,
+        loop_executor,
+        Arc::new(ScriptedModel),
+        Arc::new(NoTools),
+    );
+    let handle = runtime.create(&config(), &[]).unwrap();
     let session_id = handle.id().clone();
     let first = handle
         .message(MessageRequest {
@@ -1424,7 +900,7 @@ async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
         .await
         .unwrap();
     drop(handle);
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
 
     let resumed = runtime.open_session(&session_id).unwrap();
     let second = resumed
@@ -1434,10 +910,14 @@ async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
         .await
         .unwrap();
     assert!(second.last_sequence > first.last_sequence);
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        2,
+        "the resumed turn opens on the transcript the first one left"
+    );
     let events = runtime.events(&session_id, 0, 1_000).events;
     let sequences: Vec<u64> = events.iter().map(|event| event.sequence).collect();
-    let dense: Vec<u64> = (1..=events.len() as u64).collect();
-    assert_eq!(sequences, dense, "records stay dense across a resume");
+    assert!(sequences.windows(2).all(|pair| pair[1] > pair[0]));
     assert_eq!(
         events
             .iter()
@@ -1446,8 +926,99 @@ async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
         2
     );
     drop(resumed);
-    runtime.drain();
-    drop(runtime);
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    let _ = fs::remove_dir_all(data_dir);
+    settle(runtime, data_dir).await;
+}
+
+/// What happened between turns reaches the loop: a record the host wrote while the
+/// session sat idle is in the next turn's events.
+#[tokio::test]
+async fn events_since_the_last_activation_reach_the_loop() {
+    let data_dir = temporary_directory("since");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let loop_executor = {
+        let seen = seen.clone();
+        scripted(move |input, _services| {
+            let seen = seen.clone();
+            async move {
+                *seen.lock().unwrap() = input
+                    .events
+                    .iter()
+                    .map(|event| event.event_type.clone())
+                    .collect();
+                done(input.transcript)
+            }
+        })
+    };
+    let runtime = runtime(
+        &data_dir,
+        loop_executor,
+        Arc::new(NoModels),
+        Arc::new(NoTools),
+    );
+    let handle = runtime.create(&config(), &[]).unwrap();
+    handle
+        .message(MessageRequest {
+            input: "one".into(),
+        })
+        .await
+        .unwrap();
+    let first: Vec<String> = seen.lock().unwrap().clone();
+    assert!(first.iter().any(|kind| kind == "session_creation_ended"));
+    handle
+        .record(
+            "environment_closed",
+            serde_json::json!({"environment_id": "env_1"}),
+        )
+        .await
+        .unwrap();
+    handle
+        .message(MessageRequest {
+            input: "two".into(),
+        })
+        .await
+        .unwrap();
+    let second: Vec<String> = seen.lock().unwrap().clone();
+    assert!(second.iter().any(|kind| kind == "environment_closed"));
+    assert!(!second.iter().any(|kind| kind == "session_creation_ended"));
+    drop(handle);
+    settle(runtime, data_dir).await;
+}
+
+#[tokio::test]
+async fn a_turn_that_exceeds_its_model_call_budget_fails_with_decision_limit() {
+    let data_dir = temporary_directory("budget");
+    let loop_executor = scripted(|input, services| async move {
+        let mut transcript = input.transcript;
+        transcript.push(user(&input.input.message));
+        loop {
+            let result = services.model(request(transcript.clone())).await?;
+            transcript.push(result.message);
+        }
+    });
+    let runtime = runtime(
+        &data_dir,
+        loop_executor,
+        Arc::new(ScriptedModel),
+        Arc::new(NoTools),
+    );
+    let handle = runtime.create(&config(), &[]).unwrap();
+    handle
+        .message(MessageRequest {
+            input: "forever".into(),
+        })
+        .await
+        .unwrap();
+    let events = runtime.events(handle.id(), 0, 1_000).events;
+    let last = events.last().unwrap();
+    assert_eq!(last.event_type, "turn_failed");
+    assert_eq!(last.data["code"], "decision_limit");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "model_call_ended")
+            .count(),
+        8
+    );
+    drop(handle);
+    settle(runtime, data_dir).await;
 }

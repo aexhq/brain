@@ -27,7 +27,7 @@ assert.deepEqual(
   events.slice(-4).map(({ type }) => type),
   ["turn_started", "activation_started", "activation_ended", "turn_ended"],
 );
-assert.deepEqual(events.at(-1)?.data.result, { activations: 1, observation: "user_message" });
+assert.deepEqual(events.at(-1)?.data.result, { turns: 1, message: "finish without external capabilities" });
 assert.ok(events.every(({ recordedAt }) => recordedAt instanceof Date && !Number.isNaN(recordedAt.valueOf())));
 assert.deepEqual(events.map(({ sequence }) => sequence), events.map((_, index) => index + 1));
 

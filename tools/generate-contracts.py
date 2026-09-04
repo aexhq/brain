@@ -8,13 +8,13 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 JSON_CONTRACTS = {
-    "AGENTLOOP_SCHEMA": ROOT / "contracts/agentloop/v1/contract.json",
+    "AGENTLOOP_SCHEMA": ROOT / "contracts/agentloop/v2/contract.json",
     "ENVIRONMENT_SCHEMA": ROOT / "contracts/environment/v1/schemas.json",
     "TOOL_SCHEMA": ROOT / "contracts/tool/v1/schemas.json",
     "SESSION_SCHEMA": ROOT / "contracts/session/v1/schemas.json",
 }
 TEXT_CONTRACTS = {
-    "AGENTLOOP_WIT": ROOT / "contracts/agentloop/v1/agentloop.wit",
+    "AGENTLOOP_WIT": ROOT / "contracts/agentloop/v2/agentloop.wit",
     "SESSION_OPENAPI": ROOT / "contracts/session/v1/openapi.yaml",
 }
 RUST_OUTPUT = ROOT / "crates/brain-protocol/src/generated.rs"
@@ -62,8 +62,8 @@ def main() -> None:
     PACKAGE_WIT_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     PACKAGE_WIT_OUTPUT.write_bytes(normalized_text(TEXT_CONTRACTS["AGENTLOOP_WIT"]))
 
-    (ROOT / "contracts/agentloop/v1/contract.digest").write_text(values["AGENTLOOP_SCHEMA"] + "\n", encoding="ascii")
-    (ROOT / "contracts/agentloop/v1/agentloop.digest").write_text(values["AGENTLOOP_WIT"] + "\n", encoding="ascii")
+    (ROOT / "contracts/agentloop/v2/contract.digest").write_text(values["AGENTLOOP_SCHEMA"] + "\n", encoding="ascii")
+    (ROOT / "contracts/agentloop/v2/agentloop.digest").write_text(values["AGENTLOOP_WIT"] + "\n", encoding="ascii")
     (ROOT / "contracts/environment/v1/contract.digest").write_text(values["ENVIRONMENT_SCHEMA"] + "\n", encoding="ascii")
     (ROOT / "contracts/tool/v1/contract.digest").write_text(values["TOOL_SCHEMA"] + "\n", encoding="ascii")
     (ROOT / "contracts/session/v1/contract.digest").write_text(values["SESSION_SCHEMA"] + "\n", encoding="ascii")

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { Brain, agentloop, inspectServedTool, installExtensionIdentity, tool } from "../dist/index.js";
 
 const simple = agentloop((author) => {
-  author.on.message((message, turn) => turn.finish());
+  author.turn((turn) => turn.done());
 });
 installExtensionIdentity(simple, "simple", new Uint8Array([1, 2, 3]));
 
