@@ -35,6 +35,63 @@ paths:
             application/json:
               schema: { $ref: './schemas.json#/$defs/AgentloopAdmission' }
         default: { $ref: '#/components/responses/Error' }
+  /v1/environments:
+    post:
+      operationId: createEnvironment
+      description: >-
+        Creates an environment: Brain runs its setup and keeps what it declared it
+        executes and offers. Sessions attach to it by id. A managed environment is
+        closed by Brain once no session has been attached to it for its idle TTL; an
+        unmanaged one lives until it is deleted.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: './schemas.json#/$defs/CreateEnvironmentRequest' }
+      responses:
+        '200':
+          description: Created environment
+          content:
+            application/json:
+              schema: { $ref: './schemas.json#/$defs/Environment' }
+        default: { $ref: '#/components/responses/Error' }
+    get:
+      operationId: listEnvironments
+      responses:
+        '200':
+          description: Environments
+          content:
+            application/json:
+              schema: { $ref: './schemas.json#/$defs/EnvironmentList' }
+        default: { $ref: '#/components/responses/Error' }
+  /v1/environments/{environment_id}:
+    parameters:
+      - name: environment_id
+        in: path
+        required: true
+        schema: { $ref: './schemas.json#/$defs/Identifier' }
+    get:
+      operationId: getEnvironment
+      responses:
+        '200':
+          description: Environment state
+          content:
+            application/json:
+              schema: { $ref: './schemas.json#/$defs/Environment' }
+        default: { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: deleteEnvironment
+      description: >-
+        Tears the environment down. Refused with `conflict` while a session is still
+        attached; every session that was ever attached sees `environment_closed` on its
+        events.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204': { description: Closed }
+        default: { $ref: '#/components/responses/Error' }
   /v1/sessions:
     post:
       operationId: createSession

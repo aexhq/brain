@@ -30,8 +30,6 @@
   "environments": [
     {
       "environment_id": "env_1",
-      "configuration": {},
-      "lifecycle_policy": "session",
       "bindings": {}
     }
   ]

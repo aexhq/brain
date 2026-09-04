@@ -33,6 +33,42 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/v1/environments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listEnvironments"];
+        put?: never;
+        /** @description Creates an environment: Brain runs its setup and keeps what it declared it executes and offers. Sessions attach to it by id. A managed environment is closed by Brain once no session has been attached to it for its idle TTL; an unmanaged one lives until it is deleted. */
+        post: operations["createEnvironment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/environments/{environment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                environment_id: components["schemas"]["Identifier"];
+            };
+            cookie?: never;
+        };
+        get: operations["getEnvironment"];
+        put?: never;
+        post?: never;
+        /** @description Tears the environment down. Refused with `conflict` while a session is still attached; every session that was ever attached sees `environment_closed` on its events. */
+        delete: operations["deleteEnvironment"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions": {
         parameters: {
             query?: never;
@@ -231,7 +267,31 @@ export type components = {
             status: "admitted" | "rejected";
             error?: components["schemas"]["ApiError"];
         };
+        /** @enum {unknown} */
+        EnvironmentStatus: "open" | "unreachable";
         SessionId: string;
+        /** @enum {unknown} */
+        Runtime: "esm" | "shell" | "http";
+        Environment: {
+            environment_id: components["schemas"]["Identifier"];
+            status: components["schemas"]["EnvironmentStatus"];
+            managed: boolean;
+            idle_ttl_ms?: number;
+            attached_sessions: components["schemas"]["SessionId"][];
+            runtimes?: components["schemas"]["Runtime"][];
+            resources?: Record<string, never>;
+            created_at_ms: number;
+        };
+        EnvironmentList: {
+            environments: components["schemas"]["Environment"][];
+        };
+        CreateEnvironmentRequest: {
+            environment_id?: components["schemas"]["Identifier"];
+            configuration: unknown;
+            /** @description Brain closes the environment once no session has been attached to it for idle_ttl_ms. */
+            managed?: boolean;
+            idle_ttl_ms?: number;
+        };
         ShareKey: string;
         Session: {
             session_id: components["schemas"]["SessionId"];
@@ -287,11 +347,8 @@ export type components = {
             program?: components["schemas"]["Program"];
             environment_id?: components["schemas"]["Identifier"];
         } & (unknown & unknown);
-        EnvironmentRequirement: {
+        EnvironmentAttachRequest: {
             environment_id: components["schemas"]["Identifier"];
-            configuration: unknown;
-            /** @enum {unknown} */
-            lifecycle_policy: "session" | "shared" | "external";
             bindings?: {
                 [key: string]: string;
             };
@@ -308,7 +365,7 @@ export type components = {
             system?: string;
             response_format?: unknown;
             tools: components["schemas"]["BoundTool"][];
-            environments: components["schemas"]["EnvironmentRequirement"][];
+            environments: components["schemas"]["EnvironmentAttachRequest"][];
             history?: components["schemas"]["HistoryEvent"][];
             /** @description How long the session may sit idle before Brain suspends its task and memory to disk. Absent means the server default; zero means never. */
             idle_ttl_ms?: number;
@@ -425,6 +482,100 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["AgentloopAdmission"];
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listEnvironments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Environments */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvironmentList"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createEnvironment: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateEnvironmentRequest"];
+            };
+        };
+        responses: {
+            /** @description Created environment */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Environment"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getEnvironment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                environment_id: components["schemas"]["Identifier"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Environment state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Environment"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteEnvironment: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                environment_id: components["schemas"]["Identifier"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Closed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };

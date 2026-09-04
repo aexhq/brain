@@ -23,6 +23,22 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
     ) -> Result<SessionSummary, ApiError>;
     async fn get_session(&self, session_id: SessionId) -> Result<SessionSummary, ApiError>;
     async fn list_sessions(&self) -> Result<SessionList, ApiError>;
+    async fn create_environment(
+        &self,
+        idempotency_key: String,
+        request: brain_protocol::CreateEnvironmentRequest,
+    ) -> Result<brain_protocol::EnvironmentSummary, ApiError>;
+    async fn get_environment(
+        &self,
+        environment_id: EnvironmentId,
+    ) -> Result<brain_protocol::EnvironmentSummary, ApiError>;
+    async fn list_environments(&self) -> Result<brain_protocol::EnvironmentList, ApiError>;
+    /// Refused while a session is still attached.
+    async fn delete_environment(
+        &self,
+        environment_id: EnvironmentId,
+        idempotency_key: String,
+    ) -> Result<(), ApiError>;
     async fn send_message(
         &self,
         session_id: SessionId,

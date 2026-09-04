@@ -1,33 +1,202 @@
+//! Environments as resources: created once with their configuration, attached by id
+//! from any session, detached when a session ends, and closed when deleted or, if
+//! managed, when nothing has used them for their idle TTL.
+
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
+    time::Duration,
 };
 
 use brain::{CreatingSession, JournalStore, Session};
-use brain_protocol::codes;
 use brain_protocol::{
-    AttachmentId, EnvironmentCallResult, EnvironmentId, EnvironmentOperation, EnvironmentReceipt,
-    EnvironmentRequest, Provision, SessionConfig, ToolManifest,
+    AttachmentId, CreateEnvironmentRequest, EnvironmentBinding, EnvironmentCallResult,
+    EnvironmentId, EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, EnvironmentStatus,
+    EnvironmentSummary, Provision, SessionConfig, SessionId, ToolManifest, codes,
 };
+use tokio::sync::broadcast;
 
-use super::{DirectoryEntry, EnvironmentAdapter, EnvironmentDirectory};
+use super::{EnvironmentAdapter, EnvironmentRecord, EnvironmentResources, resources};
 
 /// Plaintext binding values per environment, carried beside the configuration for
 /// exactly as long as create runs. They go out on the attach wire and never enter the
 /// journal.
 pub type SessionBindingValues = HashMap<EnvironmentId, BTreeMap<String, String>>;
 
+/// Where an environment is reached.
+#[derive(Clone, Debug)]
+pub struct DirectoryEntry {
+    pub binding: EnvironmentBinding,
+    pub endpoint: String,
+}
+
+/// Something that happened to an environment that its attached sessions should hear.
+#[derive(Clone, Debug)]
+pub struct EnvironmentNotice {
+    pub environment_id: EnvironmentId,
+    pub kind: EnvironmentNoticeKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvironmentNoticeKind {
+    Closed,
+    Unreachable,
+}
+
 pub struct EnvironmentRegistry {
-    directory: Arc<dyn EnvironmentDirectory>,
+    resources: Arc<EnvironmentResources>,
+    endpoint: String,
     adapter: Arc<dyn EnvironmentAdapter>,
+    notices: broadcast::Sender<EnvironmentNotice>,
+    default_idle_ttl: Duration,
 }
 
 impl EnvironmentRegistry {
     pub fn new(
-        directory: Arc<dyn EnvironmentDirectory>,
+        resources: Arc<EnvironmentResources>,
+        endpoint: impl Into<String>,
         adapter: Arc<dyn EnvironmentAdapter>,
+        default_idle_ttl: Duration,
     ) -> Self {
-        Self { directory, adapter }
+        Self {
+            resources,
+            endpoint: endpoint.into(),
+            adapter,
+            notices: broadcast::Sender::new(256),
+            default_idle_ttl,
+        }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<EnvironmentNotice> {
+        self.notices.subscribe()
+    }
+
+    pub fn resources(&self) -> &Arc<EnvironmentResources> {
+        &self.resources
+    }
+
+    /// Creates an environment: records it, runs `setup`, and keeps what the environment
+    /// declared it executes and offers.
+    pub async fn create(
+        &self,
+        request: CreateEnvironmentRequest,
+    ) -> Result<EnvironmentRecord, brain::Error> {
+        if self.endpoint.trim().is_empty() {
+            return Err(brain::Error::InvalidState(
+                "no Environment endpoint is configured".into(),
+            ));
+        }
+        let environment_id = request
+            .environment_id
+            .unwrap_or_else(|| EnvironmentId::new(brain::random_id("env")));
+        self.resources.create(EnvironmentRecord {
+            environment_id: environment_id.clone(),
+            configuration: request.configuration.clone(),
+            managed: request.managed,
+            idle_ttl_ms: request.idle_ttl_ms,
+            created_at_ms: resources::wall_clock_ms(),
+            runtimes: Vec::new(),
+            resources: Default::default(),
+            operations: 0,
+        })?;
+        let receipt = match self
+            .operation(
+                &environment_id,
+                EnvironmentRequest::Setup {
+                    configuration: request.configuration,
+                },
+            )
+            .await
+        {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                let _ = self.resources.remove(&environment_id);
+                return Err(error);
+            }
+        };
+        let (runtimes, declared) = receipt_declaration(&receipt);
+        self.resources.update(&environment_id, |record| {
+            record.runtimes = runtimes;
+            record.resources = declared;
+        })
+    }
+
+    pub fn summary(
+        &self,
+        environment_id: &EnvironmentId,
+        attached_sessions: Vec<SessionId>,
+    ) -> Result<Option<EnvironmentSummary>, brain::Error> {
+        let Some(record) = self.resources.get(environment_id)? else {
+            return Ok(None);
+        };
+        let status = self
+            .resources
+            .status(environment_id)?
+            .unwrap_or(EnvironmentStatus::Open);
+        Ok(Some(EnvironmentSummary {
+            environment_id: record.environment_id,
+            status,
+            managed: record.managed,
+            idle_ttl_ms: record.idle_ttl_ms,
+            attached_sessions,
+            runtimes: record.runtimes,
+            resources: record.resources,
+            created_at_ms: record.created_at_ms,
+        }))
+    }
+
+    pub fn ids(&self) -> Result<Vec<EnvironmentId>, brain::Error> {
+        self.resources.ids()
+    }
+
+    /// How long a managed environment may sit unattached before it is closed; `None`
+    /// for an unmanaged one or one whose TTL is zero.
+    pub fn idle_ttl(
+        &self,
+        environment_id: &EnvironmentId,
+    ) -> Result<Option<Duration>, brain::Error> {
+        let Some(record) = self.resources.get(environment_id)? else {
+            return Ok(None);
+        };
+        if !record.managed {
+            return Ok(None);
+        }
+        let ttl = record
+            .idle_ttl_ms
+            .map(Duration::from_millis)
+            .unwrap_or(self.default_idle_ttl);
+        Ok((!ttl.is_zero()).then_some(ttl))
+    }
+
+    pub fn idle_since(
+        &self,
+        environment_id: &EnvironmentId,
+    ) -> Result<Option<std::time::Instant>, brain::Error> {
+        self.resources.idle_since(environment_id)
+    }
+
+    /// Tears the environment down and forgets it. Attached sessions hear
+    /// `environment_closed`.
+    pub async fn close(&self, environment_id: &EnvironmentId) -> Result<(), brain::Error> {
+        if self.resources.get(environment_id)?.is_none() {
+            return Err(brain::Error::NotFound(format!(
+                "Environment `{environment_id}` does not exist"
+            )));
+        }
+        // Best effort: an environment that cannot be reached for its teardown is still
+        // forgotten here, and the notice says which.
+        if let Err(error) = self
+            .operation(environment_id, EnvironmentRequest::Teardown)
+            .await
+        {
+            tracing::warn!(%environment_id, %error, "Environment teardown failed; forgetting it anyway");
+        }
+        self.resources.remove(environment_id)?;
+        let _ = self.notices.send(EnvironmentNotice {
+            environment_id: environment_id.clone(),
+            kind: EnvironmentNoticeKind::Closed,
+        });
+        Ok(())
     }
 
     pub async fn prepare_session(
@@ -49,59 +218,51 @@ impl EnvironmentRegistry {
         }
     }
 
-    /// Attaches every environment the configuration names and fills in what each one
-    /// answered with, so the configuration the session is admitted with says what was
-    /// actually granted.
+    /// Attaches the session to every environment the configuration names and fills in
+    /// what each one answered with, so the configuration the session is admitted with
+    /// says what was actually granted.
     async fn prepare(
         &self,
         creation: &mut CreatingSession,
         mut config: SessionConfig,
         mut binding_values: SessionBindingValues,
     ) -> Result<SessionConfig, brain::Error> {
-        let provisions: Vec<(EnvironmentId, Vec<Provision>)> = config
+        let provisions: Vec<Vec<Provision>> = config
             .environments
             .iter()
-            .map(|attachment| {
-                (
-                    attachment.environment_id.clone(),
-                    provisions_for(&config, &attachment.environment_id),
-                )
-            })
+            .map(|attachment| provisions_for(&config, &attachment.environment_id))
             .collect();
-        for (attachment, (_, provisions)) in config.environments.iter_mut().zip(provisions) {
-            let entry = self.directory.resolve(attachment).await?;
-            let setup = self
-                .lifecycle(
-                    creation,
-                    &entry,
-                    EnvironmentRequest::Setup {
-                        configuration: attachment.configuration.clone(),
-                    },
-                    None,
-                    codes::event::call::ENVIRONMENT_SETUP,
-                )
-                .await?;
+        for (attachment, provisions) in config.environments.iter_mut().zip(provisions) {
+            let record = self
+                .resources
+                .get(&attachment.environment_id)?
+                .ok_or_else(|| {
+                    brain::Error::InvalidState(format!(
+                        "Environment `{}` does not exist",
+                        attachment.environment_id
+                    ))
+                })?;
+            let entry = self.entry(&attachment.environment_id);
             let attachment_id = AttachmentId::new(brain::random_id("att"));
             let bindings = binding_values
                 .remove(&attachment.environment_id)
                 .unwrap_or_default();
-            let attach = EnvironmentRequest::Attach {
-                provisions,
-                bindings,
-            };
             let attached = self
                 .lifecycle(
                     creation,
                     &entry,
-                    attach,
+                    EnvironmentRequest::Attach {
+                        provisions,
+                        bindings,
+                    },
                     Some(attachment_id.clone()),
                     codes::event::call::ENVIRONMENT_ATTACH,
                 )
                 .await?;
             // What the environment declares it executes and offers feeds the
             // configuration's bind check; setup and attach both may report it, and a
-            // resource attach declares again replaces the setup's block.
-            let (mut runtimes, mut resources) = receipt_declaration(&setup);
+            // resource attach declares again replaces setup's block.
+            let (mut runtimes, mut resources) = (record.runtimes, record.resources);
             let (attach_runtimes, attach_resources) = receipt_declaration(&attached);
             for runtime in attach_runtimes {
                 if !runtimes.contains(&runtime) {
@@ -160,10 +321,7 @@ impl EnvironmentRegistry {
             attachment_id,
             request,
         };
-        let sent = self
-            .adapter
-            .send(&entry.endpoint, &entry.binding, &operation)
-            .await;
+        let sent = self.send(entry, &operation).await;
         match sent.and_then(|receipt| terminal(receipt, "lifecycle")) {
             Ok(receipt) => {
                 creation.record_call_ended(kind, sequence, &receipt)?;
@@ -176,15 +334,15 @@ impl EnvironmentRegistry {
         }
     }
 
+    /// One operation on a session's behalf whose record the session already holds: a
+    /// tool invoke or cancel.
     pub async fn execute(
         &self,
-        binding: &brain_protocol::EnvironmentBinding,
+        binding: &EnvironmentBinding,
         operation: &EnvironmentOperation<EnvironmentRequest>,
     ) -> Result<EnvironmentReceipt, brain::Error> {
-        let entry = self.directory.get(binding).await?;
-        self.adapter
-            .send(&entry.endpoint, &entry.binding, operation)
-            .await
+        let entry = self.entry(&binding.environment_id);
+        self.send(&entry, operation).await
     }
 
     pub async fn call(
@@ -201,17 +359,11 @@ impl EnvironmentRegistry {
             .environments
             .iter()
             .find(|attachment| &attachment.environment_id == environment_id)
-            .and_then(|attachment| {
-                attachment
-                    .binding
-                    .as_ref()
-                    .map(|binding| (attachment, binding))
-            })
+            .filter(|attachment| attachment.attached())
             .ok_or_else(|| {
                 brain::Error::InvalidState("Environment is not attached to this session".into())
             })?;
-        let (attachment, binding) = attachment;
-        let entry = self.directory.get(binding).await?;
+        let entry = self.entry(environment_id);
         let request = EnvironmentRequest::Call { name, input };
         let sequence = session
             .record_call_started(codes::event::call::ENVIRONMENT_CALL, &request)
@@ -223,10 +375,7 @@ impl EnvironmentRegistry {
             attachment_id: attachment.attachment_id.clone(),
             request,
         };
-        let sent = self
-            .adapter
-            .send(&entry.endpoint, &entry.binding, &operation)
-            .await;
+        let sent = self.send(&entry, &operation).await;
         match sent.and_then(|receipt| terminal(receipt, "call")) {
             Ok(EnvironmentReceipt::Result { output }) => {
                 session
@@ -252,16 +401,18 @@ impl EnvironmentRegistry {
         }
     }
 
+    /// Detaches the session from every environment it was attached to. The environments
+    /// stay: closing one is the owner's or the idle sweeper's decision.
     pub async fn release_session(
         &self,
         session: &Session,
         config: &SessionConfig,
     ) -> Result<(), brain::Error> {
         for attachment in config.environments.iter().rev() {
-            let Some(binding) = &attachment.binding else {
+            if !attachment.attached() {
                 continue;
-            };
-            let entry = self.directory.get(binding).await?;
+            }
+            let entry = self.entry(&attachment.environment_id);
             self.session_lifecycle(
                 session,
                 &entry,
@@ -270,19 +421,7 @@ impl EnvironmentRegistry {
                 codes::event::call::ENVIRONMENT_DETACH,
             )
             .await?;
-            if matches!(
-                attachment.lifecycle_policy,
-                brain_protocol::LifecyclePolicy::Session
-            ) {
-                self.session_lifecycle(
-                    session,
-                    &entry,
-                    None,
-                    EnvironmentRequest::Teardown,
-                    codes::event::call::ENVIRONMENT_TEARDOWN,
-                )
-                .await?;
-            }
+            self.resources.touch_idle(&attachment.environment_id)?;
         }
         Ok(())
     }
@@ -303,16 +442,78 @@ impl EnvironmentRegistry {
             attachment_id,
             request,
         };
-        let sent = self
-            .adapter
-            .send(&entry.endpoint, &entry.binding, &operation)
-            .await;
+        let sent = self.send(entry, &operation).await;
         match sent.and_then(|receipt| terminal(receipt, "lifecycle")) {
             Ok(receipt) => session.record_call_ended(kind, sequence, &receipt).await,
             Err(error) => {
                 session.record_call_failed(kind, sequence, &error).await?;
                 Err(error)
             }
+        }
+    }
+
+    /// An operation on the environment's own behalf: setup at create, teardown at close.
+    /// Numbered by the environment's own counter and addressed to it, since no session
+    /// is involved.
+    async fn operation(
+        &self,
+        environment_id: &EnvironmentId,
+        request: EnvironmentRequest,
+    ) -> Result<EnvironmentReceipt, brain::Error> {
+        let sequence = self.resources.next_operation(environment_id)?;
+        let entry = self.entry(environment_id);
+        let operation = EnvironmentOperation {
+            sequence,
+            environment_id: environment_id.clone(),
+            session_id: SessionId::new(environment_id.as_str()),
+            attachment_id: None,
+            request,
+        };
+        self.send(&entry, &operation)
+            .await
+            .and_then(|receipt| terminal(receipt, "lifecycle"))
+    }
+
+    /// Sends one operation and keeps the environment's reachability current: a transport
+    /// failure marks it unreachable and tells its sessions; the next answer clears it.
+    async fn send(
+        &self,
+        entry: &DirectoryEntry,
+        operation: &EnvironmentOperation<EnvironmentRequest>,
+    ) -> Result<EnvironmentReceipt, brain::Error> {
+        let sent = self
+            .adapter
+            .send(&entry.endpoint, &entry.binding, operation)
+            .await;
+        let environment_id = &entry.binding.environment_id;
+        match &sent {
+            Err(brain::Error::Ambiguous(_)) => {
+                if self
+                    .resources
+                    .set_status(environment_id, EnvironmentStatus::Unreachable)?
+                {
+                    let _ = self.notices.send(EnvironmentNotice {
+                        environment_id: environment_id.clone(),
+                        kind: EnvironmentNoticeKind::Unreachable,
+                    });
+                }
+            }
+            Ok(_) => {
+                self.resources
+                    .set_status(environment_id, EnvironmentStatus::Open)?;
+            }
+            Err(_) => {}
+        }
+        sent
+    }
+
+    fn entry(&self, environment_id: &EnvironmentId) -> DirectoryEntry {
+        DirectoryEntry {
+            binding: EnvironmentBinding {
+                environment_id: environment_id.clone(),
+                directory_generation: 1,
+            },
+            endpoint: self.endpoint.clone(),
         }
     }
 }

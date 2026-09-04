@@ -13,17 +13,18 @@ use brain_loophost::LoopError;
 use brain_loophost::WorkerPool;
 use brain_protocol::codes;
 use brain_protocol::{
-    AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
-    EnvironmentAttachment, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage,
-    MessageRequest, ModelBinding, Outcome, SessionConfig, SessionId, SessionList, SessionSummary,
-    ToolBinding, ToolDefinition,
+    AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateEnvironmentRequest,
+    CreateSessionRequest, EnvironmentAttachment, EnvironmentCallRequest, EnvironmentCallResult,
+    EnvironmentId, EnvironmentList, EnvironmentSummary, EventPage, MessageRequest, ModelBinding,
+    Outcome, SessionConfig, SessionId, SessionList, SessionStatus, SessionSummary, ToolBinding,
+    ToolDefinition,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Mutex;
 
 use crate::{
-    EnvironmentRegistry, IdempotencyStore, LocalSessionOwnership, ModelBindingStore,
-    SessionOwnership,
+    EnvironmentNotice, EnvironmentNoticeKind, EnvironmentRegistry, IdempotencyStore,
+    LocalSessionOwnership, ModelBindingStore, SessionOwnership,
 };
 
 pub struct ServerResources {
@@ -71,6 +72,9 @@ struct Slot {
     last_touch: Instant,
     /// Zero means never suspend.
     idle_ttl: Duration,
+    /// The environments the session attached, so the environment side can ask who is
+    /// attached without reading every configuration.
+    environments: Vec<EnvironmentId>,
 }
 
 struct KeyedLocks<K> {
@@ -236,11 +240,21 @@ impl ServerApi {
         store: Arc<SessionStore>,
         session: Option<Session>,
     ) -> Result<(), ApiError> {
-        let idle_ttl = brain::session_config(&*store)
-            .ok()
+        let config = brain::session_config(&*store).ok();
+        let idle_ttl = config
+            .as_ref()
             .and_then(|config| config.idle_ttl_ms)
             .map(Duration::from_millis)
             .unwrap_or(self.resources.session_idle_ttl);
+        let environments = config
+            .map(|config| {
+                config
+                    .environments
+                    .into_iter()
+                    .map(|attachment| attachment.environment_id)
+                    .collect()
+            })
+            .unwrap_or_default();
         self.sessions
             .lock()
             .map_err(|_| internal("session table is poisoned"))?
@@ -251,9 +265,133 @@ impl ServerApi {
                     session,
                     last_touch: Instant::now(),
                     idle_ttl,
+                    environments,
                 },
             );
         Ok(())
+    }
+
+    /// The sessions attached to an environment: those that named it and have not ended.
+    fn attached_sessions(
+        &self,
+        environment_id: &EnvironmentId,
+    ) -> Result<Vec<SessionId>, ApiError> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| internal("session table is poisoned"))?;
+        let mut attached = Vec::new();
+        for (session_id, slot) in sessions.iter() {
+            if !slot.environments.contains(environment_id) {
+                continue;
+            }
+            let status = slot.store.session_summary().map_err(api_error)?.status;
+            if !matches!(status, SessionStatus::Ended | SessionStatus::Failed) {
+                attached.push(session_id.clone());
+            }
+        }
+        attached.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        Ok(attached)
+    }
+
+    /// Closes managed environments that have had no session attached for their TTL.
+    pub fn spawn_environment_sweeper(&self) -> tokio::task::JoinHandle<()> {
+        let api = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(30));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                api.close_idle_environments().await;
+            }
+        })
+    }
+
+    /// Closes every managed environment idle past its TTL. Public so a host without the
+    /// sweeper can drive it.
+    pub async fn close_idle_environments(&self) {
+        let Ok(ids) = self.resources.environments.ids() else {
+            return;
+        };
+        for environment_id in ids {
+            let Ok(Some(ttl)) = self.resources.environments.idle_ttl(&environment_id) else {
+                continue;
+            };
+            let Ok(Some(since)) = self.resources.environments.idle_since(&environment_id) else {
+                continue;
+            };
+            if since.elapsed() < ttl {
+                continue;
+            }
+            if self
+                .attached_sessions(&environment_id)
+                .map(|attached| !attached.is_empty())
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            if let Err(error) = self.resources.environments.close(&environment_id).await {
+                tracing::warn!(%environment_id, %error, "idle Environment could not be closed");
+            }
+        }
+    }
+
+    /// Writes environment notices onto every attached session's events, so a loop sees
+    /// on its next activation that an environment closed or stopped answering.
+    pub fn spawn_environment_notices(&self) -> tokio::task::JoinHandle<()> {
+        let api = self.clone();
+        let mut notices = self.resources.environments.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match notices.recv().await {
+                    Ok(notice) => api.note_environment(notice).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+    }
+
+    async fn note_environment(&self, notice: EnvironmentNotice) {
+        let kind = match notice.kind {
+            EnvironmentNoticeKind::Closed => codes::event::ENVIRONMENT_CLOSED,
+            EnvironmentNoticeKind::Unreachable => codes::event::ENVIRONMENT_UNREACHABLE,
+        };
+        let payload = serde_json::json!({ "environment_id": notice.environment_id });
+        let Ok(attached) = self.attached_sessions(&notice.environment_id) else {
+            return;
+        };
+        for session_id in attached {
+            let Ok(lock) = self.session_lock(&session_id) else {
+                continue;
+            };
+            let _guard = lock.lock().await;
+            let (session, store) = {
+                let Ok(sessions) = self.sessions.lock() else {
+                    return;
+                };
+                let Some(slot) = sessions.get(&session_id) else {
+                    continue;
+                };
+                (slot.session.clone(), slot.store.clone())
+            };
+            let written = match session {
+                Some(session) => session.record(kind, payload.clone()).await.map(|_| ()),
+                None => store
+                    .session_row()
+                    .and_then(|row| {
+                        store.append(
+                            row.through_sequence,
+                            &[brain::AppendRecord::new(kind, payload.clone())],
+                            brain::SessionUpdate::default(),
+                        )
+                    })
+                    .map(|_| ()),
+            };
+            if let Err(error) = written {
+                tracing::warn!(%session_id, %error, "Environment notice could not be recorded");
+            }
+        }
     }
 
     fn store(&self, session_id: &SessionId) -> Result<Arc<SessionStore>, ApiError> {
@@ -551,6 +689,116 @@ impl BrainApi for ServerApi {
         }
         sessions.sort_by(|left, right| left.session_id.as_str().cmp(right.session_id.as_str()));
         Ok(SessionList { sessions })
+    }
+
+    async fn create_environment(
+        &self,
+        idempotency_key: String,
+        request: CreateEnvironmentRequest,
+    ) -> Result<EnvironmentSummary, ApiError> {
+        if request
+            .environment_id
+            .as_ref()
+            .is_some_and(|id| !valid_identifier(id.as_str()))
+        {
+            return Err(ApiError::invalid_request("Environment id is invalid"));
+        }
+        let lock = self.idempotency_lock("create_environment", &idempotency_key)?;
+        let _guard = lock.lock().await;
+        if let Some(saved) = self
+            .resources
+            .idempotency
+            .get("create_environment", &idempotency_key, &request)
+            .map_err(api_error)?
+        {
+            return Self::replay(saved);
+        }
+        let record = self
+            .resources
+            .environments
+            .create(request.clone())
+            .await
+            .map_err(api_error)?;
+        let summary = self
+            .resources
+            .environments
+            .summary(&record.environment_id, Vec::new())
+            .map_err(api_error)?
+            .ok_or_else(|| internal("Environment vanished after creation"))?;
+        self.resources
+            .idempotency
+            .put(
+                "create_environment",
+                &idempotency_key,
+                &request,
+                &serde_json::to_value(&summary).map_err(|error| internal(error.to_string()))?,
+            )
+            .map_err(api_error)?;
+        Ok(summary)
+    }
+
+    async fn get_environment(
+        &self,
+        environment_id: EnvironmentId,
+    ) -> Result<EnvironmentSummary, ApiError> {
+        let attached = self.attached_sessions(&environment_id)?;
+        self.resources
+            .environments
+            .summary(&environment_id, attached)
+            .map_err(api_error)?
+            .ok_or_else(|| not_found("Environment does not exist"))
+    }
+
+    async fn list_environments(&self) -> Result<EnvironmentList, ApiError> {
+        let mut environments = Vec::new();
+        for environment_id in self.resources.environments.ids().map_err(api_error)? {
+            let attached = self.attached_sessions(&environment_id)?;
+            if let Some(summary) = self
+                .resources
+                .environments
+                .summary(&environment_id, attached)
+                .map_err(api_error)?
+            {
+                environments.push(summary);
+            }
+        }
+        Ok(EnvironmentList { environments })
+    }
+
+    async fn delete_environment(
+        &self,
+        environment_id: EnvironmentId,
+        idempotency_key: String,
+    ) -> Result<(), ApiError> {
+        let request = (environment_id.clone(), "delete");
+        let scope = format!("environment:{environment_id}:delete");
+        let lock = self.idempotency_lock(&scope, &idempotency_key)?;
+        let _guard = lock.lock().await;
+        if self
+            .resources
+            .idempotency
+            .get::<_>(&scope, &idempotency_key, &request)
+            .map_err(api_error)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let attached = self.attached_sessions(&environment_id)?;
+        if !attached.is_empty() {
+            return Err(ApiError::conflict(format!(
+                "Environment is attached to {} session(s); end them first",
+                attached.len()
+            )));
+        }
+        self.resources
+            .environments
+            .close(&environment_id)
+            .await
+            .map_err(api_error)?;
+        self.resources
+            .idempotency
+            .put(&scope, &idempotency_key, &request, &serde_json::json!({}))
+            .map_err(api_error)
     }
 
     async fn send_message(
@@ -961,8 +1209,6 @@ fn attachments_for(
     for requirement in &request.environments {
         environments.push(EnvironmentAttachment {
             environment_id: requirement.environment_id.clone(),
-            configuration: requirement.configuration.clone(),
-            lifecycle_policy: requirement.lifecycle_policy.clone(),
             binding: None,
             attachment_id: None,
             runtimes: Vec::new(),

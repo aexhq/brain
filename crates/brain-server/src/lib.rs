@@ -13,8 +13,8 @@ pub mod tool_dispatcher;
 
 pub use config::ServerConfig;
 pub use environment::{
-    EnvironmentAdapter, EnvironmentDirectory, EnvironmentRegistry, HttpEnvironmentAdapter,
-    InMemoryEnvironmentDirectory, SessionBindingValues,
+    EnvironmentAdapter, EnvironmentNotice, EnvironmentNoticeKind, EnvironmentRegistry,
+    EnvironmentResources, HttpEnvironmentAdapter, SessionBindingValues,
 };
 pub use idempotency::IdempotencyStore;
 pub use model_binding::{

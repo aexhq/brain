@@ -34,6 +34,7 @@ test("composes extensions through sessions, env placement, and object identity",
       const request = new Request(input, init);
       requests.push(request);
       if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
+      if (request.url.endsWith("/v1/environments")) return Response.json({ environment_id: "env_1", status: "open", managed: true, attached_sessions: [], runtimes: [], resources: {}, created_at_ms: 1 });
       if (request.url.includes("/calls/suspend")) return Response.json({ output: null });
       return Response.json({ session_id: "ses_12345678901234567890", status: "idle", last_sequence: 1, share_key: "sk.ses_12345678901234567890." + "f".repeat(64) });
     },
@@ -46,18 +47,19 @@ test("composes extensions through sessions, env placement, and object identity",
   });
 
   assert.equal(session.id, "ses_12345678901234567890");
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 3);
   assert.equal(requests[0].headers.get("authorization"), "Bearer test-token");
   assert.match(requests[0].headers.get("idempotency-key"), /^agentloop-[0-9a-f]{64}$/u);
-  const body = await requests[1].json();
+  const environment = await requests[1].json();
+  assert.deepEqual(environment, { configuration: { driver: "workspace" }, managed: true });
+  const body = await requests[2].json();
   assert.deepEqual(body.agentloop, { identity: "a".repeat(64), configuration: {} });
-  assert.equal(body.environments.length, 1);
-  assert.equal(body.environments[0].environment_id, "env_1");
+  assert.deepEqual(body.environments, [{ environment_id: "env_1" }]);
   assert.deepEqual(body.tools.map(({ name, environment_id, needs, binding_names, program }) => [name, environment_id, needs, binding_names, program.kind]), [["read", "env_1", [], [], "esm"]]);
   assert.equal(body.system, "");
 
   await vm.suspend();
-  assert.match(requests[2].url, /\/environments\/env_1\/calls\/suspend$/u);
+  assert.match(requests[3].url, /\/environments\/env_1\/calls\/suspend$/u);
 });
 
 test("retries admission after a failure instead of caching the rejection", async () => {

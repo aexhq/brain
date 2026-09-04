@@ -1,7 +1,10 @@
 mod adapter;
-mod directory;
 mod registry;
+mod resources;
 
 pub use adapter::{EnvironmentAdapter, HttpEnvironmentAdapter};
-pub use directory::{DirectoryEntry, EnvironmentDirectory, InMemoryEnvironmentDirectory};
-pub use registry::{EnvironmentRegistry, SessionBindingValues};
+pub use registry::{
+    DirectoryEntry, EnvironmentNotice, EnvironmentNoticeKind, EnvironmentRegistry,
+    SessionBindingValues,
+};
+pub use resources::{EnvironmentRecord, EnvironmentResources};

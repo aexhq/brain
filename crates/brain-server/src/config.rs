@@ -45,4 +45,8 @@ pub struct ServerConfig {
     /// never.
     #[arg(long, env = "BRAIN_SESSION_IDLE_TTL_SECS", default_value_t = 1800)]
     pub session_idle_ttl_secs: u64,
+    /// Seconds a managed environment may sit with no session attached before Brain
+    /// closes it. An environment may set its own at create; zero means never.
+    #[arg(long, env = "BRAIN_ENVIRONMENT_IDLE_TTL_SECS", default_value_t = 1800)]
+    pub environment_idle_ttl_secs: u64,
 }
