@@ -29,7 +29,8 @@ assert.deepEqual(
 );
 assert.deepEqual(events.at(-1)?.data.result, { turns: 1, message: "finish without external capabilities" });
 assert.ok(events.every(({ recordedAt }) => recordedAt instanceof Date && !Number.isNaN(recordedAt.valueOf())));
-assert.deepEqual(events.map(({ sequence }) => sequence), events.map((_, index) => index + 1));
+// One sequence counter numbers both logs, so the feed is strictly increasing, not contiguous.
+assert.ok(events.every(({ sequence }, index) => index === 0 || sequence > events[index - 1].sequence));
 
 await session.end();
 await session.delete();
