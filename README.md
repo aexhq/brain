@@ -43,7 +43,7 @@ The hand for LLM to actually do work, it declares resources it needs and provide
 - Web_search/Web_fetch
 
 ### Environment Extensions
-An environment provide the resources a tool needs to complete its tasks. [Write an environment](https://aex.dev/brain/docs/guides/write-an-environment).
+An environment provides the resources a tool needs to complete its tasks. [Write an environment](https://aex.dev/brain/docs/guides/write-an-environment).
 - Sandbox
 - Browser
 - Filesystem
@@ -142,14 +142,15 @@ Brain owns the session. You supply the agent loop, the model, the tools, and the
 Four design choices make it fast:
 
 - **Isolated WebAssembly agent loops.** A loop compiles from any language to a
-  [Wasmtime](https://wasmtime.dev/) component. It is compiled once and activated for each
-  decision at native speed, fully sandboxed. Because Brain does the I/O, each decision is
-  deterministic and can be replayed from its position in the log.
-- **Write-ahead log.** The only durable state is an append-only log, written after the turn so
-  it stays off the hot path. Sessions live in memory and rebuild from the log at boot, so a
-  restart resumes the conversation where it stopped.
-- **Everything is observable.** Every decision, model call, token, and tool
-  result is an event in one feed. Watching live and reading history use the same records, so
+  [Wasmtime](https://wasmtime.dev/) component. It is compiled once and runs each turn at
+  native speed, fully sandboxed, calling back into Brain for every model call and tool call.
+  Because Brain does the I/O, every effect is in the log before it happens.
+- **Write-ahead logs.** The only durable state is a pair of append-only logs per session,
+  written behind the turn so they stay off the hot path. An active session lives in memory, an
+  idle one suspends to disk, and either rebuilds from its logs, so a restart resumes the
+  conversation where it stopped.
+- **Everything is observable.** Every model call, token, tool result, and record the loop
+  appends is an event in one feed. Watching live and reading history use the same records, so
   tracing a session is the same as replaying it.
 
 Brain comes with a server, one native Rust binary on [Tokio](https://tokio.rs/). It serves the session API over
@@ -206,7 +207,8 @@ await session.delete();
 
 - [x] The four-part runtime: agent loop, model, tools, environment
 - [x] Unified `brain`, `tool`, and `environment` authoring with `brain build`
-- [x] Append-only segment log with restart recovery
+- [x] Append-only per-session logs with suspension and restart recovery
+- [x] Environments as shared resources with a managed idle lifecycle
 - [x] Typed content identity
 - [x] HTTP/SSE session API and the `@aexhq/brain` SDK
 - [x] Remote environment contract with `env-app` and `env-aws-microvm`

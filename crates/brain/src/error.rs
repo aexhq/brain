@@ -52,7 +52,7 @@ impl Error {
             Error::Journal(_) => api::INTERNAL,
             Error::Ambiguous(_) => api::AMBIGUOUS,
             Error::Cancelled(_) => brain_protocol::codes::failure::CANCELLED,
-            Error::Budget(_) => brain_protocol::codes::failure::DECISION_LIMIT,
+            Error::Budget(_) => brain_protocol::codes::failure::MODEL_CALL_LIMIT,
             Error::Loop(error) => &error.code,
             Error::ProviderStatus { .. } => api::MODEL_PROVIDER_FAILED,
         }

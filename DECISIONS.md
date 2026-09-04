@@ -2,7 +2,7 @@
 
 Decisions that change how Brain behaves, recorded before the code changes. Each entry says what
 we decided and why. When a decision is reversed, add a new entry rather than editing the old one.
-Every entry below was implemented in the pull request that added this file.
+Every entry below was implemented in the pull request that added it.
 
 ## 2026-09-02: The agent loop owns what the model sees
 
@@ -143,3 +143,156 @@ the session log because that was the only durable place.
 what this decision removes; what remains is a session, and the crate calls it that. The
 `brain-protocol` struct that the API returns as a summary keeps a name that says it is a summary.
 The session may mint its own id as long as the server records and manages it.
+
+## 2026-09-04: The agent loop drives the turn; Brain provides services
+
+**Decided.** One activation is one whole turn. The loop receives the input, the transcript, and
+the session's records since it last ran, and calls back into Brain through host imports for as
+long as the turn lasts: `model` makes one model call, `dispatch` runs one or many tool calls
+together, `append` writes the loop's own record, `telemetry` is fire and forget. Brain performs
+each call, journals it first, and hands the result back. The loop returns the transcript and its
+slots when it decides the turn is over.
+
+Brain owns the transcript's persistence and the loop owns its content. The transcript is the
+neutral `Vec<Message>` the protocol already had; the loop edits it however it likes and hands it
+over at every model call and at the end of the turn, and Brain journals the difference from the
+last one it recorded. Compaction is the loop replacing the transcript with a shorter one.
+
+**What went away.** The decision loop in the session actor, the `step` activation with its
+observation and decision types, the resident context in the Loophost, the decision cap and
+`BRAIN_MAX_DECISIONS`, model request defaulting in the actor, and the `agentloop/v1` contract.
+The turn is bounded instead by a model-call budget (`BRAIN_MAX_MODEL_CALLS`, failure code
+`model_call_limit`) and a wall-time budget (`BRAIN_MAX_TURN_SECS`, which cancels the turn).
+
+**Why.** The loop is the policy, and a policy that can only answer one question at a time
+cannot run tool calls sequentially, skip a call the model asked for, or retry a model call on
+its own terms without a second activation per step. Brain keeps authority because effects are
+reachable only through its services, each of which journals before it acts. Cancellation
+reaches the loop as an error from the next service call, which the loop propagates.
+
+**Host imports are synchronous.** The guest toolchain (componentize-js) lowers imports
+synchronously, so a host call blocks the guest's thread until Brain answers. The SDK presents
+the calls as promises so a loop reads as async code; the compute budget charges the guest only
+for its own time, not for time spent waiting on the host. Async imports can replace this when
+the toolchain carries them without changing the developer API.
+
+## 2026-09-04: One session configuration, and nothing is sealed
+
+**Decided.** A session has one configuration type, `SessionConfig`: the request carries it,
+the store records it, and the runtime reads it. `ResolvedSessionRequest`,
+`SealedSessionConfig`, `RequestedToolBinding` against `ToolBinding`, `ResolvedEnvironment`
+against `EnvironmentAttachment`, the `EnvironmentView` trait, and the second contract
+validation at `complete` are gone. The host-wide struct that carries executors and limits is
+`SessionRuntime`.
+
+**Why.** Two types for the same thing at two moments of its life cost every change twice and
+protected nothing: the invariant they were meant to express is that a session's tool
+catalogue and bindings do not change after create, and that holds because nothing after
+create writes them. The word "sealed" goes with the type; the invariant stays and is stated
+in `AGENTS.md`.
+
+## 2026-09-04: Identity is an idempotency key and nothing else
+
+**Decided.** `Identity` is a plain 64-hex newtype. Hashing lives in the server's digest
+module and is used for HTTP idempotency keys and the configuration digest an idempotent
+replay is checked against. The environment configuration check at attach, the binding
+fingerprints sent to environments, and the hashed attachment id are gone; an attachment id is
+random.
+
+**Why.** Configuration belongs to whoever creates an environment, and attach names an id, so
+there is nothing to compare. A fingerprint the other side never verified was a promise
+without a check.
+
+## 2026-09-04: One directory per session, two append-only logs, one sequence
+
+**Decided.** Every session owns `sessions/{id}/` under the data directory, holding its
+creation configuration and two append-only logs written by one process-wide writer thread with
+a per-session backlog budget. The **events** log holds lifecycle records, effect records, and
+the loop's own records; it is the audit trail and the client feed. The **journal** holds
+the transcript as prefix deltas (`keep k, append rest` against the last recorded transcript),
+the loop's state slots as last-write-wins values, and checkpoints holding the whole transcript
+and every slot. A checkpoint is written when the bytes appended since the last one exceed the
+transcript's size. One sequence counter numbers the records of both logs. No file is rewritten
+in place; delete is directory removal.
+
+**What went away.** The shared segment log, cross-session segment rotation and reclamation,
+`ObservedJournal`, the in-memory-only context, and the per-session state file the old module
+documentation described but no code wrote.
+
+**Why.** A context that is only in memory is what forced replaying records into the loop on
+restart. Deltas keep the journal linear in the conversation's length for every loop behaviour,
+not only append-only ones; checkpoints bound recovery to about twice the transcript; one
+sequence keeps the order between a transcript change and the effect that followed it. One
+writer is enough as long as sessions do not block each other, which the per-session budget
+guarantees; sharding by session id is a measurement away if a single thread ever saturates.
+
+## 2026-09-04: Every dependency of a session is injected, and recovery is load and construct
+
+**Decided.** A session is built from its store, the shared `SessionRuntime`, and its
+`SessionConfig`; `Session::begin` and `Session::open` are the same construction with and
+without a genesis record. Recovery folds the journal from the last checkpoint and reads the
+events log. A turn the last process left running is closed with `turn_failed` whose code is
+`interrupted`. No activation runs, nothing is replayed into the loop, and the loop learns what
+happened from the events it receives at its next turn.
+
+**What went away.** `take_restored`, `restored_history`, the ten-thousand-record replay cap,
+`announce_history`, the `session_history_replayed` record, and the `history` field of the
+create request. A conversation is carried into a new session as `transcript`: messages, not
+events.
+
+**Why.** The state on disk is the whole state, so there is nothing to replay. A loop that
+never sees recovery cannot get it wrong.
+
+## 2026-09-04: Idle sessions are suspended and rebuilt on demand
+
+**Decided.** A session is created with `idle_ttl_ms`, or takes the server's
+`BRAIN_SESSION_IDLE_TTL_SECS`. Idle past it, the session's task and memory are dropped after
+its writes drain, and a `session_suspended` record is written. The next request rebuilds it
+from its logs and writes `session_resumed`. On boot every session on disk is registered
+suspended. `end` is still the only thing that detaches environments and writes
+`session_ended`.
+
+**Why.** Ten thousand idle conversations should cost disk, not memory, and a restart should
+not have to rebuild every one of them before serving the first request.
+
+## 2026-09-04: Environments are resources with an optional managed lifecycle
+
+**Decided.** An environment is created with its configuration at `POST /v1/environments`,
+named by its id, attached to by sessions at create, shared by any number of sessions at once,
+and closed by `DELETE`, which is refused while a session is attached. A managed environment is
+closed by Brain once no session has been attached for its idle TTL. Every session that was
+attached sees `environment_closed`; one whose environment cannot be reached sees
+`environment_unreachable`. Tools bind to environments by id; the SDK creates a managed
+environment per Environment object a session's tools name and deletes it when the session
+ends.
+
+**What went away.** Inline environment declarations in the create request, the
+session/shared/external `LifecyclePolicy`, provisioning on first sight of an id, and the
+environment directory that compared configurations.
+
+**Why.** A place that runs programs outlives the conversation that first needed it, and the
+next conversation should be able to find it by name. Lifecycle is either the creator's or
+Brain's, and the flag says which.
+
+## 2026-09-04: One catalogue of codes
+
+**Decided.** `brain_protocol::codes` declares every record kind, every failure code, and every
+API error code, mirrored by `contracts/session/v1/codes.json` and held identical by a test.
+Every `*_failed` record carries the same `Failure` payload: `code`, `message`, `retryable`,
+`ambiguous`. Errors inside the runtime are typed variants whose code is read from the
+variant, never from the text. A loop that fails a turn chooses its own code, and that code is
+what the `turn_failed` record carries; a loop that trapped or returned something the contract
+refuses gets `agentloop_failed`. Codes nothing emits are removed rather than kept for
+company.
+
+**Why.** A client, a loop, or a test matching on a string that is declared once cannot drift
+from the producer.
+
+## 2026-09-04: The data directory is not migrated
+
+**Decided.** The data directory carries a format marker. A Brain that finds another format, or
+the previous layout, refuses to start and says so. There is no migration.
+
+**Why.** Brain is under early development and has said so: contracts are replaced in place
+until the first stable release. A migration path for a layout nobody should be depending on
+is code that has to be right for no one.

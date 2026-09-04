@@ -13,7 +13,6 @@ pub mod event {
     pub const SESSION_CREATION_STARTED: &str = "session_creation_started";
     pub const SESSION_CREATION_ENDED: &str = "session_creation_ended";
     pub const SESSION_CREATION_FAILED: &str = "session_creation_failed";
-    pub const SESSION_HISTORY_REPLAYED: &str = "session_history_replayed";
     pub const SESSION_ENDED: &str = "session_ended";
     pub const SESSION_SUSPENDED: &str = "session_suspended";
     pub const SESSION_RESUMED: &str = "session_resumed";
@@ -68,7 +67,6 @@ pub mod event {
         SESSION_CREATION_STARTED,
         SESSION_CREATION_ENDED,
         SESSION_CREATION_FAILED,
-        SESSION_HISTORY_REPLAYED,
         SESSION_ENDED,
         SESSION_SUSPENDED,
         SESSION_RESUMED,
@@ -113,15 +111,10 @@ pub mod failure {
     pub const INTERRUPTED: &str = "interrupted";
     pub const CANCELLED: &str = "cancelled";
     pub const TIMEOUT: &str = "timeout";
-    pub const DECISION_LIMIT: &str = "decision_limit";
+    pub const MODEL_CALL_LIMIT: &str = "model_call_limit";
     pub const AGENTLOOP_FAILED: &str = "agentloop_failed";
-    pub const INVALID_CONTEXT_VERSION: &str = "invalid_context_version";
-    pub const INVALID_MODEL_DECISION: &str = "invalid_model_decision";
-    pub const INVALID_TOOLS_DECISION: &str = "invalid_tools_decision";
-    pub const MODEL_CALL_FAILED: &str = "model_call_failed";
     pub const TOOL_ERROR: &str = "tool_error";
     pub const SESSION_OWNERSHIP_FAILED: &str = "session_ownership_failed";
-    pub const SESSION_HISTORY_REJECTED: &str = "session_history_rejected";
     pub const ENVIRONMENT_PREPARATION_FAILED: &str = "environment_preparation_failed";
     pub const ENVIRONMENT_ERROR: &str = "environment_error";
     pub const INVALID_TRANSCRIPT: &str = "invalid_transcript";
@@ -130,15 +123,10 @@ pub mod failure {
         INTERRUPTED,
         CANCELLED,
         TIMEOUT,
-        DECISION_LIMIT,
+        MODEL_CALL_LIMIT,
         AGENTLOOP_FAILED,
-        INVALID_CONTEXT_VERSION,
-        INVALID_MODEL_DECISION,
-        INVALID_TOOLS_DECISION,
-        MODEL_CALL_FAILED,
         TOOL_ERROR,
         SESSION_OWNERSHIP_FAILED,
-        SESSION_HISTORY_REJECTED,
         ENVIRONMENT_PREPARATION_FAILED,
         ENVIRONMENT_ERROR,
         INVALID_TRANSCRIPT,

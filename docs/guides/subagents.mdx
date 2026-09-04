@@ -40,9 +40,10 @@ const delegate = tool({
 });
 ```
 
-The child gets its own agent loop, model, and tools, and its own environment. An Environment
-object attaches to exactly one session, so the child calls the environment factory again
-instead of reusing the parent's instance.
+The child gets its own agent loop, model, and tools. An Environment object handed to the SDK
+stands for one managed environment per session, so the child calls the factory again for a
+sandbox of its own. Two sessions that must share one environment create it with
+`brain.environments` and attach by its id over the API.
 
 ## Put it in a session
 

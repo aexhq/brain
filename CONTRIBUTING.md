@@ -61,8 +61,7 @@ Do not paste a snippet into a page — reference the example.
 
 - Commit messages are `area: imperative summary`.
 - Fail fast. Keep comments self-contained. Write plain English.
-- Journal every decision before its external effect, and record terminal results before the next
-  agent loop activation.
+- Journal every effect before it happens, and record terminal results before the loop sees them.
 - Keep the `brain` crate free of cloud SDKs. Storage, custody, and runtime behaviour go behind
   public adapters.
 - Do not weaken a production invariant to make local development easier.
