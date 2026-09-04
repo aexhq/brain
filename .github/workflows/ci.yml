@@ -26,6 +26,15 @@ jobs:
       - run: git diff --exit-code -- contracts catalog crates/brain-protocol/src/generated.rs crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts
       - run: npm test
       - run: npm run package-smoke
+
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.2"
+      # Reads package-lock.json; no install, so a slow registry costs this job alone.
       - run: npm audit --audit-level=high
 
   lint:
@@ -83,7 +92,6 @@ jobs:
           npm run build --workspace @aexhq/brain
           node packages/brain-sdk/dist/cli.js build tests/release/diagnostic-brain.mjs --out "$RUNNER_TEMP/diagnostic"
           cp "$RUNNER_TEMP/diagnostic/diagnostic.brain.json" "$RUNNER_TEMP/diagnostic.brain.json"
-          npm audit --audit-level=high
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.97.1"
@@ -160,12 +168,13 @@ jobs:
 
   build-test:
     if: always()
-    needs: [contracts, lint, rust-core, rust-platforms, loophost, image-smoke, benchmark-leakage]
+    needs: [contracts, audit, lint, rust-core, rust-platforms, loophost, image-smoke, benchmark-leakage]
     runs-on: ubuntu-24.04
     steps:
       - name: Every release gate passed
         env:
           CONTRACTS: ${{ needs.contracts.result }}
+          AUDIT: ${{ needs.audit.result }}
           LINT: ${{ needs.lint.result }}
           CORE: ${{ needs.rust-core.result }}
           PLATFORMS: ${{ needs.rust-platforms.result }}
@@ -174,6 +183,7 @@ jobs:
           RESOURCE_BOUNDS: ${{ needs.benchmark-leakage.result }}
         run: |
           test "$CONTRACTS" = success
+          test "$AUDIT" = success
           test "$LINT" = success
           test "$CORE" = success
           test "$PLATFORMS" = success

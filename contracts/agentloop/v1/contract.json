@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aexhq/brain/contracts/agentloop/v2/contract.json",
-  "title": "Brain Agentloop v2",
+  "$id": "https://github.com/aexhq/brain/contracts/agentloop/v1/contract.json",
+  "title": "Brain Agentloop",
   "$defs": {
     "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
     "Message": {
@@ -81,7 +81,7 @@
   "additionalProperties": false,
   "required": ["contract", "input", "output"],
   "properties": {
-    "contract": { "const": "agentloop/v2" },
+    "contract": { "const": "agentloop/v1" },
     "input": { "$ref": "#/$defs/TurnInput" },
     "output": { "$ref": "#/$defs/TurnOutput" }
   }

@@ -160,7 +160,9 @@ last one it recorded. Compaction is the loop replacing the transcript with a sho
 
 **What went away.** The decision loop in the session actor, the `step` activation with its
 observation and decision types, the resident context in the Loophost, the decision cap and
-`BRAIN_MAX_DECISIONS`, model request defaulting in the actor, and the `agentloop/v1` contract.
+`BRAIN_MAX_DECISIONS`, model request defaulting in the actor, and the step-shaped `agentloop/v1` contract, replaced in
+place by the turn-shaped one under the same name (contracts are rewritten, not versioned, until
+Brain 1.0.0).
 The turn is bounded instead by a model-call budget (`BRAIN_MAX_MODEL_CALLS`, failure code
 `model_call_limit`) and a wall-time budget (`BRAIN_MAX_TURN_SECS`, which cancels the turn).
 

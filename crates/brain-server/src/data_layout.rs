@@ -2,7 +2,7 @@
 //! per-session layout.
 //!
 //! ```text
-//! {data_dir}/format             "brain-data/2"
+//! {data_dir}/format             "brain-data/1"
 //! {data_dir}/sessions/{id}/     one directory per session (see brain::SessionStore)
 //! {data_dir}/agentloops         admitted loop packages
 //! {data_dir}/run                worker sockets
@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "brain-data/2";
+pub const FORMAT: &str = "brain-data/1";
 
 /// Creates the layout if the directory is new, checks it if it is not, and returns the
 /// sessions directory. A directory written by an earlier Brain is refused with a message

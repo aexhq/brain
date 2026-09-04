@@ -200,7 +200,7 @@ async function buildAgentloop(entry: string, name: string, out: string): Promise
     await rm(work, { recursive: true, force: true });
   }
   const packageValue: AgentloopPackage = {
-    manifest: { contract_version: "agentloop/v2", component_identity: createHash("sha256").update(component).digest("hex"), component_bytes: component.byteLength, toolchain: BUILDER_TOOLCHAIN },
+    manifest: { contract_version: "agentloop/v1", component_identity: createHash("sha256").update(component).digest("hex"), component_bytes: component.byteLength, toolchain: BUILDER_TOOLCHAIN },
     component_base64: Buffer.from(component).toString("base64"),
   };
   await writeFile(out, `${JSON.stringify(packageValue)}\n`);
@@ -208,7 +208,7 @@ async function buildAgentloop(entry: string, name: string, out: string): Promise
 }
 
 interface AgentloopPackage {
-  readonly manifest: { readonly contract_version: "agentloop/v2"; readonly component_identity: string; readonly component_bytes: number; readonly toolchain: string };
+  readonly manifest: { readonly contract_version: "agentloop/v1"; readonly component_identity: string; readonly component_bytes: number; readonly toolchain: string };
   readonly component_base64: string;
 }
 
@@ -217,7 +217,7 @@ function componentWrapper(entry: string, name: string): string {
   const normalized = specifier.startsWith(".") ? specifier : `./${specifier}`;
   return `
 import { runTurn } from "@aexhq/brain";
-import * as host from "aex:agentloop/host@2.0.0";
+import * as host from "aex:agentloop/host@1.0.0";
 import { ${name} as definition } from ${JSON.stringify(normalized)};
 
 // A host import that fails throws a ComponentError whose payload is the turn-error

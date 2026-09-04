@@ -31,7 +31,7 @@ pub const DEFAULT_CONCURRENT_TURNS: usize = 64;
 
 /// The interfaces a guest may import: the contract's own types and the host services.
 pub const RUNTIME_SHIM_IMPORTS: &[&str] =
-    &["aex:agentloop/types@2.0.0", "aex:agentloop/host@2.0.0"];
+    &["aex:agentloop/types@1.0.0", "aex:agentloop/host@1.0.0"];
 
 #[doc(hidden)]
 pub async fn worker_read<R: tokio::io::AsyncRead + Unpin>(
