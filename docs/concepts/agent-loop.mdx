@@ -1,52 +1,80 @@
 ---
 title: Agent loop
-description: The deterministic policy that owns context and decides what happens next.
+description: The policy that drives a turn through Brain's services.
 ---
 
-An agent loop receives what just happened and returns one durable action. Its registration
-shape is the same as every other extension:
+An agent loop is called once per turn. It receives the input, the transcript, and what
+happened since it last ran, and it drives the turn: it calls the model, dispatches tool calls,
+appends its own records, and returns when it decides the turn is over. Its registration shape
+is the same as every other extension:
 
-```ts
+```js
 import { agentloop } from "@aexhq/brain";
-import { z } from "zod";
 
-export const simple = agentloop((author) => {
-  const memory = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
-
-  author.on.message(({ input }, turn) => {
-    memory.messages.push({ role: "user", content: [{ type: "text", text: input.message }] });
-    return turn.model({ messages: memory.messages });
-  });
-
-  author.on.model((completed, turn) => {
-    memory.messages.push(completed.response.message);
-    const text = completed.response.message.content
+export const example = agentloop((author) => {
+  author.turn(async (turn) => {
+    turn.transcript.push({ role: "user", content: [{ type: "text", text: turn.input.message }] });
+    // The session's system prompt and tools apply unless the call says otherwise.
+    const { message } = await turn.model({ messages: turn.transcript });
+    turn.transcript.push(message);
+    const text = message.content
       .filter((block) => block.type === "text")
       .map((block) => block.text)
       .join("");
-    return turn.reply(text);
+    await turn.reply(text);
+    return turn.done();
   });
 });
 ```
 
 Messages are provider-neutral: a `role` and an array of content blocks (`text`, `tool_use`,
-`tool_result`). Brain renders them into the bound provider's wire format, so the same extension
+`tool_result`). Brain renders them into the bound provider's wire format, so the same loop
 runs unchanged against every supported provider.
 
-Handlers are synchronous. Model calls, Tool calls, emitted output, and cancellation complete as a
-later observation, so Brain can journal every effect before performing it and recover without a
-hidden JavaScript continuation.
+## Services
 
-`author.state()` is durable extension state. The messages passed to `turn.model()` are the context
-for that one model request. An extension can summarize or drop old messages without rewriting the
-append-only journal.
+Everything the loop wants done goes through the `turn` object, and every call journals before
+it acts. `model` makes one model call. `dispatch` runs one or many tool calls together and
+returns their results in order, so calling it once per call is sequential dispatch and once
+per batch is parallel. `append` writes the loop's own record to the session's feed;
+`reply` is the shorthand that appends an assistant message. `telemetry` is fire and forget.
+`done` ends the turn, `fail` ends it with a code the `turn_failed` record carries.
+
+Brain keeps authority because effects are only reachable this way. A call made after the turn
+was cancelled, or past its model-call budget, returns the error instead of acting; the loop
+propagates it by letting it throw. The compiled loop runs as a WebAssembly component with no
+filesystem, network, process, ambient clock, environment variables, or secrets.
+
+## The transcript
+
+`turn.transcript` is the conversation as Brain last recorded it. The loop edits it however it
+likes (append, summarise, drop, reorder) and Brain journals the difference at every model call
+and when the turn returns: the shared prefix stays, the rest is appended. A loop that wants to
+send the model less compacts the transcript; there is no separate view of what to send.
+
+The loop's private bookkeeping lives in slots. `author.slot(name, schema, initial)` returns a
+live object, validated on the way in and out and saved when the turn ends; Brain persists it
+beside the transcript and never reads it. Slots stay small. Anything large belongs in the
+transcript.
+
+## What the loop is told
 
 The loop owns what the model is told. A session is created with a system prompt and a set of
 tools, and the loop sees them as `author.system` and `author.tools`. Every `turn.model()` uses
-them unless it says otherwise: `system` replaces the prompt for that call, and `tools` names which
-of the session's tools to offer. A name outside `author.tools` fails the turn. So a loop can swap
-the prompt for a subtask, offer fewer tools, or keep a stable prefix for prompt caching, and a loop
-that does none of that gets what the creator asked for.
+them unless it says otherwise: `system` replaces the prompt for that call, and `tools` names
+which of the session's tools to offer. A name outside `author.tools` fails the call. So a loop
+can swap the prompt for a subtask, offer fewer tools, or keep a stable prefix for prompt caching,
+and a loop that does none of that gets what the creator asked for.
 
-The compiled extension runs as a WebAssembly component with no filesystem, network, process,
-ambient clock, environment variables, or secrets. Pi and Codex use the same public API and runtime.
+`turn.events` is what happened on the session since the loop last ran: a turn that was
+interrupted by a restart, an environment that closed, a suspension. Brain never calls the model
+on its own because something happened; the loop reads the events at the start of its turn and
+decides.
+
+## Recovery is not the loop's problem
+
+A restart, a suspension, or a worker restart rebuilds the session from its logs. The loop is
+not activated for it and sees nothing but the events. Retries are the loop's: Brain returns
+typed errors and never retries a model or tool call on the loop's behalf.
+
+Pi and Codex use the same public API and runtime.

@@ -8,6 +8,8 @@ These examples use the public TypeScript SDK and HTTP API against a locally runn
 | `event-history.mjs` | Read the committed journal and resume from an event cursor. |
 | `session-lifecycle.mjs` | List, reopen, cancel, end, and delete a session. |
 | `raw-http.mjs` | Admit an Agentloop and run a session using only the HTTP contract. |
+| `example-brain.mjs` | The smallest agent loop: one model call, one reply. |
+| `coder-brain.mjs` | An agent loop that runs tool calls until the model answers in prose. |
 
 On Linux, from the repository root, install dependencies and build the two Brain executables:
 

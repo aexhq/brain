@@ -20,10 +20,10 @@ Everything Brain does not do itself is one of four things you supply.
 
 | Part | You supply | Brain does |
 | --- | --- | --- |
-| [Agent loop](/brain/docs/concepts/agent-loop) | The policy: given what just happened, what next | Runs it in a WebAssembly sandbox and carries out the decision |
+| [Agent loop](/brain/docs/concepts/agent-loop) | The policy: what a turn does | Runs it in a WebAssembly sandbox and performs every effect it asks for |
 | [Model](/brain/docs/concepts/model) | A binding: provider, model name, key | Pins it for the life of the session and makes the call |
 | [Tool](/brain/docs/concepts/tool) | A name, description, schema, and where it runs | Logs the call and sends it to the bound environment |
-| [Environment](/brain/docs/concepts/environment) | Somewhere tool calls actually execute | Sets it up, attaches, calls, cancels, tears it down |
+| [Environment](/brain/docs/concepts/environment) | Somewhere tool calls actually execute | Creates it, attaches sessions to it, calls, cancels, closes it |
 
 The packages we ship use the same interface you would. Nothing built in gets a shortcut.
 
@@ -33,11 +33,12 @@ Brain never runs tool code. That is the load-bearing decision. A tool call is a 
 else — a sandbox VM, a browser tab, your backend, the user's laptop — so a crashing or hostile tool
 takes down its own environment, not the process holding your sessions.
 
-The agent loop is sealed off for the same reason. It receives an observation and returns a decision.
-No network, no filesystem, no secrets, no clock. Brain performs every effect the loop asks for.
+The agent loop is isolated for the same reason. It drives the turn through Brain's services and
+has nothing else: no network, no filesystem, no secrets, no clock. Brain performs every effect the
+loop asks for and records it first.
 
 ## Where to go next
 
 - [Quickstart](/brain/docs/quickstart) — a running server and a first session.
-- [Sessions](/brain/docs/concepts/sessions) — the log, turns, and how recovery works.
+- [Sessions](/brain/docs/concepts/sessions) — the logs, turns, suspension, and recovery.
 - [API reference](/brain/docs/reference/api) — generated from the session contract.

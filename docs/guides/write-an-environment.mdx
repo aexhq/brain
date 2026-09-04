@@ -117,6 +117,7 @@ const session = await client.sessions.create({
 await vm.snapshot();
 ```
 
-The exact Environment object identifies the attachment. A generated method fails before the
-session attaches and after it ends. Brain journals the call intent, routes it to that
-attachment, and records the terminal receipt.
+The Environment object stands for one environment: the SDK creates it as a managed
+environment when the session is created, attaches the session by id, and deletes it when the
+session ends. A generated method fails before the session attaches and after it ends. Brain
+journals the call, routes it to that environment, and records the terminal receipt.

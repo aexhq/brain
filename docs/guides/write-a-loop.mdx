@@ -1,36 +1,31 @@
 ---
 title: Write an agent loop
-description: Register synchronous hooks and build a portable agent loop artifact.
+description: Drive a turn through Brain's services and build a portable agent loop artifact.
 ---
 
-Install Brain and Zod, then export a named definition from `src/index.ts`:
+Install Brain and Zod, then export a named definition from your entry module:
 
 ```sh
 npm install @aexhq/brain zod
 ```
 
-```ts
+```js
 import { agentloop } from "@aexhq/brain";
 import { z } from "zod";
 
 const options = z.object({ instructions: z.string().default("Be helpful.") });
-const state = z.object({ messages: z.array(z.unknown()) });
 
 export const assistant = agentloop({ options }, (author) => {
-  const memory = author.state(state, () => ({ messages: [] }));
-
-  author.on.message(({ input }, turn) => {
-    memory.messages.push({ role: "user", content: [{ type: "text", text: input.message }] });
-    return turn.model({ system: author.options.instructions, messages: memory.messages });
-  });
-
-  author.on.model((completed, turn) => {
-    memory.messages.push(completed.response.message);
-    const text = completed.response.message.content
+  author.turn(async (turn) => {
+    turn.transcript.push({ role: "user", content: [{ type: "text", text: turn.input.message }] });
+    const { message } = await turn.model({ system: author.options.instructions, messages: turn.transcript });
+    turn.transcript.push(message);
+    const text = message.content
       .filter((block) => block.type === "text")
       .map((block) => block.text)
       .join("");
-    return turn.reply(text);
+    await turn.reply(text);
+    return turn.done();
   });
 });
 ```
@@ -42,9 +37,10 @@ npx brain build
 ```
 
 For an agent loop the output is a WebAssembly component. `brain build` bundles the module and
-compiles it with [componentize-js](https://github.com/bytecodealliance/componentize-js) against
-Brain's `agentloop.wit` world, with stdio, random, clocks, and HTTP disabled. Brain runs the
-component in Wasmtime, so the loop has no I/O of its own and every decision is deterministic.
+compiles it with [componentize-js](https://github.com/bytecodealliance/componentize-js)
+against Brain's `agentloop.wit` world, with stdio, random, clocks, and HTTP disabled. Brain
+runs the component in Wasmtime, so the loop has no I/O of its own: every effect goes through
+the `turn` object, and Brain journals each one before it happens.
 
 Applications import the generated factory and pass it under `agentloop`:
 
@@ -55,9 +51,10 @@ const session = await client.sessions.create({
 });
 ```
 
-Registration and agent loop handlers are synchronous. Return `turn.model`, `turn.tools`, `turn.emit`,
-`turn.reply`, `turn.done`, or `turn.fail`. Ordinary deterministic packages can be bundled. I/O and
-async work belong in Tools and Environments.
+Registration is synchronous and the turn handler is `async`. Inside it, `turn.model`,
+`turn.dispatch`, `turn.append`, and `turn.reply` return promises; the loop reads like ordinary
+async code, and each call completes before the next line runs. Ordinary deterministic packages
+can be bundled. I/O belongs in Tools and Environments.
 
 The loop decides what the model is told on every call. Leave `system` out and the call uses the
 prompt the session was created with, `author.system`; the loop above replaces it with its own
@@ -66,42 +63,73 @@ option. Leave `tools` out and every tool the session was created with is offered
 
 ## Run tools
 
-A loop that uses tools handles one more observation. When the model asks for tools, hand the
-whole batch to Brain with `turn.tools`. Brain runs the calls in parallel and reports back once,
-in `tools`, with every result. The loop below runs a full coding turn.
+When the model asks for tools, hand the batch to `turn.dispatch`. Brain runs the calls in
+parallel and returns every result, in the calls' order, once they are all in. Call it once per
+call instead and the calls run one after another; leave a call out and it never runs. The loop
+below, from [`examples/coder-brain.mjs`](https://github.com/aexhq/brain/blob/main/examples/coder-brain.mjs),
+runs a full coding turn and keeps a counter in a slot.
 
-```ts
+```js
 import { agentloop } from "@aexhq/brain";
 import { z } from "zod";
 
-const state = z.object({ messages: z.array(z.unknown()) });
-const text = (message) => message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+const text = (message) =>
+  message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("");
 
+// A full coding turn: model, tools, model again, until the model answers in prose.
 export const coder = agentloop((author) => {
-  const memory = author.state(state, () => ({ messages: [] }));
-  const push = (role, content) => memory.messages.push({ role, content });
+  const memory = author.slot("memory", z.object({ turns: z.number().int() }), () => ({ turns: 0 }));
 
-  author.on.message(({ input }, turn) => {
-    push("user", [{ type: "text", text: input.message }]);
-    return turn.model({ messages: memory.messages });
-  });
-
-  author.on.model(({ response }, turn) => {
-    push("assistant", response.message.content);
-    const calls = response.message.content
-      .filter((block) => block.type === "tool_use")
-      .map((block) => ({ callId: block.id, name: block.name, input: block.input }));
-    // One batch: Brain runs every call in parallel and reports back once.
-    return calls.length ? turn.tools(calls) : turn.reply(text(response.message));
-  });
-
-  author.on.tools(({ results }, turn) => {
-    push("user", results.map((r) => ({ type: "tool_result", tool_use_id: r.call_id, content: r.output, is_error: r.is_error })));
-    return turn.model({ messages: memory.messages });
+  author.turn(async (turn) => {
+    memory.turns += 1;
+    turn.transcript.push({ role: "user", content: [{ type: "text", text: turn.input.message }] });
+    for (;;) {
+      const { message } = await turn.model({ messages: turn.transcript });
+      turn.transcript.push(message);
+      const calls = message.content
+        .filter((block) => block.type === "tool_use")
+        .map((block) => ({ callId: block.id, name: block.name, input: block.input }));
+      if (calls.length === 0) {
+        await turn.reply(text(message));
+        return turn.done({ turns: memory.turns });
+      }
+      // One dispatch: Brain runs every call in parallel and reports back once, in order.
+      const results = await turn.dispatch(calls);
+      turn.transcript.push({
+        role: "user",
+        content: results.map((result) => ({
+          type: "tool_result",
+          tool_use_id: result.callId,
+          content: result.output,
+          is_error: result.isError,
+        })),
+      });
+    }
   });
 });
 ```
 
-The model sees every tool the session was created with unless the loop names a subset in
-`turn.model`. The official `@aexhq/agentloop-pi` and `@aexhq/agentloop-codex` loops are this
-shape with the prompt, context management, and retry policy of Pi and Codex on top.
+`author.slot` declares state the loop keeps beside the transcript: validated by its schema on
+the way in and out, live for the turn, saved when the turn ends. Brain persists it and never
+reads it.
+
+## Failing, and being told
+
+A loop ends a turn early with `turn.fail(code, message)`. The code is what the session's
+`turn_failed` record carries, so pick one a client can act on. An error the loop lets escape
+ends the turn with `agentloop_failed`.
+
+A service call can fail too: past the turn's model-call budget, `turn.model` rejects with
+`model_call_limit`; after a cancel, every call rejects with `cancelled`. Let those errors
+propagate. Brain records what already happened and the turn ends with that code.
+
+`turn.events` holds the session's records since the loop last ran. A loop that wants to know
+that its last turn was interrupted, or that an environment it was using has closed, reads
+them there before deciding what to do; Brain never calls the model on its own because something
+happened.
+
+The official `@aexhq/agentloop-pi` and `@aexhq/agentloop-codex` loops are this shape with the
+prompt, context management, and retry policy of Pi and Codex on top.

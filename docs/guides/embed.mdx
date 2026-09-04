@@ -6,29 +6,36 @@ description: Run sessions inside a Rust service you already own.
 Use the server when you want a process to talk to. Use the crate when another Rust service already
 owns startup, configuration, and deployment, and you want sessions inside it.
 
-The crate is one session at a time. Your service opens the store, builds the configuration every
-session shares, and starts each session with both:
+The crate is one session at a time. Your service opens the sessions directory, builds the
+runtime every session shares, and starts each session with both:
 
 ```rust
-let journal: Arc<dyn brain::JournalStore> = Arc::new(brain::SegmentJournal::open(&journal_dir)?);
-let store = Arc::new(brain::ObservedJournal::new(journal, telemetry));
-// Sessions that were mid-turn when the last process stopped are closed before anything runs.
-brain::interrupt_unfinished_turns(&*store)?;
+// One writer thread and one live feed for the whole process.
+let writer = brain::Writer::spawn();
+let feed = Arc::new(brain::Feed::new(telemetry.clone()));
 
-let config = Arc::new(brain::SessionConfig {
-    max_decisions_per_turn: 128,
+let runtime = Arc::new(brain::SessionRuntime {
+    max_model_calls_per_turn: brain::DEFAULT_MAX_MODEL_CALLS_PER_TURN,
+    max_turn_ms: brain::DEFAULT_MAX_TURN_MS,
     tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
     loop_executor,
     model_executor,
     tool_executor,
-    live: store.live_sender(),
+    live: feed.live_sender(),
+    telemetry,
 });
 
-// Admitting the request bounds its authority before anything is journalled.
-let creating = brain::Session::begin(store.clone(), config.clone(), &resolved_session_request)?;
-
-// Attach the Environments the request named, then seal what was actually granted.
-let session = creating.complete(sealed_session_config)?;
+// A new session: its own directory under `sessions/`, its genesis record, then the
+// environments you attach, then the configuration that was actually granted.
+let store = brain::SessionStore::create(
+    &sessions_dir.join(session_id.as_str()),
+    session_id,
+    &serde_json::to_value(&config)?,
+    writer.clone(),
+    feed.clone(),
+)?;
+let creating = brain::Session::begin(store.clone(), runtime.clone(), &config, &opening_transcript)?;
+let session = creating.complete(config)?;
 
 session
     .message(brain_protocol::MessageRequest {
@@ -37,20 +44,31 @@ session
     .await?;
 ```
 
-A session that already exists in the store, after a restart, is started with
-`brain::Session::open(store, config, &session_id)`. Which sessions to open, and when, is yours.
+After a restart, open what is on disk. Every store comes back with a turn the last process
+left running already closed by a `turn_failed` record whose code is `interrupted`; nothing is
+replayed into the loop. Which of them to start, and when, is yours: the server starts a session
+on its first request and suspends it again after its idle TTL.
+
+```rust
+for store in brain::SessionStore::open_all(&sessions_dir, writer.clone(), feed.clone())? {
+    let session = brain::Session::open(store, runtime.clone())?;
+    // ...
+}
+```
 
 ## You supply the ports
 
 `loop_executor`, `model_executor`, and `tool_executor` are the same seams the server fills in. Fill
-them differently and you get a different deployment without forking the runtime: your own storage,
-your own transport, your own placement.
+them differently and you get a different deployment without forking the runtime: your own transport,
+your own placement. The loop executor receives the session's `TurnServices` and runs the loop
+against them; the server's executor forwards to the Loophost worker over a socket, and yours could
+run a loop in-process.
 
 ## What the runtime keeps
 
 Writes still land before effects, and recovery still works the same way. The runtime does not become
 more permissive because it is embedded: `Session::begin` and `complete` are the only ways a session
-is admitted, and both hold the request to the same contract the server's callers meet.
+is admitted, and both hold the configuration to the same contract the server's callers meet.
 
 ## What stays yours
 
@@ -68,4 +86,4 @@ reported through `telemetry_delivery_dropped` records when the queue still has r
 
 Telemetry remains best effort. For resumable event forwarding, consume the session event endpoint,
 save its sequence cursor after the destination acknowledges a batch, and reconnect from that cursor.
-The journal, rather than the telemetry queue, is the durable record.
+The session's logs, rather than the telemetry queue, are the durable record.

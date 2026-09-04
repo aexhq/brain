@@ -3,8 +3,9 @@ title: Environment
 description: Where tool programs run, and the lifecycle Brain drives.
 ---
 
-An environment is a place that executes programs. Brain drives its lifecycle over the
-`environment/v1` HTTP contract:
+An environment is a place that executes programs. It is a resource of its own: created with
+its configuration, attached to by sessions, shared between them, and closed when nothing
+needs it. Brain drives the adapter over the `environment/v1` HTTP contract:
 
 `setup` · `attach` · `call` · `invoke` · `cancel` · `detach` · `teardown`
 
@@ -37,10 +38,10 @@ named ones; vendor resources are namespaced (`aws:iam`, `bin:ffmpeg`) and opaque
 | `dom` | `{}` | a document the program can drive |
 | `secrets` | `{ names }` | named secrets the platform injects |
 
-The setup and attach receipts report `runtimes` and `resources`. Brain checks every bound
-tool's program kind and `needs` against them at session create, so a shell tool bound to a
-browser environment is a create-time rejection naming the tool, the environment, and what is
-missing, not a runtime mystery.
+The setup receipt reports `runtimes` and `resources`, and Brain keeps them with the
+environment. It checks every bound tool's program kind and `needs` against them at session
+create, so a shell tool bound to a browser environment is a create-time rejection naming the
+tool, the environment, and what is missing, not a runtime mystery.
 
 Inside the environment a program reaches its resources through the platform's own APIs:
 `node:fs`, `child_process`, `fetch`, `document`. Brain wraps nothing. Policy is enforced
@@ -52,6 +53,36 @@ An environment authored with the SDK registers an executor per runtime with
 once. What it registers is exactly what its receipts report. See
 [Write an environment](/brain/docs/guides/write-an-environment).
 
+## Created once, attached by id
+
+`POST /v1/environments` creates an environment: Brain runs its setup with the configuration
+you pass and keeps what the receipt declared. From then on the environment is named by its
+id. A session attaches to it at create by naming that id in `environments`, together with the
+binding values its tools need there, and its tools bind to the environment by the same id.
+
+Many sessions may attach one environment at once. Configuration belongs to whoever created
+the environment and is not part of attach, so there is nothing for Brain to compare when a
+second session names the same id. When a session ends it detaches; the environment stays.
+
+An environment is **managed** or not. A managed one is closed by Brain once no session has
+been attached to it for its idle TTL (`idle_ttl_ms` at create, or the server's
+`BRAIN_ENVIRONMENT_IDLE_TTL_SECS`; zero means never). An unmanaged one lives until
+`DELETE /v1/environments/{id}`, which is refused with `conflict` while a session is still
+attached. Either way every session that was attached sees `environment_closed` on its events,
+and a session whose environment Brain cannot reach sees `environment_unreachable`.
+
+The SDK does the common case for you. An Environment object passed as a tool's `env` at
+session create becomes a managed environment the session owns: the SDK creates it first,
+attaches the session by id, and deletes it when the session ends. Use `brain.environments`
+directly to create an environment that outlives one session, to share it, or to inspect and
+delete what exists.
+
+```ts
+const shared = await brain.environments.create(config, { managed: false });
+const state = await brain.environments.get(shared.id); // status, attached sessions, runtimes, resources
+await brain.environments.delete(shared.id);
+```
+
 ## Attach carries programs and bindings
 
 `attach` carries two typed fields:
@@ -61,7 +92,7 @@ once. What it registers is exactly what its receipts report. See
   band by identity; a `shell` script and an `http` request template travel inline in the
   manifest.
 - **`bindings`**: named values injected into programs at runtime. They travel on this wire
-  only; the journal records their identities, never the values.
+  only; the journal records their names, never the values.
 
 ## Invocation is one envelope
 
@@ -69,15 +100,6 @@ A tool call arrives as `invoke {call_id, tool, input, deadline_ms}` and returns 
 outcome: `ok | error | timeout | cancelled`. The deadline is Brain's to enforce. An overdue
 call is killed by the caller and recorded as a distinguished `timeout` outcome, because no
 remote can be trusted to stop on its own.
-
-## Addressed by object, not by connection
-
-The exact Environment object a tool factory's `env` option names identifies one logical
-attachment. Several tools using the same object share it; calling the environment factory
-again creates another attachment. The generated private identity resolves to provider
-state rather than whichever process happens to hold a socket.
-
-Connections are caches. They never decide identity, and they never decide teardown.
 
 ## Replay is explicit
 

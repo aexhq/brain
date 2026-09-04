@@ -8,13 +8,35 @@ Each option is a flag and an environment variable. Flags win.
 | Variable | Flag | Default | What it does |
 | --- | --- | --- | --- |
 | `BRAIN_LISTEN` | `--listen` | `127.0.0.1:8080` | Address to bind |
-| `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where the session log and local state live |
+| `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where sessions, environments, packages, and local state live |
 | `BRAIN_LOOP_WORKER` | `--loop-worker` | `brain-loop-worker` | Path to the loop worker executable |
 | `BRAIN_API_TOKEN` | `--api-token` | none | Bearer token callers must present |
-| `BRAIN_MODEL_BASE_URL` | `--model-base-url` | `https://ai-gateway.vercel.sh/v1` | Model endpoint |
+| `BRAIN_MODEL_BASE_URL` | `--model-base-url` | `https://ai-gateway.vercel.sh/v1` | Endpoint for the `vercel-ai-gateway` provider |
+| `BRAIN_OPENAI_BASE_URL` | `--openai-base-url` | provider default | Endpoint for the `openai` provider, or any OpenAI-compatible server |
+| `BRAIN_ANTHROPIC_BASE_URL` | `--anthropic-base-url` | provider default | Endpoint for the `anthropic` provider |
+| `BRAIN_PROVIDERS_FILE` | `--providers-file` | none | JSON file of custom provider definitions merged over the catalog |
 | `BRAIN_ENVIRONMENT_BASE_URL` | `--environment-base-url` | empty | Default environment adapter endpoint |
 | `BRAIN_ENVIRONMENT_API_KEY` | `--environment-api-key` | none | Credential for that adapter |
-| `BRAIN_MAX_DECISIONS` | `--max-decisions` | `128` | Decision ceiling for one turn |
+| `BRAIN_MAX_MODEL_CALLS` | `--max-model-calls` | `128` | Model calls one turn may make before the next fails with `model_call_limit` |
+| `BRAIN_MAX_TURN_SECS` | `--max-turn-secs` | `1800` | Seconds one turn may run before it is cancelled; `0` means no bound |
+| `BRAIN_SESSION_IDLE_TTL_SECS` | `--session-idle-ttl-secs` | `1800` | Seconds an idle session keeps its task and memory before it is suspended to disk; a session may set its own at create; `0` means never |
+| `BRAIN_ENVIRONMENT_IDLE_TTL_SECS` | `--environment-idle-ttl-secs` | `1800` | Seconds a managed environment may sit with no session attached before Brain closes it; an environment may set its own at create; `0` means never |
+
+## The data directory
+
+Brain owns everything under `BRAIN_DATA_DIR` and marks its layout with a format file. A
+directory written by an earlier layout is refused at start rather than migrated; point Brain at
+an empty directory instead.
+
+```
+brain-data/
+  format                              the layout marker
+  sessions/{session_id}/config.json   what the session was created with
+  sessions/{session_id}/events/       lifecycle, effects, the loop's records
+  sessions/{session_id}/journal/      transcript deltas, slots, checkpoints
+  environments/{environment_id}.json  what an environment declared at setup
+  agentloops/                         admitted agent loop packages
+```
 
 ## Listening beyond loopback
 

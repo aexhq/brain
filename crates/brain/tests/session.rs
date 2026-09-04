@@ -985,7 +985,7 @@ async fn events_since_the_last_activation_reach_the_loop() {
 }
 
 #[tokio::test]
-async fn a_turn_that_exceeds_its_model_call_budget_fails_with_decision_limit() {
+async fn a_turn_that_exceeds_its_model_call_budget_fails_with_model_call_limit() {
     let data_dir = temporary_directory("budget");
     let loop_executor = scripted(|input, services| async move {
         let mut transcript = input.transcript;
@@ -1011,7 +1011,7 @@ async fn a_turn_that_exceeds_its_model_call_budget_fails_with_decision_limit() {
     let events = runtime.events(handle.id(), 0, 1_000).events;
     let last = events.last().unwrap();
     assert_eq!(last.event_type, "turn_failed");
-    assert_eq!(last.data["code"], "decision_limit");
+    assert_eq!(last.data["code"], "model_call_limit");
     assert_eq!(
         events
             .iter()
