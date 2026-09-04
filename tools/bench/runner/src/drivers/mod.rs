@@ -19,15 +19,20 @@ pub mod agentscope;
 pub mod agno_agentos;
 pub mod awaken;
 pub mod brain;
+pub mod bridge;
+pub mod codex;
 pub mod daytona;
 pub mod e2b;
 pub mod e2b_selfhosted;
+pub mod feed;
 pub mod firecracker;
 pub mod framework;
 pub mod managed_agents;
 pub mod mastra;
 pub mod modal;
 pub mod openclaw;
+pub mod opencode;
+pub mod pi;
 pub mod restate;
 pub mod temporal;
 pub mod voltagent;
@@ -140,6 +145,17 @@ pub fn for_subject(subject: &str, bench: &Bench) -> Result<Option<Box<dyn Driver
             bench.pid,
         )?))),
         "openclaw" => Ok(Some(Box::new(openclaw::OpenclawDriver::new(
+            &bench.base_url,
+            bench.pid,
+        )?))),
+        // The coding agents: each through its own documented integration surface. pi and
+        // Codex speak stdio and are reached through the bridge; OpenCode serves HTTP.
+        "pi" => Ok(Some(Box::new(pi::PiDriver::new(&bench.base_url, bench.pid)?))),
+        "codex" => Ok(Some(Box::new(codex::CodexDriver::new(
+            &bench.base_url,
+            bench.pid,
+        )?))),
+        "opencode" => Ok(Some(Box::new(opencode::OpencodeDriver::new(
             &bench.base_url,
             bench.pid,
         )?))),

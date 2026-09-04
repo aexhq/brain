@@ -1,0 +1,49 @@
+{
+  "name": "opencode",
+  "class": "session-kernel",
+  "version": "1.18.27",
+  "notes": [
+    "sst/opencode, TypeScript on Bun, MIT. A terminal coding agent whose TUI, desktop app and SDK all talk to one HTTP server, `opencode serve`; that server is the surface driven here, so the session API measured is the product's own rather than a harness.",
+    "Pinned to npm `opencode-ai@1.18.27`, the `latest` dist-tag at 2026-09-04. Installed with `npm install --ignore-scripts`; the platform binary inside `opencode-linux-arm64` is exec'd directly, so the process tree the sampler walks is OpenCode's and nothing else.",
+    "A single operator's tool: throughput and the per-session memory ramp are not declared, for the same reason as zeroclaw and openclaw. The server holds many sessions, but many concurrent conversations is not a goal the project claims, and measuring it would be a straw man.",
+    "Run with its default agent and tools, at their defaults, in an empty git repository. The scripted provider only ever answers with text, so no tool runs, but the tool definitions are in every model request exactly as they are for a user.",
+    "Config differences from a stock install are listed at the top of launch.sh: the scripted provider as an `@ai-sdk/openai-compatible` provider for both the main and the small model, autoupdate and sharing off, and the XDG directories OpenCode persists to placed under the runner's data directory.",
+    "The fixture count will exceed the turn count by a small margin: OpenCode generates a title for every new session with its small model, which here is the scripted provider too. That call is off the turn's critical path and is real work the product does per session at its defaults."
+  ],
+  "requires": { "linux": true },
+  "probes": {
+    "cold_start": {
+      "definition": "process launch on a fresh data directory until the first turn is served; one-time installation untimed"
+    },
+    "recovery": {
+      "definition": "kill -9 after 50 turns, relaunch on the same data, until the same session serves a turn whose model request carries its history"
+    },
+    "create": {
+      "definition": "`POST /session` until the response carries the session id"
+    },
+    "idle": {
+      "definition": "private memory across the whole process tree with no sessions created, sampled for 20s after 10s of settling"
+    },
+    "ttfb": {
+      "definition": "`POST /session/{id}/prompt_async` submitted until the first assistant text part for the session on the `/event` stream, which is opened in prepare so the client's subscribe latency is outside the measurement; scripted provider via an `@ai-sdk/openai-compatible` provider entry"
+    },
+    "round_trip": {
+      "definition": "`POST /session/{id}/message` submitted until the response carrying the completed assistant message"
+    },
+    "persistence": {
+      "definition": "bytes on disk under the XDG data, state and config directories after N turns of one conversation, sampled per turn"
+    }
+  },
+  "launch": {
+    "command": "tools/bench/subjects/opencode/launch.sh",
+    "args": [],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/global/health",
+    "ready_timeout_secs": 180
+  }
+}

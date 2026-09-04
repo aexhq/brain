@@ -39,3 +39,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 # it holds ports and memory into the next subject's measurement.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# The stdio bridge that lets subjects with no port of their own — pi's RPC mode, Codex's
+# app-server — be launched, sampled and driven like every other subject.
+[[bin]]
+name = "brain-bench-bridge"
+path = "src/bin/bridge.rs"

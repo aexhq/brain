@@ -1,0 +1,49 @@
+{
+  "name": "pi",
+  "class": "session-kernel",
+  "version": "0.84.4",
+  "notes": [
+    "earendil-works/pi, TypeScript, MIT. A terminal coding agent; the shipped `@earendil-works/pi-coding-agent` package, run in its documented RPC mode (`pi --mode rpc`), which is the project's own embedding surface: JSON commands on stdin, responses and agent events on stdout.",
+    "Pinned to npm `@earendil-works/pi-coding-agent@0.84.4`, the `latest` dist-tag at 2026-09-04. Installed with `npm install --ignore-scripts` into a directory the launch script is pointed at, so the binary measured is the one the project publishes.",
+    "Reached through the benchmark's stdio bridge (`tools/bench/runner/src/bin/bridge.rs`): a small Rust process that owns the pi child and exposes its stdin as `POST /stdin` and its stdout as an event stream. The bridge knows nothing of pi's protocol — every command is composed and every event read by the driver, as `docs/rpc.md` specifies — so a number here is pi's handling of its own wire plus one loopback HTTP hop, the same hop every HTTP subject pays to its own server. The bridge is Rust rather than Node so the few megabytes it costs are not mistaken for pi's.",
+    "pi holds one session per process. `create` is therefore `new_session`, which replaces the session the process was holding, and `destroy` releases nothing, because there is nothing to release: a session is a JSONL file, and the next `new_session` moves on from it. Throughput and the per-session memory ramp are not declared, for the same reason as zeroclaw and openclaw: many concurrent sessions is a design goal the project never had, and measuring it would be a straw man.",
+    "Run with its built-in tools on, at their defaults, in an empty git repository. The scripted provider only ever answers with text, so no tool runs, but the tool definitions are in every model request exactly as they are for a user.",
+    "Config differences from a stock install are listed at the top of launch.sh: the scripted provider in models.json, and startup network calls switched off."
+  ],
+  "requires": { "linux": true },
+  "probes": {
+    "cold_start": {
+      "definition": "process launch on a fresh data directory until the first turn is served; one-time installation untimed"
+    },
+    "recovery": {
+      "definition": "kill -9 after 50 turns, relaunch on the same data, then `switch_session` onto the same session file and one turn, until the model request carries its history"
+    },
+    "create": {
+      "definition": "`new_session` until it answers, plus the `get_state` that reads back the session file naming it — pi's only session identity; the process holds one session, so this replaces the last"
+    },
+    "idle": {
+      "definition": "private memory across the whole process tree (bridge included) with no sessions created, sampled for 20s after 10s of settling"
+    },
+    "ttfb": {
+      "definition": "`prompt` submitted until the first `message_update` event carrying a non-empty `text_delta`; scripted provider via an `openai-completions` entry in models.json"
+    },
+    "round_trip": {
+      "definition": "`prompt` submitted until `agent_end` with no retry pending, the assistant message complete"
+    },
+    "persistence": {
+      "definition": "bytes on disk under the agent directory after N turns of one conversation, sampled per turn; pi appends each entry to the session's JSONL file"
+    }
+  },
+  "launch": {
+    "command": "tools/bench/subjects/pi/launch.sh",
+    "args": [],
+    "env": {
+      "BENCH_PORT": "{port}",
+      "BENCH_DATA_DIR": "{data_dir}",
+      "BENCH_MODEL_BASE_URL": "{model_base_url}"
+    },
+    "base_url": "http://127.0.0.1:{port}",
+    "ready_url": "http://127.0.0.1:{port}/health",
+    "ready_timeout_secs": 120
+  }
+}
