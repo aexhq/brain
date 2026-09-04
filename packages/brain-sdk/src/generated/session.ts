@@ -73,6 +73,11 @@ export type BoundTool = {
 };
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentStatus".
+ */
+export type EnvironmentStatus = "open" | "unreachable";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "Sequence".
  */
 export type Sequence = number;
@@ -125,15 +130,47 @@ export interface HttpProgramRequest {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "EnvironmentRequirement".
+ * via the `definition` "EnvironmentAttachRequest".
  */
-export interface EnvironmentRequirement {
+export interface EnvironmentAttachRequest {
   environment_id: Identifier;
-  configuration: unknown;
-  lifecycle_policy: "session" | "shared" | "external";
   bindings?: {
     [k: string]: string | undefined;
   };
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "CreateEnvironmentRequest".
+ */
+export interface CreateEnvironmentRequest {
+  environment_id?: Identifier;
+  configuration: unknown;
+  /**
+   * Brain closes the environment once no session has been attached to it for idle_ttl_ms.
+   */
+  managed?: boolean;
+  idle_ttl_ms?: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "Environment".
+ */
+export interface Environment {
+  environment_id: Identifier;
+  status: EnvironmentStatus;
+  managed: boolean;
+  idle_ttl_ms?: number;
+  attached_sessions: SessionId[];
+  runtimes?: Runtime[];
+  resources?: {};
+  created_at_ms: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EnvironmentList".
+ */
+export interface EnvironmentList {
+  environments: Environment[];
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -160,7 +197,7 @@ export interface CreateSessionRequest {
   /**
    * @maxItems 128
    */
-  environments: EnvironmentRequirement[];
+  environments: EnvironmentAttachRequest[];
   /**
    * @maxItems 10000
    */

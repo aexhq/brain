@@ -2,9 +2,7 @@
   "contract": "environment/v1",
   "binding": {
     "environment_id": "env_shared",
-    "configuration_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "directory_generation": 1,
-    "lifecycle_policy": "shared"
+    "directory_generation": 1
   },
   "operation": {
     "sequence": 7,

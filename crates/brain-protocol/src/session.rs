@@ -1,9 +1,7 @@
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, LifecyclePolicy,
+    AgentloopIdentity, EnvironmentAttachRequest, EnvironmentAttachment, EnvironmentId, EventId,
     ModelBinding, ModelSelection, Program, SessionId, ToolBinding, ToolDefinition, ToolHosting,
 };
 
@@ -52,7 +50,8 @@ pub struct CreateSessionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<serde_json::Value>,
     pub tools: Vec<BoundTool>,
-    pub environments: Vec<EnvironmentRequirement>,
+    /// The environments this session attaches to, by id. Each must already exist.
+    pub environments: Vec<EnvironmentAttachRequest>,
     /// Prior events for this conversation, if the caller kept them.
     ///
     /// A session does not outlive the process that made it, so an application that wants
@@ -84,19 +83,6 @@ pub struct HistoryEvent {
     pub recorded_at_ms: Option<u64>,
     pub event_type: String,
     pub data: serde_json::Value,
-}
-
-/// What a session create names about one environment, as it arrives on the wire.
-/// `bindings` carries plaintext values and exists only here: the configuration the
-/// session journals never carries them.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct EnvironmentRequirement {
-    pub environment_id: EnvironmentId,
-    pub configuration: serde_json::Value,
-    pub lifecycle_policy: LifecyclePolicy,
-    #[serde(default)]
-    pub bindings: BTreeMap<String, String>,
 }
 
 /// What a session was admitted with. Written at create and never changed afterwards: a

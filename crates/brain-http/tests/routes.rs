@@ -45,6 +45,27 @@ impl BrainApi for Api {
             sessions: vec![session()],
         })
     }
+    async fn create_environment(
+        &self,
+        _: String,
+        _: brain_protocol::CreateEnvironmentRequest,
+    ) -> Result<brain_protocol::EnvironmentSummary, ApiError> {
+        Ok(environment())
+    }
+    async fn get_environment(
+        &self,
+        _: EnvironmentId,
+    ) -> Result<brain_protocol::EnvironmentSummary, ApiError> {
+        Ok(environment())
+    }
+    async fn list_environments(&self) -> Result<brain_protocol::EnvironmentList, ApiError> {
+        Ok(brain_protocol::EnvironmentList {
+            environments: vec![environment()],
+        })
+    }
+    async fn delete_environment(&self, _: EnvironmentId, _: String) -> Result<(), ApiError> {
+        Ok(())
+    }
     async fn send_message(
         &self,
         _: SessionId,
@@ -128,6 +149,19 @@ impl BrainApi for Api {
     }
 }
 
+fn environment() -> brain_protocol::EnvironmentSummary {
+    brain_protocol::EnvironmentSummary {
+        environment_id: EnvironmentId::new("env_1"),
+        status: brain_protocol::EnvironmentStatus::Open,
+        managed: true,
+        idle_ttl_ms: None,
+        attached_sessions: Vec::new(),
+        runtimes: Vec::new(),
+        resources: Default::default(),
+        created_at_ms: 1_787_846_400_000,
+    }
+}
+
 #[tokio::test]
 async fn exposes_every_v1_route_with_its_contract_status() {
     let digest = "a".repeat(64);
@@ -149,14 +183,21 @@ async fn exposes_every_v1_route_with_its_contract_status() {
         }],
         "environments": [{
             "environment_id": "env_1",
-            "configuration": {},
-            "lifecycle_policy": "session",
             "bindings": {"API_BASE": "https://api.internal"}
         }]
     });
     let cases = vec![
         request("POST", "/v1/agentloops", Some(vec![1]), None),
         request("GET", &format!("/v1/agentloops/{digest}"), None, None),
+        request(
+            "POST",
+            "/v1/environments",
+            Some(br#"{"configuration":{"image":"ubuntu"},"managed":true}"#.to_vec()),
+            Some("application/json"),
+        ),
+        request("GET", "/v1/environments", None, None),
+        request("GET", "/v1/environments/env_1", None, None),
+        request("DELETE", "/v1/environments/env_1", None, None),
         request(
             "POST",
             "/v1/sessions",
@@ -232,9 +273,7 @@ async fn request_bodies_reject_unknown_fields() {
             "grant": {}
         }],
         "environments": [{
-            "environment_id": "env_1",
-            "configuration": {},
-            "lifecycle_policy": "session"
+            "environment_id": "env_1"
         }]
     });
     let response = router(Api::default())

@@ -715,7 +715,7 @@ fn json_error(error: serde_json::Error) -> Error {
 mod tests {
     use brain_protocol::{
         AgentloopIdentity, AttachmentId, EnvironmentAttachment, EnvironmentBinding, EnvironmentId,
-        Identity, LifecyclePolicy, ModelBinding, Runtime, ToolBinding, ToolDefinition,
+        Identity, ModelBinding, Runtime, ToolBinding, ToolDefinition,
     };
 
     use super::*;
@@ -740,9 +740,7 @@ mod tests {
     fn environment_binding() -> EnvironmentBinding {
         EnvironmentBinding {
             environment_id: EnvironmentId::new("workspace"),
-            configuration_identity: identity("b"),
             directory_generation: 1,
-            lifecycle_policy: LifecyclePolicy::Shared,
         }
     }
 
@@ -760,8 +758,6 @@ mod tests {
             tools: vec![tool()],
             environments: vec![EnvironmentAttachment {
                 environment_id: EnvironmentId::new("workspace"),
-                configuration: serde_json::json!({}),
-                lifecycle_policy: LifecyclePolicy::Shared,
                 binding: None,
                 attachment_id: None,
                 runtimes: Vec::new(),

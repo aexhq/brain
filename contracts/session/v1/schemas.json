@@ -55,19 +55,50 @@
         { "if": { "not": { "required": ["hosting"], "properties": { "hosting": { "const": "client" } } } }, "then": { "required": ["environment_id"] } }
       ]
     },
-    "EnvironmentRequirement": {
+    "EnvironmentAttachRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["environment_id", "configuration", "lifecycle_policy"],
+      "required": ["environment_id"],
       "properties": {
         "environment_id": { "$ref": "#/$defs/Identifier" },
-        "configuration": {},
-        "lifecycle_policy": { "enum": ["session", "shared", "external"] },
         "bindings": {
           "type": "object",
           "propertyNames": { "$ref": "#/$defs/Identifier" },
           "additionalProperties": { "type": "string", "maxLength": 32768 }
         }
+      }
+    },
+    "CreateEnvironmentRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configuration"],
+      "properties": {
+        "environment_id": { "$ref": "#/$defs/Identifier" },
+        "configuration": {},
+        "managed": { "type": "boolean", "description": "Brain closes the environment once no session has been attached to it for idle_ttl_ms." },
+        "idle_ttl_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "EnvironmentStatus": { "enum": ["open", "unreachable"] },
+    "Environment": {
+      "type": "object",
+      "required": ["environment_id", "status", "managed", "attached_sessions", "created_at_ms"],
+      "properties": {
+        "environment_id": { "$ref": "#/$defs/Identifier" },
+        "status": { "$ref": "#/$defs/EnvironmentStatus" },
+        "managed": { "type": "boolean" },
+        "idle_ttl_ms": { "type": "integer", "minimum": 0 },
+        "attached_sessions": { "type": "array", "items": { "$ref": "#/$defs/SessionId" } },
+        "runtimes": { "type": "array", "items": { "$ref": "#/$defs/Runtime" } },
+        "resources": { "type": "object" },
+        "created_at_ms": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "EnvironmentList": {
+      "type": "object",
+      "required": ["environments"],
+      "properties": {
+        "environments": { "type": "array", "items": { "$ref": "#/$defs/Environment" } }
       }
     },
     "ModelSelection": {
@@ -90,7 +121,7 @@
         "system": { "type": "string", "maxLength": 131072 },
         "response_format": {},
         "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/BoundTool" } },
-        "environments": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/EnvironmentRequirement" } },
+        "environments": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/EnvironmentAttachRequest" } },
         "history": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/HistoryEvent" } },
         "idle_ttl_ms": { "type": "integer", "minimum": 0, "description": "How long the session may sit idle before Brain suspends its task and memory to disk. Absent means the server default; zero means never." }
       }

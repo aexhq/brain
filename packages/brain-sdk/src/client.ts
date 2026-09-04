@@ -6,11 +6,11 @@ import { ClientToolPump, type PumpTransport } from "./client-pump.js";
 import { assertEnvironmentBindable, bindEnvironment, endEnvironment, inspectAgentloop, inspectBoundTool, inspectClientTool, inspectEnvironment, inspectServedTool } from "./extensions.js";
 import { BrainError } from "./errors.js";
 import type {
-  AgentloopAdmission, BoundTool as WireBoundTool, CreateSessionRequest, EnvironmentRequirement,
+  AgentloopAdmission, BoundTool as WireBoundTool, CreateEnvironmentRequest, CreateSessionRequest, Environment as WireEnvironment, EnvironmentAttachRequest, EnvironmentList,
   EventPage, Session as WireSession, SessionList,
 } from "./generated/session.js";
 import type {
-  Agentloop, BoundTool, CreateSessionOptions, Environment, OperationOptions, ServedTool, SessionEvent, SessionState, SessionStreamEvent, UserInput,
+  Agentloop, BoundTool, CreateEnvironmentOptions, CreateSessionOptions, Environment, EnvironmentState, OperationOptions, ServedTool, SessionEvent, SessionState, SessionStreamEvent, UserInput,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -23,6 +23,7 @@ export interface BrainOptions {
 export class BrainClient {
   readonly baseUrl: string;
   readonly sessions: Sessions;
+  readonly environments: Environments;
   private readonly token?: string;
   private readonly timeoutMs: number;
   private readonly transport: typeof globalThis.fetch;
@@ -41,7 +42,9 @@ export class BrainClient {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.transport = options.fetch ?? globalThis.fetch;
     this.sessions = new Sessions(this);
+    this.environments = new Environments(this);
     Object.freeze(this.sessions);
+    Object.freeze(this.environments);
   }
 
   /** A client on the same server and transport, presenting a different bearer —
@@ -146,14 +149,72 @@ export class BrainClient {
   }
 }
 
+/** The environments a Brain holds: created with their configuration, attached to by
+ * sessions by id, closed when deleted or, if managed, when idle. */
+export class Environments {
+  constructor(private readonly client: BrainClient) {}
+
+  async create(configuration: unknown, options: CreateEnvironmentOptions = {}, operation: OperationOptions = {}): Promise<EnvironmentState> {
+    const request: CreateEnvironmentRequest = {
+      configuration: structuredClone(configuration),
+      ...(options.environmentId === undefined ? {} : { environment_id: options.environmentId }),
+      ...(options.managed === undefined ? {} : { managed: options.managed }),
+      ...(options.idleTtlMs === undefined ? {} : { idle_ttl_ms: options.idleTtlMs }),
+    };
+    return toEnvironmentState(await this.client.request<WireEnvironment>("POST", "/v1/environments", request, keyOf(operation)));
+  }
+
+  async get(environmentId: string): Promise<EnvironmentState> {
+    return toEnvironmentState(await this.client.request<WireEnvironment>("GET", `/v1/environments/${encodeURIComponent(environmentId)}`));
+  }
+
+  async list(): Promise<EnvironmentState[]> {
+    const page = await this.client.request<EnvironmentList>("GET", "/v1/environments");
+    return page.environments.map(toEnvironmentState);
+  }
+
+  /** Refused while a session is still attached. */
+  async delete(environmentId: string, operation: OperationOptions = {}): Promise<void> {
+    await this.client.request("DELETE", `/v1/environments/${encodeURIComponent(environmentId)}`, undefined, keyOf(operation));
+  }
+}
+
+function toEnvironmentState(wire: WireEnvironment): EnvironmentState {
+  return {
+    id: wire.environment_id,
+    status: wire.status,
+    managed: wire.managed,
+    ...(wire.idle_ttl_ms === undefined ? {} : { idleTtlMs: wire.idle_ttl_ms }),
+    attachedSessions: [...wire.attached_sessions],
+    runtimes: [...(wire.runtimes ?? [])],
+    resources: { ...((wire.resources as Record<string, unknown> | undefined) ?? {}) },
+    createdAt: new Date(wire.created_at_ms),
+  };
+}
+
 export class Sessions {
   constructor(private readonly client: BrainClient) {}
 
   async create(options: CreateSessionOptions, operation: OperationOptions = {}): Promise<SessionHandle> {
     validateSessionOptions(options);
     const identity = await this.client.admit(options.agentloop);
-    const compiled = compileSession(options, identity);
-    for (const environment of compiled.environments.keys()) assertEnvironmentBindable(environment);
+    // Every environment a bound tool names is created first, as a managed environment the
+    // session owns: Brain attaches by id, and the handle deletes what it created when the
+    // session ends.
+    const created = new Map<Environment, string>();
+    for (const selected of options.tools ?? []) {
+      if (inspectClientTool(selected) !== undefined || inspectServedTool(selected) !== undefined) continue;
+      const bound = inspectBoundTool(selected as BoundTool);
+      if (created.has(bound.environment)) continue;
+      assertEnvironmentBindable(bound.environment);
+      const environment = await this.client.environments.create(
+        inspectEnvironment(bound.environment).configuration,
+        { managed: true },
+        operation.idempotencyKey === undefined ? {} : { idempotencyKey: `${operation.idempotencyKey}-environment-${created.size + 1}` },
+      );
+      created.set(bound.environment, environment.id);
+    }
+    const compiled = compileSession(options, identity, created);
     const session = await this.client.request<WireSession>("POST", "/v1/sessions", compiled.request, keyOf(operation));
     for (const [environment, environmentId] of compiled.environments) bindEnvironment(environment, this.client, session.session_id, environmentId);
     let pump: ClientToolPump | undefined;
@@ -163,7 +224,7 @@ export class Sessions {
       pump = new ClientToolPump(this.client, session.session_id, registry, session.last_sequence);
       pump.start();
     }
-    return new SessionHandle(this.client, toSessionState(session), [...compiled.environments.keys()], pump);
+    return new SessionHandle(this.client, toSessionState(session), [...compiled.environments.keys()], pump, [...created.values()]);
   }
 
   async get(sessionId: string): Promise<SessionHandle> {
@@ -249,7 +310,7 @@ export class ServeHandle {
 }
 
 export class SessionHandle {
-  constructor(private readonly client: BrainClient, public state: SessionState, private readonly environments: readonly Environment[], private readonly pump?: ClientToolPump) {}
+  constructor(private readonly client: BrainClient, public state: SessionState, private readonly environments: readonly Environment[], private readonly pump?: ClientToolPump, private readonly ownedEnvironments: readonly string[] = []) {}
   get id(): string { return this.state.id; }
   /** The scoped credential another process joins with (`sessions.join`) to serve
    * this session's tools. It opens the serve feed and answers tool calls — nothing
@@ -290,23 +351,31 @@ export class SessionHandle {
   async end(operation: OperationOptions = {}): Promise<SessionState> {
     const session = await this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/end`, undefined, keyOf(operation));
     this.release();
+    await this.closeOwnedEnvironments();
     return (this.state = toSessionState(session));
   }
 
   async delete(operation: OperationOptions = {}): Promise<void> {
     await this.client.request("DELETE", `/v1/sessions/${encodeURIComponent(this.id)}`, undefined, keyOf(operation));
     this.release();
+    await this.closeOwnedEnvironments();
   }
 
   private release(): void {
     this.pump?.stop();
     for (const environment of this.environments) endEnvironment(environment);
   }
+
+  /** The environments this handle created for the session go with it. Best effort: an
+   * environment that refuses (another session attached meanwhile) stays. */
+  private async closeOwnedEnvironments(): Promise<void> {
+    await Promise.allSettled(this.ownedEnvironments.map((environmentId) => this.client.environments.delete(environmentId)));
+  }
 }
 
-function compileSession(options: CreateSessionOptions, agentloopIdentity: string): { readonly request: CreateSessionRequest; readonly environments: ReadonlyMap<Environment, string>; readonly clientTools: readonly NonNullable<ReturnType<typeof inspectClientTool>>[] } {
+function compileSession(options: CreateSessionOptions, agentloopIdentity: string, created: ReadonlyMap<Environment, string>): { readonly request: CreateSessionRequest; readonly environments: ReadonlyMap<Environment, string>; readonly clientTools: readonly NonNullable<ReturnType<typeof inspectClientTool>>[] } {
   const environments = new Map<Environment, string>();
-  const requirements: EnvironmentRequirement[] = [];
+  const requirements: EnvironmentAttachRequest[] = [];
   const tools: WireBoundTool[] = [];
   const clientTools: NonNullable<ReturnType<typeof inspectClientTool>>[] = [];
   const names = new Set<string>();
@@ -349,9 +418,10 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
     names.add(bound.definition.name);
     let environmentId = environments.get(bound.environment);
     if (environmentId === undefined) {
-      environmentId = `env_${environments.size + 1}`;
+      environmentId = created.get(bound.environment);
+      if (environmentId === undefined) throw new TypeError("a bound tool's environment was not created before the session");
       environments.set(bound.environment, environmentId);
-      requirements.push({ environment_id: environmentId, configuration: structuredClone(inspectEnvironment(bound.environment).configuration), lifecycle_policy: "session" });
+      requirements.push({ environment_id: environmentId });
     }
     tools.push({
       name: bound.definition.name,

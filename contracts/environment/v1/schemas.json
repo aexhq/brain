@@ -112,12 +112,10 @@
     "Binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["environment_id", "configuration_identity", "directory_generation", "lifecycle_policy"],
+      "required": ["environment_id", "directory_generation"],
       "properties": {
         "environment_id": { "$ref": "#/$defs/Identifier" },
-        "configuration_identity": { "$ref": "#/$defs/Identity" },
-        "directory_generation": { "type": "integer", "minimum": 1 },
-        "lifecycle_policy": { "enum": ["session", "shared", "external"] }
+        "directory_generation": { "type": "integer", "minimum": 1 }
       }
     },
     "OperationEnvelope": {

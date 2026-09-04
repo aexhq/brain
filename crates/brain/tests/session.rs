@@ -11,10 +11,10 @@ use async_trait::async_trait;
 use brain::{Error, LoopExecutor, ModelExecutor, Session, ToolExecutor};
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopIdentity, AttachmentId, Decision,
-    EnvironmentAttachment, EnvironmentBinding, EnvironmentId, Identity, LifecyclePolicy,
-    MessageRequest, ModelBinding, ModelRequest, ModelResult, ModelStreamEvent, Observation,
-    Outcome, OutcomeError, Runtime as EnvironmentRuntime, SessionConfig, ToolBinding,
-    ToolCancellation, ToolDefinition, ToolDispatch, ToolHosting, ToolInvocation,
+    EnvironmentAttachment, EnvironmentBinding, EnvironmentId, MessageRequest, ModelBinding,
+    ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, OutcomeError,
+    Runtime as EnvironmentRuntime, SessionConfig, ToolBinding, ToolCancellation, ToolDefinition,
+    ToolDispatch, ToolHosting, ToolInvocation,
 };
 use brain_telemetry::telemetry_channel;
 use tokio::sync::Notify;
@@ -393,9 +393,7 @@ fn tool_request() -> SessionConfig {
 fn tool_request_with(tool_name: &str, needs: Vec<&str>, declares: Vec<&str>) -> SessionConfig {
     let environment = EnvironmentBinding {
         environment_id: EnvironmentId::new("workspace"),
-        configuration_identity: Identity::from_hex(&"b".repeat(64)).unwrap(),
         directory_generation: 1,
-        lifecycle_policy: LifecyclePolicy::Shared,
     };
     SessionConfig {
         agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
@@ -414,8 +412,6 @@ fn tool_request_with(tool_name: &str, needs: Vec<&str>, declares: Vec<&str>) -> 
         }],
         environments: vec![EnvironmentAttachment {
             environment_id: EnvironmentId::new("workspace"),
-            configuration: serde_json::json!({}),
-            lifecycle_policy: LifecyclePolicy::Shared,
             binding: Some(environment.clone()),
             attachment_id: Some(AttachmentId::new("attachment")),
             runtimes: vec![EnvironmentRuntime::Esm],

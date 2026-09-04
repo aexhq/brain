@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use brain::{Feed, SessionRuntime, Writer};
 use brain_loophost::{LoopLimits, WorkerPool};
 use brain_server::{
-    EnvironmentRegistry, HttpEnvironmentAdapter, IdempotencyStore, InMemoryEnvironmentDirectory,
+    EnvironmentRegistry, EnvironmentResources, HttpEnvironmentAdapter, IdempotencyStore,
     LocalModelBindingStore, ServerApi, ServerConfig, ServerModelExecutor, ServerResources,
     ServerToolExecutor, WorkerLoopExecutor,
 };
@@ -88,13 +88,15 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         .timeout(Duration::from_secs(120))
         .build()?;
     let environments = Arc::new(EnvironmentRegistry::new(
-        Arc::new(InMemoryEnvironmentDirectory::new(
-            &config.environment_base_url,
-        )),
+        Arc::new(EnvironmentResources::open(
+            &config.data_dir.join("environments"),
+        )?),
+        &config.environment_base_url,
         Arc::new(HttpEnvironmentAdapter::new(
             http,
             config.environment_api_key.clone(),
         )),
+        Duration::from_secs(config.environment_idle_ttl_secs),
     ));
     // Every session's directory, rebuilt from disk. A session that was mid-turn when the
     // last process stopped is failed with code `interrupted` before anything is served.
@@ -124,6 +126,8 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         serve_secret: serve_secret(config.api_token.as_deref()),
     })?;
     api.spawn_idle_sweeper();
+    api.spawn_environment_sweeper();
+    api.spawn_environment_notices();
     Ok(api)
 }
 

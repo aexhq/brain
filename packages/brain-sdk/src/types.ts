@@ -172,6 +172,27 @@ export interface CreateSessionOptions {
 
 export interface OperationOptions { readonly idempotencyKey?: string }
 
+export interface CreateEnvironmentOptions {
+  /** The id the environment is known by. Brain mints one when absent. */
+  readonly environmentId?: string;
+  /** Brain closes the environment once no session has been attached to it for `idleTtlMs`.
+   * An unmanaged environment lives until it is deleted. */
+  readonly managed?: boolean;
+  /** Absent means the server default; zero means never. */
+  readonly idleTtlMs?: number;
+}
+
+export interface EnvironmentState {
+  readonly id: string;
+  readonly status: "open" | "unreachable";
+  readonly managed: boolean;
+  readonly idleTtlMs?: number;
+  readonly attachedSessions: readonly string[];
+  readonly runtimes: readonly string[];
+  readonly resources: Readonly<Record<string, unknown>>;
+  readonly createdAt: Date;
+}
+
 export interface SessionState {
   readonly id: string;
   readonly status: "creating" | "idle" | "running" | "ended" | "failed";

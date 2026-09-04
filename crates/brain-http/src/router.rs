@@ -142,6 +142,14 @@ fn protected_routes<A: BrainApi>(api: A) -> Router {
         .route("/v1/agentloops", post(admit_agentloop::<A>))
         .route("/v1/agentloops/{identity}", get(get_agentloop::<A>))
         .route(
+            "/v1/environments",
+            post(create_environment::<A>).get(list_environments::<A>),
+        )
+        .route(
+            "/v1/environments/{environment_id}",
+            get(get_environment::<A>).delete(delete_environment::<A>),
+        )
+        .route(
             "/v1/sessions",
             post(create_session::<A>).get(list_sessions::<A>),
         )
@@ -238,6 +246,46 @@ async fn get_agentloop<A: BrainApi>(
     Path(digest): Path<AgentloopIdentity>,
 ) -> Result<Json<AgentloopAdmission>, HttpError> {
     Ok(Json(api.get_agentloop(digest).await.map_err(HttpError)?))
+}
+
+async fn create_environment<A: BrainApi>(
+    State(api): State<A>,
+    headers: HeaderMap,
+    Json(request): Json<brain_protocol::CreateEnvironmentRequest>,
+) -> Result<Json<brain_protocol::EnvironmentSummary>, HttpError> {
+    Ok(Json(
+        api.create_environment(idempotency_key(&headers)?, request)
+            .await
+            .map_err(HttpError)?,
+    ))
+}
+
+async fn get_environment<A: BrainApi>(
+    State(api): State<A>,
+    Path(environment_id): Path<EnvironmentId>,
+) -> Result<Json<brain_protocol::EnvironmentSummary>, HttpError> {
+    Ok(Json(
+        api.get_environment(environment_id)
+            .await
+            .map_err(HttpError)?,
+    ))
+}
+
+async fn list_environments<A: BrainApi>(
+    State(api): State<A>,
+) -> Result<Json<brain_protocol::EnvironmentList>, HttpError> {
+    Ok(Json(api.list_environments().await.map_err(HttpError)?))
+}
+
+async fn delete_environment<A: BrainApi>(
+    State(api): State<A>,
+    Path(environment_id): Path<EnvironmentId>,
+    headers: HeaderMap,
+) -> Result<StatusCode, HttpError> {
+    api.delete_environment(environment_id, idempotency_key(&headers)?)
+        .await
+        .map_err(HttpError)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn idempotency_key(headers: &HeaderMap) -> Result<String, HttpError> {
