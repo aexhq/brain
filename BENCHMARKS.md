@@ -14,6 +14,41 @@ Density and reclaim measurements need Linux `/proc/*/smaps_rollup`. Other platfo
 latency and correctness arms only. The harness refuses to substitute RSS for private memory, because
 that would double-count shared pages.
 
+## Coding agents
+
+pi, Codex and OpenCode were measured on 2026-09-04 (runs `run-1788481380908` and, for first
+token, `run-1788481939624`) on one `c7g.xlarge`, 450 samples per latency probe after the warmup
+drop. The first-token run delays the scripted provider's first token by 100 ms and subtracts it,
+so first byte and turn end are separable. Each agent is the shipped binary at its defaults, driven
+through its own integration surface — pi's RPC mode, `codex app-server`, `opencode serve` — in an
+empty git repository with its tools enabled. The manifests under
+[`tools/bench/subjects`](tools/bench/subjects) (`pi`, `codex`, `opencode`) carry every probe's
+definition and every configuration difference from a stock install; pi and Codex speak only
+stdio and are reached through the runner's [stdio bridge](tools/bench/README.md#adding-a-subject).
+
+| Subject | Version | New session | First token | Round trip | Cold start | Recovery | Written per 100 turns |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| pi | 0.84.4 | 7.0 ms | 6.3 ms | 5.1 ms | 398 ms | 394 ms | 0.07 MiB |
+| Codex | 0.153.1 | 14 ms | 39 ms | 47 ms | 293 ms | 194 ms | 0.46 MiB |
+| OpenCode | 1.18.27 | 2.1 ms | 99 ms | 155 ms | 4.84 s | 4.22 s | 0.14 MiB |
+| Brain, same run | `1187ade` | 0.64 ms | 8.6 ms | 15 ms | 654 ms | — | 0.15 MiB |
+
+Cold start is process launch on a fresh data directory until the first turn is served, with
+installation untimed. Recovery is `kill -9` after 50 turns, relaunch on the same data, until the
+same session serves a turn whose model request carries all 50 — pi through `switch_session`,
+Codex through `thread/resume`, OpenCode by session id. Brain's recovery is withheld: the session
+comes back but its context restores empty ([#140](https://github.com/aexhq/brain/issues/140)).
+
+pi completes a text turn faster than Brain does. Its loop runs in-process in Node and appends
+the turn to one JSONL file; Brain's turn activates a Wasm component, journals every decision,
+and dispatches environment lifecycle over HTTP. What each does per turn is the difference, and
+the harness reports it rather than explaining it away.
+
+Idle footprints, private memory across the process tree after settling: pi 239 MiB (bridge
+included), Codex 101 MiB, OpenCode 459 MiB. OpenCode's fixture count runs one call per session
+above its turn count, because it titles every new session with its small model, which here is
+the scripted provider too.
+
 ## What CI enforces today
 
 Every push runs a resource bound against a live server: after 10,000 requests, resident memory must
