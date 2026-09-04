@@ -1,6 +1,6 @@
 {
   "name": "@aexhq/brain",
-  "version": "0.15.1",
+  "version": "0.15.2",
   "description": "TypeScript SDK for an independently runnable Brain server",
   "license": "MIT",
   "repository": {
