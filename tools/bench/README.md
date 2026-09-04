@@ -189,8 +189,21 @@ children cannot outlive it and hold ports or memory into the next measurement.
 A subject without a driver is recorded as a skip rather than driven with another
 subject's client, which would produce numbers that look real and mean nothing. Drivers
 exist today for brain, langgraph-server, letta, openfang, zeroclaw, openclaw,
-agno-agentos, voltagent, mastra, agentscope-runtime, awaken, restate, temporal, the
-framework harness, and the sandbox subjects — see `drivers/mod.rs` for the registry.
+agno-agentos, voltagent, mastra, agentscope-runtime, awaken, restate, temporal, pi,
+codex, opencode, the framework harness, and the sandbox subjects — see `drivers/mod.rs`
+for the registry.
+
+**A subject with no port** — pi's RPC mode, Codex's app-server — is launched behind
+`brain-bench-bridge`, a small Rust process built beside the runner that owns the child and
+exposes its stdin as `POST /stdin` and its stdout as an event stream on `GET /stdout`. The
+bridge knows nothing of either protocol: every command is composed and every event read by
+the subject's driver, exactly as the project's own protocol document specifies, so what is
+measured is the agent's handling of its own wire plus one loopback HTTP hop — the hop every
+HTTP subject already pays to its own server. Its `--ready-send` line is written to the child
+at start, and `/health` answers only once the child has written a line back, so a cold-start
+figure includes the child's boot and not only the bridge's. It is Rust rather than a Node
+script because the memory sampler cannot tell the bridge from the child, and a runtime's
+tens of megabytes would be charged to the subject.
 
 A project with both an open-source build and a hosted service is **two subjects**
 (`e2b-selfhosted` and `e2b-cloud`): one measures their code on our instance, the other

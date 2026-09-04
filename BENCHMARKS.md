@@ -2,7 +2,7 @@
 
 > [!NOTE]
 > Current headline figures are in the [README](README.md#benchmarks), measured with the harness in
-> [`tools/bench`](tools/bench) against thirteen other agent runtimes.
+> [`tools/bench`](tools/bench) against sixteen other agent runtimes, including the pi, Codex and OpenCode coding agents driven through their own integration surfaces.
 
 ## What the benchmark measures
 
