@@ -741,12 +741,9 @@ impl SessionActor {
         update: SessionUpdate<'_>,
     ) -> Result<Vec<JournalRecord>, Error> {
         let status = update.status.clone();
-        let saved = self.store.append(
-            &self.row.session_id,
-            self.row.through_sequence,
-            &records,
-            update,
-        )?;
+        let saved = self
+            .store
+            .append(self.row.through_sequence, &records, update)?;
         self.row.through_sequence += saved.len() as u64;
         if let Some(status) = status {
             self.row.status = status;

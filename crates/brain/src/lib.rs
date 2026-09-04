@@ -11,8 +11,8 @@ pub mod tool;
 pub use agentloop::LoopExecutor;
 pub use error::Error;
 pub use journal::{
-    AppendRecord, JournalRecord, JournalStore, ObservedJournal, SegmentJournal, SessionUpdate,
-    event_page, interrupt_unfinished_turns,
+    AppendRecord, Feed, Folded, JournalEntry, JournalRecord, JournalStore, SessionStore,
+    SessionUpdate, Writer, event_page,
 };
 pub use model::ModelExecutor;
 pub use session::{

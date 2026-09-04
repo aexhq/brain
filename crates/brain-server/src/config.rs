@@ -40,4 +40,9 @@ pub struct ServerConfig {
     pub environment_api_key: Option<String>,
     #[arg(long, env = "BRAIN_MAX_DECISIONS", default_value_t = 128)]
     pub max_decisions_per_turn: usize,
+    /// Seconds an idle session keeps its task and memory before it is suspended to disk
+    /// and rebuilt on its next request. A session may set its own at create; zero means
+    /// never.
+    #[arg(long, env = "BRAIN_SESSION_IDLE_TTL_SECS", default_value_t = 1800)]
+    pub session_idle_ttl_secs: u64,
 }

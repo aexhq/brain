@@ -375,6 +375,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
     // The event id is left behind deliberately: it names an event in the session it came
     // from, and this is a different session, so Brain mints them again.
     ...(options.history === undefined ? {} : { history: options.history.map((event) => ({ sequence: event.sequence, recorded_at_ms: event.recordedAt.getTime(), event_type: event.type, data: event.data })) }),
+    ...(options.idleTtlMs === undefined ? {} : { idle_ttl_ms: options.idleTtlMs }),
   }, environments, clientTools };
 }
 

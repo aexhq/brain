@@ -165,6 +165,10 @@ export interface CreateSessionRequest {
    * @maxItems 10000
    */
   history?: HistoryEvent[];
+  /**
+   * How long the session may sit idle before Brain suspends its task and memory to disk. Absent means the server default; zero means never.
+   */
+  idle_ttl_ms?: number;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

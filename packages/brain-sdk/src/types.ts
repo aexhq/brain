@@ -166,6 +166,8 @@ export interface CreateSessionOptions {
    * agentloop about them. Omit for an ordinary new session.
    */
   readonly history?: readonly SessionEvent[];
+  /** How long the session may sit idle before Brain suspends it to disk. Absent means the server default; zero means never. */
+  readonly idleTtlMs?: number;
 }
 
 export interface OperationOptions { readonly idempotencyKey?: string }

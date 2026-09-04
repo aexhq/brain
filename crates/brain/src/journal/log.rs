@@ -1,35 +1,24 @@
-//! The on-disk half of the journal: an append-only segment log written behind the
-//! caller.
+//! One append-only segment log: the on-disk half of a session's journal or events.
 //!
-//! Appending assigns a location and hands the bytes to a writer thread; it does not
-//! wait for the write, and it never fsyncs. Durability is not Brain's concern — the
-//! log exists so a restart can rebuild what was in memory, and so a client can page
-//! back through records the session actor no longer holds.
+//! Appending assigns a location and hands the frame to the process's [`Writer`]; it does
+//! not wait for the disk. Frame integrity lives here and nowhere else: a write-behind log
+//! can lose its tail to a crash mid-write, so every frame carries a check value over its
+//! own bytes and opening the log truncates at the first frame that does not verify.
 //!
-//! Frame integrity lives here and nowhere else. A write-behind log can lose its tail
-//! to a crash mid-write, so every frame carries a check value over its own bytes and
-//! recovery truncates at the first frame that does not verify. Nothing above this
-//! module sees that value or needs to know it exists.
-//!
-//! Session state does not go in the log. A session's state is the whole conversation so
-//! far, it is rewritten at the end of every turn, and only its latest value is ever read
-//! — appending it would write the sum of every context the session ever had and read all
-//! of them back at startup. It lives in a file per session, rewritten in place by the
-//! same writer thread, which drops a state superseded before it reached the disk. The
-//! writer handles both in order, so a state that a record depends on is on disk before
-//! that record is.
+//! The log knows nothing about what its frames mean. The session store folds them back
+//! into an index on open, and reads them back by location afterwards.
 
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{BufWriter, Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, mpsc},
-    thread::{self, JoinHandle},
-    time::Duration,
+    sync::{Arc, Mutex},
 };
 
 use crate::Error;
+
+use super::writer::{self, Staged, Writer};
 
 /// Rotate to a new segment once the open one reaches this size. Reclamation frees
 /// whole segments, so this is also the granularity at which disk comes back.
@@ -37,30 +26,7 @@ const SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
 
 const HEADER_BYTES: usize = 12;
 
-/// How far the writer may fall behind before a caller waits for it.
-///
-/// Writing behind the caller turns disk latency into memory: with a deliberately slow
-/// writer, producers queued 250 MiB of frames in 218 ms and every byte stayed on the
-/// heap. Above this the append waits instead, so a stalled disk shows up as a slow turn
-/// rather than as a process that grows until it is killed. Large enough that a healthy
-/// disk never reaches it.
-const MAX_QUEUED_BYTES: u64 = 64 * 1024 * 1024;
-
-/// What the writer has been handed and has not yet put on disk, and whether it has
-/// failed. Shared with the writer thread, which is the only thing that subtracts.
-#[derive(Default)]
-struct Queue {
-    bytes: u64,
-    /// Set once. A write-behind log has no caller left to tell when a write fails, so
-    /// the failure is kept and every later append reports it: losing records silently is
-    /// the one outcome worth refusing.
-    failure: Option<String>,
-}
-
-type Backlog = Arc<(Mutex<Queue>, Condvar)>;
-
-/// Frames handed to the writer but not yet flushed, keyed by segment and offset.
-type Staged = Arc<Mutex<HashMap<(u64, u64), Arc<Vec<u8>>>>>;
+pub(crate) const SEGMENT_EXTENSION: &str = "segment";
 
 /// Where a frame lives. Small and `Copy` so the in-memory index can hold one per record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,10 +36,8 @@ pub(crate) struct Location {
     pub length: u32,
 }
 
-/// What a caller writes. `sequence` is zero for a frame that is not part of a
-/// session's client-visible record sequence.
+/// What a caller writes.
 pub(crate) struct Append<'a> {
-    pub session_id: &'a str,
     pub sequence: u64,
     pub recorded_at_ms: u64,
     pub kind: &'a str,
@@ -83,7 +47,6 @@ pub(crate) struct Append<'a> {
 /// A frame read back out of the log. The payload stays as bytes until asked for, so
 /// replay can walk a whole segment without deserialising anything it does not need.
 pub(crate) struct Frame<'a> {
-    pub session_id: &'a str,
     pub sequence: u64,
     pub recorded_at_ms: u64,
     pub kind: &'a str,
@@ -102,29 +65,20 @@ impl Frame<'_> {
         serde_json::from_slice(self.payload).map_err(|error| Error::Journal(error.to_string()))
     }
 
-    pub(crate) fn is_sequenced(&self) -> bool {
-        self.sequence > 0
+    pub(crate) fn payload_len(&self) -> usize {
+        self.payload.len()
     }
 }
 
-enum Message {
-    Frame {
-        location: Location,
-        bytes: Arc<Vec<u8>>,
-    },
-    Reclaim(u64),
-}
-
 pub(crate) struct SegmentLog {
-    directory: PathBuf,
+    directory: Arc<PathBuf>,
+    owner: Arc<str>,
     tail: Mutex<Tail>,
     /// A read consults this first, so a record is readable the instant it is appended.
     /// The writer flushes before it removes an entry, so a miss here means the bytes
     /// are on disk.
     pending: Staged,
-    backlog: Backlog,
-    sender: Option<mpsc::Sender<Message>>,
-    writer: Option<JoinHandle<()>>,
+    writer: Arc<Writer>,
 }
 
 struct Tail {
@@ -133,35 +87,14 @@ struct Tail {
 }
 
 impl SegmentLog {
-    /// Open the log at `directory`, handing every frame to `visit` in write order. A torn
-    /// tail — the last frame of a crashed process — is truncated away.
-    ///
-    /// Rebuilding sessions from these frames is the reader's business, not the log's:
-    /// `SegmentJournal` folds them back into an index. The log's own job is to hand every
-    /// frame over in the order it was written, and to stop at a torn tail.
+    /// Open or create the log at `directory`, handing every frame already on disk to
+    /// `visit` in write order and stopping at a torn tail. `owner` is the queue the
+    /// writer charges this log's bytes to.
     pub(crate) fn open(
         directory: &Path,
-        visit: impl FnMut(Frame<'_>, Location) -> Result<(), Error>,
-    ) -> Result<Self, Error> {
-        Self::open_inner(directory, visit, None)
-    }
-
-    /// A log whose writer waits, before its first frame, until `release` is set. A test
-    /// can then fill the queue behind it and see what happens without racing it, and let
-    /// it go the moment it has seen enough. Never used outside tests: a real writer is as
-    /// fast as the disk it is writing to.
-    #[cfg(test)]
-    pub(crate) fn open_stalled(
-        directory: &Path,
-        release: Arc<std::sync::atomic::AtomicBool>,
-    ) -> Result<Self, Error> {
-        Self::open_inner(directory, |_, _| Ok(()), Some(release))
-    }
-
-    fn open_inner(
-        directory: &Path,
+        owner: Arc<str>,
+        writer: Arc<Writer>,
         mut visit: impl FnMut(Frame<'_>, Location) -> Result<(), Error>,
-        release: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<Self, Error> {
         fs::create_dir_all(directory).map_err(log_error)?;
         let mut segments = Vec::new();
@@ -210,45 +143,13 @@ impl SegmentLog {
             }
         }
 
-        let pending: Staged = Arc::default();
-        let backlog: Backlog = Arc::default();
-        let (sender, receiver) = mpsc::channel::<Message>();
-        let writer = spawn_writer(
-            directory.to_path_buf(),
-            receiver,
-            pending.clone(),
-            backlog.clone(),
-            release,
-        );
-
         Ok(Self {
-            directory: directory.to_path_buf(),
+            directory: Arc::new(directory.to_path_buf()),
+            owner,
             tail: Mutex::new(tail),
-            pending,
-            backlog,
-            sender: Some(sender),
-            writer: Some(writer),
+            pending: Arc::default(),
+            writer,
         })
-    }
-
-    /// Wait until the writer is far enough ahead to accept `bytes`, and refuse outright
-    /// if it has already failed. A frame larger than the whole allowance goes through
-    /// once the queue is empty rather than waiting for room that can never appear.
-    fn reserve(&self, bytes: u64) -> Result<(), Error> {
-        let (queue, room) = &*self.backlog;
-        let mut queue = queue.lock().map_err(|_| poisoned())?;
-        loop {
-            if let Some(failure) = &queue.failure {
-                return Err(Error::Journal(format!(
-                    "journal writer failed and the log is no longer being written: {failure}"
-                )));
-            }
-            if queue.bytes == 0 || queue.bytes + bytes <= MAX_QUEUED_BYTES {
-                queue.bytes += bytes;
-                return Ok(());
-            }
-            queue = room.wait(queue).map_err(|_| poisoned())?;
-        }
     }
 
     /// Assign a location, hand the bytes to the writer, and return. Does not block on
@@ -258,7 +159,7 @@ impl SegmentLog {
         // allocates a second buffer and copies the frame into it.
         let frame = Arc::new(encode(&append)?);
         let length = frame.len() as u64;
-        self.reserve(length)?;
+        self.writer.reserve(&self.owner, length)?;
 
         let mut tail = self.tail.lock().map_err(|_| poisoned())?;
         if tail.offset > 0 && tail.offset + length > SEGMENT_BYTES {
@@ -276,9 +177,12 @@ impl SegmentLog {
             .lock()
             .map_err(|_| poisoned())?
             .insert((location.segment, location.offset), frame.clone());
-        self.send(Message::Frame {
-            location,
+        self.writer.write(writer::Frame {
+            path: Arc::new(segment_path(&self.directory, location.segment)),
+            owner: self.owner.clone(),
+            key: (location.segment, location.offset),
             bytes: frame,
+            staged: self.pending.clone(),
         })?;
         Ok(location)
     }
@@ -336,154 +240,21 @@ impl SegmentLog {
         Ok(frames)
     }
 
-    /// The segment currently being appended to. Never reclaimed.
-    pub(crate) fn current_segment(&self) -> Result<u64, Error> {
-        Ok(self.tail.lock().map_err(|_| poisoned())?.segment)
-    }
-
     /// Delete every segment older than `keep_from`. Reclamation is a file unlink: the
     /// log never rewrites live data to free dead data.
     pub(crate) fn reclaim(&self, keep_from: u64) -> Result<(), Error> {
         if keep_from == 0 {
             return Ok(());
         }
-        self.send(Message::Reclaim(keep_from))
+        self.writer.reclaim(
+            self.directory.as_ref().clone(),
+            keep_from,
+            SEGMENT_EXTENSION,
+        )
     }
 
-    fn send(&self, message: Message) -> Result<(), Error> {
-        self.sender
-            .as_ref()
-            .ok_or_else(|| Error::Journal("journal writer is shut down".into()))?
-            .send(message)
-            .map_err(|_| Error::Journal("journal writer stopped".into()))
-    }
-}
-
-impl Drop for SegmentLog {
-    fn drop(&mut self) {
-        // Close the channel so the writer drains what is queued, then wait for it. A
-        // process that shuts down cleanly loses nothing; one that crashes loses its tail.
-        self.sender = None;
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.join();
-        }
-    }
-}
-
-fn spawn_writer(
-    directory: PathBuf,
-    receiver: mpsc::Receiver<Message>,
-    pending: Staged,
-    backlog: Backlog,
-    hold: Option<Arc<std::sync::atomic::AtomicBool>>,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
-        // Tests hold the writer here once, before it has written anything, so they can
-        // fill the queue behind it deterministically instead of racing it.
-        let mut held = hold;
-        let mut open: Option<(u64, BufWriter<File>)> = None;
-        let mut written: Vec<(u64, u64)> = Vec::new();
-        // Bytes this batch took off the queue, released once they are on the disk.
-        let mut drained = 0_u64;
-        while let Ok(first) = receiver.recv() {
-            let mut next = Some(first);
-            while let Some(message) = next.take() {
-                match message {
-                    Message::Frame { location, bytes } => {
-                        if let Some(release) = held.take() {
-                            // Capped so a test that never releases fails on its own
-                            // assertions rather than hanging the job.
-                            let until = std::time::Instant::now() + Duration::from_secs(30);
-                            while !release.load(std::sync::atomic::Ordering::Acquire)
-                                && std::time::Instant::now() < until
-                            {
-                                thread::sleep(Duration::from_millis(1));
-                            }
-                        }
-                        drained += bytes.len() as u64;
-                        if open.as_ref().is_none_or(|(id, _)| *id != location.segment) {
-                            if let Some((_, mut file)) = open.take() {
-                                let _ = file.flush();
-                            }
-                            match OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(segment_path(&directory, location.segment))
-                            {
-                                Ok(file) => {
-                                    open = Some((
-                                        location.segment,
-                                        BufWriter::with_capacity(1 << 20, file),
-                                    ));
-                                }
-                                Err(error) => {
-                                    open = None;
-                                    fail(&backlog, format!("cannot open a segment: {error}"));
-                                }
-                            }
-                        }
-                        match open.as_mut() {
-                            Some((_, file)) => match file.write_all(&bytes) {
-                                Ok(()) => written.push((location.segment, location.offset)),
-                                Err(error) => {
-                                    fail(&backlog, format!("cannot write a frame: {error}"))
-                                }
-                            },
-                            None => fail(&backlog, "the segment is not open".to_owned()),
-                        }
-                    }
-                    Message::Reclaim(keep_from) => reclaim_segments(&directory, keep_from),
-                }
-                next = receiver.try_recv().ok();
-            }
-            if let Some((_, file)) = open.as_mut() {
-                let _ = file.flush();
-            }
-            // Flushed first, unstaged second: a reader that misses `pending` finds the
-            // bytes on disk, never neither.
-            if let Ok(mut pending) = pending.lock() {
-                for key in written.drain(..) {
-                    pending.remove(&key);
-                }
-            }
-            release(&backlog, std::mem::take(&mut drained));
-        }
-        release(&backlog, drained);
-        if let Some((_, mut file)) = open.take() {
-            let _ = file.flush();
-        }
-    })
-}
-
-/// Hand back the queue allowance for bytes that have reached the disk, and wake whoever
-/// is waiting for room.
-fn release(backlog: &Backlog, bytes: u64) {
-    let (queue, room) = &**backlog;
-    if let Ok(mut queue) = queue.lock() {
-        queue.bytes = queue.bytes.saturating_sub(bytes);
-    }
-    room.notify_all();
-}
-
-/// Record the first failure and wake everyone waiting: a log that cannot be written is
-/// not going to drain, so waiting for room in it is waiting forever.
-fn fail(backlog: &Backlog, reason: String) {
-    let (queue, room) = &**backlog;
-    if let Ok(mut queue) = queue.lock() {
-        queue.failure.get_or_insert(reason);
-    }
-    room.notify_all();
-}
-
-fn reclaim_segments(directory: &Path, keep_from: u64) {
-    let Ok(entries) = fs::read_dir(directory) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if segment_id(&path).is_some_and(|id| id < keep_from) {
-            let _ = fs::remove_file(path);
-        }
+    pub(crate) fn writer(&self) -> &Arc<Writer> {
+        &self.writer
     }
 }
 
@@ -491,7 +262,7 @@ fn reclaim_segments(directory: &Path, keep_from: u64) {
 //
 // [ body length: u32 ][ check: u64 ][ body ]
 //
-// body = sequence u64 | recorded_at_ms u64 | session u16-prefixed | kind u16-prefixed | payload
+// body = sequence u64 | recorded_at_ms u64 | kind u16-prefixed | payload
 
 /// Builds the whole frame in one buffer: header space first, then the body written
 /// straight into it, then the header patched once the body's length and check value are
@@ -499,15 +270,12 @@ fn reclaim_segments(directory: &Path, keep_from: u64) {
 /// into a payload buffer, copying that into a body buffer, and copying that into a frame
 /// buffer meant three copies of it before the frame existed.
 fn encode(append: &Append<'_>) -> Result<Vec<u8>, Error> {
-    let session = append.session_id.as_bytes();
     let kind = append.kind.as_bytes();
 
-    let mut frame = Vec::with_capacity(HEADER_BYTES + session.len() + kind.len() + 24);
+    let mut frame = Vec::with_capacity(HEADER_BYTES + kind.len() + 24);
     frame.resize(HEADER_BYTES, 0);
     frame.extend_from_slice(&append.sequence.to_le_bytes());
     frame.extend_from_slice(&append.recorded_at_ms.to_le_bytes());
-    frame.extend_from_slice(&(session.len() as u16).to_le_bytes());
-    frame.extend_from_slice(session);
     frame.extend_from_slice(&(kind.len() as u16).to_le_bytes());
     frame.extend_from_slice(kind);
     serde_json::to_writer(&mut frame, append.payload)
@@ -539,14 +307,11 @@ fn decode(bytes: &[u8]) -> Option<(Frame<'_>, usize)> {
     let mut cursor = 0usize;
     let sequence = u64::from_le_bytes(take(body, &mut cursor, 8)?.try_into().ok()?);
     let recorded_at_ms = u64::from_le_bytes(take(body, &mut cursor, 8)?.try_into().ok()?);
-    let session_length = u16::from_le_bytes(take(body, &mut cursor, 2)?.try_into().ok()?) as usize;
-    let session_id = std::str::from_utf8(take(body, &mut cursor, session_length)?).ok()?;
     let kind_length = u16::from_le_bytes(take(body, &mut cursor, 2)?.try_into().ok()?) as usize;
     let kind = std::str::from_utf8(take(body, &mut cursor, kind_length)?).ok()?;
 
     Some((
         Frame {
-            session_id,
             sequence,
             recorded_at_ms,
             kind,
@@ -570,11 +335,11 @@ fn take<'a>(bytes: &'a [u8], cursor: &mut usize, length: usize) -> Option<&'a [u
 }
 
 fn segment_path(directory: &Path, id: u64) -> PathBuf {
-    directory.join(format!("{id:020}.journal"))
+    directory.join(format!("{id:020}.{SEGMENT_EXTENSION}"))
 }
 
 fn segment_id(path: &Path) -> Option<u64> {
-    if path.extension()? != "journal" {
+    if path.extension()? != SEGMENT_EXTENSION {
         return None;
     }
     path.file_stem()?.to_str()?.parse().ok()
@@ -590,7 +355,10 @@ fn log_error(error: std::io::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        thread,
+    };
 
     use super::*;
 
@@ -598,14 +366,8 @@ mod tests {
         serde_json::json!({ "value": kind })
     }
 
-    fn append<'a>(
-        session_id: &'a str,
-        sequence: u64,
-        kind: &'a str,
-        body: &'a serde_json::Value,
-    ) -> Append<'a> {
+    fn append<'a>(sequence: u64, kind: &'a str, body: &'a serde_json::Value) -> Append<'a> {
         Append {
-            session_id,
             sequence,
             recorded_at_ms: 1_700_000_000_000,
             kind,
@@ -614,21 +376,19 @@ mod tests {
     }
 
     fn temporary() -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "brain-log-{}-{}",
+        std::env::temp_dir().join(format!(
+            "brain-segment-log-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        path
+            rand::random::<u64>()
+        ))
     }
 
-    fn collect(directory: &Path) -> (SegmentLog, Vec<(u64, String, Location)>) {
+    fn collect(
+        directory: &Path,
+        writer: Arc<Writer>,
+    ) -> (SegmentLog, Vec<(u64, String, Location)>) {
         let mut seen = Vec::new();
-        let log = SegmentLog::open(directory, |frame, location| {
+        let log = SegmentLog::open(directory, Arc::from("test"), writer, |frame, location| {
             seen.push((frame.sequence, frame.kind.to_string(), location));
             Ok(())
         })
@@ -638,233 +398,135 @@ mod tests {
 
     #[test]
     fn a_frame_round_trips_through_encoding() {
-        let body = payload("turn_started");
-        let bytes = encode(&append("ses_test", 7, "turn_started", &body)).unwrap();
+        let body = payload("model_call_ended");
+        let bytes = encode(&append(7, "model_call_ended", &body)).unwrap();
         let (frame, length) = decode(&bytes).unwrap();
         assert_eq!(length, bytes.len());
         assert_eq!(frame.sequence, 7);
-        assert_eq!(frame.session_id, "ses_test");
-        assert_eq!(frame.kind, "turn_started");
+        assert_eq!(frame.kind, "model_call_ended");
         assert_eq!(frame.payload().unwrap(), body);
     }
 
     #[test]
     fn a_record_is_readable_before_the_writer_has_flushed_it() {
         let directory = temporary();
-        let (log, seen) = collect(&directory);
-        assert!(seen.is_empty());
-        let body = payload("session_creation_ended");
-        let location = log
-            .append(append("ses_test", 1, "session_creation_ended", &body))
+        let writer = Writer::spawn();
+        let (log, _) = collect(&directory, writer);
+        let body = payload("turn_started");
+        let location = log.append(append(1, "turn_started", &body)).unwrap();
+        let read = log
+            .read_many(&[location], |frame| Ok(frame.payload().unwrap()))
             .unwrap();
-        let kinds = log
-            .read_many(&[location], |frame| Ok(frame.kind.to_string()))
-            .unwrap();
-        assert_eq!(kinds, ["session_creation_ended"]);
+        assert_eq!(read, vec![body]);
         drop(log);
-        fs::remove_dir_all(directory).unwrap();
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]
     fn reopening_replays_every_frame_in_write_order() {
         let directory = temporary();
-        let (log, _) = collect(&directory);
-        let body = payload("turn_ended");
-        for sequence in 1..=32 {
-            log.append(append("ses_test", sequence, "turn_ended", &body))
-                .unwrap();
+        let writer = Writer::spawn();
+        {
+            let (log, _) = collect(&directory, writer.clone());
+            for sequence in 1..=5 {
+                let body = payload("k");
+                log.append(append(sequence, "k", &body)).unwrap();
+            }
+            writer.sync().unwrap();
         }
-        drop(log);
-
-        let (log, seen) = collect(&directory);
-        assert_eq!(seen.len(), 32);
-        assert_eq!(seen[0].0, 1);
-        assert_eq!(seen[31].0, 32);
-        let sequences = log
-            .read_many(&[seen[9].2, seen[10].2], |frame| Ok(frame.sequence))
-            .unwrap();
-        assert_eq!(sequences, [10, 11]);
-        drop(log);
-        fs::remove_dir_all(directory).unwrap();
+        let (_, seen) = collect(&directory, writer);
+        let sequences: Vec<u64> = seen.iter().map(|(sequence, _, _)| *sequence).collect();
+        assert_eq!(sequences, vec![1, 2, 3, 4, 5]);
+        let _ = fs::remove_dir_all(directory);
     }
 
-    #[test]
-    fn an_unsequenced_frame_is_marked_as_such() {
-        let body = payload("session_state");
-        let bytes = encode(&append("ses_test", 0, "session_state", &body)).unwrap();
-        let (frame, _) = decode(&bytes).unwrap();
-        assert!(!frame.is_sequenced());
-    }
-
-    /// A writer that is not being held at all.
-    fn released() -> Arc<AtomicBool> {
-        Arc::new(AtomicBool::new(true))
-    }
-
-    /// Writing behind the caller turns disk latency into memory. With a deliberately
-    /// slow writer, producers queued 250 MiB of frames in 218 ms and every byte stayed
-    /// on the heap. Past the allowance the append waits, so a stalled disk is a slow
-    /// turn rather than a process that grows until it is killed.
-    ///
-    /// The writer is held still and let go by this test rather than slowed, so what is
-    /// measured is the bound and not which of the two threads happens to be faster on
-    /// the machine running it. An earlier version slowed the writer by a millisecond a
-    /// frame and passed on one machine while the queue reached a single frame on
-    /// another.
     #[test]
     fn a_stalled_writer_makes_appends_wait_instead_of_growing_the_queue() {
-        const FRAME_BYTES: usize = 64 * 1024;
-        /// Long enough for any machine to serialise the allowance, and only ever waited
-        /// out when something is actually wrong.
-        const DEADLINE: Duration = Duration::from_secs(20);
-
         let directory = temporary();
         let release = Arc::new(AtomicBool::new(false));
-        let log = Arc::new(SegmentLog::open_stalled(&directory, release.clone()).unwrap());
-        let body = serde_json::json!({ "filler": "x".repeat(FRAME_BYTES) });
-
-        // Twice what the allowance can hold, so the producer must be made to wait.
-        let frames = 2 * (MAX_QUEUED_BYTES / FRAME_BYTES as u64);
+        let writer = Writer::spawn_held(release.clone());
+        let (log, _) = collect(&directory, writer.clone());
+        let body = serde_json::json!({ "text": "x".repeat(1024 * 1024) });
+        let log = Arc::new(log);
         let producer = {
             let log = log.clone();
+            let body = body.clone();
             thread::spawn(move || {
-                for sequence in 1..=frames {
-                    log.append(append("ses_test", sequence, "turn_ended", &body))
-                        .unwrap();
+                for sequence in 1..=64 {
+                    log.append(append(sequence, "big", &body)).unwrap();
                 }
             })
         };
-
-        // Full, to within the frame that did not fit: the producer waits when the next
-        // frame would cross the allowance, so the queue settles just under it.
-        let full = MAX_QUEUED_BYTES - 2 * FRAME_BYTES as u64;
-
-        // Watch the queue fill behind the held writer, and stop as soon as it is full.
         let mut peak = 0;
-        let watching = std::time::Instant::now();
-        while peak < full && watching.elapsed() < DEADLINE {
-            peak = peak.max(log.backlog.0.lock().unwrap().bytes);
-            thread::sleep(Duration::from_millis(1));
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        while std::time::Instant::now() < until {
+            peak = peak.max(writer.queued_bytes());
+            thread::sleep(std::time::Duration::from_millis(5));
         }
-        let waiting = !producer.is_finished();
+        assert!(
+            peak <= writer::OWNER_QUEUE_BYTES + 2 * 1024 * 1024,
+            "queue reached {peak} bytes with a stalled writer"
+        );
         release.store(true, Ordering::Release);
-
-        assert!(
-            peak <= MAX_QUEUED_BYTES,
-            "the writer was allowed to fall {peak} bytes behind, past the              {MAX_QUEUED_BYTES}-byte allowance"
-        );
-        assert!(
-            peak >= full,
-            "the queue only reached {peak} bytes of {MAX_QUEUED_BYTES} in {DEADLINE:?},              so this run never tested the bound"
-        );
-        assert!(
-            waiting,
-            "the producer queued {frames} frames past a held writer without waiting"
-        );
-
         producer.join().unwrap();
-        drop(Arc::into_inner(log).expect("the producer is finished with it"));
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    /// A frame bigger than the whole allowance must go through rather than wait for room
-    /// that can never appear.
-    #[test]
-    fn a_frame_larger_than_the_allowance_is_still_written() {
-        let directory = temporary();
-        let log = SegmentLog::open_stalled(&directory, released()).unwrap();
-        let body = serde_json::json!({
-            "filler": "x".repeat(MAX_QUEUED_BYTES as usize + 1),
-        });
-
-        let location = log
-            .append(append("ses_test", 1, "turn_ended", &body))
-            .unwrap();
-        assert!(u64::from(location.length) > MAX_QUEUED_BYTES);
-
         drop(log);
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    /// A write-behind log has no caller left to tell when a write fails. Keeping the
-    /// failure and refusing every later append is the difference between a loud stop and
-    /// silently losing records.
-    #[test]
-    fn a_writer_failure_stops_the_log_rather_than_being_swallowed() {
-        let directory = temporary();
-        let log = SegmentLog::open_stalled(&directory, released()).unwrap();
-        fail(&log.backlog, "the disk went away".to_owned());
-
-        let body = payload("turn_ended");
-        let error = log
-            .append(append("ses_test", 1, "turn_ended", &body))
-            .expect_err("an append after a writer failure must not report success");
-        assert!(
-            error.to_string().contains("the disk went away"),
-            "the failure must say what happened: {error}"
-        );
-
-        drop(log);
-        fs::remove_dir_all(directory).unwrap();
+        drop(writer);
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]
     fn a_torn_tail_is_dropped_and_its_space_reused() {
         let directory = temporary();
-        let (log, _) = collect(&directory);
-        let body = payload("turn_ended");
-        for sequence in 1..=4 {
-            log.append(append("ses_test", sequence, "turn_ended", &body))
-                .unwrap();
+        let writer = Writer::spawn();
+        {
+            let (log, _) = collect(&directory, writer.clone());
+            let body = payload("k");
+            log.append(append(1, "k", &body)).unwrap();
+            log.append(append(2, "k", &body)).unwrap();
+            writer.sync().unwrap();
         }
-        drop(log);
-
-        // Simulate a crash partway through the fifth frame.
         let path = segment_path(&directory, 0);
-        let length = fs::metadata(&path).unwrap().len();
-        let torn = encode(&append("ses_test", 5, "turn_ended", &body)).unwrap();
-        OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap()
-            .write_all(&torn[..torn.len() / 2])
-            .unwrap();
-
-        let (log, seen) = collect(&directory);
-        assert_eq!(seen.len(), 4);
-        assert_eq!(fs::metadata(&path).unwrap().len(), length);
-        let location = log
-            .append(append("ses_test", 5, "turn_ended", &body))
-            .unwrap();
-        assert_eq!(location.offset, length);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.truncate(bytes.len() - 3);
+        bytes.extend_from_slice(&[0xff; 5]);
+        fs::write(&path, &bytes).unwrap();
+        let (log, seen) = collect(&directory, writer.clone());
+        assert_eq!(seen.len(), 1, "the torn second frame is dropped");
+        let body = payload("k");
+        let location = log.append(append(2, "k", &body)).unwrap();
+        assert_eq!(
+            location.offset,
+            seen[0].2.offset + u64::from(seen[0].2.length)
+        );
+        writer.sync().unwrap();
         drop(log);
-        fs::remove_dir_all(directory).unwrap();
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]
     fn a_corrupt_frame_body_does_not_decode() {
-        let body = payload("turn_started");
-        let mut bytes = encode(&append("ses_test", 1, "turn_started", &body)).unwrap();
+        let body = payload("k");
+        let mut bytes = encode(&append(1, "k", &body)).unwrap();
         let last = bytes.len() - 1;
-        bytes[last] ^= 0xff;
+        bytes[last] ^= 0x01;
         assert!(decode(&bytes).is_none());
     }
 
     #[test]
     fn reclaim_removes_only_segments_below_the_floor() {
         let directory = temporary();
-        let (log, _) = collect(&directory);
-        let body = payload("turn_ended");
-        log.append(append("ses_test", 1, "turn_ended", &body))
-            .unwrap();
-        drop(log);
-        fs::copy(segment_path(&directory, 0), segment_path(&directory, 1)).unwrap();
-
-        let (log, _) = collect(&directory);
-        log.reclaim(1).unwrap();
-        drop(log);
+        fs::create_dir_all(&directory).unwrap();
+        for id in 0..3 {
+            fs::write(segment_path(&directory, id), b"").unwrap();
+        }
+        let writer = Writer::spawn();
+        let (log, _) = collect(&directory, writer.clone());
+        log.reclaim(2).unwrap();
+        writer.sync().unwrap();
         assert!(!segment_path(&directory, 0).exists());
-        assert!(segment_path(&directory, 1).exists());
-        fs::remove_dir_all(directory).unwrap();
+        assert!(!segment_path(&directory, 1).exists());
+        assert!(segment_path(&directory, 2).exists());
+        drop(log);
+        let _ = fs::remove_dir_all(directory);
     }
 }

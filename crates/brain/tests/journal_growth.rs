@@ -19,75 +19,15 @@ use std::{
 };
 
 use async_trait::async_trait;
-use brain::{
-    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionRuntime,
-    ToolExecutor,
-};
+use brain::{Error, JournalStore, LoopExecutor, ModelExecutor, Session, ToolExecutor};
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopIdentity, Decision, MessageRequest, ModelBinding,
     ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, SessionConfig, SessionId,
     ToolCancellation, ToolDefinition, ToolDispatch,
 };
 use brain_telemetry::telemetry_channel;
-/// What the host gives every session: the store it journals to and the executors it
-/// performs effects with. Built the way the server builds it.
-struct Runtime {
-    store: Arc<ObservedJournal>,
-    config: Arc<SessionRuntime>,
-}
-
-#[allow(dead_code)]
-impl Runtime {
-    fn open(
-        data_dir: &Path,
-        telemetry: brain_telemetry::TelemetryPublisher,
-        max_decisions_per_turn: usize,
-        tool_deadline_ms: u64,
-        loop_executor: Arc<dyn LoopExecutor>,
-        model_executor: Arc<dyn ModelExecutor>,
-        tool_executor: Arc<dyn ToolExecutor>,
-    ) -> Self {
-        let journal: Arc<dyn brain::JournalStore> =
-            Arc::new(brain::SegmentJournal::open(&data_dir.join("journal")).unwrap());
-        let store = Arc::new(ObservedJournal::new(journal, telemetry));
-        brain::interrupt_unfinished_turns(&*store).unwrap();
-        let config = Arc::new(SessionRuntime {
-            max_decisions_per_turn,
-            tool_deadline_ms,
-            loop_executor,
-            model_executor,
-            tool_executor,
-            live: store.live_sender(),
-        });
-        Self { store, config }
-    }
-
-    fn store(&self) -> Arc<dyn brain::JournalStore> {
-        self.store.clone()
-    }
-
-    fn events(
-        &self,
-        session_id: &SessionId,
-        after: u64,
-        limit: usize,
-    ) -> brain_protocol::EventPage {
-        brain::event_page(
-            self.store.records_after(session_id, after, limit).unwrap(),
-            after,
-        )
-    }
-
-    fn session(&self, session_id: &SessionId) -> brain_protocol::SessionSummary {
-        self.store.session_summary(session_id).unwrap().unwrap()
-    }
-
-    fn subscribe(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
-        self.store.subscribe()
-    }
-}
+mod common;
+use common::Runtime;
 
 /// Bytes each activation appends to the context. Large enough that the quadratic term
 /// dominates fixed per-record overhead, small enough to keep the test quick.
@@ -209,14 +149,12 @@ async fn measure_one_turn(data_dir: &Path) -> (u64, SessionId) {
         "the turn must reach its Finish decision, not the decision limit"
     );
     drop(handle);
+    runtime.drain();
     drop(runtime);
     // Dropping the runtime drains the journal writer, so the segments on disk are the
     // whole journal.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    let bytes = fs::read_dir(data_dir.join("journal"))
-        .unwrap()
-        .map(|entry| entry.unwrap().metadata().unwrap().len())
-        .sum();
+    let bytes = common::dir_bytes(&data_dir.join("sessions"));
     (bytes, session_id)
 }
 
@@ -273,6 +211,7 @@ async fn the_event_stream_does_not_carry_a_context_copy_per_decision() {
     );
 
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     fs::remove_dir_all(data_dir).unwrap();
@@ -293,9 +232,9 @@ async fn the_session_row_holds_the_final_context_after_the_turn() {
         Arc::new(TinyModel),
         Arc::new(NoTools),
     );
-    let store = runtime.store();
     let handle = start(&runtime, request());
     let session_id = handle.id().clone();
+    let store = runtime.store(&session_id);
     handle
         .message(MessageRequest {
             input: "hello".into(),
@@ -306,9 +245,7 @@ async fn the_session_row_holds_the_final_context_after_the_turn() {
     // Moving the context write off the per-decision path must not leave the row stale.
     // Read while the process that owns the session is still alive: that is the only place
     // a session exists, so it is the only place worth asserting about.
-    let row = brain::JournalStore::session_row(&*store, &session_id)
-        .unwrap()
-        .unwrap();
+    let row = store.session_row().unwrap();
     let items = row.context["items"].as_array().unwrap().len();
     assert_eq!(
         items, DECISIONS,
@@ -316,6 +253,7 @@ async fn the_session_row_holds_the_final_context_after_the_turn() {
     );
 
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     fs::remove_dir_all(data_dir).unwrap();
@@ -334,6 +272,7 @@ fn request() -> SessionConfig {
         tools: Vec::new(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
+        idle_ttl_ms: None,
     }
 }
 
@@ -347,10 +286,7 @@ fn temporary_directory() -> PathBuf {
 /// then completed. There is no shortcut past `Session::begin`, so these tests exercise
 /// the same validation the production path enforces.
 fn start(runtime: &Runtime, config: SessionConfig) -> Session {
-    Session::begin(runtime.store(), runtime.config.clone(), &config, &[])
-        .unwrap()
-        .complete(config)
-        .unwrap()
+    runtime.create(&config, &[]).unwrap()
 }
 
 /// A turn that was in flight when the process stopped is closed, and says so.
@@ -366,25 +302,30 @@ async fn an_interrupted_turn_is_closed_and_recorded() {
 
     // Leave the session mid-turn, the way a process that died during one would.
     {
-        let store = brain::SegmentJournal::open(&data_dir.join("journal")).unwrap();
-        let row = brain::JournalStore::session_row(&store, &session_id)
-            .unwrap()
-            .unwrap();
-        brain::JournalStore::append(
-            &store,
-            &session_id,
-            row.through_sequence,
-            &[brain::AppendRecord::new(
-                "turn_started",
-                serde_json::json!({"content": "and then the lights went out"}),
-            )],
-            brain::SessionUpdate {
-                status: Some(brain_protocol::SessionStatus::Running),
-                context: None,
-                configuration: None,
-            },
+        let (publisher, _worker) = telemetry_channel();
+        let writer = brain::Writer::spawn();
+        let store = brain::SessionStore::open(
+            &data_dir.join("sessions").join(session_id.as_str()),
+            writer.clone(),
+            Arc::new(brain::Feed::new(publisher)),
         )
         .unwrap();
+        let row = store.session_row().unwrap();
+        store
+            .append(
+                row.through_sequence,
+                &[brain::AppendRecord::new(
+                    "turn_started",
+                    serde_json::json!({"content": "and then the lights went out"}),
+                )],
+                brain::SessionUpdate {
+                    status: Some(brain_protocol::SessionStatus::Running),
+                    context: None,
+                    configuration: None,
+                },
+            )
+            .unwrap();
+        writer.sync().unwrap();
         drop(store);
     }
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -433,10 +374,14 @@ async fn a_session_comes_back_from_its_journal() {
     let data_dir = temporary_directory();
     let (_, session_id) = measure_one_turn(&data_dir).await;
 
-    let store = brain::SegmentJournal::open(&data_dir.join("journal")).unwrap();
-    let row = brain::JournalStore::session_row(&store, &session_id)
-        .unwrap()
-        .expect("a session must be rebuilt from the records it left behind");
+    let (publisher, _worker) = telemetry_channel();
+    let store = brain::SessionStore::open(
+        &data_dir.join("sessions").join(session_id.as_str()),
+        brain::Writer::spawn(),
+        Arc::new(brain::Feed::new(publisher)),
+    )
+    .expect("a session must be rebuilt from the records it left behind");
+    let row = store.session_row().unwrap();
     assert!(
         matches!(row.status, brain_protocol::SessionStatus::Idle),
         "a session whose last turn finished comes back idle, not mid-turn: {:?}",
@@ -445,7 +390,7 @@ async fn a_session_comes_back_from_its_journal() {
 
     // Its history reads back whole, and densely: `records_after` indexes by sequence, so a
     // session rebuilt with a gap would answer for the wrong record under the right number.
-    let records = brain::JournalStore::records_after(&store, &session_id, 0, 1_000).unwrap();
+    let records = store.records_after(0, 1_000).unwrap();
     let sequences: Vec<u64> = records.iter().map(|record| record.sequence).collect();
     let dense: Vec<u64> = (1..=records.len() as u64).collect();
     assert_eq!(
@@ -493,13 +438,11 @@ async fn a_session_does_not_journal_one_context_copy_per_turn() {
             .unwrap();
     }
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let journal_bytes: u64 = fs::read_dir(data_dir.join("journal"))
-        .unwrap()
-        .map(|entry| entry.unwrap().metadata().unwrap().len())
-        .sum();
+    let journal_bytes: u64 = common::dir_bytes(&data_dir.join("sessions"));
     let context_bytes = (TURNS * ITEM_BYTES) as u64;
     let ratio = journal_bytes as f64 / context_bytes as f64;
     let held = journal_bytes <= context_bytes * MAX_RATIO;
@@ -607,13 +550,11 @@ async fn a_session_does_not_journal_the_whole_transcript_once_per_turn() {
             .unwrap();
     }
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let journal_bytes: u64 = fs::read_dir(data_dir.join("journal"))
-        .unwrap()
-        .map(|entry| entry.unwrap().metadata().unwrap().len())
-        .sum();
+    let journal_bytes: u64 = common::dir_bytes(&data_dir.join("sessions"));
     // What the conversation itself weighs by the end.
     let transcript_bytes = (TURNS * MESSAGE_BYTES) as u64;
     let ratio = journal_bytes as f64 / transcript_bytes as f64;
@@ -719,13 +660,11 @@ async fn a_turn_does_not_journal_the_pieces_its_answer_arrived_in() {
         .await
         .unwrap();
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let journal_bytes: u64 = fs::read_dir(data_dir.join("journal"))
-        .unwrap()
-        .map(|entry| entry.unwrap().metadata().unwrap().len())
-        .sum();
+    let journal_bytes: u64 = common::dir_bytes(&data_dir.join("sessions"));
     let streamed_bytes = (DELTAS * DELTA_BYTES) as u64;
     let _ = fs::remove_dir_all(data_dir);
 

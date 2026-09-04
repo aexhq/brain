@@ -127,13 +127,8 @@ pub fn empty_context() -> ContextEnvelope {
 }
 
 /// The configuration a session was admitted with, read from its row.
-pub fn session_config(
-    store: &dyn JournalStore,
-    session_id: &SessionId,
-) -> Result<SessionConfig, Error> {
-    let row = store
-        .session_row(session_id)?
-        .ok_or_else(|| Error::NotFound("session not found".into()))?;
+pub fn session_config(store: &dyn JournalStore) -> Result<SessionConfig, Error> {
+    let row = store.session_row()?;
     serde_json::from_value(row.configuration).map_err(|error| Error::Journal(error.to_string()))
 }
 
@@ -150,23 +145,21 @@ impl Session {
         history: &[HistoryEvent],
     ) -> Result<CreatingSession, Error> {
         validate_session_contract(request)?;
-        let row = SessionRow {
-            session_id: SessionId::new(random_id("ses")),
-            status: SessionStatus::Creating,
-            through_sequence: 1,
-            configuration: serde_json::to_value(request).map_err(json_error)?,
-            context: serde_json::to_value(empty_context()).map_err(json_error)?,
-        };
         // The creation record is the session's own genesis and comes first; the events the
         // caller handed back are what happened before it, and follow.
-        store.create_session(
-            &row,
-            AppendRecord::new(
+        store.append(
+            0,
+            &[AppendRecord::new(
                 codes::event::SESSION_CREATION_STARTED,
                 serde_json::to_value(request).map_err(json_error)?,
-            ),
+            )],
+            SessionUpdate {
+                status: Some(SessionStatus::Creating),
+                context: None,
+                configuration: None,
+            },
         )?;
-        let mut row = row;
+        let mut row = store.session_row()?;
         let history = replay_history(&*store, &mut row, history)?;
         Ok(CreatingSession {
             store,
@@ -181,16 +174,10 @@ impl Session {
     /// A session rebuilt from the journal after a restart has an agentloop that has never
     /// seen any of it, so it is handed its own records once, before its first message. A
     /// session this process created was told at creation and is not told again.
-    pub fn open(
-        store: Arc<dyn JournalStore>,
-        config: Arc<SessionRuntime>,
-        session_id: &SessionId,
-    ) -> Result<Self, Error> {
-        let row = store
-            .session_row(session_id)?
-            .ok_or_else(|| Error::NotFound("session not found".into()))?;
-        let history = if store.take_restored(session_id)? {
-            restored_history(&*store, session_id)?
+    pub fn open(store: Arc<dyn JournalStore>, config: Arc<SessionRuntime>) -> Result<Self, Error> {
+        let row = store.session_row()?;
+        let history = if store.take_restored() {
+            restored_history(&*store)?
         } else {
             Vec::new()
         };
@@ -311,6 +298,12 @@ impl Session {
             .map(|_| ())
     }
 
+    /// Writes a record on the host's behalf between turns: something the host did to the
+    /// session, such as suspending or resuming it. Refused while a turn is running.
+    pub async fn record(&self, kind: &str, payload: serde_json::Value) -> Result<u64, Error> {
+        self.append(AppendRecord::new(kind, payload)).await
+    }
+
     async fn append(&self, record: AppendRecord) -> Result<u64, Error> {
         let (reply, response) = oneshot::channel();
         self.sender
@@ -364,7 +357,6 @@ impl CreatingSession {
 
     fn append(&mut self, record: AppendRecord) -> Result<u64, Error> {
         let saved = self.store.append(
-            &self.row.session_id,
             self.row.through_sequence,
             &[record],
             SessionUpdate::default(),
@@ -380,7 +372,6 @@ impl CreatingSession {
         let configuration = serde_json::to_value(&config).map_err(json_error)?;
         let context = self.row.context.clone();
         let saved = self.store.append(
-            &self.row.session_id,
             self.row.through_sequence,
             &[AppendRecord::new(
                 codes::event::SESSION_CREATION_ENDED,
@@ -400,7 +391,6 @@ impl CreatingSession {
 
     pub fn fail(mut self, code: &str, message: &str) -> Result<(), Error> {
         let saved = self.store.append(
-            &self.row.session_id,
             self.row.through_sequence,
             &[AppendRecord::new(
                 codes::event::SESSION_CREATION_FAILED,
@@ -473,12 +463,7 @@ fn replay_history(
         .iter()
         .map(|event| AppendRecord::new(&event.event_type, event.data.clone()))
         .collect();
-    let saved = store.append(
-        &row.session_id,
-        row.through_sequence,
-        &records,
-        SessionUpdate::default(),
-    )?;
+    let saved = store.append(row.through_sequence, &records, SessionUpdate::default())?;
     row.through_sequence += saved.len() as u64;
     Ok(history.iter().map(|event| event.data.clone()).collect())
 }
@@ -489,15 +474,12 @@ fn replay_history(
 /// than that restores and can be read, but is not replayed into a loop: handing over
 /// part of a conversation as though it were the whole of it would be a worse answer
 /// than declining to.
-fn restored_history(
-    store: &dyn JournalStore,
-    session_id: &SessionId,
-) -> Result<Vec<serde_json::Value>, Error> {
+fn restored_history(store: &dyn JournalStore) -> Result<Vec<serde_json::Value>, Error> {
     const MOST: usize = 10_000;
     let mut history = Vec::new();
     let mut after = 0;
     loop {
-        let page = store.records_after(session_id, after, 1_000)?;
+        let page = store.records_after(after, 1_000)?;
         let Some(last) = page.last() else { break };
         after = last.sequence;
         history.extend(page.into_iter().map(|record| record.payload));
@@ -795,6 +777,7 @@ mod tests {
                 hosting: ToolHosting::Provisioned,
                 program: None,
             }],
+            idle_ttl_ms: None,
         }
     }
 

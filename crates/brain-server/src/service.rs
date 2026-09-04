@@ -1,11 +1,13 @@
 use std::{
     collections::HashMap,
     hash::Hash,
+    path::PathBuf,
     sync::{Arc, Mutex as StdMutex, Weak},
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
-use brain::{JournalStore, LoopExecutor, ObservedJournal, Session, SessionRuntime};
+use brain::{Feed, JournalStore, LoopExecutor, Session, SessionRuntime, SessionStore, Writer};
 use brain_http::BrainApi;
 use brain_loophost::LoopError;
 use brain_loophost::WorkerPool;
@@ -25,10 +27,17 @@ use crate::{
 };
 
 pub struct ServerResources {
-    /// Every session's journal, and the live feed of everything appended to it.
-    pub store: Arc<ObservedJournal>,
+    /// Where every session's directory lives.
+    pub sessions_dir: PathBuf,
+    /// The one thread that puts every session's records on disk.
+    pub writer: Arc<Writer>,
+    /// The live feed of everything every session appends.
+    pub feed: Arc<Feed>,
     /// What every session runs with: executors, limits, and where live output goes.
     pub session_runtime: Arc<SessionRuntime>,
+    /// How long an idle session keeps its task and memory before it is suspended to
+    /// disk. A session may set its own at create; zero means never.
+    pub session_idle_ttl: Duration,
     /// Answers already given to keyed requests, so a retry replays instead of repeats.
     pub idempotency: IdempotencyStore,
     pub loops: Arc<WorkerPool>,
@@ -47,12 +56,21 @@ pub struct ServerResources {
 #[derive(Clone)]
 pub struct ServerApi {
     resources: Arc<ServerResources>,
-    /// The sessions running in this process. A session is started the first time it is
-    /// touched after a restart, and forgotten when it ends.
-    sessions: Arc<StdMutex<HashMap<SessionId, Session>>>,
+    /// Every session on disk. Its store is always open; its task runs only while the
+    /// session is active, and is dropped when the session has sat idle past its TTL.
+    sessions: Arc<StdMutex<HashMap<SessionId, Slot>>>,
     idempotency_locks: Arc<KeyedLocks<String>>,
     session_locks: Arc<KeyedLocks<SessionId>>,
     ownership: Arc<dyn SessionOwnership>,
+}
+
+struct Slot {
+    store: Arc<SessionStore>,
+    /// The running task, or `None` while the session is suspended.
+    session: Option<Session>,
+    last_touch: Instant,
+    /// Zero means never suspend.
+    idle_ttl: Duration,
 }
 
 struct KeyedLocks<K> {
@@ -104,75 +122,204 @@ impl<K: Clone + Eq + Hash> KeyedLocks<K> {
 }
 
 impl ServerApi {
-    pub fn new(resources: ServerResources) -> Self {
-        Self {
-            resources: Arc::new(resources),
-            sessions: Arc::default(),
-            idempotency_locks: Arc::new(KeyedLocks::default()),
-            session_locks: Arc::new(KeyedLocks::default()),
-            ownership: Arc::new(LocalSessionOwnership),
-        }
+    /// Opens every session on disk. Each comes back suspended: its records are indexed
+    /// and any turn the last process left running is closed, but no task is started
+    /// until something asks for it.
+    pub fn new(resources: ServerResources) -> Result<Self, brain::Error> {
+        Self::with_ownership(resources, Arc::new(LocalSessionOwnership))
     }
 
     pub fn with_ownership(
         resources: ServerResources,
         ownership: Arc<dyn SessionOwnership>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, brain::Error> {
+        let stores = SessionStore::open_all(
+            &resources.sessions_dir,
+            resources.writer.clone(),
+            resources.feed.clone(),
+        )?;
+        let api = Self {
             resources: Arc::new(resources),
             sessions: Arc::default(),
             idempotency_locks: Arc::new(KeyedLocks::default()),
             session_locks: Arc::new(KeyedLocks::default()),
             ownership,
+        };
+        for store in stores {
+            api.insert_slot(store, None)
+                .map_err(|error| brain::Error::Journal(error.message))?;
+        }
+        Ok(api)
+    }
+
+    /// Suspends sessions that have sat idle past their TTL, on a timer. Suspension drops
+    /// the task and its memory; the store stays open and the session is rebuilt from it
+    /// on its next request.
+    pub fn spawn_idle_sweeper(&self) -> tokio::task::JoinHandle<()> {
+        let api = self.clone();
+        let every = (api.resources.session_idle_ttl / 4)
+            .clamp(Duration::from_secs(1), Duration::from_secs(60));
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(every);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                api.suspend_idle().await;
+            }
+        })
+    }
+
+    /// Suspends every active session idle past its TTL. Public so a host without the
+    /// sweeper can drive it.
+    pub async fn suspend_idle(&self) {
+        let due: Vec<SessionId> = match self.sessions.lock() {
+            Ok(sessions) => sessions
+                .iter()
+                .filter(|(_, slot)| {
+                    slot.session.is_some()
+                        && !slot.idle_ttl.is_zero()
+                        && slot.last_touch.elapsed() >= slot.idle_ttl
+                })
+                .map(|(id, _)| id.clone())
+                .collect(),
+            Err(_) => return,
+        };
+        for session_id in due {
+            if let Err(error) = self.suspend(&session_id).await {
+                tracing::warn!(%session_id, error = %error.message, "session could not be suspended");
+            }
         }
     }
 
-    fn store(&self) -> Arc<dyn JournalStore> {
-        self.resources.store.clone()
-    }
-
-    /// The running session, started from its journal if this process has not touched it
-    /// yet.
-    fn session(&self, session_id: &SessionId) -> Result<Session, ApiError> {
+    /// Suspends one session if it is still idle and untouched: journals the suspension,
+    /// waits for its records to reach disk, and drops its task.
+    async fn suspend(&self, session_id: &SessionId) -> Result<(), ApiError> {
+        let lock = self.session_lock(session_id)?;
+        let _guard = lock.lock().await;
+        let (session, store) = {
+            let sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| internal("session table is poisoned"))?;
+            let Some(slot) = sessions.get(session_id) else {
+                return Ok(());
+            };
+            let Some(session) = slot.session.clone() else {
+                return Ok(());
+            };
+            if slot.last_touch.elapsed() < slot.idle_ttl {
+                return Ok(());
+            }
+            (session, slot.store.clone())
+        };
+        let summary = store.session_summary().map_err(api_error)?;
+        if !matches!(summary.status, brain_protocol::SessionStatus::Idle) {
+            return Ok(());
+        }
+        session
+            .record(codes::event::SESSION_SUSPENDED, serde_json::json!({}))
+            .await
+            .map_err(api_error)?;
+        store.sync().map_err(api_error)?;
         let mut sessions = self
             .sessions
             .lock()
             .map_err(|_| internal("session table is poisoned"))?;
-        if let Some(session) = sessions.get(session_id) {
-            return Ok(session.clone());
+        if let Some(slot) = sessions.get_mut(session_id) {
+            slot.session = None;
         }
-        let session = Session::open(
-            self.store(),
-            self.resources.session_runtime.clone(),
-            session_id,
-        )
-        .map_err(api_error)?;
-        sessions.insert(session_id.clone(), session.clone());
-        Ok(session)
-    }
-
-    fn remember(&self, session: Session) -> Result<(), ApiError> {
-        self.sessions
-            .lock()
-            .map_err(|_| internal("session table is poisoned"))?
-            .insert(session.id().clone(), session);
         Ok(())
     }
 
-    fn forget(&self, session_id: &SessionId) -> Result<(), ApiError> {
+    fn insert_slot(
+        &self,
+        store: Arc<SessionStore>,
+        session: Option<Session>,
+    ) -> Result<(), ApiError> {
+        let idle_ttl = brain::session_config(&*store)
+            .ok()
+            .and_then(|config| config.idle_ttl_ms)
+            .map(Duration::from_millis)
+            .unwrap_or(self.resources.session_idle_ttl);
         self.sessions
             .lock()
             .map_err(|_| internal("session table is poisoned"))?
-            .remove(session_id);
+            .insert(
+                store.session_id().clone(),
+                Slot {
+                    store,
+                    session,
+                    last_touch: Instant::now(),
+                    idle_ttl,
+                },
+            );
+        Ok(())
+    }
+
+    fn store(&self, session_id: &SessionId) -> Result<Arc<SessionStore>, ApiError> {
+        self.sessions
+            .lock()
+            .map_err(|_| internal("session table is poisoned"))?
+            .get(session_id)
+            .map(|slot| slot.store.clone())
+            .ok_or_else(|| not_found("session not found"))
+    }
+
+    /// The running session, rebuilt from its directory if it is suspended. An ended or
+    /// failed session is not rebuilt: nothing can be asked of it.
+    async fn session(&self, session_id: &SessionId) -> Result<Session, ApiError> {
+        let resumed = {
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| internal("session table is poisoned"))?;
+            let slot = sessions
+                .get_mut(session_id)
+                .ok_or_else(|| not_found("session not found"))?;
+            slot.last_touch = Instant::now();
+            if let Some(session) = &slot.session {
+                return Ok(session.clone());
+            }
+            let status = slot.store.session_summary().map_err(api_error)?.status;
+            if matches!(
+                status,
+                brain_protocol::SessionStatus::Ended | brain_protocol::SessionStatus::Failed
+            ) {
+                return Err(ApiError::invalid_request("session has ended"));
+            }
+            let session = Session::open(slot.store.clone(), self.resources.session_runtime.clone())
+                .map_err(api_error)?;
+            slot.session = Some(session.clone());
+            session
+        };
+        resumed
+            .record(codes::event::SESSION_RESUMED, serde_json::json!({}))
+            .await
+            .map_err(api_error)?;
+        Ok(resumed)
+    }
+
+    fn remember(&self, store: Arc<SessionStore>, session: Session) -> Result<(), ApiError> {
+        self.insert_slot(store, Some(session))
+    }
+
+    /// Drops a session's task, keeping its directory and its slot.
+    fn forget(&self, session_id: &SessionId) -> Result<(), ApiError> {
+        if let Some(slot) = self
+            .sessions
+            .lock()
+            .map_err(|_| internal("session table is poisoned"))?
+            .get_mut(session_id)
+        {
+            slot.session = None;
+        }
         Ok(())
     }
 
     fn summary(&self, session_id: &SessionId) -> Result<SessionSummary, ApiError> {
-        self.resources
-            .store
-            .session_summary(session_id)
-            .map_err(api_error)?
-            .ok_or_else(|| not_found("session not found"))
+        self.store(session_id)?
+            .session_summary()
+            .map_err(api_error)
             .map(|session| self.branded(session))
     }
 
@@ -312,22 +459,40 @@ impl BrainApi for ServerApi {
             tools,
             environments,
             tool_bindings,
+            idle_ttl_ms: request.idle_ttl_ms,
         };
-        let creation = Session::begin(
-            self.store(),
-            self.resources.session_runtime.clone(),
-            &config,
-            &request.history,
+        let session_id = SessionId::new(brain::random_id("ses"));
+        let store = SessionStore::create(
+            &self.resources.sessions_dir.join(session_id.as_str()),
+            session_id.clone(),
+            &serde_json::to_value(&config).map_err(|error| internal(error.to_string()))?,
+            self.resources.writer.clone(),
+            self.resources.feed.clone(),
         )
         .map_err(|error| {
             let _ = self.resources.models.delete(&binding_id);
             api_error(error)
         })?;
-        let session_id = creation.session_id().clone();
+        let creation = match Session::begin(
+            store.clone(),
+            self.resources.session_runtime.clone(),
+            &config,
+            &request.history,
+        ) {
+            Ok(creation) => creation,
+            Err(error) => {
+                // Nothing was admitted: the directory holds at most a genesis record
+                // for a session that never existed.
+                let _ = std::fs::remove_dir_all(store.directory());
+                let _ = self.resources.models.delete(&binding_id);
+                return Err(api_error(error));
+            }
+        };
         if let Err(error) = self.ownership.claim_new(creation.session_id()).await {
             creation
                 .fail(codes::failure::SESSION_OWNERSHIP_FAILED, &error.to_string())
                 .map_err(api_error)?;
+            self.insert_slot(store, None)?;
             self.resources
                 .models
                 .delete(&binding_id)
@@ -342,6 +507,7 @@ impl BrainApi for ServerApi {
         let (session, _) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
+                self.insert_slot(store, None)?;
                 self.ownership
                     .release(&session_id)
                     .await
@@ -353,7 +519,7 @@ impl BrainApi for ServerApi {
                 return Err(api_error(error));
             }
         };
-        self.remember(session)?;
+        self.remember(store, session)?;
         let session = self.summary(&session_id)?;
         self.resources
             .idempotency
@@ -372,16 +538,19 @@ impl BrainApi for ServerApi {
     }
 
     async fn list_sessions(&self) -> Result<SessionList, ApiError> {
-        Ok(SessionList {
-            sessions: self
-                .resources
-                .store
-                .session_summaries()
-                .map_err(api_error)?
-                .into_iter()
-                .map(|session| self.branded(session))
-                .collect(),
-        })
+        let stores: Vec<Arc<SessionStore>> = self
+            .sessions
+            .lock()
+            .map_err(|_| internal("session table is poisoned"))?
+            .values()
+            .map(|slot| slot.store.clone())
+            .collect();
+        let mut sessions = Vec::with_capacity(stores.len());
+        for store in stores {
+            sessions.push(self.branded(store.session_summary().map_err(api_error)?));
+        }
+        sessions.sort_by(|left, right| left.session_id.as_str().cmp(right.session_id.as_str()));
+        Ok(SessionList { sessions })
     }
 
     async fn send_message(
@@ -406,7 +575,8 @@ impl BrainApi for ServerApi {
             return Self::replay(saved).map(|session| self.branded(session));
         }
         let session = self
-            .session(&session_id)?
+            .session(&session_id)
+            .await?
             .message(request.clone())
             .await
             .map_err(api_error)?;
@@ -451,17 +621,12 @@ impl BrainApi for ServerApi {
         {
             return Self::replay(saved);
         }
-        let session = self.session(&session_id)?;
+        let store = self.store(&session_id)?;
+        let session = self.session(&session_id).await?;
         let result = self
             .resources
             .environments
-            .call(
-                &session,
-                &*self.resources.store,
-                &environment_id,
-                name,
-                request.input,
-            )
+            .call(&session, &*store, &environment_id, name, request.input)
             .await
             .map_err(api_error)?;
         self.resources
@@ -483,9 +648,8 @@ impl BrainApi for ServerApi {
     ) -> Result<EventPage, ApiError> {
         let after = after.unwrap_or(0);
         let records = self
-            .resources
-            .store
-            .records_after(&session_id, after, 1_000)
+            .store(&session_id)?
+            .records_after(after, 1_000)
             .map_err(api_error)?;
         Ok(brain::event_page(records, after))
     }
@@ -493,7 +657,7 @@ impl BrainApi for ServerApi {
     fn subscribe(
         &self,
     ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
-        self.resources.store.subscribe()
+        self.resources.feed.subscribe()
     }
 
     fn share_key(&self, session_id: &SessionId) -> String {
@@ -506,7 +670,7 @@ impl BrainApi for ServerApi {
     }
 
     async fn client_tool_names(&self, session_id: SessionId) -> Result<Vec<String>, ApiError> {
-        Ok(brain::session_config(&*self.resources.store, &session_id)
+        Ok(brain::session_config(&*self.store(&session_id)?)
             .map_err(api_error)?
             .tool_bindings
             .into_iter()
@@ -540,7 +704,8 @@ impl BrainApi for ServerApi {
         {
             return Ok(());
         }
-        self.session(&session_id)?
+        self.session(&session_id)
+            .await?
             .resolve_tool_call(sequence, outcome.clone())
             .map_err(api_error)?;
         self.resources
@@ -571,7 +736,8 @@ impl BrainApi for ServerApi {
         {
             return Ok(());
         }
-        self.session(&session_id)?
+        self.session(&session_id)
+            .await?
             .cancel()
             .await
             .map_err(api_error)?;
@@ -602,12 +768,17 @@ impl BrainApi for ServerApi {
         {
             return Self::replay(saved).map(|session| self.branded(session));
         }
-        let sealed =
-            brain::session_config(&*self.resources.store, &session_id).map_err(api_error)?;
-        let running = self.session(&session_id)?;
+        let store = self.store(&session_id)?;
+        let summary = store.session_summary().map_err(api_error)?;
+        if matches!(summary.status, brain_protocol::SessionStatus::Ended) {
+            // Already ended: nothing to release, and the answer is the same.
+            return Ok(self.branded(summary));
+        }
+        let config = brain::session_config(&*store).map_err(api_error)?;
+        let running = self.session(&session_id).await?;
         self.resources
             .environments
-            .release_session(&running, &sealed)
+            .release_session(&running, &config)
             .await
             .map_err(api_error)?;
         let session = running.end().await.map_err(api_error)?;
@@ -646,19 +817,20 @@ impl BrainApi for ServerApi {
         {
             return Ok(());
         }
-        let binding_id = brain::session_config(&*self.resources.store, &session_id)
+        let store = self.store(&session_id)?;
+        let binding_id = brain::session_config(&*store)
             .map_err(api_error)?
             .model
             .binding_id;
+        store.delete().map_err(api_error)?;
         self.resources
             .models
             .delete(&binding_id)
             .map_err(api_error)?;
-        self.resources
-            .store
-            .delete_ended(&session_id)
-            .map_err(api_error)?;
-        self.forget(&session_id)?;
+        self.sessions
+            .lock()
+            .map_err(|_| internal("session table is poisoned"))?
+            .remove(&session_id);
         self.resources
             .idempotency
             .put(&scope, &idempotency_key, &request, &serde_json::json!({}))

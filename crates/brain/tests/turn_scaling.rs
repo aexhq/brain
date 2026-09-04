@@ -3,80 +3,19 @@
 //! Pure runtime, scripted executors — if latency scales with resident session count
 //! here, the cost is in the runtime or journal, not the HTTP or loophost layers.
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use brain::{
-    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionRuntime,
-    ToolExecutor,
-};
+use brain::{Error, LoopExecutor, ModelExecutor, ToolExecutor};
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopIdentity, Decision, MessageRequest, ModelBinding,
-    ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, SessionConfig, SessionId,
+    ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, SessionConfig,
     ToolCancellation, ToolDefinition, ToolDispatch,
 };
 use brain_telemetry::telemetry_channel;
-/// What the host gives every session: the store it journals to and the executors it
-/// performs effects with. Built the way the server builds it.
-struct Runtime {
-    store: Arc<ObservedJournal>,
-    config: Arc<SessionRuntime>,
-}
-
-#[allow(dead_code)]
-impl Runtime {
-    fn open(
-        data_dir: &Path,
-        telemetry: brain_telemetry::TelemetryPublisher,
-        max_decisions_per_turn: usize,
-        tool_deadline_ms: u64,
-        loop_executor: Arc<dyn LoopExecutor>,
-        model_executor: Arc<dyn ModelExecutor>,
-        tool_executor: Arc<dyn ToolExecutor>,
-    ) -> Self {
-        let journal: Arc<dyn brain::JournalStore> =
-            Arc::new(brain::SegmentJournal::open(&data_dir.join("journal")).unwrap());
-        let store = Arc::new(ObservedJournal::new(journal, telemetry));
-        brain::interrupt_unfinished_turns(&*store).unwrap();
-        let config = Arc::new(SessionRuntime {
-            max_decisions_per_turn,
-            tool_deadline_ms,
-            loop_executor,
-            model_executor,
-            tool_executor,
-            live: store.live_sender(),
-        });
-        Self { store, config }
-    }
-
-    fn store(&self) -> Arc<dyn brain::JournalStore> {
-        self.store.clone()
-    }
-
-    fn events(
-        &self,
-        session_id: &SessionId,
-        after: u64,
-        limit: usize,
-    ) -> brain_protocol::EventPage {
-        brain::event_page(
-            self.store.records_after(session_id, after, limit).unwrap(),
-            after,
-        )
-    }
-
-    fn session(&self, session_id: &SessionId) -> brain_protocol::SessionSummary {
-        self.store.session_summary(session_id).unwrap().unwrap()
-    }
-
-    fn subscribe(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
-        self.store.subscribe()
-    }
-}
+mod common;
+use common::Runtime;
 
 struct OneModelTurn;
 
@@ -153,6 +92,7 @@ fn sealed() -> SessionConfig {
         tools: Vec::new(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
+        idle_ttl_ms: None,
     }
 }
 
@@ -179,10 +119,7 @@ async fn turn_latency_versus_resident_sessions() {
     for checkpoint in [10_u64, 250, 500, 1000, 2000, 4000] {
         // Accumulate sessions, one settled turn each, like the bench box does.
         while created < checkpoint {
-            let handle = Session::begin(runtime.store(), runtime.config.clone(), &sealed(), &[])
-                .unwrap()
-                .complete(sealed())
-                .unwrap();
+            let handle = runtime.create(&sealed(), &[]).unwrap();
             handle
                 .message(MessageRequest {
                     input: "warm".into(),
@@ -192,10 +129,7 @@ async fn turn_latency_versus_resident_sessions() {
             created += 1;
         }
         // Measure fresh turns on one new session at this population.
-        let probe = Session::begin(runtime.store(), runtime.config.clone(), &sealed(), &[])
-            .unwrap()
-            .complete(sealed())
-            .unwrap();
+        let probe = runtime.create(&sealed(), &[]).unwrap();
         created += 1;
         let mut samples = Vec::with_capacity(100);
         for turn in 0..100 {

@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use brain::{JournalStore, ObservedJournal, SegmentJournal, SessionRuntime};
+use brain::{Feed, SessionRuntime, Writer};
 use brain_loophost::{LoopLimits, WorkerPool};
 use brain_server::{
     EnvironmentRegistry, HttpEnvironmentAdapter, IdempotencyStore, InMemoryEnvironmentDirectory,
@@ -96,24 +96,25 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
             config.environment_api_key.clone(),
         )),
     ));
-    // Every session's journal, rebuilt from disk. A session that was mid-turn when the
+    // Every session's directory, rebuilt from disk. A session that was mid-turn when the
     // last process stopped is failed with code `interrupted` before anything is served.
-    let journal_dir = config.data_dir.join("journal").join("journal");
-    std::fs::create_dir_all(&journal_dir)?;
-    let journal: Arc<dyn JournalStore> = Arc::new(SegmentJournal::open(&journal_dir)?);
-    let store = Arc::new(ObservedJournal::new(journal, telemetry));
-    brain::interrupt_unfinished_turns(&*store)?;
+    let sessions_dir = brain_server::data_layout::prepare(&config.data_dir)?;
+    let writer = Writer::spawn();
+    let feed = Arc::new(Feed::new(telemetry));
     let session_runtime = Arc::new(SessionRuntime {
         max_decisions_per_turn: config.max_decisions_per_turn,
         tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
         loop_executor: Arc::new(WorkerLoopExecutor(loops.clone())),
         model_executor: model,
         tool_executor: Arc::new(ServerToolExecutor::new(environments.clone())),
-        live: store.live_sender(),
+        live: feed.live_sender(),
     });
-    Ok(ServerApi::new(ServerResources {
-        store,
+    let api = ServerApi::new(ServerResources {
+        sessions_dir,
+        writer,
+        feed,
         session_runtime,
+        session_idle_ttl: Duration::from_secs(config.session_idle_ttl_secs),
         idempotency: IdempotencyStore::new(brain_server::idempotency::DEFAULT_RETENTION),
         loops,
         environments,
@@ -121,7 +122,9 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         providers,
         metadata,
         serve_secret: serve_secret(config.api_token.as_deref()),
-    }))
+    })?;
+    api.spawn_idle_sweeper();
+    Ok(api)
 }
 
 /// The secret share keys are derived from. With an API token it is deterministic, so

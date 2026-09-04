@@ -1,17 +1,18 @@
-//! What the journal costs a turn.
+//! What the journal costs a turn, alone and beside other sessions.
 //!
 //! Ignored by default because it reports rather than asserts: the numbers move with
 //! the disk and the machine, and a threshold that passes on a laptop says nothing
 //! about a server. The shape is what matters and does not move — an append is a
 //! serialise, a hash of the bytes just serialised, and a channel send, with no
-//! syscall on the turn's path, and a restart pays for the log it kept rather than
-//! for every record ever written.
+//! syscall on the turn's path — and the second measurement is what decides whether
+//! one writer thread is enough: if the p90 at many sessions is not the p90 at one,
+//! the writer is the bottleneck and gets sharded.
 //!
 //!     cargo test --release -p brain --test journal_throughput -- --ignored --nocapture
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
-use brain::{AppendRecord, JournalStore, SegmentJournal, SessionUpdate, journal::SessionRow};
+use brain::{AppendRecord, Feed, JournalStore, SessionStore, SessionUpdate, Writer};
 use brain_protocol::{SessionId, SessionStatus};
 
 const RECORDS: u64 = 20_000;
@@ -22,32 +23,56 @@ fn percentile(sorted: &[f64], fraction: f64) -> f64 {
     sorted[((sorted.len() as f64 * fraction) as usize).min(sorted.len() - 1)]
 }
 
-#[test]
-#[ignore = "reports timings; run it deliberately"]
-fn reports_what_the_journal_costs() {
-    let directory = std::env::temp_dir().join(format!(
-        "brain-journal-throughput-{}-{}",
+fn temporary(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "brain-journal-throughput-{name}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
-    ));
-    let store = SegmentJournal::open(&directory).unwrap();
+    ))
+}
 
-    let session_id = SessionId::new("ses_throughput");
+fn store(
+    directory: &std::path::Path,
+    id: &str,
+    writer: &Arc<Writer>,
+    feed: &Arc<Feed>,
+) -> Arc<SessionStore> {
+    let store = SessionStore::create(
+        &directory.join(id),
+        SessionId::new(id),
+        &serde_json::json!({}),
+        writer.clone(),
+        feed.clone(),
+    )
+    .unwrap();
     store
-        .create_session(
-            &SessionRow {
-                session_id: session_id.clone(),
-                status: SessionStatus::Idle,
-                through_sequence: 1,
-                configuration: serde_json::json!({}),
-                context: serde_json::json!({}),
+        .append(
+            0,
+            &[AppendRecord::new(
+                "session_creation_ended",
+                serde_json::json!({}),
+            )],
+            SessionUpdate {
+                status: Some(SessionStatus::Idle),
+                context: None,
+                configuration: None,
             },
-            AppendRecord::new("session_creation_ended", serde_json::json!({})),
         )
         .unwrap();
+    store
+}
+
+#[test]
+#[ignore = "reports timings; run it deliberately"]
+fn reports_what_the_journal_costs() {
+    let directory = temporary("one");
+    let writer = Writer::spawn();
+    let (publisher, _worker) = brain_telemetry::telemetry_channel();
+    let feed = Arc::new(Feed::new(publisher));
+    let store = store(&directory, "ses_throughput", &writer, &feed);
 
     let payload = serde_json::json!({ "text": "x".repeat(PAYLOAD_BYTES) });
     let mut latencies = Vec::with_capacity(RECORDS as usize);
@@ -56,9 +81,8 @@ fn reports_what_the_journal_costs() {
         let at = Instant::now();
         store
             .append(
-                &session_id,
                 sequence + 1,
-                &[AppendRecord::new("model_result", payload.clone())],
+                &[AppendRecord::new("model_call_ended", payload.clone())],
                 SessionUpdate::default(),
             )
             .unwrap();
@@ -68,33 +92,90 @@ fn reports_what_the_journal_costs() {
     latencies.sort_by(|left, right| left.partial_cmp(right).unwrap());
 
     let at = Instant::now();
-    let page = store.records_after(&session_id, 0, PAGE).unwrap();
+    let page = store.records_after(0, PAGE).unwrap();
     let paging = at.elapsed().as_secs_f64() * 1e3;
     assert_eq!(page.len(), PAGE);
+    writer.sync().unwrap();
     drop(store);
 
     let at = Instant::now();
-    let reopened = SegmentJournal::open(&directory).unwrap();
+    let reopened =
+        SessionStore::open(&directory.join("ses_throughput"), writer.clone(), feed).unwrap();
     let replay = at.elapsed().as_secs_f64() * 1e3;
     assert_eq!(
-        reopened
-            .session_row(&session_id)
-            .unwrap()
-            .unwrap()
-            .through_sequence,
+        reopened.session_row().unwrap().through_sequence,
         RECORDS + 1
     );
     drop(reopened);
 
     println!(
         "append {RECORDS} x {PAYLOAD_BYTES} B   {:.0} records/s   p50 {:.2} us   p99 {:.2} us\n\
-         page {PAGE} records          {paging:.1} ms\n\
-         restart replay              {replay:.0} ms for {} records",
+         page {PAGE} records   {paging:.2} ms\n\
+         reopen {RECORDS} records   {replay:.2} ms",
         RECORDS as f64 / appending,
         percentile(&latencies, 0.5),
         percentile(&latencies, 0.99),
-        RECORDS + 1,
     );
+    drop(writer);
+    let _ = std::fs::remove_dir_all(directory);
+}
 
-    std::fs::remove_dir_all(directory).unwrap();
+/// Many sessions appending at once through the one writer. Reported at 1, 16 and 128
+/// sessions so the append latency's dependence on the session count is visible.
+#[test]
+#[ignore = "reports timings; run it deliberately"]
+fn reports_what_the_journal_costs_beside_other_sessions() {
+    const PER_SESSION: u64 = 2_000;
+    for sessions in [1_usize, 16, 128] {
+        let directory = temporary(&format!("many-{sessions}"));
+        let writer = Writer::spawn();
+        let (publisher, _worker) = brain_telemetry::telemetry_channel();
+        let feed = Arc::new(Feed::new(publisher));
+        let stores: Vec<Arc<SessionStore>> = (0..sessions)
+            .map(|index| store(&directory, &format!("ses_{index:04}"), &writer, &feed))
+            .collect();
+        let payload = Arc::new(serde_json::json!({ "text": "x".repeat(PAYLOAD_BYTES) }));
+        let started = Instant::now();
+        let threads: Vec<_> = stores
+            .iter()
+            .cloned()
+            .map(|store| {
+                let payload = payload.clone();
+                std::thread::spawn(move || {
+                    let mut latencies = Vec::with_capacity(PER_SESSION as usize);
+                    for sequence in 0..PER_SESSION {
+                        let at = Instant::now();
+                        store
+                            .append(
+                                sequence + 1,
+                                &[AppendRecord::new("model_call_ended", (*payload).clone())],
+                                SessionUpdate::default(),
+                            )
+                            .unwrap();
+                        latencies.push(at.elapsed().as_secs_f64() * 1e6);
+                    }
+                    latencies
+                })
+            })
+            .collect();
+        let mut latencies: Vec<f64> = threads
+            .into_iter()
+            .flat_map(|thread| thread.join().unwrap())
+            .collect();
+        let elapsed = started.elapsed().as_secs_f64();
+        writer.sync().unwrap();
+        let drained = started.elapsed().as_secs_f64();
+        latencies.sort_by(|left, right| left.partial_cmp(right).unwrap());
+        println!(
+            "{sessions:>4} sessions x {PER_SESSION} records   append p50 {:.2} us   p90 {:.2} us   p99 {:.2} us   {:.0} records/s appended   {:.0} records/s to disk",
+            percentile(&latencies, 0.5),
+            percentile(&latencies, 0.9),
+            percentile(&latencies, 0.99),
+            latencies.len() as f64 / elapsed,
+            latencies.len() as f64 / drained,
+        );
+        drop(stores);
+        drop(writer);
+        let _ = std::fs::remove_dir_all(directory);
+    }
 }

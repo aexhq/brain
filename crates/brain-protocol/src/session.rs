@@ -62,6 +62,11 @@ pub struct CreateSessionRequest {
     /// it left off. Empty is an ordinary new session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<HistoryEvent>,
+    /// How long the session may sit idle before Brain suspends it: its task and memory
+    /// are released and rebuilt from disk on the next request. Absent means the server's
+    /// default; zero means never.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_ttl_ms: Option<u64>,
 }
 
 /// One event an application kept and is handing back.
@@ -111,6 +116,8 @@ pub struct SessionConfig {
     pub tools: Vec<ToolDefinition>,
     pub environments: Vec<EnvironmentAttachment>,
     pub tool_bindings: Vec<ToolBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_ttl_ms: Option<u64>,
 }
 
 /// What an application hands a session on `send`. The shape is closed on purpose:
