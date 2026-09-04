@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
-use brain_protocol::{AgentloopIdentity, TurnInput, TurnOutput};
+use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{AgentloopPackage, LoopLimits, TurnBridge, WorkerClient};
@@ -11,11 +11,13 @@ use crate::{AgentloopPackage, LoopLimits, TurnBridge, WorkerClient};
 /// answering at all and costs every warm instance in it.
 const WORKER_BACKSTOP: Duration = Duration::from_secs(1);
 
-/// Why the pool could not run something. `Overloaded` is the one case a caller treats
-/// differently: it is transient and the request was never started.
+/// Why the pool could not run something, or why a turn it ran did not finish.
+/// `Overloaded` is transient and the request was never started; `Turn` is the loop's
+/// own failure with the code it or the runtime gave it; `Failed` is this side's.
 #[derive(Debug)]
 pub enum LoopError {
     Overloaded,
+    Turn(TurnError),
     Failed(String),
 }
 
@@ -23,6 +25,7 @@ impl std::fmt::Display for LoopError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LoopError::Overloaded => formatter.write_str("Loophost queue is full"),
+            LoopError::Turn(error) => write!(formatter, "{}: {}", error.code, error.message),
             LoopError::Failed(message) => formatter.write_str(message),
         }
     }
@@ -170,15 +173,15 @@ impl WorkerPool {
                 }
                 Ok(output)
             }
-            Err(error) if error == "brain-loop-worker stopped answering" => {
+            Err(LoopError::Failed(message)) if message == "brain-loop-worker stopped answering" => {
                 // The guest's own compute budget fires before this, so reaching here
                 // means the worker itself is not answering. Restarting it is the only
                 // thing left.
                 let mut state = self.state.lock().await;
                 self.stop_worker(&mut state).await;
-                Err(error.into())
+                Err(LoopError::Failed(message))
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         }
     }
 

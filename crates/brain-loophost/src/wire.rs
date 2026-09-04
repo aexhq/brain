@@ -64,6 +64,10 @@ pub enum WorkerResponse {
     Turned {
         output: TurnOutput,
     },
+    /// The turn ran and failed, with the code the loop or the runtime gave it.
+    TurnFailed {
+        error: TurnError,
+    },
     Error {
         code: String,
         message: String,

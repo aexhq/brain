@@ -20,6 +20,11 @@ name = "worker_process"
 path = "tests/worker_process.rs"
 required-features = ["integration-tests"]
 
+[[test]]
+name = "in_process"
+path = "tests/in_process.rs"
+required-features = ["integration-tests"]
+
 [dependencies]
 brain-protocol = { workspace = true }
 anyhow = { workspace = true }

@@ -93,7 +93,7 @@ jobs:
       - name: Admit and activate through the real Linux worker process
         env:
           BRAIN_TEST_AGENTLOOP_PACKAGE: ${{ runner.temp }}/diagnostic.brain.json
-        run: cargo test -p brain-loophost --features integration-tests --test worker_process
+        run: cargo test -p brain-loophost --features integration-tests --test worker_process --test in_process
 
   image-smoke:
     runs-on: ubuntu-24.04

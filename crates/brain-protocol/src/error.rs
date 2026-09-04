@@ -12,7 +12,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    pub fn new(code: &'static str, message: impl Into<String>, retryable: bool) -> Self {
+    pub fn new(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> Self {
         Self {
             code: code.into(),
             message: message.into(),

@@ -8,7 +8,7 @@ use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput};
 
 #[cfg(unix)]
 use crate::wire::{MAX_RESPONSE_FRAME_BYTES, max_request_bytes, read_frame, write_frame};
-use crate::{HostCall, WorkerRequest, WorkerResponse};
+use crate::{HostCall, LoopError, WorkerRequest, WorkerResponse};
 
 /// The server's side of a turn: what answers the guest's host calls, and whether the
 /// turn has been cancelled.
@@ -63,7 +63,7 @@ impl WorkerClient {
         max_input_bytes: usize,
         bridge: &dyn TurnBridge,
         liveness: Duration,
-    ) -> Result<TurnOutput, String> {
+    ) -> Result<TurnOutput, LoopError> {
         let mut stream = tokio::net::UnixStream::connect(&self.socket)
             .await
             .map_err(|error| error.to_string())?;
@@ -118,10 +118,13 @@ impl WorkerClient {
                     .await?;
                 }
                 WorkerResponse::Turned { output } => return Ok(output),
+                WorkerResponse::TurnFailed { error } => return Err(LoopError::Turn(error)),
                 WorkerResponse::Error { code, message } => {
-                    return Err(format!("{code}: {message}"));
+                    return Err(format!("{code}: {message}").into());
                 }
-                response => return Err(format!("unexpected worker response: {response:?}")),
+                response => {
+                    return Err(format!("unexpected worker response: {response:?}").into());
+                }
             }
         }
     }
@@ -135,7 +138,7 @@ impl WorkerClient {
         _max_input_bytes: usize,
         _bridge: &dyn TurnBridge,
         _liveness: Duration,
-    ) -> Result<TurnOutput, String> {
+    ) -> Result<TurnOutput, LoopError> {
         Err("brain-loop-worker IPC requires Unix domain sockets".into())
     }
 

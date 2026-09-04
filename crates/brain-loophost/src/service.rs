@@ -238,7 +238,7 @@ impl WorkerService {
                 finished = &mut running => {
                     break match finished {
                         Ok(Ok(output)) => WorkerResponse::Turned { output },
-                        Ok(Err(message)) => failed("turn_failed", message),
+                        Ok(Err(error)) => WorkerResponse::TurnFailed { error },
                         Err(_) => failed("turn_failed", "the turn was lost".into()),
                     };
                 }

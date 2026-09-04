@@ -1121,9 +1121,10 @@ impl LoopExecutor for WorkerLoopExecutor {
             .await
             .map_err(|error| match error {
                 LoopError::Overloaded => brain::Error::Overloaded(error.to_string()),
-                LoopError::Failed(message) if message.starts_with("cancelled:") => {
-                    brain::Error::Cancelled(message)
+                LoopError::Turn(error) if error.code == codes::failure::CANCELLED => {
+                    brain::Error::Cancelled(error.message)
                 }
+                LoopError::Turn(error) => brain::Error::Loop(error),
                 LoopError::Failed(message) => brain::Error::Executor(message),
             })
     }
@@ -1290,6 +1291,7 @@ fn model_binding_id(idempotency_key: &str) -> String {
 fn loop_error(error: LoopError) -> ApiError {
     match error {
         LoopError::Overloaded => ApiError::overloaded(error.to_string()),
+        LoopError::Turn(_) => ApiError::invalid_request(error.to_string()),
         LoopError::Failed(message) => ApiError::invalid_request(message),
     }
 }

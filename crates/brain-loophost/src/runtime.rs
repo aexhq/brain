@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput};
+use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput, codes};
 use sha2::{Digest as _, Sha256};
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{
@@ -189,6 +189,10 @@ pub struct WarmInstances {
     entries: std::sync::Mutex<Vec<WarmEntry>>,
 }
 
+/// Core instances one guest may hold: its own modules plus the shims wasmtime builds
+/// for its imports.
+const MAX_CORE_INSTANCES: usize = 8;
+
 /// Sessions kept warm at once. Each entry is a live JS engine whose heap holds one
 /// conversation, so this bounds worker memory the way `running` bounds instances.
 const WARM_SESSIONS: usize = 8;
@@ -233,13 +237,17 @@ impl AdmittedAgentloop {
         session: &str,
         input: TurnInput,
         bridge: Arc<dyn GuestHost>,
-    ) -> Result<TurnOutput, String> {
+    ) -> Result<TurnOutput, TurnError> {
         let mut entry = match warm.take(session, &self.digest) {
             Some(entry) => entry,
             None => {
+                // A component that imports the host is more than one core instance:
+                // wasmtime lowers its imports into shim instances beside the guest's
+                // own modules. The count is fixed by the component's structure, not by
+                // anything the guest does at run time, so this only needs headroom.
                 let store_limits = StoreLimitsBuilder::new()
                     .memory_size(limits.linear_memory_bytes)
-                    .instances(1)
+                    .instances(MAX_CORE_INSTANCES)
                     .build();
                 let mut store = Store::new(
                     engine,
@@ -271,10 +279,10 @@ impl AdmittedAgentloop {
                     &mut linker,
                     |state| state,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(host_failure)?;
                 let bindings =
                     bindings::Agentloop::instantiate(&mut store, &self.component, &linker)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(host_failure)?;
                 WarmEntry {
                     session: session.to_owned(),
                     digest: self.digest.clone(),
@@ -293,24 +301,37 @@ impl AdmittedAgentloop {
         entry
             .store
             .set_epoch_deadline(epoch_deadline_ticks(limits.wall_time));
-        let input = to_wit_input(input)?;
+        let input = to_wit_input(input).map_err(host_failure)?;
         let called = entry.bindings.call_turn(&mut entry.store, &input);
         entry.store.data_mut().bridge = None;
         let output = match called {
             Ok(Ok(output)) => output,
-            Ok(Err(error)) => return Err(format!("{}: {}", error.code, error.message)),
+            // The loop's own failure, with the code it chose.
+            Ok(Err(error)) => {
+                return Err(TurnError {
+                    code: error.code,
+                    message: error.message,
+                    retryable: error.retryable,
+                });
+            }
             // A trapped guest's heap is not a state anyone can vouch for: the entry is
             // dropped rather than kept.
-            Err(error) => return Err(turn_error(error)),
+            Err(error) => return Err(host_failure(turn_error(error))),
         };
         warm.keep(entry);
-        let output = from_wit_output(output)?;
-        validate_output(&output)?;
+        let output = from_wit_output(output).map_err(host_failure)?;
+        validate_output(&output).map_err(host_failure)?;
         Ok(output)
     }
 }
 
 const WALL_TIME_EXCEEDED: &str = "Agentloop turn exceeded its compute budget";
+
+/// A turn that failed on this side of the guest: a trap, a budget, an output the
+/// contract refuses. The loop did not choose a code, so it gets the one that says so.
+fn host_failure(message: impl std::fmt::Display) -> TurnError {
+    TurnError::new(codes::failure::AGENTLOOP_FAILED, message.to_string())
+}
 
 /// A guest stopped by its epoch deadline reports the budget it exceeded, not the trap
 /// that stopped it.

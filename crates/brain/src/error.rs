@@ -1,4 +1,4 @@
-use brain_protocol::codes::api;
+use brain_protocol::{TurnError, codes::api};
 
 /// What a session, its journal, or one of its executors can fail with.
 ///
@@ -26,6 +26,9 @@ pub enum Error {
     /// The turn asked for more than its budget allows.
     #[error("budget exceeded: {0}")]
     Budget(String),
+    /// The agentloop's turn failed with a code of its own, or one its runtime gave it.
+    #[error("{}", .0.message)]
+    Loop(TurnError),
     /// A model provider answered with a complete non-success response before
     /// anything streamed. Typed so the retry policy can branch on the status
     /// instead of parsing it back out of a message.
@@ -39,7 +42,7 @@ pub enum Error {
 
 impl Error {
     /// The API error code this failure surfaces as.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> &str {
         match self {
             Error::InvalidState(_) => api::INVALID_REQUEST,
             Error::NotFound(_) => api::NOT_FOUND,
@@ -50,6 +53,7 @@ impl Error {
             Error::Ambiguous(_) => api::AMBIGUOUS,
             Error::Cancelled(_) => brain_protocol::codes::failure::CANCELLED,
             Error::Budget(_) => brain_protocol::codes::failure::DECISION_LIMIT,
+            Error::Loop(error) => &error.code,
             Error::ProviderStatus { .. } => api::MODEL_PROVIDER_FAILED,
         }
     }
@@ -58,6 +62,7 @@ impl Error {
     pub fn retryable(&self) -> bool {
         match self {
             Error::Overloaded(_) | Error::Executor(_) => true,
+            Error::Loop(error) => error.retryable,
             // The executor already retried what was worth retrying in place; a
             // whole-turn retry can still help for transient statuses.
             Error::ProviderStatus { status, .. } => matches!(status, 408 | 429) || *status >= 500,
