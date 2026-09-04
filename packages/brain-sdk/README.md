@@ -5,7 +5,7 @@ The typed client and extension composition contract for any Brain server.
 ```ts
 import { Brain } from "@aexhq/brain";
 import { awsMicroVm } from "@aexhq/env-aws-microvm";
-import { pi } from "@aexhq/brain-pi";
+import { pi } from "@aexhq/agentloop-pi";
 import { bash, read } from "@aexhq/tools";
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });
