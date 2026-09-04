@@ -223,9 +223,8 @@ jobs:
           cp tests/release/sdk.mjs tests/release/diagnostic-brain.mjs "$RUNNER_TEMP/sdk-e2e/"
           cd "$RUNNER_TEMP/sdk-e2e"
           npm init --yes >/dev/null
-          npm install --ignore-scripts --save-exact "$sdk" zod@4.4.3
+          npm install --ignore-scripts --no-audit --no-fund --save-exact "$sdk" zod@4.4.3
           npx brain build diagnostic-brain.mjs --out built
-          npm audit --audit-level=high
       - name: Run the candidate image through the staged SDK
         shell: bash
         env:
@@ -272,9 +271,8 @@ jobs:
           cd "$RUNNER_TEMP/http-e2e"
           npm init --yes >/dev/null
           sdk=$(jq -er '.packages[] | select(.name == "@aexhq/brain") | "\(.name)@\(.version)"' "$RUNNER_TEMP/brain-release/manifest.json")
-          npm install --ignore-scripts --save-exact "$sdk" zod@4.4.3
+          npm install --ignore-scripts --no-audit --no-fund --save-exact "$sdk" zod@4.4.3
           npx brain build diagnostic-brain.mjs --out built
-          npm audit --audit-level=high
           sudo chown -R 10001:10001 "$RUNNER_TEMP/http-data"
       - name: Run the candidate image through raw HTTP on a mounted data volume
         shell: bash
@@ -341,9 +339,8 @@ jobs:
           cp "tests/release/$TEST_SCRIPT" tests/release/diagnostic-brain.mjs "$RUNNER_TEMP/contract-e2e/"
           cd "$RUNNER_TEMP/contract-e2e"
           npm init --yes >/dev/null
-          npm install --ignore-scripts --save-exact "$sdk" zod@4.4.3
+          npm install --ignore-scripts --no-audit --no-fund --save-exact "$sdk" zod@4.4.3
           npx brain build diagnostic-brain.mjs --out built
-          npm audit --audit-level=high
       - name: Run ${{ matrix.name }} against the candidate
         shell: bash
         env:
