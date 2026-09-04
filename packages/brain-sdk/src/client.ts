@@ -442,9 +442,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
     ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }),
     tools,
     environments: requirements,
-    // The event id is left behind deliberately: it names an event in the session it came
-    // from, and this is a different session, so Brain mints them again.
-    ...(options.history === undefined ? {} : { history: options.history.map((event) => ({ sequence: event.sequence, recorded_at_ms: event.recordedAt.getTime(), event_type: event.type, data: event.data })) }),
+    ...(options.transcript === undefined ? {} : { transcript: structuredClone(options.transcript) as unknown as CreateSessionRequest["transcript"] }),
     ...(options.idleTtlMs === undefined ? {} : { idle_ttl_ms: options.idleTtlMs }),
   }, environments, clientTools };
 }

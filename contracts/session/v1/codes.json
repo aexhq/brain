@@ -55,7 +55,8 @@
     "session_ownership_failed",
     "session_history_rejected",
     "environment_preparation_failed",
-    "environment_error"
+    "environment_error",
+    "invalid_transcript"
   ],
   "api": [
     "invalid_request",

@@ -57,7 +57,6 @@ fn store(
             )],
             SessionUpdate {
                 status: Some(SessionStatus::Idle),
-                context: None,
                 configuration: None,
             },
         )

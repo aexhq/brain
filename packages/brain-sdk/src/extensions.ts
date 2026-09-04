@@ -6,15 +6,15 @@ import type { BoundTool, Agentloop, ClientTool, Environment, HttpProgramRequest,
 
 export const extensionSource = Symbol.for("@aexhq/brain/extension-source");
 
+/** What Brain hands the loop for one turn. */
 export interface AgentloopInput {
-  readonly context: { readonly state?: unknown };
-  readonly observation:
-    | { readonly type: "session_started" }
-    | { readonly type: "user_message"; readonly input: UserInput }
-    | { readonly type: "model_completed"; readonly response: ModelResponse }
-    | { readonly type: "tools_completed"; readonly results: readonly unknown[] }
-    | { readonly type: "emitted"; readonly event: unknown }
-    | { readonly type: "cancelled" };
+  readonly input: UserInput;
+  /** The transcript as it stands: what the next model call would see. */
+  readonly transcript: readonly ModelMessage[];
+  /** The loop's slots by name, as it last returned them. */
+  readonly slots: Readonly<Record<string, unknown>>;
+  /** Every record on the session's feed since the loop last ran, oldest first. */
+  readonly events: readonly TurnEvent[];
   readonly configuration: unknown;
   /** The system prompt the session was created with. */
   readonly system: string;
@@ -23,7 +23,20 @@ export interface AgentloopInput {
   readonly runtime: { readonly logicalTimeMs: bigint };
 }
 
+/** One record off the session's feed, as the loop sees it between turns. */
+export interface TurnEvent { readonly sequence: number; readonly type: string; readonly data: unknown }
+
+/** Brain's services as the loop's host exposes them: JSON in, JSON out. The build
+ * wires these to the component's host imports; a test passes its own. */
+export interface TurnHost {
+  model(requestJson: string): string | Promise<string>;
+  dispatch(callsJson: string): string | Promise<string>;
+  append(kind: string, payloadJson: string): number | bigint | string | Promise<number | bigint | string>;
+  telemetry(recordJson: string): void;
+}
+
 export interface ToolCall { readonly callId: string; readonly name: string; readonly input: unknown }
+export interface ToolCallResult { readonly callId: string; readonly output: unknown; readonly isError: boolean }
 /** One model call, as the loop decides it. The loop owns what the model is told: what it
  * leaves out is what the session was created with. */
 export interface ModelTurnRequest {
@@ -37,41 +50,62 @@ export interface ModelTurnRequest {
   readonly response_format?: unknown;
   readonly max_output_tokens?: number;
 }
-export type AgentloopAction =
-  | { readonly type: "model"; readonly request: ModelTurnRequest }
-  | { readonly type: "tools"; readonly calls: readonly ToolCall[] }
-  | { readonly type: "emit"; readonly event: unknown }
-  | { readonly type: "reply"; readonly input: UserInput }
-  | { readonly type: "finish"; readonly result?: unknown }
-  | { readonly type: "fail"; readonly code: string; readonly message: string; readonly retryable: boolean };
 
-export interface AgentloopTurn {
-  readonly logicalTime: Date;
-  readonly signal: AbortSignal;
-  model(request: ModelTurnRequest): AgentloopAction;
-  tools(calls: readonly ToolCall[]): AgentloopAction;
-  emit(event: unknown): AgentloopAction;
-  reply(input: UserInput | string): AgentloopAction;
-  done(result?: unknown): AgentloopAction;
-  fail(code: string, message: string, options?: { readonly retryable?: boolean }): AgentloopAction;
+/** What a turn handler returns to say the turn is done. Made by `turn.done`. */
+export interface TurnResult { readonly [turnResult]: true; readonly result?: unknown }
+const turnResult = Symbol.for("@aexhq/brain/turn-result");
+
+/** A failure the loop raises to end the turn with a code. */
+export class AgentloopFailure extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+  constructor(code: string, message: string, retryable = false) {
+    super(message);
+    this.name = "AgentloopFailure";
+    this.code = code;
+    this.retryable = retryable;
+  }
 }
 
-type AgentloopHandler<Input> = (input: Input, turn: AgentloopTurn) => AgentloopAction;
+/**
+ * One turn, from the loop's side. `transcript` is the conversation the loop hands back:
+ * push the user message, the model's answer and every tool result onto it, or replace it
+ * wholesale to compact. Every service call journals before it acts.
+ */
+export interface AgentloopTurn {
+  readonly input: UserInput;
+  readonly transcript: ModelMessage[];
+  readonly events: readonly TurnEvent[];
+  readonly system: string;
+  readonly tools: readonly ToolDefinition[];
+  readonly logicalTime: Date;
+  /** One model call. */
+  model(request: ModelTurnRequest): Promise<ModelResponse>;
+  /** One or many tool calls, run together. Call it once per call for sequential dispatch. */
+  dispatch(calls: readonly ToolCall[]): Promise<ToolCallResult[]>;
+  /** The loop's own record on the session's feed; Brain's own kinds are refused. */
+  append(kind: string, payload: unknown): Promise<number>;
+  telemetry(record: unknown): void;
+  /** Emits an `output_emitted` record carrying an assistant message. */
+  reply(text: string): Promise<void>;
+  done(result?: unknown): TurnResult;
+  /** Ends the turn with a failure code. */
+  fail(code: string, message: string, options?: { readonly retryable?: boolean }): never;
+}
+
+export type AgentloopTurnHandler = (turn: AgentloopTurn) => Promise<TurnResult | void> | TurnResult | void;
+
 export interface AgentloopAuthor<Options> {
   readonly options: Options;
   /** The system prompt the session was created with. Used unless a model call sends its own. */
   readonly system: string;
   /** The tools the session was created with. All are offered unless a model call names a subset. */
   readonly tools: readonly ToolDefinition[];
-  readonly on: {
-    start(handler: AgentloopHandler<{ readonly type: "session_started" }>): void;
-    message(handler: AgentloopHandler<{ readonly type: "user_message"; readonly input: UserInput }>): void;
-    model(handler: AgentloopHandler<{ readonly type: "model_completed"; readonly response: ModelResponse }>): void;
-    tools(handler: AgentloopHandler<{ readonly type: "tools_completed"; readonly results: readonly unknown[] }>): void;
-    event(handler: AgentloopHandler<{ readonly type: "emitted"; readonly event: unknown }>): void;
-    cancel(handler: AgentloopHandler<{ readonly type: "cancelled" }>): void;
-  };
-  state<Value extends Schema>(schema: Value, initial: () => SchemaOutput<Value>): SchemaOutput<Value>;
+  /** State the loop keeps beside the transcript, by name. Validated on the way in and
+   * out; the object returned is live for the turn and saved when the turn ends. */
+  slot<Value extends Schema>(name: string, schema: Value, initial: () => SchemaOutput<Value>): SchemaOutput<Value>;
+  /** The turn: exactly one per loop. */
+  turn(handler: AgentloopTurnHandler): void;
   readonly context: { estimateTokens(messages: readonly unknown[]): number };
 }
 
@@ -936,87 +970,72 @@ export function endEnvironment(value: Environment): void {
   if (metadata !== undefined) metadata.ended = true;
 }
 
-/// The exact state object the previous activation returned. Incoming state that is
-/// reference-identical to it was validated by this runtime on its way out, so the slot
-/// schemas need not re-parse a conversation that only ever grows — the check that cost
-/// O(history) per activation. Anything else (a cold instance, a host that re-read the
-/// journal) misses and takes the full validation path.
-let warmState: unknown;
-
-export function activateAgentloop(factory: unknown, input: AgentloopInput): { readonly context: { readonly protocolVersion: "agentloop/v1"; readonly items: readonly unknown[]; readonly state: unknown }; readonly decision: Exclude<AgentloopAction, { type: "reply" }> } {
+/**
+ * Runs one turn of a loop against a host. The build calls this from the component's
+ * exported `turn` with the real host imports; a test calls it with a fake host.
+ */
+export async function runTurn(factory: unknown, input: AgentloopInput, host: TurnHost): Promise<{ readonly transcript: ModelMessage[]; readonly slots: Record<string, unknown>; readonly result?: unknown }> {
   const source = sourceOf(factory as ExtensionFactory, "agentloop") as AgentloopSource;
   const options = source.options === undefined ? requireEmptyConfiguration(input.configuration) : source.options.parse(input.configuration);
-  const trusted = input.context.state !== undefined && input.context.state === warmState;
-  const envelope = parseStateEnvelope(input.context.state);
-  if (input.observation.type === "emitted" && Object.hasOwn(envelope, "pendingReply")) return output(envelope.slots, false, undefined, { type: "finish", result: envelope.pendingReply });
-  const handlers = new Map<string, AgentloopHandler<never>>();
-  const schemas: Schema[] = [];
-  const slots: unknown[] = [];
-  const on = (name: string) => (handler: AgentloopHandler<never>) => {
-    if (handlers.has(name)) throw new TypeError(`agentloop may register ${name} only once`);
-    handlers.set(name, handler);
-  };
+  const slots = new Map<string, { readonly schema: Schema; readonly value: unknown }>();
+  let handler: AgentloopTurnHandler | undefined;
   const author: AgentloopAuthor<unknown> = {
     options,
     system: input.system,
     tools: input.tools,
-    on: { start: on("session_started"), message: on("user_message"), model: on("model_completed"), tools: on("tools_completed"), event: on("emitted"), cancel: on("cancelled") } as AgentloopAuthor<unknown>["on"],
-    state(schema, initial) {
-      const index = schemas.length;
-      schemas.push(schema);
-      const value = index < envelope.slots.length
-        ? (trusted ? envelope.slots[index] as ReturnType<typeof schema.parse> : schema.parse(envelope.slots[index]))
-        : schema.parse(initial());
-      slots.push(value);
-      return value;
+    slot(name, schema, initial) {
+      if (!validIdentifier(name)) throw new TypeError(`slot name ${JSON.stringify(name)} is not an identifier`);
+      if (slots.has(name)) throw new TypeError(`agentloop may declare slot ${name} only once`);
+      const value = Object.hasOwn(input.slots, name) ? schema.parse(input.slots[name]) : schema.parse(initial());
+      slots.set(name, { schema, value });
+      return value as ReturnType<typeof schema.parse>;
+    },
+    turn(next) {
+      if (handler !== undefined) throw new TypeError("agentloop may register one turn handler");
+      handler = next;
     },
     context: { estimateTokens(messages) { return Math.ceil(JSON.stringify(messages).length / 4); } },
   };
   const registered = source.setup(author);
   if (isPromise(registered)) throw new TypeError("Agentloop setup must be synchronous");
-  const handler = handlers.get(input.observation.type);
-  const action = handler === undefined ? defaultAction(input.observation.type) : handler(input.observation as never, turn(input.runtime.logicalTimeMs));
-  if (isPromise(action)) throw new TypeError("Agentloop handlers must be synchronous");
-  // Re-validating every slot on every activation cost O(conversation) three times per
-  // turn. Mid-turn continuations skip it: the state is never persisted before the turn
-  // ends, and the next activation receives it by identity, so a handler that corrupts
-  // its state is still caught — at the turn's terminal decision instead of immediately.
-  if (action.type !== "model" && action.type !== "tools") {
-    for (let index = 0; index < schemas.length; index += 1) slots[index] = schemas[index]!.parse(slots[index]);
-  }
-  if (action.type === "reply") return output(slots, true, action.input, { type: "emit", event: { type: "assistant_message", message: action.input.message } });
-  return output(slots, false, undefined, action);
-}
-
-function turn(logicalTimeMs: bigint): AgentloopTurn {
-  const signal = new AbortController().signal;
-  return Object.freeze({
-    logicalTime: new Date(Number(logicalTimeMs)), signal,
-    model: (request: Parameters<AgentloopTurn["model"]>[0]) => ({ type: "model" as const, request }),
-    tools: (calls: readonly ToolCall[]) => ({ type: "tools" as const, calls }),
-    emit: (event: unknown) => ({ type: "emit" as const, event }),
-    reply: (input: UserInput | string) => ({ type: "reply" as const, input: typeof input === "string" ? { message: input } : input }),
-    done: (result?: unknown) => ({ type: "finish" as const, ...(result === undefined ? {} : { result }) }),
-    fail: (code: string, message: string, options: { readonly retryable?: boolean } = {}) => ({ type: "fail" as const, code, message, retryable: options.retryable ?? false }),
-  });
-}
-
-function output(slots: readonly unknown[], hasPendingReply: boolean, pendingReply: unknown, decision: Exclude<AgentloopAction, { type: "reply" }>) {
-  const state = { version: 1, slots, ...(hasPendingReply ? { pendingReply } : {}) };
-  warmState = state;
-  return { context: { protocolVersion: "agentloop/v1" as const, items: [], state }, decision };
-}
-
-function defaultAction(type: AgentloopInput["observation"]["type"]): Exclude<AgentloopAction, { type: "reply" }> {
-  if (type === "session_started") return { type: "finish" };
-  if (type === "cancelled") return { type: "fail", code: "cancelled", message: "turn cancelled", retryable: false };
-  throw new Error(`Agentloop did not register an ${type} handler`);
-}
-
-function parseStateEnvelope(value: unknown): { readonly slots: readonly unknown[]; readonly pendingReply?: unknown } {
-  if (value === undefined) return { slots: [] };
-  if (!plainObject(value) || value.version !== 1 || !Array.isArray(value.slots)) throw new TypeError("Agentloop state envelope is invalid");
-  return { slots: value.slots, ...(Object.hasOwn(value, "pendingReply") ? { pendingReply: value.pendingReply } : {}) };
+  if (handler === undefined) throw new TypeError("Agentloop registered no turn handler");
+  const transcript: ModelMessage[] = [...input.transcript];
+  const turn: AgentloopTurn = {
+    input: input.input,
+    transcript,
+    events: input.events,
+    system: input.system,
+    tools: input.tools,
+    logicalTime: new Date(Number(input.runtime.logicalTimeMs)),
+    async model(request) {
+      return JSON.parse(await host.model(JSON.stringify(request))) as ModelResponse;
+    },
+    async dispatch(calls) {
+      const wire = calls.map((call) => ({ call_id: call.callId, name: call.name, input: call.input }));
+      const results = JSON.parse(await host.dispatch(JSON.stringify(wire))) as { call_id: string; output: unknown; is_error: boolean }[];
+      return results.map((result) => ({ callId: result.call_id, output: result.output, isError: result.is_error }));
+    },
+    async append(kind, payload) {
+      return Number(await host.append(kind, JSON.stringify(payload ?? null)));
+    },
+    telemetry(record) {
+      host.telemetry(JSON.stringify(record ?? null));
+    },
+    async reply(text) {
+      await turn.append("output_emitted", { type: "assistant_message", message: text });
+    },
+    done(result) {
+      return { [turnResult]: true, ...(result === undefined ? {} : { result }) };
+    },
+    fail(code, message, options = {}) {
+      throw new AgentloopFailure(code, message, options.retryable ?? false);
+    },
+  };
+  const outcome = await handler(turn);
+  const saved: Record<string, unknown> = {};
+  for (const [name, slot] of slots) saved[name] = slot.schema.parse(slot.value);
+  const result = outcome !== undefined && outcome !== null && typeof outcome === "object" && (outcome as TurnResult)[turnResult] === true ? (outcome as TurnResult).result : undefined;
+  return { transcript, slots: saved, ...(result === undefined ? {} : { result }) };
 }
 
 function defineSource(factory: ExtensionFactory, source: AgentloopSource | ToolSource | EnvironmentSource): void { Object.defineProperty(factory, extensionSource, { value: source }); }

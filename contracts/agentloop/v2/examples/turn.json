@@ -1,0 +1,23 @@
+{
+  "contract": "agentloop/v2",
+  "input": {
+    "input": { "message": "hello" },
+    "transcript": [],
+    "slots": {},
+    "events": [],
+    "configuration": {},
+    "system": "",
+    "tools": [],
+    "runtime": {
+      "logical_time_ms": 1,
+      "deterministic_seed": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    }
+  },
+  "output": {
+    "transcript": [
+      { "role": "user", "content": [{ "type": "text", "text": "hello" }] }
+    ],
+    "slots": { "memory": { "turns": 1 } },
+    "result": { "ok": true }
+  }
+}

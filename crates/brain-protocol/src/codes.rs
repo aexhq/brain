@@ -124,6 +124,7 @@ pub mod failure {
     pub const SESSION_HISTORY_REJECTED: &str = "session_history_rejected";
     pub const ENVIRONMENT_PREPARATION_FAILED: &str = "environment_preparation_failed";
     pub const ENVIRONMENT_ERROR: &str = "environment_error";
+    pub const INVALID_TRANSCRIPT: &str = "invalid_transcript";
 
     pub const ALL: &[&str] = &[
         INTERRUPTED,
@@ -140,6 +141,7 @@ pub mod failure {
         SESSION_HISTORY_REJECTED,
         ENVIRONMENT_PREPARATION_FAILED,
         ENVIRONMENT_ERROR,
+        INVALID_TRANSCRIPT,
     ];
 }
 

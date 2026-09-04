@@ -157,15 +157,9 @@ export interface CreateSessionOptions {
   /** The provider's structured-output request, applied to every model call unless the
    * loop sends its own. Rejected at create for a provider that cannot carry it. */
   readonly responseFormat?: unknown;
-  /**
-   * Events from an earlier session, to carry a conversation forward.
-   *
-   * A session lives in the process that created it and does not survive a restart, so
-   * keep the events you receive from `handle.events()` and pass them back here to
-   * continue. Brain writes them as the new session's opening records and tells the
-   * agentloop about them. Omit for an ordinary new session.
-   */
-  readonly history?: readonly SessionEvent[];
+  /** A transcript to carry forward: the messages the new session's first model call
+   * should already see. Brain journals them as the session's opening transcript. */
+  readonly transcript?: readonly ModelMessage[];
   /** How long the session may sit idle before Brain suspends it to disk. Absent means the server default; zero means never. */
   readonly idleTtlMs?: number;
 }

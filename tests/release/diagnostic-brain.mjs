@@ -2,9 +2,10 @@ import { agentloop } from "@aexhq/brain";
 import { z } from "zod";
 
 export const diagnostic = agentloop((author) => {
-  const state = author.state(z.object({ activations: z.number().int().nonnegative() }), () => ({ activations: 0 }));
-  author.on.message((message, turn) => {
-    state.activations += 1;
-    return turn.done({ activations: state.activations, observation: message.type });
+  const memory = author.slot("memory", z.object({ turns: z.number().int().nonnegative() }), () => ({ turns: 0 }));
+  author.turn(async (turn) => {
+    memory.turns += 1;
+    await turn.append("note", { turns: memory.turns });
+    return turn.done({ turns: memory.turns, message: turn.input.message });
   });
 });

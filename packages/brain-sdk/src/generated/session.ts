@@ -199,23 +199,15 @@ export interface CreateSessionRequest {
    */
   environments: EnvironmentAttachRequest[];
   /**
-   * @maxItems 10000
+   * A transcript to carry forward: the messages the first model call should already see.
+   *
+   * @maxItems 4096
    */
-  history?: HistoryEvent[];
+  transcript?: {}[];
   /**
    * How long the session may sit idle before Brain suspends its task and memory to disk. Absent means the server default; zero means never.
    */
   idle_ttl_ms?: number;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "HistoryEvent".
- */
-export interface HistoryEvent {
-  sequence: number;
-  recorded_at_ms?: number;
-  event_type: Identifier;
-  data: unknown;
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema

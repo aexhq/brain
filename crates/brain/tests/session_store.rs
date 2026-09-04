@@ -47,7 +47,6 @@ fn created(directory: &std::path::Path, writer: &Arc<Writer>) -> Arc<SessionStor
             )],
             SessionUpdate {
                 status: Some(SessionStatus::Idle),
-                context: None,
                 configuration: None,
             },
         )
@@ -196,7 +195,6 @@ fn both_logs_share_one_sequence_and_survive_reopening() {
             &[AppendRecord::new("turn_started", serde_json::json!({}))],
             SessionUpdate {
                 status: Some(SessionStatus::Running),
-                context: None,
                 configuration: None,
             },
         )
@@ -216,7 +214,6 @@ fn both_logs_share_one_sequence_and_survive_reopening() {
             &[AppendRecord::new("turn_ended", serde_json::json!({}))],
             SessionUpdate {
                 status: Some(SessionStatus::Idle),
-                context: None,
                 configuration: None,
             },
         )
@@ -234,8 +231,6 @@ fn both_logs_share_one_sequence_and_survive_reopening() {
     assert!(matches!(row.status, SessionStatus::Idle));
     assert_eq!(row.configuration, serde_json::json!({"system": "test"}));
     assert_eq!(reopened.fold().unwrap().transcript, vec![user("hi")]);
-    assert!(reopened.take_restored());
-    assert!(!reopened.take_restored());
     drop(reopened);
     drop(writer);
     let _ = fs::remove_dir_all(directory);
@@ -252,7 +247,6 @@ fn a_running_session_is_interrupted_when_reopened() {
             &[AppendRecord::new("turn_started", serde_json::json!({}))],
             SessionUpdate {
                 status: Some(SessionStatus::Running),
-                context: None,
                 configuration: None,
             },
         )
@@ -303,7 +297,6 @@ fn only_an_ended_session_can_be_deleted() {
             &[AppendRecord::new("session_ended", serde_json::json!({}))],
             SessionUpdate {
                 status: Some(SessionStatus::Ended),
-                context: None,
                 configuration: None,
             },
         )

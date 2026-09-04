@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aexhq/brain/contracts/agentloop/v2/contract.json",
+  "title": "Brain Agentloop v2",
+  "$defs": {
+    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
+    "Message": {
+      "type": "object",
+      "required": ["role", "content"],
+      "properties": {
+        "role": { "enum": ["user", "assistant"] },
+        "content": { "type": "array" }
+      }
+    },
+    "ToolDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "input_schema"],
+      "properties": {
+        "name": { "$ref": "#/$defs/Identifier" },
+        "description": { "type": "string", "maxLength": 8192 },
+        "input_schema": { "type": "object" },
+        "output_schema": { "type": "object" }
+      }
+    },
+    "ToolInvocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["call_id", "name", "input"],
+      "properties": {
+        "call_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "$ref": "#/$defs/Identifier" },
+        "input": {}
+      }
+    },
+    "TurnError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "TurnInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "transcript", "slots", "events", "configuration", "system", "tools", "runtime"],
+      "properties": {
+        "input": { "type": "object", "additionalProperties": false, "required": ["message"], "properties": { "message": { "type": "string", "minLength": 1 } } },
+        "transcript": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/Message" } },
+        "slots": { "type": "object" },
+        "events": { "type": "array", "maxItems": 1000 },
+        "configuration": {},
+        "system": { "type": "string", "maxLength": 131072 },
+        "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/ToolDefinition" } },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["logical_time_ms", "deterministic_seed"],
+          "properties": {
+            "logical_time_ms": { "type": "integer", "minimum": 0 },
+            "deterministic_seed": { "type": "array", "minItems": 32, "maxItems": 32, "items": { "type": "integer", "minimum": 0, "maximum": 255 } }
+          }
+        }
+      }
+    },
+    "TurnOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transcript", "slots"],
+      "properties": {
+        "transcript": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/Message" } },
+        "slots": { "type": "object" },
+        "result": {}
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "input", "output"],
+  "properties": {
+    "contract": { "const": "agentloop/v2" },
+    "input": { "$ref": "#/$defs/TurnInput" },
+    "output": { "$ref": "#/$defs/TurnOutput" }
+  }
+}

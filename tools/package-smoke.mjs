@@ -41,7 +41,7 @@ try {
   writeFileSync(
     join(directory, "extension.mjs"),
     `import { agentloop } from "@aexhq/brain";\n` +
-      `export const simple = agentloop((author) => { author.on.message((_message, turn) => turn.done()); });\n`,
+      `export const simple = agentloop((author) => { author.turn((turn) => turn.done()); });\n`,
   );
   run(["install", "--no-audit", "--no-fund"], directory);
   run(["audit", "--audit-level=high"], directory);

@@ -1,10 +1,29 @@
-use brain_protocol::{ActivationInput, ActivationOutput, AgentloopIdentity};
+//! What crosses between the server and the worker process.
+//!
+//! A ping or an admission is one request and one answer on a connection. A turn holds
+//! its connection open: the server sends the turn, the worker sends back every host
+//! call the guest makes and waits for its result, and the connection ends with the
+//! turn's output or its error. The server may send a cancel at any point; the worker
+//! fails every pending host call with it and the guest's next call sees it.
+
+use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::MAX_ACTIVATION_OUTPUT_BYTES;
+use crate::MAX_TURN_OUTPUT_BYTES;
 #[cfg(unix)]
-use crate::{MAX_ACTIVATION_INPUT_BYTES, MAX_PACKAGE_BYTES};
+use crate::{MAX_PACKAGE_BYTES, MAX_TURN_INPUT_BYTES};
+
+/// What the guest asks Brain to do. Every payload is JSON in the shapes the
+/// `contracts/session/v1` types define.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HostCall {
+    Model { request_json: String },
+    Dispatch { calls_json: String },
+    Append { kind: String, payload_json: String },
+    Telemetry { record_json: String },
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -13,16 +32,20 @@ pub enum WorkerRequest {
     Admit {
         package_json: String,
     },
-    Activate {
+    Turn {
         digest: AgentloopIdentity,
         /// Cache key for a warm instance; never handed to the guest.
         session: String,
-        /// Whether `input.context` carries the turn's context. On the turn's opening
-        /// observation it does; mid-turn legs send a placeholder and the worker uses
-        /// what it holds resident.
-        context_attached: bool,
-        input: Box<ActivationInput>,
+        input: Box<TurnInput>,
     },
+    /// The answer to a host call the worker sent on this connection.
+    HostResult {
+        id: u64,
+        result: Result<String, TurnError>,
+    },
+    /// Stop the turn on this connection: pending host calls fail with `cancelled`, and so
+    /// does the guest's next one.
+    Cancel,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -32,12 +55,14 @@ pub enum WorkerResponse {
     Admitted {
         digest: AgentloopIdentity,
     },
-    Activated {
-        output: ActivationOutput,
-        /// Whether `output.context` carries the turn's context. Terminal decisions
-        /// (finish, fail) return it; mid-turn legs keep it resident and send a
-        /// placeholder.
-        context_attached: bool,
+    /// The guest asked for something; the server answers with `HostResult` under the
+    /// same id.
+    HostCall {
+        id: u64,
+        call: HostCall,
+    },
+    Turned {
+        output: TurnOutput,
     },
     Error {
         code: String,
@@ -86,10 +111,12 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de
 #[cfg(unix)]
 pub(crate) fn max_request_bytes(request: &WorkerRequest) -> usize {
     match request {
-        WorkerRequest::Ping => 1_024,
+        WorkerRequest::Ping | WorkerRequest::Cancel => 1_024,
         WorkerRequest::Admit { .. } => MAX_PACKAGE_BYTES + 1_024,
-        WorkerRequest::Activate { .. } => MAX_ACTIVATION_INPUT_BYTES + 1_024,
+        WorkerRequest::Turn { .. } | WorkerRequest::HostResult { .. } => {
+            MAX_TURN_INPUT_BYTES + 1_024
+        }
     }
 }
 
-pub(crate) const MAX_RESPONSE_FRAME_BYTES: usize = MAX_ACTIVATION_OUTPUT_BYTES + 1_024;
+pub(crate) const MAX_RESPONSE_FRAME_BYTES: usize = MAX_TURN_OUTPUT_BYTES + 1_024;

@@ -23,6 +23,7 @@ required-features = ["integration-tests"]
 [dependencies]
 brain-protocol = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

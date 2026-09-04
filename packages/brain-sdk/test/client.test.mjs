@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { z } from "zod";
-import { Brain, BrainError, activateAgentloop, agentloop, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, tool } from "../dist/index.js";
+import { Brain, BrainError, agentloop, createEnvironmentHandler, environment, executeTool, installExtensionIdentity, runTurn, tool } from "../dist/index.js";
 
 const simple = agentloop((author) => {
-  const state = author.state(z.object({ messages: z.array(z.unknown()) }), () => ({ messages: [] }));
-  author.on.message((message, turn) => {
-    state.messages.push({ role: "user", content: [{ type: "text", text: String(message.content) }] });
-    return turn.model({ messages: state.messages });
+  const memory = author.slot("memory", z.object({ turns: z.number().int() }), () => ({ turns: 0 }));
+  author.turn(async (turn) => {
+    memory.turns += 1;
+    turn.transcript.push({ role: "user", content: [{ type: "text", text: turn.input.message }] });
+    const { message } = await turn.model({ messages: turn.transcript });
+    turn.transcript.push(message);
+    return turn.done({ turns: memory.turns });
   });
 });
 installExtensionIdentity(simple, "simple", new Uint8Array([1, 2, 3]));
@@ -79,17 +82,31 @@ test("retries admission after a failure instead of caching the rejection", async
   assert.equal(calls, 2, "a successful admission stays cached");
 });
 
-test("runs synchronous Agentloop hooks and persists validated state", () => {
-  const result = activateAgentloop(simple, {
-    context: {},
-    observation: { type: "user_message", content: "hello" },
+test("runs a turn against a host and hands back the transcript and validated slots", async () => {
+  const calls = [];
+  const output = await runTurn(simple, {
+    input: { message: "hello" },
+    transcript: [],
+    slots: { memory: { turns: 2 } },
+    events: [],
     configuration: {},
+    system: "",
+    tools: [],
     runtime: { logicalTimeMs: 1n },
+  }, {
+    model(requestJson) {
+      calls.push(JSON.parse(requestJson));
+      return JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: "hi" }] }, stop_reason: "end_turn", usage: {} });
+    },
+    dispatch() { throw new Error("not called"); },
+    append() { return 1; },
+    telemetry() {},
   });
-  assert.equal(result.decision.type, "model");
-  assert.deepEqual(result.context.state.slots[0].messages, [
-    { role: "user", content: [{ type: "text", text: "hello" }] },
-  ]);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].messages, [{ role: "user", content: [{ type: "text", text: "hello" }] }]);
+  assert.deepEqual(output.transcript.map((message) => message.role), ["user", "assistant"]);
+  assert.deepEqual(output.slots, { memory: { turns: 3 } });
+  assert.deepEqual(output.result, { turns: 3 });
 });
 
 test("executes zero-configuration Tools from their serialized configuration", async () => {

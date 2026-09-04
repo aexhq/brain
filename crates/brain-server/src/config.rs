@@ -38,8 +38,12 @@ pub struct ServerConfig {
     pub environment_base_url: String,
     #[arg(long, env = "BRAIN_ENVIRONMENT_API_KEY", hide_env_values = true)]
     pub environment_api_key: Option<String>,
-    #[arg(long, env = "BRAIN_MAX_DECISIONS", default_value_t = 128)]
-    pub max_decisions_per_turn: usize,
+    /// Model calls one turn may make before Brain refuses the next.
+    #[arg(long, env = "BRAIN_MAX_MODEL_CALLS", default_value_t = 128)]
+    pub max_model_calls_per_turn: usize,
+    /// Seconds one turn may run before Brain cancels it. Zero means no bound.
+    #[arg(long, env = "BRAIN_MAX_TURN_SECS", default_value_t = 1800)]
+    pub max_turn_secs: u64,
     /// Seconds an idle session keeps its task and memory before it is suspended to disk
     /// and rebuilt on its next request. A session may set its own at create; zero means
     /// never.

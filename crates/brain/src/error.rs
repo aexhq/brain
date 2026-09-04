@@ -20,6 +20,12 @@ pub enum Error {
     Journal(String),
     #[error("operation outcome is ambiguous: {0}")]
     Ambiguous(String),
+    /// The turn was cancelled, or timed out, while this was in flight.
+    #[error("cancelled: {0}")]
+    Cancelled(String),
+    /// The turn asked for more than its budget allows.
+    #[error("budget exceeded: {0}")]
+    Budget(String),
     /// A model provider answered with a complete non-success response before
     /// anything streamed. Typed so the retry policy can branch on the status
     /// instead of parsing it back out of a message.
@@ -42,6 +48,8 @@ impl Error {
             Error::Executor(_) => api::EXECUTOR_FAILED,
             Error::Journal(_) => api::INTERNAL,
             Error::Ambiguous(_) => api::AMBIGUOUS,
+            Error::Cancelled(_) => brain_protocol::codes::failure::CANCELLED,
+            Error::Budget(_) => brain_protocol::codes::failure::DECISION_LIMIT,
             Error::ProviderStatus { .. } => api::MODEL_PROVIDER_FAILED,
         }
     }

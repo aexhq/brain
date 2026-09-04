@@ -1,5 +1,6 @@
 mod actor;
 mod config;
+mod services;
 
 use std::{
     collections::HashMap,
@@ -11,19 +12,23 @@ use std::{
 
 use brain_protocol::codes::{self, Failure};
 use brain_protocol::{
-    ContextEnvelope, HistoryEvent, MessageRequest, Outcome, Program, SessionConfig, SessionId,
-    SessionStatus, SessionSummary, ToolHosting, resource_name_valid,
+    Message, MessageRequest, Outcome, Program, SessionConfig, SessionId, SessionStatus,
+    SessionSummary, ToolHosting, resource_name_valid,
 };
 use rand::RngCore;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     Error,
-    journal::{AppendRecord, JournalStore, SessionRow, SessionUpdate},
+    journal::{AppendRecord, JournalEntry, JournalStore, SessionRow, SessionUpdate},
 };
 use actor::{SessionActor, SessionCommand, failure_of, failure_payload};
 
-pub use config::{DEFAULT_TOOL_DEADLINE_MS, SessionRuntime};
+pub use actor::LAST_ACTIVATION_SLOT;
+pub use config::{
+    DEFAULT_MAX_MODEL_CALLS_PER_TURN, DEFAULT_MAX_TURN_MS, DEFAULT_TOOL_DEADLINE_MS, SessionRuntime,
+};
+pub use services::TurnServices;
 
 /// One running session: a task that drives its turns, and this handle to it.
 ///
@@ -93,18 +98,6 @@ impl PendingToolCalls {
     }
 }
 
-/// Record kinds a restart reads a session's state out of, and which a caller therefore
-/// cannot supply as history.
-const RESERVED_KINDS: [&str; 7] = [
-    codes::event::SESSION_CREATION_STARTED,
-    codes::event::SESSION_CREATION_ENDED,
-    codes::event::SESSION_CREATION_FAILED,
-    codes::event::SESSION_ENDED,
-    codes::event::TURN_STARTED,
-    codes::event::TURN_ENDED,
-    codes::event::TURN_FAILED,
-];
-
 /// A session between its first record and its admission. The host attaches the
 /// environments the request named, journalling each step here, and then seals what was
 /// actually granted with [`CreatingSession::complete`].
@@ -112,18 +105,6 @@ pub struct CreatingSession {
     store: Arc<dyn JournalStore>,
     config: Arc<SessionRuntime>,
     row: SessionRow,
-    /// The events this session opened with, carried in memory to the actor so the
-    /// agentloop can be told about them. They are already in the journal; this is not a
-    /// second copy of the record, it is the one delivery of it.
-    history: Vec<serde_json::Value>,
-}
-
-pub fn empty_context() -> ContextEnvelope {
-    ContextEnvelope {
-        protocol_version: "agentloop/v1".into(),
-        items: Vec::new(),
-        state: None,
-    }
 }
 
 /// The configuration a session was admitted with, read from its row.
@@ -142,11 +123,17 @@ impl Session {
         store: Arc<dyn JournalStore>,
         config: Arc<SessionRuntime>,
         request: &SessionConfig,
-        history: &[HistoryEvent],
+        transcript: &[Message],
     ) -> Result<CreatingSession, Error> {
         validate_session_contract(request)?;
-        // The creation record is the session's own genesis and comes first; the events the
-        // caller handed back are what happened before it, and follow.
+        if transcript.len() > brain_protocol::MAX_TRANSCRIPT_ITEMS {
+            return Err(Error::InvalidState(format!(
+                "a session may open with at most {} transcript items",
+                brain_protocol::MAX_TRANSCRIPT_ITEMS
+            )));
+        }
+        // The creation record is the session's own genesis and comes first; a transcript
+        // the caller carries forward is what happened before it, and follows.
         store.append(
             0,
             &[AppendRecord::new(
@@ -155,40 +142,33 @@ impl Session {
             )],
             SessionUpdate {
                 status: Some(SessionStatus::Creating),
-                context: None,
                 configuration: None,
             },
         )?;
         let mut row = store.session_row()?;
-        let history = replay_history(&*store, &mut row, history)?;
-        Ok(CreatingSession {
-            store,
-            config,
-            row,
-            history,
-        })
+        if !transcript.is_empty() {
+            row.through_sequence = store.append_journal(
+                row.through_sequence,
+                &[JournalEntry::ContextDelta {
+                    keep: 0,
+                    append: transcript.to_vec(),
+                }],
+            )?;
+        }
+        Ok(CreatingSession { store, config, row })
     }
 
-    /// Starts a session that is already in the store.
-    ///
-    /// A session rebuilt from the journal after a restart has an agentloop that has never
-    /// seen any of it, so it is handed its own records once, before its first message. A
-    /// session this process created was told at creation and is not told again.
+    /// Starts a session that is already in the store: its transcript and slots fold out
+    /// of its journal, and nothing is replayed into the loop.
     pub fn open(store: Arc<dyn JournalStore>, config: Arc<SessionRuntime>) -> Result<Self, Error> {
         let row = store.session_row()?;
-        let history = if store.take_restored() {
-            restored_history(&*store)?
-        } else {
-            Vec::new()
-        };
-        Self::spawn(store, config, row, history)
+        Self::spawn(store, config, row)
     }
 
     fn spawn(
         store: Arc<dyn JournalStore>,
         config: Arc<SessionRuntime>,
         row: SessionRow,
-        history: Vec<serde_json::Value>,
     ) -> Result<Self, Error> {
         let session_id = row.session_id.clone();
         let (sender, receiver) = mpsc::channel(8);
@@ -200,7 +180,6 @@ impl Session {
             config,
             receiver,
             cancelled.clone(),
-            history,
             pending_tools.clone(),
         )?;
         tokio::spawn(actor.run());
@@ -370,7 +349,6 @@ impl CreatingSession {
     pub fn complete(mut self, config: SessionConfig) -> Result<Session, Error> {
         validate_session_contract(&config)?;
         let configuration = serde_json::to_value(&config).map_err(json_error)?;
-        let context = self.row.context.clone();
         let saved = self.store.append(
             self.row.through_sequence,
             &[AppendRecord::new(
@@ -379,14 +357,13 @@ impl CreatingSession {
             )],
             SessionUpdate {
                 status: Some(SessionStatus::Idle),
-                context: Some(&context),
                 configuration: Some(&configuration),
             },
         )?;
         self.row.through_sequence += saved.len() as u64;
         self.row.status = SessionStatus::Idle;
         self.row.configuration = configuration;
-        Session::spawn(self.store, self.config, self.row, self.history)
+        Session::spawn(self.store, self.config, self.row)
     }
 
     pub fn fail(mut self, code: &str, message: &str) -> Result<(), Error> {
@@ -398,7 +375,6 @@ impl CreatingSession {
             )],
             SessionUpdate {
                 status: Some(SessionStatus::Failed),
-                context: None,
                 configuration: None,
             },
         )?;
@@ -418,76 +394,6 @@ fn failed_record(kind: &str, sequence: u64, error: &Error) -> Result<AppendRecor
 
 fn stopped() -> Error {
     Error::InvalidState("session actor stopped".into())
-}
-
-/// Writes the caller's events into the new session's journal, and hands back what the
-/// agentloop should be told.
-///
-/// The sequences the caller supplies are checked but not kept: they name positions in
-/// the session those events came from, and this is a different session, whose records
-/// are numbered densely from its own beginning. What they are good for is catching a
-/// caller that has lost or reordered part of the conversation, which is worth failing
-/// on rather than silently writing down.
-fn replay_history(
-    store: &dyn JournalStore,
-    row: &mut SessionRow,
-    history: &[HistoryEvent],
-) -> Result<Vec<serde_json::Value>, Error> {
-    if history.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut previous = 0;
-    for event in history {
-        // A caller's history cannot wear a lifecycle kind. These are the records the
-        // journal is read back by -- a restart derives a session's status from them --
-        // so accepting `session_ended` or `turn_started` from a client would let it
-        // describe a session that never happened, and a later restart would believe it.
-        if RESERVED_KINDS.contains(&event.event_type.as_str()) {
-            return Err(Error::InvalidState(format!(
-                "session history may not contain `{}`: lifecycle records are Brain's own, \
-                 and a restart reads a session's state back out of them",
-                event.event_type
-            )));
-        }
-        if event.sequence <= previous {
-            return Err(Error::InvalidState(format!(
-                "session history is out of order at sequence {}: events must ascend, and \
-                 one that does not is a conversation with a piece missing or moved",
-                event.sequence
-            )));
-        }
-        previous = event.sequence;
-    }
-
-    let records: Vec<AppendRecord> = history
-        .iter()
-        .map(|event| AppendRecord::new(&event.event_type, event.data.clone()))
-        .collect();
-    let saved = store.append(row.through_sequence, &records, SessionUpdate::default())?;
-    row.through_sequence += saved.len() as u64;
-    Ok(history.iter().map(|event| event.data.clone()).collect())
-}
-
-/// A restored session's own records, to hand back to its agentloop.
-///
-/// Bounded at the same count the create API accepts as history. A conversation longer
-/// than that restores and can be read, but is not replayed into a loop: handing over
-/// part of a conversation as though it were the whole of it would be a worse answer
-/// than declining to.
-fn restored_history(store: &dyn JournalStore) -> Result<Vec<serde_json::Value>, Error> {
-    const MOST: usize = 10_000;
-    let mut history = Vec::new();
-    let mut after = 0;
-    loop {
-        let page = store.records_after(after, 1_000)?;
-        let Some(last) = page.last() else { break };
-        after = last.sequence;
-        history.extend(page.into_iter().map(|record| record.payload));
-        if history.len() > MOST {
-            return Ok(Vec::new());
-        }
-    }
-    Ok(history)
 }
 
 fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {

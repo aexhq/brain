@@ -14,7 +14,6 @@ pub struct SessionRow {
     pub status: SessionStatus,
     pub through_sequence: u64,
     pub configuration: serde_json::Value,
-    pub context: serde_json::Value,
 }
 
 /// What a caller outside the session is allowed to see about it. Building one borrows
@@ -34,7 +33,6 @@ impl From<&SessionRow> for SessionSummary {
 #[derive(Default)]
 pub struct SessionUpdate<'a> {
     pub status: Option<SessionStatus>,
-    pub context: Option<&'a serde_json::Value>,
     pub configuration: Option<&'a serde_json::Value>,
 }
 
@@ -114,11 +112,6 @@ pub trait JournalStore: Send + Sync + 'static {
     fn session_row(&self) -> Result<SessionRow, Error>;
     fn session_summary(&self) -> Result<SessionSummary, Error>;
     fn records_after(&self, after: u64, limit: usize) -> Result<Vec<JournalRecord>, Error>;
-    /// Whether this session was rebuilt from disk and has not yet been handed its own
-    /// records back. Answers true once and then false: the agentloop is told what it is
-    /// continuing exactly once, and telling it twice would replay a conversation it is
-    /// already holding.
-    fn take_restored(&self) -> bool;
     /// Returns once everything appended so far is on disk.
     fn sync(&self) -> Result<(), Error>;
 }
