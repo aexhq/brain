@@ -20,21 +20,20 @@ use std::{
 
 use async_trait::async_trait;
 use brain::{
-    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionConfig,
+    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionRuntime,
     ToolExecutor,
 };
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopIdentity, Decision, MessageRequest, ModelBinding,
-    ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, RequestedToolBinding,
-    ResolvedEnvironment, ResolvedSessionRequest, SealedSessionConfig, SessionId, ToolCancellation,
-    ToolDefinition, ToolDispatch,
+    ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, SessionConfig, SessionId,
+    ToolCancellation, ToolDefinition, ToolDispatch,
 };
 use brain_telemetry::telemetry_channel;
 /// What the host gives every session: the store it journals to and the executors it
 /// performs effects with. Built the way the server builds it.
 struct Runtime {
     store: Arc<ObservedJournal>,
-    config: Arc<SessionConfig>,
+    config: Arc<SessionRuntime>,
 }
 
 #[allow(dead_code)]
@@ -52,7 +51,7 @@ impl Runtime {
             Arc::new(brain::SegmentJournal::open(&data_dir.join("journal")).unwrap());
         let store = Arc::new(ObservedJournal::new(journal, telemetry));
         brain::interrupt_unfinished_turns(&*store).unwrap();
-        let config = Arc::new(SessionConfig {
+        let config = Arc::new(SessionRuntime {
             max_decisions_per_turn,
             tool_deadline_ms,
             loop_executor,
@@ -322,8 +321,8 @@ async fn the_session_row_holds_the_final_context_after_the_turn() {
     fs::remove_dir_all(data_dir).unwrap();
 }
 
-fn request() -> SealedSessionConfig {
-    SealedSessionConfig {
+fn request() -> SessionConfig {
+    SessionConfig {
         agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
         brain_configuration: serde_json::json!({}),
         model: ModelBinding {
@@ -344,47 +343,13 @@ fn temporary_directory() -> PathBuf {
     path
 }
 
-/// Sessions are created the way the server creates them: a resolved request is admitted,
-/// then the sealed configuration completes it. There is no shortcut past `Session::begin`,
-/// so these tests exercise the same validation the production path enforces.
-fn start(runtime: &Runtime, sealed: SealedSessionConfig) -> Session {
-    let resolved = ResolvedSessionRequest {
-        history: Vec::new(),
-        agentloop_identity: sealed.agentloop_identity.clone(),
-        brain_configuration: sealed.brain_configuration.clone(),
-        model: sealed.model.clone(),
-        system: sealed.system.clone(),
-        response_format: sealed.response_format.clone(),
-        tools: sealed.tools.clone(),
-        environments: sealed
-            .environments
-            .iter()
-            .map(|environment| ResolvedEnvironment {
-                environment_id: environment.binding.environment_id.clone(),
-                configuration: serde_json::json!({}),
-                lifecycle_policy: environment.binding.lifecycle_policy.clone(),
-                binding_identities: Default::default(),
-            })
-            .collect(),
-        tool_bindings: sealed
-            .tool_bindings
-            .iter()
-            .map(|binding| RequestedToolBinding {
-                name: binding.name.clone(),
-                environment_id: binding
-                    .environment
-                    .as_ref()
-                    .map(|environment| environment.environment_id.clone()),
-                needs: binding.needs.clone(),
-                binding_names: binding.binding_names.clone(),
-                hosting: binding.hosting,
-                program: binding.program.clone(),
-            })
-            .collect(),
-    };
-    Session::begin(runtime.store(), runtime.config.clone(), &resolved)
+/// Sessions are created the way the server creates them: the configuration is admitted,
+/// then completed. There is no shortcut past `Session::begin`, so these tests exercise
+/// the same validation the production path enforces.
+fn start(runtime: &Runtime, config: SessionConfig) -> Session {
+    Session::begin(runtime.store(), runtime.config.clone(), &config, &[])
         .unwrap()
-        .complete(sealed)
+        .complete(config)
         .unwrap()
 }
 

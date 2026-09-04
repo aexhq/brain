@@ -8,7 +8,7 @@ use crate::{LoopExecutor, ModelExecutor, ToolExecutor};
 /// Everything a session needs that is not its own: the executors that perform its
 /// effects, the limits it runs under, and where its live output goes. Built once by the
 /// host and shared by every session it runs.
-pub struct SessionConfig {
+pub struct SessionRuntime {
     pub max_decisions_per_turn: usize,
     /// Deadline handed to every Tool invocation. The session enforces it by killing the
     /// call and recording a `timeout` outcome — the remote cannot be trusted to.

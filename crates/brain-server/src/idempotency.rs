@@ -124,7 +124,7 @@ impl IdempotencyStore {
 }
 
 fn digest<T: serde::Serialize>(request: &T) -> Result<Identity, brain::Error> {
-    Identity::of(request).map_err(|error| brain::Error::InvalidState(error.to_string()))
+    crate::digest::identity_of(request)
 }
 
 fn wall_clock_ms() -> Result<u64, brain::Error> {

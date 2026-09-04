@@ -16,6 +16,7 @@ pub use journal::{
 };
 pub use model::ModelExecutor;
 pub use session::{
-    CreatingSession, DEFAULT_TOOL_DEADLINE_MS, Session, SessionConfig, empty_context, sealed_config,
+    CreatingSession, DEFAULT_TOOL_DEADLINE_MS, Session, SessionRuntime, empty_context, random_id,
+    session_config,
 };
 pub use tool::ToolExecutor;

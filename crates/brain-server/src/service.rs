@@ -5,16 +5,16 @@ use std::{
 };
 
 use async_trait::async_trait;
-use brain::{JournalStore, LoopExecutor, ObservedJournal, Session, SessionConfig};
+use brain::{JournalStore, LoopExecutor, ObservedJournal, Session, SessionRuntime};
 use brain_http::BrainApi;
 use brain_loophost::LoopError;
 use brain_loophost::WorkerPool;
 use brain_protocol::codes;
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
-    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage, Identity,
-    MessageRequest, ModelBinding, Outcome, RequestedToolBinding, ResolvedEnvironment,
-    ResolvedSessionRequest, SessionId, SessionList, SessionSummary, ToolDefinition,
+    EnvironmentAttachment, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage,
+    MessageRequest, ModelBinding, Outcome, SessionConfig, SessionId, SessionList, SessionSummary,
+    ToolBinding, ToolDefinition,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::sync::Mutex;
@@ -28,7 +28,7 @@ pub struct ServerResources {
     /// Every session's journal, and the live feed of everything appended to it.
     pub store: Arc<ObservedJournal>,
     /// What every session runs with: executors, limits, and where live output goes.
-    pub session_config: Arc<SessionConfig>,
+    pub session_runtime: Arc<SessionRuntime>,
     /// Answers already given to keyed requests, so a retry replays instead of repeats.
     pub idempotency: IdempotencyStore,
     pub loops: Arc<WorkerPool>,
@@ -143,7 +143,7 @@ impl ServerApi {
         }
         let session = Session::open(
             self.store(),
-            self.resources.session_config.clone(),
+            self.resources.session_runtime.clone(),
             session_id,
         )
         .map_err(api_error)?;
@@ -299,8 +299,8 @@ impl BrainApi for ServerApi {
             .put(&binding_id, &request.model)
             .map_err(api_error)?;
         let (tools, tool_bindings) = split_tools(&request);
-        let (environments, binding_values) = seal_environments(&request)?;
-        let resolved = ResolvedSessionRequest {
+        let (environments, binding_values) = attachments_for(&request);
+        let config = SessionConfig {
             agentloop_identity: request.agentloop.identity.clone(),
             brain_configuration: request.agentloop.configuration.clone(),
             model: ModelBinding {
@@ -312,12 +312,12 @@ impl BrainApi for ServerApi {
             tools,
             environments,
             tool_bindings,
-            history: request.history.clone(),
         };
         let creation = Session::begin(
             self.store(),
-            self.resources.session_config.clone(),
-            &resolved,
+            self.resources.session_runtime.clone(),
+            &config,
+            &request.history,
         )
         .map_err(|error| {
             let _ = self.resources.models.delete(&binding_id);
@@ -337,7 +337,7 @@ impl BrainApi for ServerApi {
         let prepared = self
             .resources
             .environments
-            .prepare_session(creation, resolved, binding_values)
+            .prepare_session(creation, config, binding_values)
             .await;
         let (session, _) = match prepared {
             Ok(prepared) => prepared,
@@ -506,7 +506,7 @@ impl BrainApi for ServerApi {
     }
 
     async fn client_tool_names(&self, session_id: SessionId) -> Result<Vec<String>, ApiError> {
-        Ok(brain::sealed_config(&*self.resources.store, &session_id)
+        Ok(brain::session_config(&*self.resources.store, &session_id)
             .map_err(api_error)?
             .tool_bindings
             .into_iter()
@@ -603,7 +603,7 @@ impl BrainApi for ServerApi {
             return Self::replay(saved).map(|session| self.branded(session));
         }
         let sealed =
-            brain::sealed_config(&*self.resources.store, &session_id).map_err(api_error)?;
+            brain::session_config(&*self.resources.store, &session_id).map_err(api_error)?;
         let running = self.session(&session_id)?;
         self.resources
             .environments
@@ -646,7 +646,7 @@ impl BrainApi for ServerApi {
         {
             return Ok(());
         }
-        let binding_id = brain::sealed_config(&*self.resources.store, &session_id)
+        let binding_id = brain::session_config(&*self.resources.store, &session_id)
             .map_err(api_error)?
             .model
             .binding_id;
@@ -752,9 +752,9 @@ fn valid_identifier(value: &str) -> bool {
 }
 
 /// Splits each wire tool back into its two internal halves: what the model may be told
-/// (`ToolDefinition`) and where the call goes (`RequestedToolBinding`). The session still
+/// (`ToolDefinition`) and where the call goes (`ToolBinding`). The session still
 /// validates the split result against the session contract.
-fn split_tools(request: &CreateSessionRequest) -> (Vec<ToolDefinition>, Vec<RequestedToolBinding>) {
+fn split_tools(request: &CreateSessionRequest) -> (Vec<ToolDefinition>, Vec<ToolBinding>) {
     let mut definitions = Vec::with_capacity(request.tools.len());
     let mut bindings = Vec::with_capacity(request.tools.len());
     for tool in &request.tools {
@@ -764,9 +764,11 @@ fn split_tools(request: &CreateSessionRequest) -> (Vec<ToolDefinition>, Vec<Requ
             input_schema: tool.input_schema.clone(),
             output_schema: tool.output_schema.clone(),
         });
-        bindings.push(RequestedToolBinding {
+        bindings.push(ToolBinding {
             name: tool.name.clone(),
             environment_id: tool.environment_id.clone(),
+            environment: None,
+            attachment_id: None,
             needs: tool.needs.clone(),
             binding_names: tool.binding_names.clone(),
             hosting: tool.hosting,
@@ -776,25 +778,23 @@ fn split_tools(request: &CreateSessionRequest) -> (Vec<ToolDefinition>, Vec<Requ
     (definitions, bindings)
 }
 
-/// Seals each environment's binding values the way model credentials are sealed: the
-/// journalable requirement keeps only their identities, and the plaintext travels
-/// beside the create for exactly as long as attach needs it.
-fn seal_environments(
+/// The environments a create names, before any is attached, and their binding values.
+/// The values travel beside the create for exactly as long as attach needs them and never
+/// enter the configuration the session journals.
+fn attachments_for(
     request: &CreateSessionRequest,
-) -> Result<(Vec<ResolvedEnvironment>, crate::SessionBindingValues), ApiError> {
+) -> (Vec<EnvironmentAttachment>, crate::SessionBindingValues) {
     let mut environments = Vec::with_capacity(request.environments.len());
     let mut values = crate::SessionBindingValues::new();
     for requirement in &request.environments {
-        let mut identities = std::collections::BTreeMap::new();
-        for (name, value) in &requirement.bindings {
-            let identity = Identity::of(value).map_err(|error| internal(error.to_string()))?;
-            identities.insert(name.clone(), identity);
-        }
-        environments.push(ResolvedEnvironment {
+        environments.push(EnvironmentAttachment {
             environment_id: requirement.environment_id.clone(),
             configuration: requirement.configuration.clone(),
             lifecycle_policy: requirement.lifecycle_policy.clone(),
-            binding_identities: identities,
+            binding: None,
+            attachment_id: None,
+            runtimes: Vec::new(),
+            resources: Default::default(),
         });
         if !requirement.bindings.is_empty() {
             values.insert(
@@ -803,7 +803,7 @@ fn seal_environments(
             );
         }
     }
-    Ok((environments, values))
+    (environments, values)
 }
 
 fn validate_model(

@@ -11,10 +11,8 @@ use std::{
 
 use brain_protocol::codes::{self, Failure};
 use brain_protocol::{
-    AgentloopIdentity, ContextEnvelope, EnvironmentAttachment, EnvironmentId, HistoryEvent,
-    MessageRequest, ModelBinding, Outcome, Program, RequestedToolBinding, ResolvedEnvironment,
-    ResolvedSessionRequest, Resources, Runtime, SealedSessionConfig, SessionId, SessionStatus,
-    SessionSummary, ToolBinding, ToolDefinition, ToolHosting, resource_name_valid,
+    ContextEnvelope, HistoryEvent, MessageRequest, Outcome, Program, SessionConfig, SessionId,
+    SessionStatus, SessionSummary, ToolHosting, resource_name_valid,
 };
 use rand::RngCore;
 use tokio::sync::{mpsc, oneshot};
@@ -25,7 +23,7 @@ use crate::{
 };
 use actor::{SessionActor, SessionCommand, failure_of, failure_payload};
 
-pub use config::{DEFAULT_TOOL_DEADLINE_MS, SessionConfig};
+pub use config::{DEFAULT_TOOL_DEADLINE_MS, SessionRuntime};
 
 /// One running session: a task that drives its turns, and this handle to it.
 ///
@@ -98,13 +96,13 @@ impl PendingToolCalls {
 /// Record kinds a restart reads a session's state out of, and which a caller therefore
 /// cannot supply as history.
 const RESERVED_KINDS: [&str; 7] = [
-    "session_creation_started",
-    "session_creation_ended",
-    "session_creation_failed",
-    "session_ended",
-    "turn_started",
-    "turn_ended",
-    "turn_failed",
+    codes::event::SESSION_CREATION_STARTED,
+    codes::event::SESSION_CREATION_ENDED,
+    codes::event::SESSION_CREATION_FAILED,
+    codes::event::SESSION_ENDED,
+    codes::event::TURN_STARTED,
+    codes::event::TURN_ENDED,
+    codes::event::TURN_FAILED,
 ];
 
 /// A session between its first record and its admission. The host attaches the
@@ -112,7 +110,7 @@ const RESERVED_KINDS: [&str; 7] = [
 /// actually granted with [`CreatingSession::complete`].
 pub struct CreatingSession {
     store: Arc<dyn JournalStore>,
-    config: Arc<SessionConfig>,
+    config: Arc<SessionRuntime>,
     row: SessionRow,
     /// The events this session opened with, carried in memory to the actor so the
     /// agentloop can be told about them. They are already in the journal; this is not a
@@ -128,11 +126,11 @@ pub fn empty_context() -> ContextEnvelope {
     }
 }
 
-/// The sealed configuration a session was admitted with, read from its row.
-pub fn sealed_config(
+/// The configuration a session was admitted with, read from its row.
+pub fn session_config(
     store: &dyn JournalStore,
     session_id: &SessionId,
-) -> Result<SealedSessionConfig, Error> {
+) -> Result<SessionConfig, Error> {
     let row = store
         .session_row(session_id)?
         .ok_or_else(|| Error::NotFound("session not found".into()))?;
@@ -142,13 +140,14 @@ pub fn sealed_config(
 impl Session {
     /// Writes a session's first record and hands back the creation to finish.
     ///
-    /// Admitting the request bounds its authority before anything is journalled: the
-    /// contract is checked here and again at `complete`, so a session can only ever do
-    /// what it was granted.
+    /// Admitting the configuration bounds its authority before anything is journalled:
+    /// the contract is checked here and again at `complete`, so a session can only ever
+    /// do what it was granted.
     pub fn begin(
         store: Arc<dyn JournalStore>,
-        config: Arc<SessionConfig>,
-        request: &ResolvedSessionRequest,
+        config: Arc<SessionRuntime>,
+        request: &SessionConfig,
+        history: &[HistoryEvent],
     ) -> Result<CreatingSession, Error> {
         validate_session_contract(request)?;
         let row = SessionRow {
@@ -168,7 +167,7 @@ impl Session {
             ),
         )?;
         let mut row = row;
-        let history = replay_history(&*store, &mut row, &request.history)?;
+        let history = replay_history(&*store, &mut row, history)?;
         Ok(CreatingSession {
             store,
             config,
@@ -184,7 +183,7 @@ impl Session {
     /// session this process created was told at creation and is not told again.
     pub fn open(
         store: Arc<dyn JournalStore>,
-        config: Arc<SessionConfig>,
+        config: Arc<SessionRuntime>,
         session_id: &SessionId,
     ) -> Result<Self, Error> {
         let row = store
@@ -200,7 +199,7 @@ impl Session {
 
     fn spawn(
         store: Arc<dyn JournalStore>,
-        config: Arc<SessionConfig>,
+        config: Arc<SessionRuntime>,
         row: SessionRow,
         history: Vec<serde_json::Value>,
     ) -> Result<Self, Error> {
@@ -375,16 +374,17 @@ impl CreatingSession {
     }
 
     /// Seals what was granted and starts the session.
-    pub fn complete(mut self, sealed: SealedSessionConfig) -> Result<Session, Error> {
-        validate_session_contract(&sealed)?;
-        let configuration = serde_json::to_value(&sealed).map_err(json_error)?;
+    /// Admits the session with the configuration as the host attached it.
+    pub fn complete(mut self, config: SessionConfig) -> Result<Session, Error> {
+        validate_session_contract(&config)?;
+        let configuration = serde_json::to_value(&config).map_err(json_error)?;
         let context = self.row.context.clone();
         let saved = self.store.append(
             &self.row.session_id,
             self.row.through_sequence,
             &[AppendRecord::new(
                 codes::event::SESSION_CREATION_ENDED,
-                serde_json::json!({"configuration":sealed}),
+                serde_json::json!({"configuration":config}),
             )],
             SessionUpdate {
                 status: Some(SessionStatus::Idle),
@@ -508,190 +508,24 @@ fn restored_history(
     Ok(history)
 }
 
-/// The two request shapes a session admits differ only in where an Environment identity
-/// lives: a resolved request names it directly, a sealed configuration carries it inside
-/// the binding it resolved to. Every other term of the contract is identical, and core
-/// principle 3 requires that authority be bounded identically however a session is
-/// created, so the bounds are stated once and both shapes are read through these views.
-trait EnvironmentView {
-    fn environment_id(&self) -> &EnvironmentId;
-    /// What this environment declared it executes and offers, when that is already
-    /// known. A resolved request predates the setup/attach receipts that report it, so
-    /// only a sealed attachment answers — and only a sealed configuration is bind-checked.
-    fn declaration(&self) -> Option<(&[Runtime], &Resources)>;
-}
-
-impl EnvironmentView for ResolvedEnvironment {
-    fn environment_id(&self) -> &EnvironmentId {
-        &self.environment_id
-    }
-
-    fn declaration(&self) -> Option<(&[Runtime], &Resources)> {
-        None
-    }
-}
-
-impl EnvironmentView for EnvironmentAttachment {
-    fn environment_id(&self) -> &EnvironmentId {
-        &self.binding.environment_id
-    }
-
-    fn declaration(&self) -> Option<(&[Runtime], &Resources)> {
-        Some((&self.runtimes, &self.resources))
-    }
-}
-
-trait ToolBindingView {
-    fn name(&self) -> &str;
-    fn environment_id(&self) -> Option<&EnvironmentId>;
-    fn needs(&self) -> &[String];
-    fn binding_names(&self) -> &[String];
-    fn hosting(&self) -> ToolHosting;
-    fn program(&self) -> Option<&Program>;
-}
-
-impl ToolBindingView for RequestedToolBinding {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn environment_id(&self) -> Option<&EnvironmentId> {
-        self.environment_id.as_ref()
-    }
-
-    fn needs(&self) -> &[String] {
-        &self.needs
-    }
-
-    fn binding_names(&self) -> &[String] {
-        &self.binding_names
-    }
-
-    fn hosting(&self) -> ToolHosting {
-        self.hosting
-    }
-
-    fn program(&self) -> Option<&Program> {
-        self.program.as_ref()
-    }
-}
-
-impl ToolBindingView for ToolBinding {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn environment_id(&self) -> Option<&EnvironmentId> {
-        self.environment
-            .as_ref()
-            .map(|binding| &binding.environment_id)
-    }
-
-    fn needs(&self) -> &[String] {
-        &self.needs
-    }
-
-    fn binding_names(&self) -> &[String] {
-        &self.binding_names
-    }
-
-    fn hosting(&self) -> ToolHosting {
-        self.hosting
-    }
-
-    fn program(&self) -> Option<&Program> {
-        self.program.as_ref()
-    }
-}
-
-trait SessionContract: serde::Serialize {
-    type Environment: EnvironmentView;
-    type ToolBinding: ToolBindingView;
-
-    fn agentloop_identity(&self) -> &AgentloopIdentity;
-    fn model(&self) -> &ModelBinding;
-    fn system(&self) -> &str;
-    fn tools(&self) -> &[ToolDefinition];
-    fn environments(&self) -> &[Self::Environment];
-    fn tool_bindings(&self) -> &[Self::ToolBinding];
-}
-
-impl SessionContract for ResolvedSessionRequest {
-    type Environment = ResolvedEnvironment;
-    type ToolBinding = RequestedToolBinding;
-
-    fn agentloop_identity(&self) -> &AgentloopIdentity {
-        &self.agentloop_identity
-    }
-
-    fn model(&self) -> &ModelBinding {
-        &self.model
-    }
-
-    fn system(&self) -> &str {
-        &self.system
-    }
-
-    fn tools(&self) -> &[ToolDefinition] {
-        &self.tools
-    }
-
-    fn environments(&self) -> &[Self::Environment] {
-        &self.environments
-    }
-
-    fn tool_bindings(&self) -> &[Self::ToolBinding] {
-        &self.tool_bindings
-    }
-}
-
-impl SessionContract for SealedSessionConfig {
-    type Environment = EnvironmentAttachment;
-    type ToolBinding = ToolBinding;
-
-    fn agentloop_identity(&self) -> &AgentloopIdentity {
-        &self.agentloop_identity
-    }
-
-    fn model(&self) -> &ModelBinding {
-        &self.model
-    }
-
-    fn system(&self) -> &str {
-        &self.system
-    }
-
-    fn tools(&self) -> &[ToolDefinition] {
-        &self.tools
-    }
-
-    fn environments(&self) -> &[Self::Environment] {
-        &self.environments
-    }
-
-    fn tool_bindings(&self) -> &[Self::ToolBinding] {
-        &self.tool_bindings
-    }
-}
-
-fn validate_session_contract(request: &impl SessionContract) -> Result<(), Error> {
-    if serde_json::to_vec(request).map_err(json_error)?.len() > 2 * 1024 * 1024 {
+fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
+    if serde_json::to_vec(config).map_err(json_error)?.len() > 2 * 1024 * 1024 {
         return Err(Error::InvalidState("session request exceeds 2 MiB".into()));
     }
-    if !identity_valid(request.agentloop_identity().as_str())
-        || !identifier_valid(&request.model().binding_id)
-        || request.model().model.is_empty()
-        || request.model().model.len() > 256
-        || request.system().len() > 131_072
-        || request.tools().len() > 128
-        || request.environments().len() > 128
-        || request.tool_bindings().len() > 128
+    if !identity_valid(config.agentloop_identity.as_str())
+        || !identifier_valid(&config.model.binding_id)
+        || config.model.model.is_empty()
+        || config.model.model.len() > 256
+        || config.system.len() > 131_072
+        || config.tools.len() > 128
+        || config.environments.len() > 128
+        || config.tool_bindings.len() > 128
     {
         return Err(Error::InvalidState(
             "session request violates a contract size or identity bound".into(),
         ));
     }
-    for tool in request.tools() {
+    for tool in &config.tools {
         if !identifier_valid(&tool.name)
             || tool.description.len() > 8_192
             || !tool.input_schema.is_object()
@@ -705,17 +539,18 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Error
             ));
         }
     }
-    if request
-        .environments()
+    if config
+        .environments
         .iter()
-        .any(|environment| !identifier_valid(environment.environment_id().as_str()))
-        || request.tool_bindings().iter().any(|binding| {
-            !identifier_valid(binding.name())
+        .any(|environment| !identifier_valid(environment.environment_id.as_str()))
+        || config.tool_bindings.iter().any(|binding| {
+            !identifier_valid(&binding.name)
                 || binding
-                    .environment_id()
+                    .environment_id
+                    .as_ref()
                     .is_some_and(|id| !identifier_valid(id.as_str()))
                 || binding
-                    .binding_names()
+                    .binding_names
                     .iter()
                     .any(|name| !identifier_valid(name))
         })
@@ -724,10 +559,26 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Error
             "Environment or Tool binding has an invalid identity".into(),
         ));
     }
+    // An attached binding names the same environment the request did: the two fields are
+    // one fact at two stages, and a disagreement is a host bug.
+    if config.tool_bindings.iter().any(|binding| {
+        binding.environment.as_ref().is_some_and(|environment| {
+            Some(&environment.environment_id) != binding.environment_id.as_ref()
+        })
+    }) || config.environments.iter().any(|attachment| {
+        attachment
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.environment_id != attachment.environment_id)
+    }) {
+        return Err(Error::InvalidState(
+            "an attached Environment does not match the one the session named".into(),
+        ));
+    }
     // Resource names are the bind check's vocabulary: an invalid or repeated one is
     // rejected before it can silently match nothing.
-    for binding in request.tool_bindings() {
-        let needs = binding.needs();
+    for binding in &config.tool_bindings {
+        let needs = &binding.needs;
         if needs.iter().any(|name| !resource_name_valid(name))
             || needs
                 .iter()
@@ -736,15 +587,17 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Error
         {
             return Err(Error::InvalidState(format!(
                 "Tool `{}` names an invalid or repeated resource",
-                binding.name()
+                binding.name
             )));
         }
     }
     // A client-hosted tool's code stays in the author's process; a program beside
     // it would be an artifact nothing is allowed to run.
-    if request.tool_bindings().iter().any(|binding| {
-        matches!(binding.hosting(), ToolHosting::Client) && binding.program().is_some()
-    }) {
+    if config
+        .tool_bindings
+        .iter()
+        .any(|binding| matches!(binding.hosting, ToolHosting::Client) && binding.program.is_some())
+    {
         return Err(Error::InvalidState(
             "a client Tool binding cannot carry a program".into(),
         ));
@@ -752,33 +605,29 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Error
     // A client-hosted tool is served off the event feed by an application process: no
     // environment is on its path, so binding one (or requiring capabilities only an
     // environment could provide) is a contradiction the caller should hear about.
-    for binding in request.tool_bindings() {
-        let client = matches!(binding.hosting(), ToolHosting::Client);
-        if client && binding.environment_id().is_some() {
+    for binding in &config.tool_bindings {
+        let client = matches!(binding.hosting, ToolHosting::Client);
+        if client && binding.environment_id.is_some() {
             return Err(Error::InvalidState(
                 "a client-hosted Tool binding cannot name an Environment".into(),
             ));
         }
-        if client && !binding.needs().is_empty() {
+        if client && !binding.needs.is_empty() {
             return Err(Error::InvalidState(
                 "a client-hosted Tool binding cannot need Environment resources".into(),
             ));
         }
-        if !client && binding.environment_id().is_none() {
+        if !client && binding.environment_id.is_none() {
             return Err(Error::InvalidState(
                 "every provisioned Tool binding must name a bound Environment".into(),
             ));
         }
     }
-    let mut definitions: Vec<&str> = request
-        .tools()
+    let mut definitions: Vec<&str> = config.tools.iter().map(|tool| tool.name.as_str()).collect();
+    let mut bindings: Vec<&str> = config
+        .tool_bindings
         .iter()
-        .map(|tool| tool.name.as_str())
-        .collect();
-    let mut bindings: Vec<&str> = request
-        .tool_bindings()
-        .iter()
-        .map(ToolBindingView::name)
+        .map(|binding| binding.name.as_str())
         .collect();
     definitions.sort_unstable();
     bindings.sort_unstable();
@@ -790,19 +639,20 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Error
             "every unique Tool definition must have exactly one binding".into(),
         ));
     }
-    let environment_ids: std::collections::HashSet<_> = request
-        .environments()
+    let environment_ids: std::collections::HashSet<_> = config
+        .environments
         .iter()
-        .map(EnvironmentView::environment_id)
+        .map(|attachment| &attachment.environment_id)
         .collect();
-    if environment_ids.len() != request.environments().len() {
+    if environment_ids.len() != config.environments.len() {
         return Err(Error::InvalidState(
             "Environment identities must be unique".into(),
         ));
     }
-    if request.tool_bindings().iter().any(|binding| {
+    if config.tool_bindings.iter().any(|binding| {
         binding
-            .environment_id()
+            .environment_id
+            .as_ref()
             .is_some_and(|id| !environment_ids.contains(id))
     }) {
         return Err(Error::InvalidState(
@@ -813,38 +663,39 @@ fn validate_session_contract(request: &impl SessionContract) -> Result<(), Error
     // program kind and declare every resource the tool needs, so a mismatch is a
     // create-time rejection naming all three parties instead of a runtime mystery. A
     // tool with no program and no needs binds anywhere. The declaration is known only
-    // once the environment has attached, so only the sealed shape is checked — every
-    // admitted session passes through it.
-    for binding in request.tool_bindings() {
-        let Some(environment_id) = binding.environment_id() else {
+    // once the environment has attached, so an environment that has not is skipped here
+    // and checked when the host completes the session.
+    for binding in &config.tool_bindings {
+        let Some(environment_id) = &binding.environment_id else {
             continue;
         };
-        let declaration = request
-            .environments()
+        let Some(attachment) = config
+            .environments
             .iter()
-            .find(|environment| environment.environment_id() == environment_id)
-            .and_then(EnvironmentView::declaration);
-        let Some((runtimes, resources)) = declaration else {
+            .find(|attachment| &attachment.environment_id == environment_id)
+            .filter(|attachment| attachment.attached())
+        else {
             continue;
         };
         if let Some(runtime) = binding
-            .program()
+            .program
+            .as_ref()
             .map(Program::runtime)
-            .filter(|runtime| !runtimes.contains(runtime))
+            .filter(|runtime| !attachment.runtimes.contains(runtime))
         {
             return Err(Error::InvalidState(format!(
                 "Tool `{}` needs runtime `{runtime}` that Environment `{environment_id}` does not provide",
-                binding.name(),
+                binding.name,
             )));
         }
         if let Some(missing) = binding
-            .needs()
+            .needs
             .iter()
-            .find(|name| !resources.contains_key(name.as_str()))
+            .find(|name| !attachment.resources.contains_key(name.as_str()))
         {
             return Err(Error::InvalidState(format!(
                 "Tool `{}` needs resource `{missing}` that Environment `{environment_id}` does not provide",
-                binding.name(),
+                binding.name,
             )));
         }
     }
@@ -868,7 +719,7 @@ fn identity_valid(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn random_id(prefix: &str) -> String {
+pub fn random_id(prefix: &str) -> String {
     let mut bytes = [0_u8; 16];
     rand::rng().fill_bytes(&mut bytes);
     format!("{prefix}_{}", hex::encode(bytes))
@@ -880,12 +731,19 @@ fn json_error(error: serde_json::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use brain_protocol::{AttachmentId, EnvironmentBinding, Identity, LifecyclePolicy};
+    use brain_protocol::{
+        AgentloopIdentity, AttachmentId, EnvironmentAttachment, EnvironmentBinding, EnvironmentId,
+        Identity, LifecyclePolicy, ModelBinding, Runtime, ToolBinding, ToolDefinition,
+    };
 
     use super::*;
 
     fn digest() -> String {
         "a".repeat(64)
+    }
+
+    fn identity(fill: &str) -> Identity {
+        Identity::from_hex(&fill.repeat(64)).unwrap()
     }
 
     fn tool() -> ToolDefinition {
@@ -900,43 +758,15 @@ mod tests {
     fn environment_binding() -> EnvironmentBinding {
         EnvironmentBinding {
             environment_id: EnvironmentId::new("workspace"),
-            configuration_identity: Identity::of(&"configuration").unwrap(),
+            configuration_identity: identity("b"),
             directory_generation: 1,
             lifecycle_policy: LifecyclePolicy::Shared,
         }
     }
 
-    fn resolved() -> ResolvedSessionRequest {
-        ResolvedSessionRequest {
-            history: Vec::new(),
-            agentloop_identity: AgentloopIdentity::new(digest()),
-            brain_configuration: serde_json::json!({}),
-            model: ModelBinding {
-                binding_id: "gateway".into(),
-                model: "openai/test".into(),
-            },
-            system: "test".into(),
-            response_format: None,
-            tools: vec![tool()],
-            environments: vec![ResolvedEnvironment {
-                environment_id: EnvironmentId::new("workspace"),
-                configuration: serde_json::json!({}),
-                lifecycle_policy: LifecyclePolicy::Shared,
-                binding_identities: Default::default(),
-            }],
-            tool_bindings: vec![RequestedToolBinding {
-                name: "search".into(),
-                environment_id: Some(EnvironmentId::new("workspace")),
-                needs: Vec::new(),
-                binding_names: Vec::new(),
-                hosting: ToolHosting::Provisioned,
-                program: None,
-            }],
-        }
-    }
-
-    fn sealed() -> SealedSessionConfig {
-        SealedSessionConfig {
+    /// The configuration as it is admitted: environments named but not yet attached.
+    fn config() -> SessionConfig {
+        SessionConfig {
             agentloop_identity: AgentloopIdentity::new(digest()),
             brain_configuration: serde_json::json!({}),
             model: ModelBinding {
@@ -947,21 +777,20 @@ mod tests {
             response_format: None,
             tools: vec![tool()],
             environments: vec![EnvironmentAttachment {
-                binding: environment_binding(),
-                attachment_id: AttachmentId::new("attachment"),
-                runtimes: vec![Runtime::Esm],
-                resources: [
-                    ("process".to_string(), serde_json::json!({})),
-                    ("fs".to_string(), serde_json::json!({"root": "/workspace"})),
-                ]
-                .into_iter()
-                .collect(),
+                environment_id: EnvironmentId::new("workspace"),
+                configuration: serde_json::json!({}),
+                lifecycle_policy: LifecyclePolicy::Shared,
+                binding: None,
+                attachment_id: None,
+                runtimes: Vec::new(),
+                resources: Default::default(),
             }],
             tool_bindings: vec![ToolBinding {
                 name: "search".into(),
-                environment: Some(environment_binding()),
-                attachment_id: Some(AttachmentId::new("attachment")),
-                needs: vec!["process".into()],
+                environment_id: Some(EnvironmentId::new("workspace")),
+                environment: None,
+                attachment_id: None,
+                needs: Vec::new(),
                 binding_names: Vec::new(),
                 hosting: ToolHosting::Provisioned,
                 program: None,
@@ -969,14 +798,32 @@ mod tests {
         }
     }
 
+    /// The same configuration once the host has attached the environment.
+    fn attached() -> SessionConfig {
+        let mut config = config();
+        config.environments[0].binding = Some(environment_binding());
+        config.environments[0].attachment_id = Some(AttachmentId::new("attachment"));
+        config.environments[0].runtimes = vec![Runtime::Esm];
+        config.environments[0].resources = [
+            ("process".to_string(), serde_json::json!({})),
+            ("fs".to_string(), serde_json::json!({"root": "/workspace"})),
+        ]
+        .into_iter()
+        .collect();
+        config.tool_bindings[0].environment = Some(environment_binding());
+        config.tool_bindings[0].attachment_id = Some(AttachmentId::new("attachment"));
+        config.tool_bindings[0].needs = vec!["process".into()];
+        config
+    }
+
     /// A rejection case: the name of the breach, the smallest edit that commits it, and
     /// the bound that must reject it.
-    type Breach<T> = (&'static str, fn(&mut T), &'static str);
+    type Breach = (&'static str, fn(&mut SessionConfig), &'static str);
 
     /// Each case names the bound it breaches, so a case that starts passing for some
     /// other reason fails rather than quietly stops testing what it was written for.
-    fn assert_rejected<T: SessionContract>(subject: &str, case: &str, request: &T, bound: &str) {
-        let error = validate_session_contract(request)
+    fn assert_rejected(subject: &str, case: &str, config: &SessionConfig, bound: &str) {
+        let error = validate_session_contract(config)
             .expect_err(&format!("{subject} with {case} must be rejected"));
         let message = error.to_string();
         assert!(
@@ -986,17 +833,17 @@ mod tests {
     }
 
     #[test]
-    fn a_request_within_every_bound_is_admitted() {
-        validate_session_contract(&resolved()).unwrap();
-        validate_session_contract(&sealed()).unwrap();
+    fn a_configuration_within_every_bound_is_admitted() {
+        validate_session_contract(&config()).unwrap();
+        validate_session_contract(&attached()).unwrap();
     }
 
     /// Principle 3 fixes authority at create, so every bound below is the difference
     /// between a session that can only do what it was granted and one that cannot be
     /// reasoned about at all. Each case is the smallest edit that breaches one bound.
     #[test]
-    fn every_bound_rejects_a_resolved_request_that_breaches_it() {
-        let cases: Vec<Breach<ResolvedSessionRequest>> = vec![
+    fn every_bound_rejects_a_configuration_that_breaches_it() {
+        let cases: Vec<Breach> = vec![
             (
                 "configuration over 2 MiB",
                 |request| {
@@ -1050,7 +897,7 @@ mod tests {
                         })
                         .collect();
                     request.tool_bindings = (0..129)
-                        .map(|index| RequestedToolBinding {
+                        .map(|index| ToolBinding {
                             name: format!("tool{index}"),
                             ..binding.clone()
                         })
@@ -1063,7 +910,7 @@ mod tests {
                 |request| {
                     let environment = request.environments[0].clone();
                     request.environments = (0..129)
-                        .map(|index| ResolvedEnvironment {
+                        .map(|index| EnvironmentAttachment {
                             environment_id: EnvironmentId::new(format!("env{index}")),
                             ..environment.clone()
                         })
@@ -1115,7 +962,7 @@ mod tests {
                     request.tool_bindings[0].environment_id = None;
                     request.tool_bindings[0].needs = Vec::new();
                     request.tool_bindings[0].program = Some(Program::Esm {
-                        identity: Identity::of(&"payload").unwrap(),
+                        identity: identity("d"),
                     });
                 },
                 "cannot carry a program",
@@ -1156,75 +1003,29 @@ mod tests {
             ),
         ];
         for (case, breach, bound) in cases {
-            let mut request = resolved();
+            let mut request = config();
             breach(&mut request);
-            assert_rejected("a resolved request", case, &request, bound);
+            assert_rejected("a configuration", case, &request, bound);
         }
     }
 
-    /// A sealed configuration reaches the journal through `CreatingSession::complete`,
-    /// the only other way a session is admitted. It is held to the same bounds, so a
-    /// session does not become more permissive by being driven from inside a service.
+    /// The attached configuration reaches the journal through `CreatingSession::complete`,
+    /// the only other way a session is admitted. It is held to the same bounds plus the
+    /// bind check, so a session does not become more permissive by being driven from
+    /// inside a service.
     #[test]
-    fn every_bound_rejects_a_sealed_configuration_that_breaches_it() {
-        let cases: Vec<Breach<SealedSessionConfig>> = vec![
-            (
-                "configuration over 2 MiB",
-                |sealed| {
-                    sealed.brain_configuration = serde_json::json!("x".repeat(3 * 1024 * 1024));
-                },
-                "exceeds 2 MiB",
-            ),
-            (
-                "an Agentloop digest that is not hex",
-                |sealed| sealed.agentloop_identity = AgentloopIdentity::new("g".repeat(64)),
-                "size or identity bound",
-            ),
-            (
-                "an empty model binding",
-                |sealed| sealed.model.binding_id = String::new(),
-                "size or identity bound",
-            ),
-            (
-                "a system prompt over 128 KiB",
-                |sealed| sealed.system = "s".repeat(131_073),
-                "size or identity bound",
-            ),
-            (
-                "a Tool name that is not an identifier",
-                |sealed| {
-                    sealed.tools[0].name = "../escape".into();
-                    sealed.tool_bindings[0].name = "../escape".into();
-                },
-                "Tool definition violates",
-            ),
-            (
-                "an Environment identity that is not an identifier",
-                |sealed| {
-                    sealed.environments[0].binding.environment_id = EnvironmentId::new("../escape");
-                    sealed.tool_bindings[0]
-                        .environment
-                        .as_mut()
-                        .unwrap()
-                        .environment_id = EnvironmentId::new("../escape");
-                },
-                "invalid identity",
-            ),
-            (
-                "a binding name that is not an identifier",
-                |sealed| sealed.tool_bindings[0].binding_names = vec!["../escape".into()],
-                "invalid identity",
-            ),
+    fn every_bound_rejects_an_attached_configuration_that_breaches_it() {
+        let cases: Vec<Breach> = vec![
             (
                 "a Tool needing a resource its Environment does not declare",
-                |sealed| sealed.tool_bindings[0].needs = vec!["dom".into()],
+                |config| config.tool_bindings[0].needs = vec!["dom".into()],
                 "does not provide",
             ),
             (
                 "a Tool whose program kind its Environment cannot launch",
-                |sealed| {
-                    sealed.tool_bindings[0].program = Some(Program::Shell {
-                        identity: Identity::of(&"script").unwrap(),
+                |config| {
+                    config.tool_bindings[0].program = Some(Program::Shell {
+                        identity: identity("e"),
                         script: "$command".into(),
                     })
                 },
@@ -1232,38 +1033,36 @@ mod tests {
             ),
             (
                 "a Tool naming a resource that is not a resource name",
-                |sealed| sealed.tool_bindings[0].needs = vec!["../fs".into()],
+                |config| config.tool_bindings[0].needs = vec!["../fs".into()],
                 "invalid or repeated resource",
             ),
             (
-                "a Tool definition with no binding",
-                |sealed| sealed.tool_bindings.clear(),
-                "exactly one binding",
-            ),
-            (
-                "two Environments sharing one identity",
-                |sealed| {
-                    let environment = sealed.environments[0].clone();
-                    sealed.environments.push(environment);
-                },
-                "Environment identities must be unique",
-            ),
-            (
-                "a binding naming an Environment that was not sealed",
-                |sealed| {
-                    sealed.tool_bindings[0]
+                "an attached binding naming a different Environment than the request",
+                |config| {
+                    config.tool_bindings[0]
                         .environment
                         .as_mut()
                         .unwrap()
                         .environment_id = EnvironmentId::new("elsewhere");
                 },
-                "must name a bound Environment",
+                "does not match",
+            ),
+            (
+                "an attachment whose binding names a different Environment",
+                |config| {
+                    config.environments[0]
+                        .binding
+                        .as_mut()
+                        .unwrap()
+                        .environment_id = EnvironmentId::new("elsewhere");
+                },
+                "does not match",
             ),
         ];
         for (case, breach, bound) in cases {
-            let mut configuration = sealed();
+            let mut configuration = attached();
             breach(&mut configuration);
-            assert_rejected("a sealed configuration", case, &configuration, bound);
+            assert_rejected("an attached configuration", case, &configuration, bound);
         }
     }
 

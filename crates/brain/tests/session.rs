@@ -9,16 +9,15 @@ use std::{
 
 use async_trait::async_trait;
 use brain::{
-    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionConfig,
+    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionRuntime,
     ToolExecutor,
 };
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopIdentity, AttachmentId, Decision,
     EnvironmentAttachment, EnvironmentBinding, EnvironmentId, Identity, LifecyclePolicy,
     MessageRequest, ModelBinding, ModelRequest, ModelResult, ModelStreamEvent, Observation,
-    Outcome, OutcomeError, RequestedToolBinding, ResolvedEnvironment, ResolvedSessionRequest,
-    Runtime as EnvironmentRuntime, SealedSessionConfig, SessionId, ToolBinding, ToolCancellation,
-    ToolDefinition, ToolDispatch, ToolHosting, ToolInvocation,
+    Outcome, OutcomeError, Runtime as EnvironmentRuntime, SessionConfig, SessionId, ToolBinding,
+    ToolCancellation, ToolDefinition, ToolDispatch, ToolHosting, ToolInvocation,
 };
 use brain_telemetry::telemetry_channel;
 use tokio::sync::Notify;
@@ -27,7 +26,7 @@ use tokio::sync::Notify;
 /// performs effects with. Built the way the server builds it.
 struct Runtime {
     store: Arc<ObservedJournal>,
-    config: Arc<SessionConfig>,
+    config: Arc<SessionRuntime>,
 }
 
 #[allow(dead_code)]
@@ -45,7 +44,7 @@ impl Runtime {
             Arc::new(brain::SegmentJournal::open(&data_dir.join("journal")).unwrap());
         let store = Arc::new(ObservedJournal::new(journal, telemetry));
         brain::interrupt_unfinished_turns(&*store).unwrap();
-        let config = Arc::new(SessionConfig {
+        let config = Arc::new(SessionRuntime {
             max_decisions_per_turn,
             tool_deadline_ms,
             loop_executor,
@@ -425,8 +424,8 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
     fs::remove_dir_all(data_dir).unwrap();
 }
 
-fn request() -> SealedSessionConfig {
-    SealedSessionConfig {
+fn request() -> SessionConfig {
+    SessionConfig {
         agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
         brain_configuration: serde_json::json!({}),
         model: ModelBinding {
@@ -441,24 +440,20 @@ fn request() -> SealedSessionConfig {
     }
 }
 
-fn tool_request() -> SealedSessionConfig {
+fn tool_request() -> SessionConfig {
     tool_request_with("slow", Vec::new(), Vec::new())
 }
 
 /// A sealed configuration binding one tool with the given `needs` to one
 /// environment declaring the given resources.
-fn tool_request_with(
-    tool_name: &str,
-    needs: Vec<&str>,
-    declares: Vec<&str>,
-) -> SealedSessionConfig {
+fn tool_request_with(tool_name: &str, needs: Vec<&str>, declares: Vec<&str>) -> SessionConfig {
     let environment = EnvironmentBinding {
         environment_id: EnvironmentId::new("workspace"),
-        configuration_identity: Identity::of(&"configuration").unwrap(),
+        configuration_identity: Identity::from_hex(&"b".repeat(64)).unwrap(),
         directory_generation: 1,
         lifecycle_policy: LifecyclePolicy::Shared,
     };
-    SealedSessionConfig {
+    SessionConfig {
         agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
         brain_configuration: serde_json::json!({}),
         model: ModelBinding {
@@ -474,8 +469,11 @@ fn tool_request_with(
             output_schema: None,
         }],
         environments: vec![EnvironmentAttachment {
-            binding: environment.clone(),
-            attachment_id: AttachmentId::new("attachment"),
+            environment_id: EnvironmentId::new("workspace"),
+            configuration: serde_json::json!({}),
+            lifecycle_policy: LifecyclePolicy::Shared,
+            binding: Some(environment.clone()),
+            attachment_id: Some(AttachmentId::new("attachment")),
             runtimes: vec![EnvironmentRuntime::Esm],
             resources: declares
                 .into_iter()
@@ -484,6 +482,7 @@ fn tool_request_with(
         }],
         tool_bindings: vec![ToolBinding {
             name: tool_name.into(),
+            environment_id: Some(EnvironmentId::new("workspace")),
             environment: Some(environment),
             attachment_id: Some(AttachmentId::new("attachment")),
             needs: needs.into_iter().map(String::from).collect(),
@@ -495,8 +494,8 @@ fn tool_request_with(
 }
 
 /// A sealed configuration binding one client-hosted tool: no environment anywhere.
-fn client_tool_request(tool_name: &str) -> SealedSessionConfig {
-    SealedSessionConfig {
+fn client_tool_request(tool_name: &str) -> SessionConfig {
+    SessionConfig {
         agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
         brain_configuration: serde_json::json!({}),
         model: ModelBinding {
@@ -514,6 +513,7 @@ fn client_tool_request(tool_name: &str) -> SealedSessionConfig {
         environments: Vec::new(),
         tool_bindings: vec![ToolBinding {
             name: tool_name.into(),
+            environment_id: None,
             environment: None,
             attachment_id: None,
             needs: Vec::new(),
@@ -530,52 +530,14 @@ fn temporary_directory() -> PathBuf {
     path
 }
 
-/// Sessions are created the way the server creates them: a resolved request is admitted,
-/// then the sealed configuration completes it. There is no shortcut past `Session::begin`,
-/// so these tests exercise the same validation the production path enforces.
-fn start(runtime: &Runtime, sealed: SealedSessionConfig) -> Session {
-    let resolved = resolved_from(&sealed);
-    Session::begin(runtime.store(), runtime.config.clone(), &resolved)
+/// Sessions are created the way the server creates them: the configuration is admitted,
+/// then attached and completed. There is no shortcut past `Session::begin`, so these
+/// tests exercise the same validation the production path enforces.
+fn start(runtime: &Runtime, config: SessionConfig) -> Session {
+    Session::begin(runtime.store(), runtime.config.clone(), &config, &[])
         .unwrap()
-        .complete(sealed)
+        .complete(config)
         .unwrap()
-}
-
-fn resolved_from(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
-    ResolvedSessionRequest {
-        history: Vec::new(),
-        agentloop_identity: sealed.agentloop_identity.clone(),
-        brain_configuration: sealed.brain_configuration.clone(),
-        model: sealed.model.clone(),
-        system: sealed.system.clone(),
-        response_format: sealed.response_format.clone(),
-        tools: sealed.tools.clone(),
-        environments: sealed
-            .environments
-            .iter()
-            .map(|environment| ResolvedEnvironment {
-                environment_id: environment.binding.environment_id.clone(),
-                configuration: serde_json::json!({}),
-                lifecycle_policy: environment.binding.lifecycle_policy.clone(),
-                binding_identities: Default::default(),
-            })
-            .collect(),
-        tool_bindings: sealed
-            .tool_bindings
-            .iter()
-            .map(|binding| RequestedToolBinding {
-                name: binding.name.clone(),
-                environment_id: binding
-                    .environment
-                    .as_ref()
-                    .map(|environment| environment.environment_id.clone()),
-                needs: binding.needs.clone(),
-                binding_names: binding.binding_names.clone(),
-                hosting: binding.hosting,
-                program: binding.program.clone(),
-            })
-            .collect(),
-    }
 }
 
 /// A client watching a session must see the model's output while the turn is running.
@@ -697,12 +659,10 @@ fn history_of(count: u64) -> Vec<brain_protocol::HistoryEvent> {
 
 fn start_with_history(
     runtime: &Runtime,
-    sealed: SealedSessionConfig,
+    config: SessionConfig,
     history: Vec<brain_protocol::HistoryEvent>,
 ) -> Result<Session, Error> {
-    let mut resolved = resolved_from(&sealed);
-    resolved.history = history;
-    Session::begin(runtime.store(), runtime.config.clone(), &resolved)?.complete(sealed)
+    Session::begin(runtime.store(), runtime.config.clone(), &config, &history)?.complete(config)
 }
 
 /// A session created with history has that history in its journal, and the agentloop is
@@ -1020,10 +980,10 @@ async fn needs_beyond_declared_resources_rejects_create_naming_all_three_parties
     );
 
     let sealed = tool_request_with("bash", vec!["process"], vec!["dom"]);
-    let resolved = resolved_from(&sealed);
-    let error = match Session::begin(runtime.store(), runtime.config.clone(), &resolved)
-        .unwrap()
-        .complete(sealed)
+    // The configuration is already attached, so the bind check fires at admission; a
+    // host that attaches after `begin` is rejected at `complete` by the same bound.
+    let error = match Session::begin(runtime.store(), runtime.config.clone(), &sealed, &[])
+        .and_then(|creation| creation.complete(sealed.clone()))
     {
         Ok(_) => {
             panic!("a tool needing `process` must not bind to an environment declaring only `dom`")

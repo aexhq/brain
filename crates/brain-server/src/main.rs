@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use brain::{JournalStore, ObservedJournal, SegmentJournal, SessionConfig};
+use brain::{JournalStore, ObservedJournal, SegmentJournal, SessionRuntime};
 use brain_loophost::{LoopLimits, WorkerPool};
 use brain_server::{
     EnvironmentRegistry, HttpEnvironmentAdapter, IdempotencyStore, InMemoryEnvironmentDirectory,
@@ -103,7 +103,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let journal: Arc<dyn JournalStore> = Arc::new(SegmentJournal::open(&journal_dir)?);
     let store = Arc::new(ObservedJournal::new(journal, telemetry));
     brain::interrupt_unfinished_turns(&*store)?;
-    let session_config = Arc::new(SessionConfig {
+    let session_runtime = Arc::new(SessionRuntime {
         max_decisions_per_turn: config.max_decisions_per_turn,
         tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
         loop_executor: Arc::new(WorkerLoopExecutor(loops.clone())),
@@ -113,7 +113,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     });
     Ok(ServerApi::new(ServerResources {
         store,
-        session_config,
+        session_runtime,
         idempotency: IdempotencyStore::new(brain_server::idempotency::DEFAULT_RETENTION),
         loops,
         environments,

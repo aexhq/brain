@@ -7,14 +7,14 @@ use std::{future::Future, time::Duration};
 use brain_protocol::codes::{self, Failure};
 use brain_protocol::{
     ActivationInput, ContextEnvelope, Decision, Event, EventId, LiveEvent, MessageRequest,
-    ModelRequest, ModelStreamEvent, Observation, Outcome, RuntimeEnvelope, SealedSessionConfig,
+    ModelRequest, ModelStreamEvent, Observation, Outcome, RuntimeEnvelope, SessionConfig,
     SessionStatus, SessionSummary, StreamingEvent, ToolCancellation, ToolDefinition, ToolDispatch,
     ToolHosting, ToolResult,
 };
 use futures_util::future::join_all;
 use tokio::sync::{mpsc, oneshot};
 
-use super::{PendingToolCalls, SessionConfig};
+use super::{PendingToolCalls, SessionRuntime};
 use crate::{
     Error,
     journal::{AppendRecord, JournalRecord, JournalStore, SessionRow, SessionUpdate},
@@ -46,10 +46,10 @@ struct Journalled {
 
 pub struct SessionActor {
     row: SessionRow,
-    sealed: SealedSessionConfig,
+    config: SessionConfig,
     context: ContextEnvelope,
     store: Arc<dyn JournalStore>,
-    config: Arc<SessionConfig>,
+    runtime: Arc<SessionRuntime>,
     receiver: mpsc::Receiver<SessionCommand>,
     cancel_requested: Arc<AtomicBool>,
     /// Events the session opened with, waiting to be handed to the agentloop. Taken once,
@@ -77,26 +77,25 @@ impl SessionActor {
     pub fn new(
         mut row: SessionRow,
         store: Arc<dyn JournalStore>,
-        config: Arc<SessionConfig>,
+        runtime: Arc<SessionRuntime>,
         receiver: mpsc::Receiver<SessionCommand>,
         cancel_requested: Arc<AtomicBool>,
         opening_history: Vec<serde_json::Value>,
         pending_tools: Arc<PendingToolCalls>,
     ) -> Result<Self, Error> {
-        // The row is owned, and neither value is read again after this: `sealed` and
+        // The row is owned, and neither value is read again after this: `config` and
         // `context` replace them. Cloning first deep-copied the whole configuration and
         // the whole context on every rehydration.
-        let sealed: SealedSessionConfig =
-            serde_json::from_value(std::mem::take(&mut row.configuration))
-                .map_err(|error| Error::Journal(error.to_string()))?;
+        let config: SessionConfig = serde_json::from_value(std::mem::take(&mut row.configuration))
+            .map_err(|error| Error::Journal(error.to_string()))?;
         let context = serde_json::from_value(std::mem::take(&mut row.context))
             .map_err(|error| Error::Journal(error.to_string()))?;
         Ok(Self {
             row,
-            sealed,
+            config,
             context,
             store,
-            config,
+            runtime,
             receiver,
             cancel_requested,
             opening_history,
@@ -156,7 +155,7 @@ impl SessionActor {
             input: request.input,
         };
         self.turn_opening_context = Some(self.context.clone());
-        for decision_index in 0..self.config.max_decisions_per_turn {
+        for decision_index in 0..self.runtime.max_decisions_per_turn {
             if self.cancel_requested.load(Ordering::Acquire) {
                 return self.cancel_turn();
             }
@@ -174,9 +173,9 @@ impl SessionActor {
             let activation = ActivationInput {
                 context,
                 observation,
-                configuration: self.sealed.brain_configuration.clone(),
-                system: self.sealed.system.clone(),
-                tools: self.sealed.tools.clone(),
+                configuration: self.config.brain_configuration.clone(),
+                system: self.config.system.clone(),
+                tools: self.config.tools.clone(),
                 runtime,
             };
             self.commit(
@@ -186,8 +185,8 @@ impl SessionActor {
                 )],
                 SessionUpdate::default(),
             )?;
-            let loop_executor = self.config.loop_executor.clone();
-            let agentloop_identity = self.sealed.agentloop_identity.clone();
+            let loop_executor = self.runtime.loop_executor.clone();
+            let agentloop_identity = self.config.agentloop_identity.clone();
             let session_id = self.row.session_id.clone();
             let output = match self
                 .interruptible(loop_executor.activate(&session_id, &agentloop_identity, activation))
@@ -227,11 +226,11 @@ impl SessionActor {
                 Decision::Model { mut request } => {
                     // What the loop left unsaid is what the session was created with.
                     if request.system.is_none() {
-                        request.system = Some(self.sealed.system.clone());
+                        request.system = Some(self.config.system.clone());
                     }
                     if request.tools.is_none() {
                         request.tools = Some(
-                            self.sealed
+                            self.config
                                 .tools
                                 .iter()
                                 .map(|tool| tool.name.clone())
@@ -239,7 +238,7 @@ impl SessionActor {
                         );
                     }
                     if request.response_format.is_none() {
-                        request.response_format = self.sealed.response_format.clone();
+                        request.response_format = self.config.response_format.clone();
                     }
                     let tools = match self.offered_tools(&request) {
                         Ok(tools) => tools,
@@ -261,10 +260,10 @@ impl SessionActor {
                     // client that wants the pieces takes them off the stream as they
                     // arrive. Sending is non-blocking and drops for a subscriber that has
                     // fallen behind, so watching a turn cannot slow it down.
-                    let live = self.config.live.clone();
+                    let live = self.runtime.live.clone();
                     let live_session = self.row.session_id.clone();
-                    let model_executor = self.config.model_executor.clone();
-                    let model_binding = self.sealed.model.clone();
+                    let model_executor = self.runtime.model_executor.clone();
+                    let model_binding = self.config.model.clone();
                     match self
                         .interruptible(model_executor.execute(
                             &model_binding,
@@ -314,7 +313,7 @@ impl SessionActor {
                     let mut started = Vec::with_capacity(calls.len());
                     for (offset, invocation) in calls.into_iter().enumerate() {
                         let binding = self
-                            .sealed
+                            .config
                             .tool_bindings
                             .iter()
                             .find(|binding| binding.name == invocation.name)
@@ -327,7 +326,7 @@ impl SessionActor {
                             session_id: self.row.session_id.clone(),
                             binding,
                             invocation,
-                            deadline_ms: self.config.tool_deadline_ms,
+                            deadline_ms: self.runtime.tool_deadline_ms,
                         };
                         started.push(AppendRecord::new(
                             codes::event::TOOL_CALL_STARTED,
@@ -357,7 +356,7 @@ impl SessionActor {
                             .cloned()
                             .enumerate()
                             .map(|(index, dispatch)| {
-                                let executor = self.config.tool_executor.clone();
+                                let executor = self.runtime.tool_executor.clone();
                                 let pending = self.pending_tools.clone();
                                 let receiver = receivers[index].take();
                                 async move {
@@ -502,7 +501,7 @@ impl SessionActor {
                 return Err(format!("Tool `{name}` is offered twice"));
             }
             let definition = self
-                .sealed
+                .config
                 .tools
                 .iter()
                 .find(|tool| &tool.name == name)
@@ -636,7 +635,7 @@ impl SessionActor {
             .map(|cancellation| cancellation.sequence)
             .collect();
         let futures = cancellations.into_iter().map(|cancellation| {
-            let executor = self.config.tool_executor.clone();
+            let executor = self.runtime.tool_executor.clone();
             let pending = self.pending_tools.clone();
             async move {
                 let sequence = cancellation.sequence;
@@ -773,17 +772,17 @@ impl SessionActor {
         let activation = ActivationInput {
             context: self.context.clone(),
             observation: Observation::SessionStarted { history },
-            configuration: self.sealed.brain_configuration.clone(),
-            system: self.sealed.system.clone(),
-            tools: self.sealed.tools.clone(),
+            configuration: self.config.brain_configuration.clone(),
+            system: self.config.system.clone(),
+            tools: self.config.tools.clone(),
             runtime,
         };
         let output = self
-            .config
+            .runtime
             .loop_executor
             .activate(
                 &self.row.session_id,
-                &self.sealed.agentloop_identity,
+                &self.config.agentloop_identity,
                 activation,
             )
             .await?;

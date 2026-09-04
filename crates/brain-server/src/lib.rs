@@ -1,6 +1,7 @@
 //! Runnable Brain composition and resources shared across sessions.
 
 pub mod config;
+pub mod digest;
 pub mod environment;
 pub mod idempotency;
 pub mod metadata;

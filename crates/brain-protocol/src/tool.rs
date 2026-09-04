@@ -94,10 +94,14 @@ pub struct ToolManifest {
     pub program: Program,
 }
 
+/// Where a tool call goes. `environment_id` is what the create request named; `environment`
+/// and `attachment_id` are filled in once the host has attached that environment.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolBinding {
     pub name: String,
     /// Absent for client-hosted tools: no environment is on their serving path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<EnvironmentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,21 +113,6 @@ pub struct ToolBinding {
     pub hosting: ToolHosting,
     /// Absent for client-hosted tools and for tools the environment executes natively
     /// without a provisioned program.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub program: Option<Program>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequestedToolBinding {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment_id: Option<EnvironmentId>,
-    #[serde(default)]
-    pub needs: Vec<String>,
-    pub binding_names: Vec<String>,
-    #[serde(default)]
-    pub hosting: ToolHosting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program: Option<Program>,
 }
