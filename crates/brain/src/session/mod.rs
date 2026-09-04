@@ -9,6 +9,7 @@ use std::{
     },
 };
 
+use brain_protocol::codes::{self, Failure};
 use brain_protocol::{
     AgentloopIdentity, ContextEnvelope, EnvironmentAttachment, EnvironmentId, HistoryEvent,
     MessageRequest, ModelBinding, Outcome, Program, RequestedToolBinding, ResolvedEnvironment,
@@ -22,7 +23,7 @@ use crate::{
     Error,
     journal::{AppendRecord, JournalStore, SessionRow, SessionUpdate},
 };
-use actor::{SessionActor, SessionCommand};
+use actor::{SessionActor, SessionCommand, failure_of, failure_payload};
 
 pub use config::{DEFAULT_TOOL_DEADLINE_MS, SessionConfig};
 
@@ -134,7 +135,7 @@ pub fn sealed_config(
 ) -> Result<SealedSessionConfig, Error> {
     let row = store
         .session_row(session_id)?
-        .ok_or_else(|| Error::InvalidState("session not found".into()))?;
+        .ok_or_else(|| Error::NotFound("session not found".into()))?;
     serde_json::from_value(row.configuration).map_err(|error| Error::Journal(error.to_string()))
 }
 
@@ -162,7 +163,7 @@ impl Session {
         store.create_session(
             &row,
             AppendRecord::new(
-                "session_creation_started",
+                codes::event::SESSION_CREATION_STARTED,
                 serde_json::to_value(request).map_err(json_error)?,
             ),
         )?;
@@ -188,7 +189,7 @@ impl Session {
     ) -> Result<Self, Error> {
         let row = store
             .session_row(session_id)?
-            .ok_or_else(|| Error::InvalidState("session not found".into()))?;
+            .ok_or_else(|| Error::NotFound("session not found".into()))?;
         let history = if store.take_restored(session_id)? {
             restored_history(&*store, session_id)?
         } else {
@@ -306,7 +307,7 @@ impl Session {
         sequence: u64,
         error: &Error,
     ) -> Result<(), Error> {
-        self.append(failed_record(kind, sequence, error))
+        self.append(failed_record(kind, sequence, error)?)
             .await
             .map(|_| ())
     }
@@ -358,7 +359,7 @@ impl CreatingSession {
         sequence: u64,
         error: &Error,
     ) -> Result<(), Error> {
-        self.append(failed_record(kind, sequence, error))
+        self.append(failed_record(kind, sequence, error)?)
             .map(|_| ())
     }
 
@@ -382,7 +383,7 @@ impl CreatingSession {
             &self.row.session_id,
             self.row.through_sequence,
             &[AppendRecord::new(
-                "session_creation_ended",
+                codes::event::SESSION_CREATION_ENDED,
                 serde_json::json!({"configuration":sealed}),
             )],
             SessionUpdate {
@@ -402,8 +403,8 @@ impl CreatingSession {
             &self.row.session_id,
             self.row.through_sequence,
             &[AppendRecord::new(
-                "session_creation_failed",
-                serde_json::json!({"code":code,"message":message}),
+                codes::event::SESSION_CREATION_FAILED,
+                failure_payload(None, &Failure::new(code, message))?,
             )],
             SessionUpdate {
                 status: Some(SessionStatus::Failed),
@@ -418,15 +419,11 @@ impl CreatingSession {
 
 /// The record of an effect that did not come back with a result. `ambiguous` says
 /// whether it may have happened anyway.
-fn failed_record(kind: &str, sequence: u64, error: &Error) -> AppendRecord {
-    AppendRecord::new(
+fn failed_record(kind: &str, sequence: u64, error: &Error) -> Result<AppendRecord, Error> {
+    Ok(AppendRecord::new(
         format!("{kind}_failed"),
-        serde_json::json!({
-            "sequence": sequence,
-            "error": error.to_string(),
-            "ambiguous": matches!(error, Error::Ambiguous(_)),
-        }),
-    )
+        failure_payload(Some(sequence), &failure_of(error))?,
+    ))
 }
 
 fn stopped() -> Error {

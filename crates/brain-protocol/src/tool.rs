@@ -188,7 +188,7 @@ impl ToolResult {
             Outcome::Timeout => ToolResult {
                 call_id,
                 output: serde_json::json!({
-                    "code": "timeout",
+                    "code": crate::codes::failure::TIMEOUT,
                     "message": "the Tool call did not finish before its deadline",
                 }),
                 is_error: true,
@@ -196,7 +196,7 @@ impl ToolResult {
             Outcome::Cancelled => ToolResult {
                 call_id,
                 output: serde_json::json!({
-                    "code": "cancelled",
+                    "code": crate::codes::failure::CANCELLED,
                     "message": "the Tool call was cancelled",
                 }),
                 is_error: true,

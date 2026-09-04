@@ -211,12 +211,9 @@ fn constant_time_equal(left: &[u8; 32], right: &[u8; 32]) -> bool {
 }
 
 fn unauthorized() -> HttpError {
-    HttpError(brain_protocol::ApiError {
-        code: "unauthorized".into(),
-        message: "a valid bearer token is required".into(),
-        retryable: false,
-        details: None,
-    })
+    HttpError(brain_protocol::ApiError::unauthorized(
+        "a valid bearer token is required",
+    ))
 }
 
 async fn admit_agentloop<A: BrainApi>(
