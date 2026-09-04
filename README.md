@@ -52,64 +52,6 @@ An environment provides the resources a tool needs to complete its tasks. [Write
 We provide a number of official extensions, written in the same way you would: [aexhq/extensions](https://github.com/aexhq/extensions).
 
 
-## Benchmarks
-Brain is minimal, so it runs faster than alternatives on the market.
-Be-aware that you normally add extensions to the runtime so that it can be useful, which means you don't normally see these benchmarks number in real use cases.
-★ marks Brain in each chart.
-
-**Turn round-trip**
-
-```text
-Brain      █                                        40 ms ★
-ZeroClaw   ███                                      53 ms
-OpenFang   ██████████                              128 ms
-AgentScope ██████████████████                      338 ms
-Letta      ███████████████████████                 678 ms
-LangGraph  ████████████████████████████            1.22 s
-Awaken     █████████████████████████████████       2.23 s
-OpenClaw   ████████████████████████████████████    3.33 s
-```
-
-**Time to first token**
-
-```text
-Brain      █                                       2.9 ms ★
-ZeroClaw   ████████                                 11 ms
-OpenFang   ██████████████████                       70 ms
-LangGraph  ████████████████████████                207 ms
-AgentScope ███████████████████████████             332 ms
-Letta      ████████████████████████████            407 ms
-OpenClaw   ██████████████████████████████████      1.33 s
-Awaken     ████████████████████████████████████    1.93 s
-```
-
-**New session**
-
-```text
-LangGraph  █                                      0.66 ms
-Brain      ██                                     0.76 ms ★
-ZeroClaw   ██████████                              2.2 ms
-Awaken     ████████████████                        5.1 ms
-OpenClaw   █████████████████                       5.4 ms
-OpenFang   █████████████████████                   9.8 ms
-Letta      ████████████████████████████████████     67 ms
-```
-
-**Memory per idle session**
-
-```text
-Brain      █                                        14 KiB ★
-OpenFang   ██████████████                          0.6 MiB
-ZeroClaw   ████████████████████████████             50 MiB
-OpenClaw   ████████████████████████████████████    490 MiB
-```
-
-<sub>Each number is the median from the harness in <a href="tools/bench">tools/bench</a>, run on
-the same AWS <code>c7g.xlarge</code> for every subject. Bars use a log scale. The chart includes
-only agent runtimes that own sessions behind an API. <a href="BENCHMARKS.md">BENCHMARKS.md</a> has
-the method and the subject versions.</sub>
-
-
 ## How it works
 
 This is one turn from start to finish. The agent loop decides what to do next. Brain does the
@@ -202,6 +144,70 @@ for await (const event of session.events()) console.log(event.sequence, event.ty
 await session.end();
 await session.delete();
 ```
+
+## Benchmarks
+Brain is minimal, so it runs faster than alternatives on the market. No model latency in any number. ★ marks Brain in each chart.
+
+**Turn round-trip**
+
+```text
+pi         █                                       5.1 ms
+Brain      ████████████                             40 ms ★
+Codex      █████████████                            47 ms
+ZeroClaw   ██████████████                           53 ms
+OpenFang   ██████████████████                      128 ms
+OpenCode   ███████████████████                     155 ms
+AgentScope ████████████████████████                338 ms
+Letta      ███████████████████████████             678 ms
+LangGraph  ███████████████████████████████         1.22 s
+Awaken     ██████████████████████████████████      2.23 s
+OpenClaw   ████████████████████████████████████    3.33 s
+```
+
+**Time to first token**
+
+```text
+Brain      █                                       2.9 ms ★
+pi         █████                                   6.3 ms
+ZeroClaw   ████████                                 11 ms
+Codex      ███████████████                          39 ms
+OpenFang   ██████████████████                       70 ms
+OpenCode   ████████████████████                     99 ms
+LangGraph  ████████████████████████                207 ms
+AgentScope ███████████████████████████             332 ms
+Letta      ████████████████████████████            407 ms
+OpenClaw   ██████████████████████████████████      1.33 s
+Awaken     ████████████████████████████████████    1.93 s
+```
+
+**New session**
+
+```text
+LangGraph  █                                      0.66 ms
+Brain      ██                                     0.76 ms ★
+OpenCode   ██████████                              2.1 ms
+ZeroClaw   ██████████                              2.2 ms
+Awaken     ████████████████                        5.1 ms
+OpenClaw   █████████████████                       5.4 ms
+pi         ███████████████████                     7.0 ms
+OpenFang   █████████████████████                   9.8 ms
+Codex      ████████████████████████                 14 ms
+Letta      ████████████████████████████████████     67 ms
+```
+
+**Memory per idle session**
+
+```text
+Brain      █                                        14 KiB ★
+OpenFang   ██████████████                          0.6 MiB
+ZeroClaw   ████████████████████████████             50 MiB
+OpenClaw   ████████████████████████████████████    490 MiB
+```
+
+<sub>Each number is the median from the harness in <a href="tools/bench">tools/bench</a>, run on
+the same AWS <code>c7g.xlarge</code> for every subject. Bars use a log scale. The chart includes
+only agent runtimes that own sessions behind an API. <a href="BENCHMARKS.md">BENCHMARKS.md</a> has
+the method and the subject versions.</sub>
 
 ## Roadmap
 
