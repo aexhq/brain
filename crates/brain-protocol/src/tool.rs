@@ -1,25 +1,31 @@
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AttachmentId, EnvironmentBinding, EnvironmentId, Identity, Outcome, Runtime, SessionId,
+    AttachmentId, EnvironmentBinding, EnvironmentId, IDENTIFIER_PATTERN, Identity, Outcome,
+    RESOURCE_NAME_PATTERN, Runtime, SessionId,
 };
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolDefinition {
+    #[schemars(schema_with = "crate::schema::identifier")]
     pub name: String,
+    #[schemars(length(max = 8192))]
     pub description: String,
+    #[schemars(schema_with = "crate::schema::json_object")]
     pub input_schema: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "crate::schema::json_object")]
     pub output_schema: Option<serde_json::Value>,
 }
 
 /// Where a tool's implementation executes: a provisioned program the environment
 /// launches, or an application process answering off the serve feed (`client`) — the
 /// session's creator or anyone holding the session's share key.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolHosting {
     #[default]
@@ -29,19 +35,22 @@ pub enum ToolHosting {
 
 /// The request template of an `http` program: the environment fronts the endpoint,
 /// the tool's input travels as the JSON body, and the response body is the output.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpProgramRequest {
+    #[schemars(regex(pattern = "^[A-Z]{3,16}$"))]
     pub method: String,
+    #[schemars(length(min = 1, max = 8192))]
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "crate::schema::http_headers")]
     pub headers: Option<BTreeMap<String, String>>,
 }
 
 /// The program behind a provisioned tool, named by content identity so
 /// re-provisioning is idempotent. An `esm` bundle travels out of band under its
 /// identity; a `shell` script and an `http` request template travel inline.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Program {
     Esm {
@@ -49,6 +58,7 @@ pub enum Program {
     },
     Shell {
         identity: Identity,
+        #[schemars(length(min = 1, max = 262144))]
         script: String,
     },
     Http {
@@ -79,17 +89,31 @@ impl Program {
 /// The `contracts/tool/v1` manifest: the only thing Brain and environments read about
 /// a tool. Binding *values* are never here — the manifest declares names, the
 /// environment injects values at runtime.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolManifest {
+    #[schemars(schema_with = "crate::schema::identifier")]
     pub name: String,
+    #[schemars(length(max = 8192))]
     pub description: String,
+    #[schemars(schema_with = "crate::schema::json_object")]
     pub input_schema: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "crate::schema::json_object")]
     pub output_schema: Option<serde_json::Value>,
     /// Resource names the program operates on; checked against the environment's
     /// declared resources at session create.
+    #[schemars(
+        length(max = 64),
+        inner(regex(pattern = RESOURCE_NAME_PATTERN)),
+        extend("uniqueItems" = true)
+    )]
     pub needs: Vec<String>,
+    #[schemars(
+        length(max = 64),
+        inner(regex(pattern = IDENTIFIER_PATTERN)),
+        extend("uniqueItems" = true)
+    )]
     pub binding_names: Vec<String>,
     pub program: Program,
 }

@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::message::{Message, StopReason, Usage};
@@ -9,11 +10,14 @@ pub struct ModelBinding {
     pub model: String,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSelection {
+    #[schemars(schema_with = "crate::schema::identifier")]
     pub provider: String,
+    #[schemars(regex(pattern = r"^\S{1,256}$"), length(max = 256))]
     pub name: String,
+    #[schemars(length(min = 1, max = 16384))]
     pub api_key: String,
 }
 

@@ -1,4 +1,15 @@
 {
+  "api": [
+    "invalid_request",
+    "unauthorized",
+    "not_found",
+    "conflict",
+    "overloaded",
+    "ambiguous",
+    "executor_failed",
+    "model_provider_failed",
+    "internal"
+  ],
   "events": [
     "session_creation_started",
     "session_creation_ended",
@@ -51,16 +62,5 @@
     "environment_preparation_failed",
     "environment_error",
     "invalid_transcript"
-  ],
-  "api": [
-    "invalid_request",
-    "unauthorized",
-    "not_found",
-    "conflict",
-    "overloaded",
-    "ambiguous",
-    "executor_failed",
-    "model_provider_failed",
-    "internal"
   ]
 }

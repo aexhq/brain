@@ -1,9 +1,10 @@
 import { compile } from "json-schema-to-typescript";
-import openapiTS, { astToString } from "openapi-typescript";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
+// Everything written here is rendered from contracts/, which `cargo run -p brain-contracts`
+// renders from the Rust types. Nothing under src/generated or contracts/ is edited by hand.
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
 const output = path.resolve(here, "../src/generated");
@@ -22,8 +23,7 @@ const session = await compile(schema, "BrainSessionContract", {
 });
 await writeFile(path.join(output, "session.ts"), session.replace(/\r\n/gu, "\n"));
 
-const openapi = await openapiTS(pathToFileURL(path.join(root, "contracts/session/v1/openapi.yaml")), {
-  exportType: true,
-  defaultNonNullable: false,
-});
-await writeFile(path.join(output, "paths.ts"), banner + astToString(openapi));
+// The agentloop WIT ships in the package so `brain build` can componentize against it.
+const wit = path.resolve(here, "../contracts");
+await mkdir(wit, { recursive: true });
+await copyFile(path.join(root, "contracts/agentloop/v1/agentloop.wit"), path.join(wit, "agentloop.wit"));

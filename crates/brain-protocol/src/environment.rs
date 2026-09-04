@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -10,7 +11,7 @@ use crate::{
 pub const ENVIRONMENT_CONTRACT: &str = "environment/v1";
 
 /// What a client asks for when it creates an environment.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateEnvironmentRequest {
     /// The id the environment is known by. Minted by Brain when absent.
@@ -26,7 +27,7 @@ pub struct CreateEnvironmentRequest {
     pub idle_ttl_ms: Option<u64>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentStatus {
     Open,
@@ -36,7 +37,7 @@ pub enum EnvironmentStatus {
 }
 
 /// What the API says about an environment.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct EnvironmentSummary {
     pub environment_id: EnvironmentId,
     pub status: EnvironmentStatus,
@@ -48,12 +49,15 @@ pub struct EnvironmentSummary {
     /// What the environment declared it executes and offers at setup.
     #[serde(default)]
     pub runtimes: Vec<Runtime>,
+    /// What the environment declared, verbatim. Brain reads the names; the policy
+    /// blocks are the environment contract's business.
     #[serde(default)]
+    #[schemars(schema_with = "crate::schema::json_object")]
     pub resources: Resources,
     pub created_at_ms: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct EnvironmentList {
     pub environments: Vec<EnvironmentSummary>,
 }
@@ -61,18 +65,20 @@ pub struct EnvironmentList {
 /// What a session create names about one environment it attaches to. `bindings` carries
 /// plaintext values for the environment's hosted tools and exists only here: the
 /// configuration the session journals never carries them.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentAttachRequest {
     pub environment_id: EnvironmentId,
     #[serde(default)]
+    #[schemars(with = "crate::schema::BindingValues")]
     pub bindings: BTreeMap<String, String>,
 }
 
 /// How an environment is addressed on its wire.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct EnvironmentBinding {
     pub environment_id: EnvironmentId,
+    #[schemars(range(min = 1))]
     pub directory_generation: u64,
 }
 
@@ -103,83 +109,96 @@ impl EnvironmentAttachment {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct EnvironmentOperation<T> {
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct EnvironmentOperation {
     /// The sequence of the journal record that started this operation. With
     /// `session_id` it names the operation: a redelivery carries the same pair, so a
     /// receiver that already answered it can say so. An operation on the environment
     /// itself rather than on a session's behalf carries the environment's own id here.
+    #[schemars(range(min = 1))]
     pub sequence: u64,
     pub environment_id: EnvironmentId,
     pub session_id: SessionId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachment_id: Option<AttachmentId>,
-    pub request: T,
+    pub request: EnvironmentRequest,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct EnvironmentCommand<T> {
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct EnvironmentCommand {
+    #[schemars(schema_with = "crate::schema::environment_contract")]
     pub contract: String,
     pub binding: EnvironmentBinding,
-    pub operation: EnvironmentOperation<T>,
+    pub operation: EnvironmentOperation,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct EnvironmentResponse {
+    #[schemars(schema_with = "crate::schema::environment_contract")]
     pub contract: String,
+    #[schemars(range(min = 1))]
     pub sequence: u64,
     pub receipt: EnvironmentReceipt,
 }
 
 /// One provisioned-tool artifact carried at attach: the manifest the environment reads
 /// and the content identity naming the payload it must already hold or fetch.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Provision {
     pub manifest: ToolManifest,
     pub payload_identity: Identity,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentRequest {
     Setup {
         configuration: serde_json::Value,
     },
     Attach {
+        #[schemars(length(max = 128))]
         provisions: Vec<Provision>,
         /// Binding values by name, injected into hosted tools at runtime. Plaintext on
         /// this wire only: the journal never holds the values.
+        #[schemars(with = "crate::schema::BindingValues")]
         bindings: BTreeMap<String, String>,
     },
     Call {
+        #[schemars(schema_with = "crate::schema::identifier")]
         name: String,
         input: serde_json::Value,
     },
     Invoke {
+        #[schemars(schema_with = "crate::schema::identifier")]
         call_id: String,
+        #[schemars(schema_with = "crate::schema::identifier")]
         tool: String,
         input: serde_json::Value,
+        #[schemars(range(min = 1))]
         deadline_ms: u64,
     },
     Cancel {
+        #[schemars(range(min = 1))]
         target_sequence: u64,
     },
     Detach,
     Teardown,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentReceipt {
     Accepted {
         /// The program runtimes this environment launches, reported on setup/attach
         /// receipts and fed into the bind-time check.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[schemars(extend("uniqueItems" = true))]
         runtimes: Vec<Runtime>,
         /// The resources this environment declares, reported on setup/attach receipts
         /// and fed into the bind-time `needs ⊆ resources` check.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        #[schemars(with = "crate::schema::ResourcePolicies")]
         resources: Resources,
     },
     Progress {
@@ -192,22 +211,25 @@ pub enum EnvironmentReceipt {
         outcome: Outcome,
     },
     Failure {
+        #[schemars(schema_with = "crate::schema::identifier")]
         code: String,
+        #[schemars(length(max = 4096))]
         message: String,
         retryable: bool,
     },
     Ambiguous {
+        #[schemars(length(max = 4096))]
         message: String,
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentCallRequest {
     pub input: serde_json::Value,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentCallResult {
     pub output: serde_json::Value,

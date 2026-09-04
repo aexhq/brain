@@ -10,7 +10,7 @@ use wasmtime::{
     Cache, Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap, UpdateDeadline,
 };
 
-use crate::{AgentloopPackage, HostCall, LoopLimits};
+use crate::{HostCall, LoopLimits};
 
 /// How often the engine's epoch advances. This is the granularity of a guest's compute
 /// bound: a turn is trapped somewhere inside the last tick of its budget. Fine enough
@@ -70,7 +70,7 @@ impl AdmissionEngine {
         if package_bytes.len() > self.limits.package_bytes {
             return Err("Agentloop package exceeds the configured admission limit".into());
         }
-        let (package, component_bytes) = AgentloopPackage::decode(package_bytes)?;
+        let (package, component_bytes) = crate::package::decode(package_bytes)?;
         if package.manifest.contract_version != brain_protocol::AGENTLOOP_CONTRACT_VERSION {
             return Err(format!(
                 "Agentloop contract version {:?} is not supported; this Brain runs {}",

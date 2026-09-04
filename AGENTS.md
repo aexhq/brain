@@ -1,9 +1,11 @@
 # Working in this repository
 
-- Brain owns the neutral session, remote Environment, and Agentloop contracts.
-  Change schemas and generated views together; never hand-edit generated contract files (CI
-  regenerates and diffs them). The Rust types in `crates/brain-protocol` are hand-written views
-  of the schemas; change both in the same pull request.
+- The Rust types in `crates/brain-protocol` and the `#[utoipa::path]` annotations in
+  `crates/brain-http` are the only source of the session, Environment, and Agentloop contracts.
+  `contracts/` is rendered from them by `cargo run -p brain-contracts` (only `agentloop.wit` and
+  `examples/` are written by hand), and the SDK's `src/generated` from `contracts/` by
+  `npm run gen`. Never edit a rendered file; CI regenerates and diffs them. To change a
+  contract, change the type or the annotation and run `npm run gen`.
 - `hands` and downstream products consume immutable Brain tags or revisions. Brain must not depend
   on a Hands implementation crate or product-specific runtime.
 - Journal every effect before it happens. The logs are written behind the turn and are not a

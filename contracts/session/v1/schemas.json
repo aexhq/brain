@@ -1,248 +1,921 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aexhq/brain/contracts/session/v1/schemas.json",
-  "title": "Brain Session API v1",
   "$defs": {
-    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "Identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "AgentloopIdentity": { "$ref": "#/$defs/Identity" },
-    "SessionId": { "type": "string", "pattern": "^ses_[A-Za-z0-9]{20,32}$" },
+    "AdmissionStatus": {
+      "enum": [
+        "admitted",
+        "rejected"
+      ],
+      "type": "string"
+    },
+    "AgentloopAdmission": {
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ApiError"
+        },
+        "identity": {
+          "$ref": "#/$defs/AgentloopIdentity"
+        },
+        "status": {
+          "$ref": "#/$defs/AdmissionStatus"
+        }
+      },
+      "required": [
+        "identity",
+        "status"
+      ],
+      "type": "object"
+    },
+    "AgentloopIdentity": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "AgentloopManifest": {
+      "additionalProperties": false,
+      "description": "The manifest inside an agentloop package: the contract the loop was built against\nand the component it carries.",
+      "properties": {
+        "component_bytes": {
+          "format": "uint",
+          "maximum": 33554432,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "component_identity": {
+          "$ref": "#/$defs/AgentloopIdentity"
+        },
+        "contract_version": {
+          "const": "agentloop/v1"
+        },
+        "toolchain": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_version",
+        "component_identity",
+        "component_bytes",
+        "toolchain"
+      ],
+      "type": "object"
+    },
+    "AgentloopPackage": {
+      "additionalProperties": false,
+      "description": "What `POST /v1/agentloops` receives: the manifest and the component it describes,\nbase64-encoded.",
+      "properties": {
+        "component_base64": {
+          "type": "string"
+        },
+        "manifest": {
+          "$ref": "#/$defs/AgentloopManifest"
+        }
+      },
+      "required": [
+        "manifest",
+        "component_base64"
+      ],
+      "type": "object"
+    },
     "AgentloopRef": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["identity", "configuration"],
+      "description": "The admitted loop package a session runs: which one, and how it is configured.",
       "properties": {
-        "identity": { "$ref": "#/$defs/AgentloopIdentity" },
-        "configuration": {}
-      }
+        "configuration": true,
+        "identity": {
+          "$ref": "#/$defs/AgentloopIdentity"
+        }
+      },
+      "required": [
+        "identity",
+        "configuration"
+      ],
+      "type": "object"
     },
-    "Runtime": { "enum": ["esm", "shell", "http"] },
-    "ResourceName": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$" },
-    "HttpProgramRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["method", "url"],
+    "ApiError": {
       "properties": {
-        "method": { "type": "string", "pattern": "^[A-Z]{3,16}$" },
-        "url": { "type": "string", "minLength": 1, "maxLength": 8192 },
-        "headers": { "type": "object", "propertyNames": { "maxLength": 256 }, "additionalProperties": { "type": "string", "maxLength": 16384 } }
-      }
+        "code": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "details": true,
+        "message": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "type": "object"
     },
-    "Program": {
-      "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["kind", "identity"], "properties": { "kind": { "const": "esm" }, "identity": { "$ref": "#/$defs/Identity" } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "identity", "script"], "properties": { "kind": { "const": "shell" }, "identity": { "$ref": "#/$defs/Identity" }, "script": { "type": "string", "minLength": 1, "maxLength": 262144 } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "identity", "request"], "properties": { "kind": { "const": "http" }, "identity": { "$ref": "#/$defs/Identity" }, "request": { "$ref": "#/$defs/HttpProgramRequest" } } }
-      ]
+    "BindingValues": {
+      "additionalProperties": {
+        "maxLength": 32768,
+        "type": "string"
+      },
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "type": "object"
     },
     "BoundTool": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "input_schema", "needs", "binding_names"],
-      "properties": {
-        "name": { "$ref": "#/$defs/Identifier" },
-        "description": { "type": "string", "maxLength": 8192 },
-        "input_schema": { "type": "object" },
-        "output_schema": { "type": "object" },
-        "needs": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/ResourceName" } },
-        "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
-        "hosting": { "enum": ["provisioned", "client"] },
-        "program": { "$ref": "#/$defs/Program" },
-        "environment_id": { "$ref": "#/$defs/Identifier" }
-      },
       "allOf": [
-        { "if": { "required": ["hosting"], "properties": { "hosting": { "const": "client" } } }, "then": { "allOf": [ { "not": { "required": ["program"] } }, { "not": { "required": ["environment_id"] } }, { "properties": { "needs": { "maxItems": 0 } } } ] } },
-        { "if": { "not": { "required": ["hosting"], "properties": { "hosting": { "const": "client" } } } }, "then": { "required": ["environment_id"] } }
+        {
+          "if": {
+            "properties": {
+              "hosting": {
+                "const": "client"
+              }
+            },
+            "required": [
+              "hosting"
+            ]
+          },
+          "then": {
+            "allOf": [
+              {
+                "not": {
+                  "required": [
+                    "program"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "environment_id"
+                  ]
+                }
+              },
+              {
+                "properties": {
+                  "needs": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "hosting": {
+                  "const": "client"
+                }
+              },
+              "required": [
+                "hosting"
+              ]
+            }
+          },
+          "then": {
+            "required": [
+              "environment_id"
+            ]
+          }
+        }
+      ],
+      "description": "One tool as the SDK hands it over: its manifest fields plus the environment it\nbinds to. Brain splits the model-facing and dispatch-facing halves internally.",
+      "properties": {
+        "binding_names": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "description": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "environment_id": {
+          "$ref": "#/$defs/EnvironmentId",
+          "description": "Required unless `hosting` is `client`; a client-hosted tool binds no environment."
+        },
+        "hosting": {
+          "$ref": "#/$defs/ToolHosting",
+          "default": "provisioned"
+        },
+        "input_schema": {
+          "type": "object"
+        },
+        "name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "needs": {
+          "default": [],
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "output_schema": {
+          "type": "object"
+        },
+        "program": {
+          "$ref": "#/$defs/Program"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema",
+        "binding_names"
+      ],
+      "type": "object"
+    },
+    "ContentBlock": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "input": true,
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_use",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": true,
+            "is_error": {
+              "description": "ALWAYS set on a failed tool. Omitting the flag on a failure lets the\nmodel read that failure as a success.",
+              "type": "boolean"
+            },
+            "tool_use_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tool_use_id",
+            "content",
+            "is_error"
+          ],
+          "type": "object"
+        }
       ]
     },
-    "EnvironmentAttachRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["environment_id"],
-      "properties": {
-        "environment_id": { "$ref": "#/$defs/Identifier" },
-        "bindings": {
-          "type": "object",
-          "propertyNames": { "$ref": "#/$defs/Identifier" },
-          "additionalProperties": { "type": "string", "maxLength": 32768 }
-        }
-      }
-    },
     "CreateEnvironmentRequest": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["configuration"],
+      "description": "What a client asks for when it creates an environment.",
       "properties": {
-        "environment_id": { "$ref": "#/$defs/Identifier" },
-        "configuration": {},
-        "managed": { "type": "boolean", "description": "Brain closes the environment once no session has been attached to it for idle_ttl_ms." },
-        "idle_ttl_ms": { "type": "integer", "minimum": 0 }
-      }
-    },
-    "EnvironmentStatus": { "enum": ["open", "unreachable"] },
-    "Environment": {
-      "type": "object",
-      "required": ["environment_id", "status", "managed", "attached_sessions", "created_at_ms"],
-      "properties": {
-        "environment_id": { "$ref": "#/$defs/Identifier" },
-        "status": { "$ref": "#/$defs/EnvironmentStatus" },
-        "managed": { "type": "boolean" },
-        "idle_ttl_ms": { "type": "integer", "minimum": 0 },
-        "attached_sessions": { "type": "array", "items": { "$ref": "#/$defs/SessionId" } },
-        "runtimes": { "type": "array", "items": { "$ref": "#/$defs/Runtime" } },
-        "resources": { "type": "object" },
-        "created_at_ms": { "type": "integer", "minimum": 0 }
-      }
-    },
-    "EnvironmentList": {
-      "type": "object",
-      "required": ["environments"],
-      "properties": {
-        "environments": { "type": "array", "items": { "$ref": "#/$defs/Environment" } }
-      }
-    },
-    "ModelSelection": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["provider", "name", "api_key"],
-      "properties": {
-        "provider": { "$ref": "#/$defs/Identifier" },
-        "name": { "type": "string", "pattern": "^\\S{1,256}$", "maxLength": 256 },
-        "api_key": { "type": "string", "minLength": 1, "maxLength": 16384 }
-      }
+        "configuration": true,
+        "environment_id": {
+          "$ref": "#/$defs/EnvironmentId",
+          "description": "The id the environment is known by. Minted by Brain when absent."
+        },
+        "idle_ttl_ms": {
+          "description": "Absent means the server's default; zero means never.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "managed": {
+          "default": false,
+          "description": "Whether Brain closes the environment once no session has been attached to it\nfor `idle_ttl_ms`. An unmanaged environment lives until it is deleted.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "configuration"
+      ],
+      "type": "object"
     },
     "CreateSessionRequest": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["agentloop", "model", "tools", "environments"],
       "properties": {
-        "agentloop": { "$ref": "#/$defs/AgentloopRef" },
-        "model": { "$ref": "#/$defs/ModelSelection" },
-        "system": { "type": "string", "maxLength": 131072 },
-        "response_format": {},
-        "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/BoundTool" } },
-        "environments": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/EnvironmentAttachRequest" } },
-        "transcript": { "type": "array", "maxItems": 4096, "items": { "type": "object", "required": ["role", "content"] }, "description": "A transcript to carry forward: the messages the first model call should already see." },
-        "idle_ttl_ms": { "type": "integer", "minimum": 0, "description": "How long the session may sit idle before Brain suspends its task and memory to disk. Absent means the server default; zero means never." }
-      }
+        "agentloop": {
+          "$ref": "#/$defs/AgentloopRef"
+        },
+        "environments": {
+          "description": "The environments this session attaches to, by id. Each must already exist.",
+          "items": {
+            "$ref": "#/$defs/EnvironmentAttachRequest"
+          },
+          "maxItems": 128,
+          "type": "array"
+        },
+        "idle_ttl_ms": {
+          "description": "How long the session may sit idle before Brain suspends it: its task and memory\nare released and rebuilt from disk on the next request. Absent means the server's\ndefault; zero means never.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "$ref": "#/$defs/ModelSelection"
+        },
+        "response_format": {
+          "description": "The provider's structured-output request, applied to every model call unless the\nloop sends its own. Optional, and rejected at create for a provider that cannot\ncarry it."
+        },
+        "system": {
+          "default": "",
+          "description": "The system prompt the agent loop starts from. The loop may send a different one\non any model call.",
+          "maxLength": 131072,
+          "type": "string"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/BoundTool"
+          },
+          "maxItems": 128,
+          "type": "array"
+        },
+        "transcript": {
+          "description": "A transcript to carry forward, if the caller has one: the messages the new\nsession's first model call should already see. Brain journals them as the session's\nopening transcript. Empty is an ordinary new session.",
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        }
+      },
+      "required": [
+        "agentloop",
+        "model",
+        "tools",
+        "environments"
+      ],
+      "type": "object"
     },
-    "UserInput": {
-      "type": "object",
+    "EnvironmentAttachRequest": {
       "additionalProperties": false,
-      "required": ["message"],
-      "properties": { "message": { "type": "string", "minLength": 1 } }
-    },
-    "MessageRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["input"],
-      "properties": { "input": { "$ref": "#/$defs/UserInput" } }
+      "description": "What a session create names about one environment it attaches to. `bindings` carries\nplaintext values for the environment's hosted tools and exists only here: the\nconfiguration the session journals never carries them.",
+      "properties": {
+        "bindings": {
+          "$ref": "#/$defs/BindingValues",
+          "default": {}
+        },
+        "environment_id": {
+          "$ref": "#/$defs/EnvironmentId"
+        }
+      },
+      "required": [
+        "environment_id"
+      ],
+      "type": "object"
     },
     "EnvironmentCallRequest": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["input"],
-      "properties": { "input": {} }
+      "properties": {
+        "input": true
+      },
+      "required": [
+        "input"
+      ],
+      "type": "object"
     },
     "EnvironmentCallResult": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["output"],
-      "properties": { "output": {} }
+      "properties": {
+        "output": true
+      },
+      "required": [
+        "output"
+      ],
+      "type": "object"
     },
-    "Sequence": { "type": "integer", "minimum": 1 },
-    "Outcome": {
+    "EnvironmentId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "type": "string"
+    },
+    "EnvironmentList": {
+      "properties": {
+        "environments": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentSummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "environments"
+      ],
+      "type": "object"
+    },
+    "EnvironmentStatus": {
       "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["status", "value"], "properties": { "status": { "const": "ok" }, "value": {} } },
-        { "type": "object", "additionalProperties": false, "required": ["status", "error"], "properties": { "status": { "const": "error" }, "error": { "$ref": "#/$defs/OutcomeError" } } },
-        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "timeout" } } },
-        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "cancelled" } } }
+        {
+          "enum": [
+            "open"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "unreachable",
+          "description": "The last operation could not reach the environment. Cleared by the next one that\ndoes.",
+          "type": "string"
+        }
+      ]
+    },
+    "EnvironmentSummary": {
+      "description": "What the API says about an environment.",
+      "properties": {
+        "attached_sessions": {
+          "description": "Sessions attached right now.",
+          "items": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "type": "array"
+        },
+        "created_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "environment_id": {
+          "$ref": "#/$defs/EnvironmentId"
+        },
+        "idle_ttl_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "managed": {
+          "type": "boolean"
+        },
+        "resources": {
+          "default": {},
+          "description": "What the environment declared, verbatim. Brain reads the names; the policy\nblocks are the environment contract's business.",
+          "type": "object"
+        },
+        "runtimes": {
+          "default": [],
+          "description": "What the environment declared it executes and offers at setup.",
+          "items": {
+            "$ref": "#/$defs/Runtime"
+          },
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/EnvironmentStatus"
+        }
+      },
+      "required": [
+        "environment_id",
+        "status",
+        "managed",
+        "attached_sessions",
+        "created_at_ms"
+      ],
+      "type": "object"
+    },
+    "Event": {
+      "properties": {
+        "data": true,
+        "event_id": {
+          "$ref": "#/$defs/EventId"
+        },
+        "event_type": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "recorded_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "sequence",
+        "recorded_at_ms",
+        "event_type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "EventId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "type": "string"
+    },
+    "EventPage": {
+      "properties": {
+        "events": {
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "maxItems": 1000,
+          "type": "array"
+        },
+        "next_cursor": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "events",
+        "next_cursor"
+      ],
+      "type": "object"
+    },
+    "HttpProgramRequest": {
+      "additionalProperties": false,
+      "description": "The request template of an `http` program: the environment fronts the endpoint,\nthe tool's input travels as the JSON body, and the response body is the output.",
+      "properties": {
+        "headers": {
+          "additionalProperties": {
+            "maxLength": 16384,
+            "type": "string"
+          },
+          "propertyNames": {
+            "maxLength": 256
+          },
+          "type": "object"
+        },
+        "method": {
+          "pattern": "^[A-Z]{3,16}$",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 8192,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ],
+      "type": "object"
+    },
+    "Identity": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Message": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/ContentBlock"
+          },
+          "type": "array"
+        },
+        "role": {
+          "$ref": "#/$defs/Role"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
+    },
+    "MessageRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "$ref": "#/$defs/UserInput"
+        }
+      },
+      "required": [
+        "input"
+      ],
+      "type": "object"
+    },
+    "ModelSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "maxLength": 16384,
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 256,
+          "pattern": "^\\S{1,256}$",
+          "type": "string"
+        },
+        "provider": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "name",
+        "api_key"
+      ],
+      "type": "object"
+    },
+    "Outcome": {
+      "description": "The one envelope every tool invocation resolves to.\n\n`timeout` is distinguished from `error` because the deadline is caller-owned: no\nbackend family can be trusted to enforce one remotely, so the caller kills and says\nexactly what happened rather than encoding it as an exit code.",
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "ok",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "status",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/OutcomeError"
+            },
+            "status": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "timeout",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        }
       ]
     },
     "OutcomeError": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["code", "message"],
       "properties": {
-        "code": { "$ref": "#/$defs/Identifier" },
-        "message": { "type": "string", "maxLength": 4096 },
-        "details": {}
-      }
+        "code": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "details": true,
+        "message": {
+          "maxLength": 4096,
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
     },
-    "ShareKey": { "type": "string", "pattern": "^sk\\.ses_[A-Za-z0-9]{20,32}\\.[0-9a-f]{64}$" },
-    "Session": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["session_id", "status", "last_sequence", "share_key"],
-      "properties": {
-        "session_id": { "$ref": "#/$defs/SessionId" },
-        "status": { "enum": ["creating", "idle", "running", "ended", "failed"] },
-        "last_sequence": { "type": "integer", "minimum": 0 },
-        "share_key": { "$ref": "#/$defs/ShareKey" }
-      }
+    "Program": {
+      "description": "The program behind a provisioned tool, named by content identity so\nre-provisioning is idempotent. An `esm` bundle travels out of band under its\nidentity; a `shell` script and an `http` request template travel inline.",
+      "oneOf": [
+        {
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/Identity"
+            },
+            "kind": {
+              "const": "esm",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/Identity"
+            },
+            "kind": {
+              "const": "shell",
+              "type": "string"
+            },
+            "script": {
+              "maxLength": 262144,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity",
+            "script"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/Identity"
+            },
+            "kind": {
+              "const": "http",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/HttpProgramRequest"
+            }
+          },
+          "required": [
+            "kind",
+            "identity",
+            "request"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Role": {
+      "enum": [
+        "user",
+        "assistant"
+      ],
+      "type": "string"
+    },
+    "Runtime": {
+      "description": "The closed set of program kinds an environment can launch. Closed only because\nBrain and the SDK must physically package and start the program.",
+      "oneOf": [
+        {
+          "const": "esm",
+          "description": "A self-contained JavaScript module (`brain build` output).",
+          "type": "string"
+        },
+        {
+          "const": "shell",
+          "description": "A POSIX shell script.",
+          "type": "string"
+        },
+        {
+          "const": "http",
+          "description": "A request to an endpoint the environment fronts.",
+          "type": "string"
+        }
+      ]
+    },
+    "SessionId": {
+      "pattern": "^ses_[A-Za-z0-9]{20,32}$",
+      "type": "string"
     },
     "SessionList": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["sessions"],
-      "properties": { "sessions": { "type": "array", "items": { "$ref": "#/$defs/Session" } } }
-    },
-    "Event": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["event_id", "sequence", "recorded_at_ms", "event_type", "data"],
       "properties": {
-        "event_id": { "$ref": "#/$defs/Identifier" },
-        "sequence": { "type": "integer", "minimum": 1 },
-        "recorded_at_ms": { "type": "integer", "minimum": 0 },
-        "event_type": { "$ref": "#/$defs/Identifier" },
-        "data": {}
-      }
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/SessionSummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sessions"
+      ],
+      "type": "object"
     },
-    "EventPage": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["events", "next_cursor"],
-      "properties": {
-        "events": { "type": "array", "maxItems": 1000, "items": { "$ref": "#/$defs/Event" } },
-        "next_cursor": { "type": "integer", "minimum": 0 }
-      }
+    "SessionStatus": {
+      "enum": [
+        "creating",
+        "idle",
+        "running",
+        "ended",
+        "failed"
+      ],
+      "type": "string"
     },
-    "AgentloopManifest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["contract_version", "component_identity", "component_bytes"],
+    "SessionSummary": {
+      "description": "What the API says about a session: its id, where it is, and how far its journal goes.",
       "properties": {
-        "contract_version": { "const": "agentloop/v1" },
-        "component_identity": { "$ref": "#/$defs/Identity" },
-        "component_bytes": { "type": "integer", "minimum": 1, "maximum": 33554432 },
-        "toolchain": { "type": "string", "minLength": 1, "maxLength": 256 }
-      }
+        "last_sequence": {
+          "description": "Sequence of the last journal record committed for this session — the journal is\ncomplete through here, so it is where a `GET /events` cursor starts.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "share_key": {
+          "description": "The scoped credential that authorizes answering this session's client-hosted\ntools: the serve feed and the tool-results endpoint, nothing else. Hand it to\nthe process that serves a tool; it spends nothing and reads nothing else.\nMinted by the serving layer — the session leaves it empty.",
+          "pattern": "^sk\\.ses_[A-Za-z0-9]{20,32}\\.[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        }
+      },
+      "required": [
+        "session_id",
+        "status",
+        "last_sequence",
+        "share_key"
+      ],
+      "type": "object"
     },
-    "AgentloopAdmission": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["identity", "status"],
-      "properties": {
-        "identity": { "$ref": "#/$defs/Identity" },
-        "status": { "enum": ["admitted", "rejected"] },
-        "error": { "$ref": "#/$defs/ApiError" }
-      }
+    "ToolHosting": {
+      "description": "Where a tool's implementation executes: a provisioned program the environment\nlaunches, or an application process answering off the serve feed (`client`) — the\nsession's creator or anyone holding the session's share key.",
+      "enum": [
+        "provisioned",
+        "client"
+      ],
+      "type": "string"
     },
-    "ApiError": {
-      "type": "object",
+    "UserInput": {
       "additionalProperties": false,
-      "required": ["code", "message", "retryable"],
+      "description": "What an application hands a session on `send`. The shape is closed on purpose:\nBrain owes every agentloop the same observation shape regardless of who wrote\nthe client, so free-form content is not accepted. Multimodal parts will extend\nthis record when they land — see the roadmap.",
       "properties": {
-        "code": { "$ref": "#/$defs/Identifier" },
-        "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "retryable": { "type": "boolean" },
-        "details": {}
-      }
+        "message": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
     }
   },
-  "type": "object",
+  "$id": "https://github.com/aexhq/brain/contracts/session/v1/schemas.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "required": ["contract"],
-  "properties": { "contract": { "const": "session/v1" } }
+  "properties": {
+    "contract": {
+      "const": "session/v1"
+    }
+  },
+  "required": [
+    "contract"
+  ],
+  "title": "Brain Session API v1",
+  "type": "object"
 }

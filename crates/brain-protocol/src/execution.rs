@@ -10,11 +10,14 @@
 
 use std::{collections::BTreeMap, fmt};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The closed set of program kinds an environment can launch. Closed only because
 /// Brain and the SDK must physically package and start the program.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Runtime {
     /// A self-contained JavaScript module (`brain build` output).
@@ -40,6 +43,9 @@ impl fmt::Display for Runtime {
 /// vendor resources are namespaced (`aws:iam`) and opaque. Brain compares names
 /// only and never interprets the policy blocks.
 pub type Resources = BTreeMap<String, serde_json::Value>;
+
+/// The shape [`resource_name_valid`] admits, as the contract states it.
+pub const RESOURCE_NAME_PATTERN: &str = "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$";
 
 /// Whether `value` is a resource name the contract admits: a lowercase word,
 /// optionally namespaced with one colon (`fs`, `bin:ffmpeg`).
@@ -70,7 +76,7 @@ pub fn resource_name_valid(value: &str) -> bool {
 /// `timeout` is distinguished from `error` because the deadline is caller-owned: no
 /// backend family can be trusted to enforce one remotely, so the caller kills and says
 /// exactly what happened rather than encoding it as an exit code.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Outcome {
     Ok { value: serde_json::Value },
@@ -79,10 +85,12 @@ pub enum Outcome {
     Cancelled,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutcomeError {
+    #[schemars(schema_with = "crate::schema::identifier")]
     pub code: String,
+    #[schemars(length(max = 4096))]
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,

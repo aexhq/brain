@@ -3,7 +3,7 @@ use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput};
 use tokio::sync::{Mutex, Semaphore};
 
-use crate::{AgentloopPackage, LoopLimits, TurnBridge, WorkerClient};
+use crate::{LoopLimits, TurnBridge, WorkerClient};
 
 /// How long the worker may go without a frame while the guest is computing before the
 /// supervisor gives up on it. Strictly more than the guest's own compute budget, which
@@ -91,7 +91,7 @@ impl WorkerPool {
         if package.len() > self.limits.package_bytes {
             return Err("Agentloop package exceeds the configured admission limit".into());
         }
-        AgentloopPackage::decode(&package)?;
+        crate::package::decode(&package)?;
         let _permit = self
             .permits
             .clone()

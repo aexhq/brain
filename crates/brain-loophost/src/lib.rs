@@ -8,9 +8,9 @@ mod service;
 mod supervisor;
 mod wire;
 
+pub use brain_protocol::{AgentloopManifest, AgentloopPackage};
 pub use client::{TurnBridge, WorkerClient};
 pub use limits::LoopLimits;
-pub use package::{AgentloopManifest, AgentloopPackage};
 pub use runtime::{AdmissionEngine, AdmittedAgentloop, GuestHost, WarmInstances};
 pub use service::WorkerService;
 pub use supervisor::{LoopError, WorkerPool};

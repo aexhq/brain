@@ -1,15 +1,19 @@
 //! Types crossing Brain process, transport, or durable-storage boundaries.
+//!
+//! These types are the source of the published contracts: [`contracts`] renders them to
+//! JSON Schema, and `brain-contracts` writes the result under `contracts/`.
 
 pub mod agentloop;
 pub mod codes;
+pub mod contracts;
 pub mod environment;
 pub mod error;
 pub mod execution;
-pub mod generated;
 pub mod identity;
 pub mod ids;
 pub mod message;
 pub mod model;
+mod schema;
 pub mod session;
 pub mod tool;
 

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -10,9 +11,10 @@ pub const AGENTLOOP_CONTRACT_VERSION: &str = "agentloop/v1";
 /// The most items a transcript may hold.
 pub const MAX_TRANSCRIPT_ITEMS: usize = 4_096;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct RuntimeEnvelope {
     pub logical_time_ms: u64,
+    #[schemars(length(equal = 32))]
     pub deterministic_seed: Vec<u8>,
 }
 
@@ -33,29 +35,34 @@ impl RuntimeEnvelope {
 }
 
 /// What Brain hands the loop for one turn.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct TurnInput {
     pub input: UserInput,
     /// The transcript as it stands: what the next model call would see.
+    #[schemars(length(max = MAX_TRANSCRIPT_ITEMS))]
     pub transcript: Vec<Message>,
     /// The loop's slots by name, as it last returned them.
     pub slots: BTreeMap<String, serde_json::Value>,
     /// Every record on the session's feed since the loop last ran, oldest first, so a
     /// loop sees what happened to its environments and tools between turns.
+    #[schemars(length(max = 1000))]
     pub events: Vec<Event>,
     pub configuration: serde_json::Value,
     /// The system prompt the session was created with. Used on every model call unless
     /// the loop sends its own.
+    #[schemars(length(max = 131072))]
     pub system: String,
     /// The tools the session was created with: offered whole on every model call unless
     /// the loop names a subset. Brain admitted and provisioned exactly these.
+    #[schemars(length(max = 128))]
     pub tools: Vec<ToolDefinition>,
     pub runtime: RuntimeEnvelope,
 }
 
 /// What the loop hands back when the turn is done.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 pub struct TurnOutput {
+    #[schemars(length(max = MAX_TRANSCRIPT_ITEMS))]
     pub transcript: Vec<Message>,
     /// Slots to keep. A name the loop leaves out keeps its previous value.
     #[serde(default)]
@@ -65,9 +72,11 @@ pub struct TurnOutput {
 }
 
 /// Why a turn, or one of the host calls inside it, failed.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct TurnError {
+    #[schemars(length(min = 1, max = 128))]
     pub code: String,
+    #[schemars(length(min = 1, max = 4096))]
     pub message: String,
     #[serde(default)]
     pub retryable: bool,

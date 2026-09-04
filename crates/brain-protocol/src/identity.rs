@@ -3,9 +3,12 @@
 //! for an environment configuration. Brain validates the shape, compares, and carries it.
 //! It does not compute one here, so no boundary type can silently cost a hash.
 
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+
+use crate::IDENTITY_PATTERN;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IdentityError {
@@ -60,6 +63,16 @@ impl<'de> Deserialize<'de> for Identity {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
         Self::from_hex(&text).map_err(D::Error::custom)
+    }
+}
+
+impl JsonSchema for Identity {
+    fn schema_name() -> Cow<'static, str> {
+        "Identity".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({ "type": "string", "pattern": IDENTITY_PATTERN })
     }
 }
 

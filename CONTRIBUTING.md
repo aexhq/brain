@@ -28,21 +28,25 @@ npm run package-smoke
 CI additionally runs the loop worker integration tests, an image smoke test, and a resident-memory
 bound against a live server. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-## Contracts are the source of truth
+## The Rust types are the source of the contracts
 
-The schemas, OpenAPI document, protocol semantics, examples, generators, and conformance fixtures
-under [`contracts/`](contracts) define the wire. Generated views are generated, never hand-edited —
-CI regenerates them and fails on a diff.
+The wire is defined once, as the types in [`crates/brain-protocol`](crates/brain-protocol) and the
+`#[utoipa::path]` annotations on the handlers in [`crates/brain-http`](crates/brain-http).
+[`contracts/`](contracts) is rendered from them: the JSON Schemas by `schemars`, the OpenAPI
+document by `utoipa`, the code catalogue from `brain_protocol::codes`. Only `agentloop.wit` and
+the `examples/` directories are written by hand. The SDK's `src/generated` is rendered from
+`contracts/` in turn.
 
-Change a schema and its generated views in the same commit:
+Change a type and rerun the renderers in the same commit:
 
 ```sh
 npm run gen
 ```
 
-`npm run gen` regenerates the contract digests, the provider catalog, and the SDK's TypeScript
-types. The Rust types in `crates/brain-protocol` are written by hand and kept in step with the
-schemas by the conformance tests, which validate the checked-in examples against both.
+`npm run gen` runs `cargo run -p brain-contracts`, regenerates the provider catalog, and rebuilds
+the SDK's TypeScript types. CI runs the same command and fails on a diff, so a rendered file
+cannot be edited by hand and a type cannot change without its contract following. The conformance
+tests validate the checked-in examples against the rendered schemas.
 
 ## Documentation
 

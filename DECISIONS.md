@@ -298,3 +298,41 @@ the previous layout, refuses to start and says so. There is no migration.
 **Why.** Brain is under early development and has said so: contracts are replaced in place
 until the first stable release. A migration path for a layout nobody should be depending on
 is code that has to be right for no one.
+
+## 2026-09-04: The Rust types are the source of the contracts
+
+**Decided.** `crates/brain-protocol` and the route annotations in `crates/brain-http` define the
+wire. `contracts/` is rendered from them by `cargo run -p brain-contracts` and diffed in CI. Only
+`agentloop.wit` and the examples are written by hand.
+
+**Before.** The JSON Schemas and the OpenAPI document were written by hand, and so were the Rust
+types. The original typify generator had rotted and been deleted (#156), leaving two hand-written
+descriptions of every message, kept in step by example-based conformance tests. The contract
+digests had no reader: no admission check compared them, the SDK re-exported them to nobody, and
+CI only checked that they matched files that were already in the diff.
+
+**Why this direction.** The server is Rust, and the behaviour that a schema cannot express (a
+validated identity, an overflow-checked usage merge, a deterministic seed) already lives on the
+Rust types. Generating Rust from JSON Schema produces types without that behaviour and was the
+pipeline that failed. Generating the schemas from Rust keeps one hand-written source and makes
+the published files a build product.
+
+**Change.**
+
+- Every boundary type derives `schemars::JsonSchema`; the constraints the schemas carried
+  (identifier and identity patterns, length bounds, the client-hosting rule of a bound tool, the
+  resource policy shapes) are attributes on the fields that enforce them, or explicit schema
+  fragments next to the type.
+- Each HTTP handler carries a `#[utoipa::path]` annotation. The router registers routes from
+  those annotations and refuses to start if the set of routed operations differs from the
+  document, so a handler cannot ship undocumented or documented-but-unreachable.
+- The OpenAPI document is self-contained: the session schemas are embedded as its components
+  rather than referenced across files.
+- `AgentloopManifest` and `AgentloopPackage` move from `brain-loophost` to `brain-protocol`,
+  where every other boundary type lives, and appear in the session contract.
+- `EnvironmentCommand` and `EnvironmentOperation` lose their unused type parameter.
+- The contract digests, `generated.rs`, `tools/generate-contracts.py`, the SDK's
+  `contractDigests` export, and the unused `paths.ts` are deleted.
+
+**Not changed.** The wire. Every checked-in example still validates, and no serde attribute was
+added or removed, so Brain accepts and produces exactly what it did.

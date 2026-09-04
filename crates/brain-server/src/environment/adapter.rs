@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use brain_protocol::{
     ENVIRONMENT_CONTRACT, EnvironmentBinding, EnvironmentCommand, EnvironmentOperation,
-    EnvironmentReceipt, EnvironmentRequest, EnvironmentResponse,
+    EnvironmentReceipt, EnvironmentResponse,
 };
 
 const MAX_ENVIRONMENT_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
@@ -12,7 +12,7 @@ pub trait EnvironmentAdapter: Send + Sync + 'static {
         &self,
         endpoint: &str,
         binding: &EnvironmentBinding,
-        operation: &EnvironmentOperation<EnvironmentRequest>,
+        operation: &EnvironmentOperation,
     ) -> Result<EnvironmentReceipt, brain::Error>;
 }
 
@@ -36,7 +36,7 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         &self,
         endpoint: &str,
         binding: &EnvironmentBinding,
-        operation: &EnvironmentOperation<EnvironmentRequest>,
+        operation: &EnvironmentOperation,
     ) -> Result<EnvironmentReceipt, brain::Error> {
         let command = EnvironmentCommand {
             contract: ENVIRONMENT_CONTRACT.into(),
