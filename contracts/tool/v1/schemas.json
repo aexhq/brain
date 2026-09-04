@@ -1,43 +1,156 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aexhq/brain/contracts/tool/v1/schemas.json",
-  "title": "Brain Tool v1",
   "$defs": {
-    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "Identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "Runtime": { "enum": ["esm", "shell", "http"] },
-    "ResourceName": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$" },
     "HttpProgramRequest": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["method", "url"],
+      "description": "The request template of an `http` program: the environment fronts the endpoint,\nthe tool's input travels as the JSON body, and the response body is the output.",
       "properties": {
-        "method": { "type": "string", "pattern": "^[A-Z]{3,16}$" },
-        "url": { "type": "string", "minLength": 1, "maxLength": 8192 },
-        "headers": { "type": "object", "propertyNames": { "maxLength": 256 }, "additionalProperties": { "type": "string", "maxLength": 16384 } }
-      }
+        "headers": {
+          "additionalProperties": {
+            "maxLength": 16384,
+            "type": "string"
+          },
+          "propertyNames": {
+            "maxLength": 256
+          },
+          "type": "object"
+        },
+        "method": {
+          "pattern": "^[A-Z]{3,16}$",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 8192,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ],
+      "type": "object"
+    },
+    "Identity": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
     },
     "Program": {
+      "description": "The program behind a provisioned tool, named by content identity so\nre-provisioning is idempotent. An `esm` bundle travels out of band under its\nidentity; a `shell` script and an `http` request template travel inline.",
       "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["kind", "identity"], "properties": { "kind": { "const": "esm" }, "identity": { "$ref": "#/$defs/Identity" } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "identity", "script"], "properties": { "kind": { "const": "shell" }, "identity": { "$ref": "#/$defs/Identity" }, "script": { "type": "string", "minLength": 1, "maxLength": 262144 } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "identity", "request"], "properties": { "kind": { "const": "http" }, "identity": { "$ref": "#/$defs/Identity" }, "request": { "$ref": "#/$defs/HttpProgramRequest" } } }
+        {
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/Identity"
+            },
+            "kind": {
+              "const": "esm",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/Identity"
+            },
+            "kind": {
+              "const": "shell",
+              "type": "string"
+            },
+            "script": {
+              "maxLength": 262144,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity",
+            "script"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/Identity"
+            },
+            "kind": {
+              "const": "http",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/HttpProgramRequest"
+            }
+          },
+          "required": [
+            "kind",
+            "identity",
+            "request"
+          ],
+          "type": "object"
+        }
       ]
     },
     "ToolManifest": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "input_schema", "needs", "binding_names", "program"],
+      "description": "The `contracts/tool/v1` manifest: the only thing Brain and environments read about\na tool. Binding *values* are never here — the manifest declares names, the\nenvironment injects values at runtime.",
       "properties": {
-        "name": { "$ref": "#/$defs/Identifier" },
-        "description": { "type": "string", "maxLength": 8192 },
-        "input_schema": { "type": "object" },
-        "output_schema": { "type": "object" },
-        "needs": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/ResourceName" } },
-        "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
-        "program": { "$ref": "#/$defs/Program" }
-      }
+        "binding_names": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "description": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "input_schema": {
+          "type": "object"
+        },
+        "name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Resource names the program operates on; checked against the environment's\ndeclared resources at session create.",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "output_schema": {
+          "type": "object"
+        },
+        "program": {
+          "$ref": "#/$defs/Program"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema",
+        "needs",
+        "binding_names",
+        "program"
+      ],
+      "type": "object"
     }
   },
-  "$ref": "#/$defs/ToolManifest"
+  "$id": "https://github.com/aexhq/brain/contracts/tool/v1/schemas.json",
+  "$ref": "#/$defs/ToolManifest",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Brain Tool v1"
 }

@@ -1,177 +1,717 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aexhq/brain/contracts/environment/v1/schemas.json",
-  "title": "Brain Environment v1",
   "$defs": {
-    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "Identity": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "Runtime": { "enum": ["esm", "shell", "http"] },
-    "ResourceName": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$" },
-    "Outcome": {
+    "AttachmentId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "type": "string"
+    },
+    "BindingValues": {
+      "additionalProperties": {
+        "maxLength": 32768,
+        "type": "string"
+      },
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "EnvironmentBinding": {
+      "description": "How an environment is addressed on its wire.",
+      "properties": {
+        "directory_generation": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "environment_id": {
+          "$ref": "#/$defs/EnvironmentId"
+        }
+      },
+      "required": [
+        "environment_id",
+        "directory_generation"
+      ],
+      "type": "object"
+    },
+    "EnvironmentCommand": {
+      "properties": {
+        "binding": {
+          "$ref": "#/$defs/EnvironmentBinding"
+        },
+        "contract": {
+          "const": "environment/v1"
+        },
+        "operation": {
+          "$ref": "#/$defs/EnvironmentOperation"
+        }
+      },
+      "required": [
+        "contract",
+        "binding",
+        "operation"
+      ],
+      "type": "object"
+    },
+    "EnvironmentId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "type": "string"
+    },
+    "EnvironmentOperation": {
+      "properties": {
+        "attachment_id": {
+          "$ref": "#/$defs/AttachmentId"
+        },
+        "environment_id": {
+          "$ref": "#/$defs/EnvironmentId"
+        },
+        "request": {
+          "$ref": "#/$defs/EnvironmentRequest"
+        },
+        "sequence": {
+          "description": "The sequence of the journal record that started this operation. With\n`session_id` it names the operation: a redelivery carries the same pair, so a\nreceiver that already answered it can say so. An operation on the environment\nitself rather than on a session's behalf carries the environment's own id here.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "sequence",
+        "environment_id",
+        "session_id",
+        "request"
+      ],
+      "type": "object"
+    },
+    "EnvironmentReceipt": {
       "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["status", "value"], "properties": { "status": { "const": "ok" }, "value": {} } },
-        { "type": "object", "additionalProperties": false, "required": ["status", "error"], "properties": { "status": { "const": "error" }, "error": { "$ref": "#/$defs/OutcomeError" } } },
-        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "timeout" } } },
-        { "type": "object", "additionalProperties": false, "required": ["status"], "properties": { "status": { "const": "cancelled" } } }
+        {
+          "properties": {
+            "resources": {
+              "$ref": "#/$defs/Resources",
+              "description": "The resources this environment declares, reported on setup/attach receipts\nand fed into the bind-time `needs ⊆ resources` check."
+            },
+            "runtimes": {
+              "description": "The program runtimes this environment launches, reported on setup/attach\nreceipts and fed into the bind-time check.",
+              "items": {
+                "$ref": "#/$defs/Runtime"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "type": {
+              "const": "accepted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "data": true,
+            "type": {
+              "const": "progress",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "output": true,
+            "type": {
+              "const": "result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "output"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/Outcome"
+            },
+            "type": {
+              "const": "outcome",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "code": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            "message": {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "failure",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "code",
+            "message",
+            "retryable"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "message": {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            "type": {
+              "const": "ambiguous",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnvironmentRequest": {
+      "oneOf": [
+        {
+          "properties": {
+            "configuration": true,
+            "type": {
+              "const": "setup",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "configuration"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "bindings": {
+              "$ref": "#/$defs/BindingValues",
+              "description": "Binding values by name, injected into hosted tools at runtime. Plaintext on\nthis wire only: the journal never holds the values."
+            },
+            "provisions": {
+              "items": {
+                "$ref": "#/$defs/Provision"
+              },
+              "maxItems": 128,
+              "type": "array"
+            },
+            "type": {
+              "const": "attach",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "provisions",
+            "bindings"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "input": true,
+            "name": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "call_id": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            "deadline_ms": {
+              "format": "uint64",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "input": true,
+            "tool": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "invoke",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "call_id",
+            "tool",
+            "input",
+            "deadline_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "target_sequence": {
+              "format": "uint64",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "type": {
+              "const": "cancel",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "target_sequence"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "detach",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "teardown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnvironmentResponse": {
+      "properties": {
+        "contract": {
+          "const": "environment/v1"
+        },
+        "receipt": {
+          "$ref": "#/$defs/EnvironmentReceipt"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "contract",
+        "sequence",
+        "receipt"
+      ],
+      "type": "object"
+    },
+    "HttpProgramRequest": {
+      "additionalProperties": false,
+      "description": "The request template of an `http` program: the environment fronts the endpoint,\nthe tool's input travels as the JSON body, and the response body is the output.",
+      "properties": {
+        "headers": {
+          "additionalProperties": {
+            "maxLength": 16384,
+            "type": "string"
+          },
+          "propertyNames": {
+            "maxLength": 256
+          },
+          "type": "object"
+        },
+        "method": {
+          "pattern": "^[A-Z]{3,16}$",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 8192,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ],
+      "type": "object"
+    },
+    "Identity": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Outcome": {
+      "description": "The one envelope every tool invocation resolves to.\n\n`timeout` is distinguished from `error` because the deadline is caller-owned: no\nbackend family can be trusted to enforce one remotely, so the caller kills and says\nexactly what happened rather than encoding it as an exit code.",
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "ok",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "status",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/OutcomeError"
+            },
+            "status": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "timeout",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        }
       ]
     },
     "OutcomeError": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["code", "message"],
-      "properties": {
-        "code": { "$ref": "#/$defs/Identifier" },
-        "message": { "type": "string", "maxLength": 4096 },
-        "details": {}
-      }
-    },
-    "FsResource": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["root"],
-      "properties": { "root": { "type": "string", "minLength": 1, "maxLength": 4096 } }
-    },
-    "ProcessResource": {
-      "type": "object",
       "additionalProperties": false,
       "properties": {
-        "timeout_ms_max": { "type": "integer", "minimum": 1 },
-        "output_bytes_max": { "type": "integer", "minimum": 1 }
-      }
-    },
-    "NetResource": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["allow"],
-      "properties": { "allow": { "type": "array", "maxItems": 256, "items": { "type": "string", "minLength": 1, "maxLength": 256 } } }
-    },
-    "DomResource": { "type": "object", "additionalProperties": false, "properties": {} },
-    "SecretsResource": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["names"],
-      "properties": { "names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } } }
-    },
-    "Resources": {
-      "type": "object",
-      "properties": {
-        "fs": { "$ref": "#/$defs/FsResource" },
-        "process": { "$ref": "#/$defs/ProcessResource" },
-        "net": { "$ref": "#/$defs/NetResource" },
-        "dom": { "$ref": "#/$defs/DomResource" },
-        "secrets": { "$ref": "#/$defs/SecretsResource" }
+        "code": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "details": true,
+        "message": {
+          "maxLength": 4096,
+          "type": "string"
+        }
       },
-      "patternProperties": { "^[a-z][a-z0-9_]{0,63}:[A-Za-z0-9._-]{1,64}$": { "type": "object" } },
-      "additionalProperties": false
-    },
-    "HttpProgramRequest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["method", "url"],
-      "properties": {
-        "method": { "type": "string", "pattern": "^[A-Z]{3,16}$" },
-        "url": { "type": "string", "minLength": 1, "maxLength": 8192 },
-        "headers": { "type": "object", "propertyNames": { "maxLength": 256 }, "additionalProperties": { "type": "string", "maxLength": 16384 } }
-      }
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
     },
     "Program": {
+      "description": "The program behind a provisioned tool, named by content identity so\nre-provisioning is idempotent. An `esm` bundle travels out of band under its\nidentity; a `shell` script and an `http` request template travel inline.",
       "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["kind", "identity"], "properties": { "kind": { "const": "esm" }, "identity": { "$ref": "#/$defs/Identity" } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "identity", "script"], "properties": { "kind": { "const": "shell" }, "identity": { "$ref": "#/$defs/Identity" }, "script": { "type": "string", "minLength": 1, "maxLength": 262144 } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "identity", "request"], "properties": { "kind": { "const": "http" }, "identity": { "$ref": "#/$defs/Identity" }, "request": { "$ref": "#/$defs/HttpProgramRequest" } } }
+        {
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/Identity"
+            },
+            "kind": {
+              "const": "esm",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/Identity"
+            },
+            "kind": {
+              "const": "shell",
+              "type": "string"
+            },
+            "script": {
+              "maxLength": 262144,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity",
+            "script"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/Identity"
+            },
+            "kind": {
+              "const": "http",
+              "type": "string"
+            },
+            "request": {
+              "$ref": "#/$defs/HttpProgramRequest"
+            }
+          },
+          "required": [
+            "kind",
+            "identity",
+            "request"
+          ],
+          "type": "object"
+        }
       ]
-    },
-    "ToolManifest": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name", "description", "input_schema", "needs", "binding_names", "program"],
-      "properties": {
-        "name": { "$ref": "#/$defs/Identifier" },
-        "description": { "type": "string", "maxLength": 8192 },
-        "input_schema": { "type": "object" },
-        "output_schema": { "type": "object" },
-        "needs": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/ResourceName" } },
-        "binding_names": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/Identifier" } },
-        "program": { "$ref": "#/$defs/Program" }
-      }
     },
     "Provision": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["manifest", "payload_identity"],
+      "description": "One provisioned-tool artifact carried at attach: the manifest the environment reads\nand the content identity naming the payload it must already hold or fetch.",
       "properties": {
-        "manifest": { "$ref": "#/$defs/ToolManifest" },
-        "payload_identity": { "$ref": "#/$defs/Identity" }
-      }
+        "manifest": {
+          "$ref": "#/$defs/ToolManifest"
+        },
+        "payload_identity": {
+          "$ref": "#/$defs/Identity"
+        }
+      },
+      "required": [
+        "manifest",
+        "payload_identity"
+      ],
+      "type": "object"
     },
-    "BindingValues": {
-      "type": "object",
-      "propertyNames": { "$ref": "#/$defs/Identifier" },
-      "additionalProperties": { "type": "string", "maxLength": 32768 }
-    },
-    "Binding": {
-      "type": "object",
+    "Resources": {
       "additionalProperties": false,
-      "required": ["environment_id", "directory_generation"],
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}:[A-Za-z0-9._-]{1,64}$": {
+          "type": "object"
+        }
+      },
       "properties": {
-        "environment_id": { "$ref": "#/$defs/Identifier" },
-        "directory_generation": { "type": "integer", "minimum": 1 }
-      }
+        "dom": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "fs": {
+          "additionalProperties": false,
+          "properties": {
+            "root": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "root"
+          ],
+          "type": "object"
+        },
+        "net": {
+          "additionalProperties": false,
+          "properties": {
+            "allow": {
+              "items": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 256,
+              "type": "array"
+            }
+          },
+          "required": [
+            "allow"
+          ],
+          "type": "object"
+        },
+        "process": {
+          "additionalProperties": false,
+          "properties": {
+            "output_bytes_max": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "timeout_ms_max": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "secrets": {
+          "additionalProperties": false,
+          "properties": {
+            "names": {
+              "items": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+                "type": "string"
+              },
+              "maxItems": 64,
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "names"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
     },
-    "OperationEnvelope": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["sequence", "environment_id", "session_id", "request"],
-      "properties": {
-        "sequence": { "type": "integer", "minimum": 1 },
-        "environment_id": { "$ref": "#/$defs/Identifier" },
-        "session_id": { "$ref": "#/$defs/Identifier" },
-        "attachment_id": { "$ref": "#/$defs/Identifier" },
-        "request": { "$ref": "#/$defs/Request" }
-      }
-    },
-    "Request": {
+    "Runtime": {
+      "description": "The closed set of program kinds an environment can launch. Closed only because\nBrain and the SDK must physically package and start the program.",
       "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["type", "configuration"], "properties": { "type": { "const": "setup" }, "configuration": {} } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "provisions", "bindings"], "properties": { "type": { "const": "attach" }, "provisions": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/Provision" } }, "bindings": { "$ref": "#/$defs/BindingValues" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "name", "input"], "properties": { "type": { "const": "call" }, "name": { "$ref": "#/$defs/Identifier" }, "input": {} } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "call_id", "tool", "input", "deadline_ms"], "properties": { "type": { "const": "invoke" }, "call_id": { "$ref": "#/$defs/Identifier" }, "tool": { "$ref": "#/$defs/Identifier" }, "input": {}, "deadline_ms": { "type": "integer", "minimum": 1 } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "target_sequence"], "properties": { "type": { "const": "cancel" }, "target_sequence": { "type": "integer", "minimum": 1 } } },
-        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "detach" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "teardown" } } }
+        {
+          "const": "esm",
+          "description": "A self-contained JavaScript module (`brain build` output).",
+          "type": "string"
+        },
+        {
+          "const": "shell",
+          "description": "A POSIX shell script.",
+          "type": "string"
+        },
+        {
+          "const": "http",
+          "description": "A request to an endpoint the environment fronts.",
+          "type": "string"
+        }
       ]
     },
-    "Receipt": {
-      "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "accepted" }, "runtimes": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/Runtime" } }, "resources": { "$ref": "#/$defs/Resources" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "data"], "properties": { "type": { "const": "progress" }, "data": {} } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "output"], "properties": { "type": { "const": "result" }, "output": {} } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "outcome"], "properties": { "type": { "const": "outcome" }, "outcome": { "$ref": "#/$defs/Outcome" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "code", "message", "retryable"], "properties": { "type": { "const": "failure" }, "code": { "$ref": "#/$defs/Identifier" }, "message": { "type": "string", "maxLength": 4096 }, "retryable": { "type": "boolean" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "message"], "properties": { "type": { "const": "ambiguous" }, "message": { "type": "string", "maxLength": 4096 } } }
-      ]
+    "SessionId": {
+      "pattern": "^ses_[A-Za-z0-9]{20,32}$",
+      "type": "string"
+    },
+    "ToolManifest": {
+      "additionalProperties": false,
+      "description": "The `contracts/tool/v1` manifest: the only thing Brain and environments read about\na tool. Binding *values* are never here — the manifest declares names, the\nenvironment injects values at runtime.",
+      "properties": {
+        "binding_names": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "description": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "input_schema": {
+          "type": "object"
+        },
+        "name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "needs": {
+          "description": "Resource names the program operates on; checked against the environment's\ndeclared resources at session create.",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "output_schema": {
+          "type": "object"
+        },
+        "program": {
+          "$ref": "#/$defs/Program"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema",
+        "needs",
+        "binding_names",
+        "program"
+      ],
+      "type": "object"
     }
   },
+  "$id": "https://github.com/aexhq/brain/contracts/environment/v1/schemas.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "oneOf": [
     {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["contract", "binding", "operation"],
-      "properties": {
-        "contract": { "const": "environment/v1" },
-        "binding": { "$ref": "#/$defs/Binding" },
-        "operation": { "$ref": "#/$defs/OperationEnvelope" }
-      }
+      "$ref": "#/$defs/EnvironmentCommand"
     },
     {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["contract", "sequence", "receipt"],
-      "properties": {
-        "contract": { "const": "environment/v1" },
-        "sequence": { "type": "integer", "minimum": 1 },
-        "receipt": { "$ref": "#/$defs/Receipt" }
-      }
+      "$ref": "#/$defs/EnvironmentResponse"
     }
-  ]
+  ],
+  "title": "Brain Environment v1"
 }

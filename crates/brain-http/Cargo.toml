@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 brain-protocol = { workspace = true }
+schemars = { workspace = true }
+utoipa = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }

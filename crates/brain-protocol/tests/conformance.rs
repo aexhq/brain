@@ -128,13 +128,13 @@ fn rust_views_round_trip_contract_examples() {
     assert_eq!(session.tools[0].needs, vec!["fs"]);
     assert!(session.tools[0].program.is_some());
 
-    let command: EnvironmentCommand<EnvironmentRequest> =
+    let command: EnvironmentCommand =
         serde_json::from_value(read_json("contracts/environment/v1/examples/invoke.json")).unwrap();
     assert!(matches!(
         command.operation.request,
         EnvironmentRequest::Invoke { .. }
     ));
-    let attach: EnvironmentCommand<EnvironmentRequest> =
+    let attach: EnvironmentCommand =
         serde_json::from_value(read_json("contracts/environment/v1/examples/attach.json")).unwrap();
     assert!(matches!(
         attach.operation.request,

@@ -6,6 +6,7 @@ members = [
   "crates/brain",
   "crates/brain-http",
   "crates/brain-server",
+  "crates/brain-contracts",
 ]
 resolver = "2"
 
@@ -22,6 +23,7 @@ brain = { path = "crates/brain" }
 brain-http = { path = "crates/brain-http" }
 brain-server = { path = "crates/brain-server" }
 brain-loophost = { path = "crates/brain-loophost" }
+brain-contracts = { path = "crates/brain-contracts" }
 
 anyhow = "1"
 async-trait = "0.1"
@@ -40,10 +42,12 @@ aes-gcm = "0.10"
 rand = "0.9"
 regex = "1"
 regress = "0.10"
+schemars = "1.2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json", "http2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_jcs = "0.2"
+serde_norway = "0.9"
 sha2 = "0.10"
 wasmtime = { version = "48", default-features = false, features = ["component-model", "async", "cranelift", "parallel-compilation", "runtime", "cache", "std"] }
 wasmtime-wasi = "48"
@@ -54,6 +58,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = { version = "0.5", features = ["util"] }
 url = "2"
+utoipa = "5"
 walkdir = "2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zeroize = "1"

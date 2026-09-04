@@ -1,88 +1,298 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aexhq/brain/contracts/agentloop/v1/contract.json",
-  "title": "Brain Agentloop",
   "$defs": {
-    "Identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "Message": {
-      "type": "object",
-      "required": ["role", "content"],
+    "ContentBlock": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "input": true,
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_use",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": true,
+            "is_error": {
+              "description": "ALWAYS set on a failed tool. Omitting the flag on a failure lets the\nmodel read that failure as a success.",
+              "type": "boolean"
+            },
+            "tool_use_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tool_use_id",
+            "content",
+            "is_error"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Event": {
       "properties": {
-        "role": { "enum": ["user", "assistant"] },
-        "content": { "type": "array" }
-      }
+        "data": true,
+        "event_id": {
+          "$ref": "#/$defs/EventId"
+        },
+        "event_type": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "recorded_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "sequence",
+        "recorded_at_ms",
+        "event_type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "EventId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "type": "string"
+    },
+    "Message": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/ContentBlock"
+          },
+          "type": "array"
+        },
+        "role": {
+          "$ref": "#/$defs/Role"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
+    },
+    "Role": {
+      "enum": [
+        "user",
+        "assistant"
+      ],
+      "type": "string"
+    },
+    "RuntimeEnvelope": {
+      "properties": {
+        "deterministic_seed": {
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "logical_time_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "logical_time_ms",
+        "deterministic_seed"
+      ],
+      "type": "object"
     },
     "ToolDefinition": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "input_schema"],
       "properties": {
-        "name": { "$ref": "#/$defs/Identifier" },
-        "description": { "type": "string", "maxLength": 8192 },
-        "input_schema": { "type": "object" },
-        "output_schema": { "type": "object" }
-      }
-    },
-    "ToolInvocation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["call_id", "name", "input"],
-      "properties": {
-        "call_id": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "name": { "$ref": "#/$defs/Identifier" },
-        "input": {}
-      }
-    },
-    "TurnError": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["code", "message", "retryable"],
-      "properties": {
-        "code": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "message": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "retryable": { "type": "boolean" }
-      }
+        "description": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "input_schema": {
+          "type": "object"
+        },
+        "name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "output_schema": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema",
+        "output_schema"
+      ],
+      "type": "object"
     },
     "TurnInput": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["input", "transcript", "slots", "events", "configuration", "system", "tools", "runtime"],
+      "description": "What Brain hands the loop for one turn.",
       "properties": {
-        "input": { "type": "object", "additionalProperties": false, "required": ["message"], "properties": { "message": { "type": "string", "minLength": 1 } } },
-        "transcript": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/Message" } },
-        "slots": { "type": "object" },
-        "events": { "type": "array", "maxItems": 1000 },
-        "configuration": {},
-        "system": { "type": "string", "maxLength": 131072 },
-        "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/ToolDefinition" } },
+        "configuration": true,
+        "events": {
+          "description": "Every record on the session's feed since the loop last ran, oldest first, so a\nloop sees what happened to its environments and tools between turns.",
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "maxItems": 1000,
+          "type": "array"
+        },
+        "input": {
+          "$ref": "#/$defs/UserInput"
+        },
         "runtime": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["logical_time_ms", "deterministic_seed"],
-          "properties": {
-            "logical_time_ms": { "type": "integer", "minimum": 0 },
-            "deterministic_seed": { "type": "array", "minItems": 32, "maxItems": 32, "items": { "type": "integer", "minimum": 0, "maximum": 255 } }
-          }
+          "$ref": "#/$defs/RuntimeEnvelope"
+        },
+        "slots": {
+          "additionalProperties": true,
+          "description": "The loop's slots by name, as it last returned them.",
+          "type": "object"
+        },
+        "system": {
+          "description": "The system prompt the session was created with. Used on every model call unless\nthe loop sends its own.",
+          "maxLength": 131072,
+          "type": "string"
+        },
+        "tools": {
+          "description": "The tools the session was created with: offered whole on every model call unless\nthe loop names a subset. Brain admitted and provisioned exactly these.",
+          "items": {
+            "$ref": "#/$defs/ToolDefinition"
+          },
+          "maxItems": 128,
+          "type": "array"
+        },
+        "transcript": {
+          "description": "The transcript as it stands: what the next model call would see.",
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "maxItems": 4096,
+          "type": "array"
         }
-      }
+      },
+      "required": [
+        "input",
+        "transcript",
+        "slots",
+        "events",
+        "configuration",
+        "system",
+        "tools",
+        "runtime"
+      ],
+      "type": "object"
     },
     "TurnOutput": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["transcript", "slots"],
+      "description": "What the loop hands back when the turn is done.",
       "properties": {
-        "transcript": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/Message" } },
-        "slots": { "type": "object" },
-        "result": {}
-      }
+        "result": true,
+        "slots": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Slots to keep. A name the loop leaves out keeps its previous value.",
+          "type": "object"
+        },
+        "transcript": {
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        }
+      },
+      "required": [
+        "transcript"
+      ],
+      "type": "object"
+    },
+    "UserInput": {
+      "additionalProperties": false,
+      "description": "What an application hands a session on `send`. The shape is closed on purpose:\nBrain owes every agentloop the same observation shape regardless of who wrote\nthe client, so free-form content is not accepted. Multimodal parts will extend\nthis record when they land — see the roadmap.",
+      "properties": {
+        "message": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
     }
   },
-  "type": "object",
+  "$id": "https://github.com/aexhq/brain/contracts/agentloop/v1/contract.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "required": ["contract", "input", "output"],
   "properties": {
-    "contract": { "const": "agentloop/v1" },
-    "input": { "$ref": "#/$defs/TurnInput" },
-    "output": { "$ref": "#/$defs/TurnOutput" }
-  }
+    "contract": {
+      "const": "agentloop/v1"
+    },
+    "input": {
+      "$ref": "#/$defs/TurnInput"
+    },
+    "output": {
+      "$ref": "#/$defs/TurnOutput"
+    }
+  },
+  "required": [
+    "contract",
+    "input",
+    "output"
+  ],
+  "title": "Brain Agentloop",
+  "type": "object"
 }

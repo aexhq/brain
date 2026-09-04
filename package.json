@@ -3,7 +3,7 @@
   "private": true,
   "workspaces": ["packages/brain-sdk", "examples"],
   "scripts": {
-    "gen": "python tools/generate-contracts.py && python tools/generate-providers.py && npm run gen -w packages/brain-sdk",
+    "gen": "cargo run -q -p brain-contracts && python tools/generate-providers.py && npm run gen -w packages/brain-sdk",
     "build": "npm run build --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
     "package-smoke": "node tools/package-smoke.mjs",

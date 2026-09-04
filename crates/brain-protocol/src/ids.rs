@@ -1,12 +1,20 @@
 use std::{fmt, str::FromStr};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// The shape of every name a caller mints: a tool, an environment, a binding, a code.
+pub const IDENTIFIER_PATTERN: &str = "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$";
+/// The shape of a content address: 64 lowercase hexadecimal characters.
+pub const IDENTITY_PATTERN: &str = "^[0-9a-f]{64}$";
+
 macro_rules! id_type {
-    ($name:ident) => {
-        #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+    ($name:ident, $pattern:expr) => {
+        #[derive(
+            Clone, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+        )]
         #[serde(transparent)]
-        pub struct $name(pub String);
+        pub struct $name(#[schemars(regex(pattern = $pattern))] pub String);
 
         impl $name {
             pub fn new(value: impl Into<String>) -> Self {
@@ -32,8 +40,8 @@ macro_rules! id_type {
     };
 }
 
-id_type!(SessionId);
-id_type!(EventId);
-id_type!(EnvironmentId);
-id_type!(AttachmentId);
-id_type!(AgentloopIdentity);
+id_type!(SessionId, "^ses_[A-Za-z0-9]{20,32}$");
+id_type!(EventId, IDENTIFIER_PATTERN);
+id_type!(EnvironmentId, IDENTIFIER_PATTERN);
+id_type!(AttachmentId, IDENTIFIER_PATTERN);
+id_type!(AgentloopIdentity, IDENTITY_PATTERN);

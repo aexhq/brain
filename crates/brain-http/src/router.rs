@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::{Arc, Mutex as StdMutex},
 };
 
@@ -11,21 +11,53 @@ use axum::{
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response, Sse, sse::Event as SseEvent},
-    routing::{get, post},
+    routing::{MethodFilter, MethodRouter, on},
 };
 use brain_protocol::{
-    AgentloopAdmission, AgentloopIdentity, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentId, MessageRequest, Outcome, SessionId, SessionList,
-    SessionSummary,
+    AgentloopAdmission, AgentloopIdentity, CreateEnvironmentRequest, CreateSessionRequest,
+    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EnvironmentList,
+    EnvironmentSummary, MessageRequest, Outcome, SessionId, SessionList, SessionSummary,
+};
+use futures_util::StreamExt as _;
+use utoipa::{OpenApi, openapi::HttpMethod};
+
+use crate::{
+    BrainApi, HttpError,
+    openapi::{Package, contract, operations},
 };
 
-use futures_util::StreamExt as _;
-
-use crate::{BrainApi, HttpError};
-
-const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
 const MAX_SERVED_TOOLS: usize = 128;
+
+/// The session API as one document. Every handler below is listed here and registered
+/// through `routes!`; [`build`] checks that the two agree.
+#[derive(OpenApi)]
+#[openapi(
+    info(title = "Brain HTTP API", version = "1.0.0"),
+    paths(
+        admit_agentloop,
+        get_agentloop,
+        create_environment,
+        list_environments,
+        get_environment,
+        delete_environment,
+        create_session,
+        list_sessions,
+        get_session,
+        delete_session,
+        send_message,
+        call_environment,
+        events,
+        cancel_session,
+        end_session,
+        serve_feed,
+        resolve_tool_call,
+        live,
+        ready,
+    )
+)]
+pub(crate) struct ApiDoc;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,7 +87,8 @@ fn build<A: BrainApi>(api: A, token: Option<String>) -> Router {
         expected,
         serves: Arc::new(ServeRegistry::new()),
     };
-    let mut protected = protected_routes(api.clone());
+    let mut routed = BTreeSet::new();
+    let mut protected = protected_routes(api.clone(), &mut routed);
     if let Some(expected) = expected {
         protected = protected.layer(middleware::from_fn(
             move |request: Request, next: Next| async move {
@@ -66,9 +99,53 @@ fn build<A: BrainApi>(api: A, token: Option<String>) -> Router {
             },
         ));
     }
-    protected
-        .merge(serve_routes(access))
-        .merge(health_routes(api))
+    let serve = serve_routes(access, &mut routed);
+    let health = health_routes(api, &mut routed);
+    // The published document is rendered from `ApiDoc`; the router from the same
+    // annotations, through `documented`. A handler in one and not the other would ship
+    // undocumented or unreachable.
+    assert_eq!(
+        routed,
+        operations(&ApiDoc::openapi()),
+        "brain-http: the routes and the OpenAPI document disagree"
+    );
+    protected.merge(serve).merge(health)
+}
+
+/// A handler's route, taken from its `#[utoipa::path]` annotation: the path and the
+/// methods it answers. `routed` collects what was registered, for [`build`] to check
+/// against the document.
+fn documented<P, H, T, S>(routed: &mut BTreeSet<String>, handler: H) -> (String, MethodRouter<S>)
+where
+    P: utoipa::Path,
+    H: axum::handler::Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    let path = P::path();
+    let mut filter = MethodFilter::GET;
+    let mut first = true;
+    for method in P::methods() {
+        let (name, method_filter) = match method {
+            HttpMethod::Get => ("GET", MethodFilter::GET),
+            HttpMethod::Post => ("POST", MethodFilter::POST),
+            HttpMethod::Put => ("PUT", MethodFilter::PUT),
+            HttpMethod::Delete => ("DELETE", MethodFilter::DELETE),
+            HttpMethod::Options => ("OPTIONS", MethodFilter::OPTIONS),
+            HttpMethod::Head => ("HEAD", MethodFilter::HEAD),
+            HttpMethod::Patch => ("PATCH", MethodFilter::PATCH),
+            HttpMethod::Trace => ("TRACE", MethodFilter::TRACE),
+        };
+        routed.insert(format!("{name} {path}"));
+        filter = if first {
+            method_filter
+        } else {
+            filter.or(method_filter)
+        };
+        first = false;
+    }
+    assert!(!first, "{path} answers no method");
+    (path, on(filter, handler))
 }
 
 /// The credential surface of the serve group: requests authorized by the API token
@@ -137,40 +214,28 @@ impl ServeRegistry {
     }
 }
 
-fn protected_routes<A: BrainApi>(api: A) -> Router {
-    Router::new()
-        .route("/v1/agentloops", post(admit_agentloop::<A>))
-        .route("/v1/agentloops/{identity}", get(get_agentloop::<A>))
-        .route(
-            "/v1/environments",
-            post(create_environment::<A>).get(list_environments::<A>),
-        )
-        .route(
-            "/v1/environments/{environment_id}",
-            get(get_environment::<A>).delete(delete_environment::<A>),
-        )
-        .route(
-            "/v1/sessions",
-            post(create_session::<A>).get(list_sessions::<A>),
-        )
-        .route(
-            "/v1/sessions/{session_id}",
-            get(get_session::<A>).delete(delete_session::<A>),
-        )
-        .route(
-            "/v1/sessions/{session_id}/messages",
-            post(send_message::<A>),
-        )
-        .route(
-            "/v1/sessions/{session_id}/environments/{environment_id}/calls/{name}",
-            post(call_environment::<A>),
-        )
-        .route("/v1/sessions/{session_id}/events", get(events::<A>))
-        .route(
-            "/v1/sessions/{session_id}/cancel",
-            post(cancel_session::<A>),
-        )
-        .route("/v1/sessions/{session_id}/end", post(end_session::<A>))
+fn protected_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
+    let mut router = Router::new();
+    for (path, method) in [
+        documented::<__path_admit_agentloop, _, _, _>(routed, admit_agentloop::<A>),
+        documented::<__path_get_agentloop, _, _, _>(routed, get_agentloop::<A>),
+        documented::<__path_create_environment, _, _, _>(routed, create_environment::<A>),
+        documented::<__path_list_environments, _, _, _>(routed, list_environments::<A>),
+        documented::<__path_get_environment, _, _, _>(routed, get_environment::<A>),
+        documented::<__path_delete_environment, _, _, _>(routed, delete_environment::<A>),
+        documented::<__path_create_session, _, _, _>(routed, create_session::<A>),
+        documented::<__path_list_sessions, _, _, _>(routed, list_sessions::<A>),
+        documented::<__path_get_session, _, _, _>(routed, get_session::<A>),
+        documented::<__path_delete_session, _, _, _>(routed, delete_session::<A>),
+        documented::<__path_send_message, _, _, _>(routed, send_message::<A>),
+        documented::<__path_call_environment, _, _, _>(routed, call_environment::<A>),
+        documented::<__path_events, _, _, _>(routed, events::<A>),
+        documented::<__path_cancel_session, _, _, _>(routed, cancel_session::<A>),
+        documented::<__path_end_session, _, _, _>(routed, end_session::<A>),
+    ] {
+        router = router.route(&path, method);
+    }
+    router
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(api)
 }
@@ -178,22 +243,28 @@ fn protected_routes<A: BrainApi>(api: A) -> Router {
 /// Routes a share key can reach: the serve feed and the tool-results answer. Their
 /// authorization is per session, so it happens in the handler rather than in a
 /// router-wide layer.
-fn serve_routes<A: BrainApi>(access: Access<A>) -> Router {
-    Router::new()
-        .route("/v1/sessions/{session_id}/serve", get(serve_feed::<A>))
-        .route(
-            "/v1/sessions/{session_id}/tool-results/{sequence}",
-            post(resolve_tool_call::<A>),
-        )
+fn serve_routes<A: BrainApi>(access: Access<A>, routed: &mut BTreeSet<String>) -> Router {
+    let mut router = Router::new();
+    for (path, method) in [
+        documented::<__path_serve_feed, _, _, _>(routed, serve_feed::<A>),
+        documented::<__path_resolve_tool_call, _, _, _>(routed, resolve_tool_call::<A>),
+    ] {
+        router = router.route(&path, method);
+    }
+    router
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .with_state(access)
 }
 
-fn health_routes<A: BrainApi>(api: A) -> Router {
-    Router::new()
-        .route("/health/live", get(live::<A>))
-        .route("/health/ready", get(ready::<A>))
-        .with_state(api)
+fn health_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
+    let mut router = Router::new();
+    for (path, method) in [
+        documented::<__path_live, _, _, _>(routed, live::<A>),
+        documented::<__path_ready, _, _, _>(routed, ready::<A>),
+    ] {
+        router = router.route(&path, method);
+    }
+    router.with_state(api)
 }
 
 fn sha256(bytes: &[u8]) -> [u8; 32] {
@@ -224,6 +295,17 @@ fn unauthorized() -> HttpError {
     ))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/agentloops",
+    operation_id = "admitAgentloop",
+    params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    request_body(content = inline(Package), content_type = "application/octet-stream"),
+    responses(
+        (status = 200, description = "Agentloop admitted", body = contract::AgentloopAdmission),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn admit_agentloop<A: BrainApi>(
     State(api): State<A>,
     headers: HeaderMap,
@@ -241,6 +323,16 @@ async fn admit_agentloop<A: BrainApi>(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/agentloops/{identity}",
+    operation_id = "getAgentloop",
+    params(("identity" = contract::AgentloopIdentity, Path)),
+    responses(
+        (status = 200, description = "Admission status", body = contract::AgentloopAdmission),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn get_agentloop<A: BrainApi>(
     State(api): State<A>,
     Path(digest): Path<AgentloopIdentity>,
@@ -248,11 +340,26 @@ async fn get_agentloop<A: BrainApi>(
     Ok(Json(api.get_agentloop(digest).await.map_err(HttpError)?))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/environments",
+    operation_id = "createEnvironment",
+    description = "Creates an environment: Brain runs its setup and keeps what it declared it \
+executes and offers. Sessions attach to it by id. A managed environment is closed by Brain \
+once no session has been attached to it for its idle TTL; an unmanaged one lives until it \
+is deleted.",
+    params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    request_body = contract::CreateEnvironmentRequest,
+    responses(
+        (status = 200, description = "Created environment", body = contract::EnvironmentSummary),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn create_environment<A: BrainApi>(
     State(api): State<A>,
     headers: HeaderMap,
-    Json(request): Json<brain_protocol::CreateEnvironmentRequest>,
-) -> Result<Json<brain_protocol::EnvironmentSummary>, HttpError> {
+    Json(request): Json<CreateEnvironmentRequest>,
+) -> Result<Json<EnvironmentSummary>, HttpError> {
     Ok(Json(
         api.create_environment(idempotency_key(&headers)?, request)
             .await
@@ -260,10 +367,20 @@ async fn create_environment<A: BrainApi>(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/environments/{environment_id}",
+    operation_id = "getEnvironment",
+    params(("environment_id" = contract::EnvironmentId, Path)),
+    responses(
+        (status = 200, description = "Environment state", body = contract::EnvironmentSummary),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn get_environment<A: BrainApi>(
     State(api): State<A>,
     Path(environment_id): Path<EnvironmentId>,
-) -> Result<Json<brain_protocol::EnvironmentSummary>, HttpError> {
+) -> Result<Json<EnvironmentSummary>, HttpError> {
     Ok(Json(
         api.get_environment(environment_id)
             .await
@@ -271,12 +388,31 @@ async fn get_environment<A: BrainApi>(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/environments",
+    operation_id = "listEnvironments",
+    responses(
+        (status = 200, description = "Environments", body = contract::EnvironmentList),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn list_environments<A: BrainApi>(
     State(api): State<A>,
-) -> Result<Json<brain_protocol::EnvironmentList>, HttpError> {
+) -> Result<Json<EnvironmentList>, HttpError> {
     Ok(Json(api.list_environments().await.map_err(HttpError)?))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/v1/environments/{environment_id}",
+    operation_id = "deleteEnvironment",
+    description = "Tears the environment down. Refused with `conflict` while a session is \
+still attached; every session that was ever attached sees `environment_closed` on its \
+events.",
+    params(("environment_id" = contract::EnvironmentId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    responses((status = 204, description = "Closed"), (status = "default", description = "Structured error", body = contract::ApiError))
+)]
 async fn delete_environment<A: BrainApi>(
     State(api): State<A>,
     Path(environment_id): Path<EnvironmentId>,
@@ -301,6 +437,17 @@ fn idempotency_key(headers: &HeaderMap) -> Result<String, HttpError> {
         })
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/sessions",
+    operation_id = "createSession",
+    params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    request_body = contract::CreateSessionRequest,
+    responses(
+        (status = 200, description = "Created session", body = contract::SessionSummary),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn create_session<A: BrainApi>(
     State(api): State<A>,
     headers: HeaderMap,
@@ -313,6 +460,16 @@ async fn create_session<A: BrainApi>(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}",
+    operation_id = "getSession",
+    params(("session_id" = contract::SessionId, Path)),
+    responses(
+        (status = 200, description = "Session state", body = contract::SessionSummary),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn get_session<A: BrainApi>(
     State(api): State<A>,
     Path(session_id): Path<SessionId>,
@@ -320,10 +477,30 @@ async fn get_session<A: BrainApi>(
     Ok(Json(api.get_session(session_id).await.map_err(HttpError)?))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/sessions",
+    operation_id = "listSessions",
+    responses(
+        (status = 200, description = "Sessions", body = contract::SessionList),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn list_sessions<A: BrainApi>(State(api): State<A>) -> Result<Json<SessionList>, HttpError> {
     Ok(Json(api.list_sessions().await.map_err(HttpError)?))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/messages",
+    operation_id = "sendMessage",
+    params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    request_body = contract::MessageRequest,
+    responses(
+        (status = 200, description = "Updated session", body = contract::SessionSummary),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn send_message<A: BrainApi>(
     State(api): State<A>,
     Path(session_id): Path<SessionId>,
@@ -337,6 +514,19 @@ async fn send_message<A: BrainApi>(
     ))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/tool-results/{sequence}",
+    operation_id = "resolveToolCall",
+    description = "Answers a client-hosted tool call. The call is named by the sequence of \
+its `tool_call_started` record on the event feed; the body is the call's outcome. \
+Idempotent per call: a retry with the same key replays the first answer, and a call that \
+is no longer pending is a conflict. Authorized by the API token or by the session's share \
+key.",
+    params(("session_id" = contract::SessionId, Path), ("sequence" = u64, Path, minimum = 1), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    request_body = contract::Outcome,
+    responses((status = 204, description = "Outcome recorded"), (status = "default", description = "Structured error", body = contract::ApiError))
+)]
 async fn resolve_tool_call<A: BrainApi>(
     State(access): State<Access<A>>,
     Path((session_id, sequence)): Path<(SessionId, u64)>,
@@ -354,6 +544,22 @@ async fn resolve_tool_call<A: BrainApi>(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/environments/{environment_id}/calls/{name}",
+    operation_id = "callEnvironment",
+    params(
+        ("session_id" = contract::SessionId, Path),
+        ("environment_id" = contract::EnvironmentId, Path),
+        ("name" = String, Path, pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"),
+        ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)
+    ),
+    request_body = contract::EnvironmentCallRequest,
+    responses(
+        (status = 200, description = "Environment method result", body = contract::EnvironmentCallResult),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn call_environment<A: BrainApi>(
     State(api): State<A>,
     Path((session_id, environment_id, name)): Path<(SessionId, EnvironmentId, String)>,
@@ -373,6 +579,27 @@ async fn call_environment<A: BrainApi>(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}/events",
+    operation_id = "readSessionEvents",
+    params(("session_id" = contract::SessionId, Path), ("after" = Option<u64>, Query, minimum = 0)),
+    responses(
+        (
+            status = 200,
+            description = "A finite event page for application/json, or a live SSE stream \
+for text/event-stream. The stream begins with the page `after` names and then carries \
+records as they are appended, so a client that opens it before sending a message sees \
+that turn. It ends if the subscriber falls too far behind: reconnect with `after` set to \
+the last id seen, and the journal hands back exactly what was missed.",
+            content(
+                (contract::EventPage = "application/json"),
+                (String = "text/event-stream")
+            )
+        ),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn events<A: BrainApi>(
     State(api): State<A>,
     Path(session_id): Path<SessionId>,
@@ -451,6 +678,39 @@ async fn events<A: BrainApi>(
 /// The serve feed: pending client-hosted `tool_call_started` records for the claimed
 /// tools, then matching records as they are appended. Always SSE. See the OpenAPI
 /// description for the full contract.
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}/serve",
+    operation_id = "serveSessionTools",
+    description = "The serve feed: an SSE stream of this session's client-hosted \
+`tool_call_started` and `tool_cancel_started` records, filtered to the tools named in \
+`tools`, plus `session_ended`. It opens with the still-pending backlog (calls with no \
+finished record) and then carries records as they are appended. Authorized by the \
+session's share key as a bearer token (the API token also works). One live consumer per \
+tool: a new connection claiming a tool displaces the stream that held it, so a \
+reconnecting client replaces its own dead connection instead of racing it.",
+    params(
+        ("session_id" = contract::SessionId, Path),
+        (
+            "tools" = String,
+            Query,
+            description = "Comma-separated client-hosted tool names this connection serves.",
+            min_length = 1,
+            max_length = 4096
+        ),
+        (
+            "after" = Option<u64>,
+            Query,
+            description = "Resume cursor. Absent, the stream opens with the pending backlog; \
+set, it replays every matching record after this sequence instead.",
+            minimum = 0
+        )
+    ),
+    responses(
+        (status = 200, description = "Live serve stream", body = String, content_type = "text/event-stream"),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn serve_feed<A: BrainApi>(
     State(access): State<Access<A>>,
     Path(session_id): Path<SessionId>,
@@ -675,6 +935,13 @@ fn invalid(message: impl Into<String>) -> HttpError {
     HttpError(brain_protocol::ApiError::invalid_request(message))
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/cancel",
+    operation_id = "cancelSession",
+    params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    responses((status = 204, description = "Cancellation requested"), (status = "default", description = "Structured error", body = contract::ApiError))
+)]
 async fn cancel_session<A: BrainApi>(
     State(api): State<A>,
     Path(session_id): Path<SessionId>,
@@ -686,6 +953,16 @@ async fn cancel_session<A: BrainApi>(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/end",
+    operation_id = "endSession",
+    params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    responses(
+        (status = 200, description = "Ended session", body = contract::SessionSummary),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
 async fn end_session<A: BrainApi>(
     State(api): State<A>,
     Path(session_id): Path<SessionId>,
@@ -698,6 +975,13 @@ async fn end_session<A: BrainApi>(
     ))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/v1/sessions/{session_id}",
+    operation_id = "deleteSession",
+    params(("session_id" = contract::SessionId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    responses((status = 204, description = "Deleted"), (status = "default", description = "Structured error", body = contract::ApiError))
+)]
 async fn delete_session<A: BrainApi>(
     State(api): State<A>,
     Path(session_id): Path<SessionId>,
@@ -709,6 +993,12 @@ async fn delete_session<A: BrainApi>(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    get,
+    path = "/health/live",
+    operation_id = "live",
+    responses((status = 204, description = "Process is live"))
+)]
 async fn live<A: BrainApi>(State(api): State<A>) -> axum::http::StatusCode {
     if api.live().await {
         axum::http::StatusCode::NO_CONTENT
@@ -717,6 +1007,15 @@ async fn live<A: BrainApi>(State(api): State<A>) -> axum::http::StatusCode {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/health/ready",
+    operation_id = "ready",
+    responses(
+        (status = 204, description = "Process is ready"),
+        (status = 503, description = "Required dependency is unavailable")
+    )
+)]
 async fn ready<A: BrainApi>(State(api): State<A>) -> axum::http::StatusCode {
     if api.ready().await {
         axum::http::StatusCode::NO_CONTENT

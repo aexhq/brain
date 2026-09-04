@@ -73,4 +73,3 @@ export type {
   ToolDefinition,
   VercelAiGatewayModel,
 } from "./types.js";
-export { contractDigests } from "./generated/contracts.js";

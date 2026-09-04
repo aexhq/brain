@@ -1,313 +1,1192 @@
-openapi: 3.1.0
+components:
+  schemas:
+    AdmissionStatus:
+      enum:
+      - admitted
+      - rejected
+      type: string
+    AgentloopAdmission:
+      properties:
+        error:
+          $ref: '#/components/schemas/ApiError'
+        identity:
+          $ref: '#/components/schemas/AgentloopIdentity'
+        status:
+          $ref: '#/components/schemas/AdmissionStatus'
+      required:
+      - identity
+      - status
+      type: object
+    AgentloopIdentity:
+      pattern: ^[0-9a-f]{64}$
+      type: string
+    AgentloopManifest:
+      additionalProperties: false
+      description: |-
+        The manifest inside an agentloop package: the contract the loop was built against
+        and the component it carries.
+      properties:
+        component_bytes:
+          format: uint
+          maximum: 33554432
+          minimum: 1
+          type: integer
+        component_identity:
+          $ref: '#/components/schemas/AgentloopIdentity'
+        contract_version:
+          const: agentloop/v1
+        toolchain:
+          maxLength: 256
+          minLength: 1
+          type: string
+      required:
+      - contract_version
+      - component_identity
+      - component_bytes
+      - toolchain
+      type: object
+    AgentloopPackage:
+      additionalProperties: false
+      description: |-
+        What `POST /v1/agentloops` receives: the manifest and the component it describes,
+        base64-encoded.
+      properties:
+        component_base64:
+          type: string
+        manifest:
+          $ref: '#/components/schemas/AgentloopManifest'
+      required:
+      - manifest
+      - component_base64
+      type: object
+    AgentloopRef:
+      additionalProperties: false
+      description: 'The admitted loop package a session runs: which one, and how it is configured.'
+      properties:
+        configuration: true
+        identity:
+          $ref: '#/components/schemas/AgentloopIdentity'
+      required:
+      - identity
+      - configuration
+      type: object
+    ApiError:
+      properties:
+        code:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+        details: true
+        message:
+          maxLength: 4096
+          minLength: 1
+          type: string
+        retryable:
+          type: boolean
+      required:
+      - code
+      - message
+      - retryable
+      type: object
+    BindingValues:
+      additionalProperties:
+        maxLength: 32768
+        type: string
+      propertyNames:
+        pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+        type: string
+      type: object
+    BoundTool:
+      additionalProperties: false
+      allOf:
+      - if:
+          properties:
+            hosting:
+              const: client
+          required:
+          - hosting
+        then:
+          allOf:
+          - not:
+              required:
+              - program
+          - not:
+              required:
+              - environment_id
+          - properties:
+              needs:
+                maxItems: 0
+      - if:
+          not:
+            properties:
+              hosting:
+                const: client
+            required:
+            - hosting
+        then:
+          required:
+          - environment_id
+      description: |-
+        One tool as the SDK hands it over: its manifest fields plus the environment it
+        binds to. Brain splits the model-facing and dispatch-facing halves internally.
+      properties:
+        binding_names:
+          items:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+            type: string
+          maxItems: 64
+          type: array
+          uniqueItems: true
+        description:
+          maxLength: 8192
+          type: string
+        environment_id:
+          $ref: '#/components/schemas/EnvironmentId'
+          description: Required unless `hosting` is `client`; a client-hosted tool binds no environment.
+        hosting:
+          $ref: '#/components/schemas/ToolHosting'
+          default: provisioned
+        input_schema:
+          type: object
+        name:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+        needs:
+          default: []
+          items:
+            pattern: ^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$
+            type: string
+          maxItems: 64
+          type: array
+          uniqueItems: true
+        output_schema:
+          type: object
+        program:
+          $ref: '#/components/schemas/Program'
+      required:
+      - name
+      - description
+      - input_schema
+      - binding_names
+      type: object
+    ContentBlock:
+      oneOf:
+      - additionalProperties: false
+        properties:
+          text:
+            type: string
+          type:
+            const: text
+            type: string
+        required:
+        - type
+        - text
+        type: object
+      - additionalProperties: false
+        properties:
+          id:
+            type: string
+          input: true
+          name:
+            type: string
+          type:
+            const: tool_use
+            type: string
+        required:
+        - type
+        - id
+        - name
+        - input
+        type: object
+      - additionalProperties: false
+        properties:
+          content: true
+          is_error:
+            description: |-
+              ALWAYS set on a failed tool. Omitting the flag on a failure lets the
+              model read that failure as a success.
+            type: boolean
+          tool_use_id:
+            type: string
+          type:
+            const: tool_result
+            type: string
+        required:
+        - type
+        - tool_use_id
+        - content
+        - is_error
+        type: object
+    CreateEnvironmentRequest:
+      additionalProperties: false
+      description: What a client asks for when it creates an environment.
+      properties:
+        configuration: true
+        environment_id:
+          $ref: '#/components/schemas/EnvironmentId'
+          description: The id the environment is known by. Minted by Brain when absent.
+        idle_ttl_ms:
+          description: Absent means the server's default; zero means never.
+          format: uint64
+          minimum: 0
+          type: integer
+        managed:
+          default: false
+          description: |-
+            Whether Brain closes the environment once no session has been attached to it
+            for `idle_ttl_ms`. An unmanaged environment lives until it is deleted.
+          type: boolean
+      required:
+      - configuration
+      type: object
+    CreateSessionRequest:
+      additionalProperties: false
+      properties:
+        agentloop:
+          $ref: '#/components/schemas/AgentloopRef'
+        environments:
+          description: The environments this session attaches to, by id. Each must already exist.
+          items:
+            $ref: '#/components/schemas/EnvironmentAttachRequest'
+          maxItems: 128
+          type: array
+        idle_ttl_ms:
+          description: |-
+            How long the session may sit idle before Brain suspends it: its task and memory
+            are released and rebuilt from disk on the next request. Absent means the server's
+            default; zero means never.
+          format: uint64
+          minimum: 0
+          type: integer
+        model:
+          $ref: '#/components/schemas/ModelSelection'
+        response_format:
+          description: |-
+            The provider's structured-output request, applied to every model call unless the
+            loop sends its own. Optional, and rejected at create for a provider that cannot
+            carry it.
+        system:
+          default: ''
+          description: |-
+            The system prompt the agent loop starts from. The loop may send a different one
+            on any model call.
+          maxLength: 131072
+          type: string
+        tools:
+          items:
+            $ref: '#/components/schemas/BoundTool'
+          maxItems: 128
+          type: array
+        transcript:
+          description: |-
+            A transcript to carry forward, if the caller has one: the messages the new
+            session's first model call should already see. Brain journals them as the session's
+            opening transcript. Empty is an ordinary new session.
+          items:
+            $ref: '#/components/schemas/Message'
+          maxItems: 4096
+          type: array
+      required:
+      - agentloop
+      - model
+      - tools
+      - environments
+      type: object
+    EnvironmentAttachRequest:
+      additionalProperties: false
+      description: |-
+        What a session create names about one environment it attaches to. `bindings` carries
+        plaintext values for the environment's hosted tools and exists only here: the
+        configuration the session journals never carries them.
+      properties:
+        bindings:
+          $ref: '#/components/schemas/BindingValues'
+          default: {}
+        environment_id:
+          $ref: '#/components/schemas/EnvironmentId'
+      required:
+      - environment_id
+      type: object
+    EnvironmentCallRequest:
+      additionalProperties: false
+      properties:
+        input: true
+      required:
+      - input
+      type: object
+    EnvironmentCallResult:
+      additionalProperties: false
+      properties:
+        output: true
+      required:
+      - output
+      type: object
+    EnvironmentId:
+      pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+      type: string
+    EnvironmentList:
+      properties:
+        environments:
+          items:
+            $ref: '#/components/schemas/EnvironmentSummary'
+          type: array
+      required:
+      - environments
+      type: object
+    EnvironmentStatus:
+      oneOf:
+      - enum:
+        - open
+        type: string
+      - const: unreachable
+        description: |-
+          The last operation could not reach the environment. Cleared by the next one that
+          does.
+        type: string
+    EnvironmentSummary:
+      description: What the API says about an environment.
+      properties:
+        attached_sessions:
+          description: Sessions attached right now.
+          items:
+            $ref: '#/components/schemas/SessionId'
+          type: array
+        created_at_ms:
+          format: uint64
+          minimum: 0
+          type: integer
+        environment_id:
+          $ref: '#/components/schemas/EnvironmentId'
+        idle_ttl_ms:
+          format: uint64
+          minimum: 0
+          type: integer
+        managed:
+          type: boolean
+        resources:
+          default: {}
+          description: |-
+            What the environment declared, verbatim. Brain reads the names; the policy
+            blocks are the environment contract's business.
+          type: object
+        runtimes:
+          default: []
+          description: What the environment declared it executes and offers at setup.
+          items:
+            $ref: '#/components/schemas/Runtime'
+          type: array
+        status:
+          $ref: '#/components/schemas/EnvironmentStatus'
+      required:
+      - environment_id
+      - status
+      - managed
+      - attached_sessions
+      - created_at_ms
+      type: object
+    Event:
+      properties:
+        data: true
+        event_id:
+          $ref: '#/components/schemas/EventId'
+        event_type:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+        recorded_at_ms:
+          format: uint64
+          minimum: 0
+          type: integer
+        sequence:
+          format: uint64
+          minimum: 1
+          type: integer
+      required:
+      - event_id
+      - sequence
+      - recorded_at_ms
+      - event_type
+      - data
+      type: object
+    EventId:
+      pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+      type: string
+    EventPage:
+      properties:
+        events:
+          items:
+            $ref: '#/components/schemas/Event'
+          maxItems: 1000
+          type: array
+        next_cursor:
+          format: uint64
+          minimum: 0
+          type: integer
+      required:
+      - events
+      - next_cursor
+      type: object
+    HttpProgramRequest:
+      additionalProperties: false
+      description: |-
+        The request template of an `http` program: the environment fronts the endpoint,
+        the tool's input travels as the JSON body, and the response body is the output.
+      properties:
+        headers:
+          additionalProperties:
+            maxLength: 16384
+            type: string
+          propertyNames:
+            maxLength: 256
+          type: object
+        method:
+          pattern: ^[A-Z]{3,16}$
+          type: string
+        url:
+          maxLength: 8192
+          minLength: 1
+          type: string
+      required:
+      - method
+      - url
+      type: object
+    Identity:
+      pattern: ^[0-9a-f]{64}$
+      type: string
+    Message:
+      additionalProperties: false
+      properties:
+        content:
+          items:
+            $ref: '#/components/schemas/ContentBlock'
+          type: array
+        role:
+          $ref: '#/components/schemas/Role'
+      required:
+      - role
+      - content
+      type: object
+    MessageRequest:
+      additionalProperties: false
+      properties:
+        input:
+          $ref: '#/components/schemas/UserInput'
+      required:
+      - input
+      type: object
+    ModelSelection:
+      additionalProperties: false
+      properties:
+        api_key:
+          maxLength: 16384
+          minLength: 1
+          type: string
+        name:
+          maxLength: 256
+          pattern: ^\S{1,256}$
+          type: string
+        provider:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+      required:
+      - provider
+      - name
+      - api_key
+      type: object
+    Outcome:
+      description: |-
+        The one envelope every tool invocation resolves to.
+
+        `timeout` is distinguished from `error` because the deadline is caller-owned: no
+        backend family can be trusted to enforce one remotely, so the caller kills and says
+        exactly what happened rather than encoding it as an exit code.
+      oneOf:
+      - properties:
+          status:
+            const: ok
+            type: string
+          value: true
+        required:
+        - status
+        - value
+        type: object
+      - properties:
+          error:
+            $ref: '#/components/schemas/OutcomeError'
+          status:
+            const: error
+            type: string
+        required:
+        - status
+        - error
+        type: object
+      - properties:
+          status:
+            const: timeout
+            type: string
+        required:
+        - status
+        type: object
+      - properties:
+          status:
+            const: cancelled
+            type: string
+        required:
+        - status
+        type: object
+    OutcomeError:
+      additionalProperties: false
+      properties:
+        code:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+        details: true
+        message:
+          maxLength: 4096
+          type: string
+      required:
+      - code
+      - message
+      type: object
+    Program:
+      description: |-
+        The program behind a provisioned tool, named by content identity so
+        re-provisioning is idempotent. An `esm` bundle travels out of band under its
+        identity; a `shell` script and an `http` request template travel inline.
+      oneOf:
+      - properties:
+          identity:
+            $ref: '#/components/schemas/Identity'
+          kind:
+            const: esm
+            type: string
+        required:
+        - kind
+        - identity
+        type: object
+      - properties:
+          identity:
+            $ref: '#/components/schemas/Identity'
+          kind:
+            const: shell
+            type: string
+          script:
+            maxLength: 262144
+            minLength: 1
+            type: string
+        required:
+        - kind
+        - identity
+        - script
+        type: object
+      - properties:
+          identity:
+            $ref: '#/components/schemas/Identity'
+          kind:
+            const: http
+            type: string
+          request:
+            $ref: '#/components/schemas/HttpProgramRequest'
+        required:
+        - kind
+        - identity
+        - request
+        type: object
+    Role:
+      enum:
+      - user
+      - assistant
+      type: string
+    Runtime:
+      description: |-
+        The closed set of program kinds an environment can launch. Closed only because
+        Brain and the SDK must physically package and start the program.
+      oneOf:
+      - const: esm
+        description: A self-contained JavaScript module (`brain build` output).
+        type: string
+      - const: shell
+        description: A POSIX shell script.
+        type: string
+      - const: http
+        description: A request to an endpoint the environment fronts.
+        type: string
+    SessionId:
+      pattern: ^ses_[A-Za-z0-9]{20,32}$
+      type: string
+    SessionList:
+      properties:
+        sessions:
+          items:
+            $ref: '#/components/schemas/SessionSummary'
+          type: array
+      required:
+      - sessions
+      type: object
+    SessionStatus:
+      enum:
+      - creating
+      - idle
+      - running
+      - ended
+      - failed
+      type: string
+    SessionSummary:
+      description: 'What the API says about a session: its id, where it is, and how far its journal goes.'
+      properties:
+        last_sequence:
+          description: |-
+            Sequence of the last journal record committed for this session — the journal is
+            complete through here, so it is where a `GET /events` cursor starts.
+          format: uint64
+          minimum: 0
+          type: integer
+        session_id:
+          $ref: '#/components/schemas/SessionId'
+        share_key:
+          description: |-
+            The scoped credential that authorizes answering this session's client-hosted
+            tools: the serve feed and the tool-results endpoint, nothing else. Hand it to
+            the process that serves a tool; it spends nothing and reads nothing else.
+            Minted by the serving layer — the session leaves it empty.
+          pattern: ^sk\.ses_[A-Za-z0-9]{20,32}\.[0-9a-f]{64}$
+          type: string
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+      required:
+      - session_id
+      - status
+      - last_sequence
+      - share_key
+      type: object
+    ToolHosting:
+      description: |-
+        Where a tool's implementation executes: a provisioned program the environment
+        launches, or an application process answering off the serve feed (`client`) — the
+        session's creator or anyone holding the session's share key.
+      enum:
+      - provisioned
+      - client
+      type: string
+    UserInput:
+      additionalProperties: false
+      description: |-
+        What an application hands a session on `send`. The shape is closed on purpose:
+        Brain owes every agentloop the same observation shape regardless of who wrote
+        the client, so free-form content is not accepted. Multimodal parts will extend
+        this record when they land — see the roadmap.
+      properties:
+        message:
+          minLength: 1
+          type: string
+      required:
+      - message
+      type: object
 info:
+  description: Versioned Brain HTTP transport
+  license:
+    identifier: MIT
+    name: MIT
   title: Brain HTTP API
   version: 1.0.0
+openapi: 3.1.0
 paths:
-  /v1/agentloops:
-    post:
-      operationId: admitAgentloop
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/octet-stream:
-            schema: { type: string, format: binary, maxLength: 33554432 }
-      responses:
-        '200':
-          description: Agentloop admitted
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/AgentloopAdmission' }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/agentloops/{identity}:
-    get:
-      operationId: getAgentloop
-      parameters:
-        - name: identity
-          in: path
-          required: true
-          schema: { $ref: './schemas.json#/$defs/Identity' }
-      responses:
-        '200':
-          description: Admission status
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/AgentloopAdmission' }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/environments:
-    post:
-      operationId: createEnvironment
-      description: >-
-        Creates an environment: Brain runs its setup and keeps what it declared it
-        executes and offers. Sessions attach to it by id. A managed environment is
-        closed by Brain once no session has been attached to it for its idle TTL; an
-        unmanaged one lives until it is deleted.
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: './schemas.json#/$defs/CreateEnvironmentRequest' }
-      responses:
-        '200':
-          description: Created environment
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/Environment' }
-        default: { $ref: '#/components/responses/Error' }
-    get:
-      operationId: listEnvironments
-      responses:
-        '200':
-          description: Environments
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/EnvironmentList' }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/environments/{environment_id}:
-    parameters:
-      - name: environment_id
-        in: path
-        required: true
-        schema: { $ref: './schemas.json#/$defs/Identifier' }
-    get:
-      operationId: getEnvironment
-      responses:
-        '200':
-          description: Environment state
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/Environment' }
-        default: { $ref: '#/components/responses/Error' }
-    delete:
-      operationId: deleteEnvironment
-      description: >-
-        Tears the environment down. Refused with `conflict` while a session is still
-        attached; every session that was ever attached sees `environment_closed` on its
-        events.
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      responses:
-        '204': { description: Closed }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/sessions:
-    post:
-      operationId: createSession
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: './schemas.json#/$defs/CreateSessionRequest' }
-      responses:
-        '200':
-          description: Created session
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/Session' }
-        default: { $ref: '#/components/responses/Error' }
-    get:
-      operationId: listSessions
-      responses:
-        '200':
-          description: Sessions
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/SessionList' }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/sessions/{session_id}:
-    parameters:
-      - $ref: '#/components/parameters/SessionId'
-    get:
-      operationId: getSession
-      responses:
-        '200':
-          description: Session state
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/Session' }
-        default: { $ref: '#/components/responses/Error' }
-    delete:
-      operationId: deleteSession
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
-      responses:
-        '204': { description: Deleted }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/sessions/{session_id}/messages:
-    post:
-      operationId: sendMessage
-      parameters:
-        - $ref: '#/components/parameters/SessionId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: './schemas.json#/$defs/MessageRequest' }
-      responses:
-        '200':
-          description: Updated session
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/Session' }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/sessions/{session_id}/environments/{environment_id}/calls/{name}:
-    post:
-      operationId: callEnvironment
-      parameters:
-        - $ref: '#/components/parameters/SessionId'
-        - name: environment_id
-          in: path
-          required: true
-          schema: { $ref: './schemas.json#/$defs/Identifier' }
-        - name: name
-          in: path
-          required: true
-          schema: { $ref: './schemas.json#/$defs/Identifier' }
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: './schemas.json#/$defs/EnvironmentCallRequest' }
-      responses:
-        '200':
-          description: Environment method result
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/EnvironmentCallResult' }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/sessions/{session_id}/serve:
-    get:
-      operationId: serveSessionTools
-      description: >-
-        The serve feed: an SSE stream of this session's client-hosted
-        `tool_call_started` and `tool_cancel_started` records, filtered to the tools
-        named in `tools`, plus `session_ended`. It opens with the still-pending backlog
-        (calls with no finished record) and then carries records as they are appended. Authorized
-        by the session's share key as a bearer token (the API token also works). One
-        live consumer per tool: a new connection claiming a tool displaces the
-        stream that held it, so a reconnecting client replaces its own dead
-        connection instead of racing it.
-      parameters:
-        - $ref: '#/components/parameters/SessionId'
-        - name: tools
-          in: query
-          required: true
-          description: Comma-separated client-hosted tool names this connection serves.
-          schema: { type: string, minLength: 1, maxLength: 4096 }
-        - name: after
-          in: query
-          description: >-
-            Resume cursor. Absent, the stream opens with the pending backlog; set,
-            it replays every matching record after this sequence instead.
-          schema: { type: integer, minimum: 0 }
-      responses:
-        '200':
-          description: Live serve stream
-          content:
-            text/event-stream:
-              schema: { type: string }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/sessions/{session_id}/tool-results/{sequence}:
-    post:
-      operationId: resolveToolCall
-      description: >-
-        Answers a client-hosted tool call. The call is named by the sequence of its
-        `tool_call_started` record on the event feed; the body is the call's outcome.
-        Idempotent per call: a retry with the same key replays the first answer, and a
-        call that is no longer pending is a conflict. Authorized by the API token or by
-        the session's share key.
-      parameters:
-        - $ref: '#/components/parameters/SessionId'
-        - name: sequence
-          in: path
-          required: true
-          schema: { $ref: './schemas.json#/$defs/Sequence' }
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: './schemas.json#/$defs/Outcome' }
-      responses:
-        '204': { description: Outcome recorded }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/sessions/{session_id}/cancel:
-    post:
-      operationId: cancelSession
-      parameters:
-        - $ref: '#/components/parameters/SessionId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      responses:
-        '204': { description: Cancellation requested }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/sessions/{session_id}/events:
-    get:
-      operationId: readSessionEvents
-      parameters:
-        - $ref: '#/components/parameters/SessionId'
-        - name: after
-          in: query
-          schema: { type: integer, minimum: 0 }
-      responses:
-        '200':
-          description: >-
-            A finite event page for application/json, or a live SSE stream for
-            text/event-stream. The stream begins with the page `after` names and then
-            carries records as they are appended, so a client that opens it before
-            sending a message sees that turn. It ends if the subscriber falls too far
-            behind: reconnect with `after` set to the last id seen, and the journal
-            hands back exactly what was missed.
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/EventPage' }
-            text/event-stream:
-              schema: { type: string }
-        default: { $ref: '#/components/responses/Error' }
-  /v1/sessions/{session_id}/end:
-    post:
-      operationId: endSession
-      parameters:
-        - $ref: '#/components/parameters/SessionId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      responses:
-        '200':
-          description: Ended session
-          content:
-            application/json:
-              schema: { $ref: './schemas.json#/$defs/Session' }
-        default: { $ref: '#/components/responses/Error' }
   /health/live:
     get:
       operationId: live
       responses:
-        '204': { description: Process is live }
+        '204':
+          description: Process is live
   /health/ready:
     get:
       operationId: ready
       responses:
-        '204': { description: Process is ready }
-        '503': { description: Required dependency is unavailable }
-components:
-  parameters:
-    IdempotencyKey:
-      name: Idempotency-Key
-      in: header
-      required: true
-      schema: { type: string, minLength: 1, maxLength: 128 }
-    SessionId:
-      name: session_id
-      in: path
-      required: true
-      schema: { $ref: './schemas.json#/$defs/SessionId' }
-  responses:
-    Error:
-      description: Structured error
-      content:
-        application/json:
-          schema: { $ref: './schemas.json#/$defs/ApiError' }
+        '204':
+          description: Process is ready
+        '503':
+          description: Required dependency is unavailable
+  /v1/agentloops:
+    post:
+      operationId: admitAgentloop
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              format: binary
+              maxLength: 33554432
+              type: string
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentloopAdmission'
+          description: Agentloop admitted
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/agentloops/{identity}:
+    get:
+      operationId: getAgentloop
+      parameters:
+      - in: path
+        name: identity
+        required: true
+        schema:
+          $ref: '#/components/schemas/AgentloopIdentity'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentloopAdmission'
+          description: Admission status
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/environments:
+    get:
+      operationId: listEnvironments
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentList'
+          description: Environments
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+    post:
+      description: 'Creates an environment: Brain runs its setup and keeps what it declared it executes and offers. Sessions attach to it by id. A managed environment is closed by Brain once no session has been attached to it for its idle TTL; an unmanaged one lives until it is deleted.'
+      operationId: createEnvironment
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEnvironmentRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentSummary'
+          description: Created environment
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/environments/{environment_id}:
+    delete:
+      description: Tears the environment down. Refused with `conflict` while a session is still attached; every session that was ever attached sees `environment_closed` on its events.
+      operationId: deleteEnvironment
+      parameters:
+      - in: path
+        name: environment_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/EnvironmentId'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
+      responses:
+        '204':
+          description: Closed
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+    get:
+      operationId: getEnvironment
+      parameters:
+      - in: path
+        name: environment_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/EnvironmentId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentSummary'
+          description: Environment state
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions:
+    get:
+      operationId: listSessions
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionList'
+          description: Sessions
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+    post:
+      operationId: createSession
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSummary'
+          description: Created session
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}:
+    delete:
+      operationId: deleteSession
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
+      responses:
+        '204':
+          description: Deleted
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+    get:
+      operationId: getSession
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSummary'
+          description: Session state
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/cancel:
+    post:
+      operationId: cancelSession
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
+      responses:
+        '204':
+          description: Cancellation requested
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/end:
+    post:
+      operationId: endSession
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSummary'
+          description: Ended session
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/environments/{environment_id}/calls/{name}:
+    post:
+      operationId: callEnvironment
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: environment_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/EnvironmentId'
+      - in: path
+        name: name
+        required: true
+        schema:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnvironmentCallRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentCallResult'
+          description: Environment method result
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/events:
+    get:
+      operationId: readSessionEvents
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: query
+        name: after
+        required: false
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPage'
+            text/event-stream:
+              schema:
+                type: string
+          description: 'A finite event page for application/json, or a live SSE stream for text/event-stream. The stream begins with the page `after` names and then carries records as they are appended, so a client that opens it before sending a message sees that turn. It ends if the subscriber falls too far behind: reconnect with `after` set to the last id seen, and the journal hands back exactly what was missed.'
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/messages:
+    post:
+      operationId: sendMessage
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionSummary'
+          description: Updated session
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/serve:
+    get:
+      description: 'The serve feed: an SSE stream of this session''s client-hosted `tool_call_started` and `tool_cancel_started` records, filtered to the tools named in `tools`, plus `session_ended`. It opens with the still-pending backlog (calls with no finished record) and then carries records as they are appended. Authorized by the session''s share key as a bearer token (the API token also works). One live consumer per tool: a new connection claiming a tool displaces the stream that held it, so a reconnecting client replaces its own dead connection instead of racing it.'
+      operationId: serveSessionTools
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - description: Comma-separated client-hosted tool names this connection serves.
+        in: query
+        name: tools
+        required: true
+        schema:
+          maxLength: 4096
+          minLength: 1
+          type: string
+      - description: Resume cursor. Absent, the stream opens with the pending backlog; set, it replays every matching record after this sequence instead.
+        in: query
+        name: after
+        required: false
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      responses:
+        '200':
+          content:
+            text/event-stream:
+              schema:
+                type: string
+          description: Live serve stream
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+      summary: |-
+        The serve feed: pending client-hosted `tool_call_started` records for the claimed
+        tools, then matching records as they are appended. Always SSE. See the OpenAPI
+        description for the full contract.
+  /v1/sessions/{session_id}/tool-results/{sequence}:
+    post:
+      description: 'Answers a client-hosted tool call. The call is named by the sequence of its `tool_call_started` record on the event feed; the body is the call''s outcome. Idempotent per call: a retry with the same key replays the first answer, and a call that is no longer pending is a conflict. Authorized by the API token or by the session''s share key.'
+      operationId: resolveToolCall
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 1
+          type: integer
+      - in: header
+        name: Idempotency-Key
+        required: true
+        schema:
+          maxLength: 256
+          minLength: 1
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Outcome'
+        required: true
+      responses:
+        '204':
+          description: Outcome recorded
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error

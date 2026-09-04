@@ -6,8 +6,8 @@ import { ClientToolPump, type PumpTransport } from "./client-pump.js";
 import { assertEnvironmentBindable, bindEnvironment, endEnvironment, inspectAgentloop, inspectBoundTool, inspectClientTool, inspectEnvironment, inspectServedTool } from "./extensions.js";
 import { BrainError } from "./errors.js";
 import type {
-  AgentloopAdmission, BoundTool as WireBoundTool, CreateEnvironmentRequest, CreateSessionRequest, Environment as WireEnvironment, EnvironmentAttachRequest, EnvironmentList,
-  EventPage, Session as WireSession, SessionList,
+  AgentloopAdmission, BoundTool as WireBoundTool, CreateEnvironmentRequest, CreateSessionRequest, EnvironmentSummary as WireEnvironment, EnvironmentAttachRequest, EnvironmentList,
+  EventPage, SessionSummary as WireSession, SessionList,
 } from "./generated/session.js";
 import type {
   Agentloop, BoundTool, CreateEnvironmentOptions, CreateSessionOptions, Environment, EnvironmentState, OperationOptions, ServedTool, SessionEvent, SessionState, SessionStreamEvent, UserInput,
@@ -439,7 +439,7 @@ function compileSession(options: CreateSessionOptions, agentloopIdentity: string
     agentloop: { identity: agentloopIdentity, configuration: structuredClone(agentloop.configuration) },
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
     system: options.system ?? "",
-    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }),
+    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) as CreateSessionRequest["response_format"] }),
     tools,
     environments: requirements,
     ...(options.transcript === undefined ? {} : { transcript: structuredClone(options.transcript) as unknown as CreateSessionRequest["transcript"] }),

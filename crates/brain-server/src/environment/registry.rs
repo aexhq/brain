@@ -339,7 +339,7 @@ impl EnvironmentRegistry {
     pub async fn execute(
         &self,
         binding: &EnvironmentBinding,
-        operation: &EnvironmentOperation<EnvironmentRequest>,
+        operation: &EnvironmentOperation,
     ) -> Result<EnvironmentReceipt, brain::Error> {
         let entry = self.entry(&binding.environment_id);
         self.send(&entry, operation).await
@@ -479,7 +479,7 @@ impl EnvironmentRegistry {
     async fn send(
         &self,
         entry: &DirectoryEntry,
-        operation: &EnvironmentOperation<EnvironmentRequest>,
+        operation: &EnvironmentOperation,
     ) -> Result<EnvironmentReceipt, brain::Error> {
         let sent = self
             .adapter

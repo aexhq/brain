@@ -7,7 +7,7 @@
   "operation": {
     "sequence": 3,
     "environment_id": "env_shared",
-    "session_id": "ses_example",
+    "session_id": "ses_0123456789abcdefghij",
     "attachment_id": "att_example",
     "request": {
       "type": "attach",
