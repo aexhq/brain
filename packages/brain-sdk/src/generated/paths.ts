@@ -310,6 +310,8 @@ export type components = {
             tools: components["schemas"]["BoundTool"][];
             environments: components["schemas"]["EnvironmentRequirement"][];
             history?: components["schemas"]["HistoryEvent"][];
+            /** @description How long the session may sit idle before Brain suspends its task and memory to disk. Absent means the server default; zero means never. */
+            idle_ttl_ms?: number;
         };
         UserInput: {
             message: string;

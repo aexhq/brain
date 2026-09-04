@@ -91,7 +91,8 @@
         "response_format": {},
         "tools": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/BoundTool" } },
         "environments": { "type": "array", "maxItems": 128, "items": { "$ref": "#/$defs/EnvironmentRequirement" } },
-        "history": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/HistoryEvent" } }
+        "history": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/$defs/HistoryEvent" } },
+        "idle_ttl_ms": { "type": "integer", "minimum": 0, "description": "How long the session may sit idle before Brain suspends its task and memory to disk. Absent means the server default; zero means never." }
       }
     },
     "HistoryEvent": {

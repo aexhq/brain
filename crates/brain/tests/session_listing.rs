@@ -1,9 +1,9 @@
 //! Reading a session must not copy the conversation it is not returning.
 //!
-//! A session row holds the whole sealed configuration and the whole context. What a
-//! caller outside the session can see is a few small fields. When the journal answered
-//! `sessions()` with cloned rows, every list of N sessions deep-copied N configurations
-//! and N conversations and then dropped them: a page of the session list allocated
+//! A session row holds the whole configuration and the whole context. What a caller
+//! outside the session can see is a few small fields. When the store answered a summary
+//! with a cloned row, every list of N sessions deep-copied N configurations and N
+//! conversations and then dropped them: a page of the session list allocated
 //! proportionally to how much the sessions had been used, and startup recovery — which
 //! reads only status and sequence — did the same for every session on disk.
 //!
@@ -15,9 +15,10 @@ use std::{
     cell::Cell,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
-use brain::{AppendRecord, JournalStore, SegmentJournal, journal::SessionRow};
+use brain::{AppendRecord, Feed, JournalStore, SessionStore, SessionUpdate, Writer};
 use brain_protocol::{SessionId, SessionStatus};
 
 /// Counts bytes handed out, so a test can measure one call rather than a whole process.
@@ -69,30 +70,43 @@ const SESSIONS: usize = 8;
 const CONTEXT_BYTES: usize = 256 * 1024;
 
 /// A listing may allocate for its own vector and its ids; it may not allocate a copy of
-/// even one session's context. Measured: 896 bytes to list eight sessions and 16 bytes to
-/// read one, against 4,205,528 and 525,595 when the journal cloned whole rows. The bound
-/// sits far from both regimes.
+/// even one session's context. The bound sits far from both regimes.
 const MAX_LISTING_BYTES: usize = CONTEXT_BYTES / 4;
 
-fn journal_with_sessions(directory: &Path) -> SegmentJournal {
-    let journal = SegmentJournal::open(directory).unwrap();
+fn stores_with_sessions(directory: &Path) -> (Vec<Arc<SessionStore>>, Arc<Writer>) {
+    let writer = Writer::spawn();
+    let (publisher, _worker) = brain_telemetry::telemetry_channel();
+    let feed = Arc::new(Feed::new(publisher));
     let filler = serde_json::Value::String("x".repeat(CONTEXT_BYTES));
+    let context = serde_json::json!({ "items": filler });
+    let mut stores = Vec::with_capacity(SESSIONS);
     for index in 0..SESSIONS {
-        let row = SessionRow {
-            session_id: SessionId::new(format!("ses_{index:04}")),
-            status: SessionStatus::Idle,
-            through_sequence: 1,
-            configuration: serde_json::json!({ "sealed": filler }),
-            context: serde_json::json!({ "items": filler }),
-        };
-        journal
-            .create_session(
-                &row,
-                AppendRecord::new("session_creation_ended", serde_json::json!({})),
+        let session_id = SessionId::new(format!("ses_{index:04}"));
+        let store = SessionStore::create(
+            &directory.join(session_id.as_str()),
+            session_id,
+            &serde_json::json!({ "configuration": filler }),
+            writer.clone(),
+            feed.clone(),
+        )
+        .unwrap();
+        store
+            .append(
+                0,
+                &[AppendRecord::new(
+                    "session_creation_ended",
+                    serde_json::json!({}),
+                )],
+                SessionUpdate {
+                    status: Some(SessionStatus::Idle),
+                    context: Some(&context),
+                    configuration: None,
+                },
             )
             .unwrap();
+        stores.push(store);
     }
-    journal
+    (stores, writer)
 }
 
 fn temporary_directory(name: &str) -> PathBuf {
@@ -110,40 +124,45 @@ fn temporary_directory(name: &str) -> PathBuf {
 #[test]
 fn listing_sessions_does_not_copy_their_contexts() {
     let directory = temporary_directory("list");
-    let journal = journal_with_sessions(&directory);
+    let (stores, writer) = stores_with_sessions(&directory);
 
-    let (sessions, allocated) = measure(|| journal.session_summaries().unwrap());
+    let (sessions, allocated) = measure(|| {
+        stores
+            .iter()
+            .map(|store| store.session_summary().unwrap())
+            .collect::<Vec<_>>()
+    });
 
     assert_eq!(sessions.len(), SESSIONS);
     assert_eq!(sessions[0].session_id.as_str(), "ses_0000");
     assert!(
         allocated <= MAX_LISTING_BYTES,
         "listing {SESSIONS} sessions allocated {allocated} bytes for a \
-         {CONTEXT_BYTES}-byte context each (bound {MAX_LISTING_BYTES}): the journal is \
+         {CONTEXT_BYTES}-byte context each (bound {MAX_LISTING_BYTES}): the store is \
          cloning whole rows to answer a summary"
     );
 
-    drop(journal);
+    drop(stores);
+    drop(writer);
     fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
 fn reading_one_session_does_not_copy_its_context() {
     let directory = temporary_directory("get");
-    let journal = journal_with_sessions(&directory);
-    let wanted = SessionId::new("ses_0003");
+    let (stores, writer) = stores_with_sessions(&directory);
 
-    let (session, allocated) = measure(|| journal.session_summary(&wanted).unwrap());
+    let (session, allocated) = measure(|| stores[3].session_summary().unwrap());
 
-    let session = session.expect("the session was created above");
-    assert_eq!(session.session_id, wanted);
+    assert_eq!(session.session_id.as_str(), "ses_0003");
     assert!(
         allocated <= MAX_LISTING_BYTES,
         "reading one session allocated {allocated} bytes for a {CONTEXT_BYTES}-byte \
          context (bound {MAX_LISTING_BYTES})"
     );
 
-    drop(journal);
+    drop(stores);
+    drop(writer);
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -152,19 +171,17 @@ fn reading_one_session_does_not_copy_its_context() {
 #[test]
 fn the_full_row_is_still_reachable_for_rehydration() {
     let directory = temporary_directory("row");
-    let journal = journal_with_sessions(&directory);
+    let (stores, writer) = stores_with_sessions(&directory);
 
-    let row = journal
-        .session_row(&SessionId::new("ses_0005"))
-        .unwrap()
-        .expect("the session was created above");
+    let row = stores[5].session_row().unwrap();
 
     assert_eq!(row.context["items"].as_str().unwrap().len(), CONTEXT_BYTES);
     assert_eq!(
-        row.configuration["sealed"].as_str().unwrap().len(),
+        row.configuration["configuration"].as_str().unwrap().len(),
         CONTEXT_BYTES
     );
 
-    drop(journal);
+    drop(stores);
+    drop(writer);
     fs::remove_dir_all(directory).unwrap();
 }

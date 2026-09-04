@@ -196,7 +196,7 @@ impl EnvironmentRegistry {
         input: serde_json::Value,
     ) -> Result<EnvironmentCallResult, brain::Error> {
         let session_id = session.id();
-        let config = brain::session_config(store, session_id)?;
+        let config = brain::session_config(store)?;
         let attachment = config
             .environments
             .iter()

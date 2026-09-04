@@ -8,79 +8,19 @@ use std::{
 };
 
 use async_trait::async_trait;
-use brain::{
-    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionRuntime,
-    ToolExecutor,
-};
+use brain::{Error, LoopExecutor, ModelExecutor, Session, ToolExecutor};
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopIdentity, AttachmentId, Decision,
     EnvironmentAttachment, EnvironmentBinding, EnvironmentId, Identity, LifecyclePolicy,
     MessageRequest, ModelBinding, ModelRequest, ModelResult, ModelStreamEvent, Observation,
-    Outcome, OutcomeError, Runtime as EnvironmentRuntime, SessionConfig, SessionId, ToolBinding,
+    Outcome, OutcomeError, Runtime as EnvironmentRuntime, SessionConfig, ToolBinding,
     ToolCancellation, ToolDefinition, ToolDispatch, ToolHosting, ToolInvocation,
 };
 use brain_telemetry::telemetry_channel;
 use tokio::sync::Notify;
 
-/// What the host gives every session: the store it journals to and the executors it
-/// performs effects with. Built the way the server builds it.
-struct Runtime {
-    store: Arc<ObservedJournal>,
-    config: Arc<SessionRuntime>,
-}
-
-#[allow(dead_code)]
-impl Runtime {
-    fn open(
-        data_dir: &Path,
-        telemetry: brain_telemetry::TelemetryPublisher,
-        max_decisions_per_turn: usize,
-        tool_deadline_ms: u64,
-        loop_executor: Arc<dyn LoopExecutor>,
-        model_executor: Arc<dyn ModelExecutor>,
-        tool_executor: Arc<dyn ToolExecutor>,
-    ) -> Self {
-        let journal: Arc<dyn brain::JournalStore> =
-            Arc::new(brain::SegmentJournal::open(&data_dir.join("journal")).unwrap());
-        let store = Arc::new(ObservedJournal::new(journal, telemetry));
-        brain::interrupt_unfinished_turns(&*store).unwrap();
-        let config = Arc::new(SessionRuntime {
-            max_decisions_per_turn,
-            tool_deadline_ms,
-            loop_executor,
-            model_executor,
-            tool_executor,
-            live: store.live_sender(),
-        });
-        Self { store, config }
-    }
-
-    fn store(&self) -> Arc<dyn brain::JournalStore> {
-        self.store.clone()
-    }
-
-    fn events(
-        &self,
-        session_id: &SessionId,
-        after: u64,
-        limit: usize,
-    ) -> brain_protocol::EventPage {
-        brain::event_page(
-            self.store.records_after(session_id, after, limit).unwrap(),
-            after,
-        )
-    }
-
-    fn session(&self, session_id: &SessionId) -> brain_protocol::SessionSummary {
-        self.store.session_summary(session_id).unwrap().unwrap()
-    }
-
-    fn subscribe(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
-        self.store.subscribe()
-    }
-}
+mod common;
+use common::Runtime;
 
 struct ScriptedLoop {
     calls: AtomicUsize,
@@ -307,6 +247,7 @@ async fn the_started_record_precedes_the_model_effect() {
     );
     let _ = recorded_at_ms;
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     fs::remove_dir_all(data_dir).unwrap();
@@ -364,6 +305,7 @@ async fn cancel_interrupts_an_inflight_model_request() {
             .any(|event| event.event_type == "model_call_ended")
     );
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     fs::remove_dir_all(data_dir).unwrap();
@@ -419,6 +361,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
     assert!(kinds.iter().any(|kind| kind == "tool_cancel_ended"));
     assert_eq!(kinds.last().unwrap(), "turn_failed");
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     fs::remove_dir_all(data_dir).unwrap();
@@ -437,6 +380,7 @@ fn request() -> SessionConfig {
         tools: Vec::new(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
+        idle_ttl_ms: None,
     }
 }
 
@@ -490,6 +434,7 @@ fn tool_request_with(tool_name: &str, needs: Vec<&str>, declares: Vec<&str>) -> 
             hosting: ToolHosting::Provisioned,
             program: None,
         }],
+        idle_ttl_ms: None,
     }
 }
 
@@ -521,6 +466,7 @@ fn client_tool_request(tool_name: &str) -> SessionConfig {
             hosting: ToolHosting::Client,
             program: None,
         }],
+        idle_ttl_ms: None,
     }
 }
 
@@ -534,10 +480,7 @@ fn temporary_directory() -> PathBuf {
 /// then attached and completed. There is no shortcut past `Session::begin`, so these
 /// tests exercise the same validation the production path enforces.
 fn start(runtime: &Runtime, config: SessionConfig) -> Session {
-    Session::begin(runtime.store(), runtime.config.clone(), &config, &[])
-        .unwrap()
-        .complete(config)
-        .unwrap()
+    runtime.create(&config, &[]).unwrap()
 }
 
 /// A client watching a session must see the model's output while the turn is running.
@@ -589,6 +532,7 @@ async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
         }
     }
     drop(handle);
+    runtime.drain();
     drop(runtime);
     // Best-effort: the writer thread may still hold a segment open, and the assertions
     // below are what this test is for.
@@ -662,7 +606,7 @@ fn start_with_history(
     config: SessionConfig,
     history: Vec<brain_protocol::HistoryEvent>,
 ) -> Result<Session, Error> {
-    Session::begin(runtime.store(), runtime.config.clone(), &config, &history)?.complete(config)
+    runtime.create(&config, &history)
 }
 
 /// A session created with history has that history in its journal, and the agentloop is
@@ -716,6 +660,7 @@ async fn a_session_can_be_created_with_prior_history() {
     );
 
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _ = fs::remove_dir_all(data_dir);
@@ -785,6 +730,7 @@ async fn the_journal_is_the_only_thing_written() {
             .unwrap();
     }
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -807,12 +753,14 @@ async fn the_journal_is_the_only_thing_written() {
     let _ = fs::remove_dir_all(&data_dir);
 
     assert!(
-        found.iter().all(|name| name.ends_with(".journal")),
-        "the journal is the only thing Brain writes; found {found:?}"
+        found
+            .iter()
+            .all(|name| name.ends_with(".segment") || name.ends_with("/config.json")),
+        "a session's directory holds its configuration and its segments and nothing else; found {found:?}"
     );
     assert!(
-        !found.is_empty(),
-        "ten turns must have written a journal segment"
+        found.iter().any(|name| name.ends_with(".segment")),
+        "ten turns must have written a segment"
     );
 }
 
@@ -982,9 +930,7 @@ async fn needs_beyond_declared_resources_rejects_create_naming_all_three_parties
     let sealed = tool_request_with("bash", vec!["process"], vec!["dom"]);
     // The configuration is already attached, so the bind check fires at admission; a
     // host that attaches after `begin` is rejected at `complete` by the same bound.
-    let error = match Session::begin(runtime.store(), runtime.config.clone(), &sealed, &[])
-        .and_then(|creation| creation.complete(sealed.clone()))
-    {
+    let error = match runtime.create(&sealed, &[]) {
         Ok(_) => {
             panic!("a tool needing `process` must not bind to an environment declaring only `dom`")
         }
@@ -1033,6 +979,7 @@ async fn empty_needs_binds_to_any_environment() {
     ));
 
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _ = fs::remove_dir_all(data_dir);
@@ -1156,6 +1103,7 @@ async fn an_overdue_invoke_is_killed_and_recorded_as_timeout() {
     );
 
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _ = fs::remove_dir_all(data_dir);
@@ -1254,6 +1202,7 @@ async fn a_client_tool_call_parks_until_its_outcome_is_posted() {
     );
 
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _ = fs::remove_dir_all(data_dir);
@@ -1282,6 +1231,7 @@ async fn resolving_an_unknown_call_is_refused() {
     assert!(error.to_string().contains("no client Tool call is pending"));
 
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _ = fs::remove_dir_all(data_dir);
@@ -1327,6 +1277,7 @@ async fn an_unanswered_client_call_times_out_and_journals_the_cancellation() {
         .expect("dropping the park must be journalled as the cancellation");
 
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _ = fs::remove_dir_all(data_dir);
@@ -1444,7 +1395,63 @@ async fn a_model_request_is_journalled_from_where_it_differs() {
     assert_eq!(calls[2]["messages"][0]["content"][0]["text"], "uno");
 
     drop(handle);
+    runtime.drain();
     drop(runtime);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = fs::remove_dir_all(data_dir);
+}
+
+/// A session whose task was dropped comes back from its store and carries on.
+///
+/// This is what suspension is: the host drops the task and its memory, keeps the
+/// directory, and rebuilds the session on the next request. The records stay dense
+/// across the gap and the next turn is an ordinary turn.
+#[tokio::test]
+async fn a_session_resumes_from_its_store_after_its_task_is_dropped() {
+    let data_dir = temporary_directory();
+    let (publisher, _worker) = telemetry_channel();
+    let runtime = Runtime::open(
+        &data_dir,
+        publisher,
+        8,
+        brain::DEFAULT_TOOL_DEADLINE_MS,
+        Arc::new(OrdinaryTurn),
+        Arc::new(ScriptedModel),
+        Arc::new(NoTools),
+    );
+    let handle = start(&runtime, request());
+    let session_id = handle.id().clone();
+    let first = handle
+        .message(MessageRequest {
+            input: "hello".into(),
+        })
+        .await
+        .unwrap();
+    drop(handle);
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let resumed = runtime.open_session(&session_id).unwrap();
+    let second = resumed
+        .message(MessageRequest {
+            input: "again".into(),
+        })
+        .await
+        .unwrap();
+    assert!(second.last_sequence > first.last_sequence);
+    let events = runtime.events(&session_id, 0, 1_000).events;
+    let sequences: Vec<u64> = events.iter().map(|event| event.sequence).collect();
+    let dense: Vec<u64> = (1..=events.len() as u64).collect();
+    assert_eq!(sequences, dense, "records stay dense across a resume");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "turn_ended")
+            .count(),
+        2
+    );
+    drop(resumed);
+    runtime.drain();
+    drop(runtime);
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let _ = fs::remove_dir_all(data_dir);
 }

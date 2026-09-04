@@ -1,56 +1,17 @@
+//! A session's durable record: the events clients read, the journal its state folds out
+//! of, and the one writer thread that puts both on disk.
+
 mod cursor;
+mod feed;
 mod log;
-mod observed;
 mod record;
-mod segment;
+mod session_store;
 mod store;
+mod writer;
 
 pub use cursor::event_page;
-pub use observed::ObservedJournal;
+pub use feed::Feed;
 pub use record::{AppendRecord, JournalRecord};
-pub use segment::SegmentJournal;
-pub use store::{JournalStore, SessionRow, SessionUpdate};
-
-use brain_protocol::SessionStatus;
-use brain_protocol::codes::{self, Failure};
-
-use crate::Error;
-
-/// Closes turns that the previous process did not finish.
-///
-/// A session still `Running` after the journal has been read was mid-turn when that
-/// process stopped. Whether the model call or the tool call actually happened is not
-/// knowable from here, so Brain says exactly that and returns the session to Idle rather
-/// than deciding on the client's behalf. Agentloops, tools and SDK clients see
-/// `turn_failed` with code `interrupted` on the event stream and resume or abandon as
-/// suits them.
-///
-/// The host calls this once, after opening the store and before serving anything.
-pub fn interrupt_unfinished_turns(store: &dyn JournalStore) -> Result<(), Error> {
-    for session in store.session_summaries()? {
-        if !matches!(session.status, SessionStatus::Running) {
-            continue;
-        }
-        store.append(
-            &session.session_id,
-            session.last_sequence,
-            &[AppendRecord::new(
-                codes::event::TURN_FAILED,
-                serde_json::to_value(
-                    Failure::new(
-                        codes::failure::INTERRUPTED,
-                        "Brain restarted while this turn was in flight; whether its effects reached the model or a tool is not recorded",
-                    )
-                    .ambiguous(true),
-                )
-                .map_err(|error| Error::Journal(error.to_string()))?,
-            )],
-            SessionUpdate {
-                status: Some(SessionStatus::Idle),
-                context: None,
-                configuration: None,
-            },
-        )?;
-    }
-    Ok(())
-}
+pub use session_store::SessionStore;
+pub use store::{Folded, JournalEntry, JournalStore, SessionRow, SessionUpdate};
+pub use writer::{OWNER_QUEUE_BYTES, Writer};
