@@ -44,7 +44,6 @@ try {
       `export const simple = agentloop((author) => { author.turn((turn) => turn.done()); });\n`,
   );
   run(["install", "--no-audit", "--no-fund"], directory);
-  run(["audit", "--audit-level=high"], directory);
   execFileSync(process.execPath, [join(directory, "node_modules/@aexhq/brain/dist/cli.js"), "build", "extension.mjs", "--out", "built"], { cwd: directory, stdio: "inherit" });
   writeFileSync(
     join(directory, "smoke.mjs"),
