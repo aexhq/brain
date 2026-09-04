@@ -2,7 +2,8 @@
 
 - Brain owns the neutral session, remote Environment, and Agentloop contracts.
   Change schemas and generated views together; never hand-edit generated contract files (CI
-  regenerates and diffs them).
+  regenerates and diffs them). The Rust types in `crates/brain-protocol` are hand-written views
+  of the schemas; change both in the same pull request.
 - `hands` and downstream products consume immutable Brain tags or revisions. Brain must not depend
   on a Hands implementation crate or product-specific runtime.
 - Journal every decision. The journal is written behind the turn and is not a durability fence:

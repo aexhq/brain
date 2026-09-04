@@ -40,6 +40,10 @@ Change a schema and its generated views in the same commit:
 npm run gen
 ```
 
+`npm run gen` regenerates the contract digests, the provider catalog, and the SDK's TypeScript
+types. The Rust types in `crates/brain-protocol` are written by hand and kept in step with the
+schemas by the conformance tests, which validate the checked-in examples against both.
+
 ## Documentation
 
 Pages live in [`docs/`](docs) and are rendered at
