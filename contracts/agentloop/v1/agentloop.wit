@@ -1,4 +1,4 @@
-package aex:agentloop@2.0.0;
+package aex:agentloop@1.0.0;
 
 // An agentloop runs one whole turn. Brain calls `turn` once per user message with the
 // transcript as it stands, the loop's slots, and every event recorded since the loop

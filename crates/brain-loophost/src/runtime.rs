@@ -20,7 +20,7 @@ const EPOCH_TICK: Duration = Duration::from_millis(10);
 
 mod bindings {
     wasmtime::component::bindgen!({
-        path: "../../contracts/agentloop/v2",
+        path: "../../contracts/agentloop/v1",
         world: "agentloop",
     });
 }

@@ -37,7 +37,7 @@ fn definition_is_valid(schema_path: &str, definition: &str, value: &Value) -> bo
 #[test]
 fn contract_schemas_are_valid_draft_2020_12() {
     for path in [
-        "contracts/agentloop/v2/contract.json",
+        "contracts/agentloop/v1/contract.json",
         "contracts/environment/v1/schemas.json",
         "contracts/tool/v1/schemas.json",
         "contracts/session/v1/schemas.json",
@@ -49,8 +49,8 @@ fn contract_schemas_are_valid_draft_2020_12() {
 
 #[test]
 fn checked_in_examples_validate() {
-    let agentloop = read_json("contracts/agentloop/v2/examples/turn.json");
-    jsonschema::draft202012::new(&read_json("contracts/agentloop/v2/contract.json"))
+    let agentloop = read_json("contracts/agentloop/v1/examples/turn.json");
+    jsonschema::draft202012::new(&read_json("contracts/agentloop/v1/contract.json"))
         .unwrap()
         .validate(&agentloop)
         .unwrap();
@@ -102,7 +102,7 @@ fn a_manifest_without_a_program_is_rejected() {
 
 #[test]
 fn agentloop_world_exports_turn_and_imports_only_the_host() {
-    let wit = fs::read_to_string(root().join("contracts/agentloop/v2/agentloop.wit")).unwrap();
+    let wit = fs::read_to_string(root().join("contracts/agentloop/v1/agentloop.wit")).unwrap();
     let world = wit.split("world agentloop").nth(1).unwrap();
     assert_eq!(world.matches("import host;").count(), 1);
     assert_eq!(world.matches("import ").count(), 1);
@@ -156,7 +156,7 @@ fn rust_views_round_trip_contract_examples() {
     assert_eq!(manifest.binding_names, vec!["API_BASE"]);
 
     let output: TurnOutput = serde_json::from_value(
-        read_json("contracts/agentloop/v2/examples/turn.json")["output"].clone(),
+        read_json("contracts/agentloop/v1/examples/turn.json")["output"].clone(),
     )
     .unwrap();
     assert_eq!(output.transcript.len(), 1);

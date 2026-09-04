@@ -84,23 +84,30 @@ impl WorkerClient {
                 error
             }
         })?;
+        let (mut reader, mut writer) = stream.split();
         let mut cancelled = false;
         let mut poll = tokio::time::interval(Duration::from_millis(50));
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            let response: WorkerResponse = tokio::select! {
-                frame = tokio::time::timeout(liveness, read_frame(&mut stream, MAX_RESPONSE_FRAME_BYTES)) => {
-                    match frame {
-                        Ok(frame) => frame?,
+            // One read future lives across the poll ticks. Dropping a half-read frame
+            // would leave the stream mid-frame, and the next length prefix would be
+            // whatever bytes came next.
+            let mut next = std::pin::pin!(tokio::time::timeout(
+                liveness,
+                read_frame::<_, WorkerResponse>(&mut reader, MAX_RESPONSE_FRAME_BYTES)
+            ));
+            let response = loop {
+                tokio::select! {
+                    frame = &mut next => match frame {
+                        Ok(frame) => break frame?,
                         Err(_) => return Err("brain-loop-worker stopped answering".into()),
+                    },
+                    _ = poll.tick() => {
+                        if !cancelled && bridge.cancelled() {
+                            cancelled = true;
+                            write_frame(&mut writer, &WorkerRequest::Cancel, 1_024).await?;
+                        }
                     }
-                }
-                _ = poll.tick() => {
-                    if !cancelled && bridge.cancelled() {
-                        cancelled = true;
-                        write_frame(&mut stream, &WorkerRequest::Cancel, 1_024).await?;
-                    }
-                    continue;
                 }
             };
             match response {
@@ -108,10 +115,10 @@ impl WorkerClient {
                     let result = bridge.call(call).await;
                     if !cancelled && bridge.cancelled() {
                         cancelled = true;
-                        write_frame(&mut stream, &WorkerRequest::Cancel, 1_024).await?;
+                        write_frame(&mut writer, &WorkerRequest::Cancel, 1_024).await?;
                     }
                     write_frame(
-                        &mut stream,
+                        &mut writer,
                         &WorkerRequest::HostResult { id, result },
                         MAX_RESPONSE_FRAME_BYTES,
                     )

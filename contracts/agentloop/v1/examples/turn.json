@@ -1,5 +1,5 @@
 {
-  "contract": "agentloop/v2",
+  "contract": "agentloop/v1",
   "input": {
     "input": { "message": "hello" },
     "transcript": [],

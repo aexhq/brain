@@ -5,7 +5,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{Event, Message, SessionId, ToolDefinition, UserInput};
 
-pub const AGENTLOOP_CONTRACT_VERSION: &str = "agentloop/v2";
+pub const AGENTLOOP_CONTRACT_VERSION: &str = "agentloop/v1";
 
 /// The most items a transcript may hold.
 pub const MAX_TRANSCRIPT_ITEMS: usize = 4_096;

@@ -195,55 +195,69 @@ impl WorkerService {
         let pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, TurnError>>>> =
             Mutex::new(HashMap::new());
         let mut next_id = 0_u64;
-        let response = loop {
-            tokio::select! {
-                Some((call, reply)) = inbound.recv() => {
-                    next_id += 1;
-                    if let (Some(reply), Ok(mut pending)) = (reply, pending.lock()) {
-                        pending.insert(next_id, reply);
-                    }
-                    if write_frame(stream, &WorkerResponse::HostCall { id: next_id, call }, MAX_RESPONSE_FRAME_BYTES).await.is_err() {
-                        // The server is gone: the guest's call fails, the turn ends.
-                        cancelled.store(true, Ordering::Release);
-                        fail_pending(&pending);
-                        let _ = (&mut running).await;
-                        return;
-                    }
-                    let _ = error_never(&());
-                }
-                frame = read_frame::<_, WorkerRequest>(stream, crate::MAX_TURN_INPUT_BYTES + 1_024) => {
-                    match frame {
-                        Ok(WorkerRequest::HostResult { id, result }) => {
-                            let reply = pending.lock().ok().and_then(|mut pending| pending.remove(&id));
-                            if let Some(reply) = reply {
-                                let _ = reply.send(result);
-                            }
+        let (mut reader, mut writer) = tokio::io::split(&mut *stream);
+        let response = 'turn: loop {
+            // One read future lives across the other arms. Dropping a half-read frame
+            // when a host call or the turn's end fires would leave the stream mid-frame,
+            // and the next length prefix would be whatever bytes came next.
+            let mut next_frame = std::pin::pin!(read_frame::<_, WorkerRequest>(
+                &mut reader,
+                crate::MAX_TURN_INPUT_BYTES + 1_024
+            ));
+            loop {
+                tokio::select! {
+                    Some((call, reply)) = inbound.recv() => {
+                        next_id += 1;
+                        if let (Some(reply), Ok(mut pending)) = (reply, pending.lock()) {
+                            pending.insert(next_id, reply);
                         }
-                        Ok(WorkerRequest::Cancel) => {
-                            cancelled.store(true, Ordering::Release);
-                            fail_pending(&pending);
-                        }
-                        Ok(_) => {
-                            break failed("invalid_frame", "unexpected frame during a turn".into());
-                        }
-                        Err(_) => {
-                            // The connection closed under the turn. Nothing to answer to.
+                        if write_frame(&mut writer, &WorkerResponse::HostCall { id: next_id, call }, MAX_RESPONSE_FRAME_BYTES).await.is_err() {
+                            // The server is gone: the guest's call fails, the turn ends.
                             cancelled.store(true, Ordering::Release);
                             fail_pending(&pending);
                             let _ = (&mut running).await;
                             return;
                         }
+                        let _ = error_never(&());
                     }
-                }
-                finished = &mut running => {
-                    break match finished {
-                        Ok(Ok(output)) => WorkerResponse::Turned { output },
-                        Ok(Err(error)) => WorkerResponse::TurnFailed { error },
-                        Err(_) => failed("turn_failed", "the turn was lost".into()),
-                    };
+                    frame = &mut next_frame => {
+                        match frame {
+                            Ok(WorkerRequest::HostResult { id, result }) => {
+                                let reply = pending.lock().ok().and_then(|mut pending| pending.remove(&id));
+                                if let Some(reply) = reply {
+                                    let _ = reply.send(result);
+                                }
+                            }
+                            Ok(WorkerRequest::Cancel) => {
+                                cancelled.store(true, Ordering::Release);
+                                fail_pending(&pending);
+                            }
+                            Ok(_) => {
+                                break 'turn failed("invalid_frame", "unexpected frame during a turn".into());
+                            }
+                            Err(_) => {
+                                // The connection closed under the turn. Nothing to answer to.
+                                cancelled.store(true, Ordering::Release);
+                                fail_pending(&pending);
+                                let _ = (&mut running).await;
+                                return;
+                            }
+                        }
+                        // Arm the next read.
+                        continue 'turn;
+                    }
+                    finished = &mut running => {
+                        break 'turn match finished {
+                            Ok(Ok(output)) => WorkerResponse::Turned { output },
+                            Ok(Err(error)) => WorkerResponse::TurnFailed { error },
+                            Err(_) => failed("turn_failed", "the turn was lost".into()),
+                        };
+                    }
                 }
             }
         };
+        drop(reader);
+        drop(writer);
         let _ = crate::worker_write(stream, &response).await;
     }
 }
