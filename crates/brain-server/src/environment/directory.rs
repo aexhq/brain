@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Mutex};
 
 use async_trait::async_trait;
-use brain_protocol::{EnvironmentBinding, EnvironmentId, Identity, ResolvedEnvironment};
+use brain_protocol::{EnvironmentAttachment, EnvironmentBinding, EnvironmentId};
 
 #[derive(Clone, Debug)]
 pub struct DirectoryEntry {
@@ -13,7 +13,7 @@ pub struct DirectoryEntry {
 pub trait EnvironmentDirectory: Send + Sync + 'static {
     async fn resolve(
         &self,
-        requirement: &ResolvedEnvironment,
+        requirement: &EnvironmentAttachment,
     ) -> Result<DirectoryEntry, brain::Error>;
     async fn get(&self, binding: &EnvironmentBinding) -> Result<DirectoryEntry, brain::Error>;
 }
@@ -36,25 +36,21 @@ impl InMemoryEnvironmentDirectory {
 impl EnvironmentDirectory for InMemoryEnvironmentDirectory {
     async fn resolve(
         &self,
-        requirement: &ResolvedEnvironment,
+        requirement: &EnvironmentAttachment,
     ) -> Result<DirectoryEntry, brain::Error> {
         if self.endpoint.trim().is_empty() {
             return Err(brain::Error::InvalidState(
                 "no Environment endpoint is configured".into(),
             ));
         }
-        let digest = Identity::of(&requirement.configuration)
-            .map_err(|error| brain::Error::InvalidState(error.to_string()))?;
+        let digest = crate::digest::identity_of(&requirement.configuration)?;
         let mut entries = self
             .entries
             .lock()
             .map_err(|_| brain::Error::InvalidState("Environment directory poisoned".into()))?;
+        // An environment id names one environment: the first session to name it
+        // provisions it, and later sessions attach to what is there.
         if let Some(existing) = entries.get(&requirement.environment_id) {
-            if existing.binding.configuration_identity != digest {
-                return Err(brain::Error::InvalidState(
-                    "Environment identity already has a different configuration digest".into(),
-                ));
-            }
             return Ok(existing.clone());
         }
         let entry = DirectoryEntry {
@@ -94,7 +90,7 @@ mod tests {
         let directory = InMemoryEnvironmentDirectory::new("https://environment.example");
         let binding = EnvironmentBinding {
             environment_id: EnvironmentId::new("shared-workspace"),
-            configuration_identity: Identity::of(&"configuration").unwrap(),
+            configuration_identity: brain_protocol::Identity::from_hex(&"b".repeat(64)).unwrap(),
             directory_generation: 7,
             lifecycle_policy: LifecyclePolicy::Shared,
         };

@@ -3,9 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, Identity, LifecyclePolicy,
-    ModelBinding, ModelSelection, Program, RequestedToolBinding, SessionId, ToolBinding,
-    ToolDefinition, ToolHosting,
+    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, LifecyclePolicy,
+    ModelBinding, ModelSelection, Program, SessionId, ToolBinding, ToolDefinition, ToolHosting,
 };
 
 /// The admitted loop package a session runs: which one, and how it is configured.
@@ -82,28 +81,9 @@ pub struct HistoryEvent {
     pub data: serde_json::Value,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResolvedSessionRequest {
-    pub agentloop_identity: AgentloopIdentity,
-    pub brain_configuration: serde_json::Value,
-    pub model: ModelBinding,
-    #[serde(default)]
-    pub system: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response_format: Option<serde_json::Value>,
-    /// What the model may be told about each tool. Offered whole unless the agentloop
-    /// names a subset on a model call; the bindings say where a call goes.
-    pub tools: Vec<ToolDefinition>,
-    pub environments: Vec<ResolvedEnvironment>,
-    pub tool_bindings: Vec<RequestedToolBinding>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub history: Vec<HistoryEvent>,
-}
-
 /// What a session create names about one environment, as it arrives on the wire.
-/// `bindings` carries plaintext values and exists only here: the resolved request the
-/// session journals carries their identities instead.
+/// `bindings` carries plaintext values and exists only here: the configuration the
+/// session journals never carries them.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentRequirement {
@@ -114,21 +94,11 @@ pub struct EnvironmentRequirement {
     pub bindings: BTreeMap<String, String>,
 }
 
-/// The journal-safe form of an environment requirement: binding values are sealed
-/// outside the journal, which keeps only their identities — the same custody model as
-/// model credentials.
+/// What a session was admitted with. Written at create and never changed afterwards: a
+/// session can only ever do what it was granted. The environments and tool bindings are
+/// filled in as the host attaches them, before the session is admitted.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResolvedEnvironment {
-    pub environment_id: EnvironmentId,
-    pub configuration: serde_json::Value,
-    pub lifecycle_policy: LifecyclePolicy,
-    #[serde(default)]
-    pub binding_identities: BTreeMap<String, Identity>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SealedSessionConfig {
+pub struct SessionConfig {
     pub agentloop_identity: AgentloopIdentity,
     pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
@@ -136,6 +106,8 @@ pub struct SealedSessionConfig {
     pub system: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<serde_json::Value>,
+    /// What the model may be told about each tool. Offered whole unless the agentloop
+    /// names a subset on a model call; the bindings say where a call goes.
     pub tools: Vec<ToolDefinition>,
     pub environments: Vec<EnvironmentAttachment>,
     pub tool_bindings: Vec<ToolBinding>,

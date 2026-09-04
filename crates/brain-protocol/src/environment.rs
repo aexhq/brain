@@ -25,17 +25,33 @@ pub struct EnvironmentBinding {
     pub lifecycle_policy: LifecyclePolicy,
 }
 
+/// One environment a session was granted: what the create request named, and once the
+/// host has attached it, what the environment answered with.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentAttachment {
-    pub binding: EnvironmentBinding,
-    pub attachment_id: AttachmentId,
-    /// What the environment's setup/attach receipts declared it executes. Sealed with
-    /// the session so the bind check holds however the session was admitted.
+    pub environment_id: EnvironmentId,
+    pub configuration: serde_json::Value,
+    pub lifecycle_policy: LifecyclePolicy,
+    /// The directory's binding, present once the environment has been resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<EnvironmentBinding>,
+    /// Present once the environment has attached this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<AttachmentId>,
+    /// What the environment's setup/attach receipts declared it executes. Kept with the
+    /// session so the bind check holds however the session was admitted.
     #[serde(default)]
     pub runtimes: Vec<Runtime>,
     /// The resources the environment declared, verbatim. Brain reads the names.
     #[serde(default)]
     pub resources: Resources,
+}
+
+impl EnvironmentAttachment {
+    /// Whether the host has attached this environment yet.
+    pub fn attached(&self) -> bool {
+        self.binding.is_some()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

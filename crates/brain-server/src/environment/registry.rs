@@ -6,16 +6,15 @@ use std::{
 use brain::{CreatingSession, JournalStore, Session};
 use brain_protocol::codes;
 use brain_protocol::{
-    AttachmentId, EnvironmentAttachment, EnvironmentCallResult, EnvironmentId,
-    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, Identity, Provision,
-    ResolvedSessionRequest, SealedSessionConfig, ToolBinding, ToolManifest,
+    AttachmentId, EnvironmentCallResult, EnvironmentId, EnvironmentOperation, EnvironmentReceipt,
+    EnvironmentRequest, Provision, SessionConfig, ToolManifest,
 };
 
 use super::{DirectoryEntry, EnvironmentAdapter, EnvironmentDirectory};
 
-/// Plaintext binding values per environment, carried beside the resolved request for
-/// exactly as long as create runs. They go out on the attach wire and are journaled
-/// only as identities.
+/// Plaintext binding values per environment, carried beside the configuration for
+/// exactly as long as create runs. They go out on the attach wire and never enter the
+/// journal.
 pub type SessionBindingValues = HashMap<EnvironmentId, BTreeMap<String, String>>;
 
 pub struct EnvironmentRegistry {
@@ -34,13 +33,13 @@ impl EnvironmentRegistry {
     pub async fn prepare_session(
         &self,
         mut creation: CreatingSession,
-        request: ResolvedSessionRequest,
+        config: SessionConfig,
         binding_values: SessionBindingValues,
-    ) -> Result<(Session, SealedSessionConfig), brain::Error> {
-        match self.prepare(&mut creation, request, binding_values).await {
-            Ok(sealed) => {
-                let session = creation.complete(sealed.clone())?;
-                Ok((session, sealed))
+    ) -> Result<(Session, SessionConfig), brain::Error> {
+        match self.prepare(&mut creation, config, binding_values).await {
+            Ok(config) => {
+                let session = creation.complete(config.clone())?;
+                Ok((session, config))
             }
             Err(error) => {
                 let message = error.to_string();
@@ -50,33 +49,44 @@ impl EnvironmentRegistry {
         }
     }
 
+    /// Attaches every environment the configuration names and fills in what each one
+    /// answered with, so the configuration the session is admitted with says what was
+    /// actually granted.
     async fn prepare(
         &self,
         creation: &mut CreatingSession,
-        request: ResolvedSessionRequest,
+        mut config: SessionConfig,
         mut binding_values: SessionBindingValues,
-    ) -> Result<SealedSessionConfig, brain::Error> {
-        let mut environments = Vec::with_capacity(request.environments.len());
-        let mut attachments = std::collections::HashMap::new();
-        for requirement in &request.environments {
-            let entry = self.directory.resolve(requirement).await?;
+    ) -> Result<SessionConfig, brain::Error> {
+        let provisions: Vec<(EnvironmentId, Vec<Provision>)> = config
+            .environments
+            .iter()
+            .map(|attachment| {
+                (
+                    attachment.environment_id.clone(),
+                    provisions_for(&config, &attachment.environment_id),
+                )
+            })
+            .collect();
+        for (attachment, (_, provisions)) in config.environments.iter_mut().zip(provisions) {
+            let entry = self.directory.resolve(attachment).await?;
             let setup = self
                 .lifecycle(
                     creation,
                     &entry,
                     EnvironmentRequest::Setup {
-                        configuration: requirement.configuration.clone(),
+                        configuration: attachment.configuration.clone(),
                     },
                     None,
                     codes::event::call::ENVIRONMENT_SETUP,
                 )
                 .await?;
-            let attachment_id = attachment_id(creation.session_id(), &requirement.environment_id)?;
+            let attachment_id = AttachmentId::new(brain::random_id("att"));
             let bindings = binding_values
-                .remove(&requirement.environment_id)
+                .remove(&attachment.environment_id)
                 .unwrap_or_default();
             let attach = EnvironmentRequest::Attach {
-                provisions: provisions_for(&request, &requirement.environment_id),
+                provisions,
                 bindings,
             };
             let attached = self
@@ -88,7 +98,7 @@ impl EnvironmentRegistry {
                     codes::event::call::ENVIRONMENT_ATTACH,
                 )
                 .await?;
-            // What the environment declares it executes and offers feeds the sealed
+            // What the environment declares it executes and offers feeds the
             // configuration's bind check; setup and attach both may report it, and a
             // resource attach declares again replaces the setup's block.
             let (mut runtimes, mut resources) = receipt_declaration(&setup);
@@ -100,63 +110,33 @@ impl EnvironmentRegistry {
             }
             runtimes.sort_unstable();
             resources.extend(attach_resources);
-            attachments.insert(requirement.environment_id.clone(), attachment_id.clone());
-            environments.push(EnvironmentAttachment {
-                binding: entry.binding,
-                attachment_id,
-                runtimes,
-                resources,
-            });
+            attachment.binding = Some(entry.binding);
+            attachment.attachment_id = Some(attachment_id);
+            attachment.runtimes = runtimes;
+            attachment.resources = resources;
         }
-        let tool_bindings = request
-            .tool_bindings
-            .into_iter()
-            .map(|tool| {
-                // A client-hosted tool binds no environment: it is served by the
-                // session's creator off the event feed.
-                let Some(environment_id) = tool.environment_id else {
-                    return Ok(ToolBinding {
-                        name: tool.name,
-                        environment: None,
-                        attachment_id: None,
-                        needs: tool.needs,
-                        binding_names: tool.binding_names,
-                        hosting: tool.hosting,
-                        program: tool.program,
-                    });
-                };
-                let attachment_id = attachments.get(&environment_id).cloned().ok_or_else(|| {
-                    brain::Error::InvalidState("Tool requested an unresolved Environment".into())
-                })?;
-                Ok(ToolBinding {
-                    name: tool.name,
-                    environment: environments
-                        .iter()
-                        .find(|environment| environment.binding.environment_id == environment_id)
-                        .map(|environment| Some(environment.binding.clone()))
-                        .ok_or_else(|| {
-                            brain::Error::InvalidState(
-                                "Tool requested an unresolved Environment".into(),
-                            )
-                        })?,
-                    attachment_id: Some(attachment_id),
-                    needs: tool.needs,
-                    binding_names: tool.binding_names,
-                    hosting: tool.hosting,
-                    program: tool.program,
-                })
-            })
-            .collect::<Result<Vec<_>, brain::Error>>()?;
-        Ok(SealedSessionConfig {
-            agentloop_identity: request.agentloop_identity,
-            brain_configuration: request.brain_configuration,
-            model: request.model,
-            system: request.system,
-            response_format: request.response_format,
-            tools: request.tools,
+        let SessionConfig {
             environments,
             tool_bindings,
-        })
+            ..
+        } = &mut config;
+        for tool in tool_bindings.iter_mut() {
+            // A client-hosted tool binds no environment: it is served by the
+            // session's creator off the event feed.
+            let Some(environment_id) = &tool.environment_id else {
+                continue;
+            };
+            let attachment = environments
+                .iter()
+                .find(|attachment| &attachment.environment_id == environment_id)
+                .filter(|attachment| attachment.attached())
+                .ok_or_else(|| {
+                    brain::Error::InvalidState("Tool requested an unresolved Environment".into())
+                })?;
+            tool.environment = attachment.binding.clone();
+            tool.attachment_id = attachment.attachment_id.clone();
+        }
+        Ok(config)
     }
 
     async fn lifecycle(
@@ -168,8 +148,8 @@ impl EnvironmentRegistry {
         kind: &str,
     ) -> Result<EnvironmentReceipt, brain::Error> {
         // An attach carries binding values in plaintext, and plaintext never enters
-        // the journal: the record replaces each value with its identity.
-        let sequence = match redacted(&request)? {
+        // the journal: the record carries the names with their values struck out.
+        let sequence = match redacted(&request) {
             Some(journal_view) => creation.record_call_started(kind, &journal_view)?,
             None => creation.record_call_started(kind, &request)?,
         };
@@ -216,15 +196,22 @@ impl EnvironmentRegistry {
         input: serde_json::Value,
     ) -> Result<EnvironmentCallResult, brain::Error> {
         let session_id = session.id();
-        let sealed = brain::sealed_config(store, session_id)?;
-        let attachment = sealed
+        let config = brain::session_config(store, session_id)?;
+        let attachment = config
             .environments
             .iter()
-            .find(|attachment| &attachment.binding.environment_id == environment_id)
+            .find(|attachment| &attachment.environment_id == environment_id)
+            .and_then(|attachment| {
+                attachment
+                    .binding
+                    .as_ref()
+                    .map(|binding| (attachment, binding))
+            })
             .ok_or_else(|| {
                 brain::Error::InvalidState("Environment is not attached to this session".into())
             })?;
-        let entry = self.directory.get(&attachment.binding).await?;
+        let (attachment, binding) = attachment;
+        let entry = self.directory.get(binding).await?;
         let request = EnvironmentRequest::Call { name, input };
         let sequence = session
             .record_call_started(codes::event::call::ENVIRONMENT_CALL, &request)
@@ -233,7 +220,7 @@ impl EnvironmentRegistry {
             sequence,
             environment_id: environment_id.clone(),
             session_id: session_id.clone(),
-            attachment_id: Some(attachment.attachment_id.clone()),
+            attachment_id: attachment.attachment_id.clone(),
             request,
         };
         let sent = self
@@ -268,20 +255,23 @@ impl EnvironmentRegistry {
     pub async fn release_session(
         &self,
         session: &Session,
-        sealed: &SealedSessionConfig,
+        config: &SessionConfig,
     ) -> Result<(), brain::Error> {
-        for attachment in sealed.environments.iter().rev() {
-            let entry = self.directory.get(&attachment.binding).await?;
+        for attachment in config.environments.iter().rev() {
+            let Some(binding) = &attachment.binding else {
+                continue;
+            };
+            let entry = self.directory.get(binding).await?;
             self.session_lifecycle(
                 session,
                 &entry,
-                Some(attachment.attachment_id.clone()),
+                attachment.attachment_id.clone(),
                 EnvironmentRequest::Detach,
                 codes::event::call::ENVIRONMENT_DETACH,
             )
             .await?;
             if matches!(
-                attachment.binding.lifecycle_policy,
+                attachment.lifecycle_policy,
                 brain_protocol::LifecyclePolicy::Session
             ) {
                 self.session_lifecycle(
@@ -344,17 +334,14 @@ fn terminal(receipt: EnvironmentReceipt, what: &str) -> Result<EnvironmentReceip
 /// The provisioned-tool artifacts to hand this environment at attach: every bound tool
 /// with a payload, its manifest rebuilt from the model-facing definition plus the
 /// binding — the two halves the create request split apart.
-fn provisions_for(
-    request: &ResolvedSessionRequest,
-    environment_id: &EnvironmentId,
-) -> Vec<Provision> {
-    request
+fn provisions_for(config: &SessionConfig, environment_id: &EnvironmentId) -> Vec<Provision> {
+    config
         .tool_bindings
         .iter()
         .filter(|tool| tool.environment_id.as_ref() == Some(environment_id))
         .filter_map(|tool| {
             let program = tool.program.clone()?;
-            let definition = request
+            let definition = config
                 .tools
                 .iter()
                 .find(|definition| definition.name == tool.name)?;
@@ -387,36 +374,21 @@ fn receipt_declaration(
 }
 
 /// The journal view of a request whose wire form carries plaintext binding values:
-/// the same request with each value replaced by its identity. `None` when the request
-/// carries nothing the journal must not hold.
-fn redacted(request: &EnvironmentRequest) -> Result<Option<EnvironmentRequest>, brain::Error> {
+/// the same request with every value struck out. `None` when the request carries
+/// nothing the journal must not hold.
+fn redacted(request: &EnvironmentRequest) -> Option<EnvironmentRequest> {
     let EnvironmentRequest::Attach {
         provisions,
         bindings,
     } = request
     else {
-        return Ok(None);
+        return None;
     };
-    let mut identities = BTreeMap::new();
-    for (name, value) in bindings {
-        let identity =
-            Identity::of(value).map_err(|error| brain::Error::InvalidState(error.to_string()))?;
-        identities.insert(name.clone(), identity.to_string());
-    }
-    Ok(Some(EnvironmentRequest::Attach {
+    Some(EnvironmentRequest::Attach {
         provisions: provisions.clone(),
-        bindings: identities,
-    }))
-}
-
-fn attachment_id(
-    session_id: &brain_protocol::SessionId,
-    environment_id: &brain_protocol::EnvironmentId,
-) -> Result<AttachmentId, brain::Error> {
-    let identity = Identity::of(&(session_id, environment_id))
-        .map_err(|error| brain::Error::InvalidState(error.to_string()))?;
-    Ok(AttachmentId::new(format!(
-        "att_{}",
-        &identity.to_string()[..24]
-    )))
+        bindings: bindings
+            .keys()
+            .map(|name| (name.clone(), "<redacted>".to_owned()))
+            .collect(),
+    })
 }

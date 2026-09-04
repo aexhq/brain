@@ -9,20 +9,20 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use brain::{
-    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionConfig,
+    Error, JournalStore, LoopExecutor, ModelExecutor, ObservedJournal, Session, SessionRuntime,
     ToolExecutor,
 };
 use brain_protocol::{
     ActivationInput, ActivationOutput, AgentloopIdentity, Decision, MessageRequest, ModelBinding,
-    ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, ResolvedSessionRequest,
-    SealedSessionConfig, SessionId, ToolCancellation, ToolDefinition, ToolDispatch,
+    ModelRequest, ModelResult, ModelStreamEvent, Observation, Outcome, SessionConfig, SessionId,
+    ToolCancellation, ToolDefinition, ToolDispatch,
 };
 use brain_telemetry::telemetry_channel;
 /// What the host gives every session: the store it journals to and the executors it
 /// performs effects with. Built the way the server builds it.
 struct Runtime {
     store: Arc<ObservedJournal>,
-    config: Arc<SessionConfig>,
+    config: Arc<SessionRuntime>,
 }
 
 #[allow(dead_code)]
@@ -40,7 +40,7 @@ impl Runtime {
             Arc::new(brain::SegmentJournal::open(&data_dir.join("journal")).unwrap());
         let store = Arc::new(ObservedJournal::new(journal, telemetry));
         brain::interrupt_unfinished_turns(&*store).unwrap();
-        let config = Arc::new(SessionConfig {
+        let config = Arc::new(SessionRuntime {
             max_decisions_per_turn,
             tool_deadline_ms,
             loop_executor,
@@ -140,8 +140,8 @@ impl ToolExecutor for NoTools {
     }
 }
 
-fn sealed() -> SealedSessionConfig {
-    SealedSessionConfig {
+fn sealed() -> SessionConfig {
+    SessionConfig {
         agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
         brain_configuration: serde_json::json!({}),
         model: ModelBinding {
@@ -151,20 +151,6 @@ fn sealed() -> SealedSessionConfig {
         system: "test".into(),
         response_format: None,
         tools: Vec::new(),
-        environments: Vec::new(),
-        tool_bindings: Vec::new(),
-    }
-}
-
-fn resolved(sealed: &SealedSessionConfig) -> ResolvedSessionRequest {
-    ResolvedSessionRequest {
-        history: Vec::new(),
-        agentloop_identity: sealed.agentloop_identity.clone(),
-        brain_configuration: sealed.brain_configuration.clone(),
-        model: sealed.model.clone(),
-        system: sealed.system.clone(),
-        response_format: sealed.response_format.clone(),
-        tools: sealed.tools.clone(),
         environments: Vec::new(),
         tool_bindings: Vec::new(),
     }
@@ -193,14 +179,10 @@ async fn turn_latency_versus_resident_sessions() {
     for checkpoint in [10_u64, 250, 500, 1000, 2000, 4000] {
         // Accumulate sessions, one settled turn each, like the bench box does.
         while created < checkpoint {
-            let handle = Session::begin(
-                runtime.store(),
-                runtime.config.clone(),
-                &resolved(&sealed()),
-            )
-            .unwrap()
-            .complete(sealed())
-            .unwrap();
+            let handle = Session::begin(runtime.store(), runtime.config.clone(), &sealed(), &[])
+                .unwrap()
+                .complete(sealed())
+                .unwrap();
             handle
                 .message(MessageRequest {
                     input: "warm".into(),
@@ -210,14 +192,10 @@ async fn turn_latency_versus_resident_sessions() {
             created += 1;
         }
         // Measure fresh turns on one new session at this population.
-        let probe = Session::begin(
-            runtime.store(),
-            runtime.config.clone(),
-            &resolved(&sealed()),
-        )
-        .unwrap()
-        .complete(sealed())
-        .unwrap();
+        let probe = Session::begin(runtime.store(), runtime.config.clone(), &sealed(), &[])
+            .unwrap()
+            .complete(sealed())
+            .unwrap();
         created += 1;
         let mut samples = Vec::with_capacity(100);
         for turn in 0..100 {
