@@ -107,6 +107,7 @@ try {
   await start(baseUrl);
   assert.deepEqual(await session.transcript(), before);
   assert.equal(modelCalls, calls, "restart and history reads must not activate a loop");
+  await session.send("warm the restarted worker before measuring retained-session growth");
   const baseline = await memory();
   const histories = [];
   for (let i = 0; i < 32; i++) {
