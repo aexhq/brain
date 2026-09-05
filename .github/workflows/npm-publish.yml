@@ -137,7 +137,7 @@ jobs:
             echo
             node tools/npm-release.mjs markdown "$release_dir/manifest.json"
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: brain-image-${{ inputs.expected_commit }}
           path: ${{ runner.temp }}/brain-npm-release
@@ -169,7 +169,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: brain-npm-release-${{ inputs.expected_commit }}
           path: ${{ runner.temp }}/brain-npm-release
@@ -204,7 +204,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: brain-npm-release-${{ inputs.expected_commit }}
           path: ${{ runner.temp }}/brain-release
@@ -259,7 +259,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: brain-npm-release-${{ inputs.expected_commit }}
           path: ${{ runner.temp }}/brain-release
@@ -328,7 +328,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: brain-npm-release-${{ inputs.expected_commit }}
           path: ${{ runner.temp }}/brain-release
@@ -402,7 +402,7 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: brain-npm-release-${{ inputs.expected_commit }}
           path: ${{ runner.temp }}/brain-npm-release
@@ -440,7 +440,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: brain-npm-release-${{ inputs.expected_commit }}
           path: ${{ runner.temp }}/brain-release
