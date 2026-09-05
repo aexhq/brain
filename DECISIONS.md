@@ -36,7 +36,7 @@ These decisions supersede earlier lifecycle and residency choices below.
 - The entire official `tool-env` tool, mutable bindings, tools without bindings, automatic placement,
   configurable resource bounds, and suspension inside model/tool waits remain post-MVP. The
   roadmap includes inspection and explicit lifecycle operations for model-driven recovery.
-- This is a pre-launch clean break: the local data format is `brain-data/2`, and contracts and
+- This is a pre-launch clean break: the local data format is `brain-data/1`, and contracts and
   official consumers move together. No compatibility shims or old-data migration are provided.
 
 ## 2026-09-02: The agent loop owns what the model sees
