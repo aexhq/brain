@@ -50,7 +50,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_jcs = "0.2"
 serde_norway = "0.9"
-sha2 = "0.10"
+sha2 = "0.11"
 wasmtime = { version = "48", default-features = false, features = ["component-model", "async", "cranelift", "parallel-compilation", "runtime", "cache", "std"] }
 wasmtime-wasi = "48"
 wasmtime-wasi-http = "48"
