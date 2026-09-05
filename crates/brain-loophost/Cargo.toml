@@ -45,4 +45,4 @@ wasmtime-wasi-http = { workspace = true }
 [dev-dependencies]
 # Builds the smallest possible runaway guest for the fuel-exhaustion test. Already in the
 # lock file as a Wasmtime component dependency, so it costs no new crate.
-wasm-encoder = "0.254"
+wasm-encoder = "0.258"
