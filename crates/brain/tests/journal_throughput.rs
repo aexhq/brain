@@ -2,17 +2,15 @@
 //!
 //! Ignored by default because it reports rather than asserts: the numbers move with
 //! the disk and the machine, and a threshold that passes on a laptop says nothing
-//! about a server. The shape is what matters and does not move — an append is a
-//! serialise, a hash of the bytes just serialised, and a channel send, with no
-//! syscall on the turn's path — and the second measurement is what decides whether
-//! one writer thread is enough: if the p90 at many sessions is not the p90 at one,
-//! the writer is the bottleneck and gets sharded.
+//! about a server. A foreground append includes the writer's group commit and disk
+//! sync. The second measurement shows whether one writer thread is enough: if the p90
+//! at many sessions is far above the p90 at one, the writer is the bottleneck.
 //!
 //!     cargo test --release -p brain --test journal_throughput -- --ignored --nocapture
 
 use std::{sync::Arc, time::Instant};
 
-use brain::{AppendRecord, Feed, JournalStore, SessionStore, SessionUpdate, Writer};
+use brain::{AppendRecord, Feed, LocalSessionStore, SessionStore, SessionUpdate, Writer};
 use brain_protocol::{SessionId, SessionStatus};
 
 const RECORDS: u64 = 20_000;
@@ -39,8 +37,8 @@ fn store(
     id: &str,
     writer: &Arc<Writer>,
     feed: &Arc<Feed>,
-) -> Arc<SessionStore> {
-    let store = SessionStore::create(
+) -> Arc<LocalSessionStore> {
+    let store = LocalSessionStore::create(
         &directory.join(id),
         SessionId::new(id),
         &serde_json::json!({}),
@@ -49,11 +47,10 @@ fn store(
     )
     .unwrap();
     store
-        .append(
-            0,
+        .append_sync(
             &[AppendRecord::new(
                 "session_creation_ended",
-                serde_json::json!({}),
+                serde_json::json!({"configuration": {}}),
             )],
             SessionUpdate {
                 status: Some(SessionStatus::Idle),
@@ -76,11 +73,10 @@ fn reports_what_the_journal_costs() {
     let payload = serde_json::json!({ "text": "x".repeat(PAYLOAD_BYTES) });
     let mut latencies = Vec::with_capacity(RECORDS as usize);
     let started = Instant::now();
-    for sequence in 0..RECORDS {
+    for _ in 0..RECORDS {
         let at = Instant::now();
         store
-            .append(
-                sequence + 1,
+            .append_sync(
                 &[AppendRecord::new("model_call_ended", payload.clone())],
                 SessionUpdate::default(),
             )
@@ -99,7 +95,7 @@ fn reports_what_the_journal_costs() {
 
     let at = Instant::now();
     let reopened =
-        SessionStore::open(&directory.join("ses_throughput"), writer.clone(), feed).unwrap();
+        LocalSessionStore::open(&directory.join("ses_throughput"), writer.clone(), feed).unwrap();
     let replay = at.elapsed().as_secs_f64() * 1e3;
     assert_eq!(
         reopened.session_row().unwrap().through_sequence,
@@ -130,7 +126,7 @@ fn reports_what_the_journal_costs_beside_other_sessions() {
         let writer = Writer::spawn();
         let (publisher, _worker) = brain_telemetry::telemetry_channel();
         let feed = Arc::new(Feed::new(publisher));
-        let stores: Vec<Arc<SessionStore>> = (0..sessions)
+        let stores: Vec<Arc<LocalSessionStore>> = (0..sessions)
             .map(|index| store(&directory, &format!("ses_{index:04}"), &writer, &feed))
             .collect();
         let payload = Arc::new(serde_json::json!({ "text": "x".repeat(PAYLOAD_BYTES) }));
@@ -142,11 +138,10 @@ fn reports_what_the_journal_costs_beside_other_sessions() {
                 let payload = payload.clone();
                 std::thread::spawn(move || {
                     let mut latencies = Vec::with_capacity(PER_SESSION as usize);
-                    for sequence in 0..PER_SESSION {
+                    for _ in 0..PER_SESSION {
                         let at = Instant::now();
                         store
-                            .append(
-                                sequence + 1,
+                            .append_sync(
                                 &[AppendRecord::new("model_call_ended", (*payload).clone())],
                                 SessionUpdate::default(),
                             )

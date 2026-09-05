@@ -2,9 +2,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopIdentity, EnvironmentAttachRequest, EnvironmentAttachment, EnvironmentId, EventId,
-    IDENTIFIER_PATTERN, MAX_TRANSCRIPT_ITEMS, Message, ModelBinding, ModelSelection, Program,
-    RESOURCE_NAME_PATTERN, SessionId, ToolBinding, ToolDefinition, ToolHosting,
+    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, HostId, IDENTIFIER_PATTERN,
+    MAX_TRANSCRIPT_ITEMS, Message, ModelBinding, ModelSelection, RESOURCE_NAME_PATTERN,
+    SessionEnvironment, SessionId, ToolBinding, ToolDefinition, ToolHosting,
 };
 
 /// The contract identifier of the session API.
@@ -16,6 +16,9 @@ pub const SESSION_CONTRACT: &str = "session/v1";
 pub struct AgentloopRef {
     pub identity: AgentloopIdentity,
     pub configuration: serde_json::Value,
+    /// The Environment that executes this Agentloop. The MVP supports Brain's native
+    /// Wasmtime Environment; the binding stays explicit for later drivers.
+    pub environment_id: EnvironmentId,
 }
 
 /// One tool as the SDK hands it over: its manifest fields plus the environment it
@@ -49,10 +52,13 @@ pub struct BoundTool {
     #[serde(default)]
     pub hosting: ToolHosting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub program: Option<Program>,
-    /// Required unless `hosting` is `client`; a client-hosted tool binds no environment.
+    pub implementation: Option<serde_json::Value>,
+    /// Required for a provisioned tool; a resident tool binds no Environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_id: Option<EnvironmentId>,
+    /// Required for a resident tool and absent for a provisioned tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<HostId>,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
@@ -72,9 +78,9 @@ pub struct CreateSessionRequest {
     pub response_format: Option<serde_json::Value>,
     #[schemars(length(max = 128))]
     pub tools: Vec<BoundTool>,
-    /// The environments this session attaches to, by id. Each must already exist.
+    /// Immutable Environment specifications opened and attached as part of this create.
     #[schemars(length(max = 128))]
-    pub environments: Vec<EnvironmentAttachRequest>,
+    pub environments: Vec<SessionEnvironment>,
     /// A transcript to carry forward, if the caller has one: the messages the new
     /// session's first model call should already see. Brain journals them as the session's
     /// opening transcript. Empty is an ordinary new session.
@@ -94,6 +100,7 @@ pub struct CreateSessionRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionConfig {
     pub agentloop_identity: AgentloopIdentity,
+    pub agentloop_environment_id: EnvironmentId,
     pub brain_configuration: serde_json::Value,
     pub model: ModelBinding,
     #[serde(default)]
@@ -146,20 +153,12 @@ pub enum SessionStatus {
 
 /// What the API says about a session: its id, where it is, and how far its journal goes.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[schemars(transform = crate::schema::share_key_always_present)]
 pub struct SessionSummary {
     pub session_id: SessionId,
     pub status: SessionStatus,
     /// Sequence of the last journal record committed for this session — the journal is
     /// complete through here, so it is where a `GET /events` cursor starts.
     pub last_sequence: u64,
-    /// The scoped credential that authorizes answering this session's client-hosted
-    /// tools: the serve feed and the tool-results endpoint, nothing else. Hand it to
-    /// the process that serves a tool; it spends nothing and reads nothing else.
-    /// Minted by the serving layer — the session leaves it empty.
-    #[serde(default)]
-    #[schemars(regex(pattern = r"^sk\.ses_[A-Za-z0-9]{20,32}\.[0-9a-f]{64}$"))]
-    pub share_key: String,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -227,27 +226,4 @@ pub struct AgentloopAdmission {
     pub status: AdmissionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<crate::ApiError>,
-}
-
-/// The manifest inside an agentloop package: the contract the loop was built against
-/// and the component it carries.
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentloopManifest {
-    #[schemars(schema_with = "crate::schema::agentloop_contract")]
-    pub contract_version: String,
-    pub component_identity: AgentloopIdentity,
-    #[schemars(range(min = 1, max = 33554432))]
-    pub component_bytes: usize,
-    #[schemars(length(min = 1, max = 256))]
-    pub toolchain: String,
-}
-
-/// What `POST /v1/agentloops` receives: the manifest and the component it describes,
-/// base64-encoded.
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentloopPackage {
-    pub manifest: AgentloopManifest,
-    pub component_base64: String,
 }

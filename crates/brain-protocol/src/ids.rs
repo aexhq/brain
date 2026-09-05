@@ -44,4 +44,6 @@ id_type!(SessionId, "^ses_[A-Za-z0-9]{20,32}$");
 id_type!(EventId, IDENTIFIER_PATTERN);
 id_type!(EnvironmentId, IDENTIFIER_PATTERN);
 id_type!(AttachmentId, IDENTIFIER_PATTERN);
+id_type!(HostId, "^host_[A-Za-z0-9]{20,32}$");
 id_type!(AgentloopIdentity, IDENTITY_PATTERN);
+id_type!(ToolIdentity, IDENTITY_PATTERN);

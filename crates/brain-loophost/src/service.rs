@@ -1,71 +1,59 @@
-//! What the worker process does with a connection, independent of the socket it arrived
-//! on.
-//!
-//! One worker holds every admitted component, because compiling one costs seconds and the
-//! compiled form is what makes a turn cost milliseconds. It serves many sessions at once,
-//! each turn on its own connection and its own blocking thread; what runs at once stays
-//! explicitly bounded, because each turn is a live Wasm instance.
-//!
-//! A turn's connection is a conversation: the guest's host calls go out as frames and
-//! wait for their results; a cancel from the server fails every pending call.
+//! One bounded Wasmtime worker. It caches compiled Components only; every invocation
+//! receives a fresh Store and instance.
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock, atomic::AtomicBool, atomic::Ordering},
+    future::Future,
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use brain_protocol::{TurnError, TurnInput, codes};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::{
-    AdmissionEngine, AdmittedAgentloop, GuestHost, HostCall, LoopLimits, WarmInstances,
-    WorkerRequest, WorkerResponse,
+    AdmissionEngine, AdmittedAgentloop, AdmittedTool, ComponentKind, GuestHost, HostCall,
+    LoopLimits, NativeEnvironment, NativeToolInput, WorkerRequest, WorkerResponse,
     wire::{MAX_RESPONSE_FRAME_BYTES, read_frame, write_frame},
 };
 
 pub struct WorkerService {
     engine: Arc<AdmissionEngine>,
-    /// Read on every turn, written only by admission.
-    admitted: RwLock<HashMap<String, Arc<AdmittedAgentloop>>>,
-    /// The memory ceiling, expressed as instances rather than bytes. Requests wait here
-    /// rather than being refused: the supervisor already refused everything beyond its
-    /// own queue, so whatever reaches this point is worth a slot.
+    agentloops: RwLock<HashMap<String, Arc<AdmittedAgentloop>>>,
+    tools: RwLock<HashMap<String, Arc<AdmittedTool>>>,
     running: Semaphore,
-    /// Warm instances, one per recently active session, so a turn does not pay
-    /// instantiation for a conversation this worker just held.
-    warm: Arc<WarmInstances>,
 }
 
-/// A host call on its way from the guest's thread to the connection, with the channel
-/// its answer comes back on. `None` for a call that wants no answer.
 type Outbound = (HostCall, Option<oneshot::Sender<Result<String, TurnError>>>);
 
-/// The guest's side of the bridge: a channel to the connection task, and the cancel flag
-/// that fails every call once the server has said stop.
 struct ConnectionBridge {
-    outbound: mpsc::UnboundedSender<Outbound>,
+    outbound: mpsc::Sender<Outbound>,
     cancelled: Arc<AtomicBool>,
 }
 
+#[async_trait::async_trait]
 impl GuestHost for ConnectionBridge {
-    fn call(&self, call: HostCall) -> Result<String, TurnError> {
+    async fn call(&self, call: HostCall) -> Result<String, TurnError> {
         if self.cancelled.load(Ordering::Acquire) {
             return Err(cancelled());
         }
         if matches!(call, HostCall::Telemetry { .. }) {
-            let _ = self.outbound.send((call, None));
+            let _ = self.outbound.send((call, None)).await;
             return Ok(String::new());
         }
         let (reply, answer) = oneshot::channel();
         self.outbound
             .send((call, Some(reply)))
-            .map_err(|_| TurnError::new("connection_lost", "the turn's connection is gone"))?;
-        answer.blocking_recv().unwrap_or_else(|_| Err(cancelled()))
+            .await
+            .map_err(|_| TurnError::new("connection_lost", "the invocation connection is gone"))?;
+        answer.await.unwrap_or_else(|_| Err(cancelled()))
     }
 }
 
 fn cancelled() -> TurnError {
-    TurnError::new(codes::failure::CANCELLED, "the turn was cancelled")
+    TurnError::new(codes::failure::CANCELLED, "the invocation was cancelled")
 }
 
 impl WorkerService {
@@ -73,14 +61,12 @@ impl WorkerService {
         let running = Semaphore::new(limits.concurrent_turns_per_worker.max(1));
         Ok(Self {
             engine: Arc::new(AdmissionEngine::new(limits, allowed_imports)?),
-            admitted: RwLock::new(HashMap::new()),
+            agentloops: RwLock::new(HashMap::new()),
+            tools: RwLock::new(HashMap::new()),
             running,
-            warm: Arc::new(WarmInstances::default()),
         })
     }
 
-    /// Serve one connection: a ping or an admission is one answer; a turn holds the
-    /// connection until the guest is done.
     pub async fn serve<S>(self: Arc<Self>, stream: &mut S)
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -96,24 +82,48 @@ impl WorkerService {
             WorkerRequest::Ping => {
                 let _ = crate::worker_write(stream, &WorkerResponse::Pong).await;
             }
-            WorkerRequest::Admit { package_json } => {
-                let response = self.admit(package_json).await;
+            WorkerRequest::Admit {
+                kind,
+                component_base64,
+            } => {
+                let response = self.admit(kind, component_base64).await;
                 let _ = crate::worker_write(stream, &response).await;
             }
             WorkerRequest::Turn {
                 digest,
-                session,
+                environment,
                 input,
             } => {
-                self.turn(stream, digest.as_str().to_owned(), session, *input)
+                self.turn(stream, digest.as_str(), environment, *input)
                     .await;
+            }
+            WorkerRequest::Tool {
+                digest,
+                environment,
+                call_id,
+                input,
+                configuration,
+                deadline_at_ms,
+            } => {
+                self.tool(
+                    stream,
+                    digest.as_str(),
+                    environment,
+                    NativeToolInput {
+                        call_id,
+                        input,
+                        configuration,
+                        deadline_at_ms,
+                    },
+                )
+                .await;
             }
             WorkerRequest::HostResult { .. } | WorkerRequest::Cancel => {
                 let _ = crate::worker_write(
                     stream,
                     &failed(
                         "invalid_frame",
-                        "a turn has not been opened on this connection".into(),
+                        "an invocation has not been opened on this connection".into(),
                     ),
                 )
                 .await;
@@ -121,36 +131,68 @@ impl WorkerService {
         }
     }
 
-    async fn admit(&self, package_json: String) -> WorkerResponse {
-        let engine = self.engine.clone();
-        // Compiling a component is seconds of CPU. It does not belong on the runtime's
-        // threads any more than a turn does.
-        let compiled =
-            tokio::task::spawn_blocking(move || engine.admit(package_json.as_bytes())).await;
-        let component = match compiled {
-            Ok(Ok(component)) => component,
-            Ok(Err(message)) => return failed("admission_failed", message),
-            Err(_) => return failed("admission_failed", "the worker stopped compiling".into()),
+    async fn admit(&self, kind: ComponentKind, component_base64: String) -> WorkerResponse {
+        use base64::Engine as _;
+        let component = match base64::engine::general_purpose::STANDARD.decode(component_base64) {
+            Ok(component) => component,
+            Err(error) => return failed("admission_failed", error.to_string()),
         };
-        let digest = component.digest.clone();
-        match self.admitted.write() {
-            Ok(mut admitted) => {
-                admitted.insert(digest.as_str().to_owned(), Arc::new(component));
-                WorkerResponse::Admitted { digest }
+        let engine = self.engine.clone();
+        match kind {
+            ComponentKind::Agentloop => {
+                let compiled = tokio::task::spawn_blocking(move || engine.admit(&component)).await;
+                let component = match compiled {
+                    Ok(Ok(component)) => component,
+                    Ok(Err(message)) => return failed("admission_failed", message),
+                    Err(_) => {
+                        return failed("admission_failed", "the worker stopped compiling".into());
+                    }
+                };
+                let digest = component.digest.as_str().to_owned();
+                match self.agentloops.write() {
+                    Ok(mut admitted) => {
+                        admitted.insert(digest.clone(), Arc::new(component));
+                        WorkerResponse::Admitted { digest }
+                    }
+                    Err(_) => failed("admission_failed", "the worker lost its state".into()),
+                }
             }
-            Err(_) => failed("admission_failed", "the worker lost its state".into()),
+            ComponentKind::Tool => {
+                let compiled =
+                    tokio::task::spawn_blocking(move || engine.admit_tool(&component)).await;
+                let component = match compiled {
+                    Ok(Ok(component)) => component,
+                    Ok(Err(message)) => return failed("admission_failed", message),
+                    Err(_) => {
+                        return failed("admission_failed", "the worker stopped compiling".into());
+                    }
+                };
+                let digest = component.digest.as_str().to_owned();
+                match self.tools.write() {
+                    Ok(mut admitted) => {
+                        admitted.insert(digest.clone(), Arc::new(component));
+                        WorkerResponse::Admitted { digest }
+                    }
+                    Err(_) => failed("admission_failed", "the worker lost its state".into()),
+                }
+            }
         }
     }
 
-    async fn turn<S>(&self, stream: &mut S, digest: String, session: String, input: TurnInput)
-    where
+    async fn turn<S>(
+        &self,
+        stream: &mut S,
+        digest: &str,
+        environment: NativeEnvironment,
+        input: TurnInput,
+    ) where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         let component = self
-            .admitted
+            .agentloops
             .read()
             .ok()
-            .and_then(|admitted| admitted.get(&digest).cloned());
+            .and_then(|admitted| admitted.get(digest).cloned());
         let Some(component) = component else {
             let _ = crate::worker_write(
                 stream,
@@ -162,8 +204,6 @@ impl WorkerService {
             .await;
             return;
         };
-        // Held across the whole turn, so what it counts is instances alive rather than
-        // requests started.
         let Ok(_slot) = self.running.acquire().await else {
             let _ = crate::worker_write(
                 stream,
@@ -172,37 +212,86 @@ impl WorkerService {
             .await;
             return;
         };
-        let (outbound, mut inbound) = mpsc::unbounded_channel::<Outbound>();
+        let engine = self.engine.clone();
+        self.converse(stream, move |bridge| async move {
+            match component
+                .turn(engine.engine(), engine.limits(), environment, input, bridge)
+                .await
+            {
+                Ok(output) => WorkerResponse::Turned { output },
+                Err(error) => WorkerResponse::TurnFailed { error },
+            }
+        })
+        .await;
+    }
+
+    async fn tool<S>(
+        &self,
+        stream: &mut S,
+        digest: &str,
+        environment: NativeEnvironment,
+        input: NativeToolInput,
+    ) where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let component = self
+            .tools
+            .read()
+            .ok()
+            .and_then(|admitted| admitted.get(digest).cloned());
+        let Some(component) = component else {
+            let _ = crate::worker_write(
+                stream,
+                &failed(
+                    "not_admitted",
+                    "Tool digest is not admitted in this worker".into(),
+                ),
+            )
+            .await;
+            return;
+        };
+        let Ok(_slot) = self.running.acquire().await else {
+            let _ = crate::worker_write(
+                stream,
+                &failed("tool_failed", "the worker is shutting down".into()),
+            )
+            .await;
+            return;
+        };
+        let engine = self.engine.clone();
+        self.converse(stream, move |bridge| async move {
+            match component
+                .run(engine.engine(), engine.limits(), environment, input, bridge)
+                .await
+            {
+                Ok(output) => WorkerResponse::ToolRan { output },
+                Err(error) => WorkerResponse::TurnFailed { error },
+            }
+        })
+        .await;
+    }
+
+    async fn converse<S, Make, Running>(&self, stream: &mut S, make: Make)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+        Make: FnOnce(Arc<dyn GuestHost>) -> Running,
+        Running: Future<Output = WorkerResponse>,
+    {
+        let (outbound, mut inbound) = mpsc::channel::<Outbound>(8);
         let cancelled = Arc::new(AtomicBool::new(false));
         let bridge: Arc<dyn GuestHost> = Arc::new(ConnectionBridge {
             outbound,
             cancelled: cancelled.clone(),
         });
-        let engine = self.engine.clone();
-        let warm = self.warm.clone();
-        // Wasmtime executes synchronously. Left on a runtime thread it blocks every other
-        // connection this worker is serving for as long as the guest runs.
-        let mut running = tokio::task::spawn_blocking(move || {
-            component.turn(
-                engine.engine(),
-                engine.limits(),
-                &warm,
-                &session,
-                input,
-                bridge,
-            )
-        });
+        let mut running = Box::pin(make(bridge));
         let pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, TurnError>>>> =
             Mutex::new(HashMap::new());
         let mut next_id = 0_u64;
         let (mut reader, mut writer) = tokio::io::split(&mut *stream);
-        let response = 'turn: loop {
-            // One read future lives across the other arms. Dropping a half-read frame
-            // when a host call or the turn's end fires would leave the stream mid-frame,
-            // and the next length prefix would be whatever bytes came next.
+        let response = 'invocation: loop {
             let mut next_frame = std::pin::pin!(read_frame::<_, WorkerRequest>(
                 &mut reader,
-                crate::MAX_TURN_INPUT_BYTES + 1_024
+                crate::MAX_TURN_INPUT_BYTES + 1_024,
             ));
             loop {
                 tokio::select! {
@@ -212,13 +301,10 @@ impl WorkerService {
                             pending.insert(next_id, reply);
                         }
                         if write_frame(&mut writer, &WorkerResponse::HostCall { id: next_id, call }, MAX_RESPONSE_FRAME_BYTES).await.is_err() {
-                            // The server is gone: the guest's call fails, the turn ends.
                             cancelled.store(true, Ordering::Release);
                             fail_pending(&pending);
-                            let _ = (&mut running).await;
                             return;
                         }
-                        let _ = error_never(&());
                     }
                     frame = &mut next_frame => {
                         match frame {
@@ -231,31 +317,24 @@ impl WorkerService {
                             Ok(WorkerRequest::Cancel) => {
                                 cancelled.store(true, Ordering::Release);
                                 fail_pending(&pending);
+                                break 'invocation WorkerResponse::TurnFailed {
+                                    error: crate::service::cancelled(),
+                                };
                             }
-                            Ok(_) => {
-                                break 'turn failed("invalid_frame", "unexpected frame during a turn".into());
-                            }
+                            Ok(_) => break 'invocation failed("invalid_frame", "unexpected frame during an invocation".into()),
                             Err(_) => {
-                                // The connection closed under the turn. Nothing to answer to.
                                 cancelled.store(true, Ordering::Release);
                                 fail_pending(&pending);
-                                let _ = (&mut running).await;
                                 return;
                             }
                         }
-                        // Arm the next read.
-                        continue 'turn;
+                        continue 'invocation;
                     }
-                    finished = &mut running => {
-                        break 'turn match finished {
-                            Ok(Ok(output)) => WorkerResponse::Turned { output },
-                            Ok(Err(error)) => WorkerResponse::TurnFailed { error },
-                            Err(_) => failed("turn_failed", "the turn was lost".into()),
-                        };
-                    }
+                    finished = &mut running => break 'invocation finished,
                 }
             }
         };
+        drop(running);
         drop(reader);
         drop(writer);
         let _ = crate::worker_write(stream, &response).await;
@@ -270,11 +349,6 @@ fn fail_pending(pending: &Mutex<HashMap<u64, oneshot::Sender<Result<String, Turn
     }
 }
 
-// Keeps the select arm's `let _ =` shape uniform; optimised away.
-fn error_never(_: &()) -> Result<(), ()> {
-    Ok(())
-}
-
 fn failed(code: &str, message: String) -> WorkerResponse {
     WorkerResponse::Error {
         code: code.to_owned(),
@@ -284,7 +358,11 @@ fn failed(code: &str, message: String) -> WorkerResponse {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        future::pending,
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
 
     use super::*;
 
@@ -308,10 +386,8 @@ mod tests {
         }
     }
 
-    /// A connection that opens a turn for a loop nobody admitted is answered, and other
-    /// connections are answered meanwhile.
     #[tokio::test]
-    async fn a_turn_for_an_unknown_loop_is_refused_without_blocking_others() {
+    async fn an_unknown_loop_is_refused_without_blocking_others() {
         let service = service();
         let (mut client, mut server) = tokio::io::duplex(64 * 1024);
         let serving = tokio::spawn({
@@ -322,7 +398,12 @@ mod tests {
             &mut client,
             &WorkerRequest::Turn {
                 digest: brain_protocol::AgentloopIdentity::new("agl_missing"),
-                session: "ses_test".into(),
+                environment: NativeEnvironment {
+                    scratch: false,
+                    workspace: None,
+                    network_allow: Vec::new(),
+                    secrets: Default::default(),
+                },
                 input: Box::new(input()),
             },
             MAX_RESPONSE_FRAME_BYTES,
@@ -354,5 +435,101 @@ mod tests {
         );
         serving.await.unwrap();
         pinging.await.unwrap();
+    }
+
+    struct DropNotice(Arc<AtomicBool>);
+
+    impl Drop for DropNotice {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_invocation_drops_its_guest() {
+        let service = service();
+        let started = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let serving = tokio::spawn({
+            let service = service.clone();
+            let started = started.clone();
+            let dropped = dropped.clone();
+            async move {
+                service
+                    .converse(&mut server, move |_| async move {
+                        let _notice = DropNotice(dropped);
+                        started.store(true, Ordering::Release);
+                        pending::<()>().await;
+                        WorkerResponse::Pong
+                    })
+                    .await;
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        write_frame(&mut client, &WorkerRequest::Cancel, 1024)
+            .await
+            .unwrap();
+        let response: WorkerResponse = tokio::time::timeout(
+            Duration::from_secs(5),
+            read_frame(&mut client, MAX_RESPONSE_FRAME_BYTES),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            matches!(response, WorkerResponse::TurnFailed { ref error }
+                if error.code == codes::failure::CANCELLED),
+            "expected cancellation, got {response:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(5), serving)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(dropped.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn losing_an_invocation_connection_drops_its_guest() {
+        let service = service();
+        let started = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let (client, mut server) = tokio::io::duplex(1024);
+        let serving = tokio::spawn({
+            let service = service.clone();
+            let started = started.clone();
+            let dropped = dropped.clone();
+            async move {
+                service
+                    .converse(&mut server, move |_| async move {
+                        let _notice = DropNotice(dropped);
+                        started.store(true, Ordering::Release);
+                        pending::<()>().await;
+                        WorkerResponse::Pong
+                    })
+                    .await;
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(5), serving)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(dropped.load(Ordering::Acquire));
     }
 }

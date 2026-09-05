@@ -18,7 +18,7 @@ use std::{
     sync::Arc,
 };
 
-use brain::{AppendRecord, Feed, JournalStore, SessionStore, SessionUpdate, Writer};
+use brain::{AppendRecord, Feed, LocalSessionStore, SessionStore, SessionUpdate, Writer};
 use brain_protocol::{SessionId, SessionStatus};
 
 /// Counts bytes handed out, so a test can measure one call rather than a whole process.
@@ -73,7 +73,7 @@ const CONTEXT_BYTES: usize = 256 * 1024;
 /// even one session's context. The bound sits far from both regimes.
 const MAX_LISTING_BYTES: usize = CONTEXT_BYTES / 4;
 
-fn stores_with_sessions(directory: &Path) -> (Vec<Arc<SessionStore>>, Arc<Writer>) {
+fn stores_with_sessions(directory: &Path) -> (Vec<Arc<LocalSessionStore>>, Arc<Writer>) {
     let writer = Writer::spawn();
     let (publisher, _worker) = brain_telemetry::telemetry_channel();
     let feed = Arc::new(Feed::new(publisher));
@@ -81,7 +81,7 @@ fn stores_with_sessions(directory: &Path) -> (Vec<Arc<SessionStore>>, Arc<Writer
     let mut stores = Vec::with_capacity(SESSIONS);
     for index in 0..SESSIONS {
         let session_id = SessionId::new(format!("ses_{index:04}"));
-        let store = SessionStore::create(
+        let store = LocalSessionStore::create(
             &directory.join(session_id.as_str()),
             session_id,
             &serde_json::json!({ "configuration": filler }),
@@ -90,8 +90,7 @@ fn stores_with_sessions(directory: &Path) -> (Vec<Arc<SessionStore>>, Arc<Writer
         )
         .unwrap();
         store
-            .append(
-                0,
+            .append_sync(
                 &[AppendRecord::new(
                     "session_creation_ended",
                     serde_json::json!({}),

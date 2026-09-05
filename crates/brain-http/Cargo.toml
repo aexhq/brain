@@ -12,6 +12,7 @@ brain-protocol = { workspace = true }
 schemars = { workspace = true }
 utoipa = { workspace = true }
 async-trait = { workspace = true }
+async-stream = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }

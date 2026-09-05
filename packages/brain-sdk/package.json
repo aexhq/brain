@@ -1,6 +1,6 @@
 {
   "name": "@aexhq/brain",
-  "version": "0.15.3",
+  "version": "0.16.0",
   "description": "TypeScript SDK for an independently runnable Brain server",
   "license": "MIT",
   "repository": {
@@ -27,9 +27,6 @@
     "./contracts/*": "./contracts/*.wit",
     "./package.json": "./package.json"
   },
-  "bin": {
-    "brain": "./dist/cli.js"
-  },
   "files": [
     "dist",
     "contracts",
@@ -47,12 +44,6 @@
     "typescript": "^5.9.2"
   },
   "dependencies": {
-    "@bytecodealliance/componentize-js": "0.19.3",
-    "esbuild": "0.25.9",
-    "typescript": "5.9.2",
     "zod": "4.4.3"
-  },
-  "peerDependencies": {
-    "@bytecodealliance/jco": "1.17.9"
   }
 }

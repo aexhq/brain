@@ -7,6 +7,7 @@ pub mod environment;
 pub mod idempotency;
 pub mod metadata;
 pub mod model_binding;
+pub mod resident;
 mod service;
 mod session_ownership;
 pub mod tool_dispatcher;
@@ -20,6 +21,7 @@ pub use idempotency::IdempotencyStore;
 pub use model_binding::{
     LocalModelBindingStore, ModelBindingStore, ServerModelExecutor, load_providers_file,
 };
+pub use resident::ResidentHosts;
 pub use service::{ServerApi, ServerResources, WorkerLoopExecutor};
 pub use session_ownership::{LocalSessionOwnership, SessionOwnership};
 pub use tool_dispatcher::ServerToolExecutor;

@@ -98,7 +98,7 @@ pub enum StopReason {
 /// Provider-reported usage. Every field is `Option` because **absent is never
 /// zero** -- a provider that does not report cache reads is not a provider that
 /// read zero cache tokens.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct Usage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
@@ -110,6 +110,8 @@ pub struct Usage {
     pub cache_creation_input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_cost_usd: Option<String>,
 }
 
 impl Usage {
@@ -126,7 +128,7 @@ impl Usage {
             }
             Ok(())
         }
-        let mut merged = *self;
+        let mut merged = self.clone();
         add(&mut merged.input_tokens, other.input_tokens)?;
         add(&mut merged.output_tokens, other.output_tokens)?;
         add(
@@ -138,6 +140,15 @@ impl Usage {
             other.cache_creation_input_tokens,
         )?;
         add(&mut merged.reasoning_tokens, other.reasoning_tokens)?;
+        if let Some(cost) = &other.provider_cost_usd {
+            match &merged.provider_cost_usd {
+                Some(existing) if existing != cost => {
+                    return Err("provider reported conflicting costs");
+                }
+                Some(_) => {}
+                None => merged.provider_cost_usd = Some(cost.clone()),
+            }
+        }
         *self = merged;
         Ok(())
     }

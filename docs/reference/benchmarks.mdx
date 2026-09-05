@@ -24,7 +24,7 @@ each driven through its own public API, so the numbers can be re-run rather than
 
 The engine, not a model. It drives the real HTTP and SSE paths with an instant scripted provider
 and an in-process echo environment, so no model latency reaches the numbers. First-token and turn
-figures include HTTP, request construction, writing to the session log, and dispatch.
+figures include HTTP, request construction, committing to the session journal, and dispatch.
 
 Density and reclaim measurements need Linux `/proc/*/smaps_rollup`. Other platforms run the
 portable latency and correctness arms only. The harness refuses to substitute RSS for private
@@ -38,8 +38,8 @@ Every push bounds resident memory against a live server: after 10,000 requests i
 
 The same push bounds journal growth on both axes. A transcript grows with every model call and
 across every turn, so anything written per call or per turn would cost the sum of every intermediate
-size rather than the final one; `crates/brain/tests/journal_growth.rs` holds the journal — and one
-page of the event stream — to a small constant multiple of the final context, and holds a
+size rather than the final one; `crates/brain/tests/journal_growth.rs` holds the canonical journal
+— and one public Event projection page — to a small constant multiple of the final context, and holds a
 whole-transcript ratio so a session's log cannot grow with the square of its turn count.
 
 ## History

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 
-import { Brain } from "@aexhq/brain";
-import { diagnostic } from "./built/index.mjs";
+import { Brain, agentloop, brainWasm, component } from "@aexhq/brain";
 
 const baseUrl = process.env.BRAIN_BASE_URL;
 const token = process.env.BRAIN_API_TOKEN;
@@ -9,13 +8,16 @@ assert.ok(baseUrl);
 assert.ok(token);
 
 const brain = new Brain({ baseUrl, token });
+const diagnostic = agentloop({
+  implementation: component(new URL("./diagnostic-agentloop.wasm", import.meta.url)),
+});
 const session = await brain.sessions.create({
   model: {
     provider: "vercel-ai-gateway",
     name: "openai/gpt-5-mini",
     apiKey: "release-smoke-key",
   },
-  agentloop: diagnostic(),
+  agentloop: diagnostic({ env: brainWasm({ filesystem: { workspace: false } }) }),
 });
 await session.send("first turn");
 await session.send("second turn");

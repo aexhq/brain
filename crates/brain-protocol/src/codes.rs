@@ -22,6 +22,7 @@ pub mod event {
     pub const ACTIVATION_STARTED: &str = "activation_started";
     pub const ACTIVATION_ENDED: &str = "activation_ended";
     pub const ACTIVATION_FAILED: &str = "activation_failed";
+    pub const TRANSCRIPT_REPLACED: &str = "transcript_replaced";
     pub const MODEL_CALL_STARTED: &str = "model_call_started";
     pub const MODEL_CALL_ENDED: &str = "model_call_ended";
     pub const MODEL_CALL_FAILED: &str = "model_call_failed";
@@ -76,6 +77,7 @@ pub mod event {
         ACTIVATION_STARTED,
         ACTIVATION_ENDED,
         ACTIVATION_FAILED,
+        TRANSCRIPT_REPLACED,
         MODEL_CALL_STARTED,
         MODEL_CALL_ENDED,
         MODEL_CALL_FAILED,
@@ -111,7 +113,9 @@ pub mod failure {
     pub const INTERRUPTED: &str = "interrupted";
     pub const CANCELLED: &str = "cancelled";
     pub const TIMEOUT: &str = "timeout";
+    pub const UNKNOWN: &str = "unknown";
     pub const MODEL_CALL_LIMIT: &str = "model_call_limit";
+    pub const EMIT_LIMIT: &str = "emit_limit";
     pub const AGENTLOOP_FAILED: &str = "agentloop_failed";
     pub const TOOL_ERROR: &str = "tool_error";
     pub const SESSION_OWNERSHIP_FAILED: &str = "session_ownership_failed";
@@ -123,7 +127,9 @@ pub mod failure {
         INTERRUPTED,
         CANCELLED,
         TIMEOUT,
+        UNKNOWN,
         MODEL_CALL_LIMIT,
+        EMIT_LIMIT,
         AGENTLOOP_FAILED,
         TOOL_ERROR,
         SESSION_OWNERSHIP_FAILED,

@@ -36,6 +36,8 @@ clap = { version = "4", features = ["derive", "env"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 globset = "0.4"
 hex = "0.4"
+http = "1"
+http-body-util = "0.1"
 jsonschema = { version = "0.49", default-features = false }
 libc = "0.2"
 aes-gcm = "0.10"
@@ -51,6 +53,8 @@ serde_norway = "0.9"
 sha2 = "0.10"
 wasmtime = { version = "48", default-features = false, features = ["component-model", "async", "cranelift", "parallel-compilation", "runtime", "cache", "std"] }
 wasmtime-wasi = "48"
+wasmtime-wasi-http = "48"
+tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "signal"] }
 tokio-util = "0.7"

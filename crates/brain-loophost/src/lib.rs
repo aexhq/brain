@@ -2,19 +2,17 @@
 
 mod client;
 mod limits;
-mod package;
 mod runtime;
 mod service;
 mod supervisor;
 mod wire;
 
-pub use brain_protocol::{AgentloopManifest, AgentloopPackage};
 pub use client::{TurnBridge, WorkerClient};
 pub use limits::LoopLimits;
-pub use runtime::{AdmissionEngine, AdmittedAgentloop, GuestHost, WarmInstances};
+pub use runtime::{AdmissionEngine, AdmittedAgentloop, AdmittedTool, GuestHost, NativeToolInput};
 pub use service::WorkerService;
-pub use supervisor::{LoopError, WorkerPool};
-pub use wire::{HostCall, WorkerRequest, WorkerResponse};
+pub use supervisor::{LoopError, NativePolicy, WorkerPool};
+pub use wire::{ComponentKind, HostCall, NativeEnvironment, WorkerRequest, WorkerResponse};
 
 pub const MAX_PACKAGE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_TURN_INPUT_BYTES: usize = 32 * 1024 * 1024;
@@ -23,15 +21,42 @@ pub const MAX_LINEAR_MEMORY_BYTES: usize = 128 * 1024 * 1024;
 
 /// Turns one worker runs at once by default.
 ///
-/// A turn holds a live Wasm instance and a blocking thread for as long as it runs, model
-/// calls and parked tool calls included, so this bounds worker memory and threads
-/// together. Sixty-four instances of the default 128 MiB ceiling is the worst case the
-/// arithmetic allows; a real loop's heap is far smaller than its ceiling.
-pub const DEFAULT_CONCURRENT_TURNS: usize = 64;
+/// A turn holds a fresh Wasm Store and instance for as long as it runs. Eight instances
+/// of the default 128 MiB ceiling bound guest linear memory to 1 GiB.
+pub const DEFAULT_CONCURRENT_TURNS: usize = 8;
 
 /// The interfaces a guest may import: the contract's own types and the host services.
 pub const RUNTIME_SHIM_IMPORTS: &[&str] =
-    &["aex:agentloop/types@1.0.0", "aex:agentloop/host@1.0.0"];
+    &["brain:agentloop/types@0.1.0", "brain:agentloop/host@0.1.0"];
+pub const CAPABILITY_IMPORTS: &[&str] = &[
+    "wasi:cli/environment@0.2.9",
+    "wasi:cli/exit@0.2.9",
+    "wasi:cli/stderr@0.2.9",
+    "wasi:cli/stdin@0.2.9",
+    "wasi:cli/stdout@0.2.9",
+    "wasi:cli/terminal-input@0.2.9",
+    "wasi:cli/terminal-output@0.2.9",
+    "wasi:cli/terminal-stderr@0.2.9",
+    "wasi:cli/terminal-stdin@0.2.9",
+    "wasi:cli/terminal-stdout@0.2.9",
+    "wasi:clocks/monotonic-clock@0.2.9",
+    "wasi:clocks/wall-clock@0.2.9",
+    "wasi:filesystem/types@0.2.9",
+    "wasi:filesystem/preopens@0.2.9",
+    "wasi:http/types@0.2.9",
+    "wasi:http/outgoing-handler@0.2.9",
+    "wasi:io/error@0.2.9",
+    "wasi:io/poll@0.2.9",
+    "wasi:io/streams@0.2.9",
+    "wasi:filesystem/types@0.2.12",
+    "wasi:filesystem/preopens@0.2.12",
+    "wasi:io/error@0.2.12",
+    "wasi:io/poll@0.2.12",
+    "wasi:io/streams@0.2.12",
+    "wasi:http/types@0.2.12",
+    "wasi:http/outgoing-handler@0.2.12",
+];
+pub const TOOL_IMPORTS: &[&str] = &["brain:tool/types@0.1.0", "brain:tool/host@0.1.0"];
 
 #[doc(hidden)]
 pub async fn worker_read<R: tokio::io::AsyncRead + Unpin>(

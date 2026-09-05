@@ -11,6 +11,15 @@ pub struct ServerConfig {
     pub data_dir: PathBuf,
     #[arg(long, env = "BRAIN_LOOP_WORKER", default_value = "brain-loop-worker")]
     pub loop_worker: PathBuf,
+    /// HTTP origins or authorities that sessions may grant Brain Wasm Components.
+    #[arg(long, env = "BRAIN_WASM_NETWORK_ALLOW", value_delimiter = ',')]
+    pub wasm_network_allow: Vec<String>,
+    /// Process environment variable names that sessions may grant Brain Wasm Components.
+    #[arg(long, env = "BRAIN_WASM_SECRET_ALLOW", value_delimiter = ',')]
+    pub wasm_secret_allow: Vec<String>,
+    /// Writable filesystem roots that sessions may grant: `scratch` or `workspace`.
+    #[arg(long, env = "BRAIN_WASM_FILESYSTEM_ALLOW", value_delimiter = ',')]
+    pub wasm_filesystem_allow: Vec<String>,
     /// Endpoint for the `vercel-ai-gateway` provider. Kept under its historic
     /// name because deploys and tests already set it.
     #[arg(

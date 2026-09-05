@@ -8,11 +8,11 @@ use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    AGENTLOOP_CONTRACT_VERSION, AgentloopAdmission, AgentloopIdentity, AgentloopPackage, ApiError,
-    BoundTool, CreateEnvironmentRequest, CreateSessionRequest, EnvironmentAttachRequest,
-    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentCommand, EnvironmentId,
-    EnvironmentList, EnvironmentResponse, EnvironmentSummary, EventPage, Identity, Message,
-    MessageRequest, Outcome, SESSION_CONTRACT, SessionId, SessionList, SessionSummary,
+    AGENTLOOP_CONTRACT_VERSION, AgentloopAdmission, AgentloopIdentity, ApiError, BoundTool,
+    CreateSessionRequest, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentCommand,
+    EnvironmentId, EnvironmentResponse, EventPage, HostCommand, HostEvent, HostEventAck, HostId,
+    HostRegistration, HostResult, Identity, Message, MessageRequest, Outcome, SESSION_CONTRACT,
+    SessionEnvironment, SessionId, SessionList, SessionSummary, ToolAdmission, ToolIdentity,
     ToolManifest, TurnInput, TurnOutput,
 };
 
@@ -27,22 +27,26 @@ pub fn session() -> Value {
         |generator| {
             define::<AgentloopAdmission>(generator);
             define::<AgentloopIdentity>(generator);
-            define::<AgentloopPackage>(generator);
             define::<ApiError>(generator);
             define::<BoundTool>(generator);
-            define::<CreateEnvironmentRequest>(generator);
             define::<CreateSessionRequest>(generator);
-            define::<EnvironmentAttachRequest>(generator);
+            define::<SessionEnvironment>(generator);
             define::<EnvironmentCallRequest>(generator);
             define::<EnvironmentCallResult>(generator);
             define::<EnvironmentId>(generator);
-            define::<EnvironmentList>(generator);
-            define::<EnvironmentSummary>(generator);
             define::<EventPage>(generator);
+            define::<HostCommand>(generator);
+            define::<HostEvent>(generator);
+            define::<HostEventAck>(generator);
+            define::<HostId>(generator);
+            define::<HostRegistration>(generator);
+            define::<HostResult>(generator);
             define::<Identity>(generator);
             define::<Message>(generator);
             define::<MessageRequest>(generator);
             define::<Outcome>(generator);
+            define::<ToolAdmission>(generator);
+            define::<ToolIdentity>(generator);
             define::<SessionId>(generator);
             define::<SessionList>(generator);
             define::<SessionSummary>(generator);
@@ -186,22 +190,6 @@ fn absent_not_null(value: &mut Value) {
 mod tests {
     use super::*;
     use crate::ENVIRONMENT_CONTRACT;
-
-    #[test]
-    fn an_optional_field_is_absent_rather_than_null() {
-        let request = &session()["$defs"]["CreateEnvironmentRequest"];
-        assert_eq!(request["properties"]["idle_ttl_ms"]["type"], "integer");
-        assert_eq!(
-            request["properties"]["environment_id"]["$ref"],
-            "#/$defs/EnvironmentId"
-        );
-        assert!(
-            !request["required"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("idle_ttl_ms"))
-        );
-    }
 
     #[test]
     fn the_environment_contract_marks_every_message() {

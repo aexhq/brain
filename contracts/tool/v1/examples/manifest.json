@@ -21,9 +21,7 @@
   "binding_names": [
     "API_BASE"
   ],
-  "program": {
-    "kind": "shell",
-    "identity": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-    "script": "$command"
+  "implementation": {
+    "artifact_id": "artifact_bash_v1"
   }
 }

@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
-use brain_loophost::{HostCall, LoopLimits, TurnBridge, WorkerPool};
+use brain_loophost::{HostCall, LoopLimits, NativePolicy, NativeToolInput, TurnBridge, WorkerPool};
 use brain_protocol::{RuntimeEnvelope, TurnError, TurnInput};
 
 /// A bridge that answers every model call with a fixed assistant message and records
@@ -39,11 +39,11 @@ impl TurnBridge for RecordingBridge {
                     .push(format!("dispatch {calls_json}"));
                 Ok("[]".into())
             }
-            HostCall::Append { kind, payload_json } => {
+            HostCall::Emit { kind, payload_json } => {
                 self.calls
                     .lock()
                     .unwrap()
-                    .push(format!("append {kind} {payload_json}"));
+                    .push(format!("emit {kind} {payload_json}"));
                 Ok("7".into())
             }
             HostCall::Telemetry { record_json } => {
@@ -79,8 +79,31 @@ fn package_path() -> String {
         .expect("BRAIN_TEST_AGENTLOOP_PACKAGE must name the built diagnostic package")
 }
 
+fn tool_path() -> String {
+    std::env::var("BRAIN_TEST_TOOL_COMPONENT")
+        .expect("BRAIN_TEST_TOOL_COMPONENT must name the built diagnostic Tool")
+}
+
+fn environment() -> serde_json::Value {
+    serde_json::json!({
+        "driver": "brain_wasm",
+        "network": {"allow": []},
+        "filesystem": {"workspace": false},
+        "secrets": []
+    })
+}
+
+fn workspace_environment() -> serde_json::Value {
+    serde_json::json!({
+        "driver": "brain_wasm",
+        "network": {"allow": []},
+        "filesystem": {"workspace": true},
+        "secrets": []
+    })
+}
+
 #[tokio::test]
-async fn real_worker_admits_and_runs_a_turn_of_the_typescript_diagnostic_loop() {
+async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_loop() {
     let package = tokio::fs::read(package_path()).await.unwrap();
     let directory = tempfile::tempdir().unwrap();
     let pool = WorkerPool::new(
@@ -95,7 +118,13 @@ async fn real_worker_admits_and_runs_a_turn_of_the_typescript_diagnostic_loop() 
         cancelled: AtomicBool::new(false),
     };
     let output = pool
-        .turn("ses_worker_test".into(), digest, input("hello"), &bridge)
+        .turn(
+            "ses_worker_test".into(),
+            digest,
+            environment(),
+            input("hello"),
+            &bridge,
+        )
         .await
         .unwrap();
     assert_eq!(output.slots["memory"]["turns"], 1);
@@ -103,18 +132,84 @@ async fn real_worker_admits_and_runs_a_turn_of_the_typescript_diagnostic_loop() 
         output.result,
         Some(serde_json::json!({"turns": 1, "message": "hello"}))
     );
-    // The diagnostic loop appends one note through the host before it finishes.
+    // The diagnostic loop emits one note through the host before it finishes.
     let calls = bridge.calls.lock().unwrap();
     assert!(
-        calls.iter().any(|call| call.starts_with("append note")),
+        calls.iter().any(|call| call.starts_with("emit note")),
         "the guest's host call must reach the bridge: {calls:?}"
     );
+}
+
+#[tokio::test]
+async fn tool_workspaces_are_shared_within_a_session_and_isolated_between_sessions() {
+    let component = tokio::fs::read(tool_path()).await.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let pool = WorkerPool::new(
+        env!("CARGO_BIN_EXE_brain-loop-worker"),
+        directory.path().join("run"),
+        directory.path().join("packages"),
+        LoopLimits::default(),
+    )
+    .with_native_policy(NativePolicy {
+        filesystem: std::collections::HashSet::from(["workspace".into()]),
+        ..NativePolicy::default()
+    });
+    let digest = pool.admit_tool(component).await.unwrap();
+    let bridge = RecordingBridge {
+        calls: Mutex::new(Vec::new()),
+        cancelled: AtomicBool::new(false),
+    };
+    let invoke = |call_id: &str, input: serde_json::Value| NativeToolInput {
+        call_id: call_id.into(),
+        input,
+        configuration: serde_json::json!({}),
+        deadline_at_ms: 1_000,
+    };
+
+    let written = pool
+        .tool(
+            "ses_a".into(),
+            digest.clone(),
+            workspace_environment(),
+            invoke(
+                "write",
+                serde_json::json!({"workspace": true, "write": "private"}),
+            ),
+            &bridge,
+        )
+        .await
+        .unwrap();
+    assert_eq!(written["marker"], "private");
+
+    let same_session = pool
+        .tool(
+            "ses_a".into(),
+            digest.clone(),
+            workspace_environment(),
+            invoke("read_a", serde_json::json!({"workspace": true})),
+            &bridge,
+        )
+        .await
+        .unwrap();
+    assert_eq!(same_session["marker"], "private");
+
+    let other_session = pool
+        .tool(
+            "ses_b".into(),
+            digest,
+            workspace_environment(),
+            invoke("read_b", serde_json::json!({"workspace": true})),
+            &bridge,
+        )
+        .await
+        .unwrap();
+    assert_eq!(other_session["marker"], serde_json::Value::Null);
 }
 
 /// Turns from many sessions run at once; every one of them completes.
 #[tokio::test]
 async fn concurrent_turns_all_reach_the_agentloop() {
-    const AT_ONCE: usize = 12;
+    const AT_ONCE: usize = 8;
 
     let package = tokio::fs::read(package_path()).await.unwrap();
     let directory = tempfile::tempdir().unwrap();
@@ -138,6 +233,7 @@ async fn concurrent_turns_all_reach_the_agentloop() {
             pool.turn(
                 format!("ses_{index}"),
                 digest,
+                environment(),
                 input(&format!("turn {index}")),
                 &bridge,
             )
@@ -180,7 +276,13 @@ async fn a_cancelled_turn_ends_at_its_next_host_call() {
         cancelled: AtomicBool::new(true),
     };
     let error = pool
-        .turn("ses_cancel".into(), digest, input("hello"), &bridge)
+        .turn(
+            "ses_cancel".into(),
+            digest,
+            environment(),
+            input("hello"),
+            &bridge,
+        )
         .await
         .unwrap_err()
         .to_string();

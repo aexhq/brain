@@ -1,12 +1,25 @@
-use std::collections::BTreeMap;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AttachmentId, EnvironmentBinding, EnvironmentId, IDENTIFIER_PATTERN, Identity, Outcome,
-    RESOURCE_NAME_PATTERN, Runtime, SessionId,
+    AttachmentId, EnvironmentBinding, EnvironmentId, HostId, IDENTIFIER_PATTERN, Outcome,
+    RESOURCE_NAME_PATTERN, SessionId, ToolIdentity, TurnError,
 };
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAdmissionStatus {
+    Admitted,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct ToolAdmission {
+    pub identity: ToolIdentity,
+    pub status: ToolAdmissionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<TurnError>,
+}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -22,68 +35,14 @@ pub struct ToolDefinition {
     pub output_schema: Option<serde_json::Value>,
 }
 
-/// Where a tool's implementation executes: a provisioned program the environment
-/// launches, or an application process answering off the serve feed (`client`) — the
-/// session's creator or anyone holding the session's share key.
+/// Where a tool's implementation executes: a placed implementation in an Environment,
+/// or a function held by a registered application host.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolHosting {
     #[default]
     Provisioned,
-    Client,
-}
-
-/// The request template of an `http` program: the environment fronts the endpoint,
-/// the tool's input travels as the JSON body, and the response body is the output.
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct HttpProgramRequest {
-    #[schemars(regex(pattern = "^[A-Z]{3,16}$"))]
-    pub method: String,
-    #[schemars(length(min = 1, max = 8192))]
-    pub url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "crate::schema::http_headers")]
-    pub headers: Option<BTreeMap<String, String>>,
-}
-
-/// The program behind a provisioned tool, named by content identity so
-/// re-provisioning is idempotent. An `esm` bundle travels out of band under its
-/// identity; a `shell` script and an `http` request template travel inline.
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Program {
-    Esm {
-        identity: Identity,
-    },
-    Shell {
-        identity: Identity,
-        #[schemars(length(min = 1, max = 262144))]
-        script: String,
-    },
-    Http {
-        identity: Identity,
-        request: HttpProgramRequest,
-    },
-}
-
-impl Program {
-    /// The runtime an environment must offer to launch this program.
-    pub fn runtime(&self) -> Runtime {
-        match self {
-            Program::Esm { .. } => Runtime::Esm,
-            Program::Shell { .. } => Runtime::Shell,
-            Program::Http { .. } => Runtime::Http,
-        }
-    }
-
-    pub fn identity(&self) -> &Identity {
-        match self {
-            Program::Esm { identity }
-            | Program::Shell { identity, .. }
-            | Program::Http { identity, .. } => identity,
-        }
-    }
+    Resident,
 }
 
 /// The `contracts/tool/v1` manifest: the only thing Brain and environments read about
@@ -115,7 +74,8 @@ pub struct ToolManifest {
         extend("uniqueItems" = true)
     )]
     pub binding_names: Vec<String>,
-    pub program: Program,
+    /// Opaque to Brain; interpreted by the Environment driver this Tool is placed in.
+    pub implementation: serde_json::Value,
 }
 
 /// Where a tool call goes. `environment_id` is what the create request named; `environment`
@@ -123,25 +83,27 @@ pub struct ToolManifest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolBinding {
     pub name: String,
-    /// Absent for client-hosted tools: no environment is on their serving path.
+    /// Absent for resident tools: no Environment is on their execution path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_id: Option<EnvironmentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<EnvironmentBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_id: Option<AttachmentId>,
+    /// Present only for resident tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<HostId>,
     #[serde(default)]
     pub needs: Vec<String>,
     pub binding_names: Vec<String>,
     #[serde(default)]
     pub hosting: ToolHosting,
-    /// Absent for client-hosted tools and for tools the environment executes natively
-    /// without a provisioned program.
+    /// Present only for a provisioned Tool and interpreted by its Environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub program: Option<Program>,
+    pub implementation: Option<serde_json::Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct ToolInvocation {
     pub call_id: String,
     pub name: String,
@@ -152,7 +114,7 @@ pub struct ToolInvocation {
 pub struct ToolDispatch {
     /// The sequence of the `tool_call_started` record. With `session_id`, the name of
     /// this call everywhere: on the environment wire, in the finished record, and on
-    /// the endpoint a client answers a client-hosted call through.
+    /// the endpoint a resident host answers through.
     pub sequence: u64,
     pub session_id: SessionId,
     pub binding: ToolBinding,
@@ -211,6 +173,14 @@ impl ToolResult {
                 output: serde_json::json!({
                     "code": crate::codes::failure::CANCELLED,
                     "message": "the Tool call was cancelled",
+                }),
+                is_error: true,
+            },
+            Outcome::Unknown { message } => ToolResult {
+                call_id,
+                output: serde_json::json!({
+                    "code": crate::codes::failure::UNKNOWN,
+                    "message": message,
                 }),
                 is_error: true,
             },

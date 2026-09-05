@@ -27,7 +27,7 @@ let runtime = Arc::new(brain::SessionRuntime {
 
 // A new session: its own directory under `sessions/`, its genesis record, then the
 // environments you attach, then the configuration that was actually granted.
-let store = brain::SessionStore::create(
+let store = brain::LocalSessionStore::create(
     &sessions_dir.join(session_id.as_str()),
     session_id,
     &serde_json::to_value(&config)?,
@@ -50,7 +50,7 @@ replayed into the loop. Which of them to start, and when, is yours: the server s
 on its first request and suspends it again after its idle TTL.
 
 ```rust
-for store in brain::SessionStore::open_all(&sessions_dir, writer.clone(), feed.clone())? {
+for store in brain::LocalSessionStore::open_all(&sessions_dir, writer.clone(), feed.clone())? {
     let session = brain::Session::open(store, runtime.clone())?;
     // ...
 }
@@ -66,9 +66,9 @@ run a loop in-process.
 
 ## What the runtime keeps
 
-Writes still land before effects, and recovery still works the same way. The runtime does not become
-more permissive because it is embedded: `Session::begin` and `complete` are the only ways a session
-is admitted, and both hold the configuration to the same contract the server's callers meet.
+Synchronous journal commits still land before effects, and recovery still rebuilds every projection
+from the same canonical journal. Embedding does not make admission more permissive:
+`Session::begin` and `complete` hold configuration to the same contract as the server.
 
 ## What stays yours
 
@@ -86,4 +86,4 @@ reported through `telemetry_delivery_dropped` records when the queue still has r
 
 Telemetry remains best effort. For resumable event forwarding, consume the session event endpoint,
 save its sequence cursor after the destination acknowledges a batch, and reconnect from that cursor.
-The session's logs, rather than the telemetry queue, are the durable record.
+The session's canonical journal, rather than the telemetry queue, is the durable record.

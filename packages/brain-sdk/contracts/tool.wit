@@ -1,0 +1,29 @@
+package brain:tool@0.1.0;
+
+interface types {
+  record invocation {
+    call-id: string,
+    input-json: string,
+    configuration-json: string,
+    deadline-at-ms: u64,
+  }
+
+  record tool-error {
+    code: string,
+    message: string,
+  }
+}
+
+interface host {
+  use types.{tool-error};
+
+  emit: func(kind: string, payload-json: string) -> result<u64, tool-error>;
+  // Best-effort operational diagnostics. Never enters the session journal or model input.
+  telemetry: func(record-json: string);
+}
+
+world tool {
+  use types.{invocation, tool-error};
+  import host;
+  export run: func(input: invocation) -> result<string, tool-error>;
+}

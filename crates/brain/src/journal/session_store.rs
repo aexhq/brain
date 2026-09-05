@@ -1,17 +1,9 @@
-//! One session's directory on disk, and the index of it in memory.
+//! One session's canonical journal on disk, and its in-memory projections.
 //!
 //! ```text
 //! {sessions}/{session_id}/
-//!     config.json        the configuration the session was created with, written once
-//!     events/*.segment   effect and lifecycle records: what clients page and subscribe to
-//!     journal/*.segment  transcript deltas, slot writes and checkpoints: what the session
-//!                        folds its own state out of
+//!     journal/*.segment
 //! ```
-//!
-//! Both logs are numbered by the session's one sequence counter, so the order between a
-//! delta and the effect that followed it survives a restart. Every read a running session
-//! makes is served from the index; the logs are read to rebuild it at open, to page a
-//! client back through records it has not seen, and to fold the transcript.
 
 use std::{
     collections::BTreeMap,
@@ -26,41 +18,39 @@ use brain_protocol::{SessionId, SessionStatus, SessionSummary, codes};
 use crate::{
     Error,
     journal::{
-        AppendRecord, Feed, Folded, JournalEntry, JournalRecord, JournalStore, SessionRow,
-        SessionUpdate, Writer,
-        log::{Append, Frame, Location, SegmentLog},
+        AppendRecord, CommitHandle, Feed, Folded, JournalEntry, SessionRecord, SessionRow,
+        SessionStore, SessionUpdate, Writer,
+        log::{Frame, Location, SegmentLog, encode_unsequenced},
+        writer::Prepared,
     },
 };
 
-const CONFIG_FILE: &str = "config.json";
-const EVENTS_DIR: &str = "events";
 const JOURNAL_DIR: &str = "journal";
+const MAX_EVENT_PAGE_BYTES: u64 = 8 * 1024 * 1024;
 
-pub struct SessionStore {
+pub struct LocalSessionStore {
     session_id: SessionId,
     directory: PathBuf,
-    events: SegmentLog,
-    journal: SegmentLog,
+    journal: Arc<SegmentLog>,
     feed: Arc<Feed>,
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
 }
 
 struct State {
     row: SessionRow,
     last_recorded_at_ms: u64,
-    /// `events[i]` holds the record at sequence `i + 1` when that sequence went to the
-    /// events log; `None` when it went to the journal.
+    next_sequence: u64,
+    next_recorded_at_ms: u64,
+    /// `events[i]` holds the public Event at sequence `i + 1`; pure transcript appends
+    /// and private state mutations leave `None` at their sequence.
     events: Vec<Option<Location>>,
-    /// Journal entries in order, each with the sequence it was appended under.
+    /// Transcript and Agentloop-state entries in order.
     journal: Vec<(u64, Location)>,
-    /// Index into `journal` of the last checkpoint, if any.
-    last_checkpoint: Option<usize>,
-    bytes_since_checkpoint: u64,
+    transcript_len: usize,
 }
 
-impl SessionStore {
-    /// Creates the session's directory and writes its configuration. The caller appends
-    /// the genesis record.
+impl LocalSessionStore {
+    /// Creates the session directory. The caller's first append is its configuration.
     pub fn create(
         directory: &Path,
         session_id: SessionId,
@@ -72,23 +62,23 @@ impl SessionStore {
             return Err(Error::Conflict("session already exists".into()));
         }
         fs::create_dir_all(directory).map_err(io_error)?;
-        let bytes = serde_json::to_vec(configuration).map_err(json_error)?;
-        fs::write(directory.join(CONFIG_FILE), bytes).map_err(io_error)?;
+        if let Some(parent) = directory.parent() {
+            sync_directory(parent)?;
+        }
         let owner: Arc<str> = Arc::from(session_id.as_str());
-        let events = SegmentLog::open(
-            &directory.join(EVENTS_DIR),
-            owner.clone(),
-            writer.clone(),
+        let journal = Arc::new(SegmentLog::open(
+            &directory.join(JOURNAL_DIR),
+            owner,
+            writer,
             |_, _| Ok(()),
-        )?;
-        let journal = SegmentLog::open(&directory.join(JOURNAL_DIR), owner, writer, |_, _| Ok(()))?;
+        )?);
+        sync_directory(directory)?;
         Ok(Arc::new(Self {
             session_id: session_id.clone(),
             directory: directory.to_path_buf(),
-            events,
             journal,
             feed,
-            state: Mutex::new(State {
+            state: Arc::new(Mutex::new(State {
                 row: SessionRow {
                     session_id,
                     status: SessionStatus::Creating,
@@ -96,21 +86,21 @@ impl SessionStore {
                     configuration: configuration.clone(),
                 },
                 last_recorded_at_ms: 0,
+                next_sequence: 0,
+                next_recorded_at_ms: 0,
                 events: Vec::new(),
                 journal: Vec::new(),
-                last_checkpoint: None,
-                bytes_since_checkpoint: 0,
-            }),
+                transcript_len: 0,
+            })),
         }))
     }
 
-    /// Rebuilds a session from its directory. Its status and configuration fold out of
-    /// the events log; its transcript and slots are read on demand with [`fold`].
+    /// Rebuilds every session projection from its one journal.
     ///
     /// Best effort: a torn tail is truncated, and a log whose records are not dense is
     /// refused rather than indexed with a gap that would answer for the wrong record.
     ///
-    /// [`fold`]: JournalStore::fold
+    /// [`fold`]: SessionStore::fold
     pub fn open(
         directory: &Path,
         writer: Arc<Writer>,
@@ -122,102 +112,62 @@ impl SessionStore {
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| Error::Journal("session directory has no name".into()))?,
         );
-        let configuration: serde_json::Value =
-            serde_json::from_slice(&fs::read(directory.join(CONFIG_FILE)).map_err(io_error)?)
-                .map_err(json_error)?;
         let owner: Arc<str> = Arc::from(session_id.as_str());
         let mut state = State {
             row: SessionRow {
                 session_id,
                 status: SessionStatus::Creating,
                 through_sequence: 0,
-                configuration,
+                configuration: serde_json::Value::Null,
             },
             last_recorded_at_ms: 0,
+            next_sequence: 0,
+            next_recorded_at_ms: 0,
             events: Vec::new(),
             journal: Vec::new(),
-            last_checkpoint: None,
-            bytes_since_checkpoint: 0,
+            transcript_len: 0,
         };
-        // Both logs share the counter, so both are read before either is indexed: a
-        // sequence is dense across the two together, not within each.
-        let mut frames: Vec<(u64, u64, Slot)> = Vec::new();
-        let events = SegmentLog::open(
-            &directory.join(EVENTS_DIR),
-            owner.clone(),
-            writer.clone(),
-            |frame, location| {
-                frames.push((
-                    frame.sequence,
-                    frame.recorded_at_ms,
-                    Slot::Event {
-                        location,
-                        lifecycle: lifecycle_of(&frame)?,
-                    },
-                ));
-                Ok(())
-            },
-        )?;
         let journal = SegmentLog::open(
             &directory.join(JOURNAL_DIR),
             owner,
             writer,
             |frame, location| {
-                frames.push((
-                    frame.sequence,
-                    frame.recorded_at_ms,
-                    Slot::Journal {
-                        location,
-                        checkpoint: frame.kind == "checkpoint",
-                        bytes: frame.payload_len() as u64,
-                    },
-                ));
-                Ok(())
-            },
-        )?;
-        frames.sort_by_key(|(sequence, _, _)| *sequence);
-        for (sequence, recorded_at_ms, slot) in frames {
-            if sequence != state.row.through_sequence + 1 {
-                return Err(Error::Journal(format!(
-                    "session {} has a gap at sequence {sequence}",
-                    state.row.session_id
-                )));
-            }
-            state.row.through_sequence = sequence;
-            state.last_recorded_at_ms = recorded_at_ms;
-            match slot {
-                Slot::Event {
-                    location,
-                    lifecycle,
-                } => {
+                if frame.sequence != state.row.through_sequence + 1 {
+                    return Err(Error::Journal(format!(
+                        "session {} has a gap at sequence {}",
+                        state.row.session_id, frame.sequence
+                    )));
+                }
+                state.row.through_sequence = frame.sequence;
+                state.last_recorded_at_ms = frame.recorded_at_ms;
+                if journal_kind(frame.kind) {
+                    let entry = frame.decode::<JournalEntry>()?;
+                    let visible = transcript_replaced(&mut state.transcript_len, &entry);
+                    state.events.push(visible.then_some(location));
+                    state.journal.push((frame.sequence, location));
+                } else {
                     state.events.push(Some(location));
-                    if let Some(lifecycle) = lifecycle {
+                    if let Some(lifecycle) = lifecycle_of(&frame)? {
                         apply_lifecycle(&mut state.row, lifecycle);
                     }
                 }
-                Slot::Journal {
-                    location,
-                    checkpoint,
-                    bytes,
-                } => {
-                    state.events.push(None);
-                    state.journal.push((sequence, location));
-                    if checkpoint {
-                        state.last_checkpoint = Some(state.journal.len() - 1);
-                        state.bytes_since_checkpoint = 0;
-                    } else {
-                        state.bytes_since_checkpoint += bytes;
-                    }
-                }
-            }
+                Ok(())
+            },
+        )?;
+        if state.row.configuration.is_null() {
+            return Err(Error::Journal(format!(
+                "session {} has no creation record",
+                state.row.session_id
+            )));
         }
+        state.next_sequence = state.row.through_sequence;
+        state.next_recorded_at_ms = state.last_recorded_at_ms;
         Ok(Arc::new(Self {
             session_id: state.row.session_id.clone(),
             directory: directory.to_path_buf(),
-            events,
-            journal,
+            journal: Arc::new(journal),
             feed,
-            state: Mutex::new(state),
+            state: Arc::new(Mutex::new(state)),
         }))
     }
 
@@ -262,15 +212,13 @@ impl SessionStore {
     /// knowable from here, so Brain says exactly that and returns the session to Idle
     /// rather than deciding on the client's behalf. Returns whether a turn was closed.
     pub fn interrupt_unfinished_turn(&self) -> Result<bool, Error> {
-        let through = {
+        {
             let state = self.lock()?;
             if !matches!(state.row.status, SessionStatus::Running) {
                 return Ok(false);
             }
-            state.row.through_sequence
-        };
-        self.append(
-            through,
+        }
+        self.append_sync(
             &[AppendRecord::new(
                 codes::event::TURN_FAILED,
                 serde_json::to_value(
@@ -292,6 +240,12 @@ impl SessionStore {
 
     /// Removes the session from disk. Only an ended or failed session can go.
     pub fn delete(&self) -> Result<(), Error> {
+        self.ensure_deletable()?;
+        self.sync()?;
+        fs::remove_dir_all(&self.directory).map_err(io_error)
+    }
+
+    pub fn ensure_deletable(&self) -> Result<(), Error> {
         {
             let state = self.lock()?;
             if !matches!(
@@ -303,8 +257,7 @@ impl SessionStore {
                 ));
             }
         }
-        self.sync()?;
-        fs::remove_dir_all(&self.directory).map_err(io_error)
+        Ok(())
     }
 
     pub fn directory(&self) -> &Path {
@@ -316,28 +269,229 @@ impl SessionStore {
             .lock()
             .map_err(|_| Error::Journal("session store mutex poisoned".into()))
     }
-}
 
-enum Slot {
-    Event {
-        location: Location,
-        lifecycle: Option<Lifecycle>,
-    },
-    Journal {
-        location: Location,
-        checkpoint: bool,
-        bytes: u64,
-    },
+    fn submit_records(
+        &self,
+        records: Vec<AppendRecord>,
+        status: Option<SessionStatus>,
+        configuration: Option<serde_json::Value>,
+        synchronous: bool,
+    ) -> Result<CommitHandle, Error> {
+        if records.is_empty() {
+            return Ok(CommitHandle::ready(Vec::new()));
+        }
+        let encoded = records
+            .iter()
+            .map(|record| encode_unsequenced(&record.kind, &record.payload))
+            .collect::<Result<Vec<_>, Error>>()?;
+        let bytes = encoded.iter().try_fold(0_u64, |total, frame| {
+            total
+                .checked_add(frame.len() as u64)
+                .ok_or_else(|| Error::Journal("journal append is too large".into()))
+        })?;
+        let state = self.state.clone();
+        let journal = self.journal.clone();
+        let feed = self.feed.clone();
+        let session_id = self.session_id.clone();
+        let result = Arc::new(Mutex::new(None));
+        let committed = result.clone();
+        let prepare = Box::new(move || {
+            let (first_sequence, recorded_at_ms) = {
+                let mut state = state
+                    .lock()
+                    .map_err(|_| "session store mutex poisoned".to_owned())?;
+                let first_sequence = state
+                    .next_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| "journal sequence is exhausted".to_owned())?;
+                state.next_sequence = state
+                    .next_sequence
+                    .checked_add(records.len() as u64)
+                    .ok_or_else(|| "journal sequence is exhausted".to_owned())?;
+                let recorded_at_ms = wall_clock_ms()
+                    .map_err(|error| error.to_string())?
+                    .max(state.next_recorded_at_ms);
+                state.next_recorded_at_ms = recorded_at_ms;
+                (first_sequence, recorded_at_ms)
+            };
+            let (locations, frames) = journal
+                .prepare(encoded, first_sequence, recorded_at_ms)
+                .map_err(|error| error.to_string())?;
+            let saved = records
+                .into_iter()
+                .enumerate()
+                .map(|(offset, record)| SessionRecord {
+                    session_id: session_id.clone(),
+                    sequence: first_sequence + offset as u64,
+                    recorded_at_ms,
+                    kind: record.kind,
+                    payload: record.payload,
+                })
+                .collect::<Vec<_>>();
+            Ok(Prepared {
+                frames,
+                complete: Box::new(move || {
+                    let mut state = state
+                        .lock()
+                        .map_err(|_| "session store mutex poisoned".to_owned())?;
+                    if state.row.through_sequence + 1 != first_sequence {
+                        return Err(format!(
+                            "journal commit order changed: expected {}, found {first_sequence}",
+                            state.row.through_sequence + 1
+                        ));
+                    }
+                    for location in locations {
+                        state.events.push(Some(location));
+                    }
+                    state.row.through_sequence += saved.len() as u64;
+                    state.last_recorded_at_ms = recorded_at_ms;
+                    if let Some(status) = status {
+                        state.row.status = status;
+                    }
+                    if let Some(configuration) = configuration {
+                        state.row.configuration = configuration;
+                    }
+                    drop(state);
+                    for record in &saved {
+                        feed.publish(record);
+                    }
+                    *committed
+                        .lock()
+                        .map_err(|_| "journal commit result poisoned".to_owned())? = Some(saved);
+                    Ok(())
+                }),
+            })
+        });
+        let ticket = if synchronous {
+            self.journal
+                .writer()
+                .submit_sync(self.journal.owner(), bytes, prepare)?
+        } else {
+            self.journal
+                .writer()
+                .submit_async(self.journal.owner(), bytes, prepare)?
+        };
+        Ok(CommitHandle::new(ticket, result))
+    }
+
+    fn append_journal_records(&self, entries: Vec<JournalEntry>) -> Result<u64, Error> {
+        if entries.is_empty() {
+            return Ok(self.lock()?.row.through_sequence);
+        }
+        let encoded = entries
+            .iter()
+            .map(|entry| {
+                let kind = match entry {
+                    JournalEntry::TranscriptDelta { .. } => "transcript_delta",
+                    JournalEntry::StateSet { .. } => "state_set",
+                };
+                let payload = serde_json::to_value(entry).map_err(json_error)?;
+                encode_unsequenced(kind, &payload)
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let bytes = encoded.iter().try_fold(0_u64, |total, frame| {
+            total
+                .checked_add(frame.len() as u64)
+                .ok_or_else(|| Error::Journal("journal append is too large".into()))
+        })?;
+        let state = self.state.clone();
+        let journal = self.journal.clone();
+        let feed = self.feed.clone();
+        let session_id = self.session_id.clone();
+        let result = Arc::new(Mutex::new(None));
+        let committed = result.clone();
+        let count = entries.len() as u64;
+        let prepare = Box::new(move || {
+            let (first_sequence, recorded_at_ms) = {
+                let mut state = state
+                    .lock()
+                    .map_err(|_| "session store mutex poisoned".to_owned())?;
+                let first_sequence = state
+                    .next_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| "journal sequence is exhausted".to_owned())?;
+                state.next_sequence = state
+                    .next_sequence
+                    .checked_add(count)
+                    .ok_or_else(|| "journal sequence is exhausted".to_owned())?;
+                let recorded_at_ms = wall_clock_ms()
+                    .map_err(|error| error.to_string())?
+                    .max(state.next_recorded_at_ms);
+                state.next_recorded_at_ms = recorded_at_ms;
+                (first_sequence, recorded_at_ms)
+            };
+            let (locations, frames) = journal
+                .prepare(encoded, first_sequence, recorded_at_ms)
+                .map_err(|error| error.to_string())?;
+            Ok(Prepared {
+                frames,
+                complete: Box::new(move || {
+                    let mut state = state
+                        .lock()
+                        .map_err(|_| "session store mutex poisoned".to_owned())?;
+                    if state.row.through_sequence + 1 != first_sequence {
+                        return Err(format!(
+                            "journal commit order changed: expected {}, found {first_sequence}",
+                            state.row.through_sequence + 1
+                        ));
+                    }
+                    let mut projected = Vec::new();
+                    for (offset, (location, entry)) in
+                        locations.into_iter().zip(entries).enumerate()
+                    {
+                        let sequence = first_sequence + offset as u64;
+                        let visible = transcript_replaced(&mut state.transcript_len, &entry);
+                        state.events.push(visible.then_some(location));
+                        state.journal.push((sequence, location));
+                        if visible {
+                            projected.push(project_transcript_replacement(
+                                session_id.clone(),
+                                sequence,
+                                recorded_at_ms,
+                                entry,
+                            ));
+                        }
+                    }
+                    state.row.through_sequence += count;
+                    state.last_recorded_at_ms = recorded_at_ms;
+                    let through_sequence = state.row.through_sequence;
+                    drop(state);
+                    for record in &projected {
+                        feed.publish(record);
+                    }
+                    *committed
+                        .lock()
+                        .map_err(|_| "journal commit result poisoned".to_owned())? =
+                        Some(through_sequence);
+                    Ok(())
+                }),
+            })
+        });
+        let ticket = self
+            .journal
+            .writer()
+            .submit_sync(self.journal.owner(), bytes, prepare)?;
+        ticket.wait()?;
+        result
+            .lock()
+            .map_err(|_| Error::Journal("journal commit result poisoned".into()))?
+            .take()
+            .ok_or_else(|| Error::Journal("journal commit produced no result".into()))
+    }
 }
 
 /// What a lifecycle record does to the row when folded back.
 enum Lifecycle {
+    Creating(serde_json::Value),
     Created(serde_json::Value),
     Status(SessionStatus),
 }
 
 fn lifecycle_of(frame: &Frame<'_>) -> Result<Option<Lifecycle>, Error> {
     Ok(match frame.kind {
+        kind if kind == codes::event::SESSION_CREATION_STARTED => {
+            Some(Lifecycle::Creating(frame.payload()?))
+        }
         kind if kind == codes::event::SESSION_CREATION_ENDED => {
             #[derive(serde::Deserialize)]
             struct Created {
@@ -369,6 +523,10 @@ fn lifecycle_of(frame: &Frame<'_>) -> Result<Option<Lifecycle>, Error> {
 /// does that.
 fn apply_lifecycle(row: &mut SessionRow, lifecycle: Lifecycle) {
     match lifecycle {
+        Lifecycle::Creating(configuration) => {
+            row.configuration = configuration;
+            row.status = SessionStatus::Creating;
+        }
         Lifecycle::Created(configuration) => {
             row.configuration = configuration;
             row.status = SessionStatus::Idle;
@@ -377,116 +535,43 @@ fn apply_lifecycle(row: &mut SessionRow, lifecycle: Lifecycle) {
     }
 }
 
-impl JournalStore for SessionStore {
+fn journal_kind(kind: &str) -> bool {
+    matches!(kind, "transcript_delta" | "state_set")
+}
+
+impl SessionStore for LocalSessionStore {
     fn session_id(&self) -> &SessionId {
         &self.session_id
     }
 
-    fn append(
+    fn append_sync(
         &self,
-        expected_through: u64,
         records: &[AppendRecord],
         update: SessionUpdate<'_>,
-    ) -> Result<Vec<JournalRecord>, Error> {
-        if records.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut state = self.lock()?;
-        if state.row.through_sequence != expected_through {
-            return Err(Error::Conflict(format!(
-                "journal position changed: expected {expected_through}, found {}",
-                state.row.through_sequence
-            )));
-        }
-        // Recorded time never goes backwards within a session, whatever the wall clock does.
-        let recorded_at_ms = wall_clock_ms()?.max(state.last_recorded_at_ms);
-        let session_id = state.row.session_id.clone();
-
-        let mut saved = Vec::with_capacity(records.len());
-        for (offset, record) in records.iter().enumerate() {
-            let sequence = expected_through + offset as u64 + 1;
-            let location = self.events.append(Append {
-                sequence,
-                recorded_at_ms,
-                kind: &record.kind,
-                payload: &record.payload,
-            })?;
-            state.events.push(Some(location));
-            saved.push(JournalRecord {
-                session_id: session_id.clone(),
-                sequence,
-                recorded_at_ms,
-                kind: record.kind.clone(),
-                payload: record.payload.clone(),
-            });
-        }
-        state.row.through_sequence = expected_through + records.len() as u64;
-        state.last_recorded_at_ms = recorded_at_ms;
-        if let Some(status) = update.status {
-            state.row.status = status;
-        }
-        if let Some(configuration) = update.configuration {
-            state.row.configuration = configuration.clone();
-        }
-        drop(state);
-        for record in &saved {
-            self.feed.publish(record);
-        }
-        Ok(saved)
+    ) -> Result<Vec<SessionRecord>, Error> {
+        self.submit_records(
+            records.to_vec(),
+            update.status,
+            update.configuration.cloned(),
+            true,
+        )?
+        .wait()
     }
 
-    fn append_journal(
-        &self,
-        expected_through: u64,
-        entries: &[JournalEntry],
-    ) -> Result<u64, Error> {
-        if entries.is_empty() {
-            return Ok(expected_through);
-        }
-        let mut state = self.lock()?;
-        if state.row.through_sequence != expected_through {
-            return Err(Error::Conflict(format!(
-                "journal position changed: expected {expected_through}, found {}",
-                state.row.through_sequence
-            )));
-        }
-        let recorded_at_ms = wall_clock_ms()?.max(state.last_recorded_at_ms);
-        for (offset, entry) in entries.iter().enumerate() {
-            let sequence = expected_through + offset as u64 + 1;
-            let payload = serde_json::to_value(entry).map_err(json_error)?;
-            let kind = match entry {
-                JournalEntry::ContextDelta { .. } => "context_delta",
-                JournalEntry::Slot { .. } => "slot",
-                JournalEntry::Checkpoint { .. } => "checkpoint",
-            };
-            let location = self.journal.append(Append {
-                sequence,
-                recorded_at_ms,
-                kind,
-                payload: &payload,
-            })?;
-            state.events.push(None);
-            state.journal.push((sequence, location));
-            if matches!(entry, JournalEntry::Checkpoint { .. }) {
-                state.last_checkpoint = Some(state.journal.len() - 1);
-                state.bytes_since_checkpoint = 0;
-                // Segments wholly before the checkpoint hold nothing a fold will read.
-                self.journal.reclaim(location.segment)?;
-            } else {
-                state.bytes_since_checkpoint += u64::from(location.length);
-            }
-        }
-        state.row.through_sequence = expected_through + entries.len() as u64;
-        state.last_recorded_at_ms = recorded_at_ms;
-        Ok(state.row.through_sequence)
+    fn append_async(&self, records: Vec<AppendRecord>) -> Result<CommitHandle, Error> {
+        self.submit_records(records, None, None, false)
+    }
+
+    fn append_journal_sync(&self, entries: &[JournalEntry]) -> Result<u64, Error> {
+        self.append_journal_records(entries.to_vec())
     }
 
     fn fold(&self) -> Result<Folded, Error> {
         let (locations, through) = {
             let state = self.lock()?;
-            let from = state.last_checkpoint.unwrap_or(0);
             (
-                state.journal[from..]
+                state
+                    .journal
                     .iter()
                     .map(|(_, location)| *location)
                     .collect::<Vec<_>>(),
@@ -507,10 +592,6 @@ impl JournalStore for SessionStore {
         Ok(folded)
     }
 
-    fn journal_bytes_since_checkpoint(&self) -> Result<u64, Error> {
-        Ok(self.lock()?.bytes_since_checkpoint)
-    }
-
     fn session_row(&self) -> Result<SessionRow, Error> {
         Ok(self.lock()?.row.clone())
     }
@@ -519,18 +600,24 @@ impl JournalStore for SessionStore {
         Ok(SessionSummary::from(&self.lock()?.row))
     }
 
-    fn records_after(&self, after: u64, limit: usize) -> Result<Vec<JournalRecord>, Error> {
+    fn records_after(&self, after: u64, limit: usize) -> Result<Vec<SessionRecord>, Error> {
         // Resolve locations under the lock, read outside it: a client paging through
         // history must never hold up a session that is appending.
         let (session_id, wanted) = {
             let state = self.lock()?;
             let mut wanted = Vec::with_capacity(limit.min(state.events.len()));
+            let mut bytes = 0_u64;
             let mut sequence = after + 1;
             while wanted.len() < limit {
                 let Some(slot) = state.events.get(sequence as usize - 1) else {
                     break;
                 };
                 if let Some(location) = slot {
+                    let next = bytes.saturating_add(u64::from(location.length));
+                    if !wanted.is_empty() && next > MAX_EVENT_PAGE_BYTES {
+                        break;
+                    }
+                    bytes = next;
                     wanted.push((sequence, *location));
                 }
                 sequence += 1;
@@ -539,19 +626,63 @@ impl JournalStore for SessionStore {
         };
         let locations: Vec<Location> = wanted.iter().map(|(_, location)| *location).collect();
         let mut sequences = wanted.into_iter().map(|(sequence, _)| sequence);
-        self.events.read_many(&locations, |frame| {
-            Ok(JournalRecord {
+        self.journal.read_many(&locations, |frame| {
+            let (kind, payload) = if frame.kind == "transcript_delta" {
+                let entry = frame.decode::<JournalEntry>()?;
+                let JournalEntry::TranscriptDelta { keep, append } = entry else {
+                    return Err(Error::Journal(
+                        "transcript_delta frame has the wrong payload".into(),
+                    ));
+                };
+                (
+                    codes::event::TRANSCRIPT_REPLACED.to_owned(),
+                    serde_json::json!({"keep": keep, "append": append}),
+                )
+            } else {
+                (frame.kind.to_owned(), frame.payload()?)
+            };
+            Ok(SessionRecord {
                 session_id: session_id.clone(),
                 sequence: sequences.next().unwrap_or(frame.sequence),
                 recorded_at_ms: frame.recorded_at_ms,
-                kind: frame.kind.to_string(),
-                payload: frame.payload()?,
+                kind,
+                payload,
             })
         })
     }
 
     fn sync(&self) -> Result<(), Error> {
-        self.events.writer().sync()
+        self.journal.writer().sync()
+    }
+}
+
+fn transcript_replaced(transcript_len: &mut usize, entry: &JournalEntry) -> bool {
+    let JournalEntry::TranscriptDelta { keep, append } = entry else {
+        return false;
+    };
+    let keep = usize::try_from(*keep)
+        .unwrap_or(usize::MAX)
+        .min(*transcript_len);
+    let replaced = keep < *transcript_len;
+    *transcript_len = keep.saturating_add(append.len());
+    replaced
+}
+
+fn project_transcript_replacement(
+    session_id: SessionId,
+    sequence: u64,
+    recorded_at_ms: u64,
+    entry: JournalEntry,
+) -> SessionRecord {
+    let JournalEntry::TranscriptDelta { keep, append } = entry else {
+        unreachable!("only transcript replacements are projected")
+    };
+    SessionRecord {
+        session_id,
+        sequence,
+        recorded_at_ms,
+        kind: codes::event::TRANSCRIPT_REPLACED.into(),
+        payload: serde_json::json!({"keep": keep, "append": append}),
     }
 }
 
@@ -566,6 +697,18 @@ fn wall_clock_ms() -> Result<u64, Error> {
 
 fn io_error(error: std::io::Error) -> Error {
     Error::Journal(error.to_string())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), Error> {
+    fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(io_error)
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<(), Error> {
+    Ok(())
 }
 
 fn json_error(error: serde_json::Error) -> Error {

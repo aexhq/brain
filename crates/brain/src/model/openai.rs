@@ -179,7 +179,7 @@ pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
     let mut out = Vec::new();
 
     // Usage arrives on a chunk that may have no choices at all.
-    let usage = usage_of(value.get("usage"));
+    let usage = usage_of(value.get("usage"))?;
     if let Some(choices) = value.get("choices").and_then(Value::as_array) {
         for choice in choices {
             let delta = choice.get("delta").unwrap_or(&Value::Null);
@@ -228,7 +228,7 @@ pub fn decode(data: &str) -> Result<Vec<ModelStreamEvent>, Error> {
             if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
                 out.push(ModelStreamEvent::MessageDone {
                     stop_reason: map_stop(reason),
-                    usage,
+                    usage: usage.clone(),
                 });
             }
         }
@@ -258,12 +258,12 @@ fn map_stop(reason: &str) -> StopReason {
 }
 
 /// **Absent is never zero.** A field the provider did not send stays `None`.
-fn usage_of(usage: Option<&Value>) -> Usage {
+fn usage_of(usage: Option<&Value>) -> Result<Usage, Error> {
     let Some(usage) = usage else {
-        return Usage::default();
+        return Ok(Usage::default());
     };
     let get = |key: &str| usage.get(key).and_then(Value::as_u64);
-    Usage {
+    Ok(Usage {
         input_tokens: get("prompt_tokens"),
         output_tokens: get("completion_tokens"),
         cache_read_input_tokens: usage
@@ -275,7 +275,29 @@ fn usage_of(usage: Option<&Value>) -> Usage {
             .get("completion_tokens_details")
             .and_then(|details| details.get("reasoning_tokens"))
             .and_then(Value::as_u64),
+        provider_cost_usd: provider_cost_of(usage)?,
+    })
+}
+
+fn provider_cost_of(usage: &Value) -> Result<Option<String>, Error> {
+    let Some(cost) = usage.get("gateway_cost") else {
+        return Ok(None);
+    };
+    let cost = match cost {
+        Value::Number(cost) => cost.to_string(),
+        Value::String(cost) => cost.trim().to_owned(),
+        _ => {
+            return Err(Error::Ambiguous(
+                "provider returned an invalid gateway_cost".into(),
+            ));
+        }
+    };
+    if cost.starts_with('-') || serde_json::from_str::<serde_json::Number>(&cost).is_err() {
+        return Err(Error::Ambiguous(
+            "provider returned an invalid gateway_cost".into(),
+        ));
     }
+    Ok(Some(cost))
 }
 
 #[cfg(test)]
@@ -411,6 +433,27 @@ mod tests {
             }
             other => panic!("expected Usage, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn gateway_cost_is_preserved_as_an_exact_decimal_string() {
+        for (value, expected) in [("0.00012925", "0.00012925"), ("\"2.925E-05\"", "2.925E-05")] {
+            let raw =
+                format!("data: {{\"choices\":[],\"usage\":{{\"gateway_cost\":{value}}}}}\n\n");
+            let events = decode_stream(raw.as_bytes()).unwrap();
+            match &events[0] {
+                ModelStreamEvent::Usage { usage } => {
+                    assert_eq!(usage.provider_cost_usd.as_deref(), Some(expected));
+                }
+                other => panic!("expected Usage, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_gateway_cost_fails_the_model_call() {
+        let raw = "data: {\"choices\":[],\"usage\":{\"gateway_cost\":\"free\"}}\n\n";
+        assert!(decode_stream(raw.as_bytes()).is_err());
     }
 
     #[test]

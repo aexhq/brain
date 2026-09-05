@@ -23,7 +23,8 @@ const session = await compile(schema, "BrainSessionContract", {
 });
 await writeFile(path.join(output, "session.ts"), session.replace(/\r\n/gu, "\n"));
 
-// The agentloop WIT ships in the package so `brain build` can componentize against it.
+// Component authors compile elsewhere; these contracts define the imports Brain hosts.
 const wit = path.resolve(here, "../contracts");
 await mkdir(wit, { recursive: true });
 await copyFile(path.join(root, "contracts/agentloop/v1/agentloop.wit"), path.join(wit, "agentloop.wit"));
+await copyFile(path.join(root, "contracts/tool/v1/tool.wit"), path.join(wit, "tool.wit"));

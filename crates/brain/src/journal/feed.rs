@@ -2,7 +2,7 @@ use brain_protocol::{Event, LiveEvent, SessionId};
 use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
 use tokio::sync::broadcast;
 
-use crate::journal::JournalRecord;
+use crate::journal::SessionRecord;
 
 /// Records held for a subscriber that is not keeping up.
 ///
@@ -45,7 +45,7 @@ impl Feed {
         self.live.clone()
     }
 
-    pub(crate) fn publish(&self, record: &JournalRecord) {
+    pub(crate) fn publish(&self, record: &SessionRecord) {
         // Sent before telemetry, and never waited on: `send` returns immediately whether
         // or not anyone is listening, and drops for a receiver that has fallen behind.
         let _ = self.live.send((

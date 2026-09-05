@@ -1,5 +1,5 @@
-import { Brain } from "@aexhq/brain";
-import { example } from "./dist/index.mjs";
+import { Brain, brainWasm } from "@aexhq/brain";
+import { example } from "./example-brain.mjs";
 
 const apiKey = process.env.VERCEL_AI_GATEWAY_API_KEY;
 if (!apiKey) throw new Error("VERCEL_AI_GATEWAY_API_KEY is required");
@@ -15,7 +15,7 @@ const session = await brain.sessions.create({
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
     apiKey,
   },
-  agentloop: example(),
+  agentloop: example({ env: brainWasm() }),
 });
 
 try {
@@ -27,7 +27,7 @@ try {
   const firstTurn = complete.find((event) => event.type === "turn_ended");
   if (!firstTurn) throw new Error("the first turn did not finish");
 
-  console.log(`Journal through sequence ${complete.at(-1)?.sequence ?? 0}`);
+  console.log(`Public Events through sequence ${complete.at(-1)?.sequence ?? 0}`);
   console.log(`Events after the first turn (${firstTurn.sequence}):`);
 
   for await (const event of session.events(firstTurn.sequence)) {

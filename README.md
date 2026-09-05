@@ -51,12 +51,19 @@ An environment provides the resources a tool needs to complete its tasks. [Write
 ### Official Extensions
 We provide a number of official extensions, written in the same way you would: [aexhq/extensions](https://github.com/aexhq/extensions).
 
+`brainWasm(options)` is Brain's built-in Wasmtime Environment. Network targets, secret names, and
+writable `scratch` or `workspace` roots must appear in both the session request and the server
+deployment policy; every server grant is empty by default.
+Each native invocation is bounded by 10 billion Wasmtime fuel units for guest work; suspended I/O
+does not consume fuel, while the session's wall-time limit still bounds the complete turn.
+
 
 ## How it works
 
-This is one turn from start to finish. The agent loop decides what to do next. Brain does the
-I/O, writes the intent to the journal before acting, and streams the result while the turn is
-still running.
+This is one turn from start to finish. The Agentloop decides what to do next. Brain durably
+commits each external-effect intent before dispatch, sends it once, and streams live output while
+the turn is still running. Committed records and private state changes share one canonical journal;
+session status, transcript, Agentloop state, and the public event feed are projections of it.
 
 ```text
                     +-------------------------------+
@@ -71,38 +78,42 @@ still running.
                                     | 
                                     v
                     +-------------------------------+        +-----------------+
-                    | Brain does the I/O            |<------>| append-only log |
-                    | for the loop                  | intent | off the turn's  |
-                    +---------------+---------------+ result | hot path        |
+                    | Brain does the I/O            |<------>| canonical       |
+                    | for the loop                  | commit | journal         |
+                    +---------------+---------------+ result |                 |
                                     |                        +-----------------+
                                     +--> model provider, streaming
                                     |
-                                    +--> tool, in any environment
+                                    +--> placed tool, in its environment
+                                    `--> resident tool, over host SSE
 ```
 
 Brain owns the session. You supply the agent loop, the model, the tools, and the environment.
-Four design choices make it fast:
+Three design choices make it fast:
 
-- **Isolated WebAssembly agent loops.** A loop compiles from any language to a
-  [Wasmtime](https://wasmtime.dev/) component. It is compiled once and runs each turn at
-  native speed, fully sandboxed, calling back into Brain for every model call and tool call.
-  Because Brain does the I/O, every effect is in the log before it happens.
-- **Write-ahead logs.** The only durable state is a pair of append-only logs per session,
-  written behind the turn so they stay off the hot path. An active session lives in memory, an
-  idle one suspends to disk, and either rebuilds from its logs, so a restart resumes the
-  conversation where it stopped.
-- **Everything is observable.** Every model call, token, tool result, and record the loop
-  appends is an event in one feed. Watching live and reading history use the same records, so
-  tracing a session is the same as replaying it.
+- **Isolated WebAssembly agent loops.** Brain receives a precompiled
+  [Wasmtime](https://wasmtime.dev/) Component; compilation and source-language tooling are outside
+  its runtime contract. The Component runs each turn in a capability sandbox and calls back into
+  Brain for model calls and tool calls. Because Brain does the I/O, every effect is in the log
+  before it happens.
+- **One write-ahead journal.** The journal is the only durable session truth. Brain commits an
+  effect's intent before dispatch and never retries it automatically. An uncertain remote result is
+  recorded as unknown. In-memory status, transcript, Agentloop state, and event indexes rebuild as
+  projections after a restart.
+- **Everything is observable.** Model calls, Tool results, lifecycle changes, transcript
+  replacements, and records the loop appends are committed Events projected from the journal. The
+  live feed also carries transient token deltas; reconnecting resumes at a committed sequence and
+  receives the completed result.
 
-Brain comes with a server, one native Rust binary on [Tokio](https://tokio.rs/). It serves the session API over
-HTTP and SSE with [Axum](https://github.com/tokio-rs/axum) and needs no external store.
+Brain ships a native Rust server and an isolated Loophost worker on [Tokio](https://tokio.rs/).
+The server exposes HTTP and SSE with [Axum](https://github.com/tokio-rs/axum) and needs no external
+store for a local deployment.
 
 ## Quick start
 
 In this example the tool is a plain function in your own process. You declare it once and
-pass it to the session. The SDK answers the model's calls from the session's event feed, so
-your app needs no server, no open port, and no extra channel.
+pass it to the session. The SDK registers one application host and answers commands over SSE, so
+your app needs no inbound server or open port.
 
 Run a server:
 
@@ -119,7 +130,7 @@ npm install @aexhq/brain @aexhq/agentloop-pi zod
 Save as `order.mjs` and run with `node order.mjs`:
 
 ```js
-import { Brain, tool } from "@aexhq/brain";
+import { Brain, brainWasm, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
@@ -128,14 +139,15 @@ const lookupOrder = tool({
   name: "lookup_order",
   description: "Look up an order's status by id.",
   input: z.object({ id: z.string() }),
-  execute: ({ id }) => orders[id] ?? { status: "unknown order" },
+  run: ({ id }) => orders[id] ?? { status: "unknown order" },
 });
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
+const wasm = brainWasm();
 const session = await brain.sessions.create({
   model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
-  agentloop: pi(),
-  tools: [lookupOrder],
+  agentloop: pi({ env: wasm }),
+  tools: [lookupOrder()],
 });
 
 await session.send("Where is order A-1001?");
@@ -212,24 +224,31 @@ the method and the subject versions.</sub>
 ## Roadmap
 
 - [x] The four-part runtime: agent loop, model, tools, environment
-- [x] Unified `brain`, `tool`, and `environment` authoring with `brain build`
-- [x] Append-only per-session logs with suspension and restart recovery
-- [x] Environments as shared resources with a managed idle lifecycle
+- [x] Raw WebAssembly Components supplied with `component(...)`
+- [x] Explicit Agentloop and Tool placement with `{ env, ...options }`
+- [x] One canonical per-session journal with disposable projections
+- [x] Effect-after-commit with no automatic retries
+- [x] Session-owned Environments with a managed idle lifecycle
 - [x] Typed content identity
 - [x] HTTP/SSE session API and the `@aexhq/brain` SDK
-- [x] Remote environment contract with `env-app` and `env-aws-microvm`
-- [ ] Cross-session isolation test
+- [x] Remote Environment contract and `env-aws-microvm`
+- [x] `brainWasm` placement with deployment-granted HTTP, secrets, scratch, and workspace access
+- [x] Resident Tool host over SSE with durable `ctx.emit`
+- [x] Cross-session native workspace isolation test
 - [ ] Native subagent support, parent and child links between sessions
 - [ ] Multimodal input, images and files on `send`
 - [ ] Freeze a v1 API with tagged releases
 - [ ] File access and workspace sync
 - [ ] crates.io publication
 - [ ] Sessions spread across machines sharing environments
-- [ ] `checkpoint` and `restore`
+- [ ] Session export and import
 - [ ] Custom images with scoped credentials and network metering
 - [ ] Local environment: run tools in a directory or container on your own machine
 - [ ] Browser environment and DOM tools: a page as the place tools run
-- [ ] An agent loop written in Rust against the same `agentloop.wit` contract
+- [ ] Post-MVP external `SessionStore` for shared ownership, node-loss durability, backup, and
+  regional recovery; no storage integration catalogue in the MVP
+- [ ] Post-MVP bounded client reorder buffer if parallel delivery can emit committed Events out of
+  journal sequence; replay repairs gaps
 
 ## Contact
 

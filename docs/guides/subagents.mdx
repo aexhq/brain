@@ -3,7 +3,7 @@ title: Spawn a subagent
 description: A tool in your own process creates a child session and returns its answer.
 ---
 
-A tool with an `execute` function runs in the process that created the session, so it can
+A Tool with a `run` function stays in the process that created the session, so it can
 use the SDK. That is enough for a subagent today: the tool creates a child session, sends it
 the task, reads the reply from the child's event feed, and returns it as the tool's output.
 The parent's loop sees an ordinary tool result. Native parent and child links between
@@ -20,11 +20,12 @@ const delegate = tool({
   name: "delegate",
   description: "Hand a subtask to a fresh agent and return its answer.",
   input: z.object({ task: z.string() }),
-  execute: async ({ task }) => {
+  run: async ({ task }) => {
+    const childEnv = sandbox({ image: "node:22" });
     const child = await brain.sessions.create({
       model,
-      agentloop: coder(),
-      tools: [test({ env: sandbox({ image: "node:22" }) })],
+      agentloop: coder({ env: childEnv }),
+      tools: [test({ env: childEnv })],
     });
     await child.send(task);
     let answer;
@@ -40,26 +41,24 @@ const delegate = tool({
 });
 ```
 
-The child gets its own agent loop, model, and tools. An Environment object handed to the SDK
-stands for one managed environment per session, so the child calls the factory again for a
-sandbox of its own. Two sessions that must share one environment create it with
-`brain.environments` and attach by its id over the API.
+The child gets its own Agentloop, model, Tools, Environment, and canonical journal. Calling the
+Environment factory again gives the child a separate placement specification.
 
 ## Put it in a session
 
 The parent runs the same loop with the sandbox tools plus `delegate`. Brain routes the
-`delegate` call back to this process over the session's event feed, the function above
+`delegate` call back to this process over the registered host's SSE command stream, the function above
 answers it, and the child's whole run is journalled under its own session id.
 
 ```ts
 const box = sandbox({ image: "node:22" });
 const session = await brain.sessions.create({
   model,
-  agentloop: coder(),
-  tools: [test({ env: box }), bash({ env: box }), delegate],
+  agentloop: coder({ env: box }),
+  tools: [test({ env: box }), bash({ env: box }), delegate()],
 });
 ```
 
 Every event the child produces is readable on its own session, so a trace of the parent and
-a trace of the child are the same kind of record. See [Serve a tool from another
-process](/brain/docs/guides/app-tools) for the wire shape of an `execute` tool.
+a trace of the child are the same kind of journal projection. See [Resident application
+Tools](/brain/docs/guides/app-tools) for the host path used by a `run` Tool.

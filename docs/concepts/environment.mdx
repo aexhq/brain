@@ -1,118 +1,92 @@
 ---
-title: Environment
-description: Where tool programs run, and the lifecycle Brain drives.
+title: Environments
+description: Explicit placement, authority, resources, and lifecycle for Components and Tools.
 ---
 
-An environment is a place that executes programs. It is a resource of its own: created with
-its configuration, attached to by sessions, shared between them, and closed when nothing
-needs it. Brain drives the adapter over the `environment/v1` HTTP contract:
+An Environment is an immutable placement and authority specification. Every Agentloop and every
+placed Tool names one when its factory is called. Brain records the choice in session creation and
+does not infer, rank, or substitute another Environment. The current server executes Agentloops
+only in `brainWasm(...)`; driver-backed Environments currently host placed Tools.
 
-`setup` · `attach` · `call` · `invoke` · `cancel` · `detach` · `teardown`
+## Brain Wasm
 
-The adapter implements them. Brain decides when they happen.
-
-## One verb, declared once
-
-An environment does two things. It launches programs, and it declares what a program will
-find there.
-
-**Runtimes** are the program kinds it can launch:
-
-| Runtime | The program is |
-| --- | --- |
-| `esm` | a self-contained JavaScript module, built by `brain build` from an authored tool |
-| `shell` | a POSIX shell script |
-| `http` | a request to an endpoint the environment fronts |
-
-The list is closed only because Brain and the SDK must physically package and start the
-program. A language is not a runtime: a shell script runs python if the image has python.
-
-**Resources** are named facts about the place. The contract fixes the policy block of the
-named ones; vendor resources are namespaced (`aws:iam`, `bin:ffmpeg`) and opaque to Brain.
-
-| Resource | Policy block | Means |
-| --- | --- | --- |
-| `fs` | `{ root }` | a filesystem; every program starts with `root` as its working directory |
-| `process` | `{ timeout_ms_max?, output_bytes_max? }` | programs can start processes |
-| `net` | `{ allow }` | outbound network to these hosts |
-| `dom` | `{}` | a document the program can drive |
-| `secrets` | `{ names }` | named secrets the platform injects |
-
-The setup receipt reports `runtimes` and `resources`, and Brain keeps them with the
-environment. It checks every bound tool's program kind and `needs` against them at session
-create, so a shell tool bound to a browser environment is a create-time rejection naming the
-tool, the environment, and what is missing, not a runtime mystery.
-
-Inside the environment a program reaches its resources through the platform's own APIs:
-`node:fs`, `child_process`, `fetch`, `document`. Brain wraps nothing. Policy is enforced
-where it can hold, in the mount, the user, the VM's egress rules, or the browser's origin,
-and the environment's declaration of what it enforces is journalled with the session.
-
-An environment authored with the SDK registers an executor per runtime with
-`execute.esm()`, `execute.shell(...)`, and `execute.http(...)`, and declares its resources
-once. What it registers is exactly what its receipts report. See
-[Write an environment](/brain/docs/guides/write-an-environment).
-
-## Created once, attached by id
-
-`POST /v1/environments` creates an environment: Brain runs its setup with the configuration
-you pass and keeps what the receipt declared. From then on the environment is named by its
-id. A session attaches to it at create by naming that id in `environments`, together with the
-binding values its tools need there, and its tools bind to the environment by the same id.
-
-Many sessions may attach one environment at once. Configuration belongs to whoever created
-the environment and is not part of attach, so there is nothing for Brain to compare when a
-second session names the same id. When a session ends it detaches; the environment stays.
-
-An environment is **managed** or not. A managed one is closed by Brain once no session has
-been attached to it for its idle TTL (`idle_ttl_ms` at create, or the server's
-`BRAIN_ENVIRONMENT_IDLE_TTL_SECS`; zero means never). An unmanaged one lives until
-`DELETE /v1/environments/{id}`, which is refused with `conflict` while a session is still
-attached. Either way every session that was attached sees `environment_closed` on its events,
-and a session whose environment Brain cannot reach sees `environment_unreachable`.
-
-The SDK does the common case for you. An Environment object passed as a tool's `env` at
-session create becomes a managed environment the session owns: the SDK creates it first,
-attaches the session by id, and deletes it when the session ends. Use `brain.environments`
-directly to create an environment that outlives one session, to share it, or to inspect and
-delete what exists.
+`brainWasm(...)` selects Brain's built-in native Environment for WebAssembly Components:
 
 ```ts
-const shared = await brain.environments.create(config, { managed: false });
-const state = await brain.environments.get(shared.id); // status, attached sessions, runtimes, resources
-await brain.environments.delete(shared.id);
+import { brainWasm } from "@aexhq/brain";
+
+const isolated = brainWasm({
+  network: { allow: ["api.example.com", "https://models.example.com"] },
+  filesystem: { scratch: true, workspace: true },
+  secrets: ["MODEL_TOKEN"],
+});
 ```
 
-## Attach carries programs and bindings
+Network entries are HTTP(S) origins or authorities, writable scratch and workspace access is
+explicit, and secret names are identifiers. A caller request cannot grant itself authority: every
+requested network target must also appear in `BRAIN_WASM_NETWORK_ALLOW`, every secret name in
+`BRAIN_WASM_SECRET_ALLOW`, and each writable root in `BRAIN_WASM_FILESYSTEM_ALLOW`. The defaults
+grant none. The server starts a fresh Wasmtime instance for each invocation under the resulting
+policy. Each invocation receives a fixed 10 billion Wasmtime fuel units for guest computation;
+model, Tool, HTTP, and filesystem waits consume no fuel. Fuel is a Wasmtime work allowance, not an
+exact CPU-time promise. The separate `BRAIN_MAX_TURN_SECS` limit still bounds the whole turn's wall
+time.
 
-`attach` carries two typed fields:
+## Driver-backed Environments
 
-- **`provisions`**: the programs to launch, each a `tool/v1` manifest plus the content
-  identity of its payload, so re-provisioning is idempotent. An `esm` bundle travels out of
-  band by identity; a `shell` script and an `http` request template travel inline in the
-  manifest.
-- **`bindings`**: named values injected into programs at runtime. They travel on this wire
-  only; the journal records their names, never the values.
+An Environment extension maps typed application options into a driver configuration and optional
+binding values:
 
-## Invocation is one envelope
+```ts
+import { environment } from "@aexhq/brain";
+import { z } from "zod";
 
-A tool call arrives as `invoke {call_id, tool, input, deadline_ms}` and returns exactly one
-outcome: `ok | error | timeout | cancelled`. The deadline is Brain's to enforce. An overdue
-call is killed by the caller and recorded as a distinguished `timeout` outcome, because no
-remote can be trusted to stop on its own.
+const remoteService = environment({
+  driver: "remote_service",
+  options: z.object({ url: z.url(), token: z.string() }),
+  configure: ({ url }) => ({ url }),
+  bindings: ({ token }) => ({ API_TOKEN: token }),
+});
 
-## Replay is explicit
+const env = remoteService({
+  url: "https://tools.example",
+  token: process.env.TOOL_TOKEN,
+});
+```
 
-Every operation carries the session id and the sequence of the journal record that started
-it. A redelivery carries the same pair, so the adapter answers it the way it did the first
-time instead of running the effect again, and Brain never replays an ambiguous effect
-against a replacement target.
+`configure` produces the immutable configuration Brain records and sends to the driver. `bindings`
+produces plaintext values used only during attachment; the session journal records their names, not
+their values. `managed` defaults to true, and `idleTtlMs` controls cleanup after the last detach.
 
-## The official adapter
+The same Environment object can place several Tools in one session:
 
-`@aexhq/env-aws-microvm` launches `esm` and `shell` programs in an AWS MicroVM and declares
-`fs`, `process`, and `net`. It uses only the public contract, so a third-party adapter is
-not a second-class one. See [Write an environment](/brain/docs/guides/write-an-environment).
+```ts
+const session = await brain.sessions.create({
+  model,
+  agentloop: loop({ env: brainWasm() }),
+  tools: [read({ env }), write({ env })],
+});
+```
 
-An application process answering tools is not an environment at all. Brain routes those
-itself over the serve feed (see [App tools](/brain/docs/guides/app-tools)).
+## Resources and implementations
+
+At attachment the Environment declares named resources such as `fs`, `process`, `net`, `dom`,
+`secrets`, or a namespaced vendor resource. Brain verifies each placed Tool's `needs` by name before
+the session becomes ready. The policy block is enforced by the Environment's real boundary, such as
+filesystem mounts, process identity, egress rules, or IAM.
+
+The Tool's `implementation` is opaque to Brain unless it is a Component admitted by content
+identity. A driver interprets other implementation descriptors. There is no source-language or
+package-building protocol in Brain.
+
+## Lifecycle and delivery
+
+An Environment declaration belongs to one session; reusing the same SDK object in another session
+creates another Environment. Session creation performs setup and attachment before readiness.
+Brain journals lifecycle and Tool intents before dispatch and sends each operation once. It records
+a terminal receipt or an unknown outcome; it does not retry automatically. Ending a session
+detaches it. A managed Environment is closed after its idle policy; session deletion closes any
+Environment that remains.
+
+Environment files and process state follow the Environment lifecycle. They are not durable session
+state; the canonical session journal survives independently.

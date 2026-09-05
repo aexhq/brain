@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeSet, HashMap, HashSet},
-    sync::{Arc, Mutex as StdMutex},
-};
+use std::collections::BTreeSet;
 
 use axum::{
     Json, Router,
@@ -14,11 +11,11 @@ use axum::{
     routing::{MethodFilter, MethodRouter, on},
 };
 use brain_protocol::{
-    AgentloopAdmission, AgentloopIdentity, CreateEnvironmentRequest, CreateSessionRequest,
-    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EnvironmentList,
-    EnvironmentSummary, MessageRequest, Outcome, SessionId, SessionList, SessionSummary,
+    AgentloopAdmission, AgentloopIdentity, CreateSessionRequest, EnvironmentCallRequest,
+    EnvironmentCallResult, EnvironmentId, HostCommand, HostEvent, HostEventAck, HostId,
+    HostRegistration, HostResult, MessageRequest, SessionId, SessionList, SessionSummary,
+    ToolAdmission,
 };
-use futures_util::StreamExt as _;
 use utoipa::{OpenApi, openapi::HttpMethod};
 
 use crate::{
@@ -28,7 +25,6 @@ use crate::{
 
 pub(crate) const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
-const MAX_SERVED_TOOLS: usize = 128;
 
 /// The session API as one document. Every handler below is listed here and registered
 /// through `routes!`; [`build`] checks that the two agree.
@@ -37,11 +33,12 @@ const MAX_SERVED_TOOLS: usize = 128;
     info(title = "Brain HTTP API", version = "1.0.0"),
     paths(
         admit_agentloop,
+        admit_tool,
         get_agentloop,
-        create_environment,
-        list_environments,
-        get_environment,
-        delete_environment,
+        register_host,
+        host_commands,
+        resolve_host,
+        emit_host_event,
         create_session,
         list_sessions,
         get_session,
@@ -51,8 +48,6 @@ const MAX_SERVED_TOOLS: usize = 128;
         events,
         cancel_session,
         end_session,
-        serve_feed,
-        resolve_tool_call,
         live,
         ready,
     )
@@ -65,13 +60,6 @@ struct EventsQuery {
     after: Option<u64>,
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ServeQuery {
-    after: Option<u64>,
-    tools: String,
-}
-
 pub fn router<A: BrainApi>(api: A) -> Router {
     build(api, None)
 }
@@ -82,11 +70,6 @@ pub fn router_with_bearer<A: BrainApi>(api: A, token: String) -> Router {
 
 fn build<A: BrainApi>(api: A, token: Option<String>) -> Router {
     let expected = token.map(|token| sha256(token.as_bytes()));
-    let access = Access {
-        api: api.clone(),
-        expected,
-        serves: Arc::new(ServeRegistry::new()),
-    };
     let mut routed = BTreeSet::new();
     let mut protected = protected_routes(api.clone(), &mut routed);
     if let Some(expected) = expected {
@@ -99,7 +82,7 @@ fn build<A: BrainApi>(api: A, token: Option<String>) -> Router {
             },
         ));
     }
-    let serve = serve_routes(access, &mut routed);
+    let hosts = host_routes(api.clone(), &mut routed);
     let health = health_routes(api, &mut routed);
     // The published document is rendered from `ApiDoc`; the router from the same
     // annotations, through `documented`. A handler in one and not the other would ship
@@ -109,7 +92,7 @@ fn build<A: BrainApi>(api: A, token: Option<String>) -> Router {
         operations(&ApiDoc::openapi()),
         "brain-http: the routes and the OpenAPI document disagree"
     );
-    protected.merge(serve).merge(health)
+    protected.merge(hosts).merge(health)
 }
 
 /// A handler's route, taken from its `#[utoipa::path]` annotation: the path and the
@@ -148,81 +131,13 @@ where
     (path, on(filter, handler))
 }
 
-/// The credential surface of the serve group: requests authorized by the API token
-/// or, per session, by that session's share key.
-#[derive(Clone)]
-struct Access<A> {
-    api: A,
-    expected: Option<[u8; 32]>,
-    serves: Arc<ServeRegistry>,
-}
-
-impl<A: BrainApi> Access<A> {
-    /// Whether this request may act on the session: open mode admits everything, and
-    /// otherwise the bearer must be the API token or the session's share key. Both
-    /// comparisons go through a digest, so neither is timing-sensitive.
-    fn authorized(&self, headers: &HeaderMap, session_id: &SessionId) -> bool {
-        let Some(expected) = &self.expected else {
-            return true;
-        };
-        if bearer_matches(headers, expected) {
-            return true;
-        }
-        let share = sha256(self.api.share_key(session_id).as_bytes());
-        bearer_matches(headers, &share)
-    }
-}
-
-/// Last-connection-wins seats: at most one live serve stream per (session, tool). A
-/// new claim bumps the seat's generation and announces it; the stream holding the
-/// older generation ends itself.
-struct ServeRegistry {
-    seats: StdMutex<HashMap<(String, String), u64>>,
-    bus: tokio::sync::broadcast::Sender<Claim>,
-}
-
-#[derive(Clone)]
-struct Claim {
-    session: String,
-    tool: String,
-    generation: u64,
-}
-
-impl ServeRegistry {
-    fn new() -> Self {
-        let (bus, _) = tokio::sync::broadcast::channel(1024);
-        Self {
-            seats: StdMutex::new(HashMap::new()),
-            bus,
-        }
-    }
-
-    fn claim(&self, session: &str, tools: &[String]) -> HashMap<String, u64> {
-        let mut seats = self.seats.lock().expect("serve seat table is poisoned");
-        let mut mine = HashMap::with_capacity(tools.len());
-        for tool in tools {
-            let seat = seats.entry((session.to_owned(), tool.clone())).or_insert(0);
-            *seat += 1;
-            mine.insert(tool.clone(), *seat);
-            let _ = self.bus.send(Claim {
-                session: session.to_owned(),
-                tool: tool.clone(),
-                generation: *seat,
-            });
-        }
-        mine
-    }
-}
-
 fn protected_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
     let mut router = Router::new();
     for (path, method) in [
         documented::<__path_admit_agentloop, _, _, _>(routed, admit_agentloop::<A>),
+        documented::<__path_admit_tool, _, _, _>(routed, admit_tool::<A>),
         documented::<__path_get_agentloop, _, _, _>(routed, get_agentloop::<A>),
-        documented::<__path_create_environment, _, _, _>(routed, create_environment::<A>),
-        documented::<__path_list_environments, _, _, _>(routed, list_environments::<A>),
-        documented::<__path_get_environment, _, _, _>(routed, get_environment::<A>),
-        documented::<__path_delete_environment, _, _, _>(routed, delete_environment::<A>),
+        documented::<__path_register_host, _, _, _>(routed, register_host::<A>),
         documented::<__path_create_session, _, _, _>(routed, create_session::<A>),
         documented::<__path_list_sessions, _, _, _>(routed, list_sessions::<A>),
         documented::<__path_get_session, _, _, _>(routed, get_session::<A>),
@@ -240,20 +155,20 @@ fn protected_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Route
         .with_state(api)
 }
 
-/// Routes a share key can reach: the serve feed and the tool-results answer. Their
-/// authorization is per session, so it happens in the handler rather than in a
-/// router-wide layer.
-fn serve_routes<A: BrainApi>(access: Access<A>, routed: &mut BTreeSet<String>) -> Router {
+/// Host commands use the scoped token returned by registration rather than the API
+/// bearer, so these routes authenticate inside their handlers.
+fn host_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
     let mut router = Router::new();
     for (path, method) in [
-        documented::<__path_serve_feed, _, _, _>(routed, serve_feed::<A>),
-        documented::<__path_resolve_tool_call, _, _, _>(routed, resolve_tool_call::<A>),
+        documented::<__path_host_commands, _, _, _>(routed, host_commands::<A>),
+        documented::<__path_resolve_host, _, _, _>(routed, resolve_host::<A>),
+        documented::<__path_emit_host_event, _, _, _>(routed, emit_host_event::<A>),
     ] {
         router = router.route(&path, method);
     }
     router
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
-        .with_state(access)
+        .with_state(api)
 }
 
 fn health_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Router {
@@ -295,6 +210,116 @@ fn unauthorized() -> HttpError {
     ))
 }
 
+fn bearer(headers: &HeaderMap) -> Result<String, HttpError> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(unauthorized)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/hosts",
+    operation_id = "registerHost",
+    responses(
+        (status = 200, description = "Registered resident extension host", body = contract::HostRegistration),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn register_host<A: BrainApi>(
+    State(api): State<A>,
+) -> Result<Json<HostRegistration>, HttpError> {
+    Ok(Json(api.register_host().await.map_err(HttpError)?))
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/hosts/{host_id}/commands",
+    operation_id = "hostCommands",
+    params(("host_id" = contract::HostId, Path)),
+    responses(
+        (status = 200, description = "Bounded send-once resident command stream", body = String, content_type = "text/event-stream"),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn host_commands<A: BrainApi>(
+    State(api): State<A>,
+    Path(host_id): Path<HostId>,
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
+    let connection = api
+        .connect_host(host_id, bearer(&headers)?)
+        .await
+        .map_err(HttpError)?;
+    let stream = futures_util::stream::unfold(Some(connection), |connection| async move {
+        let mut connection = connection?;
+        tokio::select! {
+            biased;
+            command = connection.commands.recv() => command.map(|command| {
+                let frame = host_sse(command);
+                (frame, Some(connection))
+            }),
+            _ = &mut connection.displaced => None,
+        }
+    });
+    Ok(Sse::new(stream).into_response())
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/hosts/{host_id}/results",
+    operation_id = "resolveHostCommand",
+    params(("host_id" = contract::HostId, Path)),
+    request_body = contract::HostResult,
+    responses(
+        (status = 204, description = "Resident command result accepted"),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn resolve_host<A: BrainApi>(
+    State(api): State<A>,
+    Path(host_id): Path<HostId>,
+    headers: HeaderMap,
+    Json(result): Json<HostResult>,
+) -> Result<StatusCode, HttpError> {
+    api.resolve_host(host_id, bearer(&headers)?, result)
+        .await
+        .map_err(HttpError)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/hosts/{host_id}/events",
+    operation_id = "emitHostEvent",
+    params(("host_id" = contract::HostId, Path)),
+    request_body = contract::HostEvent,
+    responses(
+        (status = 200, description = "Resident extension Event committed", body = contract::HostEventAck),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn emit_host_event<A: BrainApi>(
+    State(api): State<A>,
+    Path(host_id): Path<HostId>,
+    headers: HeaderMap,
+    Json(event): Json<HostEvent>,
+) -> Result<Json<HostEventAck>, HttpError> {
+    Ok(Json(
+        api.emit_host_event(host_id, bearer(&headers)?, event)
+            .await
+            .map_err(HttpError)?,
+    ))
+}
+
+fn host_sse(command: HostCommand) -> Result<SseEvent, std::convert::Infallible> {
+    let data = serde_json::to_string(&command).expect("Host command is serializable");
+    Ok(SseEvent::default().event("command").data(data))
+}
+
 #[utoipa::path(
     post,
     path = "/v1/agentloops",
@@ -324,6 +349,32 @@ async fn admit_agentloop<A: BrainApi>(
 }
 
 #[utoipa::path(
+    post,
+    path = "/v1/tools",
+    operation_id = "admitTool",
+    params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
+    request_body(content = inline(Package), content_type = "application/octet-stream"),
+    responses(
+        (status = 200, description = "Tool Component admitted", body = contract::ToolAdmission),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn admit_tool<A: BrainApi>(
+    State(api): State<A>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<ToolAdmission>, HttpError> {
+    if body.is_empty() || body.len() > MAX_REQUEST_BYTES {
+        return Err(invalid("Tool Component must be between 1 byte and 32 MiB"));
+    }
+    Ok(Json(
+        api.admit_tool(idempotency_key(&headers)?, body.to_vec())
+            .await
+            .map_err(HttpError)?,
+    ))
+}
+
+#[utoipa::path(
     get,
     path = "/v1/agentloops/{identity}",
     operation_id = "getAgentloop",
@@ -338,90 +389,6 @@ async fn get_agentloop<A: BrainApi>(
     Path(digest): Path<AgentloopIdentity>,
 ) -> Result<Json<AgentloopAdmission>, HttpError> {
     Ok(Json(api.get_agentloop(digest).await.map_err(HttpError)?))
-}
-
-#[utoipa::path(
-    post,
-    path = "/v1/environments",
-    operation_id = "createEnvironment",
-    description = "Creates an environment: Brain runs its setup and keeps what it declared it \
-executes and offers. Sessions attach to it by id. A managed environment is closed by Brain \
-once no session has been attached to it for its idle TTL; an unmanaged one lives until it \
-is deleted.",
-    params(("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
-    request_body = contract::CreateEnvironmentRequest,
-    responses(
-        (status = 200, description = "Created environment", body = contract::EnvironmentSummary),
-        (status = "default", description = "Structured error", body = contract::ApiError)
-    )
-)]
-async fn create_environment<A: BrainApi>(
-    State(api): State<A>,
-    headers: HeaderMap,
-    Json(request): Json<CreateEnvironmentRequest>,
-) -> Result<Json<EnvironmentSummary>, HttpError> {
-    Ok(Json(
-        api.create_environment(idempotency_key(&headers)?, request)
-            .await
-            .map_err(HttpError)?,
-    ))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/environments/{environment_id}",
-    operation_id = "getEnvironment",
-    params(("environment_id" = contract::EnvironmentId, Path)),
-    responses(
-        (status = 200, description = "Environment state", body = contract::EnvironmentSummary),
-        (status = "default", description = "Structured error", body = contract::ApiError)
-    )
-)]
-async fn get_environment<A: BrainApi>(
-    State(api): State<A>,
-    Path(environment_id): Path<EnvironmentId>,
-) -> Result<Json<EnvironmentSummary>, HttpError> {
-    Ok(Json(
-        api.get_environment(environment_id)
-            .await
-            .map_err(HttpError)?,
-    ))
-}
-
-#[utoipa::path(
-    get,
-    path = "/v1/environments",
-    operation_id = "listEnvironments",
-    responses(
-        (status = 200, description = "Environments", body = contract::EnvironmentList),
-        (status = "default", description = "Structured error", body = contract::ApiError)
-    )
-)]
-async fn list_environments<A: BrainApi>(
-    State(api): State<A>,
-) -> Result<Json<EnvironmentList>, HttpError> {
-    Ok(Json(api.list_environments().await.map_err(HttpError)?))
-}
-
-#[utoipa::path(
-    delete,
-    path = "/v1/environments/{environment_id}",
-    operation_id = "deleteEnvironment",
-    description = "Tears the environment down. Refused with `conflict` while a session is \
-still attached; every session that was ever attached sees `environment_closed` on its \
-events.",
-    params(("environment_id" = contract::EnvironmentId, Path), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
-    responses((status = 204, description = "Closed"), (status = "default", description = "Structured error", body = contract::ApiError))
-)]
-async fn delete_environment<A: BrainApi>(
-    State(api): State<A>,
-    Path(environment_id): Path<EnvironmentId>,
-    headers: HeaderMap,
-) -> Result<StatusCode, HttpError> {
-    api.delete_environment(environment_id, idempotency_key(&headers)?)
-        .await
-        .map_err(HttpError)?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 fn idempotency_key(headers: &HeaderMap) -> Result<String, HttpError> {
@@ -516,36 +483,6 @@ async fn send_message<A: BrainApi>(
 
 #[utoipa::path(
     post,
-    path = "/v1/sessions/{session_id}/tool-results/{sequence}",
-    operation_id = "resolveToolCall",
-    description = "Answers a client-hosted tool call. The call is named by the sequence of \
-its `tool_call_started` record on the event feed; the body is the call's outcome. \
-Idempotent per call: a retry with the same key replays the first answer, and a call that \
-is no longer pending is a conflict. Authorized by the API token or by the session's share \
-key.",
-    params(("session_id" = contract::SessionId, Path), ("sequence" = u64, Path, minimum = 1), ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)),
-    request_body = contract::Outcome,
-    responses((status = 204, description = "Outcome recorded"), (status = "default", description = "Structured error", body = contract::ApiError))
-)]
-async fn resolve_tool_call<A: BrainApi>(
-    State(access): State<Access<A>>,
-    Path((session_id, sequence)): Path<(SessionId, u64)>,
-    headers: HeaderMap,
-    Json(outcome): Json<Outcome>,
-) -> Result<StatusCode, HttpError> {
-    if !access.authorized(&headers, &session_id) {
-        return Err(unauthorized());
-    }
-    access
-        .api
-        .resolve_tool_call(session_id, sequence, idempotency_key(&headers)?, outcome)
-        .await
-        .map_err(HttpError)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[utoipa::path(
-    post,
     path = "/v1/sessions/{session_id}/environments/{environment_id}/calls/{name}",
     operation_id = "callEnvironment",
     params(
@@ -627,30 +564,50 @@ async fn events<A: BrainApi>(
         return Ok(Json(page).into_response());
     };
 
-    // Where the page ended. Everything at or below it was already sent; everything above
-    // it is what this stream is for.
-    let sent_through = page.next_cursor;
-    // A session that has ended appends nothing more, so a stream that stayed open on one
-    // would wait for records that cannot arrive. The page is the whole story there.
-    let ended = page.events.iter().any(is_last);
-    let backlog = futures_util::stream::iter(page.events.into_iter().map(sse));
-    if ended {
-        return Ok(Sse::new(backlog).into_response());
-    }
-    let following =
-        futures_util::stream::unfold(Some((live, sent_through, session_id)), |state| async move {
-            // `None` once the session has ended: nothing follows it, so holding the
-            // connection open would leave a client waiting on a promise the journal
-            // cannot keep.
-            let (mut live, mut sent_through, session_id) = state?;
-            loop {
-                match live.recv().await {
+    let mut sent_through = query.after.unwrap_or(0);
+    let stream = async_stream::stream! {
+        let mut page = page;
+        loop {
+            let empty = page.events.is_empty();
+            for event in page.events {
+                sent_through = event.sequence;
+                let terminal = is_last(&event);
+                yield sse(event);
+                if terminal {
+                    return;
+                }
+            }
+            if empty {
+                let terminal = match api.get_session(session_id.clone()).await {
+                    Ok(session) => matches!(session.status, brain_protocol::SessionStatus::Ended | brain_protocol::SessionStatus::Failed),
+                    Err(_) => return,
+                };
+                if !terminal {
+                    break;
+                }
+            }
+            page = match api.events(session_id.clone(), Some(sent_through)).await {
+                Ok(page) => page,
+                Err(_) => return,
+            };
+            if empty && page.events.is_empty() {
+                return;
+            }
+        }
+
+        drop(api);
+        let mut live = live;
+        loop {
+            match live.recv().await {
                     Ok((session, brain_protocol::LiveEvent::Recorded(event)))
                         if session == session_id && event.sequence > sent_through =>
                     {
                         sent_through = event.sequence;
-                        let carry = (!is_last(&event)).then_some((live, sent_through, session_id));
-                        return Some((sse(event), carry));
+                        let terminal = is_last(&event);
+                        yield sse(event);
+                        if terminal {
+                            return;
+                        }
                     }
                     // Model output, mid-turn. It has no sequence and is not in the journal,
                     // so it is passed straight through and leaves the cursor alone: the
@@ -660,254 +617,28 @@ async fn events<A: BrainApi>(
                     Ok((session, brain_protocol::LiveEvent::Streaming(streaming)))
                         if session == session_id =>
                     {
-                        let carry = Some((live, sent_through, session_id));
-                        return Some((streaming_sse(streaming), carry));
+                        yield streaming_sse(streaming);
                     }
                     Ok(_) => continue,
                     // Lagged, or the session is gone. The stream ends rather than
                     // silently skipping records: a client reconnects with the cursor it
                     // last saw and the journal hands back exactly what it missed.
-                    Err(_) => return None,
-                }
+                Err(_) => return,
             }
-        });
-
-    Ok(Sse::new(backlog.chain(following)).into_response())
-}
-
-/// The serve feed: pending client-hosted `tool_call_started` records for the claimed
-/// tools, then matching records as they are appended. Always SSE. See the OpenAPI
-/// description for the full contract.
-#[utoipa::path(
-    get,
-    path = "/v1/sessions/{session_id}/serve",
-    operation_id = "serveSessionTools",
-    description = "The serve feed: an SSE stream of this session's client-hosted \
-`tool_call_started` and `tool_cancel_started` records, filtered to the tools named in \
-`tools`, plus `session_ended`. It opens with the still-pending backlog (calls with no \
-finished record) and then carries records as they are appended. Authorized by the \
-session's share key as a bearer token (the API token also works). One live consumer per \
-tool: a new connection claiming a tool displaces the stream that held it, so a \
-reconnecting client replaces its own dead connection instead of racing it.",
-    params(
-        ("session_id" = contract::SessionId, Path),
-        (
-            "tools" = String,
-            Query,
-            description = "Comma-separated client-hosted tool names this connection serves.",
-            min_length = 1,
-            max_length = 4096
-        ),
-        (
-            "after" = Option<u64>,
-            Query,
-            description = "Resume cursor. Absent, the stream opens with the pending backlog; \
-set, it replays every matching record after this sequence instead.",
-            minimum = 0
-        )
-    ),
-    responses(
-        (status = 200, description = "Live serve stream", body = String, content_type = "text/event-stream"),
-        (status = "default", description = "Structured error", body = contract::ApiError)
-    )
-)]
-async fn serve_feed<A: BrainApi>(
-    State(access): State<Access<A>>,
-    Path(session_id): Path<SessionId>,
-    Query(query): Query<ServeQuery>,
-    headers: HeaderMap,
-) -> Result<Response, HttpError> {
-    if !access.authorized(&headers, &session_id) {
-        return Err(unauthorized());
-    }
-    let tools: Vec<String> = query
-        .tools
-        .split(',')
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
-        .collect();
-    if tools.is_empty() || tools.len() > MAX_SERVED_TOOLS {
-        return Err(invalid("tools must name between 1 and 128 tools"));
-    }
-    let declared: HashSet<String> = access
-        .api
-        .client_tool_names(session_id.clone())
-        .await
-        .map_err(HttpError)?
-        .into_iter()
-        .collect();
-    if let Some(unknown) = tools.iter().find(|name| !declared.contains(*name)) {
-        return Err(invalid(format!(
-            "{unknown} is not a client-hosted tool of this session"
-        )));
-    }
-    let served: Arc<HashSet<String>> = Arc::new(tools.iter().cloned().collect());
-
-    // Order matters: subscribe to both feeds before claiming the seats and before
-    // reading the backlog, so nothing lands in a gap. Our own claims echo back on the
-    // bus and are skipped by generation.
-    let live = access.api.subscribe();
-    let displaced = access.serves.bus.subscribe();
-    let mine = Arc::new(access.serves.claim(session_id.as_str(), &tools));
-
-    let (backlog_events, sent_through, ended) =
-        serve_backlog(&access.api, &session_id, query.after, &served).await?;
-    let backlog = futures_util::stream::iter(backlog_events.into_iter().map(sse));
-    if ended {
-        return Ok(Sse::new(backlog).into_response());
-    }
-
-    struct FollowState<L> {
-        live: L,
-        displaced: tokio::sync::broadcast::Receiver<Claim>,
-        sent_through: u64,
-        session_id: SessionId,
-        served: Arc<HashSet<String>>,
-        mine: Arc<HashMap<String, u64>>,
-    }
-    let state = FollowState {
-        live,
-        displaced,
-        sent_through,
-        session_id,
-        served,
-        mine,
+        }
     };
-    let following = futures_util::stream::unfold(Some(state), |state| async move {
-        let mut state = state?;
-        loop {
-            tokio::select! {
-                claim = state.displaced.recv() => {
-                    match claim {
-                        Ok(claim) => {
-                            let superseded = claim.session == state.session_id.as_str()
-                                && state
-                                    .mine
-                                    .get(&claim.tool)
-                                    .is_some_and(|generation| claim.generation > *generation);
-                            // A newer connection took one of these seats; this stream is
-                            // the half-dead socket it displaces.
-                            if superseded {
-                                return None;
-                            }
-                        }
-                        // A lagged displacement bus cannot say who holds the seat; end
-                        // and let the client reconnect into a clean claim.
-                        Err(_) => return None,
-                    }
-                }
-                event = state.live.recv() => {
-                    match event {
-                        Ok((session, brain_protocol::LiveEvent::Recorded(event)))
-                            if session == state.session_id
-                                && event.sequence > state.sent_through
-                                && serves_event(&event, &state.served) =>
-                        {
-                            state.sent_through = event.sequence;
-                            let ended = is_last(&event);
-                            let frame = sse(event);
-                            return Some((frame, (!ended).then_some(state)));
-                        }
-                        Ok(_) => continue,
-                        Err(_) => return None,
-                    }
-                }
-            }
-        }
-    });
-    Ok(Sse::new(backlog.chain(following)).into_response())
-}
 
-/// What the serve stream opens with. Without a cursor: the still-pending calls —
-/// every matching `tool_call_started` with no `tool_call_ended` yet whose deadline
-/// has not already passed (the session would have timed those out; replaying them
-/// would run side effects nothing is waiting for). With a cursor: an exact replay of
-/// matching records after it, the same resume contract as the events feed.
-async fn serve_backlog<A: BrainApi>(
-    api: &A,
-    session_id: &SessionId,
-    after: Option<u64>,
-    served: &HashSet<String>,
-) -> Result<(Vec<brain_protocol::Event>, u64, bool), HttpError> {
-    let replay_all = after.is_some();
-    let mut cursor = after.unwrap_or(0);
-    let mut kept: Vec<brain_protocol::Event> = Vec::new();
-    let mut pending: HashMap<u64, usize> = HashMap::new();
-    let mut ended = false;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0);
-    loop {
-        let page = api
-            .events(session_id.clone(), Some(cursor))
-            .await
-            .map_err(HttpError)?;
-        for event in page.events {
-            ended = ended || is_last(&event);
-            if serves_event(&event, served) {
-                if replay_all || is_last(&event) {
-                    kept.push(event);
-                    continue;
-                }
-                if event.event_type == "tool_call_started" {
-                    let alive = event
-                        .data
-                        .get("deadline_ms")
-                        .and_then(serde_json::Value::as_u64)
-                        .is_none_or(|deadline| event.recorded_at_ms + deadline > now_ms);
-                    if alive {
-                        pending.insert(event.sequence, kept.len());
-                        kept.push(event);
-                    }
-                }
-                // Backlog cancellations target calls that resolve moments later; only
-                // the live tail needs them.
-            } else if !replay_all
-                && event.event_type == "tool_call_ended"
-                && let Some(started) = event
-                    .data
-                    .get("sequence")
-                    .and_then(serde_json::Value::as_u64)
-                && let Some(index) = pending.remove(&started)
-            {
-                kept[index].sequence = 0; // answered: marked for removal below
-            }
-        }
-        if page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    if !replay_all {
-        kept.retain(|event| event.sequence != 0);
-    }
-    Ok((kept, cursor, ended))
-}
-
-/// Whether a record belongs on a serve stream claiming these tools: the session's
-/// end, and client-hosted calls (and their cancellations) for the claimed names.
-fn serves_event(event: &brain_protocol::Event, served: &HashSet<String>) -> bool {
-    if event.event_type == "session_ended" {
-        return true;
-    }
-    if event.event_type != "tool_call_started" && event.event_type != "tool_cancel_started" {
-        return false;
-    }
-    let Some(binding) = event.data.get("binding") else {
-        return false;
-    };
-    binding.get("hosting").and_then(serde_json::Value::as_str) == Some("client")
-        && binding
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|name| served.contains(name))
+    Ok(Sse::new(stream).into_response())
 }
 
 /// Whether this record is the last a session can produce. A stream past it would wait
 /// on an append that cannot happen.
 fn is_last(event: &brain_protocol::Event) -> bool {
-    event.event_type == "session_ended"
+    matches!(
+        event.event_type.as_str(),
+        brain_protocol::codes::event::SESSION_ENDED
+            | brain_protocol::codes::event::SESSION_CREATION_FAILED
+    )
 }
 
 /// One journal record as it goes out on the wire. The id is the sequence, so a client

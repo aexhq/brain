@@ -9,7 +9,7 @@
 async fn main() -> Result<(), String> {
     use std::{path::PathBuf, sync::Arc};
 
-    use brain_loophost::{LoopLimits, RUNTIME_SHIM_IMPORTS, WorkerService};
+    use brain_loophost::{CAPABILITY_IMPORTS, LoopLimits, RUNTIME_SHIM_IMPORTS, WorkerService};
     use tokio::net::UnixListener;
 
     let socket = std::env::args_os()
@@ -24,6 +24,7 @@ async fn main() -> Result<(), String> {
         LoopLimits::default(),
         RUNTIME_SHIM_IMPORTS
             .iter()
+            .chain(CAPABILITY_IMPORTS)
             .map(|name| (*name).to_owned())
             .collect(),
     )?);

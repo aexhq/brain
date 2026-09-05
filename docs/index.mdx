@@ -1,10 +1,11 @@
 ---
 title: Introduction
-description: What Brain is, and the four things that plug into it.
+description: Brain's durable session engine and the four things that plug into it.
 ---
 
-Brain runs agent sessions. It holds the conversation, decides what happens next, calls the model,
-hands out tool calls, and journals every step. That is the entire job.
+Brain runs agent sessions. It owns one canonical journal per session, activates an Agentloop,
+executes the model and Tool effects the loop requests, and exposes journal projections over HTTP
+and SSE.
 
 Run it as a server your app talks to over HTTP, or embed the `brain` crate in a Rust service you
 already own.
@@ -16,29 +17,34 @@ and there is no upgrade path from earlier builds.
 
 ## The four parts
 
-Everything Brain does not do itself is one of four things you supply.
-
 | Part | You supply | Brain does |
 | --- | --- | --- |
-| [Agent loop](/brain/docs/concepts/agent-loop) | The policy: what a turn does | Runs it in a WebAssembly sandbox and performs every effect it asks for |
-| [Model](/brain/docs/concepts/model) | A binding: provider, model name, key | Pins it for the life of the session and makes the call |
-| [Tool](/brain/docs/concepts/tool) | A name, description, schema, and where it runs | Logs the call and sends it to the bound environment |
-| [Environment](/brain/docs/concepts/environment) | Somewhere tool calls actually execute | Creates it, attaches sessions to it, calls, cancels, closes it |
+| [Agentloop](/brain/docs/concepts/agent-loop) | A raw WebAssembly Component and an Environment | Activates it and performs its model and Tool requests |
+| [Model](/brain/docs/concepts/model) | A provider, model name, and credential | Seals the binding for the session and makes calls |
+| [Tool](/brain/docs/concepts/tool) | A typed contract plus resident code or a placed implementation | Commits the call before dispatch and records its outcome |
+| [Environment](/brain/docs/concepts/environment) | An immutable placement and authority specification | Creates, attaches, invokes, cancels, detaches, and closes it |
 
-The packages we ship use the same interface you would. Nothing built in gets a shortcut.
+Application code composes these values explicitly. `component(...)` wraps already-built Wasm,
+`brainWasm(...)` selects Brain's built-in Wasmtime Environment, and placed factories take
+`{ env, ...options }`.
 
-## Why it is split this way
+## The durable rule
 
-Brain never runs tool code. That is the load-bearing decision. A tool call is a message to somewhere
-else — a sandbox VM, a browser tab, your backend, the user's laptop — so a crashing or hostile tool
-takes down its own environment, not the process holding your sessions.
+Brain commits every external-effect intent to the session journal before dispatch and sends it
+once. It never automatically retries an effect. A known result, a known failure, or an unknown
+outcome is committed before the Agentloop observes it.
 
-The agent loop is isolated for the same reason. It drives the turn through Brain's services and
-has nothing else: no network, no filesystem, no secrets, no clock. Brain performs every effect the
-loop asks for and records it first.
+The public event feed, session status, transcript, and Agentloop slots are projections of the same
+journal. SSE is a live notification path; reconnecting clients resume from a committed sequence.
+
+Resident Tools are the deliberate exception to placed isolation: their code remains in the
+application process. The SDK registers one resident host, receives Tool commands over SSE, and
+posts results and `ctx.emit` events through scoped host endpoints.
 
 ## Where to go next
 
-- [Quickstart](/brain/docs/quickstart) — a running server and a first session.
-- [Sessions](/brain/docs/concepts/sessions) — the logs, turns, suspension, and recovery.
-- [API reference](/brain/docs/reference/api) — generated from the session contract.
+- [Quickstart](/brain/docs/quickstart) — run a server and create a first session.
+- [Sessions](/brain/docs/concepts/sessions) — journal, turns, suspension, and recovery.
+- [Agentloop](/brain/docs/concepts/agent-loop) — raw Components and explicit placement.
+- [Tools](/brain/docs/concepts/tool) — resident and placed implementations.
+- [API reference](/brain/docs/reference/api) — generated from the protocol types.

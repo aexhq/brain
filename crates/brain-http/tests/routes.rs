@@ -3,12 +3,13 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use brain_http::{BrainApi, router, router_with_bearer};
+use brain_http::{BrainApi, HostConnection, router, router_with_bearer};
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, Event, EventId, EventPage,
+    HostCommand, HostEvent, HostEventAck, HostId, HostOperation, HostRegistration, HostResult,
     LiveEvent, MessageRequest, SessionId, SessionList, SessionStatus, SessionSummary,
-    StreamingEvent,
+    StreamingEvent, ToolAdmission, ToolAdmissionStatus, ToolIdentity, ToolInvocation,
 };
 use tower::ServiceExt;
 
@@ -18,14 +19,82 @@ struct Api {
     /// turn does while a client is already streaming.
     live: Option<tokio::sync::broadcast::Sender<(SessionId, LiveEvent)>>,
     /// A finite journal for tests that page through it (the serve feed does); absent,
-    /// `events` serves one synthetic record per page forever.
+    /// `events` serves one synthetic record.
     journal: Option<Vec<Event>>,
+    page_size: Option<usize>,
+    status: Option<SessionStatus>,
 }
 
 #[async_trait]
 impl BrainApi for Api {
+    async fn register_host(&self) -> Result<HostRegistration, ApiError> {
+        Ok(HostRegistration {
+            host_id: HostId::new("host_12345678901234567890"),
+            token: "host-token".into(),
+        })
+    }
+    async fn connect_host(
+        &self,
+        host_id: HostId,
+        token: String,
+    ) -> Result<HostConnection, ApiError> {
+        if host_id.as_str() != "host_12345678901234567890" || token != "host-token" {
+            return Err(ApiError::unauthorized("invalid host credential"));
+        }
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let (_disconnect, displaced) = tokio::sync::oneshot::channel();
+        sender
+            .send(HostCommand {
+                session_id: SessionId::new("ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                sequence: 7,
+                deadline_at_ms: 1_787_846_460_000,
+                operation: HostOperation::InvokeTool {
+                    invocation: ToolInvocation {
+                        call_id: "call_1".into(),
+                        name: "highlight_row".into(),
+                        input: serde_json::json!({"row": 4}),
+                    },
+                },
+            })
+            .await
+            .unwrap();
+        Ok(HostConnection {
+            commands: receiver,
+            displaced,
+            on_close: None,
+        })
+    }
+    async fn resolve_host(
+        &self,
+        host_id: HostId,
+        token: String,
+        _: HostResult,
+    ) -> Result<(), ApiError> {
+        if host_id.as_str() != "host_12345678901234567890" || token != "host-token" {
+            return Err(ApiError::unauthorized("invalid host credential"));
+        }
+        Ok(())
+    }
+    async fn emit_host_event(
+        &self,
+        host_id: HostId,
+        token: String,
+        _: HostEvent,
+    ) -> Result<HostEventAck, ApiError> {
+        if host_id.as_str() != "host_12345678901234567890" || token != "host-token" {
+            return Err(ApiError::unauthorized("invalid host credential"));
+        }
+        Ok(HostEventAck { sequence: 8 })
+    }
     async fn admit_agentloop(&self, _: String, _: Vec<u8>) -> Result<AgentloopAdmission, ApiError> {
         Ok(admission())
+    }
+    async fn admit_tool(&self, _: String, _: Vec<u8>) -> Result<ToolAdmission, ApiError> {
+        Ok(ToolAdmission {
+            identity: ToolIdentity::new("b".repeat(64)),
+            status: ToolAdmissionStatus::Admitted,
+            error: None,
+        })
     }
     async fn get_agentloop(&self, _: AgentloopIdentity) -> Result<AgentloopAdmission, ApiError> {
         Ok(admission())
@@ -38,33 +107,16 @@ impl BrainApi for Api {
         Ok(session())
     }
     async fn get_session(&self, _: SessionId) -> Result<SessionSummary, ApiError> {
-        Ok(session())
+        let mut session = session();
+        if let Some(status) = &self.status {
+            session.status = status.clone();
+        }
+        Ok(session)
     }
     async fn list_sessions(&self) -> Result<SessionList, ApiError> {
         Ok(SessionList {
             sessions: vec![session()],
         })
-    }
-    async fn create_environment(
-        &self,
-        _: String,
-        _: brain_protocol::CreateEnvironmentRequest,
-    ) -> Result<brain_protocol::EnvironmentSummary, ApiError> {
-        Ok(environment())
-    }
-    async fn get_environment(
-        &self,
-        _: EnvironmentId,
-    ) -> Result<brain_protocol::EnvironmentSummary, ApiError> {
-        Ok(environment())
-    }
-    async fn list_environments(&self) -> Result<brain_protocol::EnvironmentList, ApiError> {
-        Ok(brain_protocol::EnvironmentList {
-            environments: vec![environment()],
-        })
-    }
-    async fn delete_environment(&self, _: EnvironmentId, _: String) -> Result<(), ApiError> {
-        Ok(())
     }
     async fn send_message(
         &self,
@@ -98,6 +150,7 @@ impl BrainApi for Api {
             let events: Vec<Event> = journal
                 .iter()
                 .filter(|event| event.sequence > after)
+                .take(self.page_size.unwrap_or(usize::MAX))
                 .cloned()
                 .collect();
             let next_cursor = events.last().map_or(after, |event| event.sequence);
@@ -106,31 +159,17 @@ impl BrainApi for Api {
                 next_cursor,
             });
         }
+        let events = matches!(after, 0 | 7).then(|| Event {
+            event_id: EventId::new("evt_test"),
+            sequence: after + 1,
+            recorded_at_ms: 1_787_846_400_000,
+            event_type: "test_event".into(),
+            data: serde_json::json!({"ok":true}),
+        });
         Ok(EventPage {
-            events: vec![Event {
-                event_id: EventId::new("evt_test"),
-                sequence: after + 1,
-                recorded_at_ms: 1_787_846_400_000,
-                event_type: "test_event".into(),
-                data: serde_json::json!({"ok":true}),
-            }],
-            next_cursor: after + 1,
+            next_cursor: events.as_ref().map_or(after, |event| event.sequence),
+            events: events.into_iter().collect(),
         })
-    }
-    fn share_key(&self, session_id: &SessionId) -> String {
-        format!("sk.{session_id}.{}", "b".repeat(64))
-    }
-    async fn client_tool_names(&self, _: SessionId) -> Result<Vec<String>, ApiError> {
-        Ok(vec!["highlight_row".into(), "pick_file".into()])
-    }
-    async fn resolve_tool_call(
-        &self,
-        _: SessionId,
-        _: u64,
-        _: String,
-        _: brain_protocol::Outcome,
-    ) -> Result<(), ApiError> {
-        Ok(())
     }
     async fn cancel_session(&self, _: SessionId, _: String) -> Result<(), ApiError> {
         Ok(())
@@ -149,27 +188,14 @@ impl BrainApi for Api {
     }
 }
 
-fn environment() -> brain_protocol::EnvironmentSummary {
-    brain_protocol::EnvironmentSummary {
-        environment_id: EnvironmentId::new("env_1"),
-        status: brain_protocol::EnvironmentStatus::Open,
-        managed: true,
-        idle_ttl_ms: None,
-        attached_sessions: Vec::new(),
-        runtimes: Vec::new(),
-        resources: Default::default(),
-        created_at_ms: 1_787_846_400_000,
-    }
-}
-
 #[tokio::test]
 async fn exposes_every_v1_route_with_its_contract_status() {
     let digest = "a".repeat(64);
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     // A create request in the execution shape: a tool declaring `needs`, `binding_names`,
-    // and its program, an environment carrying sealed binding values.
+    // and its implementation, an environment carrying sealed binding values.
     let create = serde_json::json!({
-        "agentloop": {"identity": digest, "configuration": {}},
+        "agentloop": {"identity": digest, "configuration": {}, "environment_id": "env_1"},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "tools": [{
             "name": "bash",
@@ -178,26 +204,39 @@ async fn exposes_every_v1_route_with_its_contract_status() {
             "needs": ["process", "fs"],
             "binding_names": ["API_BASE"],
             "hosting": "provisioned",
-            "program": {"kind": "esm", "identity": "d".repeat(64)},
+            "implementation": {"kind": "test"},
             "environment_id": "env_1"
         }],
         "environments": [{
             "environment_id": "env_1",
+            "configuration": {"driver": "test"},
             "bindings": {"API_BASE": "https://api.internal"}
         }]
     });
     let cases = vec![
         request("POST", "/v1/agentloops", Some(vec![1]), None),
+        request("POST", "/v1/tools", Some(vec![1]), None),
         request("GET", &format!("/v1/agentloops/{digest}"), None, None),
-        request(
-            "POST",
-            "/v1/environments",
-            Some(br#"{"configuration":{"image":"ubuntu"},"managed":true}"#.to_vec()),
-            Some("application/json"),
-        ),
-        request("GET", "/v1/environments", None, None),
-        request("GET", "/v1/environments/env_1", None, None),
-        request("DELETE", "/v1/environments/env_1", None, None),
+        request("POST", "/v1/hosts", None, None),
+        Request::builder()
+            .uri("/v1/hosts/host_12345678901234567890/commands")
+            .header("authorization", "Bearer host-token")
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri("/v1/hosts/host_12345678901234567890/results")
+            .header("authorization", "Bearer host-token")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_id":"ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sequence":7,"outcome":{"status":"ok","value":null}}"#))
+            .unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri("/v1/hosts/host_12345678901234567890/events")
+            .header("authorization", "Bearer host-token")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"session_id":"ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sequence":7,"event_type":"progress","data":null}"#))
+            .unwrap(),
         request(
             "POST",
             "/v1/sessions",
@@ -216,12 +255,6 @@ async fn exposes_every_v1_route_with_its_contract_status() {
             "POST",
             &format!("/v1/sessions/{id}/environments/env_1/calls/suspend"),
             Some(br#"{"input":null}"#.to_vec()),
-            Some("application/json"),
-        ),
-        request(
-            "POST",
-            &format!("/v1/sessions/{id}/tool-results/7"),
-            Some(br#"{"status":"ok","value":{"content":"done"}}"#.to_vec()),
             Some("application/json"),
         ),
         request("POST", &format!("/v1/sessions/{id}/cancel"), None, None),
@@ -341,6 +374,97 @@ async fn the_event_stream_starts_with_the_page_the_cursor_names() {
     assert!(body.contains("data: {\"ok\":true}"));
 }
 
+#[tokio::test]
+async fn the_event_stream_drains_every_history_page_before_following_live() {
+    let mut journal: Vec<Event> = (1..=1_002)
+        .map(|sequence| Event {
+            event_id: EventId::new(format!("evt_{sequence}")),
+            sequence,
+            recorded_at_ms: 1_787_846_400_000 + sequence,
+            event_type: "test_event".into(),
+            data: serde_json::json!({"sequence": sequence}),
+        })
+        .collect();
+    journal.last_mut().unwrap().event_type = brain_protocol::codes::event::SESSION_ENDED.into();
+    let response = router(Api {
+        journal: Some(journal),
+        page_size: Some(1_000),
+        status: Some(SessionStatus::Ended),
+        ..Api::default()
+    })
+    .oneshot(
+        Request::builder()
+            .uri("/v1/sessions/ses_test/events")
+            .header("accept", "text/event-stream")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let body = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        axum::body::to_bytes(response.into_body(), 1024 * 1024),
+    )
+    .await
+    .expect("an ended session stream must close")
+    .unwrap();
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    assert!(body.contains("id: 1001"));
+    assert!(body.contains("id: 1002"));
+    assert!(body.contains("event: session_ended"));
+}
+
+#[tokio::test]
+async fn a_terminal_cursor_and_a_failed_creation_close_the_event_stream() {
+    for (after, event_type) in [
+        (1, brain_protocol::codes::event::SESSION_ENDED),
+        (0, brain_protocol::codes::event::SESSION_CREATION_FAILED),
+    ] {
+        let journal = vec![Event {
+            event_id: EventId::new("evt_terminal"),
+            sequence: 1,
+            recorded_at_ms: 1_787_846_400_000,
+            event_type: event_type.into(),
+            data: serde_json::json!({}),
+        }];
+        let response = router(Api {
+            journal: Some(journal),
+            status: Some(if after == 1 {
+                SessionStatus::Ended
+            } else {
+                SessionStatus::Failed
+            }),
+            ..Api::default()
+        })
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/sessions/ses_test/events?after={after}"))
+                .header("accept", "text/event-stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let body = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            axum::body::to_bytes(response.into_body(), 64 * 1024),
+        )
+        .await
+        .expect("a terminal stream must close")
+        .unwrap();
+        if after == 0 {
+            assert!(
+                String::from_utf8(body.to_vec())
+                    .unwrap()
+                    .contains(event_type)
+            );
+        } else {
+            assert!(body.is_empty());
+        }
+    }
+}
+
 fn request(
     method: &str,
     uri: &str,
@@ -372,91 +496,52 @@ fn session() -> SessionSummary {
         session_id: SessionId::new("ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         status: SessionStatus::Idle,
         last_sequence: 1,
-        share_key: String::new(),
     }
 }
 
-fn started(sequence: u64, tool: &str, call_id: &str) -> Event {
-    Event {
-        event_id: EventId::new(format!("evt_{sequence}")),
-        sequence,
-        // Freshly recorded, so the pending filter cannot see it as past its deadline.
-        recorded_at_ms: now_ms(),
-        event_type: "tool_call_started".into(),
-        data: serde_json::json!({
-            "sequence": sequence,
-            "deadline_ms": 60_000,
-            "binding": {"name": tool, "hosting": "client"},
-            "invocation": {"call_id": call_id, "name": tool, "input": {}},
-        }),
-    }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
-}
-
-/// The serve feed is the share key's whole world: the key opens it and the
-/// tool-results answer, while the rest of the API still demands the bearer token.
 #[tokio::test]
-async fn the_share_key_opens_exactly_the_serve_surface() {
-    let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let key = format!("sk.{id}.{}", "b".repeat(64));
-    let journal = vec![started(1, "highlight_row", "op_1")];
-    let build = || {
-        router_with_bearer(
-            Api {
-                journal: Some(journal.clone()),
-                ..Api::default()
-            },
-            "secret".into(),
-        )
-    };
+async fn the_host_token_opens_exactly_the_resident_surface() {
+    let build = || router_with_bearer(Api::default(), "secret".into());
     let authed = |uri: &str, method: &str, bearer: &str, body: Option<&str>| {
         let mut builder = Request::builder()
             .method(method)
             .uri(uri)
             .header("authorization", format!("Bearer {bearer}"));
         if method == "POST" {
-            builder = builder
-                .header("idempotency-key", "test-key")
-                .header("content-type", "application/json");
+            builder = builder.header("content-type", "application/json");
         }
         builder
             .body(body.map_or_else(Body::empty, |body| Body::from(body.to_owned())))
             .unwrap()
     };
 
-    let serve = build()
+    let commands = build()
         .oneshot(authed(
-            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
+            "/v1/hosts/host_12345678901234567890/commands",
             "GET",
-            &key,
+            "host-token",
             None,
         ))
         .await
         .unwrap();
-    assert_eq!(serve.status(), StatusCode::OK);
+    assert_eq!(commands.status(), StatusCode::OK);
 
-    let answer = build()
+    let result = build()
         .oneshot(authed(
-            &format!("/v1/sessions/{id}/tool-results/7"),
+            "/v1/hosts/host_12345678901234567890/results",
             "POST",
-            &key,
-            Some(r#"{"status":"ok","value":null}"#),
+            "host-token",
+            Some(r#"{"session_id":"ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sequence":7,"outcome":{"status":"ok","value":null}}"#),
         ))
         .await
         .unwrap();
-    assert_eq!(answer.status(), StatusCode::NO_CONTENT);
+    assert_eq!(result.status(), StatusCode::NO_CONTENT);
 
     let wrong_key = build()
         .oneshot(authed(
-            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
+            "/v1/hosts/host_12345678901234567890/commands",
             "GET",
-            &format!("sk.{id}.{}", "c".repeat(64)),
+            "wrong-token",
             None,
         ))
         .await
@@ -464,59 +549,28 @@ async fn the_share_key_opens_exactly_the_serve_surface() {
     assert_eq!(wrong_key.status(), StatusCode::UNAUTHORIZED);
 
     let rest_of_api = build()
-        .oneshot(authed(&format!("/v1/sessions/{id}"), "GET", &key, None))
+        .oneshot(authed("/v1/sessions", "GET", "host-token", None))
         .await
         .unwrap();
     assert_eq!(rest_of_api.status(), StatusCode::UNAUTHORIZED);
 
-    let api_token_serves = build()
-        .oneshot(authed(
-            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
-            "GET",
-            "secret",
-            None,
-        ))
+    let registration = build()
+        .oneshot(authed("/v1/hosts", "POST", "secret", None))
         .await
         .unwrap();
-    assert_eq!(api_token_serves.status(), StatusCode::OK);
+    assert_eq!(registration.status(), StatusCode::OK);
 }
 
-/// The serve backlog is the still-pending work: an intent already answered by a
-/// `tool_result` is not replayed, another tool's intent is not this stream's, and a
-/// tool the session never declared is refused at the door.
 #[tokio::test]
-async fn the_serve_feed_opens_with_pending_intents_only() {
-    let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let journal = vec![
-        started(1, "highlight_row", "call_answered"),
-        Event {
-            event_id: EventId::new("evt_2"),
-            sequence: 2,
-            recorded_at_ms: now_ms(),
-            event_type: "tool_call_ended".into(),
-            data: serde_json::json!({"sequence": 1, "result": {}}),
-        },
-        started(3, "highlight_row", "call_pending"),
-        started(4, "pick_file", "call_other_tool"),
-        Event {
-            event_id: EventId::new("evt_5"),
-            sequence: 5,
-            recorded_at_ms: now_ms(),
-            event_type: "session_ended".into(),
-            data: serde_json::json!({}),
-        },
-    ];
-    let api = Api {
-        journal: Some(journal),
-        ..Api::default()
-    };
-    let response = router(api.clone())
-        .oneshot(request(
-            "GET",
-            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
-            None,
-            None,
-        ))
+async fn the_host_stream_carries_typed_commands() {
+    let response = router(Api::default())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/hosts/host_12345678901234567890/commands")
+                .header("authorization", "Bearer host-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -525,79 +579,35 @@ async fn the_serve_feed_opens_with_pending_intents_only() {
         .unwrap();
     let body = String::from_utf8(body.to_vec()).unwrap();
     assert!(
-        body.contains("call_pending"),
-        "pending call missing: {body}"
+        body.contains("event: command"),
+        "command event missing: {body}"
     );
     assert!(
-        !body.contains("call_answered"),
-        "an answered call was replayed: {body}"
+        body.contains("invoke_tool"),
+        "typed operation missing: {body}"
     );
     assert!(
-        !body.contains("call_other_tool"),
-        "another tool's call leaked onto this stream: {body}"
+        body.contains("highlight_row"),
+        "Tool invocation missing: {body}"
     );
-    assert!(body.contains("session_ended"), "no end marker: {body}");
-
-    let undeclared = router(api)
-        .oneshot(request(
-            "GET",
-            &format!("/v1/sessions/{id}/serve?tools=made_up"),
-            None,
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(undeclared.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        !body.contains("id:"),
+        "resident commands are not replay cursors: {body}"
+    );
 }
 
-/// One live consumer per tool: a second connection claiming the same tool displaces
-/// the first, which ends instead of racing it for side effects.
 #[tokio::test]
-async fn a_new_serve_connection_displaces_the_seat_holder() {
-    let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let live = tokio::sync::broadcast::Sender::new(8);
-    let api = Api {
-        live: Some(live.clone()),
-        journal: Some(vec![started(1, "highlight_row", "op_1")]),
-    };
-    // One router, two connections: the seats live in the router's serve registry.
-    let router = router(api);
-    let first = router
-        .clone()
+async fn the_api_bearer_does_not_replace_a_host_token() {
+    let response = router_with_bearer(Api::default(), "secret".into())
         .oneshot(request(
             "GET",
-            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
+            "/v1/hosts/host_12345678901234567890/commands",
             None,
             None,
         ))
         .await
         .unwrap();
-    assert_eq!(first.status(), StatusCode::OK);
-    let drained = tokio::spawn(axum::body::to_bytes(first.into_body(), 64 * 1024));
-
-    let second = router
-        .oneshot(request(
-            "GET",
-            &format!("/v1/sessions/{id}/serve?tools=highlight_row"),
-            None,
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(second.status(), StatusCode::OK);
-
-    // The first stream must end because the second claimed its seat; a held stream
-    // would make this join hang and the test time out.
-    let body = tokio::time::timeout(std::time::Duration::from_secs(5), drained)
-        .await
-        .expect("the displaced stream must end")
-        .unwrap()
-        .unwrap();
-    let body = String::from_utf8(body.to_vec()).unwrap();
-    assert!(
-        body.contains("op_1"),
-        "backlog missing before the end: {body}"
-    );
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 /// The event stream must carry what happens *after* it is opened.

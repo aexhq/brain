@@ -20,7 +20,7 @@ pub trait TurnServices: Send + Sync {
     async fn dispatch(&self, calls: Vec<ToolInvocation>) -> Result<Vec<ToolResult>, Error>;
     /// The loop's own record on the session's feed. Brain's lifecycle and effect kinds
     /// are refused. Returns the record's sequence.
-    async fn append(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error>;
+    async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error>;
     /// Fire and forget.
     fn telemetry(&self, record: serde_json::Value);
     /// Whether the turn has been cancelled or has run out of time. An executor that

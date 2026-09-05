@@ -2,11 +2,11 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use brain::{Feed, SessionRuntime, Writer};
-use brain_loophost::{LoopLimits, WorkerPool};
+use brain_loophost::{LoopLimits, NativePolicy, WorkerPool};
 use brain_server::{
     EnvironmentRegistry, EnvironmentResources, HttpEnvironmentAdapter, IdempotencyStore,
-    LocalModelBindingStore, ServerApi, ServerConfig, ServerModelExecutor, ServerResources,
-    ServerToolExecutor, WorkerLoopExecutor,
+    LocalModelBindingStore, ResidentHosts, ServerApi, ServerConfig, ServerModelExecutor,
+    ServerResources, ServerToolExecutor, WorkerLoopExecutor,
 };
 use brain_telemetry::{TelemetryRecord, TelemetrySink, telemetry_channel};
 use clap::Parser;
@@ -28,7 +28,7 @@ async fn main() -> anyhow::Result<()> {
         Some(token) => brain_http::router_with_bearer(api, token),
         None => {
             tracing::warn!(
-                "BRAIN_API_TOKEN is not set: the API runs open and share keys will not survive a restart"
+                "BRAIN_API_TOKEN is not set: the API is reachable without authentication"
             );
             brain_http::router(api)
         }
@@ -42,12 +42,19 @@ async fn main() -> anyhow::Result<()> {
 async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let (telemetry, worker) = telemetry_channel();
     tokio::spawn(worker.run(Arc::new(LogSink)));
-    let loops = Arc::new(WorkerPool::new(
-        &config.loop_worker,
-        config.data_dir.join("run"),
-        config.data_dir.join("agentloops"),
-        LoopLimits::default(),
-    ));
+    let loops = Arc::new(
+        WorkerPool::new(
+            &config.loop_worker,
+            config.data_dir.join("run"),
+            config.data_dir.join("agentloops"),
+            LoopLimits::default(),
+        )
+        .with_native_policy(NativePolicy {
+            network: config.wasm_network_allow.iter().cloned().collect(),
+            secrets: config.wasm_secret_allow.iter().cloned().collect(),
+            filesystem: config.wasm_filesystem_allow.iter().cloned().collect(),
+        }),
+    );
     loops
         .ready()
         .await
@@ -103,13 +110,18 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let sessions_dir = brain_server::data_layout::prepare(&config.data_dir)?;
     let writer = Writer::spawn();
     let feed = Arc::new(Feed::new(telemetry.clone()));
+    let resident_hosts = ResidentHosts::default();
     let session_runtime = Arc::new(SessionRuntime {
         max_model_calls_per_turn: config.max_model_calls_per_turn,
         max_turn_ms: config.max_turn_secs.saturating_mul(1_000),
         tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
         loop_executor: Arc::new(WorkerLoopExecutor(loops.clone())),
         model_executor: model,
-        tool_executor: Arc::new(ServerToolExecutor::new(environments.clone())),
+        tool_executor: Arc::new(ServerToolExecutor::new(
+            environments.clone(),
+            resident_hosts.clone(),
+            loops.clone(),
+        )),
         live: feed.live_sender(),
         telemetry: telemetry.clone(),
     });
@@ -122,30 +134,15 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         idempotency: IdempotencyStore::new(brain_server::idempotency::DEFAULT_RETENTION),
         loops,
         environments,
+        resident_hosts,
         models,
         providers,
         metadata,
-        serve_secret: serve_secret(config.api_token.as_deref()),
     })?;
     api.spawn_idle_sweeper();
     api.spawn_environment_sweeper();
     api.spawn_environment_notices();
     Ok(api)
-}
-
-/// The secret share keys are derived from. With an API token it is deterministic, so
-/// share keys stay valid across restarts; open mode gets a random one per boot.
-fn serve_secret(api_token: Option<&str>) -> [u8; 32] {
-    use sha2::Digest as _;
-    match api_token {
-        Some(token) => {
-            let mut digest = sha2::Sha256::new();
-            digest.update(b"brain.serve-secret.v1\0");
-            digest.update(token.as_bytes());
-            digest.finalize().into()
-        }
-        None => rand::random(),
-    }
 }
 
 fn validate(config: &ServerConfig) -> anyhow::Result<()> {
@@ -189,7 +186,14 @@ fn validate(config: &ServerConfig) -> anyhow::Result<()> {
         }
     }
     if config.max_model_calls_per_turn == 0 || config.max_model_calls_per_turn > 1_024 {
-        anyhow::bail!("BRAIN_MAX_DECISIONS must be in 1..=1024");
+        anyhow::bail!("BRAIN_MAX_MODEL_CALLS must be in 1..=1024");
+    }
+    if config
+        .wasm_filesystem_allow
+        .iter()
+        .any(|name| name != "scratch" && name != "workspace")
+    {
+        anyhow::bail!("BRAIN_WASM_FILESYSTEM_ALLOW accepts only scratch and workspace");
     }
     Ok(())
 }

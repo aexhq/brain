@@ -3,14 +3,13 @@
 //!
 //! The transcript grows monotonically, so anything the runtime writes whole per model
 //! call or per turn costs the sum of every intermediate size, not the final one. The
-//! journal records deltas, and a checkpoint only once the deltas since the last one
-//! outweigh the transcript, so the log stays a constant multiple of the transcript.
+//! journal records deltas so the log stays a constant multiple of the transcript.
 
 mod common;
 
 use std::{fs, sync::Arc, time::Duration};
 
-use brain::{Error, JournalStore};
+use brain::{Error, SessionStore};
 use brain_protocol::{ContentBlock, Message, MessageRequest, ModelRequest, TurnOutput};
 use brain_telemetry::telemetry_channel;
 use common::{NoTools, Runtime, ScriptedModel, config, dir_bytes, scripted, temporary_directory};
@@ -111,7 +110,7 @@ async fn the_journal_folds_to_the_final_transcript_after_the_turn() {
     let data_dir = temporary_directory("growth-fold");
     let (_, session_id) = measure_one_turn(&data_dir).await;
     let (publisher, _worker) = telemetry_channel();
-    let store = brain::SessionStore::open(
+    let store = brain::LocalSessionStore::open(
         &data_dir.join("sessions").join(session_id.as_str()),
         brain::Writer::spawn(),
         Arc::new(brain::Feed::new(publisher)),
@@ -137,16 +136,14 @@ async fn an_interrupted_turn_is_closed_and_recorded() {
     {
         let (publisher, _worker) = telemetry_channel();
         let writer = brain::Writer::spawn();
-        let store = brain::SessionStore::open(
+        let store = brain::LocalSessionStore::open(
             &data_dir.join("sessions").join(session_id.as_str()),
             writer.clone(),
             Arc::new(brain::Feed::new(publisher)),
         )
         .unwrap();
-        let row = store.session_row().unwrap();
         store
-            .append(
-                row.through_sequence,
+            .append_sync(
                 &[brain::AppendRecord::new(
                     "turn_started",
                     serde_json::json!({"content": "and then the lights went out"}),
@@ -181,7 +178,7 @@ async fn a_session_comes_back_from_its_journal() {
     let data_dir = temporary_directory("growth-reopen");
     let (_, session_id) = measure_one_turn(&data_dir).await;
     let (publisher, _worker) = telemetry_channel();
-    let store = brain::SessionStore::open(
+    let store = brain::LocalSessionStore::open(
         &data_dir.join("sessions").join(session_id.as_str()),
         brain::Writer::spawn(),
         Arc::new(brain::Feed::new(publisher)),

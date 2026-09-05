@@ -1,9 +1,9 @@
-package aex:agentloop@1.0.0;
+package brain:agentloop@0.1.0;
 
 // An agentloop runs one whole turn. Brain calls `turn` once per user message with the
 // transcript as it stands, the loop's slots, and every event recorded since the loop
 // last ran; inside the call the loop asks Brain to call the model, dispatch tools,
-// append records and publish telemetry as often as it likes, and returns the transcript
+// emit events and publish telemetry as often as it likes, and returns the transcript
 // and slots it wants kept. Brain journals what changed and what every service did.
 //
 // Every payload is JSON in a string, in the shapes `contracts/session/v1` defines:
@@ -63,7 +63,7 @@ interface host {
   dispatch: func(calls-json: string) -> result<string, turn-error>;
   // The loop's own event on the session's feed. Brain's lifecycle and effect kinds
   // are refused. Answers with the record's sequence.
-  append: func(kind: string, payload-json: string) -> result<u64, turn-error>;
+  emit: func(kind: string, payload-json: string) -> result<u64, turn-error>;
   // Fire and forget.
   telemetry: func(record-json: string);
 }

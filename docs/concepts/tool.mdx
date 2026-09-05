@@ -1,123 +1,82 @@
 ---
-title: Tool
-description: What the model sees, and where the call actually goes.
+title: Tools
+description: Typed capabilities implemented in the application or placed in an Environment.
 ---
 
-A tool is two separate things that happen to share a name.
+A Tool is the model-visible contract for one action: a name, description, input schema, and
+optional output schema. Its implementation is either resident in the application process or
+placed in an Environment. The two forms use the same session and journal semantics.
 
-**What the model may be told** is the definition: a name, a description, and an input schema.
-The session is created with a set of these. They are all offered on every model call unless the
-agent loop names a subset.
+## Resident Tools
 
-**Where the call goes** is a binding: the tool's manifest bound to one environment.
+Use `run` when the function already lives in the application creating the session:
 
 ```ts
-tools: [
-  read({ env: workspace }),
-  write({ env: workspace }),
-  bash({ env: workspace }),
-]
+import { tool } from "@aexhq/brain";
+import { z } from "zod";
+
+const lookup = tool({
+  name: "lookup",
+  description: "Look up one item.",
+  input: z.object({ id: z.string() }),
+  options: z.object({ prefix: z.string() }),
+  run: async ({ id }, ctx) => {
+    await ctx.emit("lookup_started", { id });
+    return { value: `${ctx.options.prefix}${id}` };
+  },
+});
+
+const bound = lookup({ prefix: "item:" });
 ```
 
-## A program, its needs, and a checked bind
+Calling the factory binds the options. With no options schema, call it as `lookup()`.
 
-A tool's manifest declares three things. Its `program` is what kind of thing it is: an `esm`
-module, a `shell` script, or an `http` request. Its `needs` are the resources it operates on:
-`fs`, `process`, `net`, `dom`, `secrets`, or a namespaced vendor name. Its `binding_names`
-are the named values injected at runtime, such as an API base URL or a token.
+The SDK registers one resident host with Brain and consumes its command stream over SSE. A command
+contains the session, committed journal sequence, deadline, and Tool invocation. The host validates
+input and output, runs the function, and posts one outcome. `ctx` contains `options`, `callId`,
+`deadline`, `signal`, and `emit`. Awaiting `ctx.emit(kind, data)` waits until Brain has committed the
+extension event.
 
-At session create Brain checks that the bound environment launches the program's kind and
-declares every needed resource, and rejects a mismatch naming the tool, the environment, and
-what is missing. A tool that needs nothing binds anywhere its program can run.
+Resident code has the ambient authority of its application process. No Environment is on that
+execution path.
+
+## Placed Tools
+
+Use `implementation` when an Environment executes the Tool:
 
 ```ts
-import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { promisify } from "node:util";
+import { brainWasm, component, tool } from "@aexhq/brain";
+import { z } from "zod";
 
-export const test = tool({
-  description: "Run the test suite and return the report.",
-  input: z.object({ filter: z.string().optional() }),
-  needs: ["process", "fs"],
-  bindings: { CI_TOKEN: z.string() },
-}, (author) => {
-  author.run(async ({ filter }, context) => {
-    // Plain node. The environment's fs root is the working directory.
-    const passed = await promisify(execFile)("npm", ["test", "--", filter ?? ""], {
-      env: { ...process.env, CI_TOKEN: context.bindings.CI_TOKEN },
-      signal: context.signal,
-    }).then(() => true, () => false);
-    return { passed, report: await readFile("reports/junit.xml", "utf8") };
-  });
+const inspect = tool({
+  name: "inspect",
+  description: "Inspect one workspace path.",
+  input: z.object({ path: z.string() }),
+  options: z.object({ depth: z.number().int().positive() }),
+  implementation: component(new URL("./inspect.wasm", import.meta.url)),
+  needs: ["fs"],
+});
+
+const bound = inspect({
+  env: brainWasm({ filesystem: { workspace: true } }),
+  depth: 2,
 });
 ```
 
-The run context is the binding values plus the invocation plumbing: `signal`, `deadline`,
-`callId`, and `progress`. There are no resource handles. A program reaches the filesystem,
-processes, and the network through the platform it runs on, and the environment's platform
-enforces the policy.
+The deployment must also include `workspace` in `BRAIN_WASM_FILESYSTEM_ALLOW`.
 
-A tool that is one command needs no code at all:
+Placed factories always take `{ env, ...options }`. `implementation` may be a Component, an opaque
+object understood by the selected Environment driver, or a function of parsed options that returns
+that object. `needs` lists resource names Brain checks against the Environment's attach receipt;
+`bindingNames` lists values the Environment injects without copying their plaintext into the
+session journal.
 
-```ts
-export const bash = tool.shell({
-  description: "Run a shell command in the workspace.",
-  input: z.object({ command: z.string() }),
-  output: z.object({ exit_code: z.number(), stdout: z.string(), stderr: z.string() }),
-  needs: ["process"],
-  script: "$command",
-});
-```
+A Component Tool implements [`contracts/tool/v1/tool.wit`](https://github.com/aexhq/brain/blob/main/contracts/tool/v1/tool.wit).
+It receives JSON input, configuration, a call identity, and a deadline, and can emit committed
+extension events through its host import.
 
-See [Write a tool](/brain/docs/guides/write-a-tool).
+## One execution rule
 
-Binding *values* never appear in a manifest or in Brain's journal. They are supplied at
-session create and held the way model credentials are; the environment injects them at
-runtime.
-
-## One artifact, provisioned at attach
-
-`brain build` packages each tool as a `tool/v1` artifact: the manifest above plus the
-program's payload. For `esm` that is a self-contained single-file bundle named by its
-sha-256 (`program.identity`); for `shell` and `http` it is the script or request template
-itself, which the manifest also carries inline. The environment provisions the artifact at
-attach, importing an `esm` bundle once, so a broken tool fails the attach receipt instead of
-the first model call, and re-provisioning by the same identity is idempotent.
-
-## Brain does not run tool code
-
-It logs the call and sends it to the bound environment as `invoke {call_id, tool, input,
-deadline_ms}`, and maps the single outcome `ok | error | timeout | cancelled` onto the tool
-result the loop observes. Brain enforces the deadline itself: an overdue call is killed and
-recorded as `timeout`. The environment owns the implementation, the resources, and the blast
-radius. A tool that hangs, crashes, or is hostile damages its own environment, not the
-process holding your sessions.
-
-That is also why a tool can be anything with an address: a sandbox VM, a browser tab, a
-service you already run, or a process on the user's own laptop.
-
-## Two hostings, one envelope
-
-The `hosting` axis says where the implementation lives; the invocation envelope does not
-change.
-
-- **Client**: the code stays in an application process, declared with
-  [`tool`](/brain/docs/guides/app-tools) and no environment at all. The call is journalled
-  as a `tool_call_started`, parks the turn, and surfaces on a feed; whichever process holds
-  the function runs it and POSTs the outcome back under that record's sequence, idempotently.
-  With an `execute` on the declaration that process is the session's creator, the
-  quickstart's shape, automatic. Without one it is whoever joins the session with its
-  share key and `serve`s the tool: a browser page the backend opened the session for, a
-  CLI on the user's laptop, another service. Brain terminates the connection itself, with no
-  extra server. Availability follows the app being up: an unanswered call dies at Brain's
-  deadline as a clean `timeout`.
-- **Provisioned** (the default for built tools): the tool is a program the environment
-  launches, placed with the factory's `env` option.
-
-## Splitting definition from execution
-
-Because the two halves are independent, the same `read` the model sees can be bound to a
-MicroVM in production and to a local directory in a test, with no change to what the model
-was told.
-
-Leave `tools` out and the model sees none.
+For either form, Brain durably commits `tool_call_started` before dispatch and sends the operation
+once. It records `ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop sees the
+result. Brain never automatically retries a Tool call.

@@ -72,7 +72,7 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
             ));
         }
         if !status.is_success() {
-            return Err(brain::Error::Executor(format!(
+            return Err(brain::Error::Ambiguous(format!(
                 "Environment returned {status}: {}",
                 String::from_utf8_lossy(&body[..body.len().min(16 * 1024)])
             )));

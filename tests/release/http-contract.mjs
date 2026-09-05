@@ -58,7 +58,7 @@ const missingKey = await call("POST", "/v1/agentloops", {
 assert.equal(missingKey.response.status, 400);
 assert.equal(missingKey.result.code, "invalid_request");
 
-const packageBytes = await readFile(new URL("./built/diagnostic.brain.json", import.meta.url));
+const packageBytes = await readFile(new URL("./diagnostic-agentloop.wasm", import.meta.url));
 const admitted = await call("POST", "/v1/agentloops", {
   body: packageBytes,
   contentType: "application/octet-stream",
@@ -70,10 +70,14 @@ const admission = await call("GET", `/v1/agentloops/${admitted.result.identity}`
 assert.deepEqual(admission.result, admitted.result);
 
 const createBody = {
-  agentloop: { identity: admitted.result.identity, configuration: {} },
+  agentloop: { identity: admitted.result.identity, configuration: {}, environment_id: "env_native" },
   model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", api_key: "release-smoke-key" },
   tools: [],
-  environments: [],
+  environments: [{
+    environment_id: "env_native",
+    configuration: { driver: "brain_wasm", network: { allow: [] }, filesystem: { workspace: false }, secrets: [] },
+    bindings: {},
+  }],
 };
 const created = await call("POST", "/v1/sessions", { body: createBody, key: "http-contract-create" });
 assert.equal(created.response.status, 200);

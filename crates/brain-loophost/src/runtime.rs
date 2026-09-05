@@ -1,36 +1,46 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{future::Future, sync::Arc, time::Duration};
 
-use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput, codes};
+use brain_protocol::{AgentloopIdentity, ToolIdentity, TurnError, TurnInput, TurnOutput, codes};
+use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
-use wasmtime::component::{Component, HasSelf, Linker};
-use wasmtime::{
-    Cache, Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap, UpdateDeadline,
+use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
+use wasmtime::{Cache, Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap};
+use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi_http::{
+    Error as HttpError, RequestOptions, WasiBody, WasiHttpCtx, WasiHttpCtxView, WasiHttpHooks,
+    WasiHttpView,
 };
 
-use crate::{HostCall, LoopLimits};
+use crate::{HostCall, LoopLimits, NativeEnvironment};
 
-/// How often the engine's epoch advances. This is the granularity of a guest's compute
-/// bound: a turn is trapped somewhere inside the last tick of its budget. Fine enough
-/// that a two-second budget is held to within half a percent, coarse enough that the
-/// ticker costs one atomic store every ten milliseconds for the whole process.
-const EPOCH_TICK: Duration = Duration::from_millis(10);
+/// A long-running invocation yields to Tokio at this interval while retaining its fixed
+/// total fuel budget.
+const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
 
 mod bindings {
     wasmtime::component::bindgen!({
         path: "../../contracts/agentloop/v1",
         world: "agentloop",
+        imports: { default: async },
+        exports: { default: async },
     });
 }
 
-use bindings::aex::agentloop::types as wit;
+mod tool_bindings {
+    wasmtime::component::bindgen!({
+        path: "../../contracts/tool/v1",
+        world: "tool",
+        imports: { default: async },
+        exports: { default: async },
+    });
+}
 
-/// What answers the guest's host calls while a turn runs. Synchronous on purpose: the
-/// guest toolchain can only import synchronous functions, so the host thread waits.
+use bindings::brain::agentloop::types as wit;
+
+/// What answers the guest's host calls while a turn runs.
+#[async_trait::async_trait]
 pub trait GuestHost: Send + Sync {
-    fn call(&self, call: HostCall) -> Result<String, TurnError>;
+    async fn call(&self, call: HostCall) -> Result<String, TurnError>;
 }
 
 pub struct AdmissionEngine {
@@ -44,21 +54,27 @@ pub struct AdmittedAgentloop {
     pub component: Arc<Component>,
 }
 
+pub struct AdmittedTool {
+    pub digest: ToolIdentity,
+    pub component: Arc<Component>,
+}
+
+pub struct NativeToolInput {
+    pub call_id: String,
+    pub input: serde_json::Value,
+    pub configuration: serde_json::Value,
+    pub deadline_at_ms: u64,
+}
+
 impl AdmissionEngine {
     pub fn new(limits: LoopLimits, allowed_imports: Vec<String>) -> Result<Self, String> {
         let mut config = Config::new();
-        // Epoch interruption, not fuel. Both bound a runaway guest at the same places —
-        // loop backedges and function entries — but fuel decrements and checks a counter
-        // at each one, where an epoch check is a load and a compare against a value the
-        // ticker below advances. Fuel cost 5-13% of an activation and bounded work
-        // rather than time.
-        config.wasm_component_model(true).epoch_interruption(true);
+        config.wasm_component_model(true).consume_fuel(true);
         let cache = Cache::from_file(None).map_err(|error| {
             format!("failed to configure the Wasmtime compilation cache: {error}")
         })?;
         config.cache(Some(cache));
         let engine = Engine::new(&config).map_err(|error| error.to_string())?;
-        spawn_epoch_ticker(&engine)?;
         Ok(Self {
             engine,
             limits,
@@ -70,26 +86,11 @@ impl AdmissionEngine {
         if package_bytes.len() > self.limits.package_bytes {
             return Err("Agentloop package exceeds the configured admission limit".into());
         }
-        let (package, component_bytes) = crate::package::decode(package_bytes)?;
-        if package.manifest.contract_version != brain_protocol::AGENTLOOP_CONTRACT_VERSION {
-            return Err(format!(
-                "Agentloop contract version {:?} is not supported; this Brain runs {}",
-                package.manifest.contract_version,
-                brain_protocol::AGENTLOOP_CONTRACT_VERSION
-            ));
-        }
-        let actual = AgentloopIdentity::new(hex_digest(&component_bytes));
-        if actual != package.manifest.component_identity {
-            return Err("Agentloop component digest does not match its manifest".into());
-        }
-        let component = Component::new(&self.engine, &component_bytes)
+        let actual = AgentloopIdentity::new(hex_digest(package_bytes));
+        let component = Component::new(&self.engine, package_bytes)
             .map_err(|error| format!("Agentloop component is invalid: {error}"))?;
         for (name, _) in component.component_type().imports(&self.engine) {
-            if !self
-                .allowed_imports
-                .iter()
-                .any(|allowed| name == allowed || name.starts_with(&format!("{allowed}/")))
-            {
+            if !self.allowed_imports.iter().any(|allowed| name == allowed) {
                 return Err(format!("Agentloop import {name:?} is not allowed"));
             }
         }
@@ -100,8 +101,61 @@ impl AdmissionEngine {
         {
             return Err("Agentloop component does not export turn".into());
         }
+        let mut linker = Linker::<HostState>::new(&self.engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|error| error.to_string())?;
+        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)
+            .map_err(|error| error.to_string())?;
+        bindings::brain::agentloop::host::add_to_linker::<_, HasSelf<HostState>>(
+            &mut linker,
+            |state| state,
+        )
+        .map_err(|error| error.to_string())?;
+        let instance = linker
+            .instantiate_pre(&component)
+            .map_err(|error| format!("Agentloop imports do not match its world: {error}"))?;
+        bindings::AgentloopPre::new(instance)
+            .map_err(|error| format!("Agentloop exports do not match its world: {error}"))?;
         Ok(AdmittedAgentloop {
             digest: actual,
+            component: Arc::new(component),
+        })
+    }
+
+    pub fn admit_tool(&self, component_bytes: &[u8]) -> Result<AdmittedTool, String> {
+        if component_bytes.len() > self.limits.package_bytes {
+            return Err("Tool Component exceeds the configured admission limit".into());
+        }
+        let digest = ToolIdentity::new(hex_digest(component_bytes));
+        let component = Component::new(&self.engine, component_bytes)
+            .map_err(|error| format!("Tool Component is invalid: {error}"))?;
+        for (name, _) in component.component_type().imports(&self.engine) {
+            if !crate::TOOL_IMPORTS.contains(&name) && !crate::CAPABILITY_IMPORTS.contains(&name) {
+                return Err(format!("Tool import {name:?} is not allowed"));
+            }
+        }
+        if component
+            .component_type()
+            .get_export(&self.engine, "run")
+            .is_none()
+        {
+            return Err("Tool Component does not export run".into());
+        }
+        let mut linker = Linker::<HostState>::new(&self.engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|error| error.to_string())?;
+        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)
+            .map_err(|error| error.to_string())?;
+        tool_bindings::brain::tool::host::add_to_linker::<_, HasSelf<HostState>>(
+            &mut linker,
+            |state| state,
+        )
+        .map_err(|error| error.to_string())?;
+        let instance = linker
+            .instantiate_pre(&component)
+            .map_err(|error| format!("Tool imports do not match its world: {error}"))?;
+        tool_bindings::ToolPre::new(instance)
+            .map_err(|error| format!("Tool exports do not match its world: {error}"))?;
+        Ok(AdmittedTool {
+            digest,
             component: Arc::new(component),
         })
     }
@@ -114,59 +168,210 @@ impl AdmissionEngine {
     }
 }
 
-/// The store's data: the memory limiter, the bridge for the turn in flight, and the
-/// clock the compute budget is kept against.
+/// The store's data: the memory limiter, bridge, and explicitly granted capabilities.
 pub struct HostState {
     limits: StoreLimits,
     bridge: Option<Arc<dyn GuestHost>>,
-    /// When the running turn started.
-    started: Instant,
-    /// Time the guest spent waiting on the host during this turn. Not the guest's own
-    /// time, so not charged against its compute budget.
-    host_elapsed: Duration,
-    budget: Duration,
+    table: ResourceTable,
+    wasi: WasiCtx,
+    http: WasiHttpCtx,
+    network: NetworkHooks,
+    _scratch: tempfile::TempDir,
+    _secrets: tempfile::TempDir,
 }
 
 impl HostState {
-    fn call(&mut self, call: HostCall) -> Result<String, TurnError> {
+    fn new(
+        limits: StoreLimits,
+        bridge: Arc<dyn GuestHost>,
+        environment: NativeEnvironment,
+    ) -> Result<Self, TurnError> {
+        let scratch = tempfile::tempdir().map_err(host_failure)?;
+        let secrets = tempfile::tempdir().map_err(host_failure)?;
+        for (name, value) in &environment.secrets {
+            if name.is_empty()
+                || name.contains('/')
+                || name.contains('\\')
+                || name == "."
+                || name == ".."
+            {
+                return Err(host_failure(format!("invalid secret name {name:?}")));
+            }
+            std::fs::write(secrets.path().join(name), value).map_err(host_failure)?;
+        }
+        let mut wasi = WasiCtxBuilder::new();
+        if environment.scratch {
+            wasi.preopened_dir(scratch.path(), "/scratch", FsPerms::ReadWrite)
+                .map_err(host_failure)?;
+        }
+        wasi.preopened_dir(secrets.path(), "/secrets", FsPerms::ReadOnly)
+            .map_err(host_failure)?;
+        if let Some(workspace) = &environment.workspace {
+            wasi.preopened_dir(workspace, "/workspace", FsPerms::ReadWrite)
+                .map_err(host_failure)?;
+        }
+        let mut http = WasiHttpCtx::new();
+        http.set_field_size_limit(64 * 1024);
+        Ok(Self {
+            limits,
+            bridge: Some(bridge),
+            table: ResourceTable::new(),
+            wasi: wasi.build(),
+            http,
+            network: NetworkHooks {
+                allow: environment.network_allow,
+            },
+            _scratch: scratch,
+            _secrets: secrets,
+        })
+    }
+
+    async fn call(&mut self, call: HostCall) -> Result<String, TurnError> {
         let Some(bridge) = &self.bridge else {
             return Err(TurnError::new(
                 "no_turn",
                 "the guest called the host outside a turn",
             ));
         };
-        let at = Instant::now();
-        let result = bridge.call(call);
-        self.host_elapsed += at.elapsed();
-        result
+        bridge.call(call).await
     }
 }
 
-impl bindings::aex::agentloop::host::Host for HostState {
-    fn model(&mut self, request_json: String) -> Result<String, wit::TurnError> {
+impl WasiView for HostState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WasiHttpView for HostState {
+    fn http(&mut self) -> WasiHttpCtxView<'_> {
+        WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: &mut self.network,
+        }
+    }
+}
+
+struct NetworkHooks {
+    allow: Vec<String>,
+}
+
+impl WasiHttpHooks for NetworkHooks {
+    fn send_request(
+        &mut self,
+        request: http::Request<WasiBody>,
+        options: Option<RequestOptions>,
+        _io: Box<dyn Future<Output = Result<(), HttpError>> + Send>,
+    ) -> Box<
+        dyn Future<
+                Output = Result<
+                    (
+                        http::Response<WasiBody>,
+                        Box<dyn Future<Output = Result<(), HttpError>> + Send>,
+                    ),
+                    HttpError,
+                >,
+            > + Send,
+    > {
+        let allowed = network_allowed(&self.allow, request.uri());
+        Box::new(async move {
+            if !allowed {
+                return Err(HttpError::HttpRequestDenied);
+            }
+            let (response, io) = wasmtime_wasi_http::default_send_request(
+                request,
+                Some(bounded_http_options(options)),
+            )
+            .await?;
+            Ok((
+                response.map(|body| body.boxed_unsync()),
+                Box::new(io) as Box<dyn Future<Output = Result<(), HttpError>> + Send>,
+            ))
+        })
+    }
+}
+
+fn network_allowed(allow: &[String], uri: &http::Uri) -> bool {
+    uri.scheme_str()
+        .zip(uri.authority().map(|value| value.as_str()))
+        .is_some_and(|(scheme, authority)| {
+            let origin = format!("{scheme}://{authority}");
+            allow.iter().any(|entry| {
+                entry.eq_ignore_ascii_case(authority)
+                    || entry.trim_end_matches('/').eq_ignore_ascii_case(&origin)
+            })
+        })
+}
+
+fn bounded_http_options(options: Option<RequestOptions>) -> RequestOptions {
+    const MAX: Duration = Duration::from_secs(120);
+    let options = options.unwrap_or_default();
+    RequestOptions {
+        connect_timeout: Some(options.connect_timeout.unwrap_or(MAX).min(MAX)),
+        first_byte_timeout: Some(options.first_byte_timeout.unwrap_or(MAX).min(MAX)),
+        between_bytes_timeout: Some(options.between_bytes_timeout.unwrap_or(MAX).min(MAX)),
+    }
+}
+
+impl bindings::brain::agentloop::host::Host for HostState {
+    async fn model(&mut self, request_json: String) -> Result<String, wit::TurnError> {
         self.call(HostCall::Model { request_json })
+            .await
             .map_err(wit_error)
     }
 
-    fn dispatch(&mut self, calls_json: String) -> Result<String, wit::TurnError> {
+    async fn dispatch(&mut self, calls_json: String) -> Result<String, wit::TurnError> {
         self.call(HostCall::Dispatch { calls_json })
+            .await
             .map_err(wit_error)
     }
 
-    fn append(&mut self, kind: String, payload_json: String) -> Result<u64, wit::TurnError> {
+    async fn emit(&mut self, kind: String, payload_json: String) -> Result<u64, wit::TurnError> {
         let answer = self
-            .call(HostCall::Append { kind, payload_json })
+            .call(HostCall::Emit { kind, payload_json })
+            .await
             .map_err(wit_error)?;
         answer.trim().parse().map_err(|_| {
             wit_error(TurnError::new(
                 "internal",
-                "append answered without a sequence",
+                "emit answered without a sequence",
             ))
         })
     }
 
-    fn telemetry(&mut self, record_json: String) {
-        let _ = self.call(HostCall::Telemetry { record_json });
+    async fn telemetry(&mut self, record_json: String) {
+        let _ = self.call(HostCall::Telemetry { record_json }).await;
+    }
+}
+
+impl tool_bindings::brain::tool::host::Host for HostState {
+    async fn emit(
+        &mut self,
+        kind: String,
+        payload_json: String,
+    ) -> Result<u64, tool_bindings::brain::tool::types::ToolError> {
+        let answer = self
+            .call(HostCall::Emit { kind, payload_json })
+            .await
+            .map_err(|error| tool_bindings::brain::tool::types::ToolError {
+                code: error.code,
+                message: error.message,
+            })?;
+        answer
+            .trim()
+            .parse()
+            .map_err(|_| tool_bindings::brain::tool::types::ToolError {
+                code: "internal".into(),
+                message: "emit answered without a sequence".into(),
+            })
+    }
+
+    async fn telemetry(&mut self, record_json: String) {
+        let _ = self.call(HostCall::Telemetry { record_json }).await;
     }
 }
 
@@ -178,132 +383,42 @@ fn wit_error(error: TurnError) -> wit::TurnError {
     }
 }
 
-/// Warm instances, keyed by session and component: the guest that answered a session's
-/// last turn, kept alive so the next one skips instantiation.
-///
-/// This is a cache, not a contract: an entry can vanish at any moment (eviction, a trap,
-/// a worker restart), so a correct agentloop keeps everything it needs in its transcript
-/// and slots.
-#[derive(Default)]
-pub struct WarmInstances {
-    entries: std::sync::Mutex<Vec<WarmEntry>>,
-}
-
 /// Core instances one guest may hold: its own modules plus the shims wasmtime builds
 /// for its imports.
 const MAX_CORE_INSTANCES: usize = 8;
 
-/// Sessions kept warm at once. Each entry is a live JS engine whose heap holds one
-/// conversation, so this bounds worker memory the way `running` bounds instances.
-const WARM_SESSIONS: usize = 8;
-
-struct WarmEntry {
-    session: String,
-    digest: AgentloopIdentity,
-    store: Store<HostState>,
-    bindings: bindings::Agentloop,
-}
-
-impl WarmInstances {
-    fn take(&self, session: &str, digest: &AgentloopIdentity) -> Option<WarmEntry> {
-        let mut entries = self.entries.lock().ok()?;
-        let at = entries
-            .iter()
-            .position(|entry| entry.session == session && &entry.digest == digest)?;
-        Some(entries.remove(at))
-    }
-
-    fn keep(&self, entry: WarmEntry) {
-        let Ok(mut entries) = self.entries.lock() else {
-            return;
-        };
-        entries.retain(|kept| kept.session != entry.session);
-        if entries.len() >= WARM_SESSIONS {
-            entries.remove(0);
-        }
-        entries.push(entry);
-    }
-}
-
 impl AdmittedAgentloop {
-    /// Runs one turn on the calling thread. The guest's host calls go to `bridge` and
-    /// block this thread until answered; only the guest's own compute counts against
-    /// `limits.wall_time`.
-    pub fn turn(
+    /// Runs one turn in a fresh Store and Component instance. Only compiled code is
+    /// retained between invocations.
+    pub async fn turn(
         &self,
         engine: &Engine,
         limits: &LoopLimits,
-        warm: &WarmInstances,
-        session: &str,
+        environment: NativeEnvironment,
         input: TurnInput,
         bridge: Arc<dyn GuestHost>,
     ) -> Result<TurnOutput, TurnError> {
-        let mut entry = match warm.take(session, &self.digest) {
-            Some(entry) => entry,
-            None => {
-                // A component that imports the host is more than one core instance:
-                // wasmtime lowers its imports into shim instances beside the guest's
-                // own modules. The count is fixed by the component's structure, not by
-                // anything the guest does at run time, so this only needs headroom.
-                let store_limits = StoreLimitsBuilder::new()
-                    .memory_size(limits.linear_memory_bytes)
-                    .instances(MAX_CORE_INSTANCES)
-                    .build();
-                let mut store = Store::new(
-                    engine,
-                    HostState {
-                        limits: store_limits,
-                        bridge: None,
-                        started: Instant::now(),
-                        host_elapsed: Duration::ZERO,
-                        budget: limits.wall_time,
-                    },
-                );
-                store.limiter(|state| &mut state.limits);
-                // The compute budget is kept against the guest's own time: when the
-                // epoch deadline fires, time the guest spent inside host calls is given
-                // back and the deadline is pushed out by that much.
-                store.epoch_deadline_callback(|context| {
-                    let state = context.data();
-                    let guest = state.started.elapsed().saturating_sub(state.host_elapsed);
-                    if guest >= state.budget {
-                        Err(wasmtime::Error::msg(WALL_TIME_EXCEEDED))
-                    } else {
-                        Ok(UpdateDeadline::Continue(epoch_deadline_ticks(
-                            state.budget - guest,
-                        )))
-                    }
-                });
-                let mut linker = Linker::<HostState>::new(engine);
-                bindings::aex::agentloop::host::add_to_linker::<_, HasSelf<HostState>>(
-                    &mut linker,
-                    |state| state,
-                )
-                .map_err(host_failure)?;
-                let bindings =
-                    bindings::Agentloop::instantiate(&mut store, &self.component, &linker)
-                        .map_err(host_failure)?;
-                WarmEntry {
-                    session: session.to_owned(),
-                    digest: self.digest.clone(),
-                    store,
-                    bindings,
-                }
-            }
-        };
-        {
-            let state = entry.store.data_mut();
-            state.bridge = Some(bridge);
-            state.started = Instant::now();
-            state.host_elapsed = Duration::ZERO;
-            state.budget = limits.wall_time;
-        }
-        entry
-            .store
-            .set_epoch_deadline(epoch_deadline_ticks(limits.wall_time));
+        let store_limits = StoreLimitsBuilder::new()
+            .memory_size(limits.linear_memory_bytes)
+            .instances(MAX_CORE_INSTANCES)
+            .build();
+        let state = HostState::new(store_limits, bridge, environment)?;
+        let mut store = Store::new(engine, state);
+        store.limiter(|state| &mut state.limits);
+        configure_fuel(&mut store, limits)?;
+        let mut linker = Linker::<HostState>::new(engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(host_failure)?;
+        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker).map_err(host_failure)?;
+        bindings::brain::agentloop::host::add_to_linker::<_, HasSelf<HostState>>(
+            &mut linker,
+            |state| state,
+        )
+        .map_err(host_failure)?;
+        let bindings = bindings::Agentloop::instantiate_async(&mut store, &self.component, &linker)
+            .await
+            .map_err(host_failure)?;
         let input = to_wit_input(input).map_err(host_failure)?;
-        let called = entry.bindings.call_turn(&mut entry.store, &input);
-        entry.store.data_mut().bridge = None;
+        let called = bindings.call_turn(&mut store, &input).await;
         let output = match called {
             Ok(Ok(output)) => output,
             // The loop's own failure, with the code it chose.
@@ -318,14 +433,64 @@ impl AdmittedAgentloop {
             // dropped rather than kept.
             Err(error) => return Err(host_failure(turn_error(error))),
         };
-        warm.keep(entry);
         let output = from_wit_output(output).map_err(host_failure)?;
         validate_output(&output).map_err(host_failure)?;
         Ok(output)
     }
 }
 
-const WALL_TIME_EXCEEDED: &str = "Agentloop turn exceeded its compute budget";
+impl AdmittedTool {
+    pub async fn run(
+        &self,
+        engine: &Engine,
+        limits: &LoopLimits,
+        environment: NativeEnvironment,
+        input: NativeToolInput,
+        bridge: Arc<dyn GuestHost>,
+    ) -> Result<serde_json::Value, TurnError> {
+        let store_limits = StoreLimitsBuilder::new()
+            .memory_size(limits.linear_memory_bytes)
+            .instances(MAX_CORE_INSTANCES)
+            .build();
+        let state = HostState::new(store_limits, bridge, environment)?;
+        let mut store = Store::new(engine, state);
+        store.limiter(|state| &mut state.limits);
+        configure_fuel(&mut store, limits)?;
+        let mut linker = Linker::<HostState>::new(engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(host_failure)?;
+        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker).map_err(host_failure)?;
+        tool_bindings::brain::tool::host::add_to_linker::<_, HasSelf<HostState>>(
+            &mut linker,
+            |state| state,
+        )
+        .map_err(host_failure)?;
+        let bindings = tool_bindings::Tool::instantiate_async(&mut store, &self.component, &linker)
+            .await
+            .map_err(host_failure)?;
+        let input = tool_bindings::brain::tool::types::Invocation {
+            call_id: input.call_id,
+            input_json: serde_json::to_string(&input.input).map_err(host_failure)?,
+            configuration_json: serde_json::to_string(&input.configuration)
+                .map_err(host_failure)?,
+            deadline_at_ms: input.deadline_at_ms,
+        };
+        match bindings.call_run(&mut store, &input).await {
+            Ok(Ok(output)) => serde_json::from_str(&output)
+                .map_err(|error| host_failure(format!("Tool output is invalid JSON: {error}"))),
+            Ok(Err(error)) => Err(TurnError::new(error.code, error.message)),
+            Err(error) => Err(host_failure(turn_error(error))),
+        }
+    }
+}
+
+const COMPUTE_BUDGET_EXCEEDED: &str = "native invocation exceeded its compute budget";
+
+fn configure_fuel(store: &mut Store<HostState>, limits: &LoopLimits) -> Result<(), TurnError> {
+    store.set_fuel(limits.fuel).map_err(host_failure)?;
+    store
+        .fuel_async_yield_interval(Some(FUEL_YIELD_INTERVAL.min(limits.fuel).max(1)))
+        .map_err(host_failure)
+}
 
 /// A turn that failed on this side of the guest: a trap, a budget, an output the
 /// contract refuses. The loop did not choose a code, so it gets the one that says so.
@@ -333,46 +498,12 @@ fn host_failure(message: impl std::fmt::Display) -> TurnError {
     TurnError::new(codes::failure::AGENTLOOP_FAILED, message.to_string())
 }
 
-/// A guest stopped by its epoch deadline reports the budget it exceeded, not the trap
-/// that stopped it.
+/// A guest stopped by fuel exhaustion reports the budget it exceeded, not Wasmtime's trap.
 fn turn_error(error: wasmtime::Error) -> String {
-    if error.downcast_ref::<Trap>() == Some(&Trap::Interrupt)
-        || error
-            .chain()
-            .any(|cause| cause.to_string().contains(WALL_TIME_EXCEEDED))
-    {
-        return WALL_TIME_EXCEEDED.into();
+    if error.downcast_ref::<Trap>() == Some(&Trap::OutOfFuel) {
+        return COMPUTE_BUDGET_EXCEEDED.into();
     }
     error.to_string()
-}
-
-/// Advances the engine's epoch until the engine is dropped. Held as a weak reference so
-/// the ticker does not keep an engine alive, and so a process that builds one and drops
-/// it does not leak a thread.
-fn spawn_epoch_ticker(engine: &Engine) -> Result<(), String> {
-    let weak = engine.weak();
-    std::thread::Builder::new()
-        .name("agentloop-epoch".into())
-        .spawn(move || {
-            loop {
-                match weak.upgrade() {
-                    Some(engine) => {
-                        engine.increment_epoch();
-                        drop(engine);
-                    }
-                    None => return,
-                }
-                std::thread::sleep(EPOCH_TICK);
-            }
-        })
-        .map_err(|error| format!("failed to start the Agentloop epoch ticker: {error}"))?;
-    Ok(())
-}
-
-/// Ticks that cover `budget`, at least one.
-fn epoch_deadline_ticks(budget: Duration) -> u64 {
-    let ticks = budget.as_nanos().div_ceil(EPOCH_TICK.as_nanos());
-    u64::try_from(ticks).unwrap_or(u64::MAX).max(1)
 }
 
 fn to_wit_input(input: TurnInput) -> Result<wit::TurnInput, String> {
@@ -454,11 +585,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::mpsc,
-        thread,
-        time::{Duration, Instant},
-    };
+    use std::time::{Duration, Instant};
 
     use wasm_encoder::{
         BlockType, CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction,
@@ -468,25 +595,39 @@ mod tests {
 
     use super::*;
 
-    /// The guest's budget in these tests. Short, because the test waits it out.
-    const BUDGET: Duration = Duration::from_millis(200);
+    const TEST_FUEL: u64 = 10_000;
+    const CEILING: Duration = Duration::from_secs(10);
+    const HOST_WAIT: Duration = Duration::from_millis(250);
 
-    /// How long before the guest is called unstopped. Far above the budget, so a loaded
-    /// machine or a coarse sleep clock cannot fail it, and far below "forever", which is
-    /// what this test exists to rule out.
-    const CEILING: Duration = Duration::from_secs(20);
+    struct SlowHost;
+
+    #[async_trait::async_trait]
+    impl GuestHost for SlowHost {
+        async fn call(&self, _call: HostCall) -> Result<String, TurnError> {
+            tokio::time::sleep(HOST_WAIT).await;
+            Ok(String::new())
+        }
+    }
+
+    fn empty_environment() -> NativeEnvironment {
+        NativeEnvironment {
+            scratch: false,
+            workspace: None,
+            network_allow: Vec::new(),
+            secrets: Default::default(),
+        }
+    }
 
     #[test]
-    fn a_budget_becomes_at_least_one_tick() {
-        assert_eq!(epoch_deadline_ticks(Duration::ZERO), 1);
-        assert_eq!(epoch_deadline_ticks(Duration::from_nanos(1)), 1);
-        assert_eq!(epoch_deadline_ticks(EPOCH_TICK), 1);
-        assert_eq!(
-            epoch_deadline_ticks(EPOCH_TICK + Duration::from_nanos(1)),
-            2
-        );
-        assert_eq!(epoch_deadline_ticks(Duration::from_secs(2)), 200);
-        assert_eq!(epoch_deadline_ticks(Duration::MAX), u64::MAX);
+    fn native_network_is_default_deny_and_matches_only_an_authority_or_origin() {
+        let https = "https://api.example.com/path".parse().unwrap();
+        let http = "http://api.example.com/path".parse().unwrap();
+        assert!(!network_allowed(&[], &https));
+        assert!(network_allowed(&["api.example.com".into()], &https));
+        assert!(network_allowed(&["api.example.com".into()], &http));
+        assert!(network_allowed(&["https://api.example.com".into()], &https));
+        assert!(!network_allowed(&["https://api.example.com".into()], &http));
+        assert!(!network_allowed(&["example.com".into()], &https));
     }
 
     /// `(func (export "spin") (loop (br 0)))` - a backedge and nothing else, so the only
@@ -520,108 +661,74 @@ mod tests {
         module.finish()
     }
 
-    /// The epoch advances and a deadline set against it traps: the smallest module that
-    /// never returns is stopped within its budget.
-    #[test]
-    fn a_guest_that_never_returns_is_trapped_within_its_budget() {
-        let admission = AdmissionEngine::new(
-            LoopLimits {
-                wall_time: BUDGET,
-                ..LoopLimits::default()
-            },
-            Vec::new(),
-        )
-        .unwrap();
+    /// The smallest module that never returns consumes its fixed work allowance.
+    #[tokio::test]
+    async fn a_guest_that_never_returns_is_trapped_within_its_budget() {
+        let limits = LoopLimits::default();
+        let fuel = limits.fuel;
+        let admission = AdmissionEngine::new(limits, Vec::new()).unwrap();
         let engine = admission.engine();
 
         let module = CoreModule::new(engine, spinning_module()).unwrap();
         let mut store = Store::new(engine, ());
-        store.set_epoch_deadline(epoch_deadline_ticks(BUDGET));
-        let instance = Instance::new(&mut store, &module, &[]).unwrap();
+        store.set_fuel(fuel).unwrap();
+        store
+            .fuel_async_yield_interval(Some(FUEL_YIELD_INTERVAL))
+            .unwrap();
+        let instance = Instance::new_async(&mut store, &module, &[]).await.unwrap();
         let spin = instance
             .get_typed_func::<(), ()>(&mut store, "spin")
             .unwrap();
 
-        let (finished, waiting) = mpsc::channel();
         let started = Instant::now();
-        thread::spawn(move || {
-            let _ = finished.send(spin.call(&mut store, ()));
-        });
-        let outcome = waiting.recv_timeout(CEILING).unwrap_or_else(|_| {
-            panic!("the guest was still running after {CEILING:?} on a {BUDGET:?} budget")
-        });
+        let outcome = tokio::time::timeout(CEILING, spin.call_async(&mut store, ()))
+            .await
+            .unwrap_or_else(|_| {
+                panic!("the guest was still running after {CEILING:?} on its fuel budget")
+            });
         let elapsed = started.elapsed();
 
         let error = outcome.expect_err("a guest that never returns must not return");
         assert_eq!(
             error.downcast_ref::<Trap>(),
-            Some(&Trap::Interrupt),
-            "the guest must be stopped by the epoch deadline, not by anything else: {error}"
+            Some(&Trap::OutOfFuel),
+            "the guest must be stopped by fuel exhaustion, not by anything else: {error}"
         );
-        assert_eq!(turn_error(error), WALL_TIME_EXCEEDED);
+        assert_eq!(turn_error(error), COMPUTE_BUDGET_EXCEEDED);
         assert!(
             elapsed < CEILING,
-            "the guest ran for {elapsed:?} against a {BUDGET:?} budget"
+            "the guest ran for {elapsed:?} after exhausting its fuel"
         );
     }
 
-    /// Time spent in a host call is given back: a guest whose budget would have expired
-    /// during a long host call keeps running afterwards.
-    #[test]
-    fn host_call_time_is_not_charged_to_the_guest() {
-        let admission = AdmissionEngine::new(
-            LoopLimits {
-                wall_time: BUDGET,
-                ..LoopLimits::default()
-            },
-            Vec::new(),
+    #[tokio::test]
+    async fn a_slow_async_host_wait_consumes_no_guest_fuel() {
+        let admission = AdmissionEngine::new(LoopLimits::default(), Vec::new()).unwrap();
+        let engine = admission.engine();
+        let state = HostState::new(
+            StoreLimitsBuilder::new().build(),
+            Arc::new(SlowHost),
+            empty_environment(),
         )
         .unwrap();
-        let engine = admission.engine();
-        let mut store = Store::new(
-            engine,
-            HostState {
-                limits: StoreLimitsBuilder::new().build(),
-                bridge: None,
-                started: Instant::now(),
-                host_elapsed: Duration::ZERO,
-                budget: BUDGET,
+        let mut store = Store::new(engine, state);
+        configure_fuel(
+            &mut store,
+            &LoopLimits {
+                fuel: TEST_FUEL,
+                ..LoopLimits::default()
             },
-        );
-        store.epoch_deadline_callback(|context| {
-            let state = context.data();
-            let guest = state.started.elapsed().saturating_sub(state.host_elapsed);
-            if guest >= state.budget {
-                Err(wasmtime::Error::msg(WALL_TIME_EXCEEDED))
-            } else {
-                Ok(UpdateDeadline::Continue(epoch_deadline_ticks(
-                    state.budget - guest,
-                )))
-            }
-        });
-        store.set_epoch_deadline(epoch_deadline_ticks(BUDGET));
-        // Pretend the guest spent three budgets inside the host before running.
-        thread::sleep(BUDGET * 3);
-        store.data_mut().host_elapsed = BUDGET * 3;
-        let module = CoreModule::new(engine, spinning_module()).unwrap();
-        let instance = Instance::new(&mut store, &module, &[]).unwrap();
-        let spin = instance
-            .get_typed_func::<(), ()>(&mut store, "spin")
-            .unwrap();
+        )
+        .unwrap();
         let started = Instant::now();
-        let error = spin.call(&mut store, ()).unwrap_err();
-        let elapsed = started.elapsed();
-        assert_eq!(turn_error(error), WALL_TIME_EXCEEDED);
-        assert!(
-            elapsed >= BUDGET / 2,
-            "the guest was stopped after {elapsed:?}, before it had its own {BUDGET:?}"
-        );
-    }
-
-    #[test]
-    fn an_engine_can_be_dropped_while_its_epoch_is_being_driven() {
-        for _ in 0..4 {
-            drop(AdmissionEngine::new(LoopLimits::default(), Vec::new()).unwrap());
-        }
+        store
+            .data_mut()
+            .call(HostCall::Telemetry {
+                record_json: "{}".into(),
+            })
+            .await
+            .unwrap();
+        assert!(started.elapsed() >= HOST_WAIT);
+        assert_eq!(store.get_fuel().unwrap(), TEST_FUEL);
     }
 }
