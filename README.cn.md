@@ -5,7 +5,7 @@
   ▀▀  ▀▀     |______/___|__|___|___|_______|__|____|
 </pre>
 
-<p align="center"><strong>极简、极速、可扩展的 agent 运行时。</strong></p>
+<p align="center"><strong>极简、分布式、可扩展的 agent 运行时。</strong></p>
 
 <p align="center">
   <a href="https://github.com/aexhq/brain/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/aexhq/brain/actions/workflows/ci.yml/badge.svg" /></a>
@@ -18,6 +18,7 @@
   <a href="https://aex.dev/brain/docs/reference/api">API 参考</a> ·
   <a href="https://aex.dev/brain">官网</a> ·
   <a href="https://github.com/aexhq/extensions">官方扩展</a> ·
+  <a href="ROADMAP.md">路线图</a> ·
   <a href="README.md">English</a>
 </p>
 
@@ -26,8 +27,8 @@
 
 ## 这是什么
 
-**Brain** 是一个持久化 agent 会话内核。Agentloop 决定一轮如何进行；Brain 管理唯一的会话日志、
-模型调用、工具分发、取消和结果。应用显式提供模型、Agentloop、工具与环境。
+**Brain** 是一个独立、极简、分布式、可扩展的 agent 运行时。应用通过小型公共接口组合 Agentloop、
+模型、工具和环境。同一会话可以调用多个环境中的工具；应用自行提供产品策略、调度和基础设施。
 
 - `component(urlOrBytes)` 包装已经编译好的 WebAssembly Component。Brain 接收原始 Wasm，
   不编译应用源码。
@@ -50,17 +51,39 @@ Brain 在发送外部副作用之前先把意图持久化提交，只发送一�
 常驻工具通过一条注册主机 SSE 连接接收命令。`ctx.emit(kind, data)` 把扩展事件提交到同一份日志，
 Promise 在提交完成后才返回。
 
-## 工作原理
+## 架构
 
-```text
-应用 <------ HTTP / SSE ------> Brain
-                              |
-                              +-- 每个会话一份规范日志
-                              +-- 模型提供商
-                              +-- Agentloop 环境
-                              +-- 工具环境
-                              `-- 常驻应用主机（SSE）
+Agentloop 控制上下文，决定何时调用模型或工具；Brain 协调执行并记录结果。
+同一会话可以使用原生工具、应用中的函数，以及多个远程环境中的工具。
+
+```mermaid
+flowchart LR
+  subgraph App["你的应用"]
+    Client["SDK / HTTP 客户端"]
+    Resident["常驻工具"]
+  end
+
+  subgraph Brain["Brain 运行时"]
+    Server["HTTP / SSE 服务器<br/>会话协调"]
+    Journal[("本地日志<br/>对话、slots 和事件")]
+    subgraph Worker["brainWasm · Wasmtime worker"]
+      Loop["Agentloop Component"]
+      Native["原生工具 Component"]
+    end
+    Server <-->|"提交 / 读取"| Journal
+    Server <-->|"激活 / host 调用"| Loop
+    Server <-->|"调用 / 结果"| Native
+  end
+
+  Client <-->|"HTTP / SSE"| Server
+  Resident <-->|"host SSE / 结果"| Server
+  Server <-->|"模型调用"| Models["模型提供商"]
+  Server <-->|"环境协议"| EnvA["环境 A<br/>工具与资源"]
+  Server <-->|"环境协议"| EnvB["环境 B<br/>工具与资源"]
 ```
+
+默认每轮结束后释放执行资源，对话与已记录事件仍可读取。环境提供方独立管理资源分配、TTL 和清理，
+会话挂起不会自动销毁或恢复环境资源。
 
 Brain 是基于 [Tokio](https://tokio.rs/) 的原生 Rust 二进制文件，用
 [Axum](https://github.com/tokio-rs/axum) 提供 HTTP 和 SSE API，本地部署无需外部存储。
@@ -125,20 +148,6 @@ const bound = custom({ env: brainWasm() });
 默认每轮结束后释放会话执行状态，重启时按需读取会话，不扫描所有对话日志。可重建的检查点加快恢复；
 已编译并预链接的 Wasm 模板跨调用复用，每次调用使用新的实例。原生工具拥有独立于 Agentloop 的并发容量。
 历史对比数据见 [BENCHMARKS.md](BENCHMARKS.md)，不能代表当前实现的性能承诺。
-
-## 路线图
-
-- [x] 最小、独立、可组合的运行时；Aex 与第三方使用相同接口
-- [x] 先提交后执行，不自动重试工具或环境操作
-- [x] 按需加载、每轮结束释放、可离线读取的会话记录和 transcript API
-- [x] Agentloop 事件分页读取、事件写入、每会话独立订阅
-- [x] 官方参考 Agentloop 将中断和环境故障交给模型；用户决定何时继续
-- [x] 显式绑定、预先准入、复用编译结果和预链接模板
-- [x] 环境按需分配并自行管理 TTL；重启不意味着恢复文件
-- [ ] MVP 后提供完整的 `tool-env` 工具、可变绑定和可选自动放置
-- [ ] 评估模型或工具等待期间释放计算资源的成本
-- [ ] 资源预算、公平调度，以及互不信任扩展的更强隔离
-- [ ] 可选外部提交服务和存储适配器；平台级持久工作流不属于 Brain
 
 ## 联系方式
 
