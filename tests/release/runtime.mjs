@@ -60,12 +60,19 @@ async function memory() {
   return privateKiB;
 }
 let modelUrl;
+let runtimeBaseUrl;
 try {
   const routes = {};
   for (const driver of ["first", "second"]) {
     const provider = lazyEnvironment({ now: () => clock, allocate: async () => { allocations++; return new Map(); } });
     routes[driver] = { api_key: driver, endpoint: await listen(async (req, res, command) => {
       assert.equal(req.headers.authorization, `Bearer ${driver}`);
+      if (command.operation.request.type === "setup" && modelCalls === 0) {
+        const listed = await fetch(`${runtimeBaseUrl}/v1/sessions`, { headers: { authorization: "Bearer runtime-test" } });
+        assert.equal(listed.status, 200);
+        const row = (await listed.json()).sessions.find((row) => row.session_id === command.operation.session_id);
+        assert.equal(row.status, "creating", "listing during setup must share the live creation store");
+      }
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(await provider.handle(command)));
     }) };
   }
@@ -84,6 +91,7 @@ try {
   reservation.listen(0, "127.0.0.1"); await once(reservation, "listening");
   const baseUrl = `http://127.0.0.1:${reservation.address().port}`;
   await new Promise((resolve) => reservation.close(resolve));
+  runtimeBaseUrl = baseUrl;
   await start(baseUrl);
   const brain = new Brain({ baseUrl, token: "runtime-test" });
   const artifact = component(pathToFileURL(process.env.BRAIN_TEST_REFERENCE_AGENTLOOP));

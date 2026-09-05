@@ -644,6 +644,10 @@ impl BrainApi for ServerApi {
             }
         }
         let session_id = SessionId::new(brain::random_id("ses"));
+        let session_lock = self.session_lock(&session_id)?;
+        let _session_guard = session_lock.lock().await;
+        let store_lock = self.store_locks.acquire(session_id.clone())?;
+        let store_guard = store_lock.lock().await;
         let binding_id = format!("model_{session_id}");
         self.resources
             .models
@@ -692,6 +696,8 @@ impl BrainApi for ServerApi {
                 return Err(api_error(error));
             }
         };
+        self.cache_store(&store)?;
+        drop(store_guard);
         let host_ids = request
             .tools
             .iter()
