@@ -6,6 +6,7 @@
     "gen": "cargo run -q -p brain-contracts && python tools/generate-providers.py && npm run gen -w packages/brain-sdk",
     "build": "npm run build --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
+    "test:journeys": "node --test --test-concurrency=4 tests/journeys/*.test.mjs",
     "package-smoke": "node tools/package-smoke.mjs",
     "example:basic": "npm run basic -w examples",
     "example:events": "npm run events -w examples",

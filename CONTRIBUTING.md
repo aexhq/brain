@@ -25,8 +25,12 @@ npm test
 npm run package-smoke
 ```
 
-CI additionally runs the loop worker integration tests, an image smoke test, and a resident-memory
-bound against a live server. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+CI additionally runs real loop worker and HTTP lifecycle integration tests and an image smoke
+test. Performance probes are optional diagnostics during pre-launch iteration. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+[SDK user journeys](tests/journeys/README.md) run against real Linux servers and workers with four
+isolated suites in parallel. They cover the public SDK lifecycle, tools, placement, events, and
+recovery on every pull request. Run them with `npm run test:journeys` after the documented builds.
 
 ## The Rust types are the source of the contracts
 

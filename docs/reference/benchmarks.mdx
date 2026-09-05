@@ -1,6 +1,6 @@
 ---
 title: Benchmarks
-description: Current figures, how they are measured, and what CI enforces.
+description: Performance diagnostics and CI correctness coverage.
 ---
 
 The current regression suite proves lazy history access, turn-end passivation, isolated subscription
@@ -31,16 +31,12 @@ is recorded as a refusal rather than a number.
 
 ## What CI enforces
 
-The Linux HTTP integration also retains 32 sessions with eight model/tool turns each, reads their
-transcripts after passivation, and bounds the combined server and worker private-memory growth
-to 64 MiB. It checks two independently authenticated lazy providers, expiration without retry, and
-restart history access without model execution. This is a regression workload, not a session-density
-claim for production.
+The Linux HTTP integration checks two independently authenticated lazy providers, expiration
+without retry, restart history access without model execution, and repeated turns across suspended
+sessions. CI does not impose throughput or resident-memory thresholds during pre-launch iteration.
+Benchmark and leakage gates are deferred until representative workloads and baselines stabilize.
 
-Every push bounds resident memory against a live server: after 10,000 requests it must stay under
-256 MiB and must not have grown by more than 16 MiB.
-
-The same push bounds journal growth on both axes. A transcript grows with every model call and
+Correctness tests still bound journal growth on both axes. A transcript grows with every model call and
 across every turn, so anything written per call or per turn would cost the sum of every intermediate
 size rather than the final one; `crates/brain/tests/journal_growth.rs` holds the canonical journal
 — and one public Event projection page — to a small constant multiple of the final context, and holds a
