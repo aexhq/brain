@@ -198,10 +198,18 @@ impl WorkerClient {
             };
             match response {
                 WorkerResponse::HostCall { id, call } => {
-                    let result = bridge.call(call).await;
                     if !cancelled && bridge.cancelled() {
                         cancelled = true;
                         write_frame(&mut writer, &WorkerRequest::Cancel, 1_024).await?;
+                    }
+                    if cancelled {
+                        continue;
+                    }
+                    let result = bridge.call(call).await;
+                    if bridge.cancelled() {
+                        cancelled = true;
+                        write_frame(&mut writer, &WorkerRequest::Cancel, 1_024).await?;
+                        continue;
                     }
                     write_frame(
                         &mut writer,
