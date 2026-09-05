@@ -67,6 +67,8 @@ does not consume fuel, while the session's wall-time limit still bounds the comp
 
 ## Architecture
 
+The [architecture decision records](references/adrs/README.md) explain the design and its evolution.
+
 One session can use native Tools, functions in your application, and Tools in several remote
 Environments. The Agentloop controls context and decides when to call the model or dispatch Tools;
 Brain coordinates execution and records the results.

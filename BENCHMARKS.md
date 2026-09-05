@@ -49,9 +49,13 @@ included), Codex 101 MiB, OpenCode 459 MiB. OpenCode's fixture count runs one ca
 above its turn count, because it titles every new session with its small model, which here is
 the scripted provider too.
 
-## What CI enforces today
+## Historical CI gates
 
-Every push runs a resource bound against a live server: after 10,000 requests, resident memory must
+This section describes the earlier benchmark gate. Current CI defers performance thresholds;
+see the [current measurement guide](docs/reference/benchmarks.mdx) and
+[decision record](references/adrs/2026-09-05-08-benchmark-policy.md).
+
+At the time, every push ran a resource bound against a live server: after 10,000 requests, resident memory had to
 stay under 256 MiB and must not have grown by more than 16 MiB. See the `benchmark-leakage` job
 in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
@@ -63,7 +67,10 @@ once wrote 34 MB of journal — every byte of it read back at each restart.
 `crates/brain/tests/journal_growth.rs` holds both, and one page of the event stream, to a small
 constant multiple of the final context.
 
-## What the journal costs
+## Historical journal costs
+
+The write-behind cost described below predates durable commit-before-effect. Current effect
+dispatch waits for the local journal flush; these enqueue timings do not measure that boundary.
 
 `crates/brain/tests/journal_throughput.rs` reports the cost of the journal itself, apart from HTTP,
 the model and the loop:
@@ -78,6 +85,6 @@ exactly what re-running them on yours is worth. The shape is the durable part: a
 serialise, a hash of those bytes and a channel send, with no syscall on the turn's path, and a
 restart pays for the log that was kept rather than for every record ever written.
 
-That job is a leak guard, not a benchmark, and it does not check leakage between sessions;
-the name is older than what it does. Latency, throughput, and the cross-session isolation test are
-being rebuilt — see **Roadmap** in the [README](README.md).
+That historical job was a leak guard, not a benchmark, and did not check leakage between sessions.
+See the [current measurement guide](docs/reference/benchmarks.mdx) for present coverage and
+[ROADMAP.md](ROADMAP.md) for planned work.

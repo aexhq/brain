@@ -1,3 +1,5 @@
+import { inspect } from "node:util";
+
 import { Brain, brainWasm } from "@aexhq/brain";
 import { example } from "./example-brain.mjs";
 
@@ -23,7 +25,7 @@ try {
   await session.send("Explain what an ephemeral execution runtime does in one sentence.");
 
   for await (const event of session.events()) {
-    console.log(event.sequence, event.type, event.data);
+    console.log(event.sequence, event.type, inspect(event.data, { depth: null }));
   }
 } finally {
   await session.end();

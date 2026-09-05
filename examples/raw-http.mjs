@@ -61,7 +61,8 @@ try {
   await request("POST", `/v1/sessions/${session.session_id}/messages`, {
     input: { message: "Reply with HTTP_OK." },
   });
-  console.log(await request("GET", `/v1/sessions/${session.session_id}/events?after=0`));
+  const page = await request("GET", `/v1/sessions/${session.session_id}/events?after=0`);
+  console.log(JSON.stringify(page, null, 2));
 } finally {
   await request("POST", `/v1/sessions/${session.session_id}/end`);
   await request("DELETE", `/v1/sessions/${session.session_id}`);
