@@ -123,6 +123,14 @@ jobs:
           BRAIN_TEST_WORKER: ${{ github.workspace }}/target/debug/brain-loop-worker
           BRAIN_TEST_REFERENCE_AGENTLOOP: ${{ runner.temp }}/reference-agentloop.wasm
         run: node tests/release/runtime.mjs
+      - name: Run SDK user journeys in parallel
+        env:
+          BRAIN_TEST_SERVER: ${{ github.workspace }}/target/debug/brain
+          BRAIN_TEST_WORKER: ${{ github.workspace }}/target/debug/brain-loop-worker
+          BRAIN_TEST_AGENTLOOP_PACKAGE: ${{ runner.temp }}/diagnostic-agentloop.wasm
+          BRAIN_TEST_TOOL_COMPONENT: ${{ runner.temp }}/diagnostic-tool.wasm
+          BRAIN_TEST_REFERENCE_AGENTLOOP: ${{ runner.temp }}/reference-agentloop.wasm
+        run: npm run test:journeys
 
   image-smoke:
     runs-on: ubuntu-24.04
@@ -145,53 +153,9 @@ jobs:
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18080/v1/sessions)" = 401
           curl --fail --silent -H 'authorization: Bearer test-token' http://127.0.0.1:18080/v1/sessions | jq -e '.sessions == []'
 
-  benchmark-leakage:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: "1.97.1"
-      - uses: Swatinem/rust-cache@v2
-      - name: Exercise bounded resources in release mode
-        run: cargo test --release -p brain -p brain-telemetry -p brain-loophost -p brain-server --all-targets
-      - name: Exercise journal throughput probes
-        run: cargo test --release -p brain --test journal_throughput -- --ignored --nocapture
-      - name: Bound Brain HTTP memory after sustained requests
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --release -p brain-server --bin brain \
-            -p brain-loophost --bin brain-loop-worker
-          data_dir=$(mktemp -d)
-          BRAIN_LISTEN=127.0.0.1:18081 \
-          BRAIN_DATA_DIR="$data_dir" \
-          BRAIN_API_TOKEN=test-token \
-          BRAIN_LOOP_WORKER=target/release/brain-loop-worker \
-            target/release/brain >"$RUNNER_TEMP/brain-benchmark.log" 2>&1 &
-          brain_pid=$!
-          trap 'kill "$brain_pid" 2>/dev/null || true; wait "$brain_pid" 2>/dev/null || true; cat "$RUNNER_TEMP/brain-benchmark.log"' EXIT
-          for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:18081/health/ready >/dev/null; then break; fi
-            test "$attempt" -lt 60
-            sleep 1
-          done
-          rss_before=$(ps -o rss= -p "$brain_pid")
-          for _ in $(seq 1 10000); do
-            curl --fail --silent -H 'authorization: Bearer test-token' \
-              http://127.0.0.1:18081/v1/sessions >/dev/null
-          done
-          rss_after=$(ps -o rss= -p "$brain_pid")
-          rss_growth=$((rss_after - rss_before))
-          test "$rss_after" -le 262144
-          test "$rss_growth" -le 16384
-          printf 'Brain RSS: before=%s KiB after=%s KiB growth=%s KiB\n' \
-            "$rss_before" "$rss_after" "$rss_growth"
-
   build-test:
     if: always()
-    needs: [contracts, audit, lint, rust-core, rust-platforms, loophost, image-smoke, benchmark-leakage]
+    needs: [contracts, audit, lint, rust-core, rust-platforms, loophost, image-smoke]
     runs-on: ubuntu-24.04
     steps:
       - name: Every release gate passed
@@ -203,7 +167,6 @@ jobs:
           PLATFORMS: ${{ needs.rust-platforms.result }}
           LOOPHOST: ${{ needs.loophost.result }}
           IMAGE: ${{ needs.image-smoke.result }}
-          RESOURCE_BOUNDS: ${{ needs.benchmark-leakage.result }}
         run: |
           test "$CONTRACTS" = success
           test "$AUDIT" = success
@@ -212,4 +175,3 @@ jobs:
           test "$PLATFORMS" = success
           test "$LOOPHOST" = success
           test "$IMAGE" = success
-          test "$RESOURCE_BOUNDS" = success

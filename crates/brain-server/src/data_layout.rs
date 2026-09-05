@@ -1,7 +1,7 @@
 //! Brain's v1 data directory.
 //!
 //! ```text
-//! {data_dir}/format             "brain-data/2"
+//! {data_dir}/format             "brain-data/1"
 //! {data_dir}/sessions/{id}/     one directory per session (see brain::LocalSessionStore)
 //! {data_dir}/agentloops         admitted Agentloop and Tool Components
 //! {data_dir}/native-workspaces  session workspaces for Brain Wasm Environments
@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "brain-data/2";
+pub const FORMAT: &str = "brain-data/1";
 
 /// Hold this handle for the server lifetime, before initializing any mutable stores.
 pub fn lock(data_dir: &Path) -> Result<std::fs::File, brain::Error> {

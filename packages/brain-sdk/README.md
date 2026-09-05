@@ -67,7 +67,8 @@ canonical journal before its promise resolves.
 A Tool with `implementation` is placed and requires `{ env, ...options }`. Agentloops are always
 placed the same way. The SDK admits Component bytes by content identity, preserves explicit
 placement, and supplies deterministic idempotency keys for admission. A caller may supply an
-`idempotencyKey` for other mutating requests.
+`idempotencyKey` for other mutating requests. Repeating session creation with the same key keeps
+the existing resident handlers, including any active calls and their cancellation signals.
 
 Requests have no implicit client-side deadline because a turn may legitimately outlive a short
 HTTP timeout. Set `timeoutMs` on `Brain` when the caller owns a tighter bound; Brain still enforces
@@ -75,8 +76,9 @@ its configured model, Tool, and whole-turn limits.
 
 ## Preparation and suspended history
 
-Call `await brain.admit(loop)` and `await brain.admit(tool)` before creation to prepare the same
-Component objects you will bind. Successful admission is cached. `await session.transcript()`
+Prepare an Agentloop with `await brain.admit(loopBinding)` or
+`await brain.admitAgentloop(loopComponent)`, and a Tool with `await brain.admitTool(toolComponent)`.
+Use the same Component objects when binding them for creation. Successful admission is cached. `await session.transcript()`
 returns canonical messages and their journal sequence without starting execution; Events and live
 subscriptions also remain accessible while suspended.
 

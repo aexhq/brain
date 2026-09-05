@@ -23,7 +23,8 @@ export class ResidentHostPump {
   }
 
   register(sessionId: string, registry: AppToolRegistry): void {
-    if (this.sessions.has(sessionId)) throw new Error(`resident session ${sessionId} is already registered`);
+    // Replayed creation must retain the registry that owns any in-flight calls.
+    if (this.sessions.has(sessionId)) return;
     this.sessions.set(sessionId, registry);
   }
 
