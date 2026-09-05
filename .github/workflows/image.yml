@@ -195,7 +195,7 @@ jobs:
             echo
             echo "Platforms: \`linux/amd64@$amd\`, \`linux/arm64@$arm\`"
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: brain-image-${{ github.event.workflow_run.head_sha }}
           path: ${{ runner.temp }}/brain-image.json
