@@ -29,7 +29,7 @@ anyhow = "1"
 async-trait = "0.1"
 async-stream = "0.3"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "tokio", "query", "ws"] }
-base64 = "0.22"
+base64 = "0.23"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
 clap = { version = "4", features = ["derive", "env"] }
