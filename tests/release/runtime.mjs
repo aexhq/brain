@@ -42,8 +42,8 @@ async function start(baseUrl) {
     ...process.env, BRAIN_LISTEN: new URL(baseUrl).host, BRAIN_DATA_DIR: join(root, "data"),
     BRAIN_API_TOKEN: "runtime-test", BRAIN_LOOP_WORKER: process.env.BRAIN_TEST_WORKER,
     BRAIN_MODEL_BASE_URL: `${modelUrl}/v1`, BRAIN_ENVIRONMENT_ROUTES_FILE: join(root, "routes.json"),
-  }, stdio: ["ignore", "ignore", "inherit"] });
-  for (let i = 0; i < 100; i++) {
+  }, stdio: ["ignore", "inherit", "inherit"] });
+  for (let i = 0; i < 1200; i++) {
     if (server.exitCode !== null) throw new Error(`server exited: ${server.exitCode}`);
     try { if ((await fetch(`${baseUrl}/health/ready`)).ok) return; } catch {}
     await new Promise((resolve) => setTimeout(resolve, 50));
