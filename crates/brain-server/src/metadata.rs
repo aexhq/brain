@@ -260,8 +260,12 @@ pub fn metadata_directory(data_dir: &Path) -> PathBuf {
 mod tests {
     #[test]
     fn damaged_nonce_lengths_are_errors_not_panics() {
-        for nonce in ["", "00", &"00".repeat(13)] {
-            assert!(super::unseal(&[0; super::KEY_BYTES], "binding", nonce, "00").is_none());
+        use rand::Rng;
+        let key = rand::random::<[u8; super::KEY_BYTES]>();
+        for length in [0, 1, 13] {
+            let mut nonce = vec![0; length];
+            rand::rng().fill(&mut nonce[..]);
+            assert!(super::unseal(&key, "binding", &hex::encode(nonce), "00").is_none());
         }
     }
 }
