@@ -11,7 +11,7 @@ use brain::{CreatingSession, Session, SessionStore};
 use brain_protocol::{
     AttachmentId, EnvironmentBinding, EnvironmentCallResult, EnvironmentId, EnvironmentOperation,
     EnvironmentReceipt, EnvironmentRequest, EnvironmentStatus, Provision, SessionConfig,
-    SessionEnvironment, SessionId, ToolManifest, codes,
+    SessionEnvironment, ToolManifest, codes,
 };
 use tokio::sync::broadcast;
 
@@ -88,13 +88,13 @@ impl EnvironmentRegistry {
         }
         let environment_id = specification.environment_id.clone();
         self.resources.create(EnvironmentRecord {
+            session_id: creation.session_id().clone(),
             environment_id: environment_id.clone(),
             configuration: specification.configuration.clone(),
             managed: specification.managed,
             idle_ttl_ms: specification.idle_ttl_ms,
             created_at_ms: resources::wall_clock_ms(),
             resources: Default::default(),
-            operations: 0,
         })?;
         let entry = self.entry(&environment_id);
         let receipt = self
@@ -111,7 +111,6 @@ impl EnvironmentRegistry {
         let receipt = match receipt {
             Ok(receipt) => receipt,
             Err(error) => {
-                let _ = self.resources.remove(&environment_id);
                 return Err(error);
             }
         };
@@ -153,18 +152,44 @@ impl EnvironmentRegistry {
 
     /// Tears the environment down and forgets it. Attached sessions hear
     /// `environment_closed`.
-    pub async fn close(&self, environment_id: &EnvironmentId) -> Result<(), brain::Error> {
-        if self.resources.get(environment_id)?.is_none() {
+    pub async fn close(
+        &self,
+        environment_id: &EnvironmentId,
+        store: &dyn SessionStore,
+        retry_failed: bool,
+    ) -> Result<(), brain::Error> {
+        let Some(record) = self.resources.get(environment_id)? else {
             return Ok(());
+        };
+        if &record.session_id != store.session_id() {
+            return Err(brain::Error::InvalidState(
+                "Environment belongs to another session".into(),
+            ));
         }
-        // Best effort: an environment that cannot be reached for its teardown is still
-        // forgotten here, and the notice says which.
-        if let Err(error) = self
-            .operation(environment_id, EnvironmentRequest::Teardown)
-            .await
+        let previous = operation_outcome(
+            store,
+            environment_id,
+            codes::event::call::ENVIRONMENT_TEARDOWN,
+        )?;
+        if previous
+            .as_ref()
+            .is_some_and(|attempt| attempt.outcome == Some(true))
         {
-            tracing::warn!(%environment_id, %error, "Environment teardown failed; forgetting it anyway");
+            return self.resources.remove(environment_id);
         }
+        if let Some(attempt) = &previous
+            && attempt.outcome.is_none()
+        {
+            store.append_sync(&[brain::AppendRecord::new(codes::event::ENVIRONMENT_TEARDOWN_FAILED,
+                serde_json::json!({"sequence":attempt.sequence,"code":"interrupted","ambiguous":true,"message":"teardown result was not recorded"}))], brain::SessionUpdate::default())?;
+        }
+        if previous.is_some() && !retry_failed {
+            return Err(brain::Error::Ambiguous(
+                "Environment teardown needs an explicit retry".into(),
+            ));
+        }
+        self.operation(environment_id, EnvironmentRequest::Teardown, store)
+            .await?;
         self.resources.remove(environment_id)?;
         let _ = self.notices.send(EnvironmentNotice {
             environment_id: environment_id.clone(),
@@ -384,9 +409,26 @@ impl EnvironmentRegistry {
         &self,
         session: &Session,
         config: &SessionConfig,
+        store: &dyn SessionStore,
     ) -> Result<(), brain::Error> {
         for attachment in config.environments.iter().rev() {
             if !attachment.attached() {
+                continue;
+            }
+            if let Some(attempt) = operation_outcome(
+                store,
+                &attachment.environment_id,
+                codes::event::call::ENVIRONMENT_DETACH,
+            )? {
+                if attempt.outcome.is_none() {
+                    session
+                        .record_call_failed(
+                            codes::event::call::ENVIRONMENT_DETACH,
+                            attempt.sequence,
+                            &brain::Error::Ambiguous("detach result was not recorded".into()),
+                        )
+                        .await?;
+                }
                 continue;
             }
             let entry = self.entry(&attachment.environment_id);
@@ -411,7 +453,7 @@ impl EnvironmentRegistry {
         request: EnvironmentRequest,
         kind: &str,
     ) -> Result<(), brain::Error> {
-        let sequence = session.record_call_started(kind, &request).await?;
+        let sequence = session.record(&format!("{kind}_started"), serde_json::json!({"environment_id":entry.binding.environment_id,"request":request})).await?;
         let operation = EnvironmentOperation {
             sequence,
             environment_id: entry.binding.environment_id.clone(),
@@ -424,31 +466,52 @@ impl EnvironmentRegistry {
             Ok(receipt) => session.record_call_ended(kind, sequence, &receipt).await,
             Err(error) => {
                 session.record_call_failed(kind, sequence, &error).await?;
-                Err(error)
+                Ok(())
             }
         }
     }
 
-    /// An operation on the environment's own behalf: setup at create, teardown at close.
-    /// Numbered by the environment's own counter and addressed to it, since no session
-    /// is involved.
     async fn operation(
         &self,
         environment_id: &EnvironmentId,
         request: EnvironmentRequest,
+        store: &dyn SessionStore,
     ) -> Result<EnvironmentReceipt, brain::Error> {
-        let sequence = self.resources.next_operation(environment_id)?;
+        let saved = store.append_sync(
+            &[brain::AppendRecord::new(
+                codes::event::ENVIRONMENT_TEARDOWN_STARTED,
+                serde_json::json!({"environment_id": environment_id, "request": request}),
+            )],
+            brain::SessionUpdate::default(),
+        )?;
+        let sequence = saved[0].sequence;
         let entry = self.entry(environment_id);
         let operation = EnvironmentOperation {
             sequence,
             environment_id: environment_id.clone(),
-            session_id: SessionId::new(environment_id.as_str()),
+            session_id: store.session_id().clone(),
             attachment_id: None,
             request,
         };
-        self.send(&entry, &operation)
+        let result = self
+            .send(&entry, &operation)
             .await
-            .and_then(|receipt| terminal(receipt, "lifecycle"))
+            .and_then(|receipt| terminal(receipt, "lifecycle"));
+        let (kind, payload) = match &result {
+            Ok(receipt) => (
+                codes::event::ENVIRONMENT_TEARDOWN_ENDED,
+                serde_json::json!({"sequence": sequence, "result": receipt}),
+            ),
+            Err(error) => (
+                codes::event::ENVIRONMENT_TEARDOWN_FAILED,
+                serde_json::json!({"sequence": sequence, "code": error.code(), "message": error.to_string(), "ambiguous": matches!(error, brain::Error::Ambiguous(_))}),
+            ),
+        };
+        store.append_sync(
+            &[brain::AppendRecord::new(kind, payload)],
+            brain::SessionUpdate::default(),
+        )?;
+        result
     }
 
     /// Sends one operation and keeps the environment's reachability current: a transport
@@ -504,6 +567,54 @@ impl EnvironmentRegistry {
                 directory_generation: 1,
             },
             endpoint: self.endpoint.clone(),
+        }
+    }
+}
+
+struct Attempt {
+    sequence: u64,
+    outcome: Option<bool>,
+}
+
+fn operation_outcome(
+    store: &dyn SessionStore,
+    environment_id: &EnvironmentId,
+    kind: &str,
+) -> Result<Option<Attempt>, brain::Error> {
+    let mut after = 0;
+    let mut attempt: Option<Attempt> = None;
+    loop {
+        let records = store.records_after(after, 1000)?;
+        if records.is_empty() {
+            return Ok(attempt);
+        }
+        for record in records {
+            after = record.sequence;
+            if record.kind == format!("{kind}_started")
+                && record
+                    .payload
+                    .get("environment_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(environment_id.as_str())
+            {
+                attempt = Some(Attempt {
+                    sequence: record.sequence,
+                    outcome: None,
+                });
+            } else if let Some(attempt) = &mut attempt
+                && record
+                    .payload
+                    .get("sequence")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(attempt.sequence)
+            {
+                if record.kind == format!("{kind}_ended") {
+                    attempt.outcome = Some(true);
+                }
+                if record.kind == format!("{kind}_failed") {
+                    attempt.outcome = Some(false);
+                }
+            }
         }
     }
 }
@@ -717,6 +828,91 @@ fn redacted(request: &EnvironmentRequest) -> Option<EnvironmentRequest> {
 #[cfg(test)]
 mod tests {
     use super::brain_wasm_resources;
+
+    #[tokio::test]
+    async fn teardown_is_journaled_and_failure_is_retained_without_automatic_retry() {
+        use super::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Adapter {
+            store: Arc<brain::LocalSessionStore>,
+            calls: AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl EnvironmentAdapter for Adapter {
+            async fn send(
+                &self,
+                _: &str,
+                _: &EnvironmentBinding,
+                operation: &EnvironmentOperation,
+            ) -> Result<EnvironmentReceipt, brain::Error> {
+                assert_eq!(&operation.session_id, self.store.session_id());
+                let records = self.store.records_after(0, 100).unwrap();
+                assert!(
+                    records
+                        .iter()
+                        .any(|record| record.sequence == operation.sequence
+                            && record.kind == codes::event::ENVIRONMENT_TEARDOWN_STARTED)
+                );
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(brain::Error::Ambiguous("connection lost".into()))
+                } else {
+                    Ok(EnvironmentReceipt::Accepted {
+                        resources: Default::default(),
+                    })
+                }
+            }
+        }
+        let path = std::env::temp_dir().join(format!("brain-teardown-{}", rand::random::<u64>()));
+        let (telemetry, _) = brain_telemetry::telemetry_channel();
+        let store = brain::LocalSessionStore::create(
+            &path.join("session"),
+            brain_protocol::SessionId::new("ses_owner"),
+            &serde_json::json!({}),
+            brain::Writer::spawn(),
+            Arc::new(brain::Feed::new(telemetry)),
+        )
+        .unwrap();
+        let resources = Arc::new(EnvironmentResources::open(&path.join("environments")).unwrap());
+        let id = EnvironmentId::new("env_owned");
+        resources
+            .create(EnvironmentRecord {
+                session_id: store.session_id().clone(),
+                environment_id: id.clone(),
+                configuration: serde_json::json!({}),
+                managed: true,
+                idle_ttl_ms: None,
+                created_at_ms: 0,
+                resources: Default::default(),
+            })
+            .unwrap();
+        let adapter = Arc::new(Adapter {
+            store: store.clone(),
+            calls: AtomicUsize::new(0),
+        });
+        let registry = EnvironmentRegistry::new(
+            resources.clone(),
+            "http://environment",
+            adapter.clone(),
+            Duration::from_secs(60),
+        );
+        assert!(registry.close(&id, &*store, false).await.is_err());
+        assert!(resources.get(&id).unwrap().is_some());
+        assert!(registry.close(&id, &*store, false).await.is_err());
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            store
+                .records_after(0, 100)
+                .unwrap()
+                .iter()
+                .any(
+                    |record| record.kind == codes::event::ENVIRONMENT_TEARDOWN_FAILED
+                        && record.payload["ambiguous"] == true
+                )
+        );
+        registry.close(&id, &*store, true).await.unwrap();
+        assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
+        assert!(resources.get(&id).unwrap().is_none());
+    }
 
     #[test]
     fn brain_wasm_filesystem_roots_are_explicit() {

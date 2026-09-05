@@ -14,6 +14,8 @@
     "session_creation_started",
     "session_creation_ended",
     "session_creation_failed",
+    "session_end_started",
+    "session_end_failed",
     "session_ended",
     "session_suspended",
     "session_resumed",

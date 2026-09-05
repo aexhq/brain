@@ -147,6 +147,7 @@ pub enum SessionStatus {
     Creating,
     Idle,
     Running,
+    Ending,
     Ended,
     Failed,
 }

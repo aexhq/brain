@@ -167,8 +167,8 @@ impl ModelExecutor for RemoteModelClient {
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
     ) -> Result<ModelResult, Error> {
         let body = self.body(binding, &request, tools)?;
-        let response = self.request(&body).send().await.map_err(|error| {
-            Error::Executor(format!("model request failed before response: {error}"))
+        let mut response = self.request(&body).send().await.map_err(|error| {
+            Error::Ambiguous(format!("model request outcome is unknown: {error}"))
         })?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -178,14 +178,21 @@ impl ModelExecutor for RemoteModelClient {
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.trim().parse::<u64>().ok())
                 .and_then(|seconds| seconds.checked_mul(1_000));
-            let bytes = response
-                .bytes()
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
                 .await
-                .map_err(|error| Error::Executor(error.to_string()))?;
-            let bounded = &bytes[..bytes.len().min(MAX_ERROR_BYTES)];
+                .map_err(|error| Error::Ambiguous(error.to_string()))?
+            {
+                let count = chunk.len().min(MAX_ERROR_BYTES - bytes.len());
+                bytes.extend_from_slice(&chunk[..count]);
+                if bytes.len() == MAX_ERROR_BYTES {
+                    break;
+                }
+            }
             return Err(Error::ProviderStatus {
                 status,
-                body: String::from_utf8_lossy(bounded).into_owned(),
+                body: String::from_utf8_lossy(&bytes).into_owned(),
                 retry_after_ms,
             });
         }
@@ -445,7 +452,16 @@ mod tests {
 
         let denied = Router::new().route(
             "/chat/completions",
-            post(|| async { (StatusCode::BAD_REQUEST, "bad request") }),
+            post(|| async {
+                let chunks = futures_util::stream::once(async {
+                    Ok::<_, std::io::Error>(Bytes::from(vec![b'x'; MAX_ERROR_BYTES + 1]))
+                })
+                .chain(futures_util::stream::pending());
+                (
+                    StatusCode::BAD_REQUEST,
+                    axum::body::Body::from_stream(chunks),
+                )
+            }),
         );
         let address = serve(denied).await;
         let client = RemoteModelClient::new(RemoteModelConfig {
@@ -461,7 +477,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::ProviderStatus { status: 400, .. }),
+            matches!(&error, Error::ProviderStatus { status: 400, body, .. } if body.len() == MAX_ERROR_BYTES),
             "a deterministic 4xx must surface as a typed status, got {error:?}"
         );
     }

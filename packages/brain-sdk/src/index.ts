@@ -1,5 +1,5 @@
 export { BrainClient as Brain, BrainClient, SessionHandle, Sessions } from "./client.js";
-export type { BrainOptions } from "./client.js";
+export type { BrainOptions, ResidentHostCredentials } from "./client.js";
 export {
   agentloop,
   brainWasm,

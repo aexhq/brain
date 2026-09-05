@@ -546,9 +546,25 @@ async fn persist_component(
     tokio::fs::write(&temporary, package)
         .await
         .map_err(|error| error.to_string())?;
+    tokio::fs::File::open(&temporary)
+        .await
+        .map_err(|error| error.to_string())?
+        .sync_all()
+        .await
+        .map_err(|error| error.to_string())?;
     tokio::fs::rename(&temporary, &target)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    for path in [Some(directory), directory.parent()].into_iter().flatten() {
+        tokio::fs::File::open(path)
+            .await
+            .map_err(|error| error.to_string())?
+            .sync_all()
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn component_path(directory: &std::path::Path, kind: &str, digest: &str) -> PathBuf {

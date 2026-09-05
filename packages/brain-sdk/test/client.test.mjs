@@ -66,6 +66,24 @@ test("failed admission is not cached and successful admission is", async () => {
   assert.equal(calls, 2);
 });
 
+test("retrying create with the same key sends the same Environment identities", async () => {
+  const bodies = [];
+  const client = new Brain({ baseUrl: "https://brain.example", fetch: async (input, init) => {
+    const request = new Request(input, init);
+    if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
+    bodies.push(await request.json());
+    if (bodies.length === 1) throw new TypeError("response lost after server accepted create");
+    return Response.json(sessionResponse);
+  } });
+  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
+  const options = { model: { provider: "openai", name: "gpt-5", apiKey: "key" }, agentloop: pi({ env: brainWasm() }) };
+  await assert.rejects(client.sessions.create(options, { idempotencyKey: "create-once" }));
+  await client.sessions.create(options, { idempotencyKey: "create-once" });
+  assert.deepEqual(bodies[1], bodies[0]);
+  await client.sessions.create(options, { idempotencyKey: "create-another" });
+  assert.notEqual(bodies[2].environments[0].environment_id, bodies[0].environments[0].environment_id);
+});
+
 test("long operations have no implicit client timeout", async () => {
   let defaultSignal;
   const client = new Brain({

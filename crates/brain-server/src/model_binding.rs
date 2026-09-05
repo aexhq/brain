@@ -40,8 +40,7 @@ pub trait ModelBindingStore: Send + Sync + 'static {
 
 /// The credential half of the server's session metadata.
 ///
-/// Reads come from memory; writes also append to the metadata log so a session can still
-/// call its model after a restart. Nothing fsyncs — see `crate::metadata`.
+/// Reads come from memory; writes commit the encrypted credential before admission.
 pub struct LocalModelBindingStore {
     metadata: Arc<crate::metadata::ServerMetadata>,
 }
@@ -312,17 +311,17 @@ mod tests {
         let directory = temporary();
         let store = store(&directory);
         store.put("model_a", &selection("secret")).unwrap();
+        store.put("model_b", &selection("secret")).unwrap();
         let credential = store.get("model_a").unwrap().expect("the binding is there");
         assert_eq!(credential.api_key.as_str(), "secret");
 
         store.delete("model_a").unwrap();
         assert!(store.get("model_a").unwrap().is_none());
+        assert!(store.get("model_b").unwrap().is_some());
         let _ = std::fs::remove_dir_all(directory);
     }
 
-    /// A session must still be able to call its model after a restart, so the credential
-    /// outlives the process — written asynchronously and never fsynced, so a crash may
-    /// lose the most recent ones.
+    /// A session's credential survives restart without appearing in plaintext on disk.
     #[test]
     fn a_credential_survives_a_restart_without_plaintext_on_disk() {
         let directory = temporary();

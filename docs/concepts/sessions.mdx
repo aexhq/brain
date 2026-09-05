@@ -30,6 +30,7 @@ unknown effect is not replayed onto another target.
 
 Extension Events use the same commit path. A turn may call `ctx.emit` at most 128 times and may
 emit at most 1 MiB across the serialized Event kinds and payloads.
+Public system codes and private journal record names are reserved; extensions cannot emit them.
 
 This makes `{session_id, sequence}` the stable name of an operation throughout the journal and its
 execution path.
@@ -54,6 +55,9 @@ Two server limits bound a turn:
 - `BRAIN_MAX_MODEL_CALLS`, default 128, limits model calls per turn.
 - `BRAIN_MAX_TURN_SECS`, default 1800, limits wall time; zero disables the limit.
 
+The wall deadline initiates cancellation. Brain records outstanding effect outcomes and waits for
+bounded executor cancellation before closing the turn; this cleanup can extend the response time.
+
 Cancellation requests stop local waiting and are forwarded to active executors. A remote effect
 that may have continued is reported as unknown, not as a successful cancellation.
 
@@ -66,6 +70,18 @@ Environments remain attached.
 Journal commits used as effect fences are durable before dispatch. If the process stops during a
 turn, restart records the interrupted turn as failed and does not rerun it. Any already committed
 effect record remains the source of truth.
+
+Restart also fails interrupted creation and closes interrupted ending. Every started effect with
+no terminal record becomes an ambiguous failure; Brain does not resend it. Ending is recorded before
+detach starts, so a partly detached session cannot accept another message. A failed detach does not
+prevent the session from ending. Teardown remains a separate journaled operation. If teardown fails,
+the Environment record remains and the idle sweeper does not retry it; an explicit session delete
+with a new idempotency key can request another attempt.
+
+HTTP idempotency claims survive restart. Completed answers are retained for 24 hours. If a claimed
+request has no recorded answer, reusing its key returns an ambiguous error and never executes the
+request again. Inspect the session before choosing a new operation key. The SDK derives Environment
+identities from the create key so repeating the same create sends the same body.
 
 You can also seed a new session with `transcript`; Brain records those messages as its opening
 conversation.

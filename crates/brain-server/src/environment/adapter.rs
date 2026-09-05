@@ -50,7 +50,7 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
         if let Some(token) = &self.bearer_token {
             request = request.bearer_auth(token);
         }
-        let response = request.send().await.map_err(|error| {
+        let mut response = request.send().await.map_err(|error| {
             brain::Error::Ambiguous(format!("Environment transport outcome is unknown: {error}"))
         })?;
         let status = response.status();
@@ -62,14 +62,18 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
                 "Environment response exceeds 2 MiB".into(),
             ));
         }
-        let body = response
-            .bytes()
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|error| brain::Error::Ambiguous(error.to_string()))?;
-        if body.len() > MAX_ENVIRONMENT_RESPONSE_BYTES {
-            return Err(brain::Error::Ambiguous(
-                "Environment response exceeds 2 MiB".into(),
-            ));
+            .map_err(|error| brain::Error::Ambiguous(error.to_string()))?
+        {
+            if chunk.len() > MAX_ENVIRONMENT_RESPONSE_BYTES - body.len() {
+                return Err(brain::Error::Ambiguous(
+                    "Environment response exceeds 2 MiB".into(),
+                ));
+            }
+            body.extend_from_slice(&chunk);
         }
         if !status.is_success() {
             return Err(brain::Error::Ambiguous(format!(
@@ -81,10 +85,61 @@ impl EnvironmentAdapter for HttpEnvironmentAdapter {
             brain::Error::Ambiguous(format!("Environment terminal receipt is invalid: {error}"))
         })?;
         if response.contract != ENVIRONMENT_CONTRACT || response.sequence != operation.sequence {
-            return Err(brain::Error::InvalidState(
+            return Err(brain::Error::Ambiguous(
                 "Environment response correlation does not match the operation".into(),
             ));
         }
         Ok(response.receipt)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn oversized_chunked_response_is_rejected_before_waiting_for_eof() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 8192];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                .await
+                .unwrap();
+            let body = vec![b'x'; MAX_ENVIRONMENT_RESPONSE_BYTES + 1];
+            socket
+                .write_all(format!("{:x}\r\n", body.len()).as_bytes())
+                .await
+                .unwrap();
+            socket.write_all(&body).await.unwrap();
+            socket.write_all(b"\r\n").await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let environment_id = brain_protocol::EnvironmentId::new("env_large");
+        let binding = EnvironmentBinding {
+            environment_id: environment_id.clone(),
+            directory_generation: 1,
+        };
+        let operation = EnvironmentOperation {
+            sequence: 1,
+            environment_id,
+            session_id: brain_protocol::SessionId::new("ses_test"),
+            attachment_id: None,
+            request: brain_protocol::EnvironmentRequest::Teardown,
+        };
+        let adapter = HttpEnvironmentAdapter::new(reqwest::Client::new(), None);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            adapter.send(&format!("http://{address}"), &binding, &operation),
+        )
+        .await;
+        server.abort();
+        assert!(
+            matches!(result.unwrap(), Err(brain::Error::Ambiguous(message)) if message.contains("exceeds 2 MiB"))
+        );
     }
 }

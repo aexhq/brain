@@ -7,6 +7,7 @@ pub mod environment;
 pub mod idempotency;
 pub mod metadata;
 pub mod model_binding;
+mod persistence;
 pub mod resident;
 mod service;
 mod session_ownership;

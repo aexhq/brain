@@ -292,8 +292,8 @@ from the producer.
 
 ## 2026-09-04: The data directory is not migrated
 
-**Decided.** The data directory carries a format marker. A Brain that finds another format, or
-the previous layout, refuses to start and says so. There is no migration.
+**Decided.** The data directory carries the `brain-data/1` format marker. An unrecognized format
+or a nonempty directory without a marker is refused. There are no legacy layouts or migrations.
 
 **Why.** Brain is under early development and has said so: contracts are replaced in place
 until the first stable release. A migration path for a layout nobody should be depending on
@@ -413,3 +413,17 @@ failure appears.
 **Why.** A retry can duplicate an external side effect and only the Agentloop has enough policy to
 decide whether another attempt is appropriate. Effect-after-commit preserves evidence of what Brain
 tried without pretending exactly-once execution is possible.
+
+## 2026-09-05: Preserve effect identity and uncertainty across interruption
+
+HTTP request claims and resident host token hashes live in small durable server logs. Session
+journals remain the only source for lifecycle and effect outcomes, including Environment teardown.
+A request without a recorded answer is not executed again; an effect without a terminal record is
+unknown. Ending is fenced before detach, and failed teardown retains its resource row for an explicit
+retry. Session-owned model bindings avoid credential sharing across unrelated create operations.
+
+This closes restart and cancellation gaps without introducing a database, retry engine, or background
+effect scheduler. Metadata uses the same file synchronization and torn-tail repair rules at every
+acknowledgment boundary. These changes define the pre-launch `brain-data/1` layout in place.
+Wasm memory limits apply across all memories in a Store, and remote
+response bounds apply while reading, not after buffering.

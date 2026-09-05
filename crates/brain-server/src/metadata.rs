@@ -5,18 +5,12 @@
 //! the record of what happened; this is the record of what the session calls its model
 //! with. Restoring a session after a restart needs both.
 //!
-//! Written on the same terms as the journal: appended, **never fsynced**, and best effort.
-//! A create returns as soon as the bytes are handed to the page cache, which is
-//! what took four milliseconds out of it — the previous version was a SQLite table opened
-//! `synchronous = FULL`, so every session create waited for a disk. A crash can lose the
-//! tail, and a session whose metadata went with it comes back readable but cannot take
-//! another turn. That is the trade this design accepts everywhere else, made here too.
-//!
+//! Credentials and their key are durable before session admission succeeds.
 
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::Write,
     path::{Path, PathBuf},
     sync::{Mutex, RwLock},
 };
@@ -57,9 +51,6 @@ enum Entry {
 
 pub struct ServerMetadata {
     credentials: RwLock<HashMap<String, ModelCredential>>,
-    /// Held only across a small buffered append. The old store held a process-global lock
-    /// across an fsync and an AES-GCM round trip, which serialised every session create in
-    /// the process behind a disk.
     log: Mutex<File>,
     key: Zeroizing<[u8; KEY_BYTES]>,
 }
@@ -69,12 +60,8 @@ impl ServerMetadata {
         fs::create_dir_all(directory).map_err(storage_error)?;
         let key = load_or_create_key(&directory.join("master.key"))?;
         let path = directory.join("metadata.log");
-        let credentials = replay(&path, &key)?;
-        let log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(storage_error)?;
+        let (log, records) = crate::persistence::open_log(&path)?;
+        let credentials = replay(records, &key)?;
         Ok(Self {
             credentials: RwLock::new(credentials),
             log: Mutex::new(log),
@@ -90,25 +77,16 @@ impl ServerMetadata {
         binding_id: &str,
         selection: &ModelSelection,
     ) -> Result<(), brain::Error> {
-        {
-            let mut credentials = self.credentials.write().map_err(poisoned)?;
-            if let Some(existing) = credentials.get(binding_id) {
-                if existing.provider == selection.provider
-                    && existing.api_key.as_str() == selection.api_key
-                {
-                    return Ok(());
-                }
-                return Err(brain::Error::InvalidState(
-                    "model binding identity is already sealed to different credentials".into(),
-                ));
+        let mut credentials = self.credentials.write().map_err(poisoned)?;
+        if let Some(existing) = credentials.get(binding_id) {
+            if existing.provider == selection.provider
+                && existing.api_key.as_str() == selection.api_key
+            {
+                return Ok(());
             }
-            credentials.insert(
-                binding_id.to_owned(),
-                ModelCredential {
-                    provider: selection.provider.clone(),
-                    api_key: Zeroizing::new(selection.api_key.clone()),
-                },
-            );
+            return Err(brain::Error::InvalidState(
+                "model binding identity is already sealed to different credentials".into(),
+            ));
         }
         let (nonce, ciphertext) = self.seal(binding_id, selection)?;
         self.append(&Entry::Binding {
@@ -116,7 +94,15 @@ impl ServerMetadata {
             provider: selection.provider.clone(),
             nonce,
             ciphertext,
-        })
+        })?;
+        credentials.insert(
+            binding_id.to_owned(),
+            ModelCredential {
+                provider: selection.provider.clone(),
+                api_key: Zeroizing::new(selection.api_key.clone()),
+            },
+        );
+        Ok(())
     }
 
     pub fn binding(&self, binding_id: &str) -> Result<Option<ModelCredential>, brain::Error> {
@@ -129,26 +115,20 @@ impl ServerMetadata {
     }
 
     pub fn forget_binding(&self, binding_id: &str) -> Result<(), brain::Error> {
-        self.credentials
-            .write()
-            .map_err(poisoned)?
-            .remove(binding_id);
+        let mut credentials = self.credentials.write().map_err(poisoned)?;
         self.append(&Entry::BindingForgotten {
             binding_id: binding_id.to_owned(),
-        })
+        })?;
+        credentials.remove(binding_id);
+        Ok(())
     }
 
-    /// Appends one line. No fsync, on purpose: this is best effort, and waiting for a disk
-    /// here is the cost the whole design exists to avoid.
     fn append(&self, entry: &Entry) -> Result<(), brain::Error> {
-        let mut line = serde_json::to_vec(entry).map_err(|error| storage_json(&error))?;
-        line.push(b'\n');
         let mut log = self
             .log
             .lock()
             .map_err(|_| brain::Error::Executor("server metadata log is poisoned".into()))?;
-        log.write_all(&line).map_err(storage_error)?;
-        Ok(())
+        crate::persistence::append(&mut log, entry)
     }
 
     fn seal(
@@ -174,24 +154,12 @@ impl ServerMetadata {
     }
 }
 
-/// Reads back what reached the disk.
-///
-/// A line that will not parse ends the read. The last write of a crashed process is the one
-/// most likely to be half a line, and everything before it is whole — so the log is taken up
-/// to the tear and no further, rather than refusing to start over a partial record.
 fn replay(
-    path: &Path,
+    records: Vec<Entry>,
     key: &[u8; KEY_BYTES],
 ) -> Result<HashMap<String, ModelCredential>, brain::Error> {
     let mut credentials = HashMap::new();
-    let Ok(file) = File::open(path) else {
-        return Ok(credentials);
-    };
-    for line in BufReader::new(file).lines() {
-        let Ok(line) = line else { break };
-        let Ok(entry) = serde_json::from_str::<Entry>(&line) else {
-            break;
-        };
+    for entry in records {
         match entry {
             Entry::Binding {
                 binding_id,
@@ -199,18 +167,16 @@ fn replay(
                 nonce,
                 ciphertext,
             } => {
-                // A credential that will not decrypt is dropped rather than fatal: the key
-                // may have been replaced, and one unreadable binding must not stop a
-                // process starting.
-                if let Some(api_key) = unseal(key, &binding_id, &nonce, &ciphertext) {
-                    credentials.insert(
-                        binding_id,
-                        ModelCredential {
-                            provider,
-                            api_key: Zeroizing::new(api_key),
-                        },
-                    );
-                }
+                let api_key = unseal(key, &binding_id, &nonce, &ciphertext).ok_or_else(|| {
+                    brain::Error::Journal("model credential cannot be decrypted".into())
+                })?;
+                credentials.insert(
+                    binding_id,
+                    ModelCredential {
+                        provider,
+                        api_key: Zeroizing::new(api_key),
+                    },
+                );
             }
             Entry::BindingForgotten { binding_id } => {
                 credentials.remove(&binding_id);
@@ -274,6 +240,8 @@ fn load_or_create_key(path: &Path) -> Result<[u8; KEY_BYTES], brain::Error> {
     match options.open(path) {
         Ok(mut file) => {
             file.write_all(&key).map_err(storage_error)?;
+            file.sync_all().map_err(storage_error)?;
+            crate::persistence::sync_directory(path.parent().expect("master key has a directory"))?;
             Ok(key)
         }
         // Two processes opened the same directory at once. The one that lost reads what the
@@ -291,10 +259,6 @@ fn key_from_bytes(bytes: Vec<u8>) -> Result<[u8; KEY_BYTES], brain::Error> {
 }
 
 fn storage_error(error: std::io::Error) -> brain::Error {
-    brain::Error::Executor(format!("server metadata store: {error}"))
-}
-
-fn storage_json(error: &serde_json::Error) -> brain::Error {
     brain::Error::Executor(format!("server metadata store: {error}"))
 }
 

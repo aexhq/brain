@@ -81,6 +81,12 @@ pub enum JournalEntry {
     },
 }
 
+impl JournalEntry {
+    pub(crate) fn is_kind(kind: &str) -> bool {
+        matches!(kind, "transcript_delta" | "state_set")
+    }
+}
+
 /// What folding a session's journal yields: its transcript, its slots, and the sequence
 /// the journal is current to.
 #[derive(Clone, Debug, Default, PartialEq)]

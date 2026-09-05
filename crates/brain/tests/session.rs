@@ -366,6 +366,82 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
 }
 
 #[tokio::test]
+async fn wall_deadline_keeps_completed_tool_results_and_records_unknown_cancellation() {
+    struct Tools;
+    #[async_trait]
+    impl ToolExecutor for Tools {
+        async fn execute(
+            &self,
+            call: ToolDispatch,
+            _: &dyn brain::ToolServices,
+        ) -> Result<Outcome, Error> {
+            if call.invocation.call_id == "slow" {
+                std::future::pending::<()>().await;
+            }
+            Ok(Outcome::Ok {
+                value: serde_json::json!("known answer"),
+            })
+        }
+        async fn cancel(&self, _: ToolCancellation) -> Result<(), Error> {
+            Err(Error::Ambiguous("cancel response lost".into()))
+        }
+    }
+    let data_dir = temporary_directory("deadline-parallel-tools");
+    let executor = scripted(|input, services| async move {
+        services
+            .dispatch(vec![
+                invocation("lookup", "fast"),
+                invocation("lookup", "slow"),
+            ])
+            .await?;
+        done(input.transcript)
+    });
+    let mut runtime = runtime(&data_dir, executor, Arc::new(NoModels), Arc::new(Tools));
+    Arc::get_mut(&mut runtime.config).unwrap().max_turn_ms = 1500;
+    let session = runtime
+        .create(&tool_config("lookup", vec![], vec![]), &[])
+        .unwrap();
+    let turning = tokio::spawn({
+        let session = session.clone();
+        async move { session.message(MessageRequest { input: "go".into() }).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let records = runtime.store(session.id()).records_after(0, 100).unwrap();
+            if records.iter().any(|record| {
+                record.kind == "tool_call_ended" && record.payload["result"]["call_id"] == "fast"
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a known result must commit while its sibling is still waiting");
+    tokio::time::timeout(Duration::from_secs(3), turning)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let records = runtime.store(session.id()).records_after(0, 100).unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record.kind == "tool_call_ended")
+            .count(),
+        2
+    );
+    assert!(
+        records.iter().any(
+            |record| record.kind == "tool_cancel_failed" && record.payload["ambiguous"] == true
+        )
+    );
+    assert_eq!(records.last().unwrap().kind, "turn_failed");
+    drop(session);
+    settle(runtime, data_dir).await;
+}
+
+#[tokio::test]
 async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
     let data_dir = temporary_directory("streaming");
     let loop_executor = scripted(|input, services| async move {
@@ -451,7 +527,13 @@ async fn a_session_can_be_created_with_a_transcript() {
 async fn a_loop_cannot_append_brains_own_kinds() {
     let data_dir = temporary_directory("reserved");
     let loop_executor = scripted(|input, services| async move {
-        for kind in ["turn_ended", "session_ended", "model_call_started"] {
+        for kind in [
+            "turn_ended",
+            "session_ended",
+            "model_call_started",
+            "state_set",
+            "transcript_delta",
+        ] {
             let refused = services.emit(kind.into(), serde_json::json!({})).await;
             assert!(refused.is_err(), "{kind} must be refused");
         }

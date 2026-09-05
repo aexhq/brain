@@ -27,19 +27,21 @@ Each option is a flag and an environment variable. Flags win.
 
 ## The data directory
 
-Brain owns everything under `BRAIN_DATA_DIR` and marks its layout with a format file. A
-directory written by an earlier layout is refused at start rather than migrated; point Brain at
-an empty directory instead.
+Brain owns everything under `BRAIN_DATA_DIR`. Its only format is `brain-data/1`, replaced in place
+during pre-launch development. Start with an empty directory; Brain writes its format marker on
+initialization. There are no legacy layouts or migrations.
 
 ```
 brain-data/
-  format                              layout marker (`brain-data/2`)
+  format                              layout marker (`brain-data/1`)
   sessions/{session_id}/journal/      one canonical journal per session
   environments/{environment_id}.json environment records
   agentloops/                         admitted Agentloop and Tool Components
   native-workspaces/                  workspaces for Brain Wasm Environments
   run/                                worker sockets
   server-metadata/                    model credential custody
+  requests/requests.log               durable HTTP request claims and answers
+  resident-hosts/hosts.log             resident host identities and token hashes
 ```
 
 Session configuration, status, public Events, transcript, and Agentloop slots are projections of

@@ -108,7 +108,7 @@ export interface CreateSessionOptions {
 export interface OperationOptions { readonly idempotencyKey?: string }
 export interface SessionState {
   readonly id: string;
-  readonly status: "creating" | "idle" | "running" | "ended" | "failed";
+  readonly status: "creating" | "idle" | "running" | "ending" | "ended" | "failed";
   readonly lastSequence: number;
 }
 

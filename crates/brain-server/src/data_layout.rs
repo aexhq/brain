@@ -1,8 +1,7 @@
-//! What a Brain data directory holds, and the refusal to open one from before the
-//! per-session layout.
+//! Brain's v1 data directory.
 //!
 //! ```text
-//! {data_dir}/format             "brain-data/2"
+//! {data_dir}/format             "brain-data/1"
 //! {data_dir}/sessions/{id}/     one directory per session (see brain::LocalSessionStore)
 //! {data_dir}/agentloops         admitted Agentloop and Tool Components
 //! {data_dir}/native-workspaces  session workspaces for Brain Wasm Environments
@@ -12,12 +11,9 @@
 
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "brain-data/2";
+pub const FORMAT: &str = "brain-data/1";
 
-/// Creates the layout if the directory is new, checks it if it is not, and returns the
-/// sessions directory. A directory written by an earlier Brain is refused with a message
-/// that names it: there is no migration from the shared journal, and starting over it
-/// would silently begin a second history beside the first.
+/// Initializes an empty directory or validates its format, then returns the sessions directory.
 pub fn prepare(data_dir: &Path) -> Result<PathBuf, brain::Error> {
     std::fs::create_dir_all(data_dir).map_err(io)?;
     let marker = data_dir.join("format");
@@ -25,19 +21,26 @@ pub fn prepare(data_dir: &Path) -> Result<PathBuf, brain::Error> {
         Ok(found) if found.trim() == FORMAT => {}
         Ok(found) => {
             return Err(brain::Error::InvalidState(format!(
-                "data directory {} is format {found:?}; this Brain reads {FORMAT} and does not migrate",
+                "data directory {} is format {found:?}; expected {FORMAT}",
                 data_dir.display()
             )));
         }
-        Err(_) if data_dir.join("journal").join("journal").exists() => {
-            return Err(brain::Error::InvalidState(format!(
-                "data directory {} holds a shared journal from an earlier Brain; this Brain keeps one directory per session and does not migrate. Start with an empty data directory",
-                data_dir.display()
-            )));
-        }
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if std::fs::read_dir(data_dir)
+                .map_err(io)?
+                .next()
+                .transpose()
+                .map_err(io)?
+                .is_some()
+            {
+                return Err(brain::Error::InvalidState(format!(
+                    "data directory {} is not empty and has no format marker",
+                    data_dir.display()
+                )));
+            }
             std::fs::write(&marker, format!("{FORMAT}\n")).map_err(io)?;
         }
+        Err(error) => return Err(io(error)),
     }
     let sessions = data_dir.join("sessions");
     std::fs::create_dir_all(&sessions).map_err(io)?;
@@ -76,11 +79,17 @@ mod tests {
     }
 
     #[test]
-    fn a_shared_journal_from_an_earlier_brain_is_refused() {
-        let data_dir = temporary("legacy");
-        std::fs::create_dir_all(data_dir.join("journal").join("journal")).unwrap();
+    fn an_unmarked_nonempty_directory_is_refused() {
+        let data_dir = temporary("unmarked");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("existing"), "keep").unwrap();
         let error = prepare(&data_dir).unwrap_err().to_string();
-        assert!(error.contains("does not migrate"), "{error}");
+        assert!(error.contains("no format marker"), "{error}");
+        assert!(!data_dir.join("format").exists());
+        assert_eq!(
+            std::fs::read_to_string(data_dir.join("existing")).unwrap(),
+            "keep"
+        );
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
@@ -88,14 +97,9 @@ mod tests {
     fn an_unknown_format_is_refused() {
         let data_dir = temporary("unknown");
         std::fs::create_dir_all(&data_dir).unwrap();
-        std::fs::write(
-            data_dir.join("format"),
-            "brain-data/9
-",
-        )
-        .unwrap();
+        std::fs::write(data_dir.join("format"), "unknown-format\n").unwrap();
         let error = prepare(&data_dir).unwrap_err().to_string();
-        assert!(error.contains("brain-data/9"), "{error}");
+        assert!(error.contains("unknown-format"), "{error}");
         let _ = std::fs::remove_dir_all(data_dir);
     }
 }

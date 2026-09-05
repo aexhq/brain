@@ -778,6 +778,7 @@
         "creating",
         "idle",
         "running",
+        "ending",
         "ended",
         "failed"
       ],

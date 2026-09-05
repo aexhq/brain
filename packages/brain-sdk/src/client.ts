@@ -24,7 +24,10 @@ export interface BrainOptions {
   token?: string;
   timeoutMs?: number;
   fetch?: typeof globalThis.fetch;
+  residentHost?: ResidentHostCredentials;
 }
+
+export interface ResidentHostCredentials { readonly hostId: string; readonly token: string }
 
 export class BrainClient {
   readonly baseUrl: string;
@@ -34,6 +37,7 @@ export class BrainClient {
   private readonly transport: typeof globalThis.fetch;
   private readonly agentloops = new WeakMap<object, Promise<string>>();
   private readonly tools = new WeakMap<object, Promise<string>>();
+  private registration?: HostRegistration;
   private resident?: Promise<{
     readonly hostId: string;
     readonly pump: ResidentHostPump;
@@ -54,6 +58,10 @@ export class BrainClient {
     this.token = options.token;
     this.timeoutMs = options.timeoutMs;
     this.transport = options.fetch ?? globalThis.fetch;
+    if (options.residentHost !== undefined) {
+      if (!options.residentHost.hostId || !options.residentHost.token) throw new TypeError("residentHost requires hostId and token");
+      this.registration = { host_id: options.residentHost.hostId, token: options.residentHost.token };
+    }
     this.sessions = new Sessions(this);
     Object.freeze(this.sessions);
   }
@@ -145,7 +153,8 @@ export class BrainClient {
   }> {
     if (this.resident !== undefined) return this.resident;
     const opening = (async () => {
-      const registration = await this.request<HostRegistration>("POST", "/v1/hosts");
+      const registration = this.registration ?? await this.request<HostRegistration>("POST", "/v1/hosts");
+      this.registration = registration;
       const hostClient = this.withToken(registration.token);
       const pump = new ResidentHostPump({
         stream: (signal, onOpen) => hostClient.streamPath(`/v1/hosts/${encodeURIComponent(registration.host_id)}/commands`, signal, onOpen),
@@ -169,6 +178,11 @@ export class BrainClient {
     this.resident = opening;
     opening.catch(() => { if (this.resident === opening) this.resident = undefined; });
     return opening;
+  }
+
+  async residentHostCredentials(): Promise<ResidentHostCredentials> {
+    await this.residentHost();
+    return Object.freeze({ hostId: this.registration!.host_id, token: this.registration!.token });
   }
 
   private async admitComponent(value: Component, cache: WeakMap<object, Promise<string>>, path: string, subject: string): Promise<string> {
@@ -198,9 +212,10 @@ export class Sessions {
 
   async create(options: CreateSessionOptions, operation: OperationOptions = {}): Promise<SessionHandle> {
     validateSessionOptions(options);
+    const key = keyOf(operation);
     const loop = inspectAgentloop(options.agentloop);
     const identity = await this.client.admitAgentloop(loop.component);
-    const environments = collectEnvironments(options);
+    const environments = collectEnvironments(options, await sha256(new TextEncoder().encode(key)));
     const residentTools = (options.tools ?? []).map(inspectResidentTool).filter((value) => value !== undefined);
     const resident = residentTools.length === 0 ? undefined : await this.client.residentHost();
     const implementations = new Map<ToolBinding, unknown>();
@@ -219,7 +234,7 @@ export class Sessions {
           });
     }
     const compiled = compileSession(options, identity, environments, implementations, resident?.hostId);
-    const session = await this.client.request<WireSession>("POST", "/v1/sessions", compiled.request, keyOf(operation));
+    const session = await this.client.request<WireSession>("POST", "/v1/sessions", compiled.request, key);
     if (resident !== undefined) {
       const registry = new AppToolRegistry();
       for (const tool of residentTools) registry.register(tool.contract, tool.handler);
@@ -232,9 +247,30 @@ export class Sessions {
     );
   }
 
-  async get(sessionId: string): Promise<SessionHandle> {
+  async get(sessionId: string, options: { tools?: readonly ToolBinding[] } = {}): Promise<SessionHandle> {
     const session = await this.client.request<WireSession>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}`);
-    return new SessionHandle(this.client, toSessionState(session));
+    const handle = new SessionHandle(this.client, toSessionState(session));
+    if (options.tools === undefined) return handle;
+    const tools = options.tools.map((tool) => {
+      const resident = inspectResidentTool(tool);
+      if (resident === undefined) throw new TypeError("reattachment accepts only resident Tools");
+      return resident;
+    });
+    const host = await this.client.residentHost();
+    for await (const event of handle.events()) {
+      if (event.type !== "session_creation_ended") continue;
+      const configuration = (event.data as { configuration: { tool_bindings: { name: string; host_id?: string }[] } }).configuration;
+      const bound = configuration.tool_bindings.filter((binding) => binding.host_id === host.hostId).map((binding) => binding.name).sort();
+      const supplied = tools.map((tool) => tool.definition.name).sort();
+      if (bound.length === 0 || JSON.stringify(bound) !== JSON.stringify(supplied)) {
+        throw new TypeError("resident Tools must match this host's sealed session bindings");
+      }
+      const registry = new AppToolRegistry();
+      for (const tool of tools) registry.register(tool.contract, tool.handler);
+      host.pump.register(sessionId, registry);
+      return new SessionHandle(this.client, toSessionState(session), () => host.unregister(sessionId));
+    }
+    throw new TypeError("session has no completed creation record");
   }
 
   async list(): Promise<SessionState[]> {
@@ -292,11 +328,11 @@ export class SessionHandle {
   }
 }
 
-function collectEnvironments(options: CreateSessionOptions): ReadonlyMap<Environment, string> {
+function collectEnvironments(options: CreateSessionOptions, operationIdentity: string): ReadonlyMap<Environment, string> {
   const result = new Map<Environment, string>();
   const add = (environment: Environment) => {
     inspectEnvironment(environment);
-    if (!result.has(environment)) result.set(environment, `env_${crypto.randomUUID().replaceAll("-", "")}`);
+    if (!result.has(environment)) result.set(environment, `env_${operationIdentity}_${result.size}`);
   };
   add(inspectAgentloop(options.agentloop).environment);
   for (const selected of options.tools ?? []) {

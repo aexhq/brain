@@ -72,8 +72,8 @@ impl EnvironmentAttachment {
 pub struct EnvironmentOperation {
     /// The sequence of the journal record that started this operation. With
     /// `session_id` it names the operation: a redelivery carries the same pair, so a
-    /// receiver that already answered it can say so. An operation on the environment
-    /// itself rather than on a session's behalf carries the environment's own id here.
+    /// receiver that already answered it can say so. Setup and teardown belong to the
+    /// owning session's journal too.
     #[schemars(range(min = 1))]
     pub sequence: u64,
     pub environment_id: EnvironmentId,

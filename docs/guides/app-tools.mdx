@@ -73,3 +73,13 @@ wins after dispatch, the host returns an unknown outcome because the function ma
 The SDK cancels local in-flight work and reconnects the same registered host for future commands;
 it never replays the disconnected command. Cooperative functions should observe `ctx.signal` and
 stop promptly.
+
+## Reattaching after restart
+
+Save `await brain.residentHostCredentials()` in application credential storage. After restarting the
+application, pass those credentials as `residentHost` to `new Brain(...)`, then call
+`brain.sessions.get(sessionId, { tools: [lookup()] })` with the session's resident Tool handlers.
+The supplied names must match that host's sealed bindings. Without `tools`, `get` only opens a session
+handle. Brain persists the host identity and token hash; registrations referenced by sessions do not
+expire while disconnected. Restoring a host accepts future commands, never replays old ones, and
+does not restore the application state captured by its functions.
