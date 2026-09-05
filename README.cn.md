@@ -57,7 +57,7 @@ Agentloop 控制上下文，决定何时调用模型或工具；Brain 协调执�
 同一会话可以使用原生工具、应用中的函数，以及多个远程环境中的工具。
 
 ```mermaid
-flowchart TB
+flowchart LR
   subgraph App["你的应用"]
     Client["SDK / HTTP 客户端"]
     Resident["常驻工具"]
@@ -66,7 +66,7 @@ flowchart TB
   subgraph Brain["Brain 运行时"]
     Server["HTTP / SSE 服务器<br/>会话协调"]
     Journal[("本地日志<br/>对话、slots 和事件")]
-    subgraph Worker["brainWasm 环境 · 独立 Wasmtime worker"]
+    subgraph Worker["brainWasm · Wasmtime worker"]
       Loop["Agentloop Component"]
       Native["原生工具 Component"]
     end
@@ -76,7 +76,7 @@ flowchart TB
   end
 
   Client <-->|"HTTP / SSE"| Server
-  Server <-->|"host SSE / 结果"| Resident
+  Resident <-->|"host SSE / 结果"| Server
   Server <-->|"模型调用"| Models["模型提供商"]
   Server <-->|"环境协议"| EnvA["环境 A<br/>工具与资源"]
   Server <-->|"环境协议"| EnvB["环境 B<br/>工具与资源"]

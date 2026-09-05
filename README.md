@@ -72,7 +72,7 @@ Environments. The Agentloop controls context and decides when to call the model 
 Brain coordinates execution and records the results.
 
 ```mermaid
-flowchart TB
+flowchart LR
   subgraph App["Your application"]
     Client["SDK / HTTP client"]
     Resident["Resident Tools"]
@@ -81,7 +81,7 @@ flowchart TB
   subgraph Brain["Brain runtime"]
     Server["HTTP / SSE server<br/>Session coordination"]
     Journal[("Local journal<br/>Transcript, slots and Events")]
-    subgraph Worker["brainWasm Environment · separate Wasmtime worker"]
+    subgraph Worker["brainWasm · Wasmtime worker"]
       Loop["Agentloop Component"]
       Native["Native Tool Components"]
     end
@@ -91,7 +91,7 @@ flowchart TB
   end
 
   Client <-->|"HTTP / SSE"| Server
-  Server <-->|"host SSE / results"| Resident
+  Resident <-->|"host SSE / results"| Server
   Server <-->|"model calls"| Models["Model providers"]
   Server <-->|"Environment protocol"| EnvA["Environment A<br/>Tools + resources"]
   Server <-->|"Environment protocol"| EnvB["Environment B<br/>Tools + resources"]
