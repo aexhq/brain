@@ -94,3 +94,12 @@ const bound = custom({ env: brainWasm() });
 ```
 
 Brain admits the raw Component. Compilation and source-language tooling stay outside Brain.
+
+## Build without an extension package
+
+The repository includes a small Rust [reference Agentloop](https://github.com/aexhq/brain/tree/main/examples/reference-agentloop)
+and a [lazy Environment provider](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs).
+They depend only on Brain's public contracts. Build the loop with
+`cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release`,
+then explicitly admit the Component before creating sessions. See [Write an Agentloop](./guides/write-a-loop)
+and [Write an Environment](./guides/write-an-environment) for the host calls and provider protocol.

@@ -44,12 +44,16 @@ pub fn session() -> Value {
             define::<Identity>(generator);
             define::<Message>(generator);
             define::<MessageRequest>(generator);
+            define::<crate::ModelRequest>(generator);
+            define::<crate::ModelResult>(generator);
+            define::<crate::ToolResult>(generator);
             define::<Outcome>(generator);
             define::<ToolAdmission>(generator);
             define::<ToolIdentity>(generator);
             define::<SessionId>(generator);
             define::<SessionList>(generator);
             define::<SessionSummary>(generator);
+            define::<crate::SessionTranscript>(generator);
             marker(SESSION_CONTRACT)
         },
     )

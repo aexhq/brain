@@ -147,6 +147,12 @@ export type Outcome =
 export type Identity = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "StopReason".
+ */
+export type StopReason =
+  ("end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "refusal") | "unknown";
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "SessionStatus".
  */
 export type SessionStatus = "creating" | "idle" | "running" | "ending" | "ended" | "failed";
@@ -269,8 +275,6 @@ export interface SessionEnvironment {
   bindings?: BindingValues1;
   configuration: unknown;
   environment_id: EnvironmentId;
-  idle_ttl_ms?: number;
-  managed?: boolean;
 }
 export interface BindingValues1 {
   [k: string]: string | undefined;
@@ -417,6 +421,55 @@ export interface UserInput {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ModelRequest".
+ */
+export interface ModelRequest {
+  max_output_tokens?: number;
+  messages: Message[];
+  /**
+   * Absent means the one the session was created with, if any. Filled in like `system`.
+   */
+  response_format?: {
+    [k: string]: unknown | undefined;
+  };
+  /**
+   * The system prompt for this call. Absent means the one the session was created
+   * with; empty means none. The session fills it in before the call is journalled.
+   */
+  system?: string;
+  /**
+   * The tools to offer on this call, by name. Absent means every tool the session was
+   * created with; each name given must be one of them. Filled in like `system`.
+   */
+  tools?: string[];
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ModelResult".
+ */
+export interface ModelResult {
+  message: Message;
+  stop_reason: StopReason;
+  usage: Usage;
+}
+/**
+ * Provider-reported usage. Every field is `Option` because **absent is never
+ * zero** -- a provider that does not report cache reads is not a provider that
+ * read zero cache tokens.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "Usage".
+ */
+export interface Usage {
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  provider_cost_usd?: string;
+  reasoning_tokens?: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "SessionList".
  */
 export interface SessionList {
@@ -438,6 +491,16 @@ export interface SessionSummary {
   status: SessionStatus;
 }
 /**
+ * Canonical transcript as of a committed journal sequence, available without execution.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "SessionTranscript".
+ */
+export interface SessionTranscript {
+  messages: Message[];
+  through_sequence: number;
+}
+/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ToolAdmission".
  */
@@ -456,4 +519,13 @@ export interface TurnError {
   code: string;
   message: string;
   retryable?: boolean;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolResult".
+ */
+export interface ToolResult {
+  call_id: string;
+  is_error: boolean;
+  output: unknown;
 }

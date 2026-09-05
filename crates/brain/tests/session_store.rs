@@ -73,6 +73,92 @@ fn a_new_session_folds_to_nothing() {
 }
 
 #[test]
+fn checkpoints_resume_and_rebuild_when_stale_or_damaged() {
+    let directory = temporary("checkpoint");
+    let writer = Writer::spawn();
+    let store = created(&directory, &writer);
+    store
+        .append_journal_sync(&[JournalEntry::TranscriptDelta {
+            keep: 0,
+            append: vec![user("one")],
+        }])
+        .unwrap();
+    store.checkpoint().unwrap();
+    let snapshot = store.fold().unwrap();
+    drop(store);
+    let path = directory.join("ses_1");
+    let store = LocalSessionStore::open(&path, writer.clone(), feed()).unwrap();
+    assert_eq!(store.fold().unwrap(), snapshot);
+    store
+        .append_journal_sync(&[JournalEntry::TranscriptDelta {
+            keep: 1,
+            append: vec![user("two")],
+        }])
+        .unwrap();
+    let expected = store.fold().unwrap();
+    drop(store);
+    let store = LocalSessionStore::open(&path, writer.clone(), feed()).unwrap();
+    assert_eq!(store.fold().unwrap(), expected);
+    store.checkpoint().unwrap();
+    drop(store);
+    fs::write(path.join("checkpoint"), b"damaged").unwrap();
+    let store = LocalSessionStore::open(&path, writer, feed()).unwrap();
+    assert_eq!(store.fold().unwrap(), expected);
+    assert_eq!(store.records_after(0, 100).unwrap().len(), 1);
+    drop(store);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn independent_storage_can_construct_a_commit_completion() {
+    let handle = brain::CommitHandle::from_completion(|| Ok(Vec::new()));
+    assert!(handle.wait().unwrap().is_empty());
+    assert!(
+        brain::CommitHandle::from_completion(|| Err(brain::Error::Journal("commit failed".into())))
+            .wait()
+            .is_err()
+    );
+}
+
+#[test]
+fn an_extension_event_cannot_disguise_an_unfinished_effect() {
+    let directory = temporary("pending-kind");
+    let writer = Writer::spawn();
+    let store = created(&directory, &writer);
+    let records = store
+        .append_sync(
+            &[AppendRecord::new(
+                "tool_call_started",
+                serde_json::json!({}),
+            )],
+            SessionUpdate::default(),
+        )
+        .unwrap();
+    store
+        .append_sync(
+            &[AppendRecord::new(
+                "custom_ended",
+                serde_json::json!({"sequence": records[0].sequence}),
+            )],
+            SessionUpdate::default(),
+        )
+        .unwrap();
+    assert!(store.interrupt_unfinished_turn().unwrap());
+    assert_eq!(
+        store
+            .records_after(records[0].sequence, 100)
+            .unwrap()
+            .last()
+            .unwrap()
+            .kind,
+        "tool_call_failed"
+    );
+    drop(store);
+    drop(writer);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn deltas_keep_a_prefix_and_append_the_rest() {
     let directory = temporary("delta");
     let writer = Writer::spawn();

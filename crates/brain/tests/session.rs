@@ -74,8 +74,7 @@ fn tool_config(tool_name: &str, needs: Vec<&str>, declares: Vec<&str>) -> Sessio
     config.environments = vec![EnvironmentAttachment {
         environment_id: EnvironmentId::new("workspace"),
         configuration: serde_json::json!({}),
-        managed: true,
-        idle_ttl_ms: None,
+
         binding: Some(environment.clone()),
         attachment_id: Some(AttachmentId::new("attachment")),
         resources: declares
@@ -125,6 +124,7 @@ fn resident_tool_config(tool_name: &str) -> SessionConfig {
 struct OutcomeTools {
     outcome: Outcome,
     delay: Duration,
+    entered: tokio::sync::Notify,
     cancelled: Mutex<Vec<u64>>,
 }
 
@@ -135,6 +135,7 @@ impl ToolExecutor for OutcomeTools {
         _: ToolDispatch,
         _: &dyn brain::ToolServices,
     ) -> Result<Outcome, Error> {
+        self.entered.notify_one();
         tokio::time::sleep(self.delay).await;
         Ok(self.outcome.clone())
     }
@@ -238,8 +239,8 @@ async fn the_started_record_precedes_the_model_effect() {
         done(transcript)
     });
     let runtime = runtime(&data_dir, loop_executor, model.clone(), Arc::new(NoTools));
-    *model.feed.lock().unwrap() = Some(runtime.subscribe());
     let handle = runtime.create(&config(), &[]).unwrap();
+    *model.feed.lock().unwrap() = Some(runtime.subscribe(handle.id()));
     handle
         .message(MessageRequest {
             input: "hello".into(),
@@ -326,6 +327,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
             value: serde_json::json!({}),
         },
         delay: Duration::from_secs(30),
+        entered: tokio::sync::Notify::new(),
         cancelled: Mutex::new(Vec::new()),
     });
     let loop_executor = scripted(|input, services| async move {
@@ -349,7 +351,9 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
         let handle = handle.clone();
         tokio::spawn(async move { handle.message(MessageRequest { input: "go".into() }).await })
     };
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::timeout(Duration::from_secs(5), tools.entered.notified())
+        .await
+        .unwrap();
     handle.cancel().await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), turning)
         .await
@@ -457,8 +461,8 @@ async fn a_subscriber_sees_model_output_while_the_turn_is_running() {
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
     );
-    let mut feed = runtime.subscribe();
     let handle = runtime.create(&config(), &[]).unwrap();
+    let mut feed = runtime.subscribe(handle.id());
     handle
         .message(MessageRequest {
             input: "hello".into(),
@@ -702,6 +706,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
         let tools = Arc::new(OutcomeTools {
             outcome,
             delay: Duration::ZERO,
+            entered: tokio::sync::Notify::new(),
             cancelled: Mutex::new(Vec::new()),
         });
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -751,6 +756,7 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_unknown() {
             value: serde_json::json!({}),
         },
         delay: Duration::from_secs(30),
+        entered: tokio::sync::Notify::new(),
         cancelled: Mutex::new(Vec::new()),
     });
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -813,6 +819,7 @@ async fn a_resident_tool_uses_the_configured_executor() {
             value: serde_json::json!({"path": "README.md"}),
         },
         delay: Duration::ZERO,
+        entered: tokio::sync::Notify::new(),
         cancelled: Mutex::new(Vec::new()),
     });
     let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5_000);
@@ -867,6 +874,7 @@ async fn an_unanswered_resident_call_becomes_unknown_and_journals_the_cancellati
             value: serde_json::json!({}),
         },
         delay: Duration::from_secs(5),
+        entered: tokio::sync::Notify::new(),
         cancelled: Mutex::new(Vec::new()),
     });
     let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 200);
@@ -1048,6 +1056,59 @@ async fn events_since_the_last_activation_reach_the_loop() {
 }
 
 #[tokio::test]
+async fn one_activation_can_read_more_than_the_initial_event_page() {
+    let data_dir = temporary_directory("event-pages");
+    let loop_executor = scripted(|input, services| async move {
+        let mut events = input.events;
+        loop {
+            let after = events.last().map_or(0, |event| event.sequence);
+            let page = services.events(after).await?;
+            if page.events.is_empty() {
+                break;
+            }
+            events.extend(page.events);
+        }
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == "last_observation")
+        );
+        assert!(
+            events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
+        done(input.transcript)
+    });
+    let runtime = runtime(
+        &data_dir,
+        loop_executor,
+        Arc::new(NoModels),
+        Arc::new(NoTools),
+    );
+    let handle = runtime.create(&config(), &[]).unwrap();
+    let mut records = (0..1100)
+        .map(|_| brain::AppendRecord::new("observation", serde_json::json!({})))
+        .collect::<Vec<_>>();
+    records.push(brain::AppendRecord::new(
+        "last_observation",
+        serde_json::json!({}),
+    ));
+    runtime
+        .store(handle.id())
+        .append_sync(&records, brain::SessionUpdate::default())
+        .unwrap();
+    handle
+        .message(MessageRequest {
+            input: "read history".into(),
+        })
+        .await
+        .unwrap();
+    drop(handle);
+    settle(runtime, data_dir).await;
+}
+
+#[tokio::test]
 async fn transcript_replacement_reaches_the_live_feed_and_next_activation() {
     let data_dir = temporary_directory("transcript-replaced-event");
     let turn = Arc::new(AtomicUsize::new(0));
@@ -1080,10 +1141,10 @@ async fn transcript_replacement_reaches_the_live_feed_and_next_activation() {
         Arc::new(NoModels),
         Arc::new(NoTools),
     );
-    let mut live = runtime.subscribe();
     let handle = runtime
         .create(&config(), &[user("old one"), user("old two")])
         .unwrap();
+    let mut live = runtime.subscribe(handle.id());
     handle
         .message(MessageRequest {
             input: "compact".into(),

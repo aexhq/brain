@@ -55,6 +55,9 @@ interface types {
 interface host {
   use types.{turn-error};
 
+  // A finite EventPage after this sequence. Continue with next_cursor until empty.
+  events: func(after: u64) -> result<string, turn-error>;
+
   // One model call. `request-json` is a ModelRequest; the answer is a ModelResult.
   model: func(request-json: string) -> result<string, turn-error>;
   // One or many tool calls, run together. `calls-json` is a list of ToolInvocation;

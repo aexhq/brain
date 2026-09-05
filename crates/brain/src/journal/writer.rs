@@ -56,12 +56,6 @@ pub(crate) struct Ticket {
 }
 
 impl Ticket {
-    pub(crate) fn ready() -> Self {
-        let (done, wait) = mpsc::channel();
-        let _ = done.send(Ok(()));
-        Self { wait }
-    }
-
     pub(crate) fn wait(self) -> Result<(), Error> {
         self.wait
             .recv()

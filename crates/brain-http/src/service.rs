@@ -60,6 +60,10 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         request: CreateSessionRequest,
     ) -> Result<SessionSummary, ApiError>;
     async fn get_session(&self, session_id: SessionId) -> Result<SessionSummary, ApiError>;
+    async fn transcript(
+        &self,
+        session_id: SessionId,
+    ) -> Result<brain_protocol::SessionTranscript, ApiError>;
     async fn list_sessions(&self) -> Result<SessionList, ApiError>;
     async fn send_message(
         &self,
@@ -80,13 +84,16 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         session_id: SessionId,
         after: Option<u64>,
     ) -> Result<EventPage, ApiError>;
-    /// Every record appended from now on, for every session.
+    /// Every record appended from now on, for the selected session.
     ///
     /// Opened *before* the page a stream starts with, so a record appended between the
     /// two arrives here instead of being lost in the gap; the caller drops what the page
     /// already carried, by sequence. Falling behind loses records rather than holding up
     /// a turn — the journal is the record, and `after` reads it back.
-    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, LiveEvent)>;
+    fn subscribe(
+        &self,
+        session_id: &SessionId,
+    ) -> tokio::sync::broadcast::Receiver<(SessionId, LiveEvent)>;
     async fn cancel_session(
         &self,
         session_id: SessionId,

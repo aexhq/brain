@@ -162,6 +162,13 @@ pub struct SessionSummary {
     pub last_sequence: u64,
 }
 
+/// Canonical transcript as of a committed journal sequence, available without execution.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct SessionTranscript {
+    pub messages: Vec<crate::Message>,
+    pub through_sequence: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct Event {
     pub event_id: EventId,

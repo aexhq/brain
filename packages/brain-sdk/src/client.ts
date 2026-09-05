@@ -5,19 +5,13 @@ import {
 } from "./extensions.js";
 import { BrainError } from "./errors.js";
 import type {
-  AgentloopAdmission, BoundTool as WireBoundTool, CreateSessionRequest, EventPage,
+  SessionTranscript, ToolAdmission, AgentloopAdmission, BoundTool as WireBoundTool, CreateSessionRequest, EventPage,
   HostRegistration, SessionEnvironment, SessionSummary as WireSession, SessionList,
 } from "./generated/session.js";
 import type {
   AgentloopBinding, Component, CreateSessionOptions, Environment, OperationOptions, SessionEvent,
   SessionState, SessionStreamEvent, ToolBinding, UserInput,
 } from "./types.js";
-
-interface ToolAdmission {
-  readonly identity: string;
-  readonly status: "admitted" | "rejected";
-  readonly error?: { readonly message: string; readonly details?: unknown };
-}
 
 export interface BrainOptions {
   baseUrl: string;
@@ -198,7 +192,7 @@ export class BrainClient {
       if (bytes.byteLength === 0) throw new TypeError(`${subject} Component cannot be empty`);
       const idempotencyKey = `${subject.toLowerCase()}-${await sha256(bytes)}`;
       const result = await this.request<AgentloopAdmission | ToolAdmission>("POST", path, bytes, idempotencyKey, "application/octet-stream");
-      if (result.status !== "admitted") throw new BrainError(400, `${subject.toLowerCase()}_rejected`, result.error?.message ?? `${subject} was rejected`, false, result.error?.details);
+      if (result.status !== "admitted") throw new BrainError(400, `${subject.toLowerCase()}_rejected`, result.error?.message ?? `${subject} was rejected`, false, result.error && "details" in result.error ? result.error.details : undefined);
       return result.identity;
     })();
     cache.set(value, admission);
@@ -294,6 +288,10 @@ export class SessionHandle {
     return (this.state = toSessionState(session));
   }
 
+  transcript(): Promise<SessionTranscript> {
+    return this.client.request("GET", `/v1/sessions/${encodeURIComponent(this.id)}/transcript`);
+  }
+
   events(after = 0): AsyncIterable<SessionEvent> {
     const client = this.client;
     const sessionId = this.id;
@@ -353,8 +351,6 @@ function compileSession(
     return {
       environment_id: environmentId,
       configuration: structuredClone(source.configuration),
-      managed: source.managed,
-      ...(source.idleTtlMs === undefined ? {} : { idle_ttl_ms: source.idleTtlMs }),
       bindings: { ...source.bindings },
     };
   });

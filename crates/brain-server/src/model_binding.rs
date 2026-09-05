@@ -38,30 +38,17 @@ pub trait ModelBindingStore: Send + Sync + 'static {
     fn delete(&self, binding_id: &str) -> Result<(), brain::Error>;
 }
 
-/// The credential half of the server's session metadata.
-///
-/// Reads come from memory; writes commit the encrypted credential before admission.
-pub struct LocalModelBindingStore {
-    metadata: Arc<crate::metadata::ServerMetadata>,
-}
-
-impl LocalModelBindingStore {
-    pub fn new(metadata: Arc<crate::metadata::ServerMetadata>) -> Self {
-        Self { metadata }
-    }
-}
-
-impl ModelBindingStore for LocalModelBindingStore {
+impl ModelBindingStore for crate::metadata::ServerMetadata {
     fn put(&self, binding_id: &str, selection: &ModelSelection) -> Result<(), brain::Error> {
-        self.metadata.put_binding(binding_id, selection)
+        self.put_binding(binding_id, selection)
     }
 
     fn get(&self, binding_id: &str) -> Result<Option<ModelCredential>, brain::Error> {
-        self.metadata.binding(binding_id)
+        self.binding(binding_id)
     }
 
     fn delete(&self, binding_id: &str) -> Result<(), brain::Error> {
-        self.metadata.forget_binding(binding_id)
+        self.forget_binding(binding_id)
     }
 }
 
@@ -164,8 +151,8 @@ mod tests {
         path
     }
 
-    fn store(directory: &std::path::Path) -> LocalModelBindingStore {
-        LocalModelBindingStore::new(Arc::new(ServerMetadata::open(directory).unwrap()))
+    fn store(directory: &std::path::Path) -> ServerMetadata {
+        ServerMetadata::open(directory).unwrap()
     }
 
     fn selection(api_key: &str) -> ModelSelection {

@@ -20,6 +20,9 @@ struct RecordingBridge {
 impl TurnBridge for RecordingBridge {
     async fn call(&self, call: HostCall) -> Result<String, TurnError> {
         match call {
+            HostCall::Events { after } => {
+                Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
+            }
             HostCall::Model { request_json } => {
                 self.calls
                     .lock()
@@ -84,6 +87,86 @@ fn tool_path() -> String {
         .expect("BRAIN_TEST_TOOL_COMPONENT must name the built diagnostic Tool")
 }
 
+#[tokio::test]
+async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model() {
+    struct Model {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait]
+    impl TurnBridge for Model {
+        async fn call(&self, call: HostCall) -> Result<String, TurnError> {
+            let answer = match call {
+                HostCall::Events { after: 0 } => {
+                    serde_json::json!({"events": [{"event_id": "ses_ref:3", "sequence": 3, "recorded_at_ms": 1, "event_type": "turn_failed", "data": {"code": "interrupted"}}], "next_cursor": 3})
+                }
+                HostCall::Events { after } => {
+                    serde_json::json!({"events": [], "next_cursor": after})
+                }
+                HostCall::Model { request_json } => {
+                    let request: brain_protocol::ModelRequest =
+                        serde_json::from_str(&request_json).unwrap();
+                    assert!(
+                        serde_json::to_string(&request.messages)
+                            .unwrap()
+                            .contains("interrupted")
+                    );
+                    let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+                    if !first {
+                        assert!(
+                            serde_json::to_string(&request.messages)
+                                .unwrap()
+                                .contains("\"is_error\":true")
+                        );
+                    }
+                    serde_json::json!({"message": {"role": "assistant", "content": if first { serde_json::json!([{"type": "tool_use", "id": "call_one", "name": "echo", "input": {}}]) } else { serde_json::json!([{"type": "text", "text": "Environment is unavailable"}]) }}, "stop_reason": if first { "tool_use" } else { "end_turn" }, "usage": {}})
+                }
+                HostCall::Dispatch { .. } => {
+                    serde_json::json!([{"call_id": "call_one", "output": {"code": "expired", "message": "Environment expired"}, "is_error": true}])
+                }
+                _ => {
+                    return Err(TurnError::new(
+                        "unexpected",
+                        "unexpected reference host call",
+                    ));
+                }
+            };
+            Ok(answer.to_string())
+        }
+        fn cancelled(&self) -> bool {
+            false
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let pool = WorkerPool::new(
+        env!("CARGO_BIN_EXE_brain-loop-worker"),
+        directory.path().join("run"),
+        directory.path().join("packages"),
+        LoopLimits::default(),
+    );
+    let path = std::env::var("BRAIN_TEST_REFERENCE_AGENTLOOP")
+        .expect("BRAIN_TEST_REFERENCE_AGENTLOOP must name the reference Component");
+    let digest = pool
+        .admit(tokio::fs::read(path).await.unwrap())
+        .await
+        .unwrap();
+    let model = Model {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let output = pool
+        .turn(
+            "ses_ref".into(),
+            digest,
+            environment(),
+            input("continue"),
+            &model,
+        )
+        .await
+        .unwrap();
+    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(output.slots["observed_sequence"], 3);
+    assert_eq!(output.transcript.len(), 5);
+}
+
 fn environment() -> serde_json::Value {
     serde_json::json!({
         "driver": "brain_wasm",
@@ -91,6 +174,103 @@ fn environment() -> serde_json::Value {
         "filesystem": {"workspace": false},
         "secrets": []
     })
+}
+
+#[tokio::test]
+async fn saturated_parent_turns_can_all_invoke_native_tools() {
+    struct Nested {
+        pool: Arc<WorkerPool>,
+        tool: brain_protocol::ToolIdentity,
+        parents: tokio::sync::Barrier,
+    }
+    #[async_trait]
+    impl TurnBridge for Nested {
+        async fn call(&self, call: HostCall) -> Result<String, TurnError> {
+            match call {
+                HostCall::Events { after } => {
+                    Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
+                }
+                HostCall::Emit { .. } => {
+                    self.parents.wait().await;
+                    self.pool
+                        .ready()
+                        .await
+                        .map_err(|error| TurnError::new("readiness", error.to_string()))?;
+                    let answer = self
+                        .pool
+                        .tool(
+                            "ses_nested".into(),
+                            self.tool.clone(),
+                            environment(),
+                            NativeToolInput {
+                                call_id: "nested".into(),
+                                input: serde_json::json!({"nested": true}),
+                                configuration: serde_json::json!({}),
+                                deadline_at_ms: u64::MAX,
+                            },
+                            &RecordingBridge {
+                                calls: Mutex::new(Vec::new()),
+                                cancelled: AtomicBool::new(false),
+                            },
+                        )
+                        .await
+                        .map_err(|error| TurnError::new("nested_failed", error.to_string()))?;
+                    assert_eq!(answer["echo"]["nested"], true);
+                    Ok("7".into())
+                }
+                _ => Err(TurnError::new(
+                    "unexpected_host_call",
+                    "diagnostic turn only emits",
+                )),
+            }
+        }
+        fn cancelled(&self) -> bool {
+            false
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let limits = LoopLimits::default();
+    let count = limits.concurrent_turns_per_worker;
+    let pool = Arc::new(WorkerPool::new(
+        env!("CARGO_BIN_EXE_brain-loop-worker"),
+        directory.path().join("run"),
+        directory.path().join("packages"),
+        limits,
+    ));
+    let agentloop = pool
+        .admit(tokio::fs::read(package_path()).await.unwrap())
+        .await
+        .unwrap();
+    let tool = pool
+        .admit_tool(tokio::fs::read(tool_path()).await.unwrap())
+        .await
+        .unwrap();
+    let bridge = Arc::new(Nested {
+        pool: pool.clone(),
+        tool,
+        parents: tokio::sync::Barrier::new(count),
+    });
+    let mut tasks = tokio::task::JoinSet::new();
+    for index in 0..count {
+        let (pool, agentloop, bridge) = (pool.clone(), agentloop.clone(), bridge.clone());
+        tasks.spawn(async move {
+            pool.turn(
+                format!("ses_parent_{index}"),
+                agentloop,
+                environment(),
+                input("nested"),
+                &*bridge,
+            )
+            .await
+        });
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap().unwrap();
+        }
+    })
+    .await
+    .expect("nested tools must not wait behind their parents");
 }
 
 fn workspace_environment() -> serde_json::Value {

@@ -7,6 +7,7 @@ struct Diagnostic;
 
 impl Guest for Diagnostic {
     fn turn(input: TurnInput) -> Result<TurnOutput, TurnError> {
+        brain::agentloop::host::events(0)?;
         let mut slots: serde_json::Value = serde_json::from_str(&input.slots_json).map_err(error)?;
         let turns = slots
             .get("memory")

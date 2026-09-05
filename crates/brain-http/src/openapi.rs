@@ -66,6 +66,7 @@ pub(crate) mod contract {
         SessionId,
         SessionList,
         SessionSummary,
+        SessionTranscript,
         ToolAdmission,
     );
 }

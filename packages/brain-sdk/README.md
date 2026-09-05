@@ -72,3 +72,19 @@ placement, and supplies deterministic idempotency keys for admission. A caller m
 Requests have no implicit client-side deadline because a turn may legitimately outlive a short
 HTTP timeout. Set `timeoutMs` on `Brain` when the caller owns a tighter bound; Brain still enforces
 its configured model, Tool, and whole-turn limits.
+
+## Preparation and suspended history
+
+Call `await brain.admit(loop)` and `await brain.admit(tool)` before creation to prepare the same
+Component objects you will bind. Successful admission is cached. `await session.transcript()`
+returns canonical messages and their journal sequence without starting execution; Events and live
+subscriptions also remain accessible while suspended.
+
+Brain releases session execution at turn end by default. Explicit session `idleTtlMs: 0` retains it.
+Environment resource TTL belongs in the Environment provider's configuration. Setup/attach can be
+logical operations with allocation deferred to invocation. Bindings remain fixed throughout MVP.
+
+Agentloop authors can import generated `ModelRequest`, `ModelResult`, `ToolResult`, `EventPage`, and
+`SessionTranscript` types. The JSON schemas ship at `@aexhq/brain/contracts/session.json`; WIT ships
+at `@aexhq/brain/contracts/agentloop.wit`. `events(after)` reads history during an activation, and
+`emit` appends extension Events. Model, Tool, and Environment failures are never retried by Brain.

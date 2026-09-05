@@ -2,7 +2,7 @@
 //!
 //! The process [`Writer`] selects a request before this log assigns its locations. Frame
 //! integrity lives here and nowhere else: a crash can tear the tail, so every frame
-//! carries a check value and opening truncates at the first frame that does not verify.
+//! carries a check value. Only an incomplete final write is truncated; corruption is refused.
 //!
 //! The log knows nothing about what its frames mean. The session store folds them back
 //! into an index on open, and reads them back by location afterwards.
@@ -27,7 +27,7 @@ const HEADER_BYTES: usize = 12;
 pub(crate) const SEGMENT_EXTENSION: &str = "segment";
 
 /// Where a frame lives. Small and `Copy` so the in-memory index can hold one per record.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct Location {
     pub segment: u64,
     pub offset: u64,
@@ -120,13 +120,22 @@ impl SegmentLog {
                 offset += length;
             }
             if offset < bytes.len() {
-                // Torn or corrupt tail: everything after the last good frame is unusable.
-                OpenOptions::new()
+                let remaining = &bytes[offset..];
+                let incomplete = remaining.len() < HEADER_BYTES
+                    || HEADER_BYTES
+                        + u32::from_le_bytes(remaining[..4].try_into().unwrap()) as usize
+                        > remaining.len();
+                if *id != tail.segment || !incomplete {
+                    return Err(Error::Journal(format!(
+                        "corrupt journal segment {id} at offset {offset}"
+                    )));
+                }
+                let file = OpenOptions::new()
                     .write(true)
                     .open(&path)
-                    .map_err(log_error)?
-                    .set_len(offset as u64)
                     .map_err(log_error)?;
+                file.set_len(offset as u64).map_err(log_error)?;
+                file.sync_all().map_err(log_error)?;
             }
             if *id == tail.segment {
                 tail.offset = offset as u64;
@@ -139,6 +148,21 @@ impl SegmentLog {
             tail: Mutex::new(tail),
             writer,
         })
+    }
+
+    pub(crate) fn from_checkpoint(
+        directory: &Path,
+        owner: Arc<str>,
+        writer: Arc<Writer>,
+        segment: u64,
+        offset: u64,
+    ) -> Self {
+        Self {
+            directory: Arc::new(directory.to_path_buf()),
+            owner,
+            tail: Mutex::new(Tail { segment, offset }),
+            writer,
+        }
     }
 
     /// Assigns locations to encoded frames after the writer has selected their request.
@@ -526,7 +550,6 @@ mod tests {
         let path = segment_path(&directory, 0);
         let mut bytes = fs::read(&path).unwrap();
         bytes.truncate(bytes.len() - 3);
-        bytes.extend_from_slice(&[0xff; 5]);
         fs::write(&path, &bytes).unwrap();
         let (log, seen) = collect(&directory, writer.clone());
         assert_eq!(seen.len(), 1, "the torn second frame is dropped");
@@ -548,5 +571,36 @@ mod tests {
         let last = bytes.len() - 1;
         bytes[last] ^= 0x01;
         assert!(decode(&bytes).is_none());
+    }
+
+    #[test]
+    fn complete_corruption_and_torn_nonfinal_segments_are_never_truncated() {
+        for nonfinal in [false, true] {
+            let directory = temporary();
+            fs::create_dir_all(&directory).unwrap();
+            let mut bytes = encode(&append(1, "k", &payload("k"))).unwrap();
+            if nonfinal {
+                bytes.truncate(bytes.len() - 1);
+            } else {
+                let last = bytes.len() - 1;
+                bytes[last] ^= 1;
+            }
+            let path = segment_path(&directory, 0);
+            fs::write(&path, &bytes).unwrap();
+            if nonfinal {
+                fs::write(segment_path(&directory, 1), []).unwrap();
+            }
+            assert!(
+                SegmentLog::open(
+                    &directory,
+                    Arc::from("test"),
+                    Writer::spawn(),
+                    |_, _| Ok(())
+                )
+                .is_err()
+            );
+            assert_eq!(fs::read(path).unwrap(), bytes);
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 }

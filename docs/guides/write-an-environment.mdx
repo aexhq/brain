@@ -21,14 +21,13 @@ export const sandbox = environment({
   options: z.object({
     image: z.string(),
     token: z.string(),
+    idleMs: z.number().int().positive(),
   }),
-  configure: ({ image }) => ({ image }),
+  configure: ({ image, idleMs }) => ({ image, idle_ms: idleMs }),
   bindings: ({ token }) => ({ API_TOKEN: token }),
-  managed: true,
-  idleTtlMs: 300_000,
 });
 
-const env = sandbox({ image: "node:22", token: process.env.API_TOKEN });
+const env = sandbox({ image: "node:22", token: process.env.API_TOKEN, idleMs: 300_000 });
 ```
 
 `driver` is the adapter name. `configure` returns the non-secret configuration stored with the
@@ -60,13 +59,12 @@ descriptor belongs entirely to the driver.
 Brain durably commits the operation before calling the driver and sends it once. The driver must:
 
 - treat `{session_id, sequence}` as the stable operation identity;
-- return the same terminal receipt for an already-completed identical operation;
-- reject a conflicting operation rather than execute it;
 - bind every invocation to the supplied Environment and attachment;
 - return `unknown` when it cannot prove whether an effect happened;
 - make cancellation best effort without calling uncertain work successfully cancelled.
 
-Brain never automatically retries a known failure or an unknown outcome.
+Brain never automatically retries a known failure or an unknown outcome. A provider may implement
+its own deduplication, but Brain does not require durable provider state or resource restoration.
 
 ## Resources and authority
 
@@ -80,7 +78,13 @@ provider identities and keep mutable Environment state separate from the session
 
 ## Lifecycle
 
-Session creation performs setup and attach before reporting ready. End detaches. Managed
-Environments close after their idle TTL; session deletion closes any Environment that remains. A
-lost physical instance must result in a failure or unknown receipt; it must not be presented as a
-silent restore of its files or processes.
+Session creation performs logical setup and attach before reporting ready. Declare capabilities
+there and allocate physical resources on first invoke if useful. Serialize concurrent first invokes
+inside the provider. The provider owns TTL, including expiration while the session remains attached.
+End detaches; delete asks for teardown. A driver for an external service may only release its local
+binding. Restart means fresh resources unless the provider explicitly offers restoration.
+
+See [`examples/lazy-environment.mjs`](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs)
+for a standalone provider, and its test for concurrent allocation, expiry, and explicit restart.
+Run it with `node examples/lazy-environment.mjs`. It binds loopback, executes only its reference echo
+Tool, and optionally checks `REFERENCE_ENV_TOKEN`. It is an authoring example, not a tenant sandbox.

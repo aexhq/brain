@@ -57,6 +57,7 @@ pub struct WorkerPool {
     limits: LoopLimits,
     native_policy: NativePolicy,
     permits: Arc<Semaphore>,
+    tool_permits: Arc<Semaphore>,
     state: Mutex<WorkerState>,
 }
 
@@ -90,6 +91,7 @@ impl WorkerPool {
             // Match the worker's execution slots exactly: an accepted connection must
             // never wait silently behind a worker-side slot and trip the liveness bound.
             permits: Arc::new(Semaphore::new(limits.concurrent_turns_per_worker.max(1))),
+            tool_permits: Arc::new(Semaphore::new(limits.concurrent_turns_per_worker.max(1))),
             limits,
             native_policy: NativePolicy::default(),
             state: Mutex::new(WorkerState::default()),
@@ -248,11 +250,6 @@ impl WorkerPool {
     }
 
     pub async fn ready(&self) -> Result<(), LoopError> {
-        let _permit = self
-            .permits
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| LoopError::Overloaded)?;
         let mut state = self.state.lock().await;
         self.ensure_worker(&mut state).await?;
         Ok(WorkerClient::new(&self.socket).ping().await?)
@@ -333,7 +330,7 @@ impl WorkerPool {
         bridge: &dyn TurnBridge,
     ) -> Result<serde_json::Value, LoopError> {
         let _permit = self
-            .permits
+            .tool_permits
             .clone()
             .try_acquire_owned()
             .map_err(|_| LoopError::Overloaded)?;

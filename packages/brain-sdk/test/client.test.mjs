@@ -6,6 +6,18 @@ import { Brain, BrainError, agentloop, brainWasm, component, tool } from "../dis
 
 const sessionResponse = { session_id: "ses_12345678901234567890", status: "idle", last_sequence: 1 };
 
+test("a transcript can be read without sending a turn", async () => {
+  const calls = [];
+  const brain = new Brain({ baseUrl: "http://localhost:8080", fetch: async (url) => {
+    calls.push(String(url));
+    return Response.json(String(url).endsWith("/transcript") ? { messages: [], through_sequence: 7 } : sessionResponse);
+  } });
+  const session = await brain.sessions.get(sessionResponse.session_id);
+  assert.deepEqual(await session.transcript(), { messages: [], through_sequence: 7 });
+  assert.equal(calls.length, 2);
+  assert(calls[1].endsWith("/transcript"));
+});
+
 test("session creation admits Components and sends explicit Environment placement", async () => {
   const requests = [];
   const fetchStub = async (input, init) => {

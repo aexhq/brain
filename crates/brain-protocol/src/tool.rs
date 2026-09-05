@@ -134,7 +134,7 @@ pub struct ToolCancellation {
     pub binding: ToolBinding,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct ToolResult {
     pub call_id: String,
     pub output: serde_json::Value,

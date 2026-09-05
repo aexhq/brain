@@ -59,16 +59,6 @@ export class AppToolRegistry {
     this.tools.set(contract.name, { contract, handler });
   }
 
-  /** Whether a handler is registered for this name. A pump must not answer a call it
-   * has no handler for — some other process may be serving that tool. */
-  has(name: string): boolean {
-    return this.tools.has(name);
-  }
-
-  names(): readonly string[] {
-    return [...this.tools.keys()];
-  }
-
   cancel(callId: string): void {
     const call = this.active.get(callId);
     if (call === undefined) return;

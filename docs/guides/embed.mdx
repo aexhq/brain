@@ -21,7 +21,7 @@ let runtime = Arc::new(brain::SessionRuntime {
     loop_executor,
     model_executor,
     tool_executor,
-    live: feed.live_sender(),
+    live: feed.clone(),
     telemetry,
 });
 
@@ -44,17 +44,15 @@ session
     .await?;
 ```
 
-After a restart, open what is on disk. Every store comes back with a turn the last process
-left running already closed by a `turn_failed` record whose code is `interrupted`; nothing is
-replayed into the loop. Which of them to start, and when, is yours: the server starts a session
-on its first request and suspends it again after its idle TTL.
+Open only the session needed, call `interrupt_unfinished_turn`, then `Session::open` when an explicit
+activation is required. `LocalSessionStore::open` alone permits transcript and Event reads without
+an actor. Call `checkpoint()` at a quiescent boundary before dropping execution to accelerate the
+next open; this projection is disposable. Keep one live store/sequencer per session and serialize
+mutations for that session. The stock server provides that coordination.
 
-```rust
-for store in brain::LocalSessionStore::open_all(&sessions_dir, writer.clone(), feed.clone())? {
-    let session = brain::Session::open(store, runtime.clone())?;
-    // ...
-}
-```
+Hold a filesystem lock on the local data directory for the process lifetime before opening mutable
+stores. `brain_server::data_layout::lock` provides the stock server's lock when embedding that
+composition. One local writer is supported; cross-server ownership belongs to the host platform.
 
 ## You supply the ports
 
@@ -62,7 +60,8 @@ for store in brain::LocalSessionStore::open_all(&sessions_dir, writer.clone(), f
 them differently and you get a different deployment without forking the runtime: your own transport,
 your own placement. The loop executor receives the session's `TurnServices` and runs the loop
 against them; the server's executor forwards to the Loophost worker over a socket, and yours could
-run a loop in-process.
+run a trusted loop in-process. A custom `SessionStore` can construct asynchronous append completions
+with `CommitHandle::from_completion`; returning success must mean the canonical records committed.
 
 ## What the runtime keeps
 

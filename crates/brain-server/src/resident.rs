@@ -38,9 +38,22 @@ struct Host {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct RegistrationRecord {
-    host_id: HostId,
-    token: Option<[u8; 32]>,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RegistrationRecord {
+    Registered {
+        host_id: HostId,
+        token: [u8; 32],
+    },
+    Removed {
+        host_id: HostId,
+    },
+    Bound {
+        session_id: SessionId,
+        host_ids: Vec<HostId>,
+    },
+    Released {
+        session_id: SessionId,
+    },
 }
 
 fn registered(token: [u8; 32]) -> Host {
@@ -71,10 +84,32 @@ impl ResidentHosts {
         let (log, records) = crate::persistence::open_log::<RegistrationRecord>(path)?;
         let mut hosts = HashMap::new();
         for record in records {
-            if let Some(token) = record.token {
-                hosts.insert(record.host_id, registered(token));
-            } else {
-                hosts.remove(&record.host_id);
+            match record {
+                RegistrationRecord::Registered { host_id, token } => {
+                    hosts.insert(host_id, registered(token));
+                }
+                RegistrationRecord::Removed { host_id } => {
+                    hosts.remove(&host_id);
+                }
+                RegistrationRecord::Bound {
+                    session_id,
+                    host_ids,
+                } => {
+                    for id in host_ids {
+                        hosts
+                            .get_mut(&id)
+                            .ok_or_else(|| {
+                                brain::Error::Journal("resident binding has no registration".into())
+                            })?
+                            .sessions
+                            .insert(session_id.clone());
+                    }
+                }
+                RegistrationRecord::Released { session_id } => {
+                    for host in hosts.values_mut() {
+                        host.sessions.remove(&session_id);
+                    }
+                }
             }
         }
         Ok(Self {
@@ -95,6 +130,19 @@ impl ResidentHosts {
                 ));
             }
         }
+        if host_ids
+            .iter()
+            .any(|id| !state.hosts[id].sessions.contains(session_id))
+        {
+            crate::persistence::append(
+                &mut state.log,
+                &RegistrationRecord::Bound {
+                    session_id: session_id.clone(),
+                    host_ids: host_ids.to_vec(),
+                },
+            )
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        }
         for id in host_ids {
             state
                 .hosts
@@ -107,7 +155,21 @@ impl ResidentHosts {
     }
 
     pub fn release_session(&self, session_id: &SessionId) -> Result<(), ApiError> {
-        for host in self.lock()?.hosts.values_mut() {
+        let mut state = self.lock()?;
+        if state
+            .hosts
+            .values()
+            .any(|host| host.sessions.contains(session_id))
+        {
+            crate::persistence::append(
+                &mut state.log,
+                &RegistrationRecord::Released {
+                    session_id: session_id.clone(),
+                },
+            )
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+        }
+        for host in state.hosts.values_mut() {
             host.sessions.remove(session_id);
         }
         Ok(())
@@ -130,9 +192,8 @@ impl ResidentHosts {
         for id in expired {
             crate::persistence::append(
                 &mut state.log,
-                &RegistrationRecord {
+                &RegistrationRecord::Removed {
                     host_id: id.clone(),
-                    token: None,
                 },
             )
             .map_err(|error| ApiError::internal(error.to_string()))?;
@@ -143,9 +204,9 @@ impl ResidentHosts {
         }
         crate::persistence::append(
             &mut state.log,
-            &RegistrationRecord {
+            &RegistrationRecord::Registered {
                 host_id: host_id.clone(),
-                token: Some(digest(&token)),
+                token: digest(&token),
             },
         )
         .map_err(|error| ApiError::internal(error.to_string()))?;
@@ -464,6 +525,8 @@ mod tests {
         hosts
             .bind_session(&session, std::slice::from_ref(&registration.host_id))
             .unwrap();
+        drop(hosts);
+        let hosts = ResidentHosts::open(&path).unwrap();
         hosts
             .lock()
             .unwrap()

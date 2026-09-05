@@ -166,7 +166,6 @@ impl Driver for BrainDriver {
             "environments": [{
                 "environment_id": "bench",
                 "configuration": {},
-                "managed": false,
                 "bindings": {},
             }, {
                 "environment_id": "brain-native",

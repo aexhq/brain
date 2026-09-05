@@ -122,7 +122,6 @@ pub mod failure {
     pub const EMIT_LIMIT: &str = "emit_limit";
     pub const AGENTLOOP_FAILED: &str = "agentloop_failed";
     pub const TOOL_ERROR: &str = "tool_error";
-    pub const SESSION_OWNERSHIP_FAILED: &str = "session_ownership_failed";
     pub const ENVIRONMENT_PREPARATION_FAILED: &str = "environment_preparation_failed";
     pub const ENVIRONMENT_ERROR: &str = "environment_error";
     pub const INVALID_TRANSCRIPT: &str = "invalid_transcript";
@@ -136,7 +135,6 @@ pub mod failure {
         EMIT_LIMIT,
         AGENTLOOP_FAILED,
         TOOL_ERROR,
-        SESSION_OWNERSHIP_FAILED,
         ENVIRONMENT_PREPARATION_FAILED,
         ENVIRONMENT_ERROR,
         INVALID_TRANSCRIPT,

@@ -1,5 +1,6 @@
 use brain_protocol::{Event, LiveEvent, SessionId};
 use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
+use std::{collections::HashMap, sync::Mutex};
 use tokio::sync::broadcast;
 
 use crate::journal::SessionRecord;
@@ -13,17 +14,17 @@ use crate::journal::SessionRecord;
 const LIVE_BACKLOG: usize = 1_024;
 
 /// Where every session's records and live model output go as they happen: one feed per
-/// process, shared by every session store, so a subscriber sees all of them in one place.
+/// process, with independent backlogs for each subscribed session.
 pub struct Feed {
     telemetry: TelemetryPublisher,
-    live: broadcast::Sender<(SessionId, LiveEvent)>,
+    live: Mutex<HashMap<SessionId, broadcast::Sender<(SessionId, LiveEvent)>>>,
 }
 
 impl Feed {
     pub fn new(telemetry: TelemetryPublisher) -> Self {
         Self {
             telemetry,
-            live: broadcast::Sender::new(LIVE_BACKLOG),
+            live: Mutex::new(HashMap::new()),
         }
     }
 
@@ -32,23 +33,27 @@ impl Feed {
     /// Subscribing before reading a page is what closes the gap between the two: a record
     /// appended in between arrives on the subscription, and the reader drops what it has
     /// already seen by sequence.
-    pub fn subscribe(&self) -> broadcast::Receiver<(SessionId, LiveEvent)> {
-        self.live.subscribe()
+    pub fn subscribe(&self, session_id: &SessionId) -> broadcast::Receiver<(SessionId, LiveEvent)> {
+        let mut live = self.live.lock().expect("live feed poisoned");
+        live.retain(|_, sender| sender.receiver_count() > 0);
+        live.entry(session_id.clone())
+            .or_insert_with(|| broadcast::Sender::new(LIVE_BACKLOG))
+            .subscribe()
     }
 
-    /// A handle for publishing model output as it arrives.
-    ///
-    /// Handed to a session's actor so that a turn in progress can be watched. It goes to
-    /// subscribers and nowhere else: nothing here is written to a log, because the log's
-    /// business is what a turn produced and a token is not that yet.
-    pub fn live_sender(&self) -> broadcast::Sender<(SessionId, LiveEvent)> {
-        self.live.clone()
+    pub fn send(&self, (session_id, event): (SessionId, LiveEvent)) {
+        let mut live = self.live.lock().expect("live feed poisoned");
+        if let Some(sender) = live.get(&session_id)
+            && sender.send((session_id.clone(), event)).is_err()
+        {
+            live.remove(&session_id);
+        }
     }
 
     pub(crate) fn publish(&self, record: &SessionRecord) {
         // Sent before telemetry, and never waited on: `send` returns immediately whether
         // or not anyone is listening, and drops for a receiver that has fallen behind.
-        let _ = self.live.send((
+        self.send((
             record.session_id.clone(),
             LiveEvent::Recorded(Event {
                 event_id: record.event_id(),
@@ -66,5 +71,34 @@ impl Feed {
             session_id: Some(record.session_id.clone()),
             event_id: Some(record.event_id()),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unrelated_sessions_do_not_consume_a_subscribers_backlog() {
+        let (telemetry, _) = brain_telemetry::telemetry_channel();
+        let feed = Feed::new(telemetry);
+        let quiet = SessionId::new("quiet");
+        let noisy = SessionId::new("noisy");
+        let mut receiver = feed.subscribe(&quiet);
+        let _noisy = feed.subscribe(&noisy);
+        let event = LiveEvent::Streaming(brain_protocol::StreamingEvent {
+            sequence: 1,
+            event_type: "assistant_delta".into(),
+            data: serde_json::json!({}),
+        });
+        feed.send((quiet.clone(), event.clone()));
+        for _ in 0..LIVE_BACKLOG * 2 {
+            feed.send((noisy.clone(), event.clone()));
+        }
+        assert_eq!(receiver.try_recv().unwrap().0, quiet);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
     }
 }

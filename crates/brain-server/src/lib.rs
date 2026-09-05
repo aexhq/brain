@@ -10,19 +10,15 @@ pub mod model_binding;
 mod persistence;
 pub mod resident;
 mod service;
-mod session_ownership;
 pub mod tool_dispatcher;
 
 pub use config::ServerConfig;
 pub use environment::{
-    EnvironmentAdapter, EnvironmentNotice, EnvironmentNoticeKind, EnvironmentRegistry,
-    EnvironmentResources, HttpEnvironmentAdapter, SessionBindingValues,
+    EnvironmentAdapter, EnvironmentRegistry, EnvironmentResources, HttpEnvironmentAdapter,
+    SessionBindingValues,
 };
 pub use idempotency::IdempotencyStore;
-pub use model_binding::{
-    LocalModelBindingStore, ModelBindingStore, ServerModelExecutor, load_providers_file,
-};
+pub use model_binding::{ModelBindingStore, ServerModelExecutor, load_providers_file};
 pub use resident::ResidentHosts;
 pub use service::{ServerApi, ServerResources, WorkerLoopExecutor};
-pub use session_ownership::{LocalSessionOwnership, SessionOwnership};
 pub use tool_dispatcher::ServerToolExecutor;

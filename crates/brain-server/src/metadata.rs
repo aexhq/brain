@@ -150,7 +150,7 @@ impl ServerMetadata {
                 },
             )
             .map_err(|error| brain::Error::Executor(error.to_string()))?;
-        Ok((encode(&nonce), encode(&sealed)))
+        Ok((hex::encode(nonce), hex::encode(sealed)))
     }
 }
 
@@ -193,8 +193,8 @@ fn unseal(
     ciphertext: &str,
 ) -> Option<String> {
     let cipher = Aes256Gcm::new_from_slice(key).ok()?;
-    let nonce = decode(nonce)?;
-    let ciphertext = decode(ciphertext)?;
+    let nonce: [u8; NONCE_BYTES] = hex::decode(nonce).ok()?.try_into().ok()?;
+    let ciphertext = hex::decode(ciphertext).ok()?;
     let plain = cipher
         .decrypt(
             Nonce::from_slice(&nonce),
@@ -205,20 +205,6 @@ fn unseal(
         )
         .ok()?;
     String::from_utf8(plain).ok()
-}
-
-fn encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn decode(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
-        .collect()
 }
 
 fn load_or_create_key(path: &Path) -> Result<[u8; KEY_BYTES], brain::Error> {
@@ -268,4 +254,14 @@ fn poisoned<T>(_: T) -> brain::Error {
 
 pub fn metadata_directory(data_dir: &Path) -> PathBuf {
     data_dir.join("server-metadata")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn damaged_nonce_lengths_are_errors_not_panics() {
+        for nonce in ["", "00", &"00".repeat(13)] {
+            assert!(super::unseal(&[0; super::KEY_BYTES], "binding", nonce, "00").is_none());
+        }
+    }
 }

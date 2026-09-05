@@ -51,12 +51,12 @@ pub struct AdmissionEngine {
 
 pub struct AdmittedAgentloop {
     pub digest: AgentloopIdentity,
-    pub component: Arc<Component>,
+    pre: bindings::AgentloopPre<HostState>,
 }
 
 pub struct AdmittedTool {
     pub digest: ToolIdentity,
-    pub component: Arc<Component>,
+    pre: tool_bindings::ToolPre<HostState>,
 }
 
 pub struct NativeToolInput {
@@ -113,11 +113,11 @@ impl AdmissionEngine {
         let instance = linker
             .instantiate_pre(&component)
             .map_err(|error| format!("Agentloop imports do not match its world: {error}"))?;
-        bindings::AgentloopPre::new(instance)
+        let pre = bindings::AgentloopPre::new(instance)
             .map_err(|error| format!("Agentloop exports do not match its world: {error}"))?;
         Ok(AdmittedAgentloop {
             digest: actual,
-            component: Arc::new(component),
+            pre,
         })
     }
 
@@ -152,12 +152,9 @@ impl AdmissionEngine {
         let instance = linker
             .instantiate_pre(&component)
             .map_err(|error| format!("Tool imports do not match its world: {error}"))?;
-        tool_bindings::ToolPre::new(instance)
+        let pre = tool_bindings::ToolPre::new(instance)
             .map_err(|error| format!("Tool exports do not match its world: {error}"))?;
-        Ok(AdmittedTool {
-            digest,
-            component: Arc::new(component),
-        })
+        Ok(AdmittedTool { digest, pre })
     }
 
     pub fn engine(&self) -> &Engine {
@@ -318,6 +315,12 @@ fn bounded_http_options(options: Option<RequestOptions>) -> RequestOptions {
 }
 
 impl bindings::brain::agentloop::host::Host for HostState {
+    async fn events(&mut self, after: u64) -> Result<String, wit::TurnError> {
+        self.call(HostCall::Events { after })
+            .await
+            .map_err(wit_error)
+    }
+
     async fn model(&mut self, request_json: String) -> Result<String, wit::TurnError> {
         self.call(HostCall::Model { request_json })
             .await
@@ -481,15 +484,9 @@ impl AdmittedAgentloop {
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
         configure_fuel(&mut store, limits)?;
-        let mut linker = Linker::<HostState>::new(engine);
-        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(host_failure)?;
-        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker).map_err(host_failure)?;
-        bindings::brain::agentloop::host::add_to_linker::<_, HasSelf<HostState>>(
-            &mut linker,
-            |state| state,
-        )
-        .map_err(host_failure)?;
-        let bindings = bindings::Agentloop::instantiate_async(&mut store, &self.component, &linker)
+        let bindings = self
+            .pre
+            .instantiate_async(&mut store)
             .await
             .map_err(host_failure)?;
         let input = to_wit_input(input).map_err(host_failure)?;
@@ -528,15 +525,9 @@ impl AdmittedTool {
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
         configure_fuel(&mut store, limits)?;
-        let mut linker = Linker::<HostState>::new(engine);
-        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(host_failure)?;
-        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker).map_err(host_failure)?;
-        tool_bindings::brain::tool::host::add_to_linker::<_, HasSelf<HostState>>(
-            &mut linker,
-            |state| state,
-        )
-        .map_err(host_failure)?;
-        let bindings = tool_bindings::Tool::instantiate_async(&mut store, &self.component, &linker)
+        let bindings = self
+            .pre
+            .instantiate_async(&mut store)
             .await
             .map_err(host_failure)?;
         let input = tool_bindings::brain::tool::types::Invocation {

@@ -11,7 +11,8 @@ under `sessions/{id}/journal/`.
 
 One sequence counter orders every record. Public Events, session status, the current transcript,
 and Agentloop slots are projections built from that journal. They are not independent state stores.
-On restart Brain scans the journal and rebuilds them.
+Brain opens sessions on demand. A checksummed disposable checkpoint accelerates ordinary opens;
+stale or damaged checkpoints rebuild from the canonical journal. Checkpoints are not a second source of truth.
 
 Public lifecycle and effect records appear through `GET /v1/sessions/{id}/events`. Transcript
 deltas and slots remain canonical journal records rather than separate copies. When a delta replaces
@@ -41,8 +42,8 @@ The Agentloop owns transcript contents while Brain owns persistence. At model ca
 Brain records the difference from the last transcript. Appends store only the tail; summaries,
 edits, and reorders restart at the first changed item. Recovery folds those deltas in journal order.
 
-The Agentloop's returned slots follow the same rule. A warm Wasm instance is a cache, so durable
-state must be present in the transcript or slots returned by the Component.
+The Agentloop's returned slots follow the same rule. Every invocation uses a fresh Wasm instance;
+state must be present in the transcript or returned slots.
 
 ## Turns
 
@@ -63,19 +64,20 @@ that may have continued is reported as unknown, not as a successful cancellation
 
 ## Suspension and recovery
 
-An idle session may suspend after its TTL. Its task and in-memory projections are released; the
-journal remains. The next request rebuilds the session and records its resumption. Attached
-Environments remain attached.
+By default, create and turn completion release the actor and its history indexes. Transcript and
+Event reads do not activate it. A message explicitly opens a new activation; attached Environments
+remain attached. `idleTtlMs` can retain execution for a chosen interval; explicit zero retains it
+indefinitely. The server-wide TTL is optional and has the same zero convention.
 
 Journal commits used as effect fences are durable before dispatch. If the process stops during a
-turn, restart records the interrupted turn as failed and does not rerun it. Any already committed
+turn, the first access after restart records the interrupted turn as failed and does not rerun it. Any already committed
 effect record remains the source of truth.
 
 Restart also fails interrupted creation and closes interrupted ending. Every started effect with
 no terminal record becomes an ambiguous failure; Brain does not resend it. Ending is recorded before
 detach starts, so a partly detached session cannot accept another message. A failed detach does not
 prevent the session from ending. Teardown remains a separate journaled operation. If teardown fails,
-the Environment record remains and the idle sweeper does not retry it; an explicit session delete
+the Environment record remains without automatic retry; an explicit session delete
 with a new idempotency key can request another attempt.
 
 HTTP idempotency claims survive restart. Completed answers are retained for 24 hours. If a claimed
@@ -85,6 +87,18 @@ identities from the create key so repeating the same create sends the same body.
 
 You can also seed a new session with `transcript`; Brain records those messages as its opening
 conversation.
+
+## Reading history without execution
+
+`session.transcript()` reads the current canonical messages and `through_sequence`, including while
+suspended. It corresponds to `GET /v1/sessions/{id}/transcript`. Event pages and per-session live
+subscriptions also work without keeping an actor alive. Historical telemetry requires a configured
+sink; live model deltas are not silently promoted to durable history.
+
+Acknowledged canonical records survive process and OS/power failure when the local filesystem and
+storage honor flushes. Storage loss is outside this guarantee. Brain refuses complete corrupt
+frames and incomplete nonfinal segments; only an incomplete final write is truncated. Recovery
+keeps committed prefixes and never replays agent effects.
 
 ## Reading Events
 
@@ -109,7 +123,7 @@ GET /v1/sessions/{id}/events?after={cursor}
 Accept: text/event-stream
 ```
 
-SSE first catches up from the journal and then follows new commits. Model token deltas are live-only
+SSE first catches up from the journal and then follows new commits. Each session has its own live backlog; unrelated traffic cannot make a subscriber lag. Model token deltas are live-only
 and have no journal sequence; reconnecting yields the completed committed model result. A consumer
 that needs at-least-once delivery into another system owns its saved cursor, queue, retries, and
 deduplication.

@@ -34,5 +34,7 @@ assert.ok(events.every(({ recordedAt }) => recordedAt instanceof Date && !Number
 // One sequence counter numbers both logs, so the feed is strictly increasing, not contiguous.
 assert.ok(events.every(({ sequence }, index) => index === 0 || sequence > events[index - 1].sequence));
 
+assert.deepEqual((await session.transcript()).messages, []);
+
 await session.end();
 await session.delete();
