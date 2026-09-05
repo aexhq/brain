@@ -86,6 +86,7 @@ keep an observation cursor in your own slot when consuming additional pages. Col
 before producing new effects so a loop does not chase its own Events indefinitely. Suspension
 leaves external history reads available; it does not run guest callbacks.
 
-Admission is explicit when desired: call `await brain.admit(loop)` and `await brain.admit(tool)`
-on the same bound objects you will pass to creation. Their Component objects cache successful
-admission. Brain retains compiled and prelinked templates, never one session's credentials or heap.
+Admission is explicit when desired: call `await brain.admit(loopBinding)` and
+`await brain.admitTool(toolComponent)` before creation. Reuse those Component objects when binding
+extensions; they cache successful admission. Brain retains compiled and prelinked templates,
+never one session's credentials or heap.
