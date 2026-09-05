@@ -11,7 +11,7 @@ mod writer;
 
 pub use cursor::event_page;
 pub use feed::Feed;
-pub use record::{AppendRecord, JournalRecord};
-pub use session_store::SessionStore;
-pub use store::{Folded, JournalEntry, JournalStore, SessionRow, SessionUpdate};
+pub use record::{AppendRecord, SessionRecord};
+pub use session_store::LocalSessionStore;
+pub use store::{CommitHandle, Folded, JournalEntry, SessionRow, SessionStore, SessionUpdate};
 pub use writer::{OWNER_QUEUE_BYTES, Writer};

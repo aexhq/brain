@@ -57,8 +57,8 @@ in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 The same job bounds journal growth, on both axes. A context envelope grows with every decision
 *and* across every turn, so anything written per decision or per turn costs the sum of every
-intermediate size rather than the final one. On the decision axis the kernel caps it at
-`BRAIN_MAX_DECISIONS=128`; on the turn axis nothing caps it, and 64 turns holding a 1 MiB context
+intermediate size rather than the final one. Within a turn Brain caps model calls at
+`BRAIN_MAX_MODEL_CALLS=128`; on the turn axis nothing caps it, and 64 turns holding a 1 MiB context
 once wrote 34 MB of journal — every byte of it read back at each restart.
 `crates/brain/tests/journal_growth.rs` holds both, and one page of the event stream, to a small
 constant multiple of the final context.

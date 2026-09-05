@@ -1,11 +1,14 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use brain_protocol::{Message, SessionId, SessionStatus, SessionSummary};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     Error,
-    journal::{AppendRecord, JournalRecord},
+    journal::{AppendRecord, SessionRecord, writer::Ticket},
 };
 
 #[derive(Clone, Debug)]
@@ -25,7 +28,6 @@ impl From<&SessionRow> for SessionSummary {
             session_id: row.session_id.clone(),
             status: row.status.clone(),
             last_sequence: row.through_sequence,
-            share_key: String::new(),
         }
     }
 }
@@ -36,27 +38,46 @@ pub struct SessionUpdate<'a> {
     pub configuration: Option<&'a serde_json::Value>,
 }
 
-/// One entry in a session's journal: what changed in its transcript or its state.
-///
-/// The transcript is Brain's message list. A delta keeps the longest prefix the new
-/// transcript shares with the last recorded one and appends the rest; a compaction is a
-/// delta that keeps nothing. A slot is a named value with last-write-wins semantics for
-/// state that is not a transcript item. A checkpoint carries the whole transcript and
-/// every slot, so folding never has to start from the first entry.
+/// A background append that has been admitted to the bounded writer queue. Its records
+/// have no sequence and are not visible until [`wait`](Self::wait) succeeds.
+pub struct CommitHandle {
+    ticket: Ticket,
+    records: Arc<Mutex<Option<Vec<SessionRecord>>>>,
+}
+
+impl CommitHandle {
+    pub(crate) fn new(ticket: Ticket, records: Arc<Mutex<Option<Vec<SessionRecord>>>>) -> Self {
+        Self { ticket, records }
+    }
+
+    pub(crate) fn ready(records: Vec<SessionRecord>) -> Self {
+        Self {
+            ticket: Ticket::ready(),
+            records: Arc::new(Mutex::new(Some(records))),
+        }
+    }
+
+    pub fn wait(self) -> Result<Vec<SessionRecord>, Error> {
+        self.ticket.wait()?;
+        self.records
+            .lock()
+            .map_err(|_| Error::Journal("journal commit result poisoned".into()))?
+            .take()
+            .ok_or_else(|| Error::Journal("journal commit produced no result".into()))
+    }
+}
+
+/// A compact session-state mutation stored in the same journal as public Events.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JournalEntry {
-    ContextDelta {
+    TranscriptDelta {
         keep: u64,
         append: Vec<Message>,
     },
-    Slot {
+    StateSet {
         name: String,
         value: serde_json::Value,
-    },
-    Checkpoint {
-        transcript: Vec<Message>,
-        slots: BTreeMap<String, serde_json::Value>,
     },
 }
 
@@ -72,46 +93,37 @@ pub struct Folded {
 impl Folded {
     pub fn apply(&mut self, entry: JournalEntry) {
         match entry {
-            JournalEntry::ContextDelta { keep, append } => {
+            JournalEntry::TranscriptDelta { keep, append } => {
                 self.transcript.truncate(keep as usize);
                 self.transcript.extend(append);
             }
-            JournalEntry::Slot { name, value } => {
+            JournalEntry::StateSet { name, value } => {
                 self.slots.insert(name, value);
-            }
-            JournalEntry::Checkpoint { transcript, slots } => {
-                self.transcript = transcript;
-                self.slots = slots;
             }
         }
     }
 }
 
-/// One session's durable record: an events log that clients read and a journal the
-/// session's own state folds out of, numbered by one sequence counter.
-pub trait JournalStore: Send + Sync + 'static {
+/// One session's canonical journal and its disposable projections.
+pub trait SessionStore: Send + Sync + 'static {
     fn session_id(&self) -> &SessionId;
-    /// Appends effect and lifecycle records to the events log.
-    fn append(
+    /// Appends effect and lifecycle records and waits for durable commit.
+    fn append_sync(
         &self,
-        expected_through: u64,
         records: &[AppendRecord],
         update: SessionUpdate<'_>,
-    ) -> Result<Vec<JournalRecord>, Error>;
-    /// Appends transcript deltas, slot writes and checkpoints to the journal. Returns the
-    /// sequence the session is now through.
-    fn append_journal(&self, expected_through: u64, entries: &[JournalEntry])
-    -> Result<u64, Error>;
-    /// The transcript and slots as the journal has them, folded from the last checkpoint.
+    ) -> Result<Vec<SessionRecord>, Error>;
+    /// Admits background records. The writer assigns their sequence only when selected.
+    fn append_async(&self, records: Vec<AppendRecord>) -> Result<CommitHandle, Error>;
+    /// Appends transcript and Agentloop-state mutations and waits for durable commit.
+    fn append_journal_sync(&self, entries: &[JournalEntry]) -> Result<u64, Error>;
+    /// The transcript and Agentloop state folded from the journal.
     fn fold(&self) -> Result<Folded, Error>;
-    /// Journal bytes appended since the last checkpoint; the session decides when that
-    /// has earned another one.
-    fn journal_bytes_since_checkpoint(&self) -> Result<u64, Error>;
     /// The whole row, including configuration and context. Only rehydrating a session
     /// actor needs this; everything else wants a summary.
     fn session_row(&self) -> Result<SessionRow, Error>;
     fn session_summary(&self) -> Result<SessionSummary, Error>;
-    fn records_after(&self, after: u64, limit: usize) -> Result<Vec<JournalRecord>, Error>;
+    fn records_after(&self, after: u64, limit: usize) -> Result<Vec<SessionRecord>, Error>;
     /// Returns once everything appended so far is on disk.
     fn sync(&self) -> Result<(), Error>;
 }

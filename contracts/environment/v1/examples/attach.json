@@ -23,12 +23,10 @@
               "fs"
             ],
             "binding_names": [],
-            "program": {
-              "kind": "esm",
-              "identity": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            "implementation": {
+              "artifact_id": "artifact_read_v1"
             }
-          },
-          "payload_identity": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          }
         }
       ],
       "bindings": {

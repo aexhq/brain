@@ -2,16 +2,17 @@
 //! per-session layout.
 //!
 //! ```text
-//! {data_dir}/format             "brain-data/1"
-//! {data_dir}/sessions/{id}/     one directory per session (see brain::SessionStore)
-//! {data_dir}/agentloops         admitted loop packages
+//! {data_dir}/format             "brain-data/2"
+//! {data_dir}/sessions/{id}/     one directory per session (see brain::LocalSessionStore)
+//! {data_dir}/agentloops         admitted Agentloop and Tool Components
+//! {data_dir}/native-workspaces  session workspaces for Brain Wasm Environments
 //! {data_dir}/run                worker sockets
 //! {data_dir}/server-metadata    model credentials
 //! ```
 
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "brain-data/1";
+pub const FORMAT: &str = "brain-data/2";
 
 /// Creates the layout if the directory is new, checks it if it is not, and returns the
 /// sessions directory. A directory written by an earlier Brain is refused with a message

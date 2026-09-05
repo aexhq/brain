@@ -20,7 +20,7 @@ pub struct BrainDriver {
     client: reqwest::Client,
     base_url: String,
     token: Option<String>,
-    /// The compiled agentloop package, built by `brain build`. Admitted once in `prepare`.
+    /// The prebuilt Agentloop Component. Admitted once in `prepare`.
     agentloop_package: PathBuf,
     /// `identity`, not `digest`: the wire renamed it, and reading the old name silently
     /// produced `None` and failed admission with a message that blamed the server.
@@ -110,7 +110,7 @@ impl Driver for BrainDriver {
             .await
             .with_context(|| {
                 format!(
-                    "reading agentloop package {}; build it with `brain build` first",
+                    "reading Agentloop Component {}; build the diagnostic-agentloop fixture first",
                     self.agentloop_package.display()
                 )
             })?;
@@ -141,7 +141,7 @@ impl Driver for BrainDriver {
             .as_ref()
             .context("prepare() must run before create()")?;
         let body = json!({
-            "agentloop": { "identity": identity, "configuration": {} },
+            "agentloop": { "identity": identity, "configuration": {}, "environment_id": "brain-native" },
             "model": {
                 "provider": "vercel-ai-gateway",
                 // The contract requires a provider-qualified name, so this must carry a
@@ -166,7 +166,17 @@ impl Driver for BrainDriver {
             "environments": [{
                 "environment_id": "bench",
                 "configuration": {},
-                "lifecycle_policy": "shared",
+                "managed": false,
+                "bindings": {},
+            }, {
+                "environment_id": "brain-native",
+                "configuration": {
+                    "driver": "brain_wasm",
+                    "network": {"allow": []},
+                    "filesystem": {"workspace": false},
+                    "secrets": [],
+                },
+                "bindings": {},
             }],
         });
         let session = self

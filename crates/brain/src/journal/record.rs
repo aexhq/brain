@@ -17,7 +17,7 @@ impl AppendRecord {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct JournalRecord {
+pub struct SessionRecord {
     pub session_id: SessionId,
     pub sequence: u64,
     pub recorded_at_ms: u64,
@@ -25,7 +25,7 @@ pub struct JournalRecord {
     pub payload: serde_json::Value,
 }
 
-impl JournalRecord {
+impl SessionRecord {
     pub fn event_id(&self) -> EventId {
         EventId::new(format!("evt_{}_{}", self.session_id, self.sequence))
     }

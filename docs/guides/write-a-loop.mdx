@@ -1,135 +1,72 @@
 ---
-title: Write an agent loop
-description: Drive a turn through Brain's services and build a portable agent loop artifact.
+title: Write an Agentloop
+description: Implement the WIT contract, supply raw Component bytes, and place the Agentloop.
 ---
 
-Install Brain and Zod, then export a named definition from your entry module:
+Brain does not compile Agentloop source. Write the loop in any language that can produce a
+WebAssembly Component implementing Brain's WIT world, build it with that language's toolchain, and
+give the resulting bytes to `component(...)`.
 
-```sh
-npm install @aexhq/brain zod
-```
+## Contract
 
-```js
-import { agentloop } from "@aexhq/brain";
-import { z } from "zod";
+The source of truth is
+[`contracts/agentloop/v1/agentloop.wit`](https://github.com/aexhq/brain/blob/main/contracts/agentloop/v1/agentloop.wit).
+The Component exports `turn` and imports four Brain services:
 
-const options = z.object({ instructions: z.string().default("Be helpful.") });
+- `model` performs a model call;
+- `dispatch` invokes one or more Tools;
+- `emit` appends an extension Event and returns its committed sequence;
+- `telemetry` publishes best-effort operational telemetry.
 
-export const assistant = agentloop({ options }, (author) => {
-  author.turn(async (turn) => {
-    turn.transcript.push({ role: "user", content: [{ type: "text", text: turn.input.message }] });
-    const { message } = await turn.model({ system: author.options.instructions, messages: turn.transcript });
-    turn.transcript.push(message);
-    const text = message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("");
-    await turn.reply(text);
-    return turn.done();
-  });
-});
-```
+JSON strings on the WIT boundary use the shapes in the generated session contract. A turn receives
+the current transcript, Agentloop slots, committed Events since its previous activation,
+configuration, system prompt, Tool definitions, and a deterministic logical-time/seed envelope.
+It returns the transcript, updated slots, and optional result.
 
-Build every named extension export with one command:
+Brain commits model, Tool, and emitted Event records. An Agentloop must not depend on the Wasm heap
+surviving between activations; only returned transcript and slots are durable.
 
-```sh
-npx brain build
-```
-
-For an agent loop the output is a WebAssembly component. `brain build` bundles the module and
-compiles it with [componentize-js](https://github.com/bytecodealliance/componentize-js)
-against Brain's `agentloop.wit` world, with stdio, random, clocks, and HTTP disabled. Brain
-runs the component in Wasmtime, so the loop has no I/O of its own: every effect goes through
-the `turn` object, and Brain journals each one before it happens.
-
-Applications import the generated factory and pass it under `agentloop`:
+## Bind the Component
 
 ```ts
-const session = await client.sessions.create({
-  agentloop: assistant({ instructions: "Answer briefly." }),
-  model,
-});
-```
-
-Registration is synchronous and the turn handler is `async`. Inside it, `turn.model`,
-`turn.dispatch`, `turn.append`, and `turn.reply` return promises; the loop reads like ordinary
-async code, and each call completes before the next line runs. Ordinary deterministic packages
-can be bundled. I/O belongs in Tools and Environments.
-
-The loop decides what the model is told on every call. Leave `system` out and the call uses the
-prompt the session was created with, `author.system`; the loop above replaces it with its own
-option. Leave `tools` out and every tool the session was created with is offered; name a subset of
-`author.tools` to offer fewer.
-
-## Run tools
-
-When the model asks for tools, hand the batch to `turn.dispatch`. Brain runs the calls in
-parallel and returns every result, in the calls' order, once they are all in. Call it once per
-call instead and the calls run one after another; leave a call out and it never runs. The loop
-below, from [`examples/coder-brain.mjs`](https://github.com/aexhq/brain/blob/main/examples/coder-brain.mjs),
-runs a full coding turn and keeps a counter in a slot.
-
-```js
-import { agentloop } from "@aexhq/brain";
+import { agentloop, brainWasm, component } from "@aexhq/brain";
 import { z } from "zod";
 
-const text = (message) =>
-  message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("");
+export const assistant = agentloop({
+  options: z.object({ compactAt: z.number().min(0).max(1) }),
+  implementation: component(new URL("./assistant.wasm", import.meta.url)),
+});
 
-// A full coding turn: model, tools, model again, until the model answers in prose.
-export const coder = agentloop((author) => {
-  const memory = author.slot("memory", z.object({ turns: z.number().int() }), () => ({ turns: 0 }));
-
-  author.turn(async (turn) => {
-    memory.turns += 1;
-    turn.transcript.push({ role: "user", content: [{ type: "text", text: turn.input.message }] });
-    for (;;) {
-      const { message } = await turn.model({ messages: turn.transcript });
-      turn.transcript.push(message);
-      const calls = message.content
-        .filter((block) => block.type === "tool_use")
-        .map((block) => ({ callId: block.id, name: block.name, input: block.input }));
-      if (calls.length === 0) {
-        await turn.reply(text(message));
-        return turn.done({ turns: memory.turns });
-      }
-      // One dispatch: Brain runs every call in parallel and reports back once, in order.
-      const results = await turn.dispatch(calls);
-      turn.transcript.push({
-        role: "user",
-        content: results.map((result) => ({
-          type: "tool_result",
-          tool_use_id: result.callId,
-          content: result.output,
-          is_error: result.isError,
-        })),
-      });
-    }
-  });
+const loop = assistant({
+  env: brainWasm({ filesystem: { workspace: false } }),
+  compactAt: 0.8,
 });
 ```
 
-`author.slot` declares state the loop keeps beside the transcript: validated by its schema on
-the way in and out, live for the turn, saved when the turn ends. Brain persists it and never
-reads it.
+`component(...)` also accepts `Uint8Array`, which is useful when bytes come from an object store or
+another bundler:
 
-## Failing, and being told
+```ts
+import { readFile } from "node:fs/promises";
 
-A loop ends a turn early with `turn.fail(code, message)`. The code is what the session's
-`turn_failed` record carries, so pick one a client can act on. An error the loop lets escape
-ends the turn with `agentloop_failed`.
+const bytes = new Uint8Array(await readFile("assistant.wasm"));
+const assistant = agentloop({ implementation: component(bytes) });
+```
 
-A service call can fail too: past the turn's model-call budget, `turn.model` rejects with
-`model_call_limit`; after a cancel, every call rejects with `cancelled`. Let those errors
-propagate. Brain records what already happened and the turn ends with that code.
+The client sends the raw bytes to `POST /v1/agentloops`; Brain validates the Component contract and
+returns its content identity. Admission is cached for that `Component` object. Session creation
+seals the identity, parsed options, and selected Environment. The current server accepts only
+`brainWasm(...)` for Agentloop placement.
 
-`turn.events` holds the session's records since the loop last ran. A loop that wants to know
-that its last turn was interrupted, or that an environment it was using has closed, reads
-them there before deciding what to do; Brain never calls the model on its own because something
-happened.
+## Effect semantics
 
-The official `@aexhq/agentloop-pi` and `@aexhq/agentloop-codex` loops are this shape with the
-prompt, context management, and retry policy of Pi and Codex on top.
+The loop can request effects but does not perform Brain's model or Tool I/O itself. Brain durably
+commits the intent, sends it once, and commits its known or unknown outcome before returning.
+Propagate host-service errors unless the loop has an explicit policy for presenting them to the
+model or user. Do not retry an unknown effect under a new call identity.
+
+## Test it
+
+Test policy outside Brain with fake host imports, then run the compiled Component through the real
+Loophost. Include cases for parallel Tool calls, unknown outcomes, cancellation, invalid JSON,
+restart between turns, and a fresh Wasm instance on every activation.

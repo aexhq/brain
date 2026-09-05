@@ -3,15 +3,18 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use brain_loophost::{
-    AdmissionEngine, GuestHost, HostCall, LoopLimits, RUNTIME_SHIM_IMPORTS, WarmInstances,
+    AdmissionEngine, CAPABILITY_IMPORTS, GuestHost, HostCall, LoopLimits, NativeEnvironment,
+    NativeToolInput, RUNTIME_SHIM_IMPORTS,
 };
 use brain_protocol::{RuntimeEnvelope, TurnError, TurnInput};
 
 struct Answering;
 
+#[async_trait]
 impl GuestHost for Answering {
-    fn call(&self, call: HostCall) -> Result<String, TurnError> {
+    async fn call(&self, call: HostCall) -> Result<String, TurnError> {
         match call {
             HostCall::Model { .. } => Ok(serde_json::json!({
                 "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
@@ -20,7 +23,7 @@ impl GuestHost for Answering {
             })
             .to_string()),
             HostCall::Dispatch { .. } => Ok("[]".into()),
-            HostCall::Append { .. } => Ok("7".into()),
+            HostCall::Emit { .. } => Ok("7".into()),
             HostCall::Telemetry { .. } => Ok(String::new()),
         }
     }
@@ -39,10 +42,19 @@ fn input(message: &str, slots: std::collections::BTreeMap<String, serde_json::Va
     }
 }
 
-/// A component with host imports is several core instances; the store must admit them,
-/// and a warm instance must take a second turn.
-#[test]
-fn the_diagnostic_component_takes_two_turns_in_process() {
+fn environment() -> NativeEnvironment {
+    NativeEnvironment {
+        scratch: false,
+        workspace: None,
+        network_allow: Vec::new(),
+        secrets: Default::default(),
+    }
+}
+
+/// A component with host imports is several core instances. Each turn gets a fresh
+/// Store; durable state reaches the next one only through its input.
+#[tokio::test]
+async fn the_diagnostic_component_takes_two_turns_in_fresh_stores() {
     let package = std::fs::read(
         std::env::var("BRAIN_TEST_AGENTLOOP_PACKAGE")
             .expect("BRAIN_TEST_AGENTLOOP_PACKAGE must name the built diagnostic package"),
@@ -51,21 +63,23 @@ fn the_diagnostic_component_takes_two_turns_in_process() {
     let limits = LoopLimits::default();
     let engine = AdmissionEngine::new(
         limits.clone(),
-        RUNTIME_SHIM_IMPORTS.iter().map(|s| s.to_string()).collect(),
+        RUNTIME_SHIM_IMPORTS
+            .iter()
+            .chain(CAPABILITY_IMPORTS)
+            .map(|s| s.to_string())
+            .collect(),
     )
     .unwrap();
     let admitted = engine.admit(&package).unwrap();
-    let warm = WarmInstances::default();
-
     let first = admitted
         .turn(
             engine.engine(),
             &limits,
-            &warm,
-            "ses_local",
+            environment(),
             input("hello", Default::default()),
             Arc::new(Answering),
         )
+        .await
         .unwrap();
     assert_eq!(first.slots["memory"]["turns"], 1);
     assert_eq!(
@@ -77,11 +91,39 @@ fn the_diagnostic_component_takes_two_turns_in_process() {
         .turn(
             engine.engine(),
             &limits,
-            &warm,
-            "ses_local",
+            environment(),
             input("again", first.slots),
             Arc::new(Answering),
         )
+        .await
         .unwrap();
     assert_eq!(second.slots["memory"]["turns"], 2);
+}
+
+#[tokio::test]
+async fn a_tool_component_runs_in_a_fresh_store() {
+    let component = std::fs::read(
+        std::env::var("BRAIN_TEST_TOOL_COMPONENT")
+            .expect("BRAIN_TEST_TOOL_COMPONENT must name the built diagnostic Tool"),
+    )
+    .unwrap();
+    let limits = LoopLimits::default();
+    let engine = AdmissionEngine::new(limits.clone(), Vec::new()).unwrap();
+    let admitted = engine.admit_tool(&component).unwrap();
+    let output = admitted
+        .run(
+            engine.engine(),
+            &limits,
+            environment(),
+            NativeToolInput {
+                call_id: "call_1".into(),
+                input: serde_json::json!({"value": 7}),
+                configuration: serde_json::json!({}),
+                deadline_at_ms: 1_000,
+            },
+            Arc::new(Answering),
+        )
+        .await
+        .unwrap();
+    assert_eq!(output, serde_json::json!({"echo": {"value": 7}}));
 }

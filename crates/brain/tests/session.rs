@@ -14,12 +14,12 @@ use std::{
 };
 
 use async_trait::async_trait;
-use brain::{Error, JournalStore, ToolExecutor};
+use brain::{Error, SessionStore, ToolExecutor};
 use brain_protocol::{
-    AttachmentId, ContentBlock, EnvironmentAttachment, EnvironmentBinding, EnvironmentId,
-    LiveEvent, Message, MessageRequest, ModelRequest, Outcome, OutcomeError,
-    Runtime as EnvironmentRuntime, SessionConfig, ToolBinding, ToolCancellation, ToolDefinition,
-    ToolDispatch, ToolHosting, ToolInvocation, TurnOutput,
+    AttachmentId, ContentBlock, EnvironmentAttachment, EnvironmentBinding, EnvironmentId, HostId,
+    LiveEvent, Message, MessageRequest, ModelRequest, Outcome, OutcomeError, SessionConfig,
+    ToolBinding, ToolCancellation, ToolDefinition, ToolDispatch, ToolHosting, ToolInvocation,
+    TurnOutput,
 };
 use brain_telemetry::telemetry_channel;
 use common::{
@@ -73,9 +73,11 @@ fn tool_config(tool_name: &str, needs: Vec<&str>, declares: Vec<&str>) -> Sessio
     }];
     config.environments = vec![EnvironmentAttachment {
         environment_id: EnvironmentId::new("workspace"),
+        configuration: serde_json::json!({}),
+        managed: true,
+        idle_ttl_ms: None,
         binding: Some(environment.clone()),
         attachment_id: Some(AttachmentId::new("attachment")),
-        runtimes: vec![EnvironmentRuntime::Esm],
         resources: declares
             .into_iter()
             .map(|name| (name.to_string(), serde_json::json!({})))
@@ -86,20 +88,21 @@ fn tool_config(tool_name: &str, needs: Vec<&str>, declares: Vec<&str>) -> Sessio
         environment_id: Some(EnvironmentId::new("workspace")),
         environment: Some(environment),
         attachment_id: Some(AttachmentId::new("attachment")),
+        host_id: None,
         needs: needs.into_iter().map(String::from).collect(),
         binding_names: Vec::new(),
         hosting: ToolHosting::Provisioned,
-        program: None,
+        implementation: Some(serde_json::json!({"kind": "test"})),
     }];
     config
 }
 
-/// A configuration binding one client-hosted tool: no environment anywhere.
-fn client_tool_config(tool_name: &str) -> SessionConfig {
+/// A configuration binding one resident tool to its registered application host.
+fn resident_tool_config(tool_name: &str) -> SessionConfig {
     let mut config = config();
     config.tools = vec![ToolDefinition {
         name: tool_name.into(),
-        description: "answered by the session's creator".into(),
+        description: "answered by an application host".into(),
         input_schema: serde_json::json!({"type":"object"}),
         output_schema: None,
     }];
@@ -108,10 +111,11 @@ fn client_tool_config(tool_name: &str) -> SessionConfig {
         environment_id: None,
         environment: None,
         attachment_id: None,
+        host_id: Some(HostId::new("host_12345678901234567890")),
         needs: Vec::new(),
         binding_names: Vec::new(),
-        hosting: ToolHosting::Client,
-        program: None,
+        hosting: ToolHosting::Resident,
+        implementation: None,
     }];
     config
 }
@@ -126,7 +130,11 @@ struct OutcomeTools {
 
 #[async_trait]
 impl ToolExecutor for OutcomeTools {
-    async fn execute(&self, _: ToolDispatch) -> Result<Outcome, Error> {
+    async fn execute(
+        &self,
+        _: ToolDispatch,
+        _: &dyn brain::ToolServices,
+    ) -> Result<Outcome, Error> {
         tokio::time::sleep(self.delay).await;
         Ok(self.outcome.clone())
     }
@@ -444,17 +452,17 @@ async fn a_loop_cannot_append_brains_own_kinds() {
     let data_dir = temporary_directory("reserved");
     let loop_executor = scripted(|input, services| async move {
         for kind in ["turn_ended", "session_ended", "model_call_started"] {
-            let refused = services.append(kind.into(), serde_json::json!({})).await;
+            let refused = services.emit(kind.into(), serde_json::json!({})).await;
             assert!(refused.is_err(), "{kind} must be refused");
         }
         services
-            .append(
+            .emit(
                 "output_emitted".into(),
                 serde_json::json!({"type": "assistant_message"}),
             )
             .await?;
         services
-            .append("note".into(), serde_json::json!({"text": "mine"}))
+            .emit("note".into(), serde_json::json!({"text": "mine"}))
             .await?;
         done(input.transcript)
     });
@@ -527,21 +535,15 @@ async fn the_journal_is_the_only_thing_written() {
     found.sort();
     let _ = fs::remove_dir_all(&data_dir);
     assert!(
-        found
-            .iter()
-            .all(|name| name.ends_with(".segment") || name.ends_with("/config.json")),
-        "a session's directory holds its configuration and its segments and nothing else; found {found:?}"
+        found.iter().all(|name| name.ends_with(".segment")),
+        "a session's directory holds only its canonical journal segments; found {found:?}"
     );
     assert!(
         found
             .iter()
             .any(|name| name.contains("/journal/") && name.ends_with(".segment"))
     );
-    assert!(
-        found
-            .iter()
-            .any(|name| name.contains("/events/") && name.ends_with(".segment"))
-    );
+    assert!(!found.iter().any(|name| name.contains("/events/")));
 }
 
 /// The bind check: a tool whose `needs` is not covered by its environment's declared
@@ -660,7 +662,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
 }
 
 #[tokio::test]
-async fn an_overdue_invoke_is_killed_and_recorded_as_timeout() {
+async fn an_overdue_invoke_is_cancelled_and_recorded_as_unknown() {
     let data_dir = temporary_directory("tool-timeout");
     let tools = Arc::new(OutcomeTools {
         outcome: Outcome::Ok {
@@ -694,7 +696,7 @@ async fn an_overdue_invoke_is_killed_and_recorded_as_timeout() {
         .unwrap();
     assert!(started.elapsed() < Duration::from_secs(10));
     let results = seen.lock().unwrap().clone();
-    assert_eq!(results[0].output["code"], "timeout");
+    assert_eq!(results[0].output["code"], "unknown");
     assert_eq!(
         tools.cancelled.lock().unwrap().len(),
         1,
@@ -708,8 +710,8 @@ async fn an_overdue_invoke_is_killed_and_recorded_as_timeout() {
 }
 
 #[tokio::test]
-async fn a_client_tool_call_parks_until_its_outcome_is_posted() {
-    let data_dir = temporary_directory("client-tool");
+async fn a_resident_tool_uses_the_configured_executor() {
+    let data_dir = temporary_directory("resident-tool");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let loop_executor = {
         let seen = seen.clone();
@@ -724,39 +726,20 @@ async fn a_client_tool_call_parks_until_its_outcome_is_posted() {
             }
         })
     };
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, Arc::new(NoTools), 5_000);
-    let mut feed = runtime.subscribe();
+    let tools = Arc::new(OutcomeTools {
+        outcome: Outcome::Ok {
+            value: serde_json::json!({"path": "README.md"}),
+        },
+        delay: Duration::ZERO,
+        cancelled: Mutex::new(Vec::new()),
+    });
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5_000);
     let handle = runtime
-        .create(&client_tool_config("pick_file"), &[])
+        .create(&resident_tool_config("pick_file"), &[])
         .unwrap();
-    let turning = {
-        let handle = handle.clone();
-        tokio::spawn(async move { handle.message(MessageRequest { input: "go".into() }).await })
-    };
-    // Answer off the feed, as a client would: the started record names the call.
-    let sequence = loop {
-        let (_, event) = tokio::time::timeout(Duration::from_secs(5), feed.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        if let LiveEvent::Recorded(event) = event
-            && event.event_type == "tool_call_started"
-        {
-            break event.sequence;
-        }
-    };
     handle
-        .resolve_tool_call(
-            sequence,
-            Outcome::Ok {
-                value: serde_json::json!({"path": "README.md"}),
-            },
-        )
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), turning)
+        .message(MessageRequest { input: "go".into() })
         .await
-        .unwrap()
-        .unwrap()
         .unwrap();
     let results = seen.lock().unwrap().clone();
     assert_eq!(results[0].output["path"], "README.md");
@@ -765,33 +748,24 @@ async fn a_client_tool_call_parks_until_its_outcome_is_posted() {
 }
 
 #[tokio::test]
-async fn resolving_an_unknown_call_is_refused() {
-    let data_dir = temporary_directory("unknown-call");
+async fn a_resident_tool_without_a_host_is_rejected() {
+    let data_dir = temporary_directory("resident-without-host");
+    let mut config = resident_tool_config("pick_file");
+    config.tool_bindings[0].host_id = None;
     let runtime = runtime(
         &data_dir,
         echo_loop(),
         Arc::new(NoModels),
         Arc::new(NoTools),
     );
-    let handle = runtime
-        .create(&client_tool_config("pick_file"), &[])
-        .unwrap();
-    let error = handle
-        .resolve_tool_call(
-            42,
-            Outcome::Ok {
-                value: serde_json::json!({}),
-            },
-        )
-        .unwrap_err();
-    assert!(error.to_string().contains("no client Tool call is pending"));
-    drop(handle);
+    let error = runtime.create(&config, &[]).err().unwrap();
+    assert!(error.to_string().contains("registered host"));
     settle(runtime, data_dir).await;
 }
 
 #[tokio::test]
-async fn an_unanswered_client_call_times_out_and_journals_the_cancellation() {
-    let data_dir = temporary_directory("client-timeout");
+async fn an_unanswered_resident_call_becomes_unknown_and_journals_the_cancellation() {
+    let data_dir = temporary_directory("resident-timeout");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let loop_executor = {
         let seen = seen.clone();
@@ -806,16 +780,23 @@ async fn an_unanswered_client_call_times_out_and_journals_the_cancellation() {
             }
         })
     };
-    let runtime = runtime_with_deadline(&data_dir, loop_executor, Arc::new(NoTools), 200);
+    let tools = Arc::new(OutcomeTools {
+        outcome: Outcome::Ok {
+            value: serde_json::json!({}),
+        },
+        delay: Duration::from_secs(5),
+        cancelled: Mutex::new(Vec::new()),
+    });
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 200);
     let handle = runtime
-        .create(&client_tool_config("pick_file"), &[])
+        .create(&resident_tool_config("pick_file"), &[])
         .unwrap();
     handle
         .message(MessageRequest { input: "go".into() })
         .await
         .unwrap();
     let results = seen.lock().unwrap().clone();
-    assert_eq!(results[0].output["code"], "timeout");
+    assert_eq!(results[0].output["code"], "unknown");
     let kinds = runtime.kinds(handle.id());
     assert!(kinds.iter().any(|kind| kind == "tool_cancel_started"));
     assert_eq!(kinds.last().unwrap(), "turn_ended");
@@ -980,6 +961,130 @@ async fn events_since_the_last_activation_reach_the_loop() {
     let second: Vec<String> = seen.lock().unwrap().clone();
     assert!(second.iter().any(|kind| kind == "environment_closed"));
     assert!(!second.iter().any(|kind| kind == "session_creation_ended"));
+    drop(handle);
+    settle(runtime, data_dir).await;
+}
+
+#[tokio::test]
+async fn transcript_replacement_reaches_the_live_feed_and_next_activation() {
+    let data_dir = temporary_directory("transcript-replaced-event");
+    let turn = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let loop_executor = {
+        let turn = turn.clone();
+        let seen = seen.clone();
+        scripted(move |input, _services| {
+            let turn = turn.fetch_add(1, Ordering::SeqCst);
+            let seen = seen.clone();
+            async move {
+                seen.lock().unwrap().push(
+                    input
+                        .events
+                        .iter()
+                        .map(|event| event.event_type.clone())
+                        .collect::<Vec<_>>(),
+                );
+                if turn == 0 {
+                    done(vec![user("summary")])
+                } else {
+                    done(input.transcript)
+                }
+            }
+        })
+    };
+    let runtime = runtime(
+        &data_dir,
+        loop_executor,
+        Arc::new(NoModels),
+        Arc::new(NoTools),
+    );
+    let mut live = runtime.subscribe();
+    let handle = runtime
+        .create(&config(), &[user("old one"), user("old two")])
+        .unwrap();
+    handle
+        .message(MessageRequest {
+            input: "compact".into(),
+        })
+        .await
+        .unwrap();
+    let mut replacement_was_live = false;
+    while let Ok((_, event)) = live.try_recv() {
+        if matches!(event, LiveEvent::Recorded(event) if event.event_type == "transcript_replaced")
+        {
+            replacement_was_live = true;
+        }
+    }
+    assert!(replacement_was_live);
+
+    handle
+        .message(MessageRequest {
+            input: "continue".into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        seen.lock().unwrap()[1]
+            .iter()
+            .any(|kind| kind == "transcript_replaced")
+    );
+    drop(handle);
+    settle(runtime, data_dir).await;
+}
+
+#[tokio::test]
+async fn a_bounded_event_page_does_not_skip_the_rest() {
+    let data_dir = temporary_directory("event-page");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let loop_executor = {
+        let seen = seen.clone();
+        scripted(move |input, _services| {
+            let seen = seen.clone();
+            async move {
+                seen.lock().unwrap().extend(
+                    input
+                        .events
+                        .iter()
+                        .filter(|event| event.event_type == "queued")
+                        .filter_map(|event| event.data["index"].as_u64()),
+                );
+                done(input.transcript)
+            }
+        })
+    };
+    let runtime = runtime(
+        &data_dir,
+        loop_executor,
+        Arc::new(NoModels),
+        Arc::new(NoTools),
+    );
+    let handle = runtime.create(&config(), &[]).unwrap();
+    handle
+        .message(MessageRequest {
+            input: "one".into(),
+        })
+        .await
+        .unwrap();
+    for index in 0..1_005 {
+        handle
+            .record("queued", serde_json::json!({ "index": index }))
+            .await
+            .unwrap();
+    }
+    for message in ["two", "three"] {
+        handle
+            .message(MessageRequest {
+                input: message.into(),
+            })
+            .await
+            .unwrap();
+    }
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1_005);
+        assert_eq!(seen.first(), Some(&0));
+        assert_eq!(seen.last(), Some(&1_004));
+    }
     drop(handle);
     settle(runtime, data_dir).await;
 }

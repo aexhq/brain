@@ -1,6 +1,5 @@
-//! Environments as resources: created once with their configuration, attached by id
-//! from any session, detached when a session ends, and closed when deleted or, if
-//! managed, when nothing has used them for their idle TTL.
+//! Session-owned Environments: created during session admission, detached when the
+//! session ends, and closed on idle expiry or session deletion.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -8,11 +7,11 @@ use std::{
     time::Duration,
 };
 
-use brain::{CreatingSession, JournalStore, Session};
+use brain::{CreatingSession, Session, SessionStore};
 use brain_protocol::{
-    AttachmentId, CreateEnvironmentRequest, EnvironmentBinding, EnvironmentCallResult,
-    EnvironmentId, EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, EnvironmentStatus,
-    EnvironmentSummary, Provision, SessionConfig, SessionId, ToolManifest, codes,
+    AttachmentId, EnvironmentBinding, EnvironmentCallResult, EnvironmentId, EnvironmentOperation,
+    EnvironmentReceipt, EnvironmentRequest, EnvironmentStatus, Provision, SessionConfig,
+    SessionEnvironment, SessionId, ToolManifest, codes,
 };
 use tokio::sync::broadcast;
 
@@ -75,74 +74,51 @@ impl EnvironmentRegistry {
         &self.resources
     }
 
-    /// Creates an environment: records it, runs `setup`, and keeps what the environment
-    /// declared it executes and offers.
-    pub async fn create(
+    /// Opens an Environment as part of session admission, recording setup before send.
+    pub async fn create_for_session(
         &self,
-        request: CreateEnvironmentRequest,
+        creation: &mut CreatingSession,
+        specification: &SessionEnvironment,
     ) -> Result<EnvironmentRecord, brain::Error> {
-        if self.endpoint.trim().is_empty() {
+        let native = brain_wasm_resources(&specification.configuration)?;
+        if native.is_none() && self.endpoint.trim().is_empty() {
             return Err(brain::Error::InvalidState(
                 "no Environment endpoint is configured".into(),
             ));
         }
-        let environment_id = request
-            .environment_id
-            .unwrap_or_else(|| EnvironmentId::new(brain::random_id("env")));
+        let environment_id = specification.environment_id.clone();
         self.resources.create(EnvironmentRecord {
             environment_id: environment_id.clone(),
-            configuration: request.configuration.clone(),
-            managed: request.managed,
-            idle_ttl_ms: request.idle_ttl_ms,
+            configuration: specification.configuration.clone(),
+            managed: specification.managed,
+            idle_ttl_ms: specification.idle_ttl_ms,
             created_at_ms: resources::wall_clock_ms(),
-            runtimes: Vec::new(),
             resources: Default::default(),
             operations: 0,
         })?;
-        let receipt = match self
-            .operation(
-                &environment_id,
+        let entry = self.entry(&environment_id);
+        let receipt = self
+            .lifecycle(
+                creation,
+                &entry,
                 EnvironmentRequest::Setup {
-                    configuration: request.configuration,
+                    configuration: specification.configuration.clone(),
                 },
+                None,
+                codes::event::call::ENVIRONMENT_SETUP,
             )
-            .await
-        {
+            .await;
+        let receipt = match receipt {
             Ok(receipt) => receipt,
             Err(error) => {
                 let _ = self.resources.remove(&environment_id);
                 return Err(error);
             }
         };
-        let (runtimes, declared) = receipt_declaration(&receipt);
+        let declared = receipt_declaration(&receipt);
         self.resources.update(&environment_id, |record| {
-            record.runtimes = runtimes;
             record.resources = declared;
         })
-    }
-
-    pub fn summary(
-        &self,
-        environment_id: &EnvironmentId,
-        attached_sessions: Vec<SessionId>,
-    ) -> Result<Option<EnvironmentSummary>, brain::Error> {
-        let Some(record) = self.resources.get(environment_id)? else {
-            return Ok(None);
-        };
-        let status = self
-            .resources
-            .status(environment_id)?
-            .unwrap_or(EnvironmentStatus::Open);
-        Ok(Some(EnvironmentSummary {
-            environment_id: record.environment_id,
-            status,
-            managed: record.managed,
-            idle_ttl_ms: record.idle_ttl_ms,
-            attached_sessions,
-            runtimes: record.runtimes,
-            resources: record.resources,
-            created_at_ms: record.created_at_ms,
-        }))
     }
 
     pub fn ids(&self) -> Result<Vec<EnvironmentId>, brain::Error> {
@@ -179,9 +155,7 @@ impl EnvironmentRegistry {
     /// `environment_closed`.
     pub async fn close(&self, environment_id: &EnvironmentId) -> Result<(), brain::Error> {
         if self.resources.get(environment_id)?.is_none() {
-            return Err(brain::Error::NotFound(format!(
-                "Environment `{environment_id}` does not exist"
-            )));
+            return Ok(());
         }
         // Best effort: an environment that cannot be reached for its teardown is still
         // forgotten here, and the notice says which.
@@ -262,18 +236,10 @@ impl EnvironmentRegistry {
             // What the environment declares it executes and offers feeds the
             // configuration's bind check; setup and attach both may report it, and a
             // resource attach declares again replaces setup's block.
-            let (mut runtimes, mut resources) = (record.runtimes, record.resources);
-            let (attach_runtimes, attach_resources) = receipt_declaration(&attached);
-            for runtime in attach_runtimes {
-                if !runtimes.contains(&runtime) {
-                    runtimes.push(runtime);
-                }
-            }
-            runtimes.sort_unstable();
-            resources.extend(attach_resources);
+            let mut resources = record.resources;
+            resources.extend(receipt_declaration(&attached));
             attachment.binding = Some(entry.binding);
             attachment.attachment_id = Some(attachment_id);
-            attachment.runtimes = runtimes;
             attachment.resources = resources;
         }
         let SessionConfig {
@@ -282,8 +248,7 @@ impl EnvironmentRegistry {
             ..
         } = &mut config;
         for tool in tool_bindings.iter_mut() {
-            // A client-hosted tool binds no environment: it is served by the
-            // session's creator off the event feed.
+            // A resident Tool binds no Environment; its registered host answers it.
             let Some(environment_id) = &tool.environment_id else {
                 continue;
             };
@@ -345,10 +310,22 @@ impl EnvironmentRegistry {
         self.send(&entry, operation).await
     }
 
+    pub fn brain_wasm_configuration(
+        &self,
+        environment_id: &EnvironmentId,
+    ) -> Result<Option<serde_json::Value>, brain::Error> {
+        let Some(record) = self.resources.get(environment_id)? else {
+            return Err(brain::Error::NotFound(format!(
+                "Environment `{environment_id}` does not exist"
+            )));
+        };
+        Ok(brain_wasm_resources(&record.configuration)?.map(|_| record.configuration))
+    }
+
     pub async fn call(
         &self,
         session: &Session,
-        store: &dyn JournalStore,
+        store: &dyn SessionStore,
         environment_id: &EnvironmentId,
         name: String,
         input: serde_json::Value,
@@ -481,6 +458,19 @@ impl EnvironmentRegistry {
         entry: &DirectoryEntry,
         operation: &EnvironmentOperation,
     ) -> Result<EnvironmentReceipt, brain::Error> {
+        if let Some(record) = self.resources.get(&entry.binding.environment_id)?
+            && let Some(resources) = brain_wasm_resources(&record.configuration)?
+        {
+            return match &operation.request {
+                EnvironmentRequest::Call { .. } | EnvironmentRequest::Invoke { .. } => {
+                    Err(brain::Error::InvalidState(
+                        "the Brain Wasm Environment accepts Components through native execution"
+                            .into(),
+                    ))
+                }
+                _ => Ok(EnvironmentReceipt::Accepted { resources }),
+            };
+        }
         let sent = self
             .adapter
             .send(&entry.endpoint, &entry.binding, operation)
@@ -518,12 +508,148 @@ impl EnvironmentRegistry {
     }
 }
 
+fn brain_wasm_resources(
+    configuration: &serde_json::Value,
+) -> Result<Option<brain_protocol::Resources>, brain::Error> {
+    let Some(object) = configuration.as_object() else {
+        return Ok(None);
+    };
+    if object.get("driver").and_then(serde_json::Value::as_str) != Some("brain_wasm") {
+        return Ok(None);
+    }
+    let allowed = ["driver", "network", "filesystem", "secrets"];
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(brain::Error::InvalidState(
+            "Brain Wasm Environment configuration has an unknown field".into(),
+        ));
+    }
+    let mut resources = brain_protocol::Resources::new();
+    let filesystem = object
+        .get("filesystem")
+        .map(|value| {
+            let value = value.as_object().ok_or_else(|| {
+                brain::Error::InvalidState("Brain Wasm filesystem must be an object".into())
+            })?;
+            if value
+                .keys()
+                .any(|key| key != "scratch" && key != "workspace")
+            {
+                return Err(brain::Error::InvalidState(
+                    "Brain Wasm filesystem has an unknown field".into(),
+                ));
+            }
+            Ok(value)
+        })
+        .transpose()?;
+    let mut roots = Vec::new();
+    for (name, root) in [("scratch", "/scratch"), ("workspace", "/workspace")] {
+        let requested = filesystem
+            .and_then(|value| value.get(name))
+            .map(|value| {
+                value.as_bool().ok_or_else(|| {
+                    brain::Error::InvalidState(format!("Brain Wasm {name} must be boolean"))
+                })
+            })
+            .transpose()?
+            .unwrap_or(false);
+        if requested {
+            roots.push(root);
+        }
+    }
+    if !roots.is_empty() {
+        resources.insert("fs".into(), serde_json::json!({"roots": roots}));
+    }
+    let network = object
+        .get("network")
+        .map(|value| {
+            let value = value.as_object().ok_or_else(|| {
+                brain::Error::InvalidState("Brain Wasm network must be an object".into())
+            })?;
+            if value.keys().any(|key| key != "allow") {
+                return Err(brain::Error::InvalidState(
+                    "Brain Wasm network has an unknown field".into(),
+                ));
+            }
+            Ok(value)
+        })
+        .transpose()?;
+    let allow = network
+        .and_then(|value| value.get("allow"))
+        .map(|value| {
+            value.as_array().cloned().ok_or_else(|| {
+                brain::Error::InvalidState("Brain Wasm network allow must be an array".into())
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    if allow.len() > 256
+        || allow.iter().any(|value| {
+            value
+                .as_str()
+                .is_none_or(|value| !valid_network_target(value))
+        })
+    {
+        return Err(brain::Error::InvalidState(
+            "Brain Wasm network allow must contain HTTP(S) origins or authorities".into(),
+        ));
+    }
+    resources.insert("net".into(), serde_json::json!({"allow": allow}));
+    let secrets = object
+        .get("secrets")
+        .map(|value| {
+            value.as_array().cloned().ok_or_else(|| {
+                brain::Error::InvalidState("Brain Wasm secrets must be an array".into())
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    if secrets.len() > 64
+        || secrets.iter().any(|value| {
+            value.as_str().is_none_or(|value| {
+                value.is_empty()
+                    || value.len() > 128
+                    || !value.bytes().enumerate().all(|(index, byte)| {
+                        byte.is_ascii_alphanumeric()
+                            || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+                    })
+            })
+        })
+    {
+        return Err(brain::Error::InvalidState(
+            "Brain Wasm secrets must be an array of names".into(),
+        ));
+    }
+    if !secrets.is_empty() {
+        resources.insert("secrets".into(), serde_json::json!({"names": secrets}));
+    }
+    Ok(Some(resources))
+}
+
+fn valid_network_target(value: &str) -> bool {
+    let explicit = value.contains("://");
+    let candidate = if explicit {
+        value.to_owned()
+    } else {
+        format!("https://{value}")
+    };
+    let Ok(url) = url::Url::parse(&candidate) else {
+        return false;
+    };
+    matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.host().is_some()
+}
+
 /// A receipt that ended the operation, or the error it ended with. A failure receipt is
 /// the environment saying the effect failed; an ambiguous one says it does not know; a
 /// progress receipt where a terminal one was owed is a broken environment.
 fn terminal(receipt: EnvironmentReceipt, what: &str) -> Result<EnvironmentReceipt, brain::Error> {
     match receipt {
-        EnvironmentReceipt::Ambiguous { message } => Err(brain::Error::Ambiguous(message)),
+        EnvironmentReceipt::Unknown { message } => Err(brain::Error::Ambiguous(message)),
         EnvironmentReceipt::Failure { message, .. } => Err(brain::Error::Executor(message)),
         EnvironmentReceipt::Progress { .. } => Err(brain::Error::Executor(format!(
             "Environment returned progress without a terminal {what} receipt"
@@ -541,13 +667,12 @@ fn provisions_for(config: &SessionConfig, environment_id: &EnvironmentId) -> Vec
         .iter()
         .filter(|tool| tool.environment_id.as_ref() == Some(environment_id))
         .filter_map(|tool| {
-            let program = tool.program.clone()?;
+            let implementation = tool.implementation.clone()?;
             let definition = config
                 .tools
                 .iter()
                 .find(|definition| definition.name == tool.name)?;
             Some(Provision {
-                payload_identity: *program.identity(),
                 manifest: ToolManifest {
                     name: tool.name.clone(),
                     description: definition.description.clone(),
@@ -555,21 +680,16 @@ fn provisions_for(config: &SessionConfig, environment_id: &EnvironmentId) -> Vec
                     output_schema: definition.output_schema.clone(),
                     needs: tool.needs.clone(),
                     binding_names: tool.binding_names.clone(),
-                    program,
+                    implementation,
                 },
             })
         })
         .collect()
 }
 
-fn receipt_declaration(
-    receipt: &EnvironmentReceipt,
-) -> (Vec<brain_protocol::Runtime>, brain_protocol::Resources) {
+fn receipt_declaration(receipt: &EnvironmentReceipt) -> brain_protocol::Resources {
     match receipt {
-        EnvironmentReceipt::Accepted {
-            runtimes,
-            resources,
-        } => (runtimes.clone(), resources.clone()),
+        EnvironmentReceipt::Accepted { resources } => resources.clone(),
         _ => Default::default(),
     }
 }
@@ -592,4 +712,28 @@ fn redacted(request: &EnvironmentRequest) -> Option<EnvironmentRequest> {
             .map(|name| (name.clone(), "<redacted>".to_owned()))
             .collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::brain_wasm_resources;
+
+    #[test]
+    fn brain_wasm_filesystem_roots_are_explicit() {
+        let defaults = brain_wasm_resources(&serde_json::json!({"driver": "brain_wasm"}))
+            .unwrap()
+            .unwrap();
+        assert!(!defaults.contains_key("fs"));
+
+        let requested = brain_wasm_resources(&serde_json::json!({
+            "driver": "brain_wasm",
+            "filesystem": {"scratch": true, "workspace": true}
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            requested["fs"],
+            serde_json::json!({"roots": ["/scratch", "/workspace"]})
+        );
+    }
 }

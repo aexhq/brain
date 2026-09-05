@@ -1,42 +1,16 @@
 //! The vocabulary between a Tool and the Environment that executes it.
 //!
-//! An environment is a place that executes programs. It declares which program
-//! [`Runtime`]s it can launch and which [`Resources`] a program finds there. A tool
-//! declares its program and the resource names it needs. Brain checks the tool's
+//! An environment is a place that executes Tools and offers resources. A tool
+//! declares its implementation and the resource names it needs. Brain checks the tool's
 //! needs against the environment's declaration at session create, journals every
 //! call, and never wraps the platform: inside the environment a program reaches
 //! its resources through the platform's own APIs, and policy is enforced at the
 //! platform boundary, not by Brain.
 
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-/// The closed set of program kinds an environment can launch. Closed only because
-/// Brain and the SDK must physically package and start the program.
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Runtime {
-    /// A self-contained JavaScript module (`brain build` output).
-    Esm,
-    /// A POSIX shell script.
-    Shell,
-    /// A request to an endpoint the environment fronts.
-    Http,
-}
-
-impl fmt::Display for Runtime {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Runtime::Esm => "esm",
-            Runtime::Shell => "shell",
-            Runtime::Http => "http",
-        })
-    }
-}
 
 /// The resources an environment declares, keyed by name. The contract fixes the
 /// policy shape of the named resources (`fs`, `process`, `net`, `dom`, `secrets`);
@@ -83,6 +57,7 @@ pub enum Outcome {
     Error { error: OutcomeError },
     Timeout,
     Cancelled,
+    Unknown { message: String },
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -110,14 +85,6 @@ mod tests {
         let timeout: Outcome =
             serde_json::from_value(serde_json::json!({"status":"timeout"})).unwrap();
         assert_eq!(timeout, Outcome::Timeout);
-    }
-
-    #[test]
-    fn a_runtime_is_its_wire_form() {
-        for runtime in [Runtime::Esm, Runtime::Shell, Runtime::Http] {
-            let wire = serde_json::to_value(runtime).unwrap();
-            assert_eq!(wire, serde_json::json!(runtime.to_string()));
-        }
     }
 
     #[test]

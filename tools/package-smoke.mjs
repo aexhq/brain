@@ -40,22 +40,22 @@ try {
   );
   writeFileSync(
     join(directory, "extension.mjs"),
-    `import { agentloop } from "@aexhq/brain";\n` +
-      `export const simple = agentloop((author) => { author.turn((turn) => turn.done()); });\n`,
+    `import { agentloop, brainWasm, component } from "@aexhq/brain";\n` +
+      `export const runtime = brainWasm({ filesystem: { workspace: false } });\n` +
+      `export const simple = agentloop({ implementation: component(new Uint8Array([1])) });\n`,
   );
   run(["install", "--no-audit", "--no-fund"], directory);
-  execFileSync(process.execPath, [join(directory, "node_modules/@aexhq/brain/dist/cli.js"), "build", "extension.mjs", "--out", "built"], { cwd: directory, stdio: "inherit" });
   writeFileSync(
     join(directory, "smoke.mjs"),
     `import assert from "node:assert/strict";\n` +
       `import * as brainSdk from "@aexhq/brain";\n` +
-      `import { simple } from "./built/index.mjs";\n` +
+      `import { runtime, simple } from "./extension.mjs";\n` +
       `const { Brain } = brainSdk;\n` +
       `globalThis.fetch = async () => { throw new Error("validated Brain reached fetch"); };\n` +
       `const brain = new Brain({ baseUrl: "http://127.0.0.1:8080" });\n` +
       `assert.equal(typeof brain.sessions.create, "function");\n` +
-      `assert.deepEqual(Object.keys(simple()), []);\n` +
-      `await assert.rejects(brain.sessions.create({ model: { provider: "vercel-ai-gateway", name: "openai/test", apiKey: "test" }, agentloop: simple() }), /validated Brain reached fetch/u);\n` +
+      `assert.deepEqual(Object.keys(simple({ env: runtime })), []);\n` +
+      `await assert.rejects(brain.sessions.create({ model: { provider: "vercel-ai-gateway", name: "openai/test", apiKey: "test" }, agentloop: simple({ env: runtime }) }), /validated Brain reached fetch/u);\n` +
       `assert.equal(typeof brainSdk.tool, "function");\n` +
       `assert.equal(typeof brainSdk.environment, "function");\n` +
       `assert.equal("DurableEventBridge" in brainSdk, false);\n`,

@@ -26,6 +26,9 @@ pub enum Error {
     /// The turn asked for more than its budget allows.
     #[error("budget exceeded: {0}")]
     Budget(String),
+    /// The turn tried to append too many or too-large extension Events.
+    #[error("emit limit exceeded: {0}")]
+    EmitLimit(String),
     /// The agentloop's turn failed with a code of its own, or one its runtime gave it.
     #[error("{}", .0.message)]
     Loop(TurnError),
@@ -53,6 +56,7 @@ impl Error {
             Error::Ambiguous(_) => api::AMBIGUOUS,
             Error::Cancelled(_) => brain_protocol::codes::failure::CANCELLED,
             Error::Budget(_) => brain_protocol::codes::failure::MODEL_CALL_LIMIT,
+            Error::EmitLimit(_) => brain_protocol::codes::failure::EMIT_LIMIT,
             Error::Loop(error) => &error.code,
             Error::ProviderStatus { .. } => api::MODEL_PROVIDER_FAILED,
         }
@@ -63,8 +67,7 @@ impl Error {
         match self {
             Error::Overloaded(_) | Error::Executor(_) => true,
             Error::Loop(error) => error.retryable,
-            // The executor already retried what was worth retrying in place; a
-            // whole-turn retry can still help for transient statuses.
+            // Agentloop may choose a new call for transient provider statuses.
             Error::ProviderStatus { status, .. } => matches!(status, 408 | 429) || *status >= 500,
             _ => false,
         }

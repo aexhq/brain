@@ -15,19 +15,6 @@ const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_STREAM_BYTES: usize = 32 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 256 * 1024;
 
-// Live retry policy: clean provider failures -- a complete 408/429/5xx error
-// response before anything streamed -- retry in place with bounded backoff.
-// Ambiguous losses (transport errors, mid-stream death) are never retried here:
-// the request may have billed, and only the journal's ambiguous path is honest
-// about that. Never retried either: deterministic 4xx (auth, validation,
-// context overflow) and quota exhaustion, which fail fast.
-const PROVIDER_LIVE_RETRIES: u32 = 3;
-/// Full-jitter exponential backoff: `rand(0..=min(cap, base << attempt))`.
-const PROVIDER_RETRY_BASE_MS: u64 = 1_000;
-const PROVIDER_RETRY_CAP_MS: u64 = 30_000;
-/// A provider-sent `Retry-After` is honored but never beyond this.
-const PROVIDER_RETRY_AFTER_CAP_MS: u64 = 60_000;
-
 pub struct RemoteModelConfig {
     pub base_url: String,
     pub api_key: String,
@@ -180,14 +167,10 @@ impl ModelExecutor for RemoteModelClient {
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
     ) -> Result<ModelResult, Error> {
         let body = self.body(binding, &request, tools)?;
-        let mut attempt = 0;
-        let response = loop {
-            let response = self.request(&body).send().await.map_err(|error| {
-                Error::Executor(format!("model request failed before response: {error}"))
-            })?;
-            if response.status().is_success() {
-                break response;
-            }
+        let response = self.request(&body).send().await.map_err(|error| {
+            Error::Executor(format!("model request failed before response: {error}"))
+        })?;
+        if !response.status().is_success() {
             let status = response.status().as_u16();
             let retry_after_ms = response
                 .headers()
@@ -200,19 +183,12 @@ impl ModelExecutor for RemoteModelClient {
                 .await
                 .map_err(|error| Error::Executor(error.to_string()))?;
             let bounded = &bytes[..bytes.len().min(MAX_ERROR_BYTES)];
-            let error = Error::ProviderStatus {
+            return Err(Error::ProviderStatus {
                 status,
                 body: String::from_utf8_lossy(bounded).into_owned(),
                 retry_after_ms,
-            };
-            match live_retry_delay(&error, attempt) {
-                Some(delay) if attempt < PROVIDER_LIVE_RETRIES => {
-                    attempt += 1;
-                    tokio::time::sleep(delay).await;
-                }
-                _ => return Err(error),
-            }
-        };
+            });
+        }
         let mut decoder = SseDecoder::new(MAX_FRAME_BYTES);
         let mut stream = response.bytes_stream();
         let mut total = 0_usize;
@@ -242,96 +218,6 @@ impl ModelExecutor for RemoteModelClient {
             stop_reason,
             usage,
         })
-    }
-}
-
-/// The pause before live-retry number `attempt` (0-based) of a clean failure, or `None`
-/// when the failure class must not be retried in place.
-fn live_retry_delay(error: &Error, attempt: u32) -> Option<Duration> {
-    let Error::ProviderStatus {
-        status,
-        body,
-        retry_after_ms,
-    } = error
-    else {
-        return None;
-    };
-    if !matches!(status, 408 | 429) && *status < 500 {
-        return None;
-    }
-    // OpenAI reports exhausted quota as a 429; waiting will not refill an account.
-    if *status == 429 && body.contains("insufficient_quota") {
-        return None;
-    }
-    let ms = match retry_after_ms {
-        Some(requested) => (*requested).min(PROVIDER_RETRY_AFTER_CAP_MS),
-        None => {
-            use rand::Rng;
-            let ceiling = PROVIDER_RETRY_BASE_MS
-                .checked_shl(attempt.min(16))
-                .unwrap_or(u64::MAX)
-                .min(PROVIDER_RETRY_CAP_MS);
-            rand::rng().random_range(0..=ceiling)
-        }
-    };
-    Some(Duration::from_millis(ms))
-}
-
-#[cfg(test)]
-mod retry_tests {
-    use super::*;
-
-    fn status(status: u16, body: &str, retry_after_ms: Option<u64>) -> Error {
-        Error::ProviderStatus {
-            status,
-            body: body.into(),
-            retry_after_ms,
-        }
-    }
-
-    #[test]
-    fn clean_failures_retry_and_deterministic_ones_do_not() {
-        assert!(live_retry_delay(&status(429, "rate limited", None), 0).is_some());
-        assert!(live_retry_delay(&status(408, "timeout", None), 0).is_some());
-        assert!(live_retry_delay(&status(500, "oops", None), 0).is_some());
-        assert!(live_retry_delay(&status(529, "overloaded", None), 2).is_some());
-        assert!(live_retry_delay(&status(400, "bad request", None), 0).is_none());
-        assert!(live_retry_delay(&status(401, "bad key", None), 0).is_none());
-        assert!(live_retry_delay(&status(404, "no model", None), 0).is_none());
-        assert!(
-            live_retry_delay(&Error::Ambiguous("mid-stream loss".into()), 0).is_none(),
-            "ambiguous losses are never retried in place"
-        );
-    }
-
-    #[test]
-    fn quota_exhaustion_fails_fast() {
-        let quota = status(
-            429,
-            r#"{"error":{"code":"insufficient_quota","message":"..."}}"#,
-            Some(1_000),
-        );
-        assert!(live_retry_delay(&quota, 0).is_none());
-    }
-
-    #[test]
-    fn retry_after_is_honored_and_capped() {
-        let asked = live_retry_delay(&status(429, "slow down", Some(2_000)), 0).unwrap();
-        assert_eq!(asked.as_millis(), 2_000);
-        let capped = live_retry_delay(&status(429, "slow down", Some(600_000)), 0).unwrap();
-        assert_eq!(capped.as_millis(), PROVIDER_RETRY_AFTER_CAP_MS as u128);
-    }
-
-    #[test]
-    fn backoff_stays_inside_the_jitter_ceiling() {
-        for attempt in 0..6 {
-            let delay = live_retry_delay(&status(503, "unavailable", None), attempt).unwrap();
-            let ceiling = PROVIDER_RETRY_BASE_MS
-                .checked_shl(attempt)
-                .unwrap_or(u64::MAX)
-                .min(PROVIDER_RETRY_CAP_MS);
-            assert!(delay.as_millis() <= ceiling as u128);
-        }
     }
 }
 
@@ -510,7 +396,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_clean_429_is_retried_and_a_400_is_not() {
+    async fn a_provider_error_is_returned_without_retry() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let counted = attempts.clone();
         let app = Router::new().route(
@@ -518,25 +404,12 @@ mod tests {
             post(move || {
                 let attempts = counted.clone();
                 async move {
-                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                        (
-                            StatusCode::TOO_MANY_REQUESTS,
-                            [
-                                ("content-type", "text/plain"),
-                                ("retry-after", "0"),
-                            ],
-                            "rate limited".to_owned(),
-                        )
-                    } else {
-                        (
-                            StatusCode::OK,
-                            [
-                                ("content-type", "text/event-stream"),
-                                ("retry-after", "0"),
-                            ],
-                            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_owned(),
-                        )
-                    }
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [("content-type", "text/plain"), ("retry-after", "7")],
+                        "rate limited".to_owned(),
+                    )
                 }
             }),
         );
@@ -556,12 +429,19 @@ mod tests {
             response_format: None,
             max_output_tokens: None,
         };
-        let result = client
+        let error = client
             .execute(&binding(), request.clone(), &[], &mut |_| {})
             .await
-            .unwrap();
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
-        assert_eq!(result.stop_reason, StopReason::EndTurn);
+            .unwrap_err();
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            error,
+            Error::ProviderStatus {
+                status: 429,
+                retry_after_ms: Some(7_000),
+                ..
+            }
+        ));
 
         let denied = Router::new().route(
             "/chat/completions",

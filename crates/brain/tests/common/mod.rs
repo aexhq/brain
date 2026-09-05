@@ -14,11 +14,12 @@ use std::{
 
 use async_trait::async_trait;
 use brain::{
-    Error, Feed, JournalStore, LoopExecutor, ModelExecutor, Session, SessionRuntime, SessionStore,
-    ToolExecutor, TurnServices, Writer,
+    Error, Feed, LocalSessionStore, LoopExecutor, ModelExecutor, Session, SessionRuntime,
+    SessionStore, ToolExecutor, TurnServices, Writer,
 };
 use brain_protocol::{
-    AgentloopIdentity, Message, ModelBinding, SessionConfig, SessionId, TurnInput, TurnOutput,
+    AgentloopIdentity, EnvironmentId, Message, ModelBinding, SessionConfig, SessionId, TurnInput,
+    TurnOutput,
 };
 use futures_util::future::BoxFuture;
 
@@ -27,7 +28,7 @@ pub struct Runtime {
     pub writer: Arc<Writer>,
     pub feed: Arc<Feed>,
     pub config: Arc<SessionRuntime>,
-    stores: Mutex<HashMap<SessionId, Arc<SessionStore>>>,
+    stores: Mutex<HashMap<SessionId, Arc<LocalSessionStore>>>,
 }
 
 impl Runtime {
@@ -45,7 +46,7 @@ impl Runtime {
         let writer = Writer::spawn();
         let feed = Arc::new(Feed::new(telemetry.clone()));
         let stores =
-            SessionStore::open_all(&data_dir.join("sessions"), writer.clone(), feed.clone())
+            LocalSessionStore::open_all(&data_dir.join("sessions"), writer.clone(), feed.clone())
                 .unwrap()
                 .into_iter()
                 .map(|store| (store.session_id().clone(), store))
@@ -78,7 +79,7 @@ impl Runtime {
     /// `Session::begin`, so tests exercise the validation the production path enforces.
     pub fn create(&self, config: &SessionConfig, transcript: &[Message]) -> Result<Session, Error> {
         let session_id = SessionId::new(brain::random_id("ses"));
-        let store = SessionStore::create(
+        let store = LocalSessionStore::create(
             &self.sessions_dir().join(session_id.as_str()),
             session_id.clone(),
             &serde_json::to_value(config).unwrap(),
@@ -92,7 +93,7 @@ impl Runtime {
         Session::begin(store, self.config.clone(), config, transcript)?.complete(config.clone())
     }
 
-    pub fn store(&self, session_id: &SessionId) -> Arc<SessionStore> {
+    pub fn store(&self, session_id: &SessionId) -> Arc<LocalSessionStore> {
         self.stores
             .lock()
             .unwrap()
@@ -171,10 +172,11 @@ pub fn temporary_directory(name: &str) -> PathBuf {
     path
 }
 
-/// The smallest admitted configuration: no tools, no environments.
+/// The smallest admitted configuration: an Agentloop and its Environment, no tools.
 pub fn config() -> SessionConfig {
     SessionConfig {
         agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
+        agentloop_environment_id: EnvironmentId::new("workspace"),
         brain_configuration: serde_json::json!({}),
         model: ModelBinding {
             binding_id: "gateway".into(),
@@ -183,7 +185,18 @@ pub fn config() -> SessionConfig {
         system: "test".into(),
         response_format: None,
         tools: Vec::new(),
-        environments: Vec::new(),
+        environments: vec![brain_protocol::EnvironmentAttachment {
+            environment_id: EnvironmentId::new("workspace"),
+            configuration: serde_json::json!({"driver": "brain_wasm"}),
+            managed: true,
+            idle_ttl_ms: None,
+            binding: Some(brain_protocol::EnvironmentBinding {
+                environment_id: EnvironmentId::new("workspace"),
+                directory_generation: 1,
+            }),
+            attachment_id: Some(brain_protocol::AttachmentId::new("attachment")),
+            resources: Default::default(),
+        }],
         tool_bindings: Vec::new(),
         idle_ttl_ms: None,
     }
@@ -216,6 +229,7 @@ impl LoopExecutor for ScriptedLoop {
         &self,
         _session: &SessionId,
         _agentloop: &AgentloopIdentity,
+        _environment: serde_json::Value,
         input: TurnInput,
         services: Arc<dyn TurnServices>,
     ) -> Result<TurnOutput, Error> {
@@ -305,6 +319,7 @@ impl ToolExecutor for NoTools {
     async fn execute(
         &self,
         _: brain_protocol::ToolDispatch,
+        _: &dyn brain::ToolServices,
     ) -> Result<brain_protocol::Outcome, Error> {
         Err(Error::Executor("no tools in this test".into()))
     }

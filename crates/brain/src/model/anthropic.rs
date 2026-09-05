@@ -250,6 +250,7 @@ fn usage_of(usage: Option<&Value>) -> Usage {
         cache_read_input_tokens: get("cache_read_input_tokens"),
         cache_creation_input_tokens: get("cache_creation_input_tokens"),
         reasoning_tokens: None,
+        provider_cost_usd: None,
     }
 }
 

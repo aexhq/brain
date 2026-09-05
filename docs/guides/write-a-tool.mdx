@@ -1,120 +1,92 @@
 ---
-title: Write a Tool extension
-description: Declare what you operate on, write plain code, ship one artifact.
+title: Write a Tool
+description: Declare a resident function or a placed implementation with one typed contract.
 ---
 
-A built tool is a typed async function plus a declaration of the resources it operates
-on. Inside the function you use the platform: `node:fs`, `child_process`, `fetch`. Brain
-never wraps them.
+Every Tool has a model-visible name, description, input schema, and optional output schema. Choose
+exactly one implementation form: `run` for code resident in the application, or `implementation`
+for code interpreted by an Environment.
+
+## Resident function
 
 ```ts
-import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { promisify } from "node:util";
 import { tool } from "@aexhq/brain";
 import { z } from "zod";
 
-export const test = tool(
-  {
-    description: "Run the test suite and return the report.",
-    input: z.object({ filter: z.string().optional() }),
-    output: z.object({ passed: z.boolean(), report: z.string() }),
-    // Resources this program operates on. Brain rejects a bind to an environment
-    // that does not declare them at session create. Omit it (or leave it empty)
-    // to bind anywhere the program kind can run.
-    needs: ["process", "fs"],
-    // Named runtime values by shape. Only the names enter the manifest; values
-    // are supplied at session create and injected by the environment.
-    bindings: { CI_TOKEN: z.string() },
+export const lookup = tool({
+  name: "lookup",
+  description: "Look up one record.",
+  input: z.object({ id: z.string() }),
+  output: z.object({ value: z.string() }).nullable(),
+  options: z.object({ prefix: z.string() }),
+  run: async ({ id }, ctx) => {
+    await ctx.emit("lookup_started", { id });
+    return database.get(`${ctx.options.prefix}${id}`) ?? null;
   },
-  (author) => {
-    author.run(async ({ filter }, context) => {
-      // context: { bindings: { CI_TOKEN: string }; signal: AbortSignal;
-      //            deadline: Date; callId: string; progress(value): void }
-      context.progress({ stage: "running" });
-      const passed = await promisify(execFile)("npm", ["test", "--", filter ?? ""], {
-        env: { ...process.env, CI_TOKEN: context.bindings.CI_TOKEN },
-        signal: context.signal,
-      }).then(() => true, () => false);
-      return { passed, report: await readFile("reports/junit.xml", "utf8") };
-    });
-  },
-);
-```
-
-The working directory is the environment's `fs` root by convention, so relative paths
-land in the workspace. Timeouts and cancellation arrive through the tool's own `signal`
-and `deadline`. Anything else the tool must know arrives as a binding.
-
-## Two more program kinds
-
-A tool that is one command is a `shell` program. `$name` in the script is replaced with the
-input property of that name before the environment runs it; other `$` references are left
-for the shell.
-
-```ts
-export const bash = tool.shell({
-  description: "Run a shell command in the workspace.",
-  input: z.object({ command: z.string() }),
-  output: z.object({ exit_code: z.number(), stdout: z.string(), stderr: z.string() }),
-  needs: ["process"],
-  script: "$command",
 });
+
+const bound = lookup({ prefix: "customer:" });
 ```
 
-A tool that is one request to a service the environment fronts is an `http` program. The
-input travels as the JSON body and the response body is the output.
+The function remains in this process. The factory parses and freezes options. The SDK serves calls
+over its resident-host SSE connection, validates input and output, and posts the outcome. With no
+options schema, instantiate it as `lookup()`.
+
+## Component implementation
 
 ```ts
-export const search = tool.http({
-  description: "Search the catalogue.",
-  input: z.object({ query: z.string() }),
-  request: { method: "POST", url: "https://catalogue.internal/search" },
+import { component, tool } from "@aexhq/brain";
+import { z } from "zod";
+
+export const inspect = tool({
+  name: "inspect",
+  description: "Inspect one path.",
+  input: z.object({ path: z.string() }),
+  options: z.object({ depth: z.number().int().positive() }),
+  implementation: component(new URL("./inspect.wasm", import.meta.url)),
+  needs: ["fs"],
 });
+
+const bound = inspect({ env: workspace, depth: 2 });
 ```
 
-## The artifact
+The Component implements
+[`contracts/tool/v1/tool.wit`](https://github.com/aexhq/brain/blob/main/contracts/tool/v1/tool.wit).
+Brain admits the raw bytes by content identity. Each invocation contains the Tool input, parsed
+configuration, call identity, and deadline. The Component may call its `emit` host import to append
+an extension Event, or its fire-and-forget `telemetry` import for best-effort operational diagnostics
+that never enter the journal or model input.
 
-Run `npx brain build`. For each exported tool it emits `<name>.tool.json`: a `tool/v1`
-manifest plus the program's payload. For `esm` the payload is a self-contained single-file
-bundle and the identity is its sha-256; for `shell` and `http` the payload is the script or
-request template, which the manifest also carries inline.
+## Driver-defined implementation
 
-```jsonc
-{
-  "manifest": {
-    "name": "test",
-    "description": "Run the test suite and return the report.",
-    "input_schema": { /* from zod */ },
-    "output_schema": { /* from zod */ },
-    "needs": ["process", "fs"],
-    "binding_names": ["CI_TOKEN"],
-    "program": { "kind": "esm", "identity": "<sha-256 of the bundle>" }
-  },
-  "payload": "/* the bundle */"
-}
-```
-
-Dependencies are baked into the bundle; binding *values* are structurally impossible in
-it, since they do not exist at build time. Provisioning imports the bundle once at attach,
-so a broken tool fails the attach receipt, never the first model call. Native addons and
-install-time files are not portable and fail the build; a system binary belongs to the
-environment's image, and a tool that depends on one declares it as an open resource such
-as `bin:ffmpeg`.
-
-Application code chooses placement explicitly. The environment is the factory's `env`
-option, beside the tool's own configuration:
+An Environment may define its own immutable implementation descriptor:
 
 ```ts
-test({ env: sandbox })
+const fetchIssue = tool({
+  name: "fetch_issue",
+  description: "Fetch one issue.",
+  input: z.object({ number: z.number().int() }),
+  options: z.object({ repository: z.string() }),
+  implementation: ({ repository }) => ({
+    type: "http_json",
+    method: "GET",
+    path: `/repos/${repository}/issues/{number}`,
+  }),
+  needs: ["net"],
+  bindingNames: ["API_TOKEN"],
+});
+
+const bound = fetchIssue({ env: github, repository: "aexhq/brain" });
 ```
 
-## Running a tool locally
+Brain treats this descriptor as opaque. The selected Environment validates and executes it.
+`needs` are checked against resource names declared at attachment, and `bindingNames` select values
+the Environment factory supplies outside the journal.
 
-An `esm` tool is a function, so it runs in your own process for a test:
+## Execution context
 
-```ts
-import { executeTool } from "@aexhq/brain";
-
-const report = await executeTool(test, undefined, { filter: "unit" }, { signal: AbortSignal.timeout(60_000), deadlineMs: Date.now() + 60_000 });
-```
+Resident `ctx.emit` and the Component Tool `emit` import both wait for the same thing: a committed
+extension Event in the session journal. Brain commits a Tool intent before dispatch, sends it once,
+and commits `ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop sees the result.
+The Agentloop and all Tools share a turn limit of 128 emitted Events and 1 MiB across serialized
+Event kinds and payloads. There is no automatic retry.

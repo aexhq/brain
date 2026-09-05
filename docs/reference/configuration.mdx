@@ -8,8 +8,11 @@ Each option is a flag and an environment variable. Flags win.
 | Variable | Flag | Default | What it does |
 | --- | --- | --- | --- |
 | `BRAIN_LISTEN` | `--listen` | `127.0.0.1:8080` | Address to bind |
-| `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where sessions, environments, packages, and local state live |
+| `BRAIN_DATA_DIR` | `--data-dir` | `brain-data` | Where journals, admitted Components, environments, and local state live |
 | `BRAIN_LOOP_WORKER` | `--loop-worker` | `brain-loop-worker` | Path to the loop worker executable |
+| `BRAIN_WASM_NETWORK_ALLOW` | `--wasm-network-allow` | empty | Comma-separated HTTP origins or authorities the server may grant native Components |
+| `BRAIN_WASM_SECRET_ALLOW` | `--wasm-secret-allow` | empty | Comma-separated process environment variable names the server may grant native Components |
+| `BRAIN_WASM_FILESYSTEM_ALLOW` | `--wasm-filesystem-allow` | empty | Comma-separated writable roots (`scratch`, `workspace`) the server may grant native Components |
 | `BRAIN_API_TOKEN` | `--api-token` | none | Bearer token callers must present |
 | `BRAIN_MODEL_BASE_URL` | `--model-base-url` | `https://ai-gateway.vercel.sh/v1` | Endpoint for the `vercel-ai-gateway` provider |
 | `BRAIN_OPENAI_BASE_URL` | `--openai-base-url` | provider default | Endpoint for the `openai` provider, or any OpenAI-compatible server |
@@ -30,18 +33,27 @@ an empty directory instead.
 
 ```
 brain-data/
-  format                              the layout marker
-  sessions/{session_id}/config.json   what the session was created with
-  sessions/{session_id}/events/       lifecycle, effects, the loop's records
-  sessions/{session_id}/journal/      transcript deltas, slots, checkpoints
-  environments/{environment_id}.json  what an environment declared at setup
-  agentloops/                         admitted agent loop packages
+  format                              layout marker (`brain-data/2`)
+  sessions/{session_id}/journal/      one canonical journal per session
+  environments/{environment_id}.json environment records
+  agentloops/                         admitted Agentloop and Tool Components
+  native-workspaces/                  workspaces for Brain Wasm Environments
+  run/                                worker sockets
+  server-metadata/                    model credential custody
 ```
+
+Session configuration, status, public Events, transcript, and Agentloop slots are projections of
+the canonical journal. Brain does not keep a second event or state log.
 
 ## Listening beyond loopback
 
 Brain refuses to start on a non-loopback address without `BRAIN_API_TOKEN`. Binding `0.0.0.0` with
 no token is a mistake worth failing on rather than serving.
+
+Brain Wasm network, secret, and writable-filesystem requests must also appear in the three server
+allowlists above. Keep them empty in a multi-tenant deployment unless its control plane supplies
+the corresponding tenant custody, egress, and storage boundary. Never place Brain's own API,
+Environment, or cloud credentials in the secret allowlist.
 
 ## Docker
 

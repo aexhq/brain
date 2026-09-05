@@ -1,102 +1,5 @@
 {
   "$defs": {
-    "HttpProgramRequest": {
-      "additionalProperties": false,
-      "description": "The request template of an `http` program: the environment fronts the endpoint,\nthe tool's input travels as the JSON body, and the response body is the output.",
-      "properties": {
-        "headers": {
-          "additionalProperties": {
-            "maxLength": 16384,
-            "type": "string"
-          },
-          "propertyNames": {
-            "maxLength": 256
-          },
-          "type": "object"
-        },
-        "method": {
-          "pattern": "^[A-Z]{3,16}$",
-          "type": "string"
-        },
-        "url": {
-          "maxLength": 8192,
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "method",
-        "url"
-      ],
-      "type": "object"
-    },
-    "Identity": {
-      "pattern": "^[0-9a-f]{64}$",
-      "type": "string"
-    },
-    "Program": {
-      "description": "The program behind a provisioned tool, named by content identity so\nre-provisioning is idempotent. An `esm` bundle travels out of band under its\nidentity; a `shell` script and an `http` request template travel inline.",
-      "oneOf": [
-        {
-          "properties": {
-            "identity": {
-              "$ref": "#/$defs/Identity"
-            },
-            "kind": {
-              "const": "esm",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "identity"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "identity": {
-              "$ref": "#/$defs/Identity"
-            },
-            "kind": {
-              "const": "shell",
-              "type": "string"
-            },
-            "script": {
-              "maxLength": 262144,
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "identity",
-            "script"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "identity": {
-              "$ref": "#/$defs/Identity"
-            },
-            "kind": {
-              "const": "http",
-              "type": "string"
-            },
-            "request": {
-              "$ref": "#/$defs/HttpProgramRequest"
-            }
-          },
-          "required": [
-            "kind",
-            "identity",
-            "request"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "ToolManifest": {
       "additionalProperties": false,
       "description": "The `contracts/tool/v1` manifest: the only thing Brain and environments read about\na tool. Binding *values* are never here — the manifest declares names, the\nenvironment injects values at runtime.",
@@ -113,6 +16,9 @@
         "description": {
           "maxLength": 8192,
           "type": "string"
+        },
+        "implementation": {
+          "description": "Opaque to Brain; interpreted by the Environment driver this Tool is placed in."
         },
         "input_schema": {
           "type": "object"
@@ -133,9 +39,6 @@
         },
         "output_schema": {
           "type": "object"
-        },
-        "program": {
-          "$ref": "#/$defs/Program"
         }
       },
       "required": [
@@ -144,7 +47,7 @@
         "input_schema",
         "needs",
         "binding_names",
-        "program"
+        "implementation"
       ],
       "type": "object"
     }

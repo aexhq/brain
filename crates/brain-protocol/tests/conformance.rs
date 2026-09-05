@@ -82,18 +82,18 @@ fn checked_in_examples_validate() {
     );
 }
 
-/// A manifest always describes a provisioned program: a hosting axis is not a manifest
-/// field, and a manifest without a program is rejected outright.
+/// A manifest always describes a provisioned implementation: a hosting axis is not a
+/// manifest field, and a manifest without an implementation is rejected outright.
 #[test]
-fn a_manifest_without_a_program_is_rejected() {
+fn a_manifest_without_an_implementation_is_rejected() {
     let schema =
         jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json")).unwrap();
     let mut manifest = read_json("contracts/tool/v1/examples/manifest.json");
-    manifest["hosting"] = serde_json::json!("client");
+    manifest["hosting"] = serde_json::json!("resident");
     assert!(schema.validate(&manifest).is_err());
     manifest.as_object_mut().unwrap().remove("hosting");
     schema.validate(&manifest).unwrap();
-    manifest.as_object_mut().unwrap().remove("program");
+    manifest.as_object_mut().unwrap().remove("implementation");
     assert!(schema.validate(&manifest).is_err());
     let mut needs = read_json("contracts/tool/v1/examples/manifest.json");
     needs["needs"] = serde_json::json!(["../fs"]);
@@ -126,7 +126,7 @@ fn rust_views_round_trip_contract_examples() {
         Some(&session.environments[0].environment_id)
     );
     assert_eq!(session.tools[0].needs, vec!["fs"]);
-    assert!(session.tools[0].program.is_some());
+    assert!(session.tools[0].implementation.is_some());
 
     let command: EnvironmentCommand =
         serde_json::from_value(read_json("contracts/environment/v1/examples/invoke.json")).unwrap();
@@ -196,18 +196,18 @@ fn model_selection_names_are_validated_per_provider() {
     assert!(!validate(&selection("", "model")));
 }
 
-/// A client-hosted tool is answered by an application process off the serve feed: it
-/// can carry no program, needs no resources, and unlike provisioned hosting it names no
-/// environment — the schema enforces both directions of the environment rule.
+/// A resident Tool is answered by its registered application host. It carries no
+/// implementation, needs no Environment resources, and names the host instead.
 #[test]
-fn a_client_tool_binds_no_environment_and_ships_no_program() {
+fn a_resident_tool_binds_a_host_and_no_environment() {
     let session = read_json("contracts/session/v1/examples/create-session.json");
     let mut tool = session["tools"][0].clone();
-    tool["hosting"] = serde_json::json!("client");
+    tool["hosting"] = serde_json::json!("resident");
+    tool["host_id"] = serde_json::json!("host_12345678901234567890");
     tool["needs"] = serde_json::json!([]);
-    tool.as_object_mut().unwrap().remove("program");
+    tool.as_object_mut().unwrap().remove("implementation");
     let mut request = session.clone();
-    // A client tool still naming an environment is contradictory.
+    // A resident Tool still naming an Environment is contradictory.
     request["tools"][0] = tool.clone();
     assert!(!definition_is_valid(
         "contracts/session/v1/schemas.json",
@@ -216,13 +216,12 @@ fn a_client_tool_binds_no_environment_and_ships_no_program() {
     ));
     tool.as_object_mut().unwrap().remove("environment_id");
     request["tools"][0] = tool;
-    request["environments"] = serde_json::json!([]);
     validate_definition(
         "contracts/session/v1/schemas.json",
         "CreateSessionRequest",
         &request,
     );
-    // And a non-client tool without an environment stays rejected.
+    // And a provisioned Tool without an Environment stays rejected.
     let mut bare = session.clone();
     bare["tools"][0]
         .as_object_mut()

@@ -1,16 +1,11 @@
-import { agentloop } from "@aexhq/brain";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
-export const example = agentloop((author) => {
-  author.turn(async (turn) => {
-    turn.transcript.push({ role: "user", content: [{ type: "text", text: turn.input.message }] });
-    // The session's system prompt and tools apply unless the call says otherwise.
-    const { message } = await turn.model({ messages: turn.transcript });
-    turn.transcript.push(message);
-    const text = message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("");
-    await turn.reply(text);
-    return turn.done();
-  });
+import { agentloop, component } from "@aexhq/brain";
+
+const path = process.env.BRAIN_AGENTLOOP_WASM;
+if (!path) throw new Error("BRAIN_AGENTLOOP_WASM must name a compiled Agentloop Component");
+
+export const example = agentloop({
+  implementation: component(pathToFileURL(resolve(path))),
 });

@@ -149,7 +149,7 @@ The session may mint its own id as long as the server records and manages it.
 **Decided.** One activation is one whole turn. The loop receives the input, the transcript, and
 the session's records since it last ran, and calls back into Brain through host imports for as
 long as the turn lasts: `model` makes one model call, `dispatch` runs one or many tool calls
-together, `append` writes the loop's own record, `telemetry` is fire and forget. Brain performs
+together, `emit` writes the loop's own Event, `telemetry` is fire and forget. Brain performs
 each call, journals it first, and hands the result back. The loop returns the transcript and its
 slots when it decides the turn is over.
 
@@ -172,11 +172,11 @@ its own terms without a second activation per step. Brain keeps authority becaus
 reachable only through its services, each of which journals before it acts. Cancellation
 reaches the loop as an error from the next service call, which the loop propagates.
 
-**Host imports are synchronous.** The guest toolchain (componentize-js) lowers imports
-synchronously, so a host call blocks the guest's thread until Brain answers. The SDK presents
-the calls as promises so a loop reads as async code; the compute budget charges the guest only
-for its own time, not for time spent waiting on the host. Async imports can replace this when
-the toolchain carries them without changing the developer API.
+**Host imports are asynchronous.** The SDK presents them as promises and Wasmtime suspends the
+guest while Brain or WASI performs I/O. A fixed 10 billion fuel units replace the former
+two-second epoch deadline: fuel bounds guest instructions while suspended model, Tool, HTTP, and
+filesystem waits consume none. Fuel is a work allowance for this Wasmtime version, not a promise
+of an exact CPU duration. `BRAIN_MAX_TURN_SECS` remains the independent whole-turn wall deadline.
 
 ## 2026-09-04: One session configuration, and nothing is sealed
 
@@ -336,3 +336,80 @@ the published files a build product.
 
 **Not changed.** The wire. Every checked-in example still validates, and no serde attribute was
 added or removed, so Brain accepts and produces exactly what it did.
+
+## 2026-09-05: One canonical journal, with transcript and Events as projections
+
+**Decided.** Each session has one ordered append-only journal. Configuration, transcript changes,
+Agentloop state, lifecycle changes, effect starts and outcomes all enter that journal. The public
+Event feed and the transcript sent to an Agentloop are projections; Brain does not persist either
+as a second copy. This reverses the two-log and checkpoint decision above. The data format advances
+in place because Brain is pre-launch and does not migrate development data.
+
+One process-wide writer owns sequence assignment. It accepts separate synchronous and asynchronous
+lanes and always selects ready synchronous work first, so informational background writes cannot
+queue ahead of a turn's latency-sensitive commit. Records become visible to projections only after
+the journal append is flushed to disk. `SessionStore` defines this contract; the MVP implements it
+with local machine disk, while an external store remains a later adapter rather than a second
+durability path.
+
+**Why.** Two logs duplicated ordering and recovery work without adding another source of truth.
+The journal is already sufficient to rebuild the transcript, state, status, configuration and
+Events, and one sequencer gives them one unambiguous order.
+
+## 2026-09-05: Placement is explicit and execution has two forms
+
+**Decided.** A placed Agentloop or Tool is bound to exactly one Environment at session creation.
+The TypeScript API expresses this as `extension({ env, ...options })`; Brain never infers a runtime
+from source language, installed packages or requested capabilities. An Environment may be a remote
+service, an application, a sandbox provider, or Brain's built-in `brain_wasm` Environment.
+For the MVP each Environment declaration belongs to one session. Brain does not expose a
+standalone Environment API until it can truthfully attach an existing Environment across sessions.
+
+Code already resident in an application is registered as a resident Tool without a synthetic
+Environment. Brain sends commands to that host over one bounded event stream and accepts results
+and Tool-emitted Events over HTTP. Losing the connection makes an in-flight outcome unknown; Brain
+does not replay it. This same host protocol permits a latency-sensitive handler to be resident in a
+trusted server process chosen by the application, without running customer code inside Brain.
+
+**Why.** Where code runs is authority and lifecycle, not a language-detection convenience. Making
+placement visible keeps custom Environments open-ended while keeping the common resident and native
+paths small.
+
+## 2026-09-05: Brain's native Environment runs Components in one worker process
+
+**Decided.** `brain_wasm` accepts precompiled WebAssembly Components only. Brain does not bundle a
+JavaScript, Python or Rust runtime and does not install dependencies. A bounded worker process owns
+one Wasmtime engine and its compiled-component cache; every invocation receives a fresh Store and
+component instance. Guests start with no ambient environment, stdio or network. The Environment may
+request an isolated scratch directory, a session workspace, read-only secret files and exact
+HTTP(S) origins or authorities. Requested filesystem roots, secrets, and network targets must also
+be granted by the server deployment, so caller input cannot expose Brain process credentials,
+worker-host network, or writable host storage. The hosted deployment grants none. The parent
+accepts exactly the worker's eight concurrent
+128 MiB Stores and refuses overflow instead of hiding a queue behind the worker liveness bound.
+That bounds guest linear memory to 1 GiB, and the worker is restarted if it stops answering.
+Each invocation also receives 10 billion Wasmtime fuel units. Exhaustion traps runaway guest
+code without charging time suspended in Brain or WASI I/O. Cancellation or a lost worker-client
+connection drops the in-flight Store immediately, releasing its execution slot.
+
+This is component and process isolation, not a claim that Wasmtime is a virtual machine security
+boundary. Code requiring an OS, language runtime or stronger tenant boundary belongs in an explicit
+external Environment such as a MicroVM.
+
+**Why.** Native execution is for small, latency-sensitive extensions. A single worker avoids a
+process or VM start per call, fresh Stores prevent guest state leaking across calls, and the narrow
+WASI surface is the smallest useful built-in runtime.
+
+## 2026-09-05: Brain sends each effect once and reports the outcome
+
+**Decided.** An effect's started record is durably committed before Brain dispatches it. Brain sends
+the effect once and never retries automatically. It then commits the ended, failed or unknown
+outcome before the Agentloop can observe it. Tool failures, Environment failures and uncertain
+resident-host disconnects are Events; `ctx.emit` is the common extension operation for adding an
+Event. One turn may emit at most 128 extension Events and 1 MiB across their serialized kinds and
+payloads. Logs remain operational diagnostics and are never the only place an Agentloop-actionable
+failure appears.
+
+**Why.** A retry can duplicate an external side effect and only the Agentloop has enough policy to
+decide whether another attempt is appropriate. Effect-after-commit preserves evidence of what Brain
+tried without pretending exactly-once execution is possible.

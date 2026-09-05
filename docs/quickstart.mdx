@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Run a Brain server and give a session a tool that answers from your own process.
+description: Run Brain and give a session a resident Tool from your application process.
 ---
 
 ## Run a server
@@ -11,7 +11,7 @@ docker run --rm -p 127.0.0.1:8080:8080 \
   -v brain-data:/var/lib/brain ghcr.io/aexhq/brain:latest
 ```
 
-Or build it:
+Or build both executables:
 
 ```sh
 cargo build --release -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
@@ -20,69 +20,77 @@ BRAIN_LOOP_WORKER="$PWD/target/release/brain-loop-worker" \
 ./target/release/brain --listen 127.0.0.1:8080
 ```
 
-Brain listens on loopback and needs no token there. Set `BRAIN_API_TOKEN` to listen anywhere else —
-it refuses to start on a non-loopback address without one. That is why the docker line carries a
-token: inside the container Brain must listen on `0.0.0.0` for the published port to work, even
-though docker only exposes it to your host's loopback.
+Brain permits an unauthenticated loopback listener. A non-loopback listener requires
+`BRAIN_API_TOKEN`.
 
-## Give the agent a tool
+## Create a session
 
-The session's tool is a plain function in your own process: declare it once with `tool`,
-hand it to the session, and the SDK answers the model's calls off the session's own event
-feed. No server in your app, no ports, no channel.
+Install the client, an Agentloop, and Zod:
 
 ```sh
 npm install @aexhq/brain @aexhq/agentloop-pi zod
 ```
 
-Save as `order.mjs` and run with `node order.mjs`:
+Save this as `order.mjs`:
 
 ```js
-import { Brain, tool } from "@aexhq/brain";
+import { Brain, brainWasm, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
-// One declaration: the contract the model sees and the function that answers it,
-// closing over your app's state.
 const orders = { "A-1001": { status: "shipped", eta: "Thursday" } };
+
+// `run` makes this a resident Tool. Calling the factory with `()` binds its
+// implementation to this application process.
 const lookupOrder = tool({
   name: "lookup_order",
   description: "Look up an order's status by id.",
   input: z.object({ id: z.string() }),
-  execute: ({ id }) => orders[id] ?? { status: "unknown order" },
+  run: async ({ id }, ctx) => {
+    await ctx.emit("order_lookup_started", { id });
+    return orders[id] ?? { status: "unknown order" };
+  },
 });
 
-const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
+const brain = new Brain({
+  baseUrl: "http://127.0.0.1:8080",
+  token: "quickstart",
+});
+const wasm = brainWasm();
 const session = await brain.sessions.create({
-  model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
-  agentloop: pi(),
-  tools: [lookupOrder],
+  model: {
+    provider: "openai",
+    name: "gpt-5-mini",
+    apiKey: process.env.OPENAI_API_KEY,
+  },
+  agentloop: pi({ env: wasm }),
+  tools: [lookupOrder()],
 });
 
 await session.send("Where is order A-1001?");
-for await (const event of session.events()) console.log(event.sequence, event.type);
+for await (const event of session.events()) {
+  console.log(event.sequence, event.type, event.data);
+}
 
 await session.end();
 await session.delete();
 process.exit(0);
 ```
 
-The model reads the question and calls `lookup_order`: the call is journalled as a
-`tool_call_started` record and surfaces on the session's event feed, your `execute` answers
-it beside the `orders` object it closes over, and the SDK posts the outcome back under that
-record's sequence — idempotently, so a retry is the same effect. The whole exchange
-lands in the feed, tool call and result included.
+The SDK registers one resident application host and keeps its command SSE connection open. Brain
+commits `tool_call_started` before sending the command. `ctx.emit` appends an extension event to the
+same journal before its promise resolves, and the Tool result is committed before the Agentloop
+receives it. Brain sends each effect once; it does not retry a Tool when the outcome is uncertain.
 
-Under the hood this is `hosting: "client"` on the tool's manifest. When the function
-lives in a *different* process — a browser page your backend opened the session for, a
-CLI on the user's laptop — declare the tool without `execute` and let that process join
-the session with its share key and serve it: see
-[App tools](/brain/docs/guides/app-tools). A tool that needs `exec`, `fs`, or a sandbox
-runs provisioned in an environment instead: see
-[Environments](/brain/docs/concepts/environment).
+For a custom Agentloop, wrap already-built Component bytes and place the factory explicitly:
 
-## Runnable versions
+```js
+import { agentloop, brainWasm, component } from "@aexhq/brain";
 
-The [`examples/`](https://github.com/aexhq/brain/tree/main/examples) directory in the repository has
-four working scripts: a basic session, reading event history from a cursor, the full lifecycle, and
-the same thing over raw HTTP with no SDK.
+const custom = agentloop({
+  implementation: component(new URL("./agentloop.wasm", import.meta.url)),
+});
+const bound = custom({ env: brainWasm() });
+```
+
+Brain admits the raw Component. Compilation and source-language tooling stay outside Brain.

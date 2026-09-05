@@ -2,25 +2,22 @@ mod actor;
 mod config;
 mod services;
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 use brain_protocol::codes::{self, Failure};
 use brain_protocol::{
-    Message, MessageRequest, Outcome, Program, SessionConfig, SessionId, SessionStatus,
-    SessionSummary, ToolHosting, resource_name_valid,
+    Message, MessageRequest, SessionConfig, SessionId, SessionStatus, SessionSummary, ToolHosting,
+    resource_name_valid,
 };
 use rand::RngCore;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     Error,
-    journal::{AppendRecord, JournalEntry, JournalStore, SessionRow, SessionUpdate},
+    journal::{AppendRecord, JournalEntry, SessionRow, SessionStore, SessionUpdate},
 };
 use actor::{SessionActor, SessionCommand, failure_of, failure_payload};
 
@@ -40,75 +37,19 @@ pub struct Session {
     session_id: SessionId,
     sender: mpsc::Sender<SessionCommand>,
     cancelled: Arc<AtomicBool>,
-    pending_tools: Arc<PendingToolCalls>,
-}
-
-/// Client-hosted tool calls parked mid-turn, waiting for an outcome the session's
-/// creator POSTs back. In-memory on purpose: a restart interrupts the turn exactly like
-/// any other in-flight tool call, and the `tool_call_started` record on the feed is the
-/// durable statement of what was asked.
-pub(crate) struct PendingToolCalls {
-    inner: Mutex<HashMap<u64, oneshot::Sender<Outcome>>>,
-}
-
-impl PendingToolCalls {
-    fn new() -> Self {
-        Self {
-            inner: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Registers a parked call and hands back the receiver the turn awaits. Called
-    /// before the `tool_call_started` commit so a client that answers off the live feed
-    /// can never race an empty map.
-    pub(crate) fn park(&self, sequence: u64) -> oneshot::Receiver<Outcome> {
-        let (sender, receiver) = oneshot::channel();
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.insert(sequence, sender);
-        }
-        receiver
-    }
-
-    /// Delivers an outcome to a parked call. A call that is not pending — unknown,
-    /// already answered, or expired — is a conflict the caller hears about; the
-    /// idempotency layer above turns retries into replays.
-    pub(crate) fn resolve(&self, sequence: u64, outcome: Outcome) -> Result<(), Error> {
-        let entry = self
-            .inner
-            .lock()
-            .map_err(|_| Error::InvalidState("pending Tool map poisoned".into()))?
-            .remove(&sequence);
-        let Some(sender) = entry else {
-            return Err(Error::InvalidState(
-                "no client Tool call is pending under this sequence".into(),
-            ));
-        };
-        // A dropped receiver means the turn stopped waiting (timeout or cancellation)
-        // between our lookup and the send; the caller is told the same thing.
-        sender.send(outcome).map_err(|_| {
-            Error::InvalidState("no client Tool call is pending under this sequence".into())
-        })
-    }
-
-    /// Forgets a parked call without answering it (timeout, cancellation, failed commit).
-    pub(crate) fn discard(&self, sequence: u64) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.remove(&sequence);
-        }
-    }
 }
 
 /// A session between its first record and its admission. The host attaches the
 /// environments the request named, journalling each step here, and then seals what was
 /// actually granted with [`CreatingSession::complete`].
 pub struct CreatingSession {
-    store: Arc<dyn JournalStore>,
+    store: Arc<dyn SessionStore>,
     config: Arc<SessionRuntime>,
     row: SessionRow,
 }
 
 /// The configuration a session was admitted with, read from its row.
-pub fn session_config(store: &dyn JournalStore) -> Result<SessionConfig, Error> {
+pub fn session_config(store: &dyn SessionStore) -> Result<SessionConfig, Error> {
     let row = store.session_row()?;
     serde_json::from_value(row.configuration).map_err(|error| Error::Journal(error.to_string()))
 }
@@ -120,7 +61,7 @@ impl Session {
     /// the contract is checked here and again at `complete`, so a session can only ever
     /// do what it was granted.
     pub fn begin(
-        store: Arc<dyn JournalStore>,
+        store: Arc<dyn SessionStore>,
         config: Arc<SessionRuntime>,
         request: &SessionConfig,
         transcript: &[Message],
@@ -134,8 +75,7 @@ impl Session {
         }
         // The creation record is the session's own genesis and comes first; a transcript
         // the caller carries forward is what happened before it, and follows.
-        store.append(
-            0,
+        store.append_sync(
             &[AppendRecord::new(
                 codes::event::SESSION_CREATION_STARTED,
                 serde_json::to_value(request).map_err(json_error)?,
@@ -147,47 +87,35 @@ impl Session {
         )?;
         let mut row = store.session_row()?;
         if !transcript.is_empty() {
-            row.through_sequence = store.append_journal(
-                row.through_sequence,
-                &[JournalEntry::ContextDelta {
-                    keep: 0,
-                    append: transcript.to_vec(),
-                }],
-            )?;
+            row.through_sequence = store.append_journal_sync(&[JournalEntry::TranscriptDelta {
+                keep: 0,
+                append: transcript.to_vec(),
+            }])?;
         }
         Ok(CreatingSession { store, config, row })
     }
 
     /// Starts a session that is already in the store: its transcript and slots fold out
     /// of its journal, and nothing is replayed into the loop.
-    pub fn open(store: Arc<dyn JournalStore>, config: Arc<SessionRuntime>) -> Result<Self, Error> {
+    pub fn open(store: Arc<dyn SessionStore>, config: Arc<SessionRuntime>) -> Result<Self, Error> {
         let row = store.session_row()?;
         Self::spawn(store, config, row)
     }
 
     fn spawn(
-        store: Arc<dyn JournalStore>,
+        store: Arc<dyn SessionStore>,
         config: Arc<SessionRuntime>,
         row: SessionRow,
     ) -> Result<Self, Error> {
         let session_id = row.session_id.clone();
         let (sender, receiver) = mpsc::channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
-        let pending_tools = Arc::new(PendingToolCalls::new());
-        let actor = SessionActor::new(
-            row,
-            store,
-            config,
-            receiver,
-            cancelled.clone(),
-            pending_tools.clone(),
-        )?;
+        let actor = SessionActor::new(row, store, config, receiver, cancelled.clone())?;
         tokio::spawn(actor.run());
         Ok(Self {
             session_id,
             sender,
             cancelled,
-            pending_tools,
         })
     }
 
@@ -226,13 +154,6 @@ impl Session {
             .await
             .map_err(|_| stopped())?;
         response.await.map_err(|_| stopped())?
-    }
-
-    /// Answers a parked client-hosted tool call. Deliberately lock-free at the session
-    /// level: the turn holding the park is inside `message` — this is the call that lets
-    /// it finish.
-    pub fn resolve_tool_call(&self, sequence: u64, outcome: Outcome) -> Result<(), Error> {
-        self.pending_tools.resolve(sequence, outcome)
     }
 
     /// Journals an effect the host is about to perform on the session's behalf outside a
@@ -335,12 +256,12 @@ impl CreatingSession {
     }
 
     fn append(&mut self, record: AppendRecord) -> Result<u64, Error> {
-        let saved = self.store.append(
-            self.row.through_sequence,
-            &[record],
-            SessionUpdate::default(),
-        )?;
-        self.row.through_sequence += saved.len() as u64;
+        let saved = self
+            .store
+            .append_sync(&[record], SessionUpdate::default())?;
+        self.row.through_sequence = saved
+            .last()
+            .map_or(self.row.through_sequence, |record| record.sequence);
         Ok(self.row.through_sequence)
     }
 
@@ -349,8 +270,7 @@ impl CreatingSession {
     pub fn complete(mut self, config: SessionConfig) -> Result<Session, Error> {
         validate_session_contract(&config)?;
         let configuration = serde_json::to_value(&config).map_err(json_error)?;
-        let saved = self.store.append(
-            self.row.through_sequence,
+        let saved = self.store.append_sync(
             &[AppendRecord::new(
                 codes::event::SESSION_CREATION_ENDED,
                 serde_json::json!({"configuration":config}),
@@ -360,15 +280,16 @@ impl CreatingSession {
                 configuration: Some(&configuration),
             },
         )?;
-        self.row.through_sequence += saved.len() as u64;
+        self.row.through_sequence = saved
+            .last()
+            .map_or(self.row.through_sequence, |record| record.sequence);
         self.row.status = SessionStatus::Idle;
         self.row.configuration = configuration;
         Session::spawn(self.store, self.config, self.row)
     }
 
     pub fn fail(mut self, code: &str, message: &str) -> Result<(), Error> {
-        let saved = self.store.append(
-            self.row.through_sequence,
+        let saved = self.store.append_sync(
             &[AppendRecord::new(
                 codes::event::SESSION_CREATION_FAILED,
                 failure_payload(None, &Failure::new(code, message))?,
@@ -378,7 +299,9 @@ impl CreatingSession {
                 configuration: None,
             },
         )?;
-        self.row.through_sequence += saved.len() as u64;
+        self.row.through_sequence = saved
+            .last()
+            .map_or(self.row.through_sequence, |record| record.sequence);
         Ok(())
     }
 }
@@ -479,35 +402,48 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
             )));
         }
     }
-    // A client-hosted tool's code stays in the author's process; a program beside
+    // A resident tool's code stays in its registered process; an implementation beside
     // it would be an artifact nothing is allowed to run.
-    if config
-        .tool_bindings
-        .iter()
-        .any(|binding| matches!(binding.hosting, ToolHosting::Client) && binding.program.is_some())
-    {
+    if config.tool_bindings.iter().any(|binding| {
+        matches!(binding.hosting, ToolHosting::Resident) && binding.implementation.is_some()
+    }) {
         return Err(Error::InvalidState(
-            "a client Tool binding cannot carry a program".into(),
+            "a resident Tool binding cannot carry an implementation".into(),
         ));
     }
-    // A client-hosted tool is served off the event feed by an application process: no
-    // environment is on its path, so binding one (or requiring capabilities only an
+    // A resident tool runs in a registered application process: no Environment is on
+    // its path, so binding one (or requiring capabilities only an
     // environment could provide) is a contradiction the caller should hear about.
     for binding in &config.tool_bindings {
-        let client = matches!(binding.hosting, ToolHosting::Client);
-        if client && binding.environment_id.is_some() {
+        let resident = matches!(binding.hosting, ToolHosting::Resident);
+        if resident && binding.environment_id.is_some() {
             return Err(Error::InvalidState(
-                "a client-hosted Tool binding cannot name an Environment".into(),
+                "a resident Tool binding cannot name an Environment".into(),
             ));
         }
-        if client && !binding.needs.is_empty() {
+        if resident && !binding.needs.is_empty() {
             return Err(Error::InvalidState(
-                "a client-hosted Tool binding cannot need Environment resources".into(),
+                "a resident Tool binding cannot need Environment resources".into(),
             ));
         }
-        if !client && binding.environment_id.is_none() {
+        if resident && binding.host_id.is_none() {
+            return Err(Error::InvalidState(
+                "every resident Tool binding must name a registered host".into(),
+            ));
+        }
+        if !resident && binding.host_id.is_some() {
+            return Err(Error::InvalidState(
+                "a provisioned Tool binding cannot name a resident host".into(),
+            ));
+        }
+        if !resident && binding.environment_id.is_none() {
             return Err(Error::InvalidState(
                 "every provisioned Tool binding must name a bound Environment".into(),
+            ));
+        }
+        if !resident && binding.implementation.is_none() {
+            return Err(Error::InvalidState(
+                "every provisioned Tool binding must carry an implementation".into(),
             ));
         }
     }
@@ -537,6 +473,11 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
             "Environment identities must be unique".into(),
         ));
     }
+    if !environment_ids.contains(&config.agentloop_environment_id) {
+        return Err(Error::InvalidState(
+            "the Agentloop must name a bound Environment".into(),
+        ));
+    }
     if config.tool_bindings.iter().any(|binding| {
         binding
             .environment_id
@@ -547,10 +488,9 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
             "every Tool binding must name a bound Environment".into(),
         ));
     }
-    // The bind check: the environment a tool is bound to must launch the tool's
-    // program kind and declare every resource the tool needs, so a mismatch is a
-    // create-time rejection naming all three parties instead of a runtime mystery. A
-    // tool with no program and no needs binds anywhere. The declaration is known only
+    // The bind check: the Environment a Tool is bound to must declare every resource
+    // the Tool needs, so a mismatch is a create-time rejection naming all three
+    // parties instead of a runtime mystery. The declaration is known only
     // once the environment has attached, so an environment that has not is skipped here
     // and checked when the host completes the session.
     for binding in &config.tool_bindings {
@@ -565,17 +505,6 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
         else {
             continue;
         };
-        if let Some(runtime) = binding
-            .program
-            .as_ref()
-            .map(Program::runtime)
-            .filter(|runtime| !attachment.runtimes.contains(runtime))
-        {
-            return Err(Error::InvalidState(format!(
-                "Tool `{}` needs runtime `{runtime}` that Environment `{environment_id}` does not provide",
-                binding.name,
-            )));
-        }
         if let Some(missing) = binding
             .needs
             .iter()
@@ -621,17 +550,13 @@ fn json_error(error: serde_json::Error) -> Error {
 mod tests {
     use brain_protocol::{
         AgentloopIdentity, AttachmentId, EnvironmentAttachment, EnvironmentBinding, EnvironmentId,
-        Identity, ModelBinding, Runtime, ToolBinding, ToolDefinition,
+        ModelBinding, ToolBinding, ToolDefinition,
     };
 
     use super::*;
 
     fn digest() -> String {
         "a".repeat(64)
-    }
-
-    fn identity(fill: &str) -> Identity {
-        Identity::from_hex(&fill.repeat(64)).unwrap()
     }
 
     fn tool() -> ToolDefinition {
@@ -654,6 +579,7 @@ mod tests {
     fn config() -> SessionConfig {
         SessionConfig {
             agentloop_identity: AgentloopIdentity::new(digest()),
+            agentloop_environment_id: EnvironmentId::new("workspace"),
             brain_configuration: serde_json::json!({}),
             model: ModelBinding {
                 binding_id: "gateway".into(),
@@ -664,9 +590,11 @@ mod tests {
             tools: vec![tool()],
             environments: vec![EnvironmentAttachment {
                 environment_id: EnvironmentId::new("workspace"),
+                configuration: serde_json::json!({}),
+                managed: true,
+                idle_ttl_ms: None,
                 binding: None,
                 attachment_id: None,
-                runtimes: Vec::new(),
                 resources: Default::default(),
             }],
             tool_bindings: vec![ToolBinding {
@@ -674,10 +602,11 @@ mod tests {
                 environment_id: Some(EnvironmentId::new("workspace")),
                 environment: None,
                 attachment_id: None,
+                host_id: None,
                 needs: Vec::new(),
                 binding_names: Vec::new(),
                 hosting: ToolHosting::Provisioned,
-                program: None,
+                implementation: Some(serde_json::json!({"kind": "test"})),
             }],
             idle_ttl_ms: None,
         }
@@ -688,7 +617,6 @@ mod tests {
         let mut config = config();
         config.environments[0].binding = Some(environment_binding());
         config.environments[0].attachment_id = Some(AttachmentId::new("attachment"));
-        config.environments[0].runtimes = vec![Runtime::Esm];
         config.environments[0].resources = [
             ("process".to_string(), serde_json::json!({})),
             ("fs".to_string(), serde_json::json!({"root": "/workspace"})),
@@ -841,16 +769,17 @@ mod tests {
                 "invalid identity",
             ),
             (
-                "a client Tool carrying a program",
+                "a resident Tool carrying an implementation",
                 |request| {
-                    request.tool_bindings[0].hosting = ToolHosting::Client;
+                    request.tool_bindings[0].hosting = ToolHosting::Resident;
                     request.tool_bindings[0].environment_id = None;
+                    request.tool_bindings[0].host_id =
+                        Some(brain_protocol::HostId::new("host_12345678901234567890"));
                     request.tool_bindings[0].needs = Vec::new();
-                    request.tool_bindings[0].program = Some(Program::Esm {
-                        identity: identity("d"),
-                    });
+                    request.tool_bindings[0].implementation =
+                        Some(serde_json::json!({"kind": "test"}));
                 },
-                "cannot carry a program",
+                "cannot carry an implementation",
             ),
             (
                 "two Tool definitions sharing one name",
@@ -904,16 +833,6 @@ mod tests {
             (
                 "a Tool needing a resource its Environment does not declare",
                 |config| config.tool_bindings[0].needs = vec!["dom".into()],
-                "does not provide",
-            ),
-            (
-                "a Tool whose program kind its Environment cannot launch",
-                |config| {
-                    config.tool_bindings[0].program = Some(Program::Shell {
-                        identity: identity("e"),
-                        script: "$command".into(),
-                    })
-                },
                 "does not provide",
             ),
             (

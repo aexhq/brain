@@ -11,10 +11,12 @@ export interface AppToolContract<InputSchema extends Schema = Schema, OutputSche
 
 export interface AppToolCall {
   readonly callId: string;
-  /** When the kernel's budget for this call runs out. */
+  /** When Brain's budget for this call runs out. */
   readonly deadline: Date;
   /** Fires on best-effort cancellation and when the deadline passes. */
   readonly signal: AbortSignal;
+  /** Append a durable extension Event to this session. */
+  emit(kind: string, data: unknown): Promise<number>;
 }
 
 export type AppToolHandler<Input, Output> = (input: Input, call: AppToolCall) => Output | Promise<Output>;
@@ -26,9 +28,10 @@ export interface InvokeFrame {
   readonly name: string;
   readonly arguments: unknown;
   readonly deadline_ms: number;
+  emit(kind: string, data: unknown): Promise<number>;
 }
 
-/** Ceiling on a wire-provided call deadline: generous next to the kernel's default
+/** Ceiling on a wire-provided call deadline: generous next to Brain's default
  * tool deadline, small enough that a hostile frame cannot pin a timer for hours. */
 export const MAX_DEADLINE_MS = 600_000;
 
@@ -89,10 +92,15 @@ export class AppToolRegistry {
     const interrupted = new Promise<typeof interruption>((resolve) => call.controller.signal.addEventListener("abort", () => resolve(interruption), { once: true }));
     try {
       const value = await Promise.race([
-        Promise.resolve(registered.handler(input, { callId: frame.call_id, deadline: new Date(Date.now() + deadlineMs), signal: call.controller.signal })),
+        Promise.resolve(registered.handler(input, {
+          callId: frame.call_id,
+          deadline: new Date(Date.now() + deadlineMs),
+          signal: call.controller.signal,
+          emit: frame.emit,
+        })),
         interrupted,
       ]);
-      if (value === interruption) return { status: call.cancelled ? "cancelled" : "timeout" };
+      if (value === interruption) return { status: "unknown", message: call.cancelled ? "resident Tool was cancelled after dispatch" : "resident Tool exceeded its deadline after dispatch" };
       if (registered.contract.output === undefined) return { status: "ok", value: value ?? null };
       try {
         return { status: "ok", value: registered.contract.output.parse(value) ?? null };
@@ -100,7 +108,7 @@ export class AppToolRegistry {
         return errorOutcome("invalid_output", String(error instanceof Error ? error.message : error));
       }
     } catch (error) {
-      if (call.controller.signal.aborted) return { status: call.cancelled ? "cancelled" : "timeout" };
+      if (call.controller.signal.aborted) return { status: "unknown", message: call.cancelled ? "resident Tool was cancelled after dispatch" : "resident Tool exceeded its deadline after dispatch" };
       return errorOutcome("tool_error", String(error instanceof Error ? error.message : error));
     } finally {
       clearTimeout(timer);

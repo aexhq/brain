@@ -1,15 +1,13 @@
-//! One append-only segment log: the on-disk half of a session's journal or events.
+//! One append-only segment log: the on-disk half of a session's journal.
 //!
-//! Appending assigns a location and hands the frame to the process's [`Writer`]; it does
-//! not wait for the disk. Frame integrity lives here and nowhere else: a write-behind log
-//! can lose its tail to a crash mid-write, so every frame carries a check value over its
-//! own bytes and opening the log truncates at the first frame that does not verify.
+//! The process [`Writer`] selects a request before this log assigns its locations. Frame
+//! integrity lives here and nowhere else: a crash can tear the tail, so every frame
+//! carries a check value and opening truncates at the first frame that does not verify.
 //!
 //! The log knows nothing about what its frames mean. The session store folds them back
 //! into an index on open, and reads them back by location afterwards.
 
 use std::{
-    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -18,7 +16,7 @@ use std::{
 
 use crate::Error;
 
-use super::writer::{self, Staged, Writer};
+use super::writer::{self, Writer};
 
 /// Rotate to a new segment once the open one reaches this size. Reclamation frees
 /// whole segments, so this is also the granularity at which disk comes back.
@@ -64,20 +62,12 @@ impl Frame<'_> {
     pub(crate) fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, Error> {
         serde_json::from_slice(self.payload).map_err(|error| Error::Journal(error.to_string()))
     }
-
-    pub(crate) fn payload_len(&self) -> usize {
-        self.payload.len()
-    }
 }
 
 pub(crate) struct SegmentLog {
     directory: Arc<PathBuf>,
     owner: Arc<str>,
     tail: Mutex<Tail>,
-    /// A read consults this first, so a record is readable the instant it is appended.
-    /// The writer flushes before it removes an entry, so a miss here means the bytes
-    /// are on disk.
-    pending: Staged,
     writer: Arc<Writer>,
 }
 
@@ -147,44 +137,40 @@ impl SegmentLog {
             directory: Arc::new(directory.to_path_buf()),
             owner,
             tail: Mutex::new(tail),
-            pending: Arc::default(),
             writer,
         })
     }
 
-    /// Assign a location, hand the bytes to the writer, and return. Does not block on
-    /// the disk.
-    pub(crate) fn append(&self, append: Append<'_>) -> Result<Location, Error> {
-        // `Arc<Vec<u8>>` rather than `Arc<[u8]>`: converting a `Vec` into `Arc<[u8]>`
-        // allocates a second buffer and copies the frame into it.
-        let frame = Arc::new(encode(&append)?);
-        let length = frame.len() as u64;
-        self.writer.reserve(&self.owner, length)?;
-
+    /// Assigns locations to encoded frames after the writer has selected their request.
+    pub(crate) fn prepare(
+        &self,
+        mut encoded: Vec<Vec<u8>>,
+        first_sequence: u64,
+        recorded_at_ms: u64,
+    ) -> Result<(Vec<Location>, Vec<writer::Frame>), Error> {
         let mut tail = self.tail.lock().map_err(|_| poisoned())?;
-        if tail.offset > 0 && tail.offset + length > SEGMENT_BYTES {
-            tail.segment += 1;
-            tail.offset = 0;
+        let mut locations = Vec::with_capacity(encoded.len());
+        let mut frames = Vec::with_capacity(encoded.len());
+        for (offset, mut bytes) in encoded.drain(..).enumerate() {
+            patch_metadata(&mut bytes, first_sequence + offset as u64, recorded_at_ms)?;
+            let length = bytes.len() as u64;
+            if tail.offset > 0 && tail.offset + length > SEGMENT_BYTES {
+                tail.segment += 1;
+                tail.offset = 0;
+            }
+            let location = Location {
+                segment: tail.segment,
+                offset: tail.offset,
+                length: length as u32,
+            };
+            tail.offset += length;
+            locations.push(location);
+            frames.push(writer::Frame {
+                path: segment_path(&self.directory, location.segment),
+                bytes,
+            });
         }
-        let location = Location {
-            segment: tail.segment,
-            offset: tail.offset,
-            length: length as u32,
-        };
-        tail.offset += length;
-
-        self.pending
-            .lock()
-            .map_err(|_| poisoned())?
-            .insert((location.segment, location.offset), frame.clone());
-        self.writer.write(writer::Frame {
-            path: Arc::new(segment_path(&self.directory, location.segment)),
-            owner: self.owner.clone(),
-            key: (location.segment, location.offset),
-            bytes: frame,
-            staged: self.pending.clone(),
-        })?;
-        Ok(location)
+        Ok((locations, frames))
     }
 
     pub(crate) fn read_many<T>(
@@ -192,35 +178,13 @@ impl SegmentLog {
         locations: &[Location],
         mut read: impl FnMut(Frame<'_>) -> Result<T, Error>,
     ) -> Result<Vec<T>, Error> {
-        // Only the frames this call asks for, so the lock is held for a bounded moment
-        // and never across the reads below.
-        let staged = {
-            let pending = self.pending.lock().map_err(|_| poisoned())?;
-            locations
-                .iter()
-                .filter_map(|location| {
-                    pending
-                        .get(&(location.segment, location.offset))
-                        .map(|bytes| ((location.segment, location.offset), bytes.clone()))
-                })
-                .collect::<HashMap<_, _>>()
-        };
-
         let mut frames = Vec::with_capacity(locations.len());
         let mut index = 0;
         while index < locations.len() {
             let location = locations[index];
-            if let Some(bytes) = staged.get(&(location.segment, location.offset)) {
-                frames.push(read(decoded(bytes)?)?);
-                index += 1;
-                continue;
-            }
-            // The longest run that shares a segment and has reached the disk.
+            // The longest run that shares a segment.
             let mut end = index;
-            while end < locations.len()
-                && locations[end].segment == location.segment
-                && !staged.contains_key(&(location.segment, locations[end].offset))
-            {
+            while end < locations.len() && locations[end].segment == location.segment {
                 end += 1;
             }
             let last = locations[end - 1];
@@ -240,21 +204,72 @@ impl SegmentLog {
         Ok(frames)
     }
 
-    /// Delete every segment older than `keep_from`. Reclamation is a file unlink: the
-    /// log never rewrites live data to free dead data.
-    pub(crate) fn reclaim(&self, keep_from: u64) -> Result<(), Error> {
-        if keep_from == 0 {
-            return Ok(());
-        }
-        self.writer.reclaim(
-            self.directory.as_ref().clone(),
-            keep_from,
-            SEGMENT_EXTENSION,
-        )
-    }
-
     pub(crate) fn writer(&self) -> &Arc<Writer> {
         &self.writer
+    }
+
+    pub(crate) fn owner(&self) -> Arc<str> {
+        self.owner.clone()
+    }
+
+    #[cfg(test)]
+    fn append(self: &Arc<Self>, append: Append<'_>) -> Result<Location, Error> {
+        let encoded = encode(&append)?;
+        let bytes = encoded.len() as u64;
+        let sequence = append.sequence;
+        let recorded_at_ms = append.recorded_at_ms;
+        let log = self.clone();
+        let result = Arc::new(Mutex::new(None));
+        let committed = result.clone();
+        let ticket = self.writer.submit_sync(
+            self.owner.clone(),
+            bytes,
+            Box::new(move || {
+                let (mut locations, frames) = log
+                    .prepare(vec![encoded], sequence, recorded_at_ms)
+                    .map_err(|error| error.to_string())?;
+                let location = locations.remove(0);
+                Ok(writer::Prepared {
+                    frames,
+                    complete: Box::new(move || {
+                        *committed
+                            .lock()
+                            .map_err(|_| "journal test result poisoned".to_owned())? =
+                            Some(location);
+                        Ok(())
+                    }),
+                })
+            }),
+        )?;
+        ticket.wait()?;
+        result
+            .lock()
+            .map_err(|_| Error::Journal("journal test result poisoned".into()))?
+            .take()
+            .ok_or_else(|| Error::Journal("journal test append produced no location".into()))
+    }
+
+    #[cfg(test)]
+    fn append_background(self: &Arc<Self>, append: Append<'_>) -> Result<(), Error> {
+        let encoded = encode(&append)?;
+        let bytes = encoded.len() as u64;
+        let sequence = append.sequence;
+        let recorded_at_ms = append.recorded_at_ms;
+        let log = self.clone();
+        self.writer.submit_async(
+            self.owner.clone(),
+            bytes,
+            Box::new(move || {
+                let (_, frames) = log
+                    .prepare(vec![encoded], sequence, recorded_at_ms)
+                    .map_err(|error| error.to_string())?;
+                Ok(writer::Prepared {
+                    frames,
+                    complete: Box::new(|| Ok(())),
+                })
+            }),
+        )?;
+        Ok(())
     }
 }
 
@@ -287,6 +302,29 @@ fn encode(append: &Append<'_>) -> Result<Vec<u8>, Error> {
     frame[0..4].copy_from_slice(&length);
     frame[4..HEADER_BYTES].copy_from_slice(&check);
     Ok(frame)
+}
+
+pub(crate) fn encode_unsequenced(
+    kind: &str,
+    payload: &serde_json::Value,
+) -> Result<Vec<u8>, Error> {
+    encode(&Append {
+        sequence: 0,
+        recorded_at_ms: 0,
+        kind,
+        payload,
+    })
+}
+
+fn patch_metadata(bytes: &mut [u8], sequence: u64, recorded_at_ms: u64) -> Result<(), Error> {
+    if bytes.len() < HEADER_BYTES + 16 {
+        return Err(Error::Journal("journal frame is too short".into()));
+    }
+    bytes[HEADER_BYTES..HEADER_BYTES + 8].copy_from_slice(&sequence.to_le_bytes());
+    bytes[HEADER_BYTES + 8..HEADER_BYTES + 16].copy_from_slice(&recorded_at_ms.to_le_bytes());
+    let check = xxhash_rust::xxh3::xxh3_64(&bytes[HEADER_BYTES..]).to_le_bytes();
+    bytes[4..HEADER_BYTES].copy_from_slice(&check);
+    Ok(())
 }
 
 /// Decode the frame at the start of `bytes`, returning it and its total length.
@@ -386,14 +424,14 @@ mod tests {
     fn collect(
         directory: &Path,
         writer: Arc<Writer>,
-    ) -> (SegmentLog, Vec<(u64, String, Location)>) {
+    ) -> (Arc<SegmentLog>, Vec<(u64, String, Location)>) {
         let mut seen = Vec::new();
         let log = SegmentLog::open(directory, Arc::from("test"), writer, |frame, location| {
             seen.push((frame.sequence, frame.kind.to_string(), location));
             Ok(())
         })
         .unwrap();
-        (log, seen)
+        (Arc::new(log), seen)
     }
 
     #[test]
@@ -408,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_is_readable_before_the_writer_has_flushed_it() {
+    fn a_record_is_readable_after_commit() {
         let directory = temporary();
         let writer = Writer::spawn();
         let (log, _) = collect(&directory, writer);
@@ -447,13 +485,13 @@ mod tests {
         let writer = Writer::spawn_held(release.clone());
         let (log, _) = collect(&directory, writer.clone());
         let body = serde_json::json!({ "text": "x".repeat(1024 * 1024) });
-        let log = Arc::new(log);
         let producer = {
             let log = log.clone();
             let body = body.clone();
             thread::spawn(move || {
                 for sequence in 1..=64 {
-                    log.append(append(sequence, "big", &body)).unwrap();
+                    log.append_background(append(sequence, "big", &body))
+                        .unwrap();
                 }
             })
         };
@@ -510,23 +548,5 @@ mod tests {
         let last = bytes.len() - 1;
         bytes[last] ^= 0x01;
         assert!(decode(&bytes).is_none());
-    }
-
-    #[test]
-    fn reclaim_removes_only_segments_below_the_floor() {
-        let directory = temporary();
-        fs::create_dir_all(&directory).unwrap();
-        for id in 0..3 {
-            fs::write(segment_path(&directory, id), b"").unwrap();
-        }
-        let writer = Writer::spawn();
-        let (log, _) = collect(&directory, writer.clone());
-        log.reclaim(2).unwrap();
-        writer.sync().unwrap();
-        assert!(!segment_path(&directory, 0).exists());
-        assert!(!segment_path(&directory, 1).exists());
-        assert!(segment_path(&directory, 2).exists());
-        drop(log);
-        let _ = fs::remove_dir_all(directory);
     }
 }

@@ -27,15 +27,19 @@ export type BoundTool = {
   binding_names: string[];
   description: string;
   /**
-   * Required unless `hosting` is `client`; a client-hosted tool binds no environment.
+   * Required for a provisioned tool; a resident tool binds no Environment.
    */
   environment_id?: string;
   /**
-   * Where a tool's implementation executes: a provisioned program the environment
-   * launches, or an application process answering off the serve feed (`client`) — the
-   * session's creator or anyone holding the session's share key.
+   * Required for a resident tool and absent for a provisioned tool.
    */
-  hosting?: "provisioned" | "client";
+  host_id?: string;
+  /**
+   * Where a tool's implementation executes: a placed implementation in an Environment,
+   * or a function held by a registered application host.
+   */
+  hosting?: "provisioned" | "resident";
+  implementation?: unknown;
   input_schema: {};
   name: string;
   /**
@@ -43,36 +47,7 @@ export type BoundTool = {
    */
   needs?: string[];
   output_schema?: {};
-  program?: Program;
 };
-/**
- * The program behind a provisioned tool, named by content identity so
- * re-provisioning is idempotent. An `esm` bundle travels out of band under its
- * identity; a `shell` script and an `http` request template travel inline.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "Program".
- */
-export type Program =
-  | {
-      identity: Identity;
-      kind: "esm";
-    }
-  | {
-      identity: Identity;
-      kind: "shell";
-      script: string;
-    }
-  | {
-      identity: Identity;
-      kind: "http";
-      request: HttpProgramRequest;
-    };
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "Identity".
- */
-export type Identity = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ContentBlock".
@@ -110,27 +85,32 @@ export type EnvironmentId = string;
 export type Role = "user" | "assistant";
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "EventId".
+ */
+export type EventId = string;
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HostOperation".
+ */
+export type HostOperation =
+  | {
+      invocation: ToolInvocation;
+      type: "invoke_tool";
+    }
+  | {
+      target_sequence: number;
+      type: "cancel_tool";
+    };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "SessionId".
  */
 export type SessionId = string;
 /**
- * The closed set of program kinds an environment can launch. Closed only because
- * Brain and the SDK must physically package and start the program.
- *
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "Runtime".
+ * via the `definition` "HostId".
  */
-export type Runtime = "esm" | "shell" | "http";
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "EnvironmentStatus".
- */
-export type EnvironmentStatus = "open" | "unreachable";
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "EventId".
- */
-export type EventId = string;
+export type HostId = string;
 /**
  * The one envelope every tool invocation resolves to.
  *
@@ -155,21 +135,39 @@ export type Outcome =
     }
   | {
       status: "cancelled";
+    }
+  | {
+      message: string;
+      status: "unknown";
     };
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "Identity".
+ */
+export type Identity = string;
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "SessionStatus".
  */
 export type SessionStatus = "creating" | "idle" | "running" | "ended" | "failed";
 /**
- * Where a tool's implementation executes: a provisioned program the environment
- * launches, or an application process answering off the serve feed (`client`) — the
- * session's creator or anyone holding the session's share key.
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolIdentity".
+ */
+export type ToolIdentity = string;
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolAdmissionStatus".
+ */
+export type ToolAdmissionStatus = "admitted" | "rejected";
+/**
+ * Where a tool's implementation executes: a placed implementation in an Environment,
+ * or a function held by a registered application host.
  *
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ToolHosting".
  */
-export type ToolHosting = "provisioned" | "client";
+export type ToolHosting = "provisioned" | "resident";
 
 export interface BrainSessionAPIV1 {
   contract: "session/v1";
@@ -194,30 +192,6 @@ export interface ApiError {
   retryable: boolean;
 }
 /**
- * The manifest inside an agentloop package: the contract the loop was built against
- * and the component it carries.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "AgentloopManifest".
- */
-export interface AgentloopManifest {
-  component_bytes: number;
-  component_identity: AgentloopIdentity;
-  contract_version: "agentloop/v1";
-  toolchain: string;
-}
-/**
- * What `POST /v1/agentloops` receives: the manifest and the component it describes,
- * base64-encoded.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "AgentloopPackage".
- */
-export interface AgentloopPackage {
-  component_base64: string;
-  manifest: AgentloopManifest;
-}
-/**
  * The admitted loop package a session runs: which one, and how it is configured.
  *
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
@@ -225,6 +199,11 @@ export interface AgentloopPackage {
  */
 export interface AgentloopRef {
   configuration: unknown;
+  /**
+   * The Environment that executes this Agentloop. The MVP supports Brain's native
+   * Wasmtime Environment; the binding stays explicit for later drivers.
+   */
+  environment_id: string;
   identity: AgentloopIdentity;
 }
 /**
@@ -235,53 +214,17 @@ export interface BindingValues {
   [k: string]: string | undefined;
 }
 /**
- * The request template of an `http` program: the environment fronts the endpoint,
- * the tool's input travels as the JSON body, and the response body is the output.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "HttpProgramRequest".
- */
-export interface HttpProgramRequest {
-  headers?: {
-    [k: string]: string | undefined;
-  };
-  method: string;
-  url: string;
-}
-/**
- * What a client asks for when it creates an environment.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "CreateEnvironmentRequest".
- */
-export interface CreateEnvironmentRequest {
-  configuration: unknown;
-  /**
-   * The id the environment is known by. Minted by Brain when absent.
-   */
-  environment_id?: string;
-  /**
-   * Absent means the server's default; zero means never.
-   */
-  idle_ttl_ms?: number;
-  /**
-   * Whether Brain closes the environment once no session has been attached to it
-   * for `idle_ttl_ms`. An unmanaged environment lives until it is deleted.
-   */
-  managed?: boolean;
-}
-/**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "CreateSessionRequest".
  */
 export interface CreateSessionRequest {
   agentloop: AgentloopRef;
   /**
-   * The environments this session attaches to, by id. Each must already exist.
+   * Immutable Environment specifications opened and attached as part of this create.
    *
    * @maxItems 128
    */
-  environments: EnvironmentAttachRequest[];
+  environments: SessionEnvironment[];
   /**
    * How long the session may sit idle before Brain suspends it: its task and memory
    * are released and rebuilt from disk on the next request. Absent means the server's
@@ -316,16 +259,18 @@ export interface CreateSessionRequest {
   transcript?: Message[];
 }
 /**
- * What a session create names about one environment it attaches to. `bindings` carries
- * plaintext values for the environment's hosted tools and exists only here: the
- * configuration the session journals never carries them.
+ * One immutable Environment specification in a session create. `bindings` carries
+ * plaintext values only until attach and is never copied into the session journal.
  *
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "EnvironmentAttachRequest".
+ * via the `definition` "SessionEnvironment".
  */
-export interface EnvironmentAttachRequest {
+export interface SessionEnvironment {
   bindings?: BindingValues1;
+  configuration: unknown;
   environment_id: EnvironmentId;
+  idle_ttl_ms?: number;
+  managed?: boolean;
 }
 export interface BindingValues1 {
   [k: string]: string | undefined;
@@ -363,39 +308,6 @@ export interface EnvironmentCallResult {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "EnvironmentList".
- */
-export interface EnvironmentList {
-  environments: EnvironmentSummary[];
-}
-/**
- * What the API says about an environment.
- *
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "EnvironmentSummary".
- */
-export interface EnvironmentSummary {
-  /**
-   * Sessions attached right now.
-   */
-  attached_sessions: SessionId[];
-  created_at_ms: number;
-  environment_id: EnvironmentId;
-  idle_ttl_ms?: number;
-  managed: boolean;
-  /**
-   * What the environment declared, verbatim. Brain reads the names; the policy
-   * blocks are the environment contract's business.
-   */
-  resources?: {};
-  /**
-   * What the environment declared it executes and offers at setup.
-   */
-  runtimes?: Runtime[];
-  status: EnvironmentStatus;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "Event".
  */
 export interface Event {
@@ -418,6 +330,74 @@ export interface EventPage {
 }
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HostCommand".
+ */
+export interface HostCommand {
+  deadline_at_ms: number;
+  operation: HostOperation;
+  sequence: number;
+  session_id: SessionId;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolInvocation".
+ */
+export interface ToolInvocation {
+  call_id: string;
+  input: unknown;
+  name: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HostEvent".
+ */
+export interface HostEvent {
+  data: unknown;
+  event_type: string;
+  /**
+   * The resident command this Event belongs to.
+   */
+  sequence: number;
+  session_id: SessionId;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HostEventAck".
+ */
+export interface HostEventAck {
+  /**
+   * The sequence Brain assigned to the committed Event.
+   */
+  sequence: number;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HostRegistration".
+ */
+export interface HostRegistration {
+  host_id: HostId;
+  token: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "HostResult".
+ */
+export interface HostResult {
+  outcome: Outcome;
+  sequence: number;
+  session_id: SessionId;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "OutcomeError".
+ */
+export interface OutcomeError {
+  code: string;
+  details?: unknown;
+  message: string;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "MessageRequest".
  */
 export interface MessageRequest {
@@ -433,15 +413,6 @@ export interface MessageRequest {
  * via the `definition` "UserInput".
  */
 export interface UserInput {
-  message: string;
-}
-/**
- * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
- * via the `definition` "OutcomeError".
- */
-export interface OutcomeError {
-  code: string;
-  details?: unknown;
   message: string;
 }
 /**
@@ -464,12 +435,25 @@ export interface SessionSummary {
    */
   last_sequence: number;
   session_id: SessionId;
-  /**
-   * The scoped credential that authorizes answering this session's client-hosted
-   * tools: the serve feed and the tool-results endpoint, nothing else. Hand it to
-   * the process that serves a tool; it spends nothing and reads nothing else.
-   * Minted by the serving layer — the session leaves it empty.
-   */
-  share_key: string;
   status: SessionStatus;
+}
+/**
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "ToolAdmission".
+ */
+export interface ToolAdmission {
+  error?: TurnError;
+  identity: ToolIdentity;
+  status: ToolAdmissionStatus;
+}
+/**
+ * Why a turn, or one of the host calls inside it, failed.
+ *
+ * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
+ * via the `definition` "TurnError".
+ */
+export interface TurnError {
+  code: string;
+  message: string;
+  retryable?: boolean;
 }

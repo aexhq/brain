@@ -14,6 +14,7 @@ pub trait LoopExecutor: Send + Sync + 'static {
         &self,
         session: &SessionId,
         agentloop: &AgentloopIdentity,
+        environment: serde_json::Value,
         input: TurnInput,
         services: Arc<dyn TurnServices>,
     ) -> Result<TurnOutput, Error>;

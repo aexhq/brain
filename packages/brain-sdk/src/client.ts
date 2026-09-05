@@ -1,17 +1,23 @@
-import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-
-import { AppToolRegistry, type AppToolCall } from "./app.js";
-import { ClientToolPump, type PumpTransport } from "./client-pump.js";
-import { assertEnvironmentBindable, bindEnvironment, endEnvironment, inspectAgentloop, inspectBoundTool, inspectClientTool, inspectEnvironment, inspectServedTool } from "./extensions.js";
+import { AppToolRegistry } from "./app.js";
+import { ResidentHostPump } from "./client-pump.js";
+import {
+  inspectAgentloop, inspectComponent, inspectEnvironment, inspectPlacedTool, inspectResidentTool,
+} from "./extensions.js";
 import { BrainError } from "./errors.js";
 import type {
-  AgentloopAdmission, BoundTool as WireBoundTool, CreateEnvironmentRequest, CreateSessionRequest, EnvironmentSummary as WireEnvironment, EnvironmentAttachRequest, EnvironmentList,
-  EventPage, SessionSummary as WireSession, SessionList,
+  AgentloopAdmission, BoundTool as WireBoundTool, CreateSessionRequest, EventPage,
+  HostRegistration, SessionEnvironment, SessionSummary as WireSession, SessionList,
 } from "./generated/session.js";
 import type {
-  Agentloop, BoundTool, CreateEnvironmentOptions, CreateSessionOptions, Environment, EnvironmentState, OperationOptions, ServedTool, SessionEvent, SessionState, SessionStreamEvent, UserInput,
+  AgentloopBinding, Component, CreateSessionOptions, Environment, OperationOptions, SessionEvent,
+  SessionState, SessionStreamEvent, ToolBinding, UserInput,
 } from "./types.js";
+
+interface ToolAdmission {
+  readonly identity: string;
+  readonly status: "admitted" | "rejected";
+  readonly error?: { readonly message: string; readonly details?: unknown };
+}
 
 export interface BrainOptions {
   baseUrl: string;
@@ -23,11 +29,16 @@ export interface BrainOptions {
 export class BrainClient {
   readonly baseUrl: string;
   readonly sessions: Sessions;
-  readonly environments: Environments;
   private readonly token?: string;
-  private readonly timeoutMs: number;
+  private readonly timeoutMs?: number;
   private readonly transport: typeof globalThis.fetch;
-  private readonly admitted = new WeakMap<object, Promise<string>>();
+  private readonly agentloops = new WeakMap<object, Promise<string>>();
+  private readonly tools = new WeakMap<object, Promise<string>>();
+  private resident?: Promise<{
+    readonly hostId: string;
+    readonly pump: ResidentHostPump;
+    unregister(sessionId: string): void;
+  }>;
 
   constructor(options: BrainOptions) {
     let end = options.baseUrl.length;
@@ -35,27 +46,20 @@ export class BrainClient {
     this.baseUrl = options.baseUrl.slice(0, end);
     if (this.baseUrl.length === 0) throw new TypeError("baseUrl is required");
     const url = new URL(this.baseUrl);
-    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") throw new TypeError("baseUrl must be HTTP(S) without credentials, query, or fragment");
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+      throw new TypeError("baseUrl must be HTTP(S) without credentials, query, or fragment");
+    }
     if (options.token !== undefined && options.token.trim() === "") throw new TypeError("token cannot be empty");
-    if (!Number.isSafeInteger(options.timeoutMs ?? 30_000) || (options.timeoutMs ?? 30_000) < 1) throw new TypeError("timeoutMs must be a positive safe integer");
+    if (options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1)) throw new TypeError("timeoutMs must be a positive safe integer");
     this.token = options.token;
-    this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.timeoutMs = options.timeoutMs;
     this.transport = options.fetch ?? globalThis.fetch;
     this.sessions = new Sessions(this);
-    this.environments = new Environments(this);
     Object.freeze(this.sessions);
-    Object.freeze(this.environments);
   }
 
-  /** A client on the same server and transport, presenting a different bearer —
-   * how a join speaks with the share key instead of the API token. */
   withToken(token: string): BrainClient {
     return new BrainClient({ baseUrl: this.baseUrl, token, timeoutMs: this.timeoutMs, fetch: this.transport });
-  }
-
-  async callEnvironment(sessionId: string, environmentId: string, name: string, input: unknown, operation: OperationOptions = {}): Promise<unknown> {
-    const response = await this.request<{ output: unknown }>("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/environments/${encodeURIComponent(environmentId)}/calls/${encodeURIComponent(name)}`, { input }, keyOf(operation));
-    return response.output;
   }
 
   async request<T>(method: string, path: string, body?: unknown, idempotencyKey?: string, contentType = "application/json"): Promise<T> {
@@ -64,9 +68,10 @@ export class BrainClient {
     if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
     if (idempotencyKey !== undefined) headers.set("idempotency-key", idempotencyKey);
     const response = await this.transport(`${this.baseUrl}${path}`, {
-      method, headers,
+      method,
+      headers,
       body: body === undefined ? undefined : body instanceof Uint8Array ? new Uint8Array(body).buffer : JSON.stringify(body),
-      signal: AbortSignal.timeout(this.timeoutMs),
+      ...(this.timeoutMs === undefined ? {} : { signal: AbortSignal.timeout(this.timeoutMs) }),
     });
     if (!response.ok) {
       const error = (await response.json().catch(() => ({}))) as Partial<BrainError>;
@@ -75,17 +80,11 @@ export class BrainClient {
     return (response.status === 204 ? undefined : await response.json()) as T;
   }
 
-  /** The session's live event feed over SSE: the journalled backlog after `after`,
-   * then records as they are appended, plus the never-journalled streaming deltas.
-   * Ends when the session ends or the server drops a lagging subscriber — iterate
-   * again from the last seen sequence to resume. */
   async *stream(sessionId: string, after = 0, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent> {
     yield* this.streamPath(`/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, signal);
   }
 
-  /** The SSE reader behind `stream`, on any feed path — the events feed and the
-   * serve feed carry the same frames. */
-  async *streamPath(path: string, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent> {
+  async *streamPath(path: string, signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<SessionStreamEvent> {
     const headers = new Headers({ accept: "text/event-stream" });
     if (this.token !== undefined) headers.set("authorization", `Bearer ${this.token}`);
     const response = await this.transport(`${this.baseUrl}${path}`, { headers, signal });
@@ -93,6 +92,7 @@ export class BrainClient {
       const error = (await response.json().catch(() => ({}))) as Partial<BrainError>;
       throw new BrainError(response.status, error.code ?? "http_error", error.message ?? response.statusText, error.retryable ?? false, error.details);
     }
+    onOpen?.();
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -117,7 +117,7 @@ export class BrainClient {
           if (type === undefined) continue;
           const text = data.join("\n");
           let payload: unknown = text;
-          try { payload = JSON.parse(text); } catch { /* a non-JSON payload stays a string */ }
+          try { payload = JSON.parse(text); } catch { /* keep non-JSON payloads */ }
           yield { ...(id === undefined || id === "" ? {} : { sequence: Number(id) }), type, data: payload };
         }
       }
@@ -126,70 +126,71 @@ export class BrainClient {
     }
   }
 
-  async admit(extension: Agentloop): Promise<string> {
-    const cached = this.admitted.get(extension);
+  async admit(extension: AgentloopBinding): Promise<string> {
+    return this.admitAgentloop(inspectAgentloop(extension).component);
+  }
+
+  async admitAgentloop(value: Component): Promise<string> {
+    return this.admitComponent(value, this.agentloops, "/v1/agentloops", "Agentloop");
+  }
+
+  async admitTool(value: Component): Promise<string> {
+    return this.admitComponent(value, this.tools, "/v1/tools", "Tool");
+  }
+
+  async residentHost(): Promise<{
+    readonly hostId: string;
+    readonly pump: ResidentHostPump;
+    unregister(sessionId: string): void;
+  }> {
+    if (this.resident !== undefined) return this.resident;
+    const opening = (async () => {
+      const registration = await this.request<HostRegistration>("POST", "/v1/hosts");
+      const hostClient = this.withToken(registration.token);
+      const pump = new ResidentHostPump({
+        stream: (signal, onOpen) => hostClient.streamPath(`/v1/hosts/${encodeURIComponent(registration.host_id)}/commands`, signal, onOpen),
+        result: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/results`, value),
+        emit: (value) => hostClient.request<{ sequence: number }>("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/events`, value),
+      });
+      await pump.start();
+      void pump.closed.then(() => {
+        if (this.resident === opening) this.resident = undefined;
+      });
+      return {
+        hostId: registration.host_id,
+        pump,
+        unregister: (sessionId: string) => {
+          if (pump.unregister(sessionId) && this.resident === opening) {
+            this.resident = undefined;
+          }
+        },
+      };
+    })();
+    this.resident = opening;
+    opening.catch(() => { if (this.resident === opening) this.resident = undefined; });
+    return opening;
+  }
+
+  private async admitComponent(value: Component, cache: WeakMap<object, Promise<string>>, path: string, subject: string): Promise<string> {
+    const source = inspectComponent(value);
+    const cached = cache.get(value);
     if (cached !== undefined) return cached;
-    const admission = this.loadAndAdmit(inspectAgentloop(extension).artifact);
-    this.admitted.set(extension, admission);
-    // A rejection is not an admission: forget it, so a transient fetch or server
-    // failure does not poison this agentloop for the life of the client.
-    admission.catch(() => this.admitted.delete(extension));
+    const admission = (async () => {
+      const bytes = source.artifact instanceof Uint8Array
+        ? source.artifact
+        : source.artifact.protocol === "file:"
+          ? new Uint8Array(await (await import("node:fs/promises")).readFile(source.artifact))
+          : new Uint8Array(await (await this.transport(source.artifact)).arrayBuffer());
+      if (bytes.byteLength === 0) throw new TypeError(`${subject} Component cannot be empty`);
+      const idempotencyKey = `${subject.toLowerCase()}-${await sha256(bytes)}`;
+      const result = await this.request<AgentloopAdmission | ToolAdmission>("POST", path, bytes, idempotencyKey, "application/octet-stream");
+      if (result.status !== "admitted") throw new BrainError(400, `${subject.toLowerCase()}_rejected`, result.error?.message ?? `${subject} was rejected`, false, result.error?.details);
+      return result.identity;
+    })();
+    cache.set(value, admission);
+    admission.catch(() => cache.delete(value));
     return admission;
   }
-
-  private async loadAndAdmit(artifact: URL | Uint8Array): Promise<string> {
-    const bytes = artifact instanceof Uint8Array ? artifact : artifact.protocol === "file:"
-      ? new Uint8Array(await readFile(artifact))
-      : new Uint8Array(await (await this.transport(artifact)).arrayBuffer());
-    if (bytes.byteLength === 0) throw new TypeError("Agentloop package cannot be empty");
-    const idempotencyKey = `agentloop-${createHash("sha256").update(bytes).digest("hex")}`;
-    const admission = await this.request<AgentloopAdmission>("POST", "/v1/agentloops", bytes, idempotencyKey, "application/octet-stream");
-    if (admission.status !== "admitted") throw new BrainError(400, "agentloop_rejected", admission.error?.message ?? "Agentloop was rejected", false, admission.error?.details);
-    return admission.identity;
-  }
-}
-
-/** The environments a Brain holds: created with their configuration, attached to by
- * sessions by id, closed when deleted or, if managed, when idle. */
-export class Environments {
-  constructor(private readonly client: BrainClient) {}
-
-  async create(configuration: unknown, options: CreateEnvironmentOptions = {}, operation: OperationOptions = {}): Promise<EnvironmentState> {
-    const request: CreateEnvironmentRequest = {
-      configuration: structuredClone(configuration),
-      ...(options.environmentId === undefined ? {} : { environment_id: options.environmentId }),
-      ...(options.managed === undefined ? {} : { managed: options.managed }),
-      ...(options.idleTtlMs === undefined ? {} : { idle_ttl_ms: options.idleTtlMs }),
-    };
-    return toEnvironmentState(await this.client.request<WireEnvironment>("POST", "/v1/environments", request, keyOf(operation)));
-  }
-
-  async get(environmentId: string): Promise<EnvironmentState> {
-    return toEnvironmentState(await this.client.request<WireEnvironment>("GET", `/v1/environments/${encodeURIComponent(environmentId)}`));
-  }
-
-  async list(): Promise<EnvironmentState[]> {
-    const page = await this.client.request<EnvironmentList>("GET", "/v1/environments");
-    return page.environments.map(toEnvironmentState);
-  }
-
-  /** Refused while a session is still attached. */
-  async delete(environmentId: string, operation: OperationOptions = {}): Promise<void> {
-    await this.client.request("DELETE", `/v1/environments/${encodeURIComponent(environmentId)}`, undefined, keyOf(operation));
-  }
-}
-
-function toEnvironmentState(wire: WireEnvironment): EnvironmentState {
-  return {
-    id: wire.environment_id,
-    status: wire.status,
-    managed: wire.managed,
-    ...(wire.idle_ttl_ms === undefined ? {} : { idleTtlMs: wire.idle_ttl_ms }),
-    attachedSessions: [...wire.attached_sessions],
-    runtimes: [...(wire.runtimes ?? [])],
-    resources: { ...((wire.resources as Record<string, unknown> | undefined) ?? {}) },
-    createdAt: new Date(wire.created_at_ms),
-  };
 }
 
 export class Sessions {
@@ -197,50 +198,43 @@ export class Sessions {
 
   async create(options: CreateSessionOptions, operation: OperationOptions = {}): Promise<SessionHandle> {
     validateSessionOptions(options);
-    const identity = await this.client.admit(options.agentloop);
-    // Every environment a bound tool names is created first, as a managed environment the
-    // session owns: Brain attaches by id, and the handle deletes what it created when the
-    // session ends.
-    const created = new Map<Environment, string>();
+    const loop = inspectAgentloop(options.agentloop);
+    const identity = await this.client.admitAgentloop(loop.component);
+    const environments = collectEnvironments(options);
+    const residentTools = (options.tools ?? []).map(inspectResidentTool).filter((value) => value !== undefined);
+    const resident = residentTools.length === 0 ? undefined : await this.client.residentHost();
+    const implementations = new Map<ToolBinding, unknown>();
     for (const selected of options.tools ?? []) {
-      if (inspectClientTool(selected) !== undefined || inspectServedTool(selected) !== undefined) continue;
-      const bound = inspectBoundTool(selected as BoundTool);
-      if (created.has(bound.environment)) continue;
-      assertEnvironmentBindable(bound.environment);
-      const environment = await this.client.environments.create(
-        inspectEnvironment(bound.environment).configuration,
-        { managed: true },
-        operation.idempotencyKey === undefined ? {} : { idempotencyKey: `${operation.idempotencyKey}-environment-${created.size + 1}` },
-      );
-      created.set(bound.environment, environment.id);
+      if (inspectResidentTool(selected) !== undefined) continue;
+      const placed = inspectPlacedTool(selected);
+      const componentSource = placed.implementation !== null && typeof placed.implementation === "object"
+        ? (() => { try { return inspectComponent(placed.implementation as Component); } catch { return undefined; } })()
+        : undefined;
+      implementations.set(selected, componentSource === undefined
+        ? structuredClone(placed.implementation)
+        : {
+            type: "brain_component",
+            identity: await this.client.admitTool(placed.implementation as Component),
+            configuration: structuredClone(placed.configuration),
+          });
     }
-    const compiled = compileSession(options, identity, created);
+    const compiled = compileSession(options, identity, environments, implementations, resident?.hostId);
     const session = await this.client.request<WireSession>("POST", "/v1/sessions", compiled.request, keyOf(operation));
-    for (const [environment, environmentId] of compiled.environments) bindEnvironment(environment, this.client, session.session_id, environmentId);
-    let pump: ClientToolPump | undefined;
-    if (compiled.clientTools.length > 0) {
+    if (resident !== undefined) {
       const registry = new AppToolRegistry();
-      for (const { contract, handler } of compiled.clientTools) registry.register(contract, handler);
-      pump = new ClientToolPump(this.client, session.session_id, registry, session.last_sequence);
-      pump.start();
+      for (const tool of residentTools) registry.register(tool.contract, tool.handler);
+      resident.pump.register(session.session_id, registry);
     }
-    return new SessionHandle(this.client, toSessionState(session), [...compiled.environments.keys()], pump, [...created.values()]);
+    return new SessionHandle(
+      this.client,
+      toSessionState(session),
+      resident === undefined ? undefined : () => resident.unregister(session.session_id),
+    );
   }
 
   async get(sessionId: string): Promise<SessionHandle> {
     const session = await this.client.request<WireSession>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}`);
-    return new SessionHandle(this.client, toSessionState(session), []);
-  }
-
-  /**
-   * Join a session from another process to serve its tools. The share key —
-   * `session.shareKey` in the process that created it — is the whole address: it
-   * names the session and authorizes serving, nothing else. Register handlers with
-   * `serve`; the SDK holds the session's serve feed open, answers each call, and
-   * reconnects with backoff after a drop.
-   */
-  join(shareKey: string): ServeHandle {
-    return new ServeHandle(this.client, shareKey);
+    return new SessionHandle(this.client, toSessionState(session));
   }
 
   async list(): Promise<SessionState[]> {
@@ -249,73 +243,13 @@ export class Sessions {
   }
 }
 
-const shareKeyPattern = /^sk\.(ses_[A-Za-z0-9]{20,32})\.[0-9a-f]{64}$/u;
-
-/**
- * One joined session: the registration surface for serving its tools from this
- * process. Each `serve` claims that tool's seat on the session's serve feed —
- * last connection wins, so a reloaded page displaces its own dead predecessor.
- */
-export class ServeHandle {
-  readonly sessionId: string;
-  private readonly serveClient: BrainClient;
-  private readonly registry = new AppToolRegistry();
-  private pump: ClientToolPump | undefined;
-  private cursor = 0;
-  private closed = false;
-
-  constructor(client: BrainClient, shareKey: string) {
-    const match = shareKeyPattern.exec(shareKey);
-    if (match === null) throw new TypeError("join needs a session share key (sk.<session>.<mac>)");
-    this.sessionId = match[1]!;
-    this.serveClient = client.withToken(shareKey);
-  }
-
-  /** Register the function that answers this served tool, and (re)connect the feed
-   * claiming it. Several `serve` calls share one connection. */
-  serve<Input, Output>(tool: ServedTool<Input, Output>, handler: (input: Input, call: AppToolCall) => Output | Promise<Output>): this {
-    const served = inspectServedTool(tool);
-    if (served === undefined) throw new TypeError("serve takes a served tool — one declared with tool({...}) and no execute");
-    if (this.closed) throw new Error("this join is closed");
-    this.registry.register(served.contract, handler as (input: unknown, call: AppToolCall) => unknown);
-    this.connect();
-    return this;
-  }
-
-  /** Stop serving: the feed closes and in-flight handlers are cancelled. */
-  close(): void {
-    this.closed = true;
-    this.pump?.stop();
-    this.pump = undefined;
-  }
-
-  private connect(): void {
-    if (this.pump !== undefined) {
-      // Reconnect with the wider tool set, keeping the cursor so nothing replays.
-      this.cursor = this.pump.position();
-      this.pump.stop();
-    }
-    const client = this.serveClient;
-    const sessionId = this.sessionId;
-    const tools = encodeURIComponent(this.registry.names().join(","));
-    const transport: PumpTransport = {
-      // `after=0` means "never seen anything": the serve feed's pending mode. A real
-      // cursor resumes exactly, like the events feed.
-      stream: (_, after, signal) => client.streamPath(`/v1/sessions/${encodeURIComponent(sessionId)}/serve?tools=${tools}${after > 0 ? `&after=${after}` : ""}`, signal),
-      request: (method, path, body, idempotencyKey) => client.request(method, path, body, idempotencyKey),
-    };
-    this.pump = new ClientToolPump(transport, sessionId, this.registry, this.cursor);
-    this.pump.start();
-  }
-}
-
 export class SessionHandle {
-  constructor(private readonly client: BrainClient, public state: SessionState, private readonly environments: readonly Environment[], private readonly pump?: ClientToolPump, private readonly ownedEnvironments: readonly string[] = []) {}
+  constructor(
+    private readonly client: BrainClient,
+    public state: SessionState,
+    private readonly unregisterResident?: () => void,
+  ) {}
   get id(): string { return this.state.id; }
-  /** The scoped credential another process joins with (`sessions.join`) to serve
-   * this session's tools. It opens the serve feed and answers tool calls — nothing
-   * else — so it is safe to hand to a page. */
-  get shareKey(): string { return this.state.shareKey; }
 
   async send(input: UserInput | string, operation: OperationOptions = {}): Promise<SessionState> {
     const normalized = typeof input === "string" ? { message: input } : input;
@@ -338,8 +272,6 @@ export class SessionHandle {
     } };
   }
 
-  /** The live event feed: journalled records after `after` plus streaming deltas,
-   * until the session ends or the stream drops (resume from the last sequence). */
   stream(after = 0, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent> {
     return this.client.stream(this.id, after, signal);
   }
@@ -350,108 +282,96 @@ export class SessionHandle {
 
   async end(operation: OperationOptions = {}): Promise<SessionState> {
     const session = await this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/end`, undefined, keyOf(operation));
-    this.release();
-    await this.closeOwnedEnvironments();
+    this.unregisterResident?.();
     return (this.state = toSessionState(session));
   }
 
   async delete(operation: OperationOptions = {}): Promise<void> {
     await this.client.request("DELETE", `/v1/sessions/${encodeURIComponent(this.id)}`, undefined, keyOf(operation));
-    this.release();
-    await this.closeOwnedEnvironments();
-  }
-
-  private release(): void {
-    this.pump?.stop();
-    for (const environment of this.environments) endEnvironment(environment);
-  }
-
-  /** The environments this handle created for the session go with it. Best effort: an
-   * environment that refuses (another session attached meanwhile) stays. */
-  private async closeOwnedEnvironments(): Promise<void> {
-    await Promise.allSettled(this.ownedEnvironments.map((environmentId) => this.client.environments.delete(environmentId)));
+    this.unregisterResident?.();
   }
 }
 
-function compileSession(options: CreateSessionOptions, agentloopIdentity: string, created: ReadonlyMap<Environment, string>): { readonly request: CreateSessionRequest; readonly environments: ReadonlyMap<Environment, string>; readonly clientTools: readonly NonNullable<ReturnType<typeof inspectClientTool>>[] } {
-  const environments = new Map<Environment, string>();
-  const requirements: EnvironmentAttachRequest[] = [];
+function collectEnvironments(options: CreateSessionOptions): ReadonlyMap<Environment, string> {
+  const result = new Map<Environment, string>();
+  const add = (environment: Environment) => {
+    inspectEnvironment(environment);
+    if (!result.has(environment)) result.set(environment, `env_${crypto.randomUUID().replaceAll("-", "")}`);
+  };
+  add(inspectAgentloop(options.agentloop).environment);
+  for (const selected of options.tools ?? []) {
+    if (inspectResidentTool(selected) === undefined) add(inspectPlacedTool(selected).environment);
+  }
+  return result;
+}
+
+function compileSession(
+  options: CreateSessionOptions,
+  agentloopIdentity: string,
+  environmentIds: ReadonlyMap<Environment, string>,
+  implementations: ReadonlyMap<ToolBinding, unknown>,
+  residentHostId?: string,
+): { readonly request: CreateSessionRequest } {
+  const requirements: SessionEnvironment[] = [...environmentIds].map(([environment, environmentId]) => {
+    const source = inspectEnvironment(environment);
+    return {
+      environment_id: environmentId,
+      configuration: structuredClone(source.configuration),
+      managed: source.managed,
+      ...(source.idleTtlMs === undefined ? {} : { idle_ttl_ms: source.idleTtlMs }),
+      bindings: { ...source.bindings },
+    };
+  });
   const tools: WireBoundTool[] = [];
-  const clientTools: NonNullable<ReturnType<typeof inspectClientTool>>[] = [];
   const names = new Set<string>();
   for (const selected of options.tools ?? []) {
-    const client = inspectClientTool(selected);
-    if (client !== undefined) {
-      if (names.has(client.definition.name)) throw new TypeError(`Tool name ${client.definition.name} is duplicated`);
-      names.add(client.definition.name);
-      tools.push({
-        name: client.definition.name,
-        description: client.definition.description,
-        input_schema: structuredClone(client.definition.inputSchema),
-        ...(client.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(client.definition.outputSchema) }),
-        needs: [],
-        binding_names: [],
-        hosting: "client",
-      });
-      clientTools.push(client);
-      continue;
-    }
-    // A served tool is client-hosted on the wire — parked and answered over the API —
-    // but this process registers no handler: whoever joins with the share key does.
-    const served = inspectServedTool(selected);
-    if (served !== undefined) {
-      if (names.has(served.definition.name)) throw new TypeError(`Tool name ${served.definition.name} is duplicated`);
-      names.add(served.definition.name);
-      tools.push({
-        name: served.definition.name,
-        description: served.definition.description,
-        input_schema: structuredClone(served.definition.inputSchema),
-        ...(served.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(served.definition.outputSchema) }),
-        needs: [],
-        binding_names: [],
-        hosting: "client",
-      });
-      continue;
-    }
-    const bound = inspectBoundTool(selected as BoundTool);
-    if (names.has(bound.definition.name)) throw new TypeError(`Tool name ${bound.definition.name} is duplicated`);
-    names.add(bound.definition.name);
-    let environmentId = environments.get(bound.environment);
-    if (environmentId === undefined) {
-      environmentId = created.get(bound.environment);
-      if (environmentId === undefined) throw new TypeError("a bound tool's environment was not created before the session");
-      environments.set(bound.environment, environmentId);
-      requirements.push({ environment_id: environmentId });
-    }
+    const resident = inspectResidentTool(selected);
+    const placed = resident === undefined ? inspectPlacedTool(selected) : undefined;
+    const definition = resident?.definition ?? placed!.definition;
+    if (names.has(definition.name)) throw new TypeError(`Tool name ${definition.name} is duplicated`);
+    names.add(definition.name);
     tools.push({
-      name: bound.definition.name,
-      description: bound.definition.description,
-      input_schema: structuredClone(bound.definition.inputSchema),
-      ...(bound.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(bound.definition.outputSchema) }),
-      needs: [...bound.needs],
-      binding_names: [...bound.bindingNames],
-      program: structuredClone(bound.program),
-      environment_id: environmentId,
+      name: definition.name,
+      description: definition.description,
+      input_schema: structuredClone(definition.inputSchema),
+      ...(definition.outputSchema === undefined ? {} : { output_schema: structuredClone(definition.outputSchema) }),
+      ...(resident === undefined
+        ? {
+            needs: [...placed!.needs],
+            binding_names: [...placed!.bindingNames],
+            hosting: "provisioned" as const,
+            implementation: structuredClone(implementations.get(selected)),
+            environment_id: environmentIds.get(placed!.environment)!,
+          }
+        : {
+            needs: [],
+            binding_names: [],
+            hosting: "resident" as const,
+            host_id: residentHostId!,
+          }),
     });
   }
-  const agentloop = inspectAgentloop(options.agentloop);
-  return { request: {
-    agentloop: { identity: agentloopIdentity, configuration: structuredClone(agentloop.configuration) },
+  const loop = inspectAgentloop(options.agentloop);
+  const request = {
+    agentloop: {
+      identity: agentloopIdentity,
+      configuration: structuredClone(loop.configuration),
+      environment_id: environmentIds.get(loop.environment)!,
+    },
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
     system: options.system ?? "",
-    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) as CreateSessionRequest["response_format"] }),
+    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }),
     tools,
     environments: requirements,
-    ...(options.transcript === undefined ? {} : { transcript: structuredClone(options.transcript) as unknown as CreateSessionRequest["transcript"] }),
+    ...(options.transcript === undefined ? {} : { transcript: structuredClone(options.transcript) }),
     ...(options.idleTtlMs === undefined ? {} : { idle_ttl_ms: options.idleTtlMs }),
-  }, environments, clientTools };
+  } as CreateSessionRequest;
+  return { request };
 }
 
 function validateSessionOptions(options: CreateSessionOptions): void {
   if (options === null || typeof options !== "object") throw new TypeError("session options are required");
   inspectAgentloop(options.agentloop);
-  // Shape only, mirroring the contract's Identifier: which providers exist is
-  // the server deployment's registry, so an unknown one fails there, not here.
   const provider = options.model?.provider;
   if (typeof provider !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(provider)) throw new TypeError("model provider is invalid");
   if (provider === "vercel-ai-gateway" && !/^[^/\s]+\/[^/\s][^\s]*$/u.test(options.model.name)) throw new TypeError("model name must include its provider namespace");
@@ -463,8 +383,14 @@ function validateSessionOptions(options: CreateSessionOptions): void {
 
 function keyOf(options: OperationOptions): string {
   if (options.idempotencyKey !== undefined && options.idempotencyKey.trim() === "") throw new TypeError("idempotencyKey cannot be empty");
-  return options.idempotencyKey ?? randomUUID();
+  return options.idempotencyKey ?? crypto.randomUUID();
 }
+
+async function sha256(bytes: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function toSessionState(session: WireSession): SessionState {
-  return Object.freeze({ id: session.session_id, status: session.status, lastSequence: session.last_sequence, shareKey: session.share_key });
+  return Object.freeze({ id: session.session_id, status: session.status, lastSequence: session.last_sequence });
 }

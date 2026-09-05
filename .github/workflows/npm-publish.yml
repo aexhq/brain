@@ -213,6 +213,10 @@ jobs:
           node-version: '24'
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+          targets: wasm32-wasip2
       - name: Install the staged public SDK
         shell: bash
         run: |
@@ -220,11 +224,12 @@ jobs:
           sdk=$(jq -er '.packages[] | select(.name == "@aexhq/brain") | "\(.name)@\(.version)"' "$RUNNER_TEMP/brain-release/manifest.json")
           test "$(npm view "$sdk" version)" = "${sdk##*@}"
           mkdir "$RUNNER_TEMP/sdk-e2e"
-          cp tests/release/sdk.mjs tests/release/diagnostic-brain.mjs "$RUNNER_TEMP/sdk-e2e/"
+          cp tests/release/sdk.mjs "$RUNNER_TEMP/sdk-e2e/"
+          cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
+          cp tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm "$RUNNER_TEMP/sdk-e2e/diagnostic-agentloop.wasm"
           cd "$RUNNER_TEMP/sdk-e2e"
           npm init --yes >/dev/null
           npm install --ignore-scripts --no-audit --no-fund --save-exact "$sdk" zod@4.4.3
-          npx brain build diagnostic-brain.mjs --out built
       - name: Run the candidate image through the staged SDK
         shell: bash
         env:
@@ -262,17 +267,22 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+          targets: wasm32-wasip2
       - name: Prepare the raw HTTP client
         shell: bash
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/http-e2e" "$RUNNER_TEMP/http-data"
-          cp tests/release/http.mjs tests/release/diagnostic-brain.mjs "$RUNNER_TEMP/http-e2e/"
+          cp tests/release/http.mjs "$RUNNER_TEMP/http-e2e/"
+          cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
+          cp tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm "$RUNNER_TEMP/http-e2e/diagnostic-agentloop.wasm"
           cd "$RUNNER_TEMP/http-e2e"
           npm init --yes >/dev/null
           sdk=$(jq -er '.packages[] | select(.name == "@aexhq/brain") | "\(.name)@\(.version)"' "$RUNNER_TEMP/brain-release/manifest.json")
           npm install --ignore-scripts --no-audit --no-fund --save-exact "$sdk" zod@4.4.3
-          npx brain build diagnostic-brain.mjs --out built
           sudo chown -R 10001:10001 "$RUNNER_TEMP/http-data"
       - name: Run the candidate image through raw HTTP on a mounted data volume
         shell: bash
@@ -327,7 +337,11 @@ jobs:
           node-version: '24'
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      - name: Build the diagnostic Agentloop with the staged SDK
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.97.1"
+          targets: wasm32-wasip2
+      - name: Install the staged SDK and build the diagnostic Agentloop
         shell: bash
         env:
           TEST_SCRIPT: ${{ matrix.script }}
@@ -336,11 +350,12 @@ jobs:
           sdk=$(jq -er '.packages[] | select(.name == "@aexhq/brain") | "\(.name)@\(.version)"' "$RUNNER_TEMP/brain-release/manifest.json")
           test "$(npm view "$sdk" version)" = "${sdk##*@}"
           mkdir "$RUNNER_TEMP/contract-e2e"
-          cp "tests/release/$TEST_SCRIPT" tests/release/diagnostic-brain.mjs "$RUNNER_TEMP/contract-e2e/"
+          cp "tests/release/$TEST_SCRIPT" "$RUNNER_TEMP/contract-e2e/"
+          cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
+          cp tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm "$RUNNER_TEMP/contract-e2e/diagnostic-agentloop.wasm"
           cd "$RUNNER_TEMP/contract-e2e"
           npm init --yes >/dev/null
           npm install --ignore-scripts --no-audit --no-fund --save-exact "$sdk" zod@4.4.3
-          npx brain build diagnostic-brain.mjs --out built
       - name: Run ${{ matrix.name }} against the candidate
         shell: bash
         env:

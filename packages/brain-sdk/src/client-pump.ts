@@ -1,113 +1,142 @@
 import type { AppToolRegistry } from "./app.js";
-import { BrainError } from "./errors.js";
+import type { HostCommand, HostEvent, HostEventAck, HostResult } from "./generated/session.js";
 import type { SessionStreamEvent } from "./types.js";
 
-/** What the pump needs from the client: the live stream and the result POST. Narrow on
- * purpose so tests can drive it without a BrainClient. */
-export interface PumpTransport {
-  stream(sessionId: string, after: number, signal?: AbortSignal): AsyncGenerator<SessionStreamEvent>;
-  request<T>(method: string, path: string, body?: unknown, idempotencyKey?: string): Promise<T>;
+export interface HostTransport {
+  stream(signal?: AbortSignal, onOpen?: () => void): AsyncGenerator<SessionStreamEvent>;
+  result(value: HostResult): Promise<void>;
+  emit(value: HostEvent): Promise<HostEventAck>;
 }
 
-interface ToolCallData {
-  readonly deadline_ms?: number;
-  readonly binding?: { readonly hosting?: string };
-  readonly invocation?: { readonly call_id?: string; readonly name?: string; readonly input?: unknown };
-  readonly target_sequence?: number;
-}
-
-/**
- * Serves a session's client-hosted tools off its event feed: watches `tool_call_started`
- * records whose binding says `client`, runs the registered handler, and POSTs the
- * outcome back under the record's sequence. `tool_cancel_started` records abort the
- * local handler; the stream reconnects from the last seen sequence until the session
- * ends or the handle stops the pump. Delivery is best effort by design — the session's
- * deadline is the backstop for anything this process fails to answer.
- */
-export class ClientToolPump {
-  private stopped = false;
+export class ResidentHostPump {
   private readonly controller = new AbortController();
-  /** sequence -> call_id for in-flight handlers, so a cancellation (which names the
-   * call's started record) can abort the local call (which the registry names by call
-   * id). */
-  private readonly inFlight = new Map<number, string>();
+  private readonly sessions = new Map<string, AppToolRegistry>();
+  private readonly inFlight = new Map<string, string>();
+  private readonly close: () => void;
+  readonly closed: Promise<void>;
+  private opening?: Promise<void>;
 
-  constructor(
-    private readonly transport: PumpTransport,
-    private readonly sessionId: string,
-    private readonly registry: AppToolRegistry,
-    private cursor: number,
-  ) {}
-
-  start(): void {
-    void this.run();
+  constructor(private readonly transport: HostTransport) {
+    let close!: () => void;
+    this.closed = new Promise((resolve) => { close = resolve; });
+    this.close = close;
   }
 
-  /** The last journal sequence this pump has seen — where a successor resumes. */
-  position(): number {
-    return this.cursor;
+  register(sessionId: string, registry: AppToolRegistry): void {
+    if (this.sessions.has(sessionId)) throw new Error(`resident session ${sessionId} is already registered`);
+    this.sessions.set(sessionId, registry);
+  }
+
+  unregister(sessionId: string): boolean {
+    const registry = this.sessions.get(sessionId);
+    if (registry !== undefined) {
+      for (const [key, callId] of this.inFlight) {
+        if (key.startsWith(`${sessionId}:`)) registry.cancel(callId);
+      }
+      this.sessions.delete(sessionId);
+    }
+    if (this.sessions.size === 0) this.stop();
+    return this.sessions.size === 0;
+  }
+
+  start(): Promise<void> {
+    if (this.opening !== undefined) return this.opening;
+    this.opening = new Promise((resolve, reject) => {
+      let opened = false;
+      void this.run(() => {
+        opened = true;
+        resolve();
+      }).then(() => {
+        if (!opened) reject(new Error("resident host command stream closed before opening"));
+      }, (error: unknown) => {
+        if (!opened) reject(error);
+      });
+    });
+    return this.opening;
   }
 
   stop(): void {
-    this.stopped = true;
     this.controller.abort();
-    for (const callId of this.inFlight.values()) this.registry.cancel(callId);
+    this.cancelInFlight();
+  }
+
+  private async run(onOpen: () => void): Promise<void> {
+    let opened = false;
+    try {
+      while (!this.controller.signal.aborted) {
+        try {
+          for await (const event of this.transport.stream(this.controller.signal, () => {
+            opened = true;
+            onOpen();
+          })) {
+            if (event.type === "command") void this.handle(event.data as HostCommand).catch(() => {});
+          }
+        } catch (error) {
+          if (!opened) throw error;
+        }
+        this.cancelInFlight();
+        if (!opened) throw new Error("resident host command stream closed before opening");
+        if (!this.controller.signal.aborted) await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    } finally {
+      this.stop();
+      this.close();
+    }
+  }
+
+  private cancelInFlight(): void {
+    for (const [key, callId] of this.inFlight) {
+      const separator = key.lastIndexOf(":");
+      this.sessions.get(key.slice(0, separator))?.cancel(callId);
+    }
     this.inFlight.clear();
   }
 
-  private async run(): Promise<void> {
-    while (!this.stopped) {
-      try {
-        for await (const event of this.transport.stream(this.sessionId, this.cursor, this.controller.signal)) {
-          if (event.sequence !== undefined) this.cursor = event.sequence;
-          if (event.type === "session_ended") {
-            this.stopped = true;
-            break;
-          }
-          void this.handle(event);
-        }
-      } catch {
-        // The stream dropped or lagged out; the reconnect below reads back what was
-        // missed from the journal via the cursor.
+  private async handle(command: HostCommand): Promise<void> {
+    const registry = this.sessions.get(command.session_id);
+    if (registry === undefined) {
+      if (command.operation.type === "invoke_tool") {
+        await this.transport.result({
+          session_id: command.session_id,
+          sequence: command.sequence,
+          outcome: {
+            status: "error",
+            error: {
+              code: "unknown_session",
+              message: `resident session ${command.session_id} is not registered`,
+            },
+          },
+        });
       }
-      if (this.stopped) return;
-      await new Promise((resolve) => {
-        const timer = setTimeout(resolve, 250);
-        (timer as { unref?(): void }).unref?.();
-      });
-    }
-  }
-
-  private async handle(event: SessionStreamEvent): Promise<void> {
-    const data = event.data as ToolCallData | undefined;
-    if (data?.binding?.hosting !== "client") return;
-    if (event.type === "tool_cancel_started") {
-      const callId = typeof data.target_sequence === "number" ? this.inFlight.get(data.target_sequence) : undefined;
-      if (callId !== undefined) this.registry.cancel(callId);
       return;
     }
-    if (event.type !== "tool_call_started") return;
-    const sequence = event.sequence;
-    const invocation = data.invocation;
-    if (sequence === undefined || typeof invocation?.call_id !== "string" || typeof invocation.name !== "string") return;
-    // A client-hosted tool this pump has no handler for is someone else's to serve.
-    if (!this.registry.has(invocation.name)) return;
-    this.inFlight.set(sequence, invocation.call_id);
-    const outcome = await this.registry.run({
+    if (command.operation.type === "cancel_tool") {
+      const key = `${command.session_id}:${command.operation.target_sequence}`;
+      const callId = this.inFlight.get(key);
+      if (callId !== undefined) registry.cancel(callId);
+      return;
+    }
+    const invocation = command.operation.invocation;
+    const key = `${command.session_id}:${command.sequence}`;
+    this.inFlight.set(key, invocation.call_id);
+    const outcome = await registry.run({
       call_id: invocation.call_id,
       name: invocation.name,
       arguments: invocation.input,
-      deadline_ms: typeof data.deadline_ms === "number" ? data.deadline_ms : 0,
+      deadline_ms: Math.max(0, command.deadline_at_ms - Date.now()),
+      emit: async (kind, data) => (await this.transport.emit({
+        session_id: command.session_id,
+        sequence: command.sequence,
+        event_type: kind,
+        data,
+      })).sequence,
     });
-    this.inFlight.delete(sequence);
-    if (this.stopped) return;
-    try {
-      await this.transport.request("POST", `/v1/sessions/${encodeURIComponent(this.sessionId)}/tool-results/${sequence}`, outcome, `tool-result-${sequence}`);
-    } catch (error) {
-      // A conflict means nobody is waiting any more — the call timed out or was
-      // answered — and anything else is equally unactionable from here: the session's
-      // deadline records the failure as a timeout the loop can read.
-      if (!(error instanceof BrainError)) throw error;
-    }
+    this.inFlight.delete(key);
+    if (this.controller.signal.aborted) return;
+    await this.transport.result({
+      session_id: command.session_id,
+      sequence: command.sequence,
+      outcome,
+    });
   }
 }

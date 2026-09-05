@@ -81,7 +81,7 @@ enum Command {
         #[arg(long, default_value_t = 2)]
         repeats: usize,
         /// Compiled agentloop package for the Brain driver.
-        #[arg(long, default_value = "examples/dist/example.brain.json")]
+        #[arg(long, default_value = "tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm")]
         agentloop: PathBuf,
         /// Where the per-turn rows are written, as CSV.
         #[arg(long, default_value = "tools/bench/results/growth.csv")]
@@ -100,7 +100,7 @@ enum Command {
         /// Sessions created after the cold one, on each process.
         #[arg(long, default_value_t = 20)]
         warm_per_repeat: usize,
-        #[arg(long, default_value = "examples/dist/example.brain.json")]
+        #[arg(long, default_value = "tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm")]
         agentloop: PathBuf,
     },
     /// Run probes.
@@ -130,7 +130,7 @@ enum Command {
         #[arg(long)]
         base_url: Option<String>,
         /// Compiled agentloop package for the Brain driver.
-        #[arg(long, default_value = "examples/dist/example.brain.json")]
+        #[arg(long, default_value = "tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm")]
         agentloop: PathBuf,
         /// Pid whose process tree holds the subject's memory, when the runner did not
         /// start it.

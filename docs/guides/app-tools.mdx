@@ -1,87 +1,75 @@
 ---
-title: Serve a tool from another process
-description: Declare a tool without execute; the process that has the function joins the session and serves it.
+title: Resident application Tools
+description: Run typed Tool functions in the process that creates a session.
 ---
 
-An app tool's function never leaves the process that owns it. When that process is the
-one creating the session, you are done — give `tool` an `execute` and pass it to
-`sessions.create`; the SDK answers calls off the event feed automatically (the
-[quickstart](/brain/docs/quickstart)'s shape). **This page is for the tool whose function
-lives in a *different* process than the session's creator**: a browser page your backend
-opened a session for, a CLI on the user's laptop, a worker — anything that should answer
-tools without holding your Brain API token.
-
-No extra server is involved in any of this. Brain terminates the connection itself; the
-serving process only ever dials out, so it works from a page, behind NAT, and through
-proxies.
-
-## Declare the tool where the session is created
-
-A tool without an `execute` is a *served* tool: schema only, no environment, no code.
+A resident Tool is ordinary application code. Declare it with `run`, instantiate its factory, and
+pass the binding to session creation:
 
 ```ts
-import { tool } from "@aexhq/brain";
+import { Brain, brainWasm, tool } from "@aexhq/brain";
+import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
-export const highlightRow = tool({
-  name: "highlight_row",
-  description: "Highlight a row in the visible grid.",
-  input: z.object({ row: z.number().int() }),
+const rows = new Map([["42", { name: "Ada" }]]);
+
+const findRow = tool({
+  name: "find_row",
+  description: "Find one row by id.",
+  input: z.object({ id: z.string() }),
+  options: z.object({ table: z.string() }),
+  run: async ({ id }, ctx) => {
+    await ctx.emit("row_lookup_started", { table: ctx.options.table, id });
+    return rows.get(id) ?? null;
+  },
 });
 
+const brain = new Brain({ baseUrl, token });
 const session = await brain.sessions.create({
-  model, agentloop: pi(),
-  tools: [bash({ env: vm }), highlightRow],
+  model,
+  agentloop: pi({ env: brainWasm() }),
+  tools: [findRow({ table: "people" })],
 });
-sendToPage(session.shareKey);   // one opaque string; the entire handoff
 ```
 
-`session.shareKey` is the scoped credential that crosses processes. It names the session
-and authorizes exactly two things — reading the serve feed and answering tool calls — so
-handing it to a page risks nothing: it cannot create sessions, send messages, read the
-conversation, or spend model tokens.
+With no `options` schema, instantiate the Tool with `findRow()`.
 
-## Serve it where the function lives
+## The resident host
+
+The first session containing a resident Tool causes the SDK to register one host. It authenticates
+with a scoped host token and keeps `GET /v1/hosts/{host_id}/commands` open as SSE. Several sessions
+and Tools in the same `Brain` client share that connection.
+
+Brain commits the Tool intent before publishing a command. The command contains the session ID,
+journal sequence, absolute deadline, and invocation. The SDK validates input, calls the registered
+function, validates configured output, and posts one outcome to the host result endpoint.
+
+This is a resident execution path: the function remains in the declaring process and may close over
+application state. No Environment is inserted around it, so the application owns its isolation and
+ambient authority.
+
+## Context
+
+The second `run` argument contains:
+
+- `options`: the factory options, parsed once and frozen;
+- `callId`: the model's Tool call identity;
+- `deadline`: the caller-owned deadline;
+- `signal`: best-effort cancellation and deadline notification;
+- `emit(kind, data)`: append a durable extension Event.
+
+Always await `ctx.emit`. Its promise resolves with the committed journal sequence, so an emitted
+progress or audit Event is ordered before the Tool result:
 
 ```ts
-import { Brain } from "@aexhq/brain";
-import { highlightRow } from "./tools.js";   // the same declaration, shared
-
-const brain = new Brain({ baseUrl: BRAIN_URL });   // no token needed here
-const remote = brain.sessions.join(shareKey);
-remote.serve(highlightRow, async ({ row }) => grid.highlight(row));
+run: async (input, ctx) => {
+  const sequence = await ctx.emit("import_started", { source: input.source });
+  return { eventSequence: sequence, imported: await importRows(input) };
+}
 ```
 
-`serve` registers the function and holds the session's serve feed open — an SSE stream
-of this tool's pending and future calls. The SDK runs your handler for each one and
-POSTs the outcome back idempotently; it reconnects with backoff after a drop and resumes
-from where it left off, so a network blip loses nothing. `remote.close()` stops serving.
-
-The declared schema must match what the creator declared — share the declaration module,
-as above, and it cannot drift.
-
-## The delivery rules
-
-- **Pending, then live.** A fresh connection first receives the still-unanswered calls
-  (never ones already answered, never ones whose deadline has passed), then new calls as
-  the model makes them.
-- **One server per tool, last connection wins.** A new connection claiming a tool
-  displaces the stream that held it — so a reloaded page replaces its own dead
-  predecessor instead of racing it. Different processes serve different tools in one
-  session: the page serves the UI tools while a laptop CLI serves the file tools.
-- **Nobody serving is never a hang.** Brain enforces every call's deadline itself; a
-  call nothing answers is recorded as a `timeout` outcome the loop can read. `serve` of
-  a tool the session never declared fails immediately at join.
-- **Cancellation flows down.** A cancelled turn aborts your handler through its
-  `signal`, best effort.
-
-## What this is on the wire
-
-Nothing new. A served tool is `hosting: "client"` in the manifest, exactly like an
-`execute` tool: the session journals `invoke {call_id, tool, input, deadline_ms}` as a
-`tool_call_started`, parks the turn, and accepts one `ok | error | timeout | cancelled`
-outcome at `POST /tool-results/{sequence}`, where the sequence is that record's. The serve
-feed (`GET /v1/sessions/{id}/serve?tools=...`) is a server-side-filtered view of the
-journal: a share key sees its tools' calls and the session's end, and nothing else. A tool that
-needs another service — a billing API, a Lambda — is just code inside some process's
-handler; Brain never dials out.
+Brain sends each invocation once and does not retry after disconnect. If deadline or cancellation
+wins after dispatch, the host returns an unknown outcome because the function may still finish.
+The SDK cancels local in-flight work and reconnects the same registered host for future commands;
+it never replays the disconnected command. Cooperative functions should observe `ctx.signal` and
+stop promptly.

@@ -11,8 +11,8 @@ pub mod tool;
 pub use agentloop::LoopExecutor;
 pub use error::Error;
 pub use journal::{
-    AppendRecord, Feed, Folded, JournalEntry, JournalRecord, JournalStore, SessionStore,
-    SessionUpdate, Writer, event_page,
+    AppendRecord, CommitHandle, Feed, Folded, JournalEntry, LocalSessionStore, SessionRecord,
+    SessionStore, SessionUpdate, Writer, event_page,
 };
 pub use model::ModelExecutor;
 pub use session::{
@@ -20,4 +20,4 @@ pub use session::{
     DEFAULT_TOOL_DEADLINE_MS, LAST_ACTIVATION_SLOT, Session, SessionRuntime, TurnServices,
     random_id, session_config,
 };
-pub use tool::ToolExecutor;
+pub use tool::{ToolExecutor, ToolServices};

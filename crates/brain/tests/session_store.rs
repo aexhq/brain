@@ -1,10 +1,11 @@
-//! One session's store: two logs under one sequence counter, a transcript that folds out
-//! of deltas and checkpoints, and slots that keep their last value.
+//! One session's store: one journal, a transcript that folds from deltas, and
+//! Agentloop state with last-write-wins values.
 
 use std::{fs, path::PathBuf, sync::Arc};
 
 use brain::{
-    AppendRecord, Feed, Folded, JournalEntry, JournalStore, SessionStore, SessionUpdate, Writer,
+    AppendRecord, Feed, Folded, JournalEntry, LocalSessionStore, SessionStore, SessionUpdate,
+    Writer,
 };
 use brain_protocol::{Message, SessionId, SessionStatus};
 
@@ -29,8 +30,8 @@ fn user(text: &str) -> Message {
     Message::user_text(text)
 }
 
-fn created(directory: &std::path::Path, writer: &Arc<Writer>) -> Arc<SessionStore> {
-    let store = SessionStore::create(
+fn created(directory: &std::path::Path, writer: &Arc<Writer>) -> Arc<LocalSessionStore> {
+    let store = LocalSessionStore::create(
         &directory.join("ses_1"),
         SessionId::new("ses_1"),
         &serde_json::json!({"system": "test"}),
@@ -39,8 +40,7 @@ fn created(directory: &std::path::Path, writer: &Arc<Writer>) -> Arc<SessionStor
     )
     .unwrap();
     store
-        .append(
-            0,
+        .append_sync(
             &[AppendRecord::new(
                 "session_creation_ended",
                 serde_json::json!({"configuration": {"system": "test"}}),
@@ -78,24 +78,18 @@ fn deltas_keep_a_prefix_and_append_the_rest() {
     let writer = Writer::spawn();
     let store = created(&directory, &writer);
     let through = store
-        .append_journal(
-            1,
-            &[JournalEntry::ContextDelta {
-                keep: 0,
-                append: vec![user("a"), user("b"), user("c")],
-            }],
-        )
+        .append_journal_sync(&[JournalEntry::TranscriptDelta {
+            keep: 0,
+            append: vec![user("a"), user("b"), user("c")],
+        }])
         .unwrap();
     assert_eq!(through, 2);
     // The loop rewrote the tail: keep `a`, replace the rest.
     store
-        .append_journal(
-            2,
-            &[JournalEntry::ContextDelta {
-                keep: 1,
-                append: vec![user("d")],
-            }],
-        )
+        .append_journal_sync(&[JournalEntry::TranscriptDelta {
+            keep: 1,
+            append: vec![user("d")],
+        }])
         .unwrap();
     let folded = store.fold().unwrap();
     assert_eq!(folded.transcript, vec![user("a"), user("d")]);
@@ -106,28 +100,68 @@ fn deltas_keep_a_prefix_and_append_the_rest() {
 }
 
 #[test]
+fn transcript_replacement_is_an_event_projection_after_reopen() {
+    let directory = temporary("transcript-replaced");
+    let writer = Writer::spawn();
+    let store = created(&directory, &writer);
+    store
+        .append_journal_sync(&[JournalEntry::TranscriptDelta {
+            keep: 0,
+            append: vec![user("a"), user("b"), user("c")],
+        }])
+        .unwrap();
+    store
+        .append_journal_sync(&[JournalEntry::TranscriptDelta {
+            keep: 1,
+            append: vec![user("summary")],
+        }])
+        .unwrap();
+    writer.sync().unwrap();
+    drop(store);
+
+    let reopened =
+        LocalSessionStore::open(&directory.join("ses_1"), writer.clone(), feed()).unwrap();
+    let replacement = reopened
+        .records_after(0, 100)
+        .unwrap()
+        .into_iter()
+        .find(|record| record.kind == "transcript_replaced")
+        .expect("the canonical transcript mutation is projected as an Event");
+    assert_eq!(replacement.sequence, 3);
+    assert_eq!(replacement.payload["keep"], 1);
+    assert_eq!(
+        replacement.payload["append"][0],
+        serde_json::json!(user("summary"))
+    );
+    assert_eq!(
+        reopened.fold().unwrap().transcript,
+        vec![user("a"), user("summary")]
+    );
+    drop(reopened);
+    drop(writer);
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
 fn a_slot_keeps_its_last_value() {
     let directory = temporary("slot");
     let writer = Writer::spawn();
     let store = created(&directory, &writer);
     store
-        .append_journal(
-            1,
-            &[
-                JournalEntry::Slot {
-                    name: "loop".into(),
-                    value: serde_json::json!({"summary": null}),
-                },
-                JournalEntry::Slot {
-                    name: "loop".into(),
-                    value: serde_json::json!({"summary": "so far"}),
-                },
-                JournalEntry::Slot {
-                    name: "tool".into(),
-                    value: serde_json::json!(7),
-                },
-            ],
-        )
+        .append_journal_sync(&[
+            JournalEntry::StateSet {
+                name: "loop".into(),
+                value: serde_json::json!({"summary": null}),
+            },
+            JournalEntry::StateSet {
+                name: "loop".into(),
+                value: serde_json::json!({"summary": "so far"}),
+            },
+            JournalEntry::StateSet {
+                name: "tool".into(),
+                value: serde_json::json!(7),
+            },
+        ])
         .unwrap();
     let folded = store.fold().unwrap();
     assert_eq!(
@@ -141,57 +175,12 @@ fn a_slot_keeps_its_last_value() {
 }
 
 #[test]
-fn a_checkpoint_resets_the_fold_and_the_bytes_since() {
-    let directory = temporary("checkpoint");
-    let writer = Writer::spawn();
-    let store = created(&directory, &writer);
-    store
-        .append_journal(
-            1,
-            &[JournalEntry::ContextDelta {
-                keep: 0,
-                append: vec![user("old"), user("older")],
-            }],
-        )
-        .unwrap();
-    assert!(store.journal_bytes_since_checkpoint().unwrap() > 0);
-    store
-        .append_journal(
-            2,
-            &[JournalEntry::Checkpoint {
-                transcript: vec![user("summary")],
-                slots: [("loop".to_string(), serde_json::json!(1))]
-                    .into_iter()
-                    .collect(),
-            }],
-        )
-        .unwrap();
-    assert_eq!(store.journal_bytes_since_checkpoint().unwrap(), 0);
-    store
-        .append_journal(
-            3,
-            &[JournalEntry::ContextDelta {
-                keep: 1,
-                append: vec![user("after")],
-            }],
-        )
-        .unwrap();
-    let folded = store.fold().unwrap();
-    assert_eq!(folded.transcript, vec![user("summary"), user("after")]);
-    assert_eq!(folded.slots["loop"], serde_json::json!(1));
-    drop(store);
-    drop(writer);
-    let _ = fs::remove_dir_all(directory);
-}
-
-#[test]
-fn both_logs_share_one_sequence_and_survive_reopening() {
+fn one_journal_keeps_sequence_and_survives_reopening() {
     let directory = temporary("reopen");
     let writer = Writer::spawn();
     let store = created(&directory, &writer);
     store
-        .append(
-            1,
+        .append_sync(
             &[AppendRecord::new("turn_started", serde_json::json!({}))],
             SessionUpdate {
                 status: Some(SessionStatus::Running),
@@ -200,17 +189,13 @@ fn both_logs_share_one_sequence_and_survive_reopening() {
         )
         .unwrap();
     store
-        .append_journal(
-            2,
-            &[JournalEntry::ContextDelta {
-                keep: 0,
-                append: vec![user("hi")],
-            }],
-        )
+        .append_journal_sync(&[JournalEntry::TranscriptDelta {
+            keep: 0,
+            append: vec![user("hi")],
+        }])
         .unwrap();
     store
-        .append(
-            3,
+        .append_sync(
             &[AppendRecord::new("turn_ended", serde_json::json!({}))],
             SessionUpdate {
                 status: Some(SessionStatus::Idle),
@@ -225,7 +210,8 @@ fn both_logs_share_one_sequence_and_survive_reopening() {
     writer.sync().unwrap();
     drop(store);
 
-    let reopened = SessionStore::open(&directory.join("ses_1"), writer.clone(), feed()).unwrap();
+    let reopened =
+        LocalSessionStore::open(&directory.join("ses_1"), writer.clone(), feed()).unwrap();
     let row = reopened.session_row().unwrap();
     assert_eq!(row.through_sequence, 4);
     assert!(matches!(row.status, SessionStatus::Idle));
@@ -242,8 +228,7 @@ fn a_running_session_is_interrupted_when_reopened() {
     let writer = Writer::spawn();
     let store = created(&directory, &writer);
     store
-        .append(
-            1,
+        .append_sync(
             &[AppendRecord::new("turn_started", serde_json::json!({}))],
             SessionUpdate {
                 status: Some(SessionStatus::Running),
@@ -254,7 +239,7 @@ fn a_running_session_is_interrupted_when_reopened() {
     writer.sync().unwrap();
     drop(store);
 
-    let stores = SessionStore::open_all(&directory, writer.clone(), feed()).unwrap();
+    let stores = LocalSessionStore::open_all(&directory, writer.clone(), feed()).unwrap();
     assert_eq!(stores.len(), 1);
     let row = stores[0].session_row().unwrap();
     assert!(matches!(row.status, SessionStatus::Idle));
@@ -268,18 +253,42 @@ fn a_running_session_is_interrupted_when_reopened() {
 }
 
 #[test]
-fn an_append_at_the_wrong_position_is_a_conflict() {
-    let directory = temporary("conflict");
+fn a_background_append_gets_its_sequence_when_it_commits() {
+    let directory = temporary("background");
     let writer = Writer::spawn();
     let store = created(&directory, &writer);
-    let error = store
-        .append(
-            0,
-            &[AppendRecord::new("turn_started", serde_json::json!({}))],
+    let commit = store
+        .append_async(vec![AppendRecord::new("queued", serde_json::json!({}))])
+        .unwrap();
+    let saved = commit.wait().unwrap();
+    assert_eq!(saved[0].sequence, 2);
+    assert_eq!(store.records_after(0, 10).unwrap().len(), 2);
+    drop(store);
+    drop(writer);
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn an_event_page_is_bounded_by_bytes_and_always_makes_progress() {
+    let directory = temporary("bounded-page");
+    let writer = Writer::spawn();
+    let store = created(&directory, &writer);
+    let payload = serde_json::json!({"data": "x".repeat(5 * 1024 * 1024)});
+    store
+        .append_sync(
+            &[
+                AppendRecord::new("large_1", payload.clone()),
+                AppendRecord::new("large_2", payload),
+            ],
             SessionUpdate::default(),
         )
-        .unwrap_err();
-    assert!(matches!(error, brain::Error::Conflict(_)), "{error}");
+        .unwrap();
+    let first = store.records_after(1, 1_000).unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].sequence, 2);
+    let second = store.records_after(first[0].sequence, 1_000).unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].sequence, 3);
     drop(store);
     drop(writer);
     let _ = fs::remove_dir_all(directory);
@@ -292,8 +301,7 @@ fn only_an_ended_session_can_be_deleted() {
     let store = created(&directory, &writer);
     assert!(store.delete().is_err());
     store
-        .append(
-            1,
+        .append_sync(
             &[AppendRecord::new("session_ended", serde_json::json!({}))],
             SessionUpdate {
                 status: Some(SessionStatus::Ended),

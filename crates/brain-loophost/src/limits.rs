@@ -1,4 +1,6 @@
-use std::time::Duration;
+/// Fixed MVP allowance for small orchestration Components. Fuel is a stable work
+/// ceiling within one Wasmtime version, not a duration or a cross-machine CPU measure.
+const DEFAULT_INVOCATION_FUEL: u64 = 10_000_000_000;
 
 #[derive(Clone, Debug)]
 pub struct LoopLimits {
@@ -6,17 +8,11 @@ pub struct LoopLimits {
     pub turn_input_bytes: usize,
     pub turn_output_bytes: usize,
     pub linear_memory_bytes: usize,
-    /// The guest's own compute per turn. Time the guest spends waiting on a host call
-    /// (a model answering, a tool running) is not charged against it.
-    pub wall_time: Duration,
-    /// Turns a worker runs at once. Each holds a live Wasm instance and a thread for as
-    /// long as it runs, so this times `linear_memory_bytes` is the worst case a worker
-    /// can hold.
+    /// Wasmtime work units one invocation may consume. Host and WASI waits consume none.
+    pub fuel: u64,
+    /// Turns a worker runs at once. Each holds one fresh Wasm Store and instance, so
+    /// this times `linear_memory_bytes` is the guest linear-memory ceiling.
     pub concurrent_turns_per_worker: usize,
-    /// How many more may be waiting for one of those slots before the pool says no.
-    /// Beyond this a turn is refused rather than queued, so a busy Brain reports that
-    /// it is busy instead of building a backlog nobody is waiting on any more.
-    pub queued_turns_per_worker: usize,
 }
 
 impl Default for LoopLimits {
@@ -26,9 +22,8 @@ impl Default for LoopLimits {
             turn_input_bytes: super::MAX_TURN_INPUT_BYTES,
             turn_output_bytes: super::MAX_TURN_OUTPUT_BYTES,
             linear_memory_bytes: super::MAX_LINEAR_MEMORY_BYTES,
-            wall_time: Duration::from_secs(2),
+            fuel: DEFAULT_INVOCATION_FUEL,
             concurrent_turns_per_worker: super::DEFAULT_CONCURRENT_TURNS,
-            queued_turns_per_worker: 8,
         }
     }
 }

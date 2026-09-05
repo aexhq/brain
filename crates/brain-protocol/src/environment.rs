@@ -3,29 +3,10 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    AttachmentId, EnvironmentId, Identity, Outcome, Resources, Runtime, SessionId, ToolManifest,
-};
+use crate::{AttachmentId, EnvironmentId, Outcome, Resources, SessionId, ToolManifest};
 
 /// The contract identifier every command and response carries.
 pub const ENVIRONMENT_CONTRACT: &str = "environment/v1";
-
-/// What a client asks for when it creates an environment.
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateEnvironmentRequest {
-    /// The id the environment is known by. Minted by Brain when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment_id: Option<EnvironmentId>,
-    pub configuration: serde_json::Value,
-    /// Whether Brain closes the environment once no session has been attached to it
-    /// for `idle_ttl_ms`. An unmanaged environment lives until it is deleted.
-    #[serde(default)]
-    pub managed: bool,
-    /// Absent means the server's default; zero means never.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_ttl_ms: Option<u64>,
-}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,39 +17,17 @@ pub enum EnvironmentStatus {
     Unreachable,
 }
 
-/// What the API says about an environment.
+/// One immutable Environment specification in a session create. `bindings` carries
+/// plaintext values only until attach and is never copied into the session journal.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct EnvironmentSummary {
+#[serde(deny_unknown_fields)]
+pub struct SessionEnvironment {
     pub environment_id: EnvironmentId,
-    pub status: EnvironmentStatus,
+    pub configuration: serde_json::Value,
+    #[serde(default)]
     pub managed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_ttl_ms: Option<u64>,
-    /// Sessions attached right now.
-    pub attached_sessions: Vec<SessionId>,
-    /// What the environment declared it executes and offers at setup.
-    #[serde(default)]
-    pub runtimes: Vec<Runtime>,
-    /// What the environment declared, verbatim. Brain reads the names; the policy
-    /// blocks are the environment contract's business.
-    #[serde(default)]
-    #[schemars(schema_with = "crate::schema::json_object")]
-    pub resources: Resources,
-    pub created_at_ms: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct EnvironmentList {
-    pub environments: Vec<EnvironmentSummary>,
-}
-
-/// What a session create names about one environment it attaches to. `bindings` carries
-/// plaintext values for the environment's hosted tools and exists only here: the
-/// configuration the session journals never carries them.
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct EnvironmentAttachRequest {
-    pub environment_id: EnvironmentId,
     #[serde(default)]
     #[schemars(with = "crate::schema::BindingValues")]
     pub bindings: BTreeMap<String, String>,
@@ -87,16 +46,16 @@ pub struct EnvironmentBinding {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentAttachment {
     pub environment_id: EnvironmentId,
+    pub configuration: serde_json::Value,
+    pub managed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_ttl_ms: Option<u64>,
     /// The wire binding, present once the environment has been resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<EnvironmentBinding>,
     /// Present once the environment has attached this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_id: Option<AttachmentId>,
-    /// What the environment's setup/attach receipts declared it executes. Kept with the
-    /// session so the bind check holds however the session was admitted.
-    #[serde(default)]
-    pub runtimes: Vec<Runtime>,
     /// The resources the environment declared, verbatim. Brain reads the names.
     #[serde(default)]
     pub resources: Resources,
@@ -141,13 +100,11 @@ pub struct EnvironmentResponse {
     pub receipt: EnvironmentReceipt,
 }
 
-/// One provisioned-tool artifact carried at attach: the manifest the environment reads
-/// and the content identity naming the payload it must already hold or fetch.
+/// One placed Tool handed to an Environment at attach.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Provision {
     pub manifest: ToolManifest,
-    pub payload_identity: Identity,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -190,11 +147,6 @@ pub enum EnvironmentRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentReceipt {
     Accepted {
-        /// The program runtimes this environment launches, reported on setup/attach
-        /// receipts and fed into the bind-time check.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        #[schemars(extend("uniqueItems" = true))]
-        runtimes: Vec<Runtime>,
         /// The resources this environment declares, reported on setup/attach receipts
         /// and fed into the bind-time `needs ⊆ resources` check.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -217,7 +169,7 @@ pub enum EnvironmentReceipt {
         message: String,
         retryable: bool,
     },
-    Ambiguous {
+    Unknown {
         #[schemars(length(max = 4096))]
         message: String,
     },

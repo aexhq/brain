@@ -1,7 +1,8 @@
 {
   "agentloop": {
     "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "configuration": {}
+    "configuration": {},
+    "environment_id": "env_1"
   },
   "model": {
     "provider": "vercel-ai-gateway",
@@ -20,9 +21,8 @@
         "fs"
       ],
       "binding_names": [],
-      "program": {
-        "kind": "esm",
-        "identity": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      "implementation": {
+        "artifact_id": "artifact_read_v1"
       },
       "environment_id": "env_1"
     }
@@ -30,6 +30,9 @@
   "environments": [
     {
       "environment_id": "env_1",
+      "configuration": {
+        "driver": "brain_wasm"
+      },
       "bindings": {}
     }
   ]

@@ -1,6 +1,6 @@
 //! The environments this Brain knows.
 //!
-//! Each is created with its configuration, attached by id from any number of sessions,
+//! Each is created with its configuration during one session's admission,
 //! and closed when it is deleted or, if managed, when no session has used it for its
 //! idle TTL. One JSON file per environment under `{data_dir}/environments/`, written at
 //! create, rewritten when the setup receipt arrives, and removed at close. Small, rare,
@@ -14,7 +14,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use brain_protocol::{EnvironmentId, EnvironmentStatus, Resources, Runtime};
+use brain_protocol::{EnvironmentId, EnvironmentStatus, Resources};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -25,8 +25,6 @@ pub struct EnvironmentRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_ttl_ms: Option<u64>,
     pub created_at_ms: u64,
-    #[serde(default)]
-    pub runtimes: Vec<Runtime>,
     #[serde(default)]
     pub resources: Resources,
     /// Operations issued on the environment's own behalf (setup, teardown): the
@@ -246,7 +244,6 @@ mod tests {
             managed: true,
             idle_ttl_ms: Some(1_000),
             created_at_ms: 1,
-            runtimes: Vec::new(),
             resources: Default::default(),
             operations: 0,
         }
@@ -263,7 +260,7 @@ mod tests {
         ));
         resources
             .update(&EnvironmentId::new("env_a"), |record| {
-                record.runtimes = vec![Runtime::Shell];
+                record.configuration = serde_json::json!({"image": "debian"});
             })
             .unwrap();
         assert_eq!(
@@ -275,7 +272,7 @@ mod tests {
         drop(resources);
         let reopened = EnvironmentResources::open(&directory).unwrap();
         let found = reopened.get(&EnvironmentId::new("env_a")).unwrap().unwrap();
-        assert_eq!(found.runtimes, vec![Runtime::Shell]);
+        assert_eq!(found.configuration["image"], "debian");
         assert_eq!(found.operations, 1);
         reopened.remove(&EnvironmentId::new("env_a")).unwrap();
         assert!(

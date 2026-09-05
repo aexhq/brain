@@ -93,14 +93,6 @@
               "$ref": "#/$defs/Resources",
               "description": "The resources this environment declares, reported on setup/attach receipts\nand fed into the bind-time `needs ⊆ resources` check."
             },
-            "runtimes": {
-              "description": "The program runtimes this environment launches, reported on setup/attach\nreceipts and fed into the bind-time check.",
-              "items": {
-                "$ref": "#/$defs/Runtime"
-              },
-              "type": "array",
-              "uniqueItems": true
-            },
             "type": {
               "const": "accepted",
               "type": "string"
@@ -188,7 +180,7 @@
               "type": "string"
             },
             "type": {
-              "const": "ambiguous",
+              "const": "unknown",
               "type": "string"
             }
           },
@@ -355,40 +347,6 @@
       ],
       "type": "object"
     },
-    "HttpProgramRequest": {
-      "additionalProperties": false,
-      "description": "The request template of an `http` program: the environment fronts the endpoint,\nthe tool's input travels as the JSON body, and the response body is the output.",
-      "properties": {
-        "headers": {
-          "additionalProperties": {
-            "maxLength": 16384,
-            "type": "string"
-          },
-          "propertyNames": {
-            "maxLength": 256
-          },
-          "type": "object"
-        },
-        "method": {
-          "pattern": "^[A-Z]{3,16}$",
-          "type": "string"
-        },
-        "url": {
-          "maxLength": 8192,
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "method",
-        "url"
-      ],
-      "type": "object"
-    },
-    "Identity": {
-      "pattern": "^[0-9a-f]{64}$",
-      "type": "string"
-    },
     "Outcome": {
       "description": "The one envelope every tool invocation resolves to.\n\n`timeout` is distinguished from `error` because the deadline is caller-owned: no\nbackend family can be trusted to enforce one remotely, so the caller kills and says\nexactly what happened rather than encoding it as an exit code.",
       "oneOf": [
@@ -445,6 +403,22 @@
             "status"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "status": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "message"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -467,83 +441,16 @@
       ],
       "type": "object"
     },
-    "Program": {
-      "description": "The program behind a provisioned tool, named by content identity so\nre-provisioning is idempotent. An `esm` bundle travels out of band under its\nidentity; a `shell` script and an `http` request template travel inline.",
-      "oneOf": [
-        {
-          "properties": {
-            "identity": {
-              "$ref": "#/$defs/Identity"
-            },
-            "kind": {
-              "const": "esm",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "identity"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "identity": {
-              "$ref": "#/$defs/Identity"
-            },
-            "kind": {
-              "const": "shell",
-              "type": "string"
-            },
-            "script": {
-              "maxLength": 262144,
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "identity",
-            "script"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "identity": {
-              "$ref": "#/$defs/Identity"
-            },
-            "kind": {
-              "const": "http",
-              "type": "string"
-            },
-            "request": {
-              "$ref": "#/$defs/HttpProgramRequest"
-            }
-          },
-          "required": [
-            "kind",
-            "identity",
-            "request"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "Provision": {
       "additionalProperties": false,
-      "description": "One provisioned-tool artifact carried at attach: the manifest the environment reads\nand the content identity naming the payload it must already hold or fetch.",
+      "description": "One placed Tool handed to an Environment at attach.",
       "properties": {
         "manifest": {
           "$ref": "#/$defs/ToolManifest"
-        },
-        "payload_identity": {
-          "$ref": "#/$defs/Identity"
         }
       },
       "required": [
-        "manifest",
-        "payload_identity"
+        "manifest"
       ],
       "type": "object"
     },
@@ -627,26 +534,6 @@
       },
       "type": "object"
     },
-    "Runtime": {
-      "description": "The closed set of program kinds an environment can launch. Closed only because\nBrain and the SDK must physically package and start the program.",
-      "oneOf": [
-        {
-          "const": "esm",
-          "description": "A self-contained JavaScript module (`brain build` output).",
-          "type": "string"
-        },
-        {
-          "const": "shell",
-          "description": "A POSIX shell script.",
-          "type": "string"
-        },
-        {
-          "const": "http",
-          "description": "A request to an endpoint the environment fronts.",
-          "type": "string"
-        }
-      ]
-    },
     "SessionId": {
       "pattern": "^ses_[A-Za-z0-9]{20,32}$",
       "type": "string"
@@ -668,6 +555,9 @@
           "maxLength": 8192,
           "type": "string"
         },
+        "implementation": {
+          "description": "Opaque to Brain; interpreted by the Environment driver this Tool is placed in."
+        },
         "input_schema": {
           "type": "object"
         },
@@ -687,9 +577,6 @@
         },
         "output_schema": {
           "type": "object"
-        },
-        "program": {
-          "$ref": "#/$defs/Program"
         }
       },
       "required": [
@@ -698,7 +585,7 @@
         "input_schema",
         "needs",
         "binding_names",
-        "program"
+        "implementation"
       ],
       "type": "object"
     }

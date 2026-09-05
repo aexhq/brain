@@ -344,6 +344,28 @@ mod tests {
     }
 
     #[test]
+    fn rejects_conflicting_provider_costs() {
+        let mut a = Accumulator::new();
+        a.push(ModelStreamEvent::Usage {
+            usage: Usage {
+                provider_cost_usd: Some("0.1".into()),
+                ..Usage::default()
+            },
+        })
+        .unwrap();
+        let error = a
+            .push(ModelStreamEvent::Usage {
+                usage: Usage {
+                    provider_cost_usd: Some("0.2".into()),
+                    ..Usage::default()
+                },
+            })
+            .unwrap_err();
+        assert!(matches!(error, Error::Ambiguous(_)));
+        assert_eq!(a.usage.provider_cost_usd.as_deref(), Some("0.1"));
+    }
+
+    #[test]
     fn refusal_survives_an_ordinary_stop_reason() {
         let mut a = Accumulator::new();
         a.push(ModelStreamEvent::RefusalDelta {

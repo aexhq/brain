@@ -6,8 +6,9 @@
 //! turn's output or its error. The server may send a cancel at any point; the worker
 //! fails every pending host call with it and the guest's next call sees it.
 
-use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput};
+use brain_protocol::{AgentloopIdentity, ToolIdentity, TurnError, TurnInput, TurnOutput};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::MAX_TURN_OUTPUT_BYTES;
@@ -21,7 +22,7 @@ use crate::{MAX_PACKAGE_BYTES, MAX_TURN_INPUT_BYTES};
 pub enum HostCall {
     Model { request_json: String },
     Dispatch { calls_json: String },
-    Append { kind: String, payload_json: String },
+    Emit { kind: String, payload_json: String },
     Telemetry { record_json: String },
 }
 
@@ -30,13 +31,21 @@ pub enum HostCall {
 pub enum WorkerRequest {
     Ping,
     Admit {
-        package_json: String,
+        kind: ComponentKind,
+        component_base64: String,
     },
     Turn {
         digest: AgentloopIdentity,
-        /// Cache key for a warm instance; never handed to the guest.
-        session: String,
+        environment: NativeEnvironment,
         input: Box<TurnInput>,
+    },
+    Tool {
+        digest: ToolIdentity,
+        environment: NativeEnvironment,
+        call_id: String,
+        input: serde_json::Value,
+        configuration: serde_json::Value,
+        deadline_at_ms: u64,
     },
     /// The answer to a host call the worker sent on this connection.
     HostResult {
@@ -49,11 +58,26 @@ pub enum WorkerRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct NativeEnvironment {
+    pub scratch: bool,
+    pub workspace: Option<String>,
+    pub network_allow: Vec<String>,
+    pub secrets: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComponentKind {
+    Agentloop,
+    Tool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerResponse {
     Pong,
     Admitted {
-        digest: AgentloopIdentity,
+        digest: String,
     },
     /// The guest asked for something; the server answers with `HostResult` under the
     /// same id.
@@ -63,6 +87,9 @@ pub enum WorkerResponse {
     },
     Turned {
         output: TurnOutput,
+    },
+    ToolRan {
+        output: serde_json::Value,
     },
     /// The turn ran and failed, with the code the loop or the runtime gave it.
     TurnFailed {
@@ -116,10 +143,10 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de
 pub(crate) fn max_request_bytes(request: &WorkerRequest) -> usize {
     match request {
         WorkerRequest::Ping | WorkerRequest::Cancel => 1_024,
-        WorkerRequest::Admit { .. } => MAX_PACKAGE_BYTES + 1_024,
-        WorkerRequest::Turn { .. } | WorkerRequest::HostResult { .. } => {
-            MAX_TURN_INPUT_BYTES + 1_024
-        }
+        WorkerRequest::Admit { .. } => MAX_PACKAGE_BYTES * 2,
+        WorkerRequest::Turn { .. }
+        | WorkerRequest::Tool { .. }
+        | WorkerRequest::HostResult { .. } => MAX_TURN_INPUT_BYTES + 1_024,
     }
 }
 

@@ -20,33 +20,6 @@ pub(crate) fn environment_contract(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "const": crate::ENVIRONMENT_CONTRACT })
 }
 
-pub(crate) fn agentloop_contract(_: &mut SchemaGenerator) -> Schema {
-    json_schema!({ "const": crate::AGENTLOOP_CONTRACT_VERSION })
-}
-
-/// Request headers an `http` program sends: bounded names and values.
-pub(crate) fn http_headers(_: &mut SchemaGenerator) -> Schema {
-    json_schema!({
-        "type": "object",
-        "propertyNames": { "maxLength": 256 },
-        "additionalProperties": { "type": "string", "maxLength": 16384 }
-    })
-}
-
-/// A session summary always carries its share key on the wire: the serving layer mints
-/// it before the summary leaves the process. The field defaults in Rust only so that a
-/// summary can exist before that point.
-pub(crate) fn share_key_always_present(schema: &mut Schema) {
-    if let Some(serde_json::Value::Array(required)) = schema.get_mut("required") {
-        required.push(serde_json::json!("share_key"));
-    }
-    if let Some(share_key) = schema.pointer_mut("/properties/share_key") {
-        share_key
-            .as_object_mut()
-            .map(|field| field.remove("default"));
-    }
-}
-
 /// Binding values by name, as they travel to an environment. Plaintext on that wire
 /// only: the journal never holds them.
 pub(crate) struct BindingValues;
@@ -128,28 +101,37 @@ impl JsonSchema for ResourcePolicies {
     }
 }
 
-/// The hosting rule of a bound tool, which no single field can say: a client-hosted
-/// tool carries no program, needs nothing, and names no environment; every other tool
-/// names one.
+/// The hosting rule of a bound tool, which no single field can say: a resident Tool
+/// names its application host and carries no placed implementation; a provisioned
+/// Tool names an Environment and carries the implementation that driver understands.
 pub(crate) fn bound_tool_rules(schema: &mut Schema) {
-    let client = serde_json::json!({
+    let resident = serde_json::json!({
         "required": ["hosting"],
-        "properties": { "hosting": { "const": "client" } }
+        "properties": { "hosting": { "const": "resident" } }
     });
     schema.insert(
         "allOf".into(),
         serde_json::json!([
             {
-                "if": client,
+                "if": resident,
                 "then": {
                     "allOf": [
-                        { "not": { "required": ["program"] } },
+                        { "required": ["host_id"] },
+                        { "not": { "required": ["implementation"] } },
                         { "not": { "required": ["environment_id"] } },
                         { "properties": { "needs": { "maxItems": 0 } } }
                     ]
                 }
             },
-            { "if": { "not": client }, "then": { "required": ["environment_id"] } }
+            {
+                "if": { "not": resident },
+                "then": {
+                    "allOf": [
+                        { "required": ["environment_id", "implementation"] },
+                        { "not": { "required": ["host_id"] } }
+                    ]
+                }
+            }
         ]),
     );
 }

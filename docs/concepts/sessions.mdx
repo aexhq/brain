@@ -1,104 +1,78 @@
 ---
 title: Sessions
-description: The two logs, turns, suspension, recovery, and reading events.
+description: The canonical journal, turns, suspension, recovery, and event projections.
 ---
 
-A session is a conversation plus everything Brain did on its behalf, recorded as ordered logs
-in a directory of its own.
+A session is a conversation plus everything Brain did on its behalf. Its creation configuration,
+lifecycle, effects, transcript changes, and Agentloop state are ordered in one append-only journal
+under `sessions/{id}/journal/`.
 
-## One directory, two logs
+## One journal, several projections
 
-Under the data directory every session owns `sessions/{id}/`, holding its creation
-configuration and two append-only logs:
+One sequence counter orders every record. Public Events, session status, the current transcript,
+and Agentloop slots are projections built from that journal. They are not independent state stores.
+On restart Brain scans the journal and rebuilds them.
 
-- **events** is the audit trail and the client feed: lifecycle records, every effect Brain
-  performed, and the records the agent loop appends itself.
-- **journal** is the transcript: the messages the model is shown, written as deltas, plus the
-  loop's state slots and periodic checkpoints.
+Public lifecycle and effect records appear through `GET /v1/sessions/{id}/events`. Transcript
+deltas and slots remain canonical journal records rather than separate copies. When a delta replaces
+an existing transcript tail, Brain projects that same record as `transcript_replaced`; pure appends
+and slot changes stay private. Every projection preserves the journal sequence.
 
-One sequence counter numbers the records of both logs, so the order between a transcript
-change and the effect that followed it survives. A record is named by the session id and its
-sequence, and those are the only ids there are: a client-hosted tool call is answered at the
-sequence of its `tool_call_started`, and an environment sees the same pair on the wire.
+## Effects happen after commit
 
-No file is rewritten in place. Delete is directory removal.
+Before Brain calls a model, invokes a Tool, or starts an Environment operation, it durably commits
+the corresponding `*_started` record. It then sends the effect once. Brain never automatically
+retries it.
 
-## Writes land before effects
+Before the Agentloop observes the answer, Brain commits `*_ended` or `*_failed` referencing the
+started sequence. If a remote result is uncertain, the failure or Tool outcome says `unknown`; an
+unknown effect is not replayed onto another target.
 
-Every effect the loop asks for goes through a Brain service, and every service journals before
-it acts. Before Brain calls a model or dispatches a tool call, it writes a `*_started` record.
-Before the loop sees the result, a `*_ended` record is written too, naming the started record
-by its sequence; an effect that did not come back with a result gets a `*_failed` record
-instead, which says whether the effect may have happened anyway. Every lifecycle uses the same
-three words: `turn_started`, `turn_ended`, `turn_failed`; `session_creation_started`,
-`session_creation_ended`, `session_creation_failed`.
+Extension Events use the same commit path. A turn may call `ctx.emit` at most 128 times and may
+emit at most 1 MiB across the serialized Event kinds and payloads.
 
-## The transcript is Brain's
+This makes `{session_id, sequence}` the stable name of an operation throughout the journal and its
+execution path.
 
-The loop owns the content of the transcript and Brain owns its persistence. Each time the loop
-calls the model, and again when the turn ends, it hands the transcript over. Brain compares it
-with the last one it recorded, keeps the longest shared prefix, and journals the rest: in the
-common case the loop appended and the delta is the tail; when the loop summarised, edited, or
-reordered, the delta restarts from the first changed position and carries everything after it.
-Nothing already written is touched, the journal stays linear in the length of the conversation,
-and every request the model saw can be rebuilt from it.
+## Transcript and Agentloop state
 
-When the bytes appended since the last checkpoint exceed the size of the transcript, Brain
-writes a checkpoint holding the whole transcript and every slot. Recovery reads from the last
-checkpoint forward, so it costs at most about twice the transcript, and segments before it can
-be reclaimed.
+The Agentloop owns transcript contents while Brain owns persistence. At model calls and turn end,
+Brain records the difference from the last transcript. Appends store only the tail; summaries,
+edits, and reorders restart at the first changed item. Recovery folds those deltas in journal order.
+
+The Agentloop's returned slots follow the same rule. A warm Wasm instance is a cache, so durable
+state must be present in the transcript or slots returned by the Component.
 
 ## Turns
 
-A turn starts when you send a message and ends when the agent loop returns. In between the
-loop drives: it calls the model, dispatches tool calls, appends records, in whatever order it
-wants. Brain performs each call, records it, and hands the result back. It never wakes the
-loop on its own; something that happened while the loop was not running (an environment
-closing, a suspension) is a record the loop reads at the start of its next turn.
+A turn starts when a client sends a message and ends when the Agentloop returns or fails. During
+the activation the loop may call Brain's model, Tool dispatch, event emission, and telemetry
+services in any order.
 
-Two budgets bound a turn. `BRAIN_MAX_MODEL_CALLS` (default 128) is how many model calls one
-turn may make; the call past it fails with `model_call_limit`, and a loop that does not stop
-there fails the turn with that code. `BRAIN_MAX_TURN_SECS` (default 1800) is how long a turn may
-run; past it the turn is cancelled and its next service call returns `cancelled`.
+Two server limits bound a turn:
 
-A `turn_failed` record carries a code and a message. The codes a loop or a client can meet:
+- `BRAIN_MAX_MODEL_CALLS`, default 128, limits model calls per turn.
+- `BRAIN_MAX_TURN_SECS`, default 1800, limits wall time; zero disables the limit.
 
-| Code | Means |
-| --- | --- |
-| `cancelled` | The turn was cancelled, by a client or by the wall-time budget. |
-| `model_call_limit` | The turn made more model calls than the budget allows. |
-| `interrupted` | The process stopped while the turn was running. |
-| `timeout` | A tool call passed its deadline; Brain killed it. |
-| `agentloop_failed` | The loop trapped, ran out of compute, or returned something the contract refuses. |
-| `invalid_transcript` | The loop handed back a transcript the contract refuses. |
-| `executor_failed`, `model_provider_failed`, `overloaded` | A Brain service failed; the message says which. |
-
-A loop that fails a turn on purpose chooses its own code, and that code is what the record
-carries.
+Cancellation requests stop local waiting and are forwarded to active executors. A remote effect
+that may have continued is reported as unknown, not as a successful cancellation.
 
 ## Suspension and recovery
 
-An active session holds a task and its transcript in memory. One that has sat idle for its
-idle TTL is suspended: the task and the memory go, a `session_suspended` record is written, and
-the next request rebuilds the session from its logs and writes `session_resumed`. The TTL is
-`idle_ttl_ms` on the create request, or the server's `BRAIN_SESSION_IDLE_TTL_SECS`; zero means
-never. Suspension is not ending: attached environments stay attached and the session takes its
-next message as if nothing happened.
+An idle session may suspend after its TTL. Its task and in-memory projections are released; the
+journal remains. The next request rebuilds the session and records its resumption. Attached
+Environments remain attached.
 
-The logs are written behind the turn, with no fsync on the hot path, so a crash may lose their
-tail. On restart Brain registers every session on disk as suspended. A session that was
-mid-turn gets a `turn_failed` record whose code is `interrupted` and returns to idle: whether
-the in-flight call reached the model or a tool is not knowable from here, so Brain records
-exactly that and lets the client resume or abandon on its own terms. Nothing is replayed into
-the loop; the state on disk is the whole state.
+Journal commits used as effect fences are durable before dispatch. If the process stops during a
+turn, restart records the interrupted turn as failed and does not rerun it. Any already committed
+effect record remains the source of truth.
 
-A conversation also does not have to be resumed in place. Pass messages as `transcript` when
-creating a session and Brain journals them as the new session's opening transcript, so a
-conversation moves across processes or machines by carrying its messages.
+You can also seed a new session with `transcript`; Brain records those messages as its opening
+conversation.
 
-## Reading events
+## Reading Events
 
-Events are the log, exposed. Read from a cursor and you get everything committed since:
+Read committed Events from a sequence cursor:
 
 ```ts
 let cursor = 0;
@@ -109,32 +83,23 @@ for await (const event of session.events(cursor)) {
 }
 ```
 
-This reads the durable log, so it is replayable and gap-free. The live stream on top of it is
-bounded and best-effort: under sustained pressure it drops rather than blocking a turn or growing
-without limit. If you need at-least-once delivery into your own systems, own the cursor and do the
-forwarding yourself. Brain is not a queue.
+A finite page returns at most 1,000 Events and normally at most 8 MiB of journal frames. If the
+next Event alone exceeds that byte bound, Brain returns that one Event so the cursor can advance.
 
-The live stream is the same endpoint asked for a different media type:
+For live delivery, request the same endpoint as SSE:
 
-```
+```text
 GET /v1/sessions/{id}/events?after={cursor}
 Accept: text/event-stream
 ```
 
-It begins with the page `after` names and then carries records as they are appended, so opening it
-*before* sending a message is how you see that turn's first output. While a turn is running it
-also carries the model's output as it arrives, as `assistant_delta` and `tool_call_delta` events.
-Those are never written to the log and carry no `id`: the id is the resume cursor, and a client
-that reconnects gets the completed message from the log rather than the tokens that built it. The
-stream ends when the session ends, and it ends if you fall too far behind; reconnect with the
-last `id` you saw and the log hands back exactly what you missed. `Accept: application/json`
-returns one page and is what `session.events()` uses.
-
-An environment the session is attached to reports into the same feed: `environment_closed`
-when it is gone and `environment_unreachable` when Brain cannot reach it.
+SSE first catches up from the journal and then follows new commits. Model token deltas are live-only
+and have no journal sequence; reconnecting yields the completed committed model result. A consumer
+that needs at-least-once delivery into another system owns its saved cursor, queue, retries, and
+deduplication.
 
 ## Lifecycle
 
-`cancel` stops work in flight. `end` closes the session to new messages and detaches its
-environments. `delete` removes it and its directory. They are separate on purpose: ending a
-session keeps its logs readable.
+`cancel` requests cancellation of work in flight. `end` refuses new messages and detaches the
+session's Environments while preserving history. `delete` removes the session directory, its
+native workspace, and its session-owned Environments.

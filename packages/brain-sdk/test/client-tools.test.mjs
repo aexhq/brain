@@ -2,197 +2,197 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { z } from "zod";
-import { Brain, agentloop, inspectServedTool, installExtensionIdentity, tool } from "../dist/index.js";
+import { AppToolRegistry } from "../dist/app.js";
+import { ResidentHostPump } from "../dist/client-pump.js";
+import { Brain, agentloop, brainWasm, component, tool } from "../dist/index.js";
 
-const simple = agentloop((author) => {
-  author.turn((turn) => turn.done());
-});
-installExtensionIdentity(simple, "simple", new Uint8Array([1, 2, 3]));
+const sessionId = "ses_12345678901234567890";
+const sse = (data) => `event: command\ndata: ${JSON.stringify(data)}\n\n`;
 
-const SHARE_KEY = `sk.ses_12345678901234567890.${"f".repeat(64)}`;
-
-const session = () =>
-  Response.json({ session_id: "ses_12345678901234567890", status: "idle", last_sequence: 0, share_key: SHARE_KEY });
-
-const sse = (frames) => `${frames.map(({ id, event, data }) => `${id === undefined ? "" : `id: ${id}\n`}event: ${event}\ndata: ${JSON.stringify(data)}`).join("\n\n")}\n\n`;
-
-const started = (name, input, id = 3) => ({
-  id,
-  event: "tool_call_started",
-  data: {
-    sequence: id,
-    session_id: "ses_12345678901234567890",
-    binding: { name, hosting: "client", needs: [], binding_names: [] },
-    invocation: { call_id: "call-1", name, input },
-    deadline_ms: 120_000,
-  },
-});
-
-test("a client tool compiles without an environment and answers off the stream", async () => {
+test("one resident host runs app Tools and commits ctx.emit before its result", async () => {
   const requests = [];
-  let resolveAnswered;
-  const answered = new Promise((resolve) => { resolveAnswered = resolve; });
-  const client = new Brain({
-    baseUrl: "https://brain.example",
-    token: "test-token",
-    fetch: async (input, init) => {
-      const request = new Request(input, init);
-      requests.push(request);
-      if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
-      if (request.url.includes("/events")) {
-        // The feed: the parked call; the session ends once it is answered.
-        return new Response(new ReadableStream({
-          async start(controller) {
-            const encoder = new TextEncoder();
-            controller.enqueue(encoder.encode(sse([started("lookup_order", { id: "A-1001" })])));
-            await answered;
-            controller.enqueue(encoder.encode(sse([{ id: 6, event: "session_ended", data: {} }])));
-            controller.close();
-          },
-        }), { headers: { "content-type": "text/event-stream" } });
-      }
-      if (request.url.includes("/tool-results/")) {
-        queueMicrotask(() => resolveAnswered());
-        return new Response(null, { status: 204 });
-      }
-      return session();
-    },
-  });
-
-  const lookupOrder = tool({
-    name: "lookup_order",
-    description: "Look up an order's status by id.",
-    input: z.object({ id: z.string() }),
-    execute: ({ id }) => ({ status: id === "A-1001" ? "shipped" : "unknown" }),
-  });
-  const handle = await client.sessions.create({
-    model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", apiKey: "model-secret" },
-    agentloop: simple(),
-    tools: [lookupOrder],
-  });
-  assert.equal(handle.shareKey, SHARE_KEY, "the share key rides the create response");
-
-  const create = await requests[1].json();
-  assert.equal(create.environments.length, 0, "a client tool must mint no environment");
-  assert.equal(create.tools.length, 1);
-  assert.equal(create.tools[0].hosting, "client");
-  assert.equal(create.tools[0].environment_id, undefined);
-  assert.equal(create.tools[0].name, "lookup_order");
-  assert.deepEqual(create.tools[0].needs, []);
-
-  await answered;
-  const result = requests.find((request) => request.url.includes("/tool-results/"));
-  assert.ok(result, "the outcome must be POSTed back");
-  assert.equal(new URL(result.url).pathname, "/v1/sessions/ses_12345678901234567890/tool-results/3");
-  assert.equal(result.headers.get("idempotency-key"), "tool-result-3");
-  assert.deepEqual(await result.json(), { status: "ok", value: { status: "shipped" } });
-
-  await handle.delete();
-});
-
-test("a call for a tool this process does not serve is left for whoever does", async () => {
-  const requests = [];
-  const client = new Brain({
-    baseUrl: "https://brain.example",
-    fetch: async (input, init) => {
-      const request = new Request(input, init);
-      requests.push(request);
-      if (request.url.endsWith("/v1/agentloops")) return Response.json({ identity: "a".repeat(64), status: "admitted" });
-      if (request.url.includes("/events")) {
-        return new Response(new ReadableStream({
-          start(controller) {
-            const encoder = new TextEncoder();
-            controller.enqueue(encoder.encode(sse([
-              started("someone_elses_tool", {}),
-              { id: 6, event: "session_ended", data: {} },
-            ])));
-            controller.close();
-          },
-        }), { headers: { "content-type": "text/event-stream" } });
-      }
-      if (request.url.includes("/tool-results/")) return new Response(null, { status: 204 });
-      return session();
-    },
-  });
-
-  const handle = await client.sessions.create({
-    model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", apiKey: "model-secret" },
-    agentloop: simple(),
-    tools: [
-      tool({ name: "mine", description: "Registered here.", input: z.object({}), execute: () => null }),
-      tool({ name: "someone_elses_tool", description: "Served elsewhere.", input: z.object({}) }),
-    ],
-  });
-
-  // Give the pump its ticks; a wrong answer would already be in flight.
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(
-    requests.find((request) => request.url.includes("/tool-results/")),
-    undefined,
-    "the creator's pump must not answer a tool it has no handler for",
-  );
-  const create = await requests[1].json();
-  assert.deepEqual(create.tools.map(({ name, hosting }) => [name, hosting]), [["mine", "client"], ["someone_elses_tool", "client"]]);
-
-  await handle.delete();
-});
-
-test("joining with the share key serves a tool off the serve feed", async () => {
-  const requests = [];
-  let resolveAnswered;
-  const answered = new Promise((resolve) => { resolveAnswered = resolve; });
+  let releaseStream;
+  let releaseCommand;
+  const completed = new Promise((resolve) => { releaseStream = resolve; });
+  const sessionCreated = new Promise((resolve) => { releaseCommand = resolve; });
   const fetchStub = async (input, init) => {
     const request = new Request(input, init);
     requests.push(request);
-    if (request.url.includes("/serve")) {
+    const path = new URL(request.url).pathname;
+    if (path === "/v1/agentloops") return Response.json({ identity: "a".repeat(64), status: "admitted" });
+    if (path === "/v1/hosts") return Response.json({ host_id: "host_12345678901234567890", token: "host-token" });
+    if (path.endsWith("/commands")) {
       return new Response(new ReadableStream({
         async start(controller) {
-          const encoder = new TextEncoder();
-          controller.enqueue(encoder.encode(sse([started("highlight_row", { row: 4 })])));
-          await answered;
-          controller.enqueue(encoder.encode(sse([{ id: 6, event: "session_ended", data: {} }])));
-          controller.close();
+          await sessionCreated;
+          controller.enqueue(new TextEncoder().encode(sse({
+            session_id: sessionId,
+            sequence: 3,
+            deadline_at_ms: Date.now() + 5_000,
+            operation: { type: "invoke_tool", invocation: { call_id: "call_1", name: "lookup", input: { id: "1" } } },
+          })));
+          completed.then(() => controller.close());
         },
       }), { headers: { "content-type": "text/event-stream" } });
     }
-    if (request.url.includes("/tool-results/")) {
-      queueMicrotask(() => resolveAnswered());
+    if (path.endsWith("/events")) return Response.json({ sequence: 4 });
+    if (path.endsWith("/results")) {
+      releaseStream();
       return new Response(null, { status: 204 });
     }
-    return session();
+    if (path === "/v1/sessions") {
+      setTimeout(() => releaseCommand(), 0);
+      return Response.json({ session_id: sessionId, status: "idle", last_sequence: 1 });
+    }
+    if (path === `/v1/sessions/${sessionId}` && request.method === "DELETE") return new Response(null, { status: 204 });
+    throw new Error(`unexpected request ${request.method} ${path}`);
   };
-
-  const highlightRow = tool({
-    name: "highlight_row",
-    description: "Highlight a row in the visible grid.",
-    input: z.object({ row: z.number().int() }),
+  const lookup = tool({
+    name: "lookup",
+    description: "Look up one value.",
+    input: z.object({ id: z.string() }),
+    run: async ({ id }, ctx) => {
+      assert.equal(await ctx.emit("lookup_progress", { id }), 4);
+      return { id };
+    },
   });
-  const highlighted = [];
-  const client = new Brain({ baseUrl: "https://brain.example", fetch: fetchStub });
-  const remote = client.sessions.join(SHARE_KEY);
-  assert.equal(remote.sessionId, "ses_12345678901234567890", "the share key names its session");
-  remote.serve(highlightRow, ({ row }) => { highlighted.push(row); return null; });
-
-  await answered;
-  assert.deepEqual(highlighted, [4]);
-  const feed = requests.find((request) => request.url.includes("/serve"));
-  assert.ok(feed, "serve must open the serve feed");
-  const feedUrl = new URL(feed.url);
-  assert.equal(feedUrl.pathname, "/v1/sessions/ses_12345678901234567890/serve");
-  assert.equal(feedUrl.searchParams.get("tools"), "highlight_row");
-  assert.equal(feed.headers.get("authorization"), `Bearer ${SHARE_KEY}`, "the share key authorizes the feed");
-  const result = requests.find((request) => request.url.includes("/tool-results/"));
-  assert.equal(result.headers.get("authorization"), `Bearer ${SHARE_KEY}`, "the share key authorizes the answer");
-  assert.deepEqual(await result.json(), { status: "ok", value: null });
-
-  remote.close();
+  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
+  const client = new Brain({ baseUrl: "https://brain.example", token: "brain-token", fetch: fetchStub });
+  const session = await client.sessions.create({
+    model: { provider: "openai", name: "gpt-5", apiKey: "model-token" },
+    agentloop: pi({ env: brainWasm() }),
+    tools: [lookup()],
+  });
+  await completed;
+  const eventRequest = requests.find((request) => new URL(request.url).pathname.endsWith("/events"));
+  const resultRequest = requests.find((request) => new URL(request.url).pathname.endsWith("/results"));
+  assert.ok(eventRequest);
+  assert.ok(resultRequest);
+  assert.equal(eventRequest.headers.get("authorization"), "Bearer host-token");
+  assert.deepEqual(await eventRequest.json(), { session_id: sessionId, sequence: 3, event_type: "lookup_progress", data: { id: "1" } });
+  assert.deepEqual(await resultRequest.json(), { session_id: sessionId, sequence: 3, outcome: { status: "ok", value: { id: "1" } } });
+  await session.delete();
 });
 
-test("tool() forms: served tools are inspectable, execute must be a function, join checks its key", () => {
-  const declared = tool({ name: "plain", description: "Served shape.", input: z.object({}) });
-  assert.ok(inspectServedTool(declared), "a tool without execute is a served tool");
-  assert.throws(() => tool({ name: "bad", description: "x", input: z.object({}), execute: "not a function" }), /execute must be a function/u);
-  const client = new Brain({ baseUrl: "https://brain.example", fetch: async () => new Response(null, { status: 500 }) });
-  assert.throws(() => client.sessions.join("not-a-key"), /share key/u);
-  assert.throws(() => client.sessions.join(SHARE_KEY).serve(declared, "not a function"), /handler function/u);
+test("session creation waits for the resident command stream", async () => {
+  const paths = [];
+  const client = new Brain({ baseUrl: "https://brain.example", fetch: async (input, init) => {
+    const request = new Request(input, init);
+    const path = new URL(request.url).pathname;
+    paths.push(path);
+    if (path === "/v1/agentloops") return Response.json({ identity: "a".repeat(64), status: "admitted" });
+    if (path === "/v1/hosts") return Response.json({ host_id: "host_12345678901234567890", token: "host-token" });
+    if (path.endsWith("/commands")) return Response.json({ code: "unavailable", message: "offline", retryable: true }, { status: 503 });
+    if (path === "/v1/sessions") throw new Error("session create raced the resident connection");
+    throw new Error(`unexpected request ${request.method} ${path}`);
+  } });
+  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
+  const resident = tool({
+    name: "resident",
+    description: "Run here.",
+    input: z.object({}),
+    run: async () => null,
+  });
+  await assert.rejects(client.sessions.create({
+    model: { provider: "openai", name: "gpt-5", apiKey: "model-token" },
+    agentloop: pi({ env: brainWasm() }),
+    tools: [resident()],
+  }), /offline/u);
+  assert.equal(paths.includes("/v1/sessions"), false);
+});
+
+test("a resident host reconnects without replaying old commands", async () => {
+  let connections = 0;
+  let finish;
+  const finished = new Promise((resolve) => { finish = resolve; });
+  const pump = new ResidentHostPump({
+    stream: async function* (signal, onOpen) {
+      connections += 1;
+      onOpen?.();
+      if (connections === 1) return;
+      yield {
+        type: "command",
+        data: {
+          session_id: sessionId,
+          sequence: 9,
+          deadline_at_ms: Date.now() + 5_000,
+          operation: { type: "invoke_tool", invocation: { call_id: "call_2", name: "lookup", input: { id: "2" } } },
+        },
+      };
+      await new Promise((resolve) => {
+        if (signal?.aborted) resolve();
+        else signal?.addEventListener("abort", resolve, { once: true });
+      });
+    },
+    result: async (result) => finish(result),
+    emit: async () => ({ sequence: 10 }),
+  });
+  const registry = new AppToolRegistry();
+  registry.register({
+    name: "lookup",
+    description: "Look up one value.",
+    input: z.object({ id: z.string() }),
+  }, async ({ id }) => ({ id }));
+  pump.register(sessionId, registry);
+
+  await pump.start();
+  const result = await finished;
+  assert.equal(connections, 2);
+  assert.deepEqual(result.outcome, { status: "ok", value: { id: "2" } });
+  pump.unregister(sessionId);
+  await pump.closed;
+});
+
+test("a new resident session never reuses the stopped host of the previous session", async () => {
+  let hosts = 0;
+  let sessions = 0;
+  const bindings = [];
+  const client = new Brain({ baseUrl: "https://brain.example", fetch: async (input, init) => {
+    const request = new Request(input, init);
+    const path = new URL(request.url).pathname;
+    if (path === "/v1/agentloops") {
+      return Response.json({ identity: "a".repeat(64), status: "admitted" });
+    }
+    if (path === "/v1/hosts") {
+      hosts += 1;
+      return Response.json({ host_id: `host_${hosts}`, token: `token_${hosts}` });
+    }
+    if (path.endsWith("/commands")) {
+      return new Response(new ReadableStream({
+        start(controller) {
+          request.signal.addEventListener("abort", () => controller.close(), { once: true });
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    }
+    if (path === "/v1/sessions") {
+      sessions += 1;
+      const body = await request.json();
+      bindings.push(body.tools[0].host_id);
+      return Response.json({ session_id: `ses_${sessions}`, status: "idle", last_sequence: 1 });
+    }
+    if (path.endsWith("/end")) {
+      return Response.json({ session_id: path.split("/")[3], status: "ended", last_sequence: 2 });
+    }
+    throw new Error(`unexpected request ${request.method} ${path}`);
+  } });
+  const pi = agentloop({ implementation: component(new Uint8Array([1])) });
+  const resident = tool({
+    name: "resident",
+    description: "Run here.",
+    input: z.object({}),
+    run: async () => null,
+  });
+  const options = {
+    model: { provider: "openai", name: "gpt-5", apiKey: "model-token" },
+    agentloop: pi({ env: brainWasm() }),
+    tools: [resident()],
+  };
+
+  const first = await client.sessions.create(options);
+  await first.end();
+  const second = await client.sessions.create(options);
+  await second.end();
+
+  assert.equal(hosts, 2);
+  assert.deepEqual(bindings, ["host_1", "host_2"]);
 });

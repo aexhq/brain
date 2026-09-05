@@ -19,18 +19,18 @@ use std::{
 use brain_protocol::{
     Event, EventId, LiveEvent, Message, MessageRequest, ModelRequest, ModelResult,
     ModelStreamEvent, Outcome, RuntimeEnvelope, SessionConfig, SessionStatus, SessionSummary,
-    StreamingEvent, ToolCancellation, ToolDefinition, ToolDispatch, ToolHosting, ToolInvocation,
-    ToolResult, TurnInput, TurnOutput,
+    StreamingEvent, ToolCancellation, ToolDefinition, ToolDispatch, ToolInvocation, ToolResult,
+    TurnInput, TurnOutput,
     codes::{self, Failure},
 };
 use futures_util::future::join_all;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
-use super::{PendingToolCalls, SessionRuntime, TurnServices};
+use super::{SessionRuntime, TurnServices};
 use crate::{
-    Error,
+    Error, ToolServices,
     journal::{
-        AppendRecord, Folded, JournalEntry, JournalRecord, JournalStore, SessionRow, SessionUpdate,
+        AppendRecord, Folded, JournalEntry, SessionRecord, SessionRow, SessionStore, SessionUpdate,
     },
 };
 
@@ -41,6 +41,9 @@ pub const LAST_ACTIVATION_SLOT: &str = "brain.last_activation";
 /// Records handed to a loop as "what happened since you last ran". More than this and
 /// the loop reads the feed itself.
 const EVENTS_PER_TURN: usize = 1_000;
+
+const MAX_EMITS_PER_TURN: usize = 128;
+const MAX_EMITTED_BYTES_PER_TURN: usize = 1024 * 1024;
 
 pub enum SessionCommand {
     Message {
@@ -62,24 +65,21 @@ pub enum SessionCommand {
 pub struct SessionActor {
     row: SessionRow,
     config: Arc<SessionConfig>,
-    store: Arc<dyn JournalStore>,
+    store: Arc<dyn SessionStore>,
     runtime: Arc<SessionRuntime>,
     receiver: mpsc::Receiver<SessionCommand>,
     cancel_requested: Arc<AtomicBool>,
     /// The transcript and slots as the journal holds them.
     folded: Folded,
-    /// Where client-hosted tool calls wait for their POSTed outcome.
-    pending_tools: Arc<PendingToolCalls>,
 }
 
 impl SessionActor {
     pub fn new(
         mut row: SessionRow,
-        store: Arc<dyn JournalStore>,
+        store: Arc<dyn SessionStore>,
         runtime: Arc<SessionRuntime>,
         receiver: mpsc::Receiver<SessionCommand>,
         cancel_requested: Arc<AtomicBool>,
-        pending_tools: Arc<PendingToolCalls>,
     ) -> Result<Self, Error> {
         let config: SessionConfig = serde_json::from_value(std::mem::take(&mut row.configuration))
             .map_err(|error| Error::Journal(error.to_string()))?;
@@ -92,7 +92,6 @@ impl SessionActor {
             receiver,
             cancel_requested,
             folded,
-            pending_tools,
         })
     }
 
@@ -107,10 +106,10 @@ impl SessionActor {
                     self.cancel_requested.store(true, Ordering::Release);
                 }
                 SessionCommand::End { reply } => {
-                    let _ = reply.send(self.end());
+                    let _ = reply.send(self.end().await);
                 }
                 SessionCommand::Append { record, reply } => {
-                    let _ = reply.send(self.append_between_turns(record));
+                    let _ = reply.send(self.append_between_turns(record).await);
                 }
             }
         }
@@ -126,23 +125,18 @@ impl SessionActor {
                 codes::event::TURN_STARTED,
                 serde_json::to_value(&request).map_err(json_error)?,
             )],
-            SessionUpdate {
-                status: Some(SessionStatus::Running),
-                configuration: None,
-            },
-        )?;
+            Some(SessionStatus::Running),
+        )
+        .await?;
         let since = self
             .folded
             .slots
             .get(LAST_ACTIVATION_SLOT)
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        let events = self
-            .store
-            .records_after(since, EVENTS_PER_TURN)?
-            .into_iter()
-            .map(event_of)
-            .collect();
+        let event_records = self.store.records_after(since, EVENTS_PER_TURN)?;
+        let events_through = event_records.last().map_or(since, |record| record.sequence);
+        let events = event_records.into_iter().map(event_of).collect();
         let input = TurnInput {
             input: request.input,
             transcript: self.folded.transcript.clone(),
@@ -158,24 +152,34 @@ impl SessionActor {
                 codes::event::ACTIVATION_STARTED,
                 serde_json::json!({"since": since}),
             )],
-            SessionUpdate::default(),
-        )?;
+            None,
+        )
+        .await?;
         let host = Arc::new(TurnHost {
             session_id: self.row.session_id.clone(),
             store: self.store.clone(),
             runtime: self.runtime.clone(),
             config: self.config.clone(),
-            pending_tools: self.pending_tools.clone(),
             cancel_requested: self.cancel_requested.clone(),
             model_calls: AtomicUsize::new(0),
             cursor: Mutex::new(Cursor {
                 through_sequence: self.row.through_sequence,
                 transcript: std::mem::take(&mut self.folded.transcript),
+                emitted: 0,
+                emitted_bytes: 0,
             }),
         });
+        let agentloop_environment = self
+            .config
+            .environments
+            .iter()
+            .find(|environment| environment.environment_id == self.config.agentloop_environment_id)
+            .map(|environment| environment.configuration.clone())
+            .ok_or_else(|| Error::InvalidState("Agentloop Environment is missing".into()))?;
         let running = self.runtime.loop_executor.turn(
             &self.row.session_id,
             &self.config.agentloop_identity,
+            agentloop_environment,
             input,
             host.clone(),
         );
@@ -203,6 +207,8 @@ impl SessionActor {
             Cursor {
                 through_sequence: cursor.through_sequence,
                 transcript: std::mem::take(&mut cursor.transcript),
+                emitted: cursor.emitted,
+                emitted_bytes: cursor.emitted_bytes,
             }
         };
         self.row.through_sequence = cursor.through_sequence;
@@ -216,7 +222,7 @@ impl SessionActor {
             outcome => outcome,
         };
         match outcome {
-            Ok(output) => self.finish_turn(output).await,
+            Ok(output) => self.finish_turn(output, events_through).await,
             Err(error) => {
                 let failure = failure_of(&error);
                 let failure = if self.cancel_requested.load(Ordering::Acquire)
@@ -235,12 +241,17 @@ impl SessionActor {
                     ),
                     AppendRecord::new(codes::event::TURN_FAILED, failure_payload(None, &failure)?),
                 ])
+                .await
             }
         }
     }
 
     /// The loop came back: keep what it handed over, then close the turn.
-    async fn finish_turn(&mut self, output: TurnOutput) -> Result<SessionSummary, Error> {
+    async fn finish_turn(
+        &mut self,
+        output: TurnOutput,
+        events_through: u64,
+    ) -> Result<SessionSummary, Error> {
         if output.transcript.len() > brain_protocol::MAX_TRANSCRIPT_ITEMS {
             let failure = Failure::new(
                 codes::failure::INVALID_TRANSCRIPT,
@@ -250,13 +261,15 @@ impl SessionActor {
                     brain_protocol::MAX_TRANSCRIPT_ITEMS
                 ),
             );
-            return self.close_turn(vec![
-                AppendRecord::new(
-                    codes::event::ACTIVATION_FAILED,
-                    failure_payload(None, &failure)?,
-                ),
-                AppendRecord::new(codes::event::TURN_FAILED, failure_payload(None, &failure)?),
-            ]);
+            return self
+                .close_turn(vec![
+                    AppendRecord::new(
+                        codes::event::ACTIVATION_FAILED,
+                        failure_payload(None, &failure)?,
+                    ),
+                    AppendRecord::new(codes::event::TURN_FAILED, failure_payload(None, &failure)?),
+                ])
+                .await;
         }
         let mut entries = Vec::new();
         if let Some(delta) = delta(&self.folded.transcript, &output.transcript) {
@@ -267,7 +280,7 @@ impl SessionActor {
                 continue;
             }
             if self.folded.slots.get(&name) != Some(&value) {
-                entries.push(JournalEntry::Slot {
+                entries.push(JournalEntry::StateSet {
                     name: name.clone(),
                     value: value.clone(),
                 });
@@ -275,60 +288,38 @@ impl SessionActor {
             }
         }
         self.folded.transcript = output.transcript;
-        self.row.through_sequence = self
-            .store
-            .append_journal(self.row.through_sequence, &entries)?;
-        let activated = self.commit(
+        self.row.through_sequence = append_journal(self.store.clone(), entries).await?;
+        self.commit(
             vec![AppendRecord::new(
                 codes::event::ACTIVATION_ENDED,
                 serde_json::json!({}),
             )],
-            SessionUpdate::default(),
-        )?;
-        let last = activated
-            .last()
-            .map_or(self.row.through_sequence, |record| record.sequence);
-        self.folded
-            .slots
-            .insert(LAST_ACTIVATION_SLOT.into(), serde_json::json!(last));
-        let mut entries = vec![JournalEntry::Slot {
+            None,
+        )
+        .await?;
+        self.folded.slots.insert(
+            LAST_ACTIVATION_SLOT.into(),
+            serde_json::json!(events_through),
+        );
+        let entries = vec![JournalEntry::StateSet {
             name: LAST_ACTIVATION_SLOT.into(),
-            value: serde_json::json!(last),
+            value: serde_json::json!(events_through),
         }];
-        // A checkpoint once the deltas since the last one outweigh the transcript: total
-        // writes stay under twice the deltas, and a fold reads at most about twice the
-        // transcript.
-        let transcript_bytes = serde_json::to_vec(&self.folded.transcript)
-            .map(|bytes| bytes.len() as u64)
-            .unwrap_or(0);
-        if self.store.journal_bytes_since_checkpoint()? > transcript_bytes {
-            entries.push(JournalEntry::Checkpoint {
-                transcript: self.folded.transcript.clone(),
-                slots: self.folded.slots.clone(),
-            });
-        }
-        self.row.through_sequence = self
-            .store
-            .append_journal(self.row.through_sequence, &entries)?;
+        self.row.through_sequence = append_journal(self.store.clone(), entries).await?;
         self.close_turn(vec![AppendRecord::new(
             codes::event::TURN_ENDED,
             serde_json::json!({"result": output.result}),
         )])
+        .await
     }
 
     /// Commits a turn's terminal records and returns the session to Idle.
-    fn close_turn(&mut self, records: Vec<AppendRecord>) -> Result<SessionSummary, Error> {
-        self.commit(
-            records,
-            SessionUpdate {
-                status: Some(SessionStatus::Idle),
-                configuration: None,
-            },
-        )?;
+    async fn close_turn(&mut self, records: Vec<AppendRecord>) -> Result<SessionSummary, Error> {
+        self.commit(records, Some(SessionStatus::Idle)).await?;
         Ok(self.public())
     }
 
-    fn end(&mut self) -> Result<SessionSummary, Error> {
+    async fn end(&mut self) -> Result<SessionSummary, Error> {
         if matches!(self.row.status, SessionStatus::Running) {
             return Err(Error::InvalidState("cannot end a running session".into()));
         }
@@ -338,35 +329,32 @@ impl SessionActor {
                     codes::event::SESSION_ENDED,
                     serde_json::json!({}),
                 )],
-                SessionUpdate {
-                    status: Some(SessionStatus::Ended),
-                    configuration: None,
-                },
-            )?;
+                Some(SessionStatus::Ended),
+            )
+            .await?;
         }
         Ok(self.public())
     }
 
     /// A record for something the host did to the session between turns. Refused while
     /// a turn is running: the turn owns the sequence until it ends.
-    fn append_between_turns(&mut self, record: AppendRecord) -> Result<u64, Error> {
+    async fn append_between_turns(&mut self, record: AppendRecord) -> Result<u64, Error> {
         if !matches!(self.row.status, SessionStatus::Idle) {
             return Err(Error::InvalidState("session is not idle".into()));
         }
-        self.commit(vec![record], SessionUpdate::default())?;
+        self.commit(vec![record], None).await?;
         Ok(self.row.through_sequence)
     }
 
-    fn commit(
+    async fn commit(
         &mut self,
         records: Vec<AppendRecord>,
-        update: SessionUpdate<'_>,
-    ) -> Result<Vec<JournalRecord>, Error> {
-        let status = update.status.clone();
-        let saved = self
-            .store
-            .append(self.row.through_sequence, &records, update)?;
-        self.row.through_sequence += saved.len() as u64;
+        status: Option<SessionStatus>,
+    ) -> Result<Vec<SessionRecord>, Error> {
+        let saved = append_records(self.store.clone(), records, status.clone()).await?;
+        if let Some(last) = saved.last() {
+            self.row.through_sequence = last.sequence;
+        }
         if let Some(status) = status {
             self.row.status = status;
         }
@@ -378,7 +366,6 @@ impl SessionActor {
             session_id: self.row.session_id.clone(),
             status: self.row.status.clone(),
             last_sequence: self.row.through_sequence,
-            share_key: String::new(),
         }
     }
 }
@@ -389,15 +376,34 @@ struct Cursor {
     through_sequence: u64,
     /// The transcript as last recorded, so the next delta is against it.
     transcript: Vec<Message>,
+    emitted: usize,
+    emitted_bytes: usize,
+}
+
+impl Cursor {
+    fn reserve_emit(&mut self, bytes: usize) -> Result<(), Error> {
+        if self.emitted >= MAX_EMITS_PER_TURN {
+            return Err(Error::EmitLimit(format!(
+                "turn exceeded its limit of {MAX_EMITS_PER_TURN} emitted Events"
+            )));
+        }
+        if self.emitted_bytes.saturating_add(bytes) > MAX_EMITTED_BYTES_PER_TURN {
+            return Err(Error::EmitLimit(format!(
+                "turn exceeded its limit of {MAX_EMITTED_BYTES_PER_TURN} emitted Event bytes"
+            )));
+        }
+        self.emitted += 1;
+        self.emitted_bytes += bytes;
+        Ok(())
+    }
 }
 
 /// Brain's side of a running turn.
 pub struct TurnHost {
     session_id: brain_protocol::SessionId,
-    store: Arc<dyn JournalStore>,
+    store: Arc<dyn SessionStore>,
     runtime: Arc<SessionRuntime>,
     config: Arc<SessionConfig>,
-    pending_tools: Arc<PendingToolCalls>,
     cancel_requested: Arc<AtomicBool>,
     model_calls: AtomicUsize,
     cursor: Mutex<Cursor>,
@@ -447,11 +453,11 @@ impl TurnHost {
         &self,
         cursor: &mut Cursor,
         records: Vec<AppendRecord>,
-    ) -> Result<Vec<JournalRecord>, Error> {
-        let saved =
-            self.store
-                .append(cursor.through_sequence, &records, SessionUpdate::default())?;
-        cursor.through_sequence += saved.len() as u64;
+    ) -> Result<Vec<SessionRecord>, Error> {
+        let saved = append_records(self.store.clone(), records, None).await?;
+        if let Some(last) = saved.last() {
+            cursor.through_sequence = last.sequence;
+        }
         Ok(saved)
     }
 }
@@ -506,9 +512,7 @@ impl TurnServices for TurnHost {
         let sequence = {
             let mut cursor = self.cursor.lock().await;
             if let Some(entry) = delta(&cursor.transcript, &request.messages) {
-                cursor.through_sequence = self
-                    .store
-                    .append_journal(cursor.through_sequence, &[entry])?;
+                cursor.through_sequence = append_journal(self.store.clone(), vec![entry]).await?;
                 cursor.transcript = request.messages.clone();
             }
             let saved = self
@@ -599,11 +603,11 @@ impl TurnServices for TurnHost {
                 )));
             }
         }
-        let (dispatches, receivers) = {
+        let dispatches = {
             let mut cursor = self.cursor.lock().await;
             let mut dispatches = Vec::with_capacity(calls.len());
             let mut started = Vec::with_capacity(calls.len());
-            for (offset, invocation) in calls.into_iter().enumerate() {
+            for invocation in calls {
                 let binding = self
                     .config
                     .tool_bindings
@@ -614,7 +618,7 @@ impl TurnServices for TurnHost {
                         Error::InvalidState(format!("unbound Tool `{}`", invocation.name))
                     })?;
                 let dispatch = ToolDispatch {
-                    sequence: cursor.through_sequence + offset as u64 + 1,
+                    sequence: 0,
                     session_id: self.session_id.clone(),
                     binding,
                     invocation,
@@ -622,37 +626,26 @@ impl TurnServices for TurnHost {
                 };
                 started.push(AppendRecord::new(
                     codes::event::TOOL_CALL_STARTED,
-                    serde_json::to_value(&dispatch).map_err(json_error)?,
+                    serde_json::json!({
+                        "binding": &dispatch.binding,
+                        "invocation": &dispatch.invocation,
+                        "deadline_ms": dispatch.deadline_ms,
+                    }),
                 ));
                 dispatches.push(dispatch);
             }
-            // A client-hosted call parks before the started commit: the commit is what
-            // puts `tool_call_started` on the live feed, so a client answering off that
-            // feed must never find the park missing.
-            let receivers: Vec<Option<oneshot::Receiver<Outcome>>> = dispatches
-                .iter()
-                .map(|dispatch| {
-                    matches!(dispatch.binding.hosting, ToolHosting::Client)
-                        .then(|| self.pending_tools.park(dispatch.sequence))
-                })
-                .collect();
-            if let Err(error) = self.append(&mut cursor, started).await {
-                for dispatch in &dispatches {
-                    self.pending_tools.discard(dispatch.sequence);
-                }
-                return Err(error);
+            let saved = self.append(&mut cursor, started).await?;
+            for (dispatch, record) in dispatches.iter_mut().zip(saved) {
+                dispatch.sequence = record.sequence;
             }
-            (dispatches, receivers)
+            dispatches
         };
-        let mut receivers = receivers;
         let futures = dispatches
             .iter()
             .cloned()
             .enumerate()
             .map(|(index, dispatch)| {
                 let executor = self.runtime.tool_executor.clone();
-                let pending = self.pending_tools.clone();
-                let receiver = receivers[index].take();
                 let cancel = self.cancel_requested.clone();
                 async move {
                     let sequence = dispatch.sequence;
@@ -662,30 +655,22 @@ impl TurnServices for TurnHost {
                     // cannot be trusted to, so an overdue call is dropped and recorded
                     // as its own distinguished outcome. A cancellation ends the wait the
                     // same way.
-                    let result = match receiver {
-                        Some(receiver) => match tokio::time::timeout(deadline, receiver).await {
-                            Ok(Ok(outcome)) => Ok((outcome, false)),
-                            Ok(Err(_)) => Ok((Outcome::Cancelled, false)),
-                            Err(_) => {
-                                pending.discard(sequence);
-                                Ok((Outcome::Timeout, true))
-                            }
-                        },
-                        None => {
-                            let call = executor.execute(dispatch);
-                            let cancelled = async {
-                                while !cancel.load(Ordering::Acquire) {
-                                    tokio::time::sleep(Duration::from_millis(25)).await;
-                                }
-                            };
-                            tokio::select! {
-                                outcome = tokio::time::timeout(deadline, call) => match outcome {
-                                    Ok(result) => result.map(|outcome| (outcome, false)),
-                                    Err(_) => Ok((Outcome::Timeout, true)),
-                                },
-                                () = cancelled => Ok((Outcome::Cancelled, true)),
-                            }
+                    let call = executor.execute(dispatch, self);
+                    let cancelled = async {
+                        while !cancel.load(Ordering::Acquire) {
+                            tokio::time::sleep(Duration::from_millis(25)).await;
                         }
+                    };
+                    let result = tokio::select! {
+                        outcome = tokio::time::timeout(deadline, call) => match outcome {
+                            Ok(result) => result.map(|outcome| (outcome, false)),
+                            Err(_) => Ok((Outcome::Unknown {
+                                message: "Tool deadline elapsed after the call was sent".into(),
+                            }, true)),
+                        },
+                        () = cancelled => Ok((Outcome::Unknown {
+                            message: "Tool cancellation was requested after the call was sent".into(),
+                        }, true)),
                     };
                     (index, sequence, call_id, result)
                 }
@@ -701,6 +686,9 @@ impl TurnServices for TurnHost {
                         abandoned.push(dispatches[index].clone());
                     }
                     ToolResult::from_outcome(call_id, outcome)
+                }
+                Err(Error::Ambiguous(message)) => {
+                    ToolResult::from_outcome(call_id, Outcome::Unknown { message })
                 }
                 Err(error) => ToolResult {
                     call_id,
@@ -733,7 +721,7 @@ impl TurnServices for TurnHost {
         Ok(results)
     }
 
-    async fn append(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error> {
+    async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error> {
         self.check_cancelled()?;
         if !valid_kind(&kind)
             || (codes::event::ALL.contains(&kind.as_str()) && kind != codes::event::OUTPUT_EMITTED)
@@ -742,7 +730,12 @@ impl TurnServices for TurnHost {
                 "record kind `{kind}` is Brain's own; a loop may not append it"
             )));
         }
+        let bytes = kind
+            .len()
+            .checked_add(serde_json::to_vec(&payload).map_err(json_error)?.len())
+            .ok_or_else(|| Error::EmitLimit("emitted Event size overflowed".into()))?;
         let mut cursor = self.cursor.lock().await;
+        cursor.reserve_emit(bytes)?;
         let saved =
             TurnHost::append(self, &mut cursor, vec![AppendRecord::new(kind, payload)]).await?;
         Ok(saved[0].sequence)
@@ -753,57 +746,82 @@ impl TurnServices for TurnHost {
     }
 
     fn telemetry(&self, record: serde_json::Value) {
+        self.publish_telemetry(
+            brain_telemetry::TelemetryKind::Event,
+            "agentloop_telemetry",
+            record,
+        );
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolServices for TurnHost {
+    async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error> {
+        TurnServices::emit(self, kind, payload).await
+    }
+
+    fn telemetry(&self, record: serde_json::Value) {
+        self.publish_telemetry(
+            brain_telemetry::TelemetryKind::Log,
+            "tool_telemetry",
+            record,
+        );
+    }
+}
+
+impl TurnHost {
+    fn publish_telemetry(
+        &self,
+        kind: brain_telemetry::TelemetryKind,
+        name: &str,
+        record: serde_json::Value,
+    ) {
         let payload = serde_json::to_vec(&record).unwrap_or_default();
         let _ = self
             .runtime
             .telemetry
             .try_publish(brain_telemetry::TelemetryRecord {
-                kind: brain_telemetry::TelemetryKind::Event,
-                name: "agentloop_telemetry".into(),
+                kind,
+                name: name.into(),
                 payload,
                 session_id: Some(self.session_id.clone()),
                 event_id: None,
             });
     }
-}
 
-impl TurnHost {
     async fn cancel_tools(&self, dispatches: &[ToolDispatch]) -> Result<(), Error> {
         let (cancellations, sequences) = {
             let mut cursor = self.cursor.lock().await;
             let mut cancellations = Vec::with_capacity(dispatches.len());
             let mut started = Vec::with_capacity(dispatches.len());
-            for (offset, dispatch) in dispatches.iter().enumerate() {
+            for dispatch in dispatches {
                 let cancellation = ToolCancellation {
-                    sequence: cursor.through_sequence + offset as u64 + 1,
+                    sequence: 0,
                     target_sequence: dispatch.sequence,
                     session_id: dispatch.session_id.clone(),
                     binding: dispatch.binding.clone(),
                 };
                 started.push(AppendRecord::new(
                     codes::event::TOOL_CANCEL_STARTED,
-                    serde_json::to_value(&cancellation).map_err(json_error)?,
+                    serde_json::json!({
+                        "target_sequence": cancellation.target_sequence,
+                        "binding": &cancellation.binding,
+                    }),
                 ));
                 cancellations.push(cancellation);
             }
-            self.append(&mut cursor, started).await?;
+            let saved = self.append(&mut cursor, started).await?;
+            for (cancellation, record) in cancellations.iter_mut().zip(saved) {
+                cancellation.sequence = record.sequence;
+            }
             let sequences: Vec<u64> = cancellations.iter().map(|c| c.sequence).collect();
             (cancellations, sequences)
         };
         let futures = cancellations.into_iter().map(|cancellation| {
             let executor = self.runtime.tool_executor.clone();
-            let pending = self.pending_tools.clone();
             async move {
                 let sequence = cancellation.sequence;
-                // A client-hosted call has no environment to tell: dropping the park is
-                // the cancellation, and the journaled `tool_cancel_started` above is the
-                // signal the client aborts its local handler on.
-                let result = if matches!(cancellation.binding.hosting, ToolHosting::Client) {
-                    pending.discard(cancellation.target_sequence);
-                    Ok(())
-                } else {
-                    executor.cancel(cancellation).await
-                };
+                let result = executor.cancel(cancellation).await;
                 (sequence, result)
             }
         });
@@ -847,6 +865,33 @@ impl TurnHost {
     }
 }
 
+async fn append_records(
+    store: Arc<dyn SessionStore>,
+    records: Vec<AppendRecord>,
+    status: Option<SessionStatus>,
+) -> Result<Vec<SessionRecord>, Error> {
+    tokio::task::spawn_blocking(move || {
+        store.append_sync(
+            &records,
+            SessionUpdate {
+                status,
+                configuration: None,
+            },
+        )
+    })
+    .await
+    .map_err(|error| Error::Journal(format!("journal commit task failed: {error}")))?
+}
+
+async fn append_journal(
+    store: Arc<dyn SessionStore>,
+    entries: Vec<JournalEntry>,
+) -> Result<u64, Error> {
+    tokio::task::spawn_blocking(move || store.append_journal_sync(&entries))
+        .await
+        .map_err(|error| Error::Journal(format!("journal commit task failed: {error}")))?
+}
+
 /// The journal entry that takes `recorded` to `wanted`: keep the longest shared prefix,
 /// append the rest. `None` when nothing changed. A change deep in the transcript
 /// rewrites the tail from there; rare, because it breaks prompt cache anyway.
@@ -859,13 +904,13 @@ pub(crate) fn delta(recorded: &[Message], wanted: &[Message]) -> Option<JournalE
     if keep == recorded.len() && keep == wanted.len() {
         return None;
     }
-    Some(JournalEntry::ContextDelta {
+    Some(JournalEntry::TranscriptDelta {
         keep: keep as u64,
         append: wanted[keep..].to_vec(),
     })
 }
 
-fn event_of(record: JournalRecord) -> Event {
+fn event_of(record: SessionRecord) -> Event {
     Event {
         event_id: EventId::new(format!("evt_{}_{}", record.session_id, record.sequence)),
         sequence: record.sequence,
@@ -958,7 +1003,7 @@ mod tests {
         let wanted = vec![user("a"), user("b"), user("d"), user("e")];
         assert_eq!(
             delta(&recorded, &wanted),
-            Some(JournalEntry::ContextDelta {
+            Some(JournalEntry::TranscriptDelta {
                 keep: 2,
                 append: vec![user("d"), user("e")],
             })
@@ -966,10 +1011,33 @@ mod tests {
         assert_eq!(delta(&recorded, &recorded), None);
         assert_eq!(
             delta(&recorded, &[]),
-            Some(JournalEntry::ContextDelta {
+            Some(JournalEntry::TranscriptDelta {
                 keep: 0,
                 append: Vec::new()
             })
+        );
+    }
+
+    #[test]
+    fn emitted_events_have_count_and_aggregate_byte_limits() {
+        let mut cursor = Cursor {
+            through_sequence: 0,
+            transcript: Vec::new(),
+            emitted: MAX_EMITS_PER_TURN - 1,
+            emitted_bytes: 0,
+        };
+        cursor.reserve_emit(1).unwrap();
+        assert_eq!(
+            cursor.reserve_emit(1).unwrap_err().code(),
+            codes::failure::EMIT_LIMIT
+        );
+
+        cursor.emitted = 0;
+        cursor.emitted_bytes = MAX_EMITTED_BYTES_PER_TURN - 1;
+        cursor.reserve_emit(1).unwrap();
+        assert_eq!(
+            cursor.reserve_emit(1).unwrap_err().code(),
+            codes::failure::EMIT_LIMIT
         );
     }
 }

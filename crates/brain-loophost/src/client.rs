@@ -4,11 +4,14 @@ use std::{
 };
 
 use async_trait::async_trait;
-use brain_protocol::{AgentloopIdentity, TurnError, TurnInput, TurnOutput};
+use brain_protocol::{AgentloopIdentity, ToolIdentity, TurnError, TurnInput, TurnOutput};
 
 #[cfg(unix)]
 use crate::wire::{MAX_RESPONSE_FRAME_BYTES, max_request_bytes, read_frame, write_frame};
-use crate::{HostCall, LoopError, WorkerRequest, WorkerResponse};
+use crate::{
+    ComponentKind, HostCall, LoopError, NativeEnvironment, NativeToolInput, WorkerRequest,
+    WorkerResponse,
+};
 
 /// The server's side of a turn: what answers the guest's host calls, and whether the
 /// turn has been cancelled.
@@ -41,13 +44,96 @@ impl WorkerClient {
     }
 
     pub async fn admit(&self, package: &[u8]) -> Result<AgentloopIdentity, String> {
-        let package_json = String::from_utf8(package.to_vec())
-            .map_err(|_| "Agentloop package must be UTF-8 JSON".to_owned())?;
-        match self.call(WorkerRequest::Admit { package_json }).await? {
+        self.admit_as(package, ComponentKind::Agentloop)
+            .await
+            .map(AgentloopIdentity::new)
+    }
+
+    pub async fn admit_tool(&self, component: &[u8]) -> Result<ToolIdentity, String> {
+        self.admit_as(component, ComponentKind::Tool)
+            .await
+            .map(ToolIdentity::new)
+    }
+
+    async fn admit_as(&self, package: &[u8], kind: ComponentKind) -> Result<String, String> {
+        use base64::Engine as _;
+        let component_base64 = base64::engine::general_purpose::STANDARD.encode(package);
+        match self
+            .call(WorkerRequest::Admit {
+                kind,
+                component_base64,
+            })
+            .await?
+        {
             WorkerResponse::Admitted { digest } => Ok(digest),
             WorkerResponse::Error { code, message } => Err(format!("{code}: {message}")),
             response => Err(format!("unexpected worker response: {response:?}")),
         }
+    }
+
+    #[cfg(unix)]
+    pub async fn tool(
+        &self,
+        digest: ToolIdentity,
+        environment: NativeEnvironment,
+        input: NativeToolInput,
+        bridge: &dyn TurnBridge,
+        liveness: Duration,
+    ) -> Result<serde_json::Value, LoopError> {
+        let mut stream = tokio::net::UnixStream::connect(&self.socket)
+            .await
+            .map_err(|error| error.to_string())?;
+        write_frame(
+            &mut stream,
+            &WorkerRequest::Tool {
+                digest,
+                environment,
+                call_id: input.call_id,
+                input: input.input,
+                configuration: input.configuration,
+                deadline_at_ms: input.deadline_at_ms,
+            },
+            crate::MAX_TURN_INPUT_BYTES + 1_024,
+        )
+        .await?;
+        let (mut reader, mut writer) = stream.split();
+        loop {
+            let response = tokio::time::timeout(
+                liveness,
+                read_frame::<_, WorkerResponse>(&mut reader, MAX_RESPONSE_FRAME_BYTES),
+            )
+            .await
+            .map_err(|_| LoopError::Failed("brain-loop-worker stopped answering".into()))??;
+            match response {
+                WorkerResponse::HostCall { id, call } => {
+                    let result = bridge.call(call).await;
+                    write_frame(
+                        &mut writer,
+                        &WorkerRequest::HostResult { id, result },
+                        MAX_RESPONSE_FRAME_BYTES,
+                    )
+                    .await?;
+                }
+                WorkerResponse::ToolRan { output } => return Ok(output),
+                WorkerResponse::TurnFailed { error } => return Err(LoopError::Turn(error)),
+                WorkerResponse::Error { code, message } => {
+                    return Err(format!("{code}: {message}").into());
+                }
+                response => return Err(format!("unexpected worker response: {response:?}").into()),
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub async fn tool(
+        &self,
+        _digest: ToolIdentity,
+        _environment: NativeEnvironment,
+        _input: NativeToolInput,
+        _bridge: &dyn TurnBridge,
+        _liveness: Duration,
+    ) -> Result<serde_json::Value, LoopError> {
+        Err("brain-loop-worker IPC requires Unix domain sockets".into())
     }
 
     /// Runs one turn on its own connection, answering the guest's host calls through
@@ -57,8 +143,8 @@ impl WorkerClient {
     #[cfg(unix)]
     pub async fn turn(
         &self,
-        session: String,
         digest: AgentloopIdentity,
+        environment: NativeEnvironment,
         input: TurnInput,
         max_input_bytes: usize,
         bridge: &dyn TurnBridge,
@@ -71,7 +157,7 @@ impl WorkerClient {
             &mut stream,
             &WorkerRequest::Turn {
                 digest,
-                session,
+                environment,
                 input: Box::new(input),
             },
             max_input_bytes + 1_024,
@@ -139,8 +225,8 @@ impl WorkerClient {
     #[cfg(not(unix))]
     pub async fn turn(
         &self,
-        _session: String,
         _digest: AgentloopIdentity,
+        _environment: NativeEnvironment,
         _input: TurnInput,
         _max_input_bytes: usize,
         _bridge: &dyn TurnBridge,
