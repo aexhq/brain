@@ -401,3 +401,86 @@ fn only_an_ended_session_can_be_deleted() {
     drop(writer);
     let _ = fs::remove_dir_all(directory);
 }
+#[test]
+fn committed_completion_prefix_survives_without_inventing_turn_success() {
+    for completed_steps in 0..=4 {
+        let directory = temporary("completion-prefix");
+        let writer = Writer::spawn();
+        let store = created(&directory, &writer);
+        store
+            .append_sync(
+                &[AppendRecord::new("turn_started", serde_json::json!({}))],
+                SessionUpdate {
+                    status: Some(SessionStatus::Running),
+                    configuration: None,
+                },
+            )
+            .unwrap();
+        if completed_steps >= 1 {
+            store
+                .append_journal_sync(&[
+                    JournalEntry::TranscriptDelta {
+                        keep: 0,
+                        append: vec![user("committed answer")],
+                    },
+                    JournalEntry::StateSet {
+                        name: "observed_sequence".into(),
+                        value: serde_json::json!(2),
+                    },
+                ])
+                .unwrap();
+        }
+        if completed_steps >= 2 {
+            store
+                .append_sync(
+                    &[AppendRecord::new("activation_ended", serde_json::json!({}))],
+                    SessionUpdate::default(),
+                )
+                .unwrap();
+        }
+        if completed_steps >= 3 {
+            store
+                .append_journal_sync(&[JournalEntry::StateSet {
+                    name: "brain.last_activation".into(),
+                    value: serde_json::json!(2),
+                }])
+                .unwrap();
+        }
+        if completed_steps == 4 {
+            store
+                .append_sync(
+                    &[AppendRecord::new("turn_ended", serde_json::json!({}))],
+                    SessionUpdate {
+                        status: Some(SessionStatus::Idle),
+                        configuration: None,
+                    },
+                )
+                .unwrap();
+        }
+        let path = store.directory().to_owned();
+        drop(store);
+        let reopened = LocalSessionStore::open(&path, writer, feed()).unwrap();
+        assert_eq!(
+            reopened.interrupt_unfinished_turn().unwrap(),
+            completed_steps < 4
+        );
+        let folded = reopened.fold().unwrap();
+        assert_eq!(folded.transcript.len(), usize::from(completed_steps >= 1));
+        if completed_steps >= 1 {
+            assert_eq!(folded.slots["observed_sequence"], 2);
+        }
+        let records = reopened.records_after(0, 100).unwrap();
+        assert_eq!(
+            records.iter().any(|record| record.kind == "turn_ended"),
+            completed_steps == 4
+        );
+        assert_eq!(
+            records
+                .iter()
+                .any(|record| record.kind == "turn_failed"
+                    && record.payload["code"] == "interrupted"),
+            completed_steps < 4
+        );
+        assert!(!reopened.interrupt_unfinished_turn().unwrap());
+    }
+}
