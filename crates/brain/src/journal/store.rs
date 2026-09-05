@@ -11,7 +11,7 @@ use crate::{
     journal::{AppendRecord, SessionRecord, writer::Ticket},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionRow {
     pub session_id: SessionId,
     pub status: SessionStatus,
@@ -41,29 +41,36 @@ pub struct SessionUpdate<'a> {
 /// A background append that has been admitted to the bounded writer queue. Its records
 /// have no sequence and are not visible until [`wait`](Self::wait) succeeds.
 pub struct CommitHandle {
-    ticket: Ticket,
-    records: Arc<Mutex<Option<Vec<SessionRecord>>>>,
+    completion: Box<dyn FnOnce() -> Result<Vec<SessionRecord>, Error> + Send>,
 }
 
 impl CommitHandle {
     pub(crate) fn new(ticket: Ticket, records: Arc<Mutex<Option<Vec<SessionRecord>>>>) -> Self {
-        Self { ticket, records }
+        Self::from_completion(move || {
+            ticket.wait()?;
+            records
+                .lock()
+                .map_err(|_| Error::Journal("journal commit result poisoned".into()))?
+                .take()
+                .ok_or_else(|| Error::Journal("journal commit produced no result".into()))
+        })
     }
 
-    pub(crate) fn ready(records: Vec<SessionRecord>) -> Self {
+    /// Constructs a completion for an admitted append. Success must mean durable commit.
+    pub fn from_completion(
+        completion: impl FnOnce() -> Result<Vec<SessionRecord>, Error> + Send + 'static,
+    ) -> Self {
         Self {
-            ticket: Ticket::ready(),
-            records: Arc::new(Mutex::new(Some(records))),
+            completion: Box::new(completion),
         }
     }
 
+    pub fn ready(records: Vec<SessionRecord>) -> Self {
+        Self::from_completion(move || Ok(records))
+    }
+
     pub fn wait(self) -> Result<Vec<SessionRecord>, Error> {
-        self.ticket.wait()?;
-        self.records
-            .lock()
-            .map_err(|_| Error::Journal("journal commit result poisoned".into()))?
-            .take()
-            .ok_or_else(|| Error::Journal("journal commit produced no result".into()))
+        (self.completion)()
     }
 }
 
@@ -89,7 +96,7 @@ impl JournalEntry {
 
 /// What folding a session's journal yields: its transcript, its slots, and the sequence
 /// the journal is current to.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct Folded {
     pub transcript: Vec<Message>,
     pub slots: BTreeMap<String, serde_json::Value>,

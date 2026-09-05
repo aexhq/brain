@@ -47,6 +47,9 @@ pub struct ServerConfig {
     pub environment_base_url: String,
     #[arg(long, env = "BRAIN_ENVIRONMENT_API_KEY", hide_env_values = true)]
     pub environment_api_key: Option<String>,
+    /// JSON map from driver name to { endpoint, api_key? }. Credentials stay in the server.
+    #[arg(long, env = "BRAIN_ENVIRONMENT_ROUTES_FILE")]
+    pub environment_routes_file: Option<PathBuf>,
     /// Model calls one turn may make before Brain refuses the next.
     #[arg(long, env = "BRAIN_MAX_MODEL_CALLS", default_value_t = 128)]
     pub max_model_calls_per_turn: usize,
@@ -56,10 +59,6 @@ pub struct ServerConfig {
     /// Seconds an idle session keeps its task and memory before it is suspended to disk
     /// and rebuilt on its next request. A session may set its own at create; zero means
     /// never.
-    #[arg(long, env = "BRAIN_SESSION_IDLE_TTL_SECS", default_value_t = 1800)]
-    pub session_idle_ttl_secs: u64,
-    /// Seconds a managed environment may sit with no session attached before Brain
-    /// closes it. An environment may set its own at create; zero means never.
-    #[arg(long, env = "BRAIN_ENVIRONMENT_IDLE_TTL_SECS", default_value_t = 1800)]
-    pub environment_idle_ttl_secs: u64,
+    #[arg(long, env = "BRAIN_SESSION_IDLE_TTL_SECS")]
+    pub session_idle_ttl_secs: Option<u64>,
 }

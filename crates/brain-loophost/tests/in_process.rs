@@ -16,6 +16,9 @@ struct Answering;
 impl GuestHost for Answering {
     async fn call(&self, call: HostCall) -> Result<String, TurnError> {
         match call {
+            HostCall::Events { after } => {
+                Ok(serde_json::json!({"events": [], "next_cursor": after}).to_string())
+            }
             HostCall::Model { .. } => Ok(serde_json::json!({
                 "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
                 "stop_reason": "end_turn",

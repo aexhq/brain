@@ -1,8 +1,8 @@
 //! The environments this Brain knows.
 //!
 //! Each is created with its configuration during one session's admission,
-//! and closed when it is deleted or, if managed, when no session has used it for its
-//! idle TTL. One JSON file per environment under `{data_dir}/environments/`, written at
+//! and forgotten when its binding is closed. Providers own physical expiry.
+//! One JSON file per environment under `{data_dir}/environments/`, written at
 //! create, rewritten when the setup receipt arrives, and removed at close. Small, rare,
 //! and whole: this is a resource row, not a log.
 
@@ -11,7 +11,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use brain_protocol::{EnvironmentId, EnvironmentStatus, Resources, SessionId};
@@ -22,9 +22,6 @@ pub struct EnvironmentRecord {
     pub session_id: SessionId,
     pub environment_id: EnvironmentId,
     pub configuration: serde_json::Value,
-    pub managed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_ttl_ms: Option<u64>,
     pub created_at_ms: u64,
     #[serde(default)]
     pub resources: Resources,
@@ -33,9 +30,6 @@ pub struct EnvironmentRecord {
 struct Row {
     record: EnvironmentRecord,
     status: EnvironmentStatus,
-    /// When the last session detached, or when the row was opened. What a managed
-    /// environment's idle TTL counts from while nothing is attached.
-    idle_since: Instant,
 }
 
 pub struct EnvironmentResources {
@@ -66,8 +60,7 @@ impl EnvironmentResources {
                         record.environment_id.clone(),
                         Row {
                             record,
-                            status: EnvironmentStatus::Open,
-                            idle_since: Instant::now(),
+                            status: EnvironmentStatus::Unknown,
                         },
                     );
                 }
@@ -96,7 +89,6 @@ impl EnvironmentResources {
             Row {
                 record,
                 status: EnvironmentStatus::Open,
-                idle_since: Instant::now(),
             },
         );
         Ok(())
@@ -157,20 +149,6 @@ impl EnvironmentResources {
         let changed = row.status != status;
         row.status = status;
         Ok(changed)
-    }
-
-    pub fn touch_idle(&self, environment_id: &EnvironmentId) -> Result<(), brain::Error> {
-        if let Some(row) = self.lock()?.get_mut(environment_id) {
-            row.idle_since = Instant::now();
-        }
-        Ok(())
-    }
-
-    pub fn idle_since(
-        &self,
-        environment_id: &EnvironmentId,
-    ) -> Result<Option<Instant>, brain::Error> {
-        Ok(self.lock()?.get(environment_id).map(|row| row.idle_since))
     }
 
     pub fn remove(&self, environment_id: &EnvironmentId) -> Result<(), brain::Error> {
@@ -238,8 +216,7 @@ mod tests {
             session_id: SessionId::new("ses_owner"),
             environment_id: EnvironmentId::new(id),
             configuration: serde_json::json!({"image": "ubuntu"}),
-            managed: true,
-            idle_ttl_ms: Some(1_000),
+
             created_at_ms: 1,
             resources: Default::default(),
         }

@@ -1,10 +1,8 @@
-//! Session-owned Environments: created during session admission, detached when the
-//! session ends, and closed on idle expiry or session deletion.
+//! Session Environment bindings. Providers own physical lifetime; Brain records lifecycle calls.
 
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
-    time::Duration,
 };
 
 use brain::{CreatingSession, Session, SessionStore};
@@ -13,7 +11,6 @@ use brain_protocol::{
     EnvironmentReceipt, EnvironmentRequest, EnvironmentStatus, Provision, SessionConfig,
     SessionEnvironment, ToolManifest, codes,
 };
-use tokio::sync::broadcast;
 
 use super::{EnvironmentAdapter, EnvironmentRecord, EnvironmentResources, resources};
 
@@ -23,31 +20,18 @@ use super::{EnvironmentAdapter, EnvironmentRecord, EnvironmentResources, resourc
 pub type SessionBindingValues = HashMap<EnvironmentId, BTreeMap<String, String>>;
 
 /// Where an environment is reached.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DirectoryEntry {
     pub binding: EnvironmentBinding,
     pub endpoint: String,
-}
-
-/// Something that happened to an environment that its attached sessions should hear.
-#[derive(Clone, Debug)]
-pub struct EnvironmentNotice {
-    pub environment_id: EnvironmentId,
-    pub kind: EnvironmentNoticeKind,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EnvironmentNoticeKind {
-    Closed,
-    Unreachable,
+    adapter: Arc<dyn EnvironmentAdapter>,
 }
 
 pub struct EnvironmentRegistry {
     resources: Arc<EnvironmentResources>,
     endpoint: String,
     adapter: Arc<dyn EnvironmentAdapter>,
-    notices: broadcast::Sender<EnvironmentNotice>,
-    default_idle_ttl: Duration,
+    routes: HashMap<String, (String, Arc<dyn EnvironmentAdapter>)>,
 }
 
 impl EnvironmentRegistry {
@@ -55,23 +39,37 @@ impl EnvironmentRegistry {
         resources: Arc<EnvironmentResources>,
         endpoint: impl Into<String>,
         adapter: Arc<dyn EnvironmentAdapter>,
-        default_idle_ttl: Duration,
     ) -> Self {
         Self {
             resources,
             endpoint: endpoint.into(),
             adapter,
-            notices: broadcast::Sender::new(256),
-            default_idle_ttl,
+            routes: HashMap::new(),
         }
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<EnvironmentNotice> {
-        self.notices.subscribe()
     }
 
     pub fn resources(&self) -> &Arc<EnvironmentResources> {
         &self.resources
+    }
+
+    /// Deployment-granted routing. Session configuration can select a driver, never its credentials.
+    pub fn with_route(
+        mut self,
+        driver: String,
+        endpoint: String,
+        adapter: Arc<dyn EnvironmentAdapter>,
+    ) -> Result<Self, brain::Error> {
+        if driver.is_empty()
+            || driver == "brain_wasm"
+            || endpoint.trim().is_empty()
+            || self.routes.contains_key(&driver)
+        {
+            return Err(brain::Error::InvalidState(
+                "invalid or duplicate Environment route".into(),
+            ));
+        }
+        self.routes.insert(driver, (endpoint, adapter));
+        Ok(self)
     }
 
     /// Opens an Environment as part of session admission, recording setup before send.
@@ -81,7 +79,12 @@ impl EnvironmentRegistry {
         specification: &SessionEnvironment,
     ) -> Result<EnvironmentRecord, brain::Error> {
         let native = brain_wasm_resources(&specification.configuration)?;
-        if native.is_none() && self.endpoint.trim().is_empty() {
+        let routed = specification
+            .configuration
+            .get("driver")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|driver| self.routes.contains_key(driver));
+        if native.is_none() && !routed && self.endpoint.trim().is_empty() {
             return Err(brain::Error::InvalidState(
                 "no Environment endpoint is configured".into(),
             ));
@@ -91,12 +94,11 @@ impl EnvironmentRegistry {
             session_id: creation.session_id().clone(),
             environment_id: environment_id.clone(),
             configuration: specification.configuration.clone(),
-            managed: specification.managed,
-            idle_ttl_ms: specification.idle_ttl_ms,
+
             created_at_ms: resources::wall_clock_ms(),
             resources: Default::default(),
         })?;
-        let entry = self.entry(&environment_id);
+        let entry = self.entry(&environment_id)?;
         let receipt = self
             .lifecycle(
                 creation,
@@ -107,13 +109,7 @@ impl EnvironmentRegistry {
                 None,
                 codes::event::call::ENVIRONMENT_SETUP,
             )
-            .await;
-        let receipt = match receipt {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                return Err(error);
-            }
-        };
+            .await?;
         let declared = receipt_declaration(&receipt);
         self.resources.update(&environment_id, |record| {
             record.resources = declared;
@@ -122,32 +118,6 @@ impl EnvironmentRegistry {
 
     pub fn ids(&self) -> Result<Vec<EnvironmentId>, brain::Error> {
         self.resources.ids()
-    }
-
-    /// How long a managed environment may sit unattached before it is closed; `None`
-    /// for an unmanaged one or one whose TTL is zero.
-    pub fn idle_ttl(
-        &self,
-        environment_id: &EnvironmentId,
-    ) -> Result<Option<Duration>, brain::Error> {
-        let Some(record) = self.resources.get(environment_id)? else {
-            return Ok(None);
-        };
-        if !record.managed {
-            return Ok(None);
-        }
-        let ttl = record
-            .idle_ttl_ms
-            .map(Duration::from_millis)
-            .unwrap_or(self.default_idle_ttl);
-        Ok((!ttl.is_zero()).then_some(ttl))
-    }
-
-    pub fn idle_since(
-        &self,
-        environment_id: &EnvironmentId,
-    ) -> Result<Option<std::time::Instant>, brain::Error> {
-        self.resources.idle_since(environment_id)
     }
 
     /// Tears the environment down and forgets it. Attached sessions hear
@@ -191,10 +161,13 @@ impl EnvironmentRegistry {
         self.operation(environment_id, EnvironmentRequest::Teardown, store)
             .await?;
         self.resources.remove(environment_id)?;
-        let _ = self.notices.send(EnvironmentNotice {
-            environment_id: environment_id.clone(),
-            kind: EnvironmentNoticeKind::Closed,
-        });
+        store.append_sync(
+            &[brain::AppendRecord::new(
+                codes::event::ENVIRONMENT_CLOSED,
+                serde_json::json!({"environment_id": environment_id}),
+            )],
+            brain::SessionUpdate::default(),
+        )?;
         Ok(())
     }
 
@@ -241,7 +214,7 @@ impl EnvironmentRegistry {
                         attachment.environment_id
                     ))
                 })?;
-            let entry = self.entry(&attachment.environment_id);
+            let entry = self.entry(&attachment.environment_id)?;
             let attachment_id = AttachmentId::new(brain::random_id("att"));
             let bindings = binding_values
                 .remove(&attachment.environment_id)
@@ -319,6 +292,9 @@ impl EnvironmentRegistry {
             }
             Err(error) => {
                 creation.record_call_failed(kind, sequence, &error)?;
+                if matches!(error, brain::Error::Ambiguous(_)) {
+                    creation.record(codes::event::ENVIRONMENT_UNREACHABLE, serde_json::json!({"environment_id": operation.environment_id, "sequence": sequence}))?;
+                }
                 Err(error)
             }
         }
@@ -331,7 +307,7 @@ impl EnvironmentRegistry {
         binding: &EnvironmentBinding,
         operation: &EnvironmentOperation,
     ) -> Result<EnvironmentReceipt, brain::Error> {
-        let entry = self.entry(&binding.environment_id);
+        let entry = self.entry(&binding.environment_id)?;
         self.send(&entry, operation).await
     }
 
@@ -365,7 +341,7 @@ impl EnvironmentRegistry {
             .ok_or_else(|| {
                 brain::Error::InvalidState("Environment is not attached to this session".into())
             })?;
-        let entry = self.entry(environment_id);
+        let entry = self.entry(environment_id)?;
         let request = EnvironmentRequest::Call { name, input };
         let sequence = session
             .record_call_started(codes::event::call::ENVIRONMENT_CALL, &request)
@@ -392,19 +368,25 @@ impl EnvironmentRegistry {
                 session
                     .record_call_failed(codes::event::call::ENVIRONMENT_CALL, sequence, &error)
                     .await?;
+                if matches!(error, brain::Error::Ambiguous(_)) {
+                    session.record(codes::event::ENVIRONMENT_UNREACHABLE, serde_json::json!({"environment_id": environment_id, "sequence": sequence})).await?;
+                }
                 Err(error)
             }
             Err(error) => {
                 session
                     .record_call_failed(codes::event::call::ENVIRONMENT_CALL, sequence, &error)
                     .await?;
+                if matches!(error, brain::Error::Ambiguous(_)) {
+                    session.record(codes::event::ENVIRONMENT_UNREACHABLE, serde_json::json!({"environment_id": environment_id, "sequence": sequence})).await?;
+                }
                 Err(error)
             }
         }
     }
 
     /// Detaches the session from every environment it was attached to. The environments
-    /// stay: closing one is the owner's or the idle sweeper's decision.
+    /// stay until the provider expires them or the owner requests teardown.
     pub async fn release_session(
         &self,
         session: &Session,
@@ -431,7 +413,7 @@ impl EnvironmentRegistry {
                 }
                 continue;
             }
-            let entry = self.entry(&attachment.environment_id);
+            let entry = self.entry(&attachment.environment_id)?;
             self.session_lifecycle(
                 session,
                 &entry,
@@ -440,7 +422,6 @@ impl EnvironmentRegistry {
                 codes::event::call::ENVIRONMENT_DETACH,
             )
             .await?;
-            self.resources.touch_idle(&attachment.environment_id)?;
         }
         Ok(())
     }
@@ -466,6 +447,9 @@ impl EnvironmentRegistry {
             Ok(receipt) => session.record_call_ended(kind, sequence, &receipt).await,
             Err(error) => {
                 session.record_call_failed(kind, sequence, &error).await?;
+                if matches!(error, brain::Error::Ambiguous(_)) {
+                    session.record(codes::event::ENVIRONMENT_UNREACHABLE, serde_json::json!({"environment_id": operation.environment_id, "sequence": sequence})).await?;
+                }
                 Ok(())
             }
         }
@@ -485,7 +469,7 @@ impl EnvironmentRegistry {
             brain::SessionUpdate::default(),
         )?;
         let sequence = saved[0].sequence;
-        let entry = self.entry(environment_id);
+        let entry = self.entry(environment_id)?;
         let operation = EnvironmentOperation {
             sequence,
             environment_id: environment_id.clone(),
@@ -534,22 +518,15 @@ impl EnvironmentRegistry {
                 _ => Ok(EnvironmentReceipt::Accepted { resources }),
             };
         }
-        let sent = self
+        let sent = entry
             .adapter
             .send(&entry.endpoint, &entry.binding, operation)
             .await;
         let environment_id = &entry.binding.environment_id;
         match &sent {
             Err(brain::Error::Ambiguous(_)) => {
-                if self
-                    .resources
-                    .set_status(environment_id, EnvironmentStatus::Unreachable)?
-                {
-                    let _ = self.notices.send(EnvironmentNotice {
-                        environment_id: environment_id.clone(),
-                        kind: EnvironmentNoticeKind::Unreachable,
-                    });
-                }
+                self.resources
+                    .set_status(environment_id, EnvironmentStatus::Unreachable)?;
             }
             Ok(_) => {
                 self.resources
@@ -560,14 +537,28 @@ impl EnvironmentRegistry {
         sent
     }
 
-    fn entry(&self, environment_id: &EnvironmentId) -> DirectoryEntry {
-        DirectoryEntry {
+    fn entry(&self, environment_id: &EnvironmentId) -> Result<DirectoryEntry, brain::Error> {
+        let record = self
+            .resources
+            .get(environment_id)?
+            .ok_or_else(|| brain::Error::NotFound("Environment does not exist".into()))?;
+        let route = record
+            .configuration
+            .get("driver")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|driver| self.routes.get(driver));
+        let (endpoint, adapter) = route
+            .map_or((&self.endpoint, &self.adapter), |(endpoint, adapter)| {
+                (endpoint, adapter)
+            });
+        Ok(DirectoryEntry {
             binding: EnvironmentBinding {
                 environment_id: environment_id.clone(),
                 directory_generation: 1,
             },
-            endpoint: self.endpoint.clone(),
-        }
+            endpoint: endpoint.clone(),
+            adapter: adapter.clone(),
+        })
     }
 }
 
@@ -879,8 +870,7 @@ mod tests {
                 session_id: store.session_id().clone(),
                 environment_id: id.clone(),
                 configuration: serde_json::json!({}),
-                managed: true,
-                idle_ttl_ms: None,
+
                 created_at_ms: 0,
                 resources: Default::default(),
             })
@@ -889,12 +879,8 @@ mod tests {
             store: store.clone(),
             calls: AtomicUsize::new(0),
         });
-        let registry = EnvironmentRegistry::new(
-            resources.clone(),
-            "http://environment",
-            adapter.clone(),
-            Duration::from_secs(60),
-        );
+        let registry =
+            EnvironmentRegistry::new(resources.clone(), "http://environment", adapter.clone());
         assert!(registry.close(&id, &*store, false).await.is_err());
         assert!(resources.get(&id).unwrap().is_some());
         assert!(registry.close(&id, &*store, false).await.is_err());
@@ -912,6 +898,65 @@ mod tests {
         registry.close(&id, &*store, true).await.unwrap();
         assert_eq!(adapter.calls.load(Ordering::SeqCst), 2);
         assert!(resources.get(&id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn deployment_routes_keep_endpoints_and_adapters_separate() {
+        use super::*;
+        struct Route(&'static str);
+        #[async_trait::async_trait]
+        impl EnvironmentAdapter for Route {
+            async fn send(
+                &self,
+                endpoint: &str,
+                _: &EnvironmentBinding,
+                _: &EnvironmentOperation,
+            ) -> Result<EnvironmentReceipt, brain::Error> {
+                assert_eq!(endpoint, self.0);
+                Ok(EnvironmentReceipt::Result {
+                    output: serde_json::json!(endpoint),
+                })
+            }
+        }
+        let path = std::env::temp_dir().join(format!("brain-routes-{}", rand::random::<u64>()));
+        let resources = Arc::new(EnvironmentResources::open(&path).unwrap());
+        let mut registry =
+            EnvironmentRegistry::new(resources.clone(), "gateway", Arc::new(Route("gateway")));
+        for driver in ["first", "second"] {
+            registry = registry
+                .with_route(driver.into(), driver.into(), Arc::new(Route(driver)))
+                .unwrap();
+            resources
+                .create(EnvironmentRecord {
+                    session_id: brain_protocol::SessionId::new("ses_routes"),
+                    environment_id: EnvironmentId::new(driver),
+                    configuration: serde_json::json!({"driver": driver, "endpoint": "ungranted"}),
+                    created_at_ms: 0,
+                    resources: Default::default(),
+                })
+                .unwrap();
+        }
+        for driver in ["first", "second"] {
+            let entry = registry.entry(&EnvironmentId::new(driver)).unwrap();
+            let operation = EnvironmentOperation {
+                sequence: 1,
+                environment_id: entry.binding.environment_id.clone(),
+                session_id: brain_protocol::SessionId::new("ses_routes"),
+                attachment_id: None,
+                request: EnvironmentRequest::Call {
+                    name: "status".into(),
+                    input: serde_json::json!({}),
+                },
+            };
+            let receipt = registry.execute(&entry.binding, &operation).await.unwrap();
+            assert!(matches!(receipt, EnvironmentReceipt::Result { output } if output == driver));
+        }
+        assert!(
+            registry
+                .with_route("first".into(), "changed".into(), Arc::new(Route("changed")))
+                .is_err()
+        );
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

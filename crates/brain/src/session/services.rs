@@ -11,6 +11,8 @@ use crate::Error;
 /// loop propagates it by returning an error from the turn.
 #[async_trait]
 pub trait TurnServices: Send + Sync {
+    /// One finite page after a journal sequence. Reading does not advance the activation cursor.
+    async fn events(&self, after: u64) -> Result<brain_protocol::EventPage, Error>;
     /// One model call. What the request leaves unsaid is what the session was created
     /// with; the messages are the transcript as the loop wants the model to see it, and
     /// Brain journals how they differ from what it last recorded.

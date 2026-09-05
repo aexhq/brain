@@ -21,6 +21,7 @@ export type {
   ToolRunContext,
 } from "./extensions.js";
 export { BrainError } from "./errors.js";
+export type { EventPage, ModelRequest, ModelResult, SessionTranscript, ToolResult } from "./generated/session.js";
 export type {
   AgentloopAdmission,
   AgentloopBinding,

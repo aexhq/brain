@@ -28,6 +28,62 @@ use crate::{
 const JOURNAL_DIR: &str = "journal";
 const MAX_EVENT_PAGE_BYTES: u64 = 8 * 1024 * 1024;
 
+#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
+struct SegmentStamp {
+    id: u64,
+    bytes: u64,
+    modified: SystemTime,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Checkpoint<S> {
+    state: S,
+    segments: Vec<SegmentStamp>,
+}
+
+fn segment_stamps(directory: &Path) -> Result<Vec<SegmentStamp>, Error> {
+    let mut stamps = Vec::new();
+    for entry in fs::read_dir(directory.join(JOURNAL_DIR)).map_err(io_error)? {
+        let entry = entry.map_err(io_error)?;
+        let path = entry.path();
+        if path
+            .extension()
+            .is_none_or(|extension| extension != "segment")
+        {
+            continue;
+        }
+        let id = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.parse().ok())
+            .ok_or_else(|| Error::Journal("invalid segment name".into()))?;
+        let metadata = entry.metadata().map_err(io_error)?;
+        stamps.push(SegmentStamp {
+            id,
+            bytes: metadata.len(),
+            modified: metadata.modified().map_err(io_error)?,
+        });
+    }
+    stamps.sort_by_key(|stamp| stamp.id);
+    Ok(stamps)
+}
+
+fn read_checkpoint(directory: &Path) -> Option<Checkpoint<State>> {
+    let bytes = fs::read(directory.join("checkpoint")).ok()?;
+    let (check, payload) = bytes.split_at_checked(8)?;
+    if u64::from_le_bytes(check.try_into().ok()?) != xxhash_rust::xxh3::xxh3_64(payload) {
+        return None;
+    }
+    let checkpoint: Checkpoint<State> = serde_json::from_slice(payload).ok()?;
+    if checkpoint.segments != segment_stamps(directory).ok()?
+        || checkpoint.state.next_sequence != checkpoint.state.row.through_sequence
+        || checkpoint.state.events.len() as u64 != checkpoint.state.row.through_sequence
+    {
+        return None;
+    }
+    Some(checkpoint)
+}
+
 pub struct LocalSessionStore {
     session_id: SessionId,
     directory: PathBuf,
@@ -36,6 +92,7 @@ pub struct LocalSessionStore {
     state: Arc<Mutex<State>>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct State {
     row: SessionRow,
     last_recorded_at_ms: u64,
@@ -44,9 +101,36 @@ struct State {
     /// `events[i]` holds the public Event at sequence `i + 1`; pure transcript appends
     /// and private state mutations leave `None` at their sequence.
     events: Vec<Option<Location>>,
-    /// Transcript and Agentloop-state entries in order.
-    journal: Vec<(u64, Location)>,
+    folded: Folded,
+    pending: BTreeMap<u64, String>,
     transcript_len: usize,
+}
+
+impl State {
+    fn observe_effect(&mut self, sequence: u64, kind: &str, payload: &serde_json::Value) {
+        if let Some(kind) = kind.strip_suffix("_started") {
+            if matches!(
+                kind,
+                "model_call"
+                    | "tool_call"
+                    | "tool_cancel"
+                    | "environment_setup"
+                    | "environment_attach"
+                    | "environment_call"
+                    | "environment_detach"
+                    | "environment_teardown"
+            ) {
+                self.pending.insert(sequence, kind.to_owned());
+            }
+        } else if (kind.ends_with("_ended") || kind.ends_with("_failed"))
+            && let Some(sequence) = payload.get("sequence").and_then(serde_json::Value::as_u64)
+            && self.pending.get(&sequence).is_some_and(|pending| {
+                kind == format!("{pending}_ended") || kind == format!("{pending}_failed")
+            })
+        {
+            self.pending.remove(&sequence);
+        }
+    }
 }
 
 impl LocalSessionStore {
@@ -89,7 +173,8 @@ impl LocalSessionStore {
                 next_sequence: 0,
                 next_recorded_at_ms: 0,
                 events: Vec::new(),
-                journal: Vec::new(),
+                folded: Folded::default(),
+                pending: BTreeMap::new(),
                 transcript_len: 0,
             })),
         }))
@@ -113,6 +198,27 @@ impl LocalSessionStore {
                 .ok_or_else(|| Error::Journal("session directory has no name".into()))?,
         );
         let owner: Arc<str> = Arc::from(session_id.as_str());
+        if let Some(checkpoint) = read_checkpoint(directory)
+            .filter(|checkpoint| checkpoint.state.row.session_id == session_id)
+        {
+            let (segment, offset) = checkpoint
+                .segments
+                .last()
+                .map_or((0, 0), |stamp| (stamp.id, stamp.bytes));
+            return Ok(Arc::new(Self {
+                session_id,
+                directory: directory.to_path_buf(),
+                journal: Arc::new(SegmentLog::from_checkpoint(
+                    &directory.join(JOURNAL_DIR),
+                    owner,
+                    writer,
+                    segment,
+                    offset,
+                )),
+                feed,
+                state: Arc::new(Mutex::new(checkpoint.state)),
+            }));
+        }
         let mut state = State {
             row: SessionRow {
                 session_id,
@@ -124,7 +230,8 @@ impl LocalSessionStore {
             next_sequence: 0,
             next_recorded_at_ms: 0,
             events: Vec::new(),
-            journal: Vec::new(),
+            folded: Folded::default(),
+            pending: BTreeMap::new(),
             transcript_len: 0,
         };
         let journal = SegmentLog::open(
@@ -144,9 +251,15 @@ impl LocalSessionStore {
                     let entry = frame.decode::<JournalEntry>()?;
                     let visible = transcript_replaced(&mut state.transcript_len, &entry);
                     state.events.push(visible.then_some(location));
-                    state.journal.push((frame.sequence, location));
+                    state.folded.apply(entry);
                 } else {
                     state.events.push(Some(location));
+                    if frame.kind.ends_with("_started")
+                        || frame.kind.ends_with("_ended")
+                        || frame.kind.ends_with("_failed")
+                    {
+                        state.observe_effect(frame.sequence, frame.kind, &frame.payload()?);
+                    }
                     if let Some(lifecycle) = lifecycle_of(&frame)? {
                         apply_lifecycle(&mut state.row, lifecycle);
                     }
@@ -208,40 +321,10 @@ impl LocalSessionStore {
     /// Records unknown outcomes for interrupted effects and closes unfinished creation,
     /// turns, or ending without replaying their effects. Returns whether records were added.
     pub fn interrupt_unfinished_turn(&self) -> Result<bool, Error> {
-        let status = self.lock()?.row.status.clone();
-        let mut pending = BTreeMap::new();
-        let mut after = 0;
-        loop {
-            let records = self.records_after(after, 1000)?;
-            if records.is_empty() {
-                break;
-            }
-            for record in records {
-                after = record.sequence;
-                if let Some(kind) = record.kind.strip_suffix("_started") {
-                    if matches!(
-                        kind,
-                        "model_call"
-                            | "tool_call"
-                            | "tool_cancel"
-                            | "environment_setup"
-                            | "environment_attach"
-                            | "environment_call"
-                            | "environment_detach"
-                            | "environment_teardown"
-                    ) {
-                        pending.insert(record.sequence, kind.to_owned());
-                    }
-                } else if (record.kind.ends_with("_ended") || record.kind.ends_with("_failed"))
-                    && let Some(sequence) = record
-                        .payload
-                        .get("sequence")
-                        .and_then(serde_json::Value::as_u64)
-                {
-                    pending.remove(&sequence);
-                }
-            }
-        }
+        let (status, pending) = {
+            let state = self.lock()?;
+            (state.row.status.clone(), state.pending.clone())
+        };
         let failure = serde_json::to_value(codes::Failure::new(codes::failure::INTERRUPTED,
             "Brain restarted before the outcome was recorded; this operation will not be replayed").ambiguous(true)).map_err(json_error)?;
         let mut records = pending
@@ -315,6 +398,25 @@ impl LocalSessionStore {
 
     pub fn directory(&self) -> &Path {
         &self.directory
+    }
+
+    /// Saves a disposable projection at a quiescent boundary. The journal remains canonical:
+    /// missing, damaged, or stale checkpoints are rebuilt on open. No additional durable commit.
+    pub fn checkpoint(&self) -> Result<(), Error> {
+        let state = self.lock()?;
+        if state.next_sequence != state.row.through_sequence {
+            return Ok(());
+        }
+        let checkpoint = Checkpoint {
+            state: &*state,
+            segments: segment_stamps(&self.directory)?,
+        };
+        let payload = serde_json::to_vec(&checkpoint).map_err(json_error)?;
+        let mut bytes = xxhash_rust::xxh3::xxh3_64(&payload).to_le_bytes().to_vec();
+        bytes.extend_from_slice(&payload);
+        let temporary = self.directory.join("checkpoint.tmp");
+        fs::write(&temporary, bytes).map_err(io_error)?;
+        fs::rename(temporary, self.directory.join("checkpoint")).map_err(io_error)
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>, Error> {
@@ -393,8 +495,9 @@ impl LocalSessionStore {
                             state.row.through_sequence + 1
                         ));
                     }
-                    for location in locations {
+                    for (location, record) in locations.into_iter().zip(&saved) {
                         state.events.push(Some(location));
+                        state.observe_effect(record.sequence, &record.kind, &record.payload);
                     }
                     state.row.through_sequence += saved.len() as u64;
                     state.last_recorded_at_ms = recorded_at_ms;
@@ -495,7 +598,7 @@ impl LocalSessionStore {
                         let sequence = first_sequence + offset as u64;
                         let visible = transcript_replaced(&mut state.transcript_len, &entry);
                         state.events.push(visible.then_some(location));
-                        state.journal.push((sequence, location));
+                        state.folded.apply(entry.clone());
                         if visible {
                             projected.push(project_transcript_replacement(
                                 session_id.clone(),
@@ -619,28 +722,9 @@ impl SessionStore for LocalSessionStore {
     }
 
     fn fold(&self) -> Result<Folded, Error> {
-        let (locations, through) = {
-            let state = self.lock()?;
-            (
-                state
-                    .journal
-                    .iter()
-                    .map(|(_, location)| *location)
-                    .collect::<Vec<_>>(),
-                state.row.through_sequence,
-            )
-        };
-        let mut folded = Folded {
-            transcript: Vec::new(),
-            slots: BTreeMap::new(),
-            through_sequence: through,
-        };
-        for entry in self
-            .journal
-            .read_many(&locations, |frame| frame.decode::<JournalEntry>())?
-        {
-            folded.apply(entry);
-        }
+        let state = self.lock()?;
+        let mut folded = state.folded.clone();
+        folded.through_sequence = state.row.through_sequence;
         Ok(folded)
     }
 
@@ -659,7 +743,9 @@ impl SessionStore for LocalSessionStore {
             let state = self.lock()?;
             let mut wanted = Vec::with_capacity(limit.min(state.events.len()));
             let mut bytes = 0_u64;
-            let mut sequence = after + 1;
+            let Some(mut sequence) = after.checked_add(1) else {
+                return Ok(Vec::new());
+            };
             while wanted.len() < limit {
                 let Some(slot) = state.events.get(sequence as usize - 1) else {
                     break;

@@ -10,8 +10,9 @@ pub struct LoopLimits {
     pub linear_memory_bytes: usize,
     /// Wasmtime work units one invocation may consume. Host and WASI waits consume none.
     pub fuel: u64,
-    /// Turns a worker runs at once. Each holds one fresh Wasm Store and instance, so
-    /// this times `linear_memory_bytes` is the guest linear-memory ceiling.
+    /// Capacity per invocation class: this many Agentloops and this many native Tools.
+    /// Each retains a fresh Store during host waits; the combined linear-memory ceiling
+    /// is twice this count times `linear_memory_bytes`.
     pub concurrent_turns_per_worker: usize,
 }
 

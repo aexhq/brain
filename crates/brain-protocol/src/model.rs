@@ -21,7 +21,7 @@ pub struct ModelSelection {
     pub api_key: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRequest {
     /// The system prompt for this call. Absent means the one the session was created
@@ -40,8 +40,7 @@ pub struct ModelRequest {
     pub max_output_tokens: Option<u32>,
 }
 
-/// Dialect-neutral streaming events. Journaled verbatim in `model_result`, so
-/// the journal never learns a provider's frame shapes.
+/// Dialect-neutral live observations; the completed model result is journaled separately.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ModelStreamEvent {
@@ -81,7 +80,7 @@ pub enum ModelStreamEvent {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct ModelResult {
     pub message: Message,
     pub stop_reason: StopReason,

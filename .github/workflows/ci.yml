@@ -100,13 +100,29 @@ jobs:
           set -euo pipefail
           cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
           cargo build --manifest-path tests/fixtures/diagnostic-tool/Cargo.toml --target wasm32-wasip2 --release
+          cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release
           cp tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm "$RUNNER_TEMP/diagnostic-agentloop.wasm"
           cp tests/fixtures/diagnostic-tool/target/wasm32-wasip2/release/diagnostic_tool.wasm "$RUNNER_TEMP/diagnostic-tool.wasm"
+          cp examples/reference-agentloop/target/wasm32-wasip2/release/reference_agentloop.wasm "$RUNNER_TEMP/reference-agentloop.wasm"
       - name: Admit and activate through the real Linux worker process
         env:
           BRAIN_TEST_AGENTLOOP_PACKAGE: ${{ runner.temp }}/diagnostic-agentloop.wasm
           BRAIN_TEST_TOOL_COMPONENT: ${{ runner.temp }}/diagnostic-tool.wasm
+          BRAIN_TEST_REFERENCE_AGENTLOOP: ${{ runner.temp }}/reference-agentloop.wasm
         run: cargo test -p brain-loophost --features integration-tests --test worker_process --test in_process
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.23.2"
+          cache: npm
+      - run: npm ci && npm run build
+      - run: cargo build -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
+      - name: Exercise lazy providers, cold history, and retained sessions through HTTP
+        env:
+          BRAIN_TEST_SERVER: ${{ github.workspace }}/target/debug/brain
+          BRAIN_TEST_WORKER: ${{ github.workspace }}/target/debug/brain-loop-worker
+          BRAIN_TEST_REFERENCE_AGENTLOOP: ${{ runner.temp }}/reference-agentloop.wasm
+        run: node tests/release/runtime.mjs
 
   image-smoke:
     runs-on: ubuntu-24.04

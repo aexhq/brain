@@ -4,6 +4,41 @@ Decisions that change how Brain behaves, recorded before the code changes. Each 
 we decided and why. When a decision is reversed, add a new entry rather than editing the old one.
 Every entry below was implemented in the pull request that added it.
 
+## 2026-09-05: Standalone, ephemeral execution
+
+These decisions supersede earlier lifecycle and residency choices below.
+
+- Brain is a minimal, language-neutral runtime. Aex consumes its public contracts like any third
+  party. Placement, workflow durability, tool policy, and cloud provisioning belong in extensions
+  or platforms. No heavy workflow dependency is required.
+- Prepare and admit Wasm artifacts before session creation. Cache compiled and prelinked code;
+  activate each invocation in a fresh store. Parent turns and their nested tools have separate
+  execution permits, so saturated parents cannot prevent child execution.
+- Release the session actor and cached journal state after each turn by default. An explicit
+  session idle TTL can keep execution warm; zero means no automatic suspension. History and
+  transcript reads need no activation. Startup does not reopen every session journal.
+- A checksummed, disposable checkpoint accelerates reopening. The canonical journal remains the
+  source of truth. This avoids decoding unchanged history, not its growing index or transcript.
+- Acknowledge local commits only after the supported filesystem flush boundary. Recover an
+  unfinished turn as interrupted and expose that Event without automatically running the loop.
+  Never retry tool or environment effects automatically; uncertainty stays unknown. A caller or
+  model may explicitly choose a new action. External commit services remain possible through
+  the store interface and are post-MVP.
+- Agentloops can page Events and append their own observations. Official loops expose interruption
+  and environment failures to the model. Live subscriptions are scoped to one session; durable
+  Events come from the journal, while historical telemetry requires a configured sink.
+- Tools keep fixed environment bindings for the MVP. Environment providers can allocate on first
+  invoke and own TTL, restart, and externally attached resource policy. Brain does not restore a
+  browser or sandbox's lost state. Reloaded environment metadata starts with unknown status.
+- Named environment routes and their credentials are deployment grants. A session cannot choose
+  an arbitrary destination for a server credential. Wasm capabilities remain restricted; stronger
+  process or VM isolation and tenant resource fairness are post-MVP platform choices.
+- The entire official `tool-env` tool, mutable bindings, tools without bindings, automatic placement,
+  configurable resource bounds, and suspension inside model/tool waits remain post-MVP. The
+  roadmap includes inspection and explicit lifecycle operations for model-driven recovery.
+- This is a pre-launch clean break: the local data format is `brain-data/2`, and contracts and
+  official consumers move together. No compatibility shims or old-data migration are provided.
+
 ## 2026-09-02: The agent loop owns what the model sees
 
 **Decided.** The creator sets the system prompt, the response format, and the tool catalogue at

@@ -24,6 +24,7 @@ pub struct WorkerService {
     agentloops: RwLock<HashMap<String, Arc<AdmittedAgentloop>>>,
     tools: RwLock<HashMap<String, Arc<AdmittedTool>>>,
     running: Semaphore,
+    running_tools: Semaphore,
 }
 
 type Outbound = (HostCall, Option<oneshot::Sender<Result<String, TurnError>>>);
@@ -59,11 +60,13 @@ fn cancelled() -> TurnError {
 impl WorkerService {
     pub fn new(limits: LoopLimits, allowed_imports: Vec<String>) -> Result<Self, String> {
         let running = Semaphore::new(limits.concurrent_turns_per_worker.max(1));
+        let running_tools = Semaphore::new(limits.concurrent_turns_per_worker.max(1));
         Ok(Self {
             engine: Arc::new(AdmissionEngine::new(limits, allowed_imports)?),
             agentloops: RwLock::new(HashMap::new()),
             tools: RwLock::new(HashMap::new()),
             running,
+            running_tools,
         })
     }
 
@@ -250,7 +253,7 @@ impl WorkerService {
             .await;
             return;
         };
-        let Ok(_slot) = self.running.acquire().await else {
+        let Ok(_slot) = self.running_tools.acquire().await else {
             let _ = crate::worker_write(
                 stream,
                 &failed("tool_failed", "the worker is shutting down".into()),

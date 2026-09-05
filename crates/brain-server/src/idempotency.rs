@@ -38,6 +38,26 @@ struct Stored {
     expires_at_ms: u64,
 }
 
+impl Stored {
+    fn replay(
+        &self,
+        request: &Identity,
+        now: u64,
+    ) -> Result<Option<serde_json::Value>, brain::Error> {
+        if self.response.is_some() && self.expires_at_ms <= now {
+            return Ok(None);
+        }
+        if &self.request != request {
+            return Err(brain::Error::Conflict(
+                "idempotency key reused with different request".into(),
+            ));
+        }
+        self.response.clone().map(Some).ok_or_else(|| brain::Error::Ambiguous(
+            "this request was already accepted but its outcome is not recorded; it will not be executed again".into()
+        ))
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Record {
     scope: String,
@@ -46,6 +66,20 @@ struct Record {
 }
 
 impl IdempotencyStore {
+    /// Reads an answer without claiming work. Content-addressed artifact preparation is repeatable.
+    pub fn replay<T: serde::Serialize>(
+        &self,
+        scope: &str,
+        key: &str,
+        request: &T,
+    ) -> Result<Option<serde_json::Value>, brain::Error> {
+        let request = digest(request)?;
+        let now = wall_clock_ms()?;
+        self.lock()?
+            .entries
+            .get(&(scope.into(), key.into()))
+            .map_or(Ok(None), |stored| stored.replay(&request, now))
+    }
     pub fn open(path: &Path, retention: Duration) -> Result<Self, brain::Error> {
         let (log, records) = crate::persistence::open_log::<Record>(path)?;
         let now = wall_clock_ms()?;
@@ -65,7 +99,7 @@ impl IdempotencyStore {
     }
 
     /// Replays a completed answer or durably claims a new request before the caller acts.
-    pub fn get<T: serde::Serialize>(
+    pub fn replay_or_claim<T: serde::Serialize>(
         &self,
         scope: &str,
         key: &str,
@@ -75,22 +109,12 @@ impl IdempotencyStore {
         let now = wall_clock_ms()?;
         let mut state = self.lock()?;
         let entry = (scope.to_string(), key.to_string());
-        match state.entries.get(&entry) {
-            None => self.claim(&mut state, entry, request),
-            // Past its retention it is not a record any more. Dropped here rather than
-            // returned, so the caller executes the request instead of replaying an
-            // answer Brain has stopped promising to keep.
-            Some(stored) if stored.response.is_some() && stored.expires_at_ms <= now => {
-                state.entries.remove(&entry);
-                self.claim(&mut state, entry, request)
-            }
-            Some(stored) if stored.request != request => Err(brain::Error::Conflict(
-                "idempotency key reused with different request".into(),
-            )),
-            Some(stored) => stored.response.clone().map(Some).ok_or_else(|| brain::Error::Ambiguous(
-                "this request was already accepted but its outcome is not recorded; it will not be executed again".into()
-            )),
+        if let Some(stored) = state.entries.get(&entry)
+            && let Some(response) = stored.replay(&request, now)?
+        {
+            return Ok(Some(response));
         }
+        self.claim(&mut state, entry, request)
     }
 
     fn claim(
@@ -130,7 +154,8 @@ impl IdempotencyStore {
         let mut state = self.lock()?;
         let entry = (scope.to_string(), key.to_string());
         if state.entries.get(&entry).is_some_and(|stored| {
-            stored.request != request || (stored.response.is_some() && stored.expires_at_ms > now)
+            (stored.response.is_none() && stored.request != request)
+                || (stored.response.is_some() && stored.expires_at_ms > now)
         }) {
             return Err(brain::Error::Conflict(
                 "idempotency key already recorded".into(),
@@ -205,11 +230,20 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            store.get("create", "key", &"request").unwrap(),
+            store.replay_or_claim("create", "key", &"request").unwrap(),
             Some(serde_json::json!({"ok": true}))
         );
-        assert!(store.get("create", "key", &"other request").is_err());
-        assert_eq!(store.get("create", "other key", &"request").unwrap(), None);
+        assert!(
+            store
+                .replay_or_claim("create", "key", &"other request")
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .replay_or_claim("create", "other key", &"request")
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -218,7 +252,10 @@ mod tests {
             .join(format!("brain-requests-{}", rand::random::<u64>()))
             .join("requests.log");
         let store = IdempotencyStore::open(&path, DEFAULT_RETENTION).unwrap();
-        assert_eq!(store.get("create", "done", &"body").unwrap(), None);
+        assert_eq!(
+            store.replay_or_claim("create", "done", &"body").unwrap(),
+            None
+        );
         store
             .put(
                 "create",
@@ -227,19 +264,22 @@ mod tests {
                 &serde_json::json!({"id": "ses_1"}),
             )
             .unwrap();
-        assert_eq!(store.get("create", "pending", &"body").unwrap(), None);
+        assert_eq!(
+            store.replay_or_claim("create", "pending", &"body").unwrap(),
+            None
+        );
         drop(store);
         let store = IdempotencyStore::open(&path, DEFAULT_RETENTION).unwrap();
         assert_eq!(
-            store.get("create", "done", &"body").unwrap(),
+            store.replay_or_claim("create", "done", &"body").unwrap(),
             Some(serde_json::json!({"id": "ses_1"}))
         );
         assert!(matches!(
-            store.get("create", "pending", &"body"),
+            store.replay_or_claim("create", "pending", &"body"),
             Err(brain::Error::Ambiguous(_))
         ));
         assert!(matches!(
-            store.get("create", "pending", &"changed"),
+            store.replay_or_claim("create", "pending", &"changed"),
             Err(brain::Error::Conflict(_))
         ));
     }
@@ -250,7 +290,10 @@ mod tests {
         store
             .put("create", "key", &"request", &serde_json::json!({}))
             .unwrap();
-        assert_eq!(store.get("create", "key", &"request").unwrap(), None);
+        assert_eq!(
+            store.replay_or_claim("create", "key", &"request").unwrap(),
+            None
+        );
     }
 
     #[test]

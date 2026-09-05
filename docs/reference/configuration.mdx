@@ -20,21 +20,23 @@ Each option is a flag and an environment variable. Flags win.
 | `BRAIN_PROVIDERS_FILE` | `--providers-file` | none | JSON file of custom provider definitions merged over the catalog |
 | `BRAIN_ENVIRONMENT_BASE_URL` | `--environment-base-url` | empty | Default environment adapter endpoint |
 | `BRAIN_ENVIRONMENT_API_KEY` | `--environment-api-key` | none | Credential for that adapter |
+| `BRAIN_ENVIRONMENT_ROUTES_FILE` | `--environment-routes-file` | none | JSON map of driver names to deployment-granted `{ endpoint, api_key? }` routes |
 | `BRAIN_MAX_MODEL_CALLS` | `--max-model-calls` | `128` | Model calls one turn may make before the next fails with `model_call_limit` |
 | `BRAIN_MAX_TURN_SECS` | `--max-turn-secs` | `1800` | Seconds one turn may run before it is cancelled; `0` means no bound |
-| `BRAIN_SESSION_IDLE_TTL_SECS` | `--session-idle-ttl-secs` | `1800` | Seconds an idle session keeps its task and memory before it is suspended to disk; a session may set its own at create; `0` means never |
-| `BRAIN_ENVIRONMENT_IDLE_TTL_SECS` | `--environment-idle-ttl-secs` | `1800` | Seconds a managed environment may sit with no session attached before Brain closes it; an environment may set its own at create; `0` means never |
+| `BRAIN_SESSION_IDLE_TTL_SECS` | `--session-idle-ttl-secs` | none: release after each turn | Seconds an idle session keeps its task and memory before it is suspended to disk; a session may set its own at create; `0` means never |
 
 ## The data directory
 
-Brain owns everything under `BRAIN_DATA_DIR`. Its only format is `brain-data/1`, replaced in place
+Brain owns everything under `BRAIN_DATA_DIR`. Its only format is `brain-data/2`, replaced in place
 during pre-launch development. Start with an empty directory; Brain writes its format marker on
 initialization. There are no legacy layouts or migrations.
 
 ```
 brain-data/
-  format                              layout marker (`brain-data/1`)
+  .lock                               process-held single-writer lock
+  format                              layout marker (`brain-data/2`)
   sessions/{session_id}/journal/      one canonical journal per session
+  sessions/{session_id}/checkpoint    disposable current-state/index projection
   environments/{environment_id}.json environment records
   agentloops/                         admitted Agentloop and Tool Components
   native-workspaces/                  workspaces for Brain Wasm Environments
@@ -72,3 +74,14 @@ people.
 ## Health
 
 `GET /health/ready` answers when the server is serving.
+
+## Environment routing and expiry
+
+A routes file maps `configuration.driver` names to endpoints and optional bearer credentials.
+Each route uses a separate credential binding; session-supplied URLs never select a Brain credential.
+HTTPS and loopback HTTP are supported. [`examples/environment-routes.json`](https://github.com/aexhq/brain/blob/main/examples/environment-routes.json)
+shows two independent providers. The default endpoint can still serve a single gateway.
+
+Environment resource TTL belongs in that provider's configuration. Setup and attach may be logical
+operations that declare capabilities; allocation may wait until invoke. Brain neither restarts an
+expired resource automatically nor promises its files will survive a restart.

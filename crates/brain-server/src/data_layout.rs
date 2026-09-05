@@ -1,7 +1,7 @@
 //! Brain's v1 data directory.
 //!
 //! ```text
-//! {data_dir}/format             "brain-data/1"
+//! {data_dir}/format             "brain-data/2"
 //! {data_dir}/sessions/{id}/     one directory per session (see brain::LocalSessionStore)
 //! {data_dir}/agentloops         admitted Agentloop and Tool Components
 //! {data_dir}/native-workspaces  session workspaces for Brain Wasm Environments
@@ -11,7 +11,25 @@
 
 use std::path::{Path, PathBuf};
 
-pub const FORMAT: &str = "brain-data/1";
+pub const FORMAT: &str = "brain-data/2";
+
+/// Hold this handle for the server lifetime, before initializing any mutable stores.
+pub fn lock(data_dir: &Path) -> Result<std::fs::File, brain::Error> {
+    std::fs::create_dir_all(data_dir).map_err(io)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(data_dir.join(".lock"))
+        .map_err(io)?;
+    file.try_lock().map_err(|error| {
+        brain::Error::Journal(format!(
+            "data directory is already in use or cannot be locked: {error}"
+        ))
+    })?;
+    Ok(file)
+}
 
 /// Initializes an empty directory or validates its format, then returns the sessions directory.
 pub fn prepare(data_dir: &Path) -> Result<PathBuf, brain::Error> {
@@ -28,7 +46,11 @@ pub fn prepare(data_dir: &Path) -> Result<PathBuf, brain::Error> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if std::fs::read_dir(data_dir)
                 .map_err(io)?
-                .next()
+                .find(|entry| {
+                    !entry
+                        .as_ref()
+                        .is_ok_and(|entry| entry.file_name() == ".lock")
+                })
                 .transpose()
                 .map_err(io)?
                 .is_some()
@@ -39,11 +61,24 @@ pub fn prepare(data_dir: &Path) -> Result<PathBuf, brain::Error> {
                 )));
             }
             std::fs::write(&marker, format!("{FORMAT}\n")).map_err(io)?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&marker)
+                .map_err(io)?
+                .sync_all()
+                .map_err(io)?;
         }
         Err(error) => return Err(io(error)),
     }
     let sessions = data_dir.join("sessions");
     std::fs::create_dir_all(&sessions).map_err(io)?;
+    crate::persistence::sync_directory(data_dir)?;
+    if let Some(parent) = data_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        crate::persistence::sync_directory(parent)?;
+    }
     Ok(sessions)
 }
 
@@ -54,6 +89,17 @@ fn io(error: std::io::Error) -> brain::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_second_writer_is_refused_until_the_handle_is_dropped() {
+        let path = temporary("lock");
+        let first = lock(&path).unwrap();
+        prepare(&path).unwrap();
+        assert!(lock(&path).is_err());
+        drop(first);
+        drop(lock(&path).unwrap());
+        std::fs::remove_dir_all(path).unwrap();
+    }
 
     fn temporary(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

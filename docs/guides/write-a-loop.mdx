@@ -11,14 +11,16 @@ give the resulting bytes to `component(...)`.
 
 The source of truth is
 [`contracts/agentloop/v1/agentloop.wit`](https://github.com/aexhq/brain/blob/main/contracts/agentloop/v1/agentloop.wit).
-The Component exports `turn` and imports four Brain services:
+The Component exports `turn` and imports five Brain services:
 
+- `events(after)` reads a finite `EventPage`; continue from `next_cursor` for more history;
 - `model` performs a model call;
 - `dispatch` invokes one or more Tools;
 - `emit` appends an extension Event and returns its committed sequence;
 - `telemetry` publishes best-effort operational telemetry.
 
-JSON strings on the WIT boundary use the shapes in the generated session contract. A turn receives
+JSON strings on the WIT boundary use the generated session contract, also packaged as
+`@aexhq/brain/contracts/session.json`. It includes `ModelRequest`, `ModelResult`, `ToolResult`, and `EventPage`. A turn receives
 the current transcript, Agentloop slots, committed Events since its previous activation,
 configuration, system prompt, Tool definitions, and a deterministic logical-time/seed envelope.
 It returns the transcript, updated slots, and optional result.
@@ -63,10 +65,27 @@ seals the identity, parsed options, and selected Environment. The current server
 The loop can request effects but does not perform Brain's model or Tool I/O itself. Brain durably
 commits the intent, sends it once, and commits its known or unknown outcome before returning.
 Propagate host-service errors unless the loop has an explicit policy for presenting them to the
-model or user. Do not retry an unknown effect under a new call identity.
+model or user. Let the model or caller explicitly choose another attempt after seeing the failure or unknown
+outcome. Brain never makes that choice automatically.
 
 ## Test it
 
 Test policy outside Brain with fake host imports, then run the compiled Component through the real
 Loophost. Include cases for parallel Tool calls, unknown outcomes, cancellation, invalid JSON,
 restart between turns, and a fresh Wasm instance on every activation.
+
+## Standalone reference
+
+[`examples/reference-agentloop`](https://github.com/aexhq/brain/tree/main/examples/reference-agentloop)
+builds a usable model-driving Component using only Brain's public types and WIT. It reads failure
+observations into the transcript, dispatches requested Tools, and returns errors to the model.
+It has no Aex dependency. Build with `cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release`.
+
+Read imports are available during an activation. They do not advance Brain's initial-page cursor;
+keep an observation cursor in your own slot when consuming additional pages. Collect observations
+before producing new effects so a loop does not chase its own Events indefinitely. Suspension
+leaves external history reads available; it does not run guest callbacks.
+
+Admission is explicit when desired: call `await brain.admit(loop)` and `await brain.admit(tool)`
+on the same bound objects you will pass to creation. Their Component objects cache successful
+admission. Brain retains compiled and prelinked templates, never one session's credentials or heap.

@@ -27,8 +27,14 @@
 
 ## What is it
 
-**Brain** is a minimal, and extensible agent runtime server. You assemble or write your own
-extensions to control every aspect of the runtime.
+**Brain** is a standalone, minimal, extensible agent runtime. Compose an Agentloop, Models, Tools,
+and Environments through small public interfaces. One session can invoke Tools in several execution
+Environments while keeping its transcript and canonical history locally accessible.
+
+It is for builders who need control over agent execution and want to assemble their own system:
+custom assistants, research agents, and future agent platforms. Brain supplies runtime mechanisms;
+applications supply product policy, scheduling, tenancy, and infrastructure. Aex is an independent
+consumer of these same interfaces.
 
 ### Agentloop Extensions
 The core mechanism that bridge LLM, full control of context and dispatch tools.  [Write an agent loop](https://aex.dev/brain/docs/guides/write-a-loop).
@@ -99,7 +105,7 @@ Three design choices make it fast:
 - **One write-ahead journal.** The journal is the only durable session truth. Brain commits an
   effect's intent before dispatch and never retries it automatically. An uncertain remote result is
   recorded as unknown. In-memory status, transcript, Agentloop state, and event indexes rebuild as
-  projections after a restart.
+  projections on demand after a restart. A disposable checkpoint avoids ordinary full-history replay.
 - **Everything is observable.** Model calls, Tool results, lifecycle changes, transcript
   replacements, and records the loop appends are committed Events projected from the journal. The
   live feed also carries transient token deltas; reconnecting resumes at a committed sequence and
@@ -157,69 +163,15 @@ await session.end();
 await session.delete();
 ```
 
-## Benchmarks
-Brain is minimal, so it runs faster than alternatives on the market. No model latency in any number. ★ marks Brain in each chart.
+## Performance
 
-**Turn round-trip**
+Brain releases session execution after each turn by default and opens history on demand. Admission
+retains compiled, prelinked Components; each invocation gets fresh state. Native Tools have capacity
+independent of waiting Agentloops. These properties are covered by regression tests.
 
-```text
-pi         █                                       5.1 ms
-Brain      ████████████                             40 ms ★
-Codex      █████████████                            47 ms
-ZeroClaw   ██████████████                           53 ms
-OpenFang   ██████████████████                      128 ms
-OpenCode   ███████████████████                     155 ms
-AgentScope ████████████████████████                338 ms
-Letta      ███████████████████████████             678 ms
-LangGraph  ███████████████████████████████         1.22 s
-Awaken     ██████████████████████████████████      2.23 s
-OpenClaw   ████████████████████████████████████    3.33 s
-```
-
-**Time to first token**
-
-```text
-Brain      █                                       2.9 ms ★
-pi         █████                                   6.3 ms
-ZeroClaw   ████████                                 11 ms
-Codex      ███████████████                          39 ms
-OpenFang   ██████████████████                       70 ms
-OpenCode   ████████████████████                     99 ms
-LangGraph  ████████████████████████                207 ms
-AgentScope ███████████████████████████             332 ms
-Letta      ████████████████████████████            407 ms
-OpenClaw   ██████████████████████████████████      1.33 s
-Awaken     ████████████████████████████████████    1.93 s
-```
-
-**New session**
-
-```text
-LangGraph  █                                      0.66 ms
-Brain      ██                                     0.76 ms ★
-OpenCode   ██████████                              2.1 ms
-ZeroClaw   ██████████                              2.2 ms
-Awaken     ████████████████                        5.1 ms
-OpenClaw   █████████████████                       5.4 ms
-pi         ███████████████████                     7.0 ms
-OpenFang   █████████████████████                   9.8 ms
-Codex      ████████████████████████                 14 ms
-Letta      ████████████████████████████████████     67 ms
-```
-
-**Memory per idle session**
-
-```text
-Brain      █                                        14 KiB ★
-OpenFang   ██████████████                          0.6 MiB
-ZeroClaw   ████████████████████████████             50 MiB
-OpenClaw   ████████████████████████████████████    490 MiB
-```
-
-<sub>Each number is the median from the harness in <a href="tools/bench">tools/bench</a>, run on
-the same AWS <code>c7g.xlarge</code> for every subject. Bars use a log scale. The chart includes
-only agent runtimes that own sessions behind an API. <a href="BENCHMARKS.md">BENCHMARKS.md</a> has
-the method and the subject versions.</sub>
+The earlier comparison numbers describe an older execution/storage design. See [BENCHMARKS.md](BENCHMARKS.md)
+for their provenance and [the benchmark guide](docs/reference/benchmarks.mdx) for current measurements
+and limits. New-session latency, whole-process memory, and resume cost must be measured together.
 
 ## Roadmap
 
@@ -228,7 +180,7 @@ the method and the subject versions.</sub>
 - [x] Explicit Agentloop and Tool placement with `{ env, ...options }`
 - [x] One canonical per-session journal with disposable projections
 - [x] Effect-after-commit with no automatic retries
-- [x] Session-owned Environments with a managed idle lifecycle
+- [x] Logical Environment setup/attachment; providers own lazy allocation and resource TTL
 - [x] Typed content identity
 - [x] HTTP/SSE session API and the `@aexhq/brain` SDK
 - [x] Remote Environment contract and `env-aws-microvm`
@@ -236,6 +188,34 @@ the method and the subject versions.</sub>
 - [x] Resident Tool host over SSE with durable `ctx.emit`
 - [x] Cross-session native workspace isolation test
 - [ ] Native subagent support, parent and child links between sessions
+- [ ] Post-MVP official `tool-env` Tool extension: inspect the session's Tool bindings and Environment
+  status, expose failures to the Agentloop for model-directed recovery, and request binding
+  changes and supported Environment lifecycle operations such as restart within explicitly
+  granted session authority; journal mutations and their outcomes
+- [ ] Post-MVP mutable Tool and Environment bindings: committed changes apply to subsequent calls,
+  including within a turn; already-dispatched calls retain their original target. MVP Tools require
+  explicit execution bindings, fixed at session creation
+- [ ] Post-MVP optional Brain-selected execution placement for Tools without an explicit
+  Environment binding, within caller-granted authority; MVP placement remains explicit
+- [x] Official Agentloop extensions expose Tool failures, Environment status, expiry, and
+  resource loss to the model; Agentloop policy decides recovery without runtime retries
+- [x] Record interrupted turns as session Events that Agentloops can read and include in their
+  transcripts; the user decides the next action, with explicit activation and no automatic retries
+- [x] Agentloop APIs to read session Events and append extension Events through the existing
+  emit interface, with history readable while execution is suspended; host imports run only during an activation
+- [x] Cheap suspension at turn boundaries with transcript and recorded Events readable from
+  disk without activating the Agentloop; load sessions on demand after a process restart
+- [ ] Evaluate releasing Agentloop memory while awaiting model or Tool results, keeping the
+  extension authoring interface simple and measuring continuation costs before adopting it
+- [x] Separate extension artifact admission and compilation from session creation; reuse
+  compatible compiled artifacts and invocation templates
+- [x] Environment extensions can prepare resources lazily on invocation and own TTL and cleanup
+  policy; attach need not provision compute, and expired resources need not be restored
+- [x] Per-session live subscriptions, independent of Agentloop activation
+- [ ] Post-MVP configurable resource admission, memory and compiled-code cache budgets, and
+  fair scheduling for deployments running mutually untrusted extensions
+- [ ] Optional worker isolation integrations such as gVisor or MicroVMs for deployments needing
+  an additional boundary around Wasm execution
 - [ ] Multimodal input, images and files on `send`
 - [ ] Freeze a v1 API with tagged releases
 - [ ] File access and workspace sync
@@ -245,8 +225,10 @@ the method and the subject versions.</sub>
 - [ ] Custom images with scoped credentials and network metering
 - [ ] Local environment: run tools in a directory or container on your own machine
 - [ ] Browser environment and DOM tools: a page as the place tools run
-- [ ] Post-MVP external `SessionStore` for shared ownership, node-loss durability, backup, and
-  regional recovery; no storage integration catalogue in the MVP
+- [ ] Post-MVP public storage/commit interfaces for optional external stores and commit services,
+  preserving acknowledged-record and commit-before-effect guarantees; the default remains local
+  and self-contained. Shared ownership, node-loss recovery, backup, and regional recovery belong
+  to extensions and consuming platforms
 - [ ] Post-MVP bounded client reorder buffer if parallel delivery can emit committed Events out of
   journal sequence; replay repairs gaps
 

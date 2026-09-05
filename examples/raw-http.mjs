@@ -52,7 +52,7 @@ const session = await request("POST", "/v1/sessions", {
       filesystem: { workspace: false },
       secrets: [],
     },
-    managed: true,
+
     bindings: {},
   }],
 });

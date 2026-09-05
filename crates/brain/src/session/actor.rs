@@ -473,6 +473,16 @@ impl TurnHost {
 
 #[async_trait::async_trait]
 impl TurnServices for TurnHost {
+    async fn events(&self, after: u64) -> Result<brain_protocol::EventPage, Error> {
+        self.check_cancelled()?;
+        let store = self.store.clone();
+        let records =
+            tokio::task::spawn_blocking(move || store.records_after(after, EVENTS_PER_TURN))
+                .await
+                .map_err(|error| Error::Journal(error.to_string()))??;
+        Ok(crate::event_page(records, after))
+    }
+
     async fn model(&self, mut request: ModelRequest) -> Result<ModelResult, Error> {
         self.check_cancelled()?;
         let calls = self.model_calls.fetch_add(1, Ordering::AcqRel) + 1;
@@ -548,7 +558,7 @@ impl TurnServices for TurnHost {
         let cancel = self.cancel_requested.clone();
         let mut on_event = move |event: ModelStreamEvent| {
             if let Some(streaming) = streaming_event(sequence, &event) {
-                let _ = live.send((live_session.clone(), LiveEvent::Streaming(streaming)));
+                live.send((live_session.clone(), LiveEvent::Streaming(streaming)));
             }
         };
         let call =
@@ -658,6 +668,7 @@ impl TurnServices for TurnHost {
                 let cancel = self.cancel_requested.clone();
                 async move {
                     let sequence = dispatch.sequence;
+                    let environment_id = dispatch.binding.environment_id.clone();
                     let call_id = dispatch.invocation.call_id.clone();
                     let deadline = Duration::from_millis(dispatch.deadline_ms);
                     // The deadline is enforced here, on the calling side: the remote
@@ -682,6 +693,7 @@ impl TurnServices for TurnHost {
                         }, true)),
                     };
                     let dropped = matches!(&result, Ok((_, true)));
+                    let unreachable = matches!(&result, Err(Error::Ambiguous(_)));
                     let result = match result {
                         Ok((outcome, _)) => ToolResult::from_outcome(call_id, outcome),
                         Err(Error::Ambiguous(message)) => ToolResult::from_outcome(call_id, Outcome::Unknown { message }),
@@ -692,10 +704,13 @@ impl TurnServices for TurnHost {
                         },
                     };
                     let mut cursor = self.cursor.lock().await;
-                    self.append(&mut cursor, vec![AppendRecord::new(
-                        codes::event::TOOL_CALL_ENDED,
-                        serde_json::json!({"sequence": sequence, "result": result}),
-                    )]).await?;
+                    let mut records = vec![AppendRecord::new(codes::event::TOOL_CALL_ENDED,
+                        serde_json::json!({"sequence": sequence, "result": result}))];
+                    if unreachable && let Some(environment_id) = environment_id {
+                        records.push(AppendRecord::new(codes::event::ENVIRONMENT_UNREACHABLE,
+                            serde_json::json!({"environment_id": environment_id, "sequence": sequence})));
+                    }
+                    self.append(&mut cursor, records).await?;
                     Ok::<_, Error>((index, result, dropped))
                 }
             });

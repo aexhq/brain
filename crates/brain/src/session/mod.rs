@@ -123,14 +123,19 @@ impl Session {
         &self.session_id
     }
 
-    /// Runs one turn and returns when it is finished.
-    pub async fn message(&self, request: MessageRequest) -> Result<SessionSummary, Error> {
+    pub fn validate_message(request: &MessageRequest) -> Result<(), Error> {
         if request.input.message.is_empty() {
             return Err(Error::InvalidState("message cannot be empty".into()));
         }
         if serde_json::to_vec(&request).map_err(json_error)?.len() > 2 * 1024 * 1024 {
             return Err(Error::InvalidState("message request exceeds 2 MiB".into()));
         }
+        Ok(())
+    }
+
+    /// Runs one turn and returns when it is finished.
+    pub async fn message(&self, request: MessageRequest) -> Result<SessionSummary, Error> {
+        Self::validate_message(&request)?;
         let (reply, response) = oneshot::channel();
         self.sender
             .send(SessionCommand::Message { request, reply })
@@ -253,6 +258,10 @@ impl CreatingSession {
     ) -> Result<(), Error> {
         self.append(failed_record(kind, sequence, error)?)
             .map(|_| ())
+    }
+
+    pub fn record(&mut self, kind: &str, payload: serde_json::Value) -> Result<u64, Error> {
+        self.append(AppendRecord::new(kind, payload))
     }
 
     fn append(&mut self, record: AppendRecord) -> Result<u64, Error> {
@@ -591,8 +600,7 @@ mod tests {
             environments: vec![EnvironmentAttachment {
                 environment_id: EnvironmentId::new("workspace"),
                 configuration: serde_json::json!({}),
-                managed: true,
-                idle_ttl_ms: None,
+
                 binding: None,
                 attachment_id: None,
                 resources: Default::default(),

@@ -1,0 +1,7 @@
+{
+  "ModelRequest": {"messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}]},
+  "ModelResult": {"message": {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]}, "stop_reason": "end_turn", "usage": {}},
+  "ToolResult": {"call_id": "call_one", "output": {"status": "unknown", "message": "Connection lost"}, "is_error": true},
+  "EventPage": {"events": [], "next_cursor": 42},
+  "SessionTranscript": {"messages": [], "through_sequence": 42}
+}

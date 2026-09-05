@@ -16,8 +16,6 @@ interface ComponentSource {
 interface EnvironmentSource {
   readonly kind: "environment";
   readonly configuration: unknown;
-  readonly managed: boolean;
-  readonly idleTtlMs?: number;
   readonly bindings: Readonly<Record<string, string>>;
 }
 
@@ -61,8 +59,6 @@ export function component(artifact: URL | Uint8Array): Component {
 export interface EnvironmentContract<OptionsSchema extends Schema | undefined = undefined> {
   readonly driver: string;
   readonly options?: OptionsSchema;
-  readonly managed?: boolean;
-  readonly idleTtlMs?: number;
   readonly configure?: (options: OptionsSchema extends Schema ? SchemaOutput<OptionsSchema> : Record<string, never>) => unknown;
   readonly bindings?: (options: OptionsSchema extends Schema ? SchemaOutput<OptionsSchema> : Record<string, never>) => Readonly<Record<string, string>>;
 }
@@ -78,7 +74,6 @@ export function environment<OptionsSchema extends Schema | undefined = undefined
   contract: EnvironmentContract<OptionsSchema>,
 ): OptionalFactory<OptionsSchema, Environment> {
   identifier(contract.driver, "Environment driver");
-  boundedInteger(contract.idleTtlMs, "Environment idleTtlMs");
   return ((raw?: unknown) => {
     const options = parseOptions(contract.options, raw);
     const configured = contract.configure?.(options as never) ?? options;
@@ -88,8 +83,6 @@ export function environment<OptionsSchema extends Schema | undefined = undefined
     return branded({
       kind: "environment",
       configuration,
-      managed: contract.managed ?? true,
-      ...(contract.idleTtlMs === undefined ? {} : { idleTtlMs: contract.idleTtlMs }),
       bindings: Object.freeze({ ...bindings }),
     });
   }) as OptionalFactory<OptionsSchema, Environment>;
@@ -132,7 +125,6 @@ export function brainWasm(options: BrainWasmOptions = {}): Environment {
       },
       secrets: [...secrets],
     }),
-    managed: true,
     bindings: Object.freeze({}),
   });
 }
@@ -348,9 +340,7 @@ function validateBindings(bindings: Readonly<Record<string, string>>): void {
   }
 }
 
-function boundedInteger(value: number | undefined, subject: string): void {
-  if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new TypeError(`${subject} must be a non-negative safe integer`);
-}
+
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

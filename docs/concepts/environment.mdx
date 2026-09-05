@@ -56,7 +56,7 @@ const env = remoteService({
 
 `configure` produces the immutable configuration Brain records and sends to the driver. `bindings`
 produces plaintext values used only during attachment; the session journal records their names, not
-their values. `managed` defaults to true, and `idleTtlMs` controls cleanup after the last detach.
+their values. Resource TTL and allocation policy belong to the provider configuration.
 
 The same Environment object can place several Tools in one session:
 
@@ -82,11 +82,23 @@ package-building protocol in Brain.
 ## Lifecycle and delivery
 
 An Environment declaration belongs to one session; reusing the same SDK object in another session
-creates another Environment. Session creation performs setup and attachment before readiness.
+creates another logical Environment. Session creation performs setup and attachment before readiness;
+these operations can declare capabilities without allocating a browser or sandbox.
 Brain journals lifecycle and Tool intents before dispatch and sends each operation once. It records
 a terminal receipt or an unknown outcome; it does not retry automatically. Ending a session
-detaches it. A managed Environment is closed after its idle policy; session deletion closes any
-Environment that remains.
+detaches it; session deletion asks the provider to tear down the logical Environment. A provider
+wrapping an externally owned URL can implement teardown as releasing only its binding. Brain does
+not acquire ownership of the external service.
 
 Environment files and process state follow the Environment lifecycle. They are not durable session
 state; the canonical session journal survives independently.
+
+Providers can allocate on first invocation, serialize concurrent initialization, and expire physical
+resources while sessions remain suspended. The standalone [lazy Environment example](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs)
+demonstrates that policy using the existing wire. A restart creates fresh resources; it is not file
+restoration. Reloaded metadata starts with unknown resource status until an operation observes it.
+Environment and Tool failures are committed for the Agentloop before their results return.
+
+Configure independent provider routes in `BRAIN_ENVIRONMENT_ROUTES_FILE`, or use the public registry's
+`with_route` composition method. Route names are server-granted; the session's bindings stay fixed.
+The complete `tool-env` Tool, mutable bindings, and automatic placement remain post-MVP.

@@ -63,7 +63,6 @@
     "emit_limit",
     "agentloop_failed",
     "tool_error",
-    "session_ownership_failed",
     "environment_preparation_failed",
     "environment_error",
     "invalid_transcript"

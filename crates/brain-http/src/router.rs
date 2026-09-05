@@ -42,6 +42,7 @@ const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
         create_session,
         list_sessions,
         get_session,
+        transcript,
         delete_session,
         send_message,
         call_environment,
@@ -141,6 +142,7 @@ fn protected_routes<A: BrainApi>(api: A, routed: &mut BTreeSet<String>) -> Route
         documented::<__path_create_session, _, _, _>(routed, create_session::<A>),
         documented::<__path_list_sessions, _, _, _>(routed, list_sessions::<A>),
         documented::<__path_get_session, _, _, _>(routed, get_session::<A>),
+        documented::<__path_transcript, _, _, _>(routed, transcript::<A>),
         documented::<__path_delete_session, _, _, _>(routed, delete_session::<A>),
         documented::<__path_send_message, _, _, _>(routed, send_message::<A>),
         documented::<__path_call_environment, _, _, _>(routed, call_environment::<A>),
@@ -445,6 +447,21 @@ async fn get_session<A: BrainApi>(
 }
 
 #[utoipa::path(
+    get, path = "/v1/sessions/{session_id}/transcript",
+    params(("session_id" = String, Path, description = "Session id")),
+    responses(
+        (status = 200, description = "Committed transcript, including suspended sessions", body = contract::SessionTranscript),
+        (status = "default", description = "Structured error", body = contract::ApiError)
+    )
+)]
+async fn transcript<A: BrainApi>(
+    State(api): State<A>,
+    Path(session_id): Path<SessionId>,
+) -> Result<Json<brain_protocol::SessionTranscript>, HttpError> {
+    Ok(Json(api.transcript(session_id).await.map_err(HttpError)?))
+}
+
+#[utoipa::path(
     get,
     path = "/v1/sessions",
     operation_id = "listSessions",
@@ -555,7 +572,7 @@ async fn events<A: BrainApi>(
     // Subscribed before the page is read, so a record appended between the two arrives on
     // the subscription rather than falling into the gap. Only for a stream: a JSON reader
     // asked for a page and gets one.
-    let live = wants_sse.then(|| api.subscribe());
+    let live = wants_sse.then(|| api.subscribe(&session_id));
     let page = api
         .events(session_id.clone(), query.after)
         .await

@@ -49,6 +49,12 @@ fn contract_schemas_are_valid_draft_2020_12() {
 
 #[test]
 fn checked_in_examples_validate() {
+    for (name, example) in read_json("contracts/agentloop/v1/examples/host-calls.json")
+        .as_object()
+        .unwrap()
+    {
+        validate_definition("contracts/session/v1/schemas.json", name, example);
+    }
     let agentloop = read_json("contracts/agentloop/v1/examples/turn.json");
     jsonschema::draft202012::new(&read_json("contracts/agentloop/v1/contract.json"))
         .unwrap()

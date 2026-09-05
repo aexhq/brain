@@ -322,7 +322,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
- "tokio-util",
  "tracing",
  "xxhash-rust",
  "zeroize",

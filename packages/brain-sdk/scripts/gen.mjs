@@ -28,3 +28,4 @@ const wit = path.resolve(here, "../contracts");
 await mkdir(wit, { recursive: true });
 await copyFile(path.join(root, "contracts/agentloop/v1/agentloop.wit"), path.join(wit, "agentloop.wit"));
 await copyFile(path.join(root, "contracts/tool/v1/tool.wit"), path.join(wit, "tool.wit"));
+await copyFile(schemaPath, path.join(wit, "session.json"));

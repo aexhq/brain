@@ -430,6 +430,47 @@ components:
       required:
       - input
       type: object
+    ModelRequest:
+      additionalProperties: false
+      properties:
+        max_output_tokens:
+          format: uint32
+          minimum: 0
+          type: integer
+        messages:
+          items:
+            $ref: '#/components/schemas/Message'
+          type: array
+        response_format:
+          description: Absent means the one the session was created with, if any. Filled in like `system`.
+        system:
+          description: |-
+            The system prompt for this call. Absent means the one the session was created
+            with; empty means none. The session fills it in before the call is journalled.
+          type: string
+        tools:
+          description: |-
+            The tools to offer on this call, by name. Absent means every tool the session was
+            created with; each name given must be one of them. Filled in like `system`.
+          items:
+            type: string
+          type: array
+      required:
+      - messages
+      type: object
+    ModelResult:
+      properties:
+        message:
+          $ref: '#/components/schemas/Message'
+        stop_reason:
+          $ref: '#/components/schemas/StopReason'
+        usage:
+          $ref: '#/components/schemas/Usage'
+      required:
+      - message
+      - stop_reason
+      - usage
+      type: object
     ModelSelection:
       additionalProperties: false
       properties:
@@ -531,13 +572,6 @@ components:
         configuration: true
         environment_id:
           $ref: '#/components/schemas/EnvironmentId'
-        idle_ttl_ms:
-          format: uint64
-          minimum: 0
-          type: integer
-        managed:
-          default: false
-          type: boolean
       required:
       - environment_id
       - configuration
@@ -582,6 +616,35 @@ components:
       - status
       - last_sequence
       type: object
+    SessionTranscript:
+      description: Canonical transcript as of a committed journal sequence, available without execution.
+      properties:
+        messages:
+          items:
+            $ref: '#/components/schemas/Message'
+          type: array
+        through_sequence:
+          format: uint64
+          minimum: 0
+          type: integer
+      required:
+      - messages
+      - through_sequence
+      type: object
+    StopReason:
+      oneOf:
+      - enum:
+        - end_turn
+        - tool_use
+        - max_tokens
+        - stop_sequence
+        - refusal
+        type: string
+      - const: unknown
+        description: |-
+          The provider ended the stream without a terminal reason. Distinct from
+          EndTurn on purpose: absent is never zero.
+        type: string
     ToolAdmission:
       properties:
         error:
@@ -622,6 +685,18 @@ components:
       - name
       - input
       type: object
+    ToolResult:
+      properties:
+        call_id:
+          type: string
+        is_error:
+          type: boolean
+        output: true
+      required:
+      - call_id
+      - output
+      - is_error
+      type: object
     TurnError:
       description: Why a turn, or one of the host calls inside it, failed.
       properties:
@@ -639,6 +714,35 @@ components:
       required:
       - code
       - message
+      type: object
+    Usage:
+      description: |-
+        Provider-reported usage. Every field is `Option` because **absent is never
+        zero** -- a provider that does not report cache reads is not a provider that
+        read zero cache tokens.
+      properties:
+        cache_creation_input_tokens:
+          format: uint64
+          minimum: 0
+          type: integer
+        cache_read_input_tokens:
+          format: uint64
+          minimum: 0
+          type: integer
+        input_tokens:
+          format: uint64
+          minimum: 0
+          type: integer
+        output_tokens:
+          format: uint64
+          minimum: 0
+          type: integer
+        provider_cost_usd:
+          type: string
+        reasoning_tokens:
+          format: uint64
+          minimum: 0
+          type: integer
       type: object
     UserInput:
       additionalProperties: false
@@ -1073,6 +1177,29 @@ paths:
               schema:
                 $ref: '#/components/schemas/SessionSummary'
           description: Updated session
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/transcript:
+    get:
+      operationId: transcript
+      parameters:
+      - description: Session id
+        in: path
+        name: session_id
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionTranscript'
+          description: Committed transcript, including suspended sessions
         default:
           content:
             application/json:

@@ -94,14 +94,28 @@ fn reports_what_the_journal_costs() {
     drop(store);
 
     let at = Instant::now();
-    let reopened =
-        LocalSessionStore::open(&directory.join("ses_throughput"), writer.clone(), feed).unwrap();
+    let reopened = LocalSessionStore::open(
+        &directory.join("ses_throughput"),
+        writer.clone(),
+        feed.clone(),
+    )
+    .unwrap();
     let replay = at.elapsed().as_secs_f64() * 1e3;
     assert_eq!(
         reopened.session_row().unwrap().through_sequence,
         RECORDS + 1
     );
+    let at = Instant::now();
+    reopened.checkpoint().unwrap();
+    let checkpoint_ms = at.elapsed().as_secs_f64() * 1e3;
     drop(reopened);
+    let at = Instant::now();
+    let cached =
+        LocalSessionStore::open(&directory.join("ses_throughput"), writer.clone(), feed).unwrap();
+    let cached_ms = at.elapsed().as_secs_f64() * 1e3;
+    assert_eq!(cached.session_summary().unwrap().last_sequence, RECORDS + 1);
+    drop(cached);
+    println!("checkpoint {RECORDS} records {checkpoint_ms:.2} ms; cached reopen {cached_ms:.2} ms");
 
     println!(
         "append {RECORDS} x {PAYLOAD_BYTES} B   {:.0} records/s   p50 {:.2} us   p99 {:.2} us\n\

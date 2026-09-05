@@ -3,22 +3,20 @@ title: Benchmarks
 description: Current figures, how they are measured, and what CI enforces.
 ---
 
-Headline figures, measured on AWS `c7g.xlarge` against the same scripted model behind every
-subject:
+The current regression suite proves lazy history access, turn-end passivation, isolated subscription
+backlogs, and native Tool dispatch at full parent concurrency. Previous headline numbers predate
+this design and are archived in [BENCHMARKS.md](https://github.com/aexhq/brain/blob/main/BENCHMARKS.md).
+They are not release thresholds for the current implementation.
 
-| Measurement | Brain |
-| --- | ---: |
-| Turn round-trip, median | 25 ms |
-| Time to first token, median | ≤25 ms |
-| New session, median | 0.6 ms |
-| Cold start to first served session | 25 ms |
-| Marginal memory per idle session | ~14 KiB |
-| Disk after a 100-turn conversation | 0.2 MiB |
+Measure cold readiness, explicit admission, prepared creation, first activation, resumed activation,
+and history reads separately. Include both the server and Wasmtime worker in memory and CPU totals.
+Use retained sessions with long histories; an empty-server RSS smoke cannot establish session density.
 
-The comparison charts against other agent runtimes are in the
-[README](https://github.com/aexhq/brain#benchmarks), and the harness that produced them is in
-[`tools/bench`](https://github.com/aexhq/brain/tree/main/tools/bench) — one subject at a time,
-each driven through its own public API, so the numbers can be re-run rather than trusted.
+The existing journal probe reports canonical reopen, disposable checkpoint write, and cached reopen
+on the same workload. Run `cargo test --release -p brain --test journal_throughput -- --ignored --nocapture`.
+A checkpoint saves decoding canonical history, but its index and current transcript still grow with
+history. Disk indexing and more selective projections are future measured optimizations, not a claim
+of constant-time activation.
 
 ## What the benchmark measures
 
@@ -32,6 +30,12 @@ memory, because that would double-count shared pages. Any probe a subject cannot
 is recorded as a refusal rather than a number.
 
 ## What CI enforces
+
+The Linux HTTP integration also retains 32 sessions with eight model/tool turns each, reads their
+transcripts after passivation, and bounds the combined server and worker private-memory growth
+to 64 MiB. It checks two independently authenticated lazy providers, expiration without retry, and
+restart history access without model execution. This is a regression workload, not a session-density
+claim for production.
 
 Every push bounds resident memory against a live server: after 10,000 requests it must stay under
 256 MiB and must not have grown by more than 16 MiB.

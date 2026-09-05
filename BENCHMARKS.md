@@ -1,8 +1,8 @@
 # Benchmarks
 
 > [!NOTE]
-> Current headline figures are in the [README](README.md#benchmarks), measured with the harness in
-> [`tools/bench`](tools/bench) against sixteen other agent runtimes, including the pi, Codex and OpenCode coding agents driven through their own integration surfaces.
+> Historical measurements below predate turn-end passivation and the current storage/cache design.
+> They are retained for provenance, not current performance claims. See the [measurement guide](docs/reference/benchmarks.mdx) for the current workload and regression gates.
 
 ## What the benchmark measures
 

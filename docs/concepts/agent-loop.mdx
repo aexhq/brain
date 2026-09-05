@@ -42,12 +42,12 @@ The Component exports one `turn` function. Its input contains:
 - committed events since its previous activation;
 - its configuration, system prompt, Tool definitions, and deterministic runtime envelope.
 
-During the activation it may call Brain's `model`, `dispatch`, `emit`, and `telemetry` imports.
+During the activation it may call Brain's `events`, `model`, `dispatch`, `emit`, and `telemetry` imports.
 `model`, `dispatch`, and `emit` cross the Brain boundary. Brain commits an external-effect intent
 before dispatch, sends it once, and commits its terminal or unknown outcome before returning it.
 
-The Component returns the transcript and slots to keep. Brain journals their changes; the Wasm
-instance is only a cache and may disappear between turns.
+The Component returns the transcript and slots to keep. Brain journals their changes; every turn uses a fresh Wasm
+instance, while compiled and prelinked code is reused.
 
 ## Placement and capabilities
 

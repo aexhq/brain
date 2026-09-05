@@ -58,7 +58,7 @@ impl Runtime {
             loop_executor,
             model_executor,
             tool_executor,
-            live: feed.live_sender(),
+            live: feed.clone(),
             telemetry,
         });
         Self {
@@ -134,8 +134,9 @@ impl Runtime {
 
     pub fn subscribe(
         &self,
+        session_id: &SessionId,
     ) -> tokio::sync::broadcast::Receiver<(SessionId, brain_protocol::LiveEvent)> {
-        self.feed.subscribe()
+        self.feed.subscribe(session_id)
     }
 
     /// Waits until everything appended so far is on disk.
@@ -188,8 +189,7 @@ pub fn config() -> SessionConfig {
         environments: vec![brain_protocol::EnvironmentAttachment {
             environment_id: EnvironmentId::new("workspace"),
             configuration: serde_json::json!({"driver": "brain_wasm"}),
-            managed: true,
-            idle_ttl_ms: None,
+
             binding: Some(brain_protocol::EnvironmentBinding {
                 environment_id: EnvironmentId::new("workspace"),
                 directory_generation: 1,

@@ -19,7 +19,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 tracing = { workspace = true }
 xxhash-rust = { workspace = true }
 zeroize = { workspace = true }

@@ -7,7 +7,7 @@ services:
     image: ${BRAIN_SERVER_IMAGE:-brain:local}
     restart: unless-stopped
     environment:
-      # SQLite log and local session storage under BRAIN_DATA_DIR.
+      # journal log and local session storage under BRAIN_DATA_DIR.
       BRAIN_LISTEN: 0.0.0.0:8080
       BRAIN_DATA_DIR: /var/lib/brain
     ports:

@@ -11,6 +11,8 @@ pub const ENVIRONMENT_CONTRACT: &str = "environment/v1";
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentStatus {
+    /// No observation has been made in this process; metadata does not restore a resource.
+    Unknown,
     Open,
     /// The last operation could not reach the environment. Cleared by the next one that
     /// does.
@@ -24,10 +26,6 @@ pub enum EnvironmentStatus {
 pub struct SessionEnvironment {
     pub environment_id: EnvironmentId,
     pub configuration: serde_json::Value,
-    #[serde(default)]
-    pub managed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_ttl_ms: Option<u64>,
     #[serde(default)]
     #[schemars(with = "crate::schema::BindingValues")]
     pub bindings: BTreeMap<String, String>,
@@ -47,9 +45,6 @@ pub struct EnvironmentBinding {
 pub struct EnvironmentAttachment {
     pub environment_id: EnvironmentId,
     pub configuration: serde_json::Value,
-    pub managed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_ttl_ms: Option<u64>,
     /// The wire binding, present once the environment has been resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<EnvironmentBinding>,

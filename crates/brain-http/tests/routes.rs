@@ -106,6 +106,16 @@ impl BrainApi for Api {
     ) -> Result<SessionSummary, ApiError> {
         Ok(session())
     }
+    async fn transcript(
+        &self,
+        _: SessionId,
+    ) -> Result<brain_protocol::SessionTranscript, ApiError> {
+        Ok(brain_protocol::SessionTranscript {
+            messages: vec![brain_protocol::Message::user_text("hello")],
+            through_sequence: 7,
+        })
+    }
+
     async fn get_session(&self, _: SessionId) -> Result<SessionSummary, ApiError> {
         let mut session = session();
         if let Some(status) = &self.status {
@@ -138,7 +148,10 @@ impl BrainApi for Api {
             output: request.input,
         })
     }
-    fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(SessionId, LiveEvent)> {
+    fn subscribe(
+        &self,
+        _session_id: &SessionId,
+    ) -> tokio::sync::broadcast::Receiver<(SessionId, LiveEvent)> {
         match &self.live {
             Some(live) => live.subscribe(),
             None => tokio::sync::broadcast::Sender::new(8).subscribe(),

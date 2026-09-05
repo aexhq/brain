@@ -5,8 +5,8 @@ use brain::{Feed, SessionRuntime, Writer};
 use brain_loophost::{LoopLimits, NativePolicy, WorkerPool};
 use brain_server::{
     EnvironmentRegistry, EnvironmentResources, HttpEnvironmentAdapter, IdempotencyStore,
-    LocalModelBindingStore, ResidentHosts, ServerApi, ServerConfig, ServerModelExecutor,
-    ServerResources, ServerToolExecutor, WorkerLoopExecutor,
+    ResidentHosts, ServerApi, ServerConfig, ServerModelExecutor, ServerResources,
+    ServerToolExecutor, WorkerLoopExecutor,
 };
 use brain_telemetry::{TelemetryRecord, TelemetrySink, telemetry_channel};
 use clap::Parser;
@@ -21,6 +21,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let config = ServerConfig::parse();
     validate(&config)?;
+    let _data_lock = brain_server::data_layout::lock(&config.data_dir)?;
     let api = compose(&config).await?;
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, "Brain is ready");
@@ -64,7 +65,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let metadata = Arc::new(brain_server::metadata::ServerMetadata::open(
         &brain_server::metadata::metadata_directory(&config.data_dir),
     )?);
-    let models = Arc::new(LocalModelBindingStore::new(Arc::clone(&metadata)));
+    let models = Arc::clone(&metadata);
     let mut base_url_overrides = vec![(
         "vercel-ai-gateway".to_owned(),
         config.model_base_url.clone(),
@@ -94,17 +95,42 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(120))
         .build()?;
-    let environments = Arc::new(EnvironmentRegistry::new(
+    let mut environments = EnvironmentRegistry::new(
         Arc::new(EnvironmentResources::open(
             &config.data_dir.join("environments"),
         )?),
         &config.environment_base_url,
         Arc::new(HttpEnvironmentAdapter::new(
-            http,
+            http.clone(),
             config.environment_api_key.clone(),
         )),
-        Duration::from_secs(config.environment_idle_ttl_secs),
-    ));
+    );
+    if let Some(path) = &config.environment_routes_file {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Route {
+            endpoint: String,
+            api_key: Option<String>,
+        }
+        let routes: std::collections::BTreeMap<String, Route> =
+            serde_json::from_slice(&std::fs::read(path)?)?;
+        for (driver, route) in routes {
+            validate_environment_endpoint(&route.endpoint)?;
+            if route
+                .api_key
+                .as_deref()
+                .is_some_and(|key| key.trim().is_empty())
+            {
+                anyhow::bail!("Environment route credentials cannot be empty");
+            }
+            environments = environments.with_route(
+                driver,
+                route.endpoint,
+                Arc::new(HttpEnvironmentAdapter::new(http.clone(), route.api_key)),
+            )?;
+        }
+    }
+    let environments = Arc::new(environments);
     // Every session's directory, rebuilt from disk. A session that was mid-turn when the
     // last process stopped is failed with code `interrupted` before anything is served.
     let writer = Writer::spawn();
@@ -122,7 +148,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
             resident_hosts.clone(),
             loops.clone(),
         )),
-        live: feed.live_sender(),
+        live: feed.clone(),
         telemetry: telemetry.clone(),
     });
     let api = ServerApi::new(ServerResources {
@@ -130,7 +156,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         writer,
         feed,
         session_runtime,
-        session_idle_ttl: Duration::from_secs(config.session_idle_ttl_secs),
+        session_idle_ttl: config.session_idle_ttl_secs.map(Duration::from_secs),
         idempotency: IdempotencyStore::open(
             &config.data_dir.join("requests").join("requests.log"),
             brain_server::idempotency::DEFAULT_RETENTION,
@@ -143,8 +169,6 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         metadata,
     })?;
     api.spawn_idle_sweeper();
-    api.spawn_environment_sweeper();
-    api.spawn_environment_notices();
     Ok(api)
 }
 
@@ -167,26 +191,7 @@ fn validate(config: &ServerConfig) -> anyhow::Result<()> {
         anyhow::bail!("BRAIN_ENVIRONMENT_API_KEY cannot be empty when set");
     }
     if !config.environment_base_url.is_empty() {
-        let url = reqwest::Url::parse(&config.environment_base_url)?;
-        let loopback_http = url.scheme() == "http"
-            && url
-                .host_str()
-                .and_then(|host| {
-                    host.trim_matches(['[', ']'])
-                        .parse::<std::net::IpAddr>()
-                        .ok()
-                })
-                .is_some_and(|ip| ip.is_loopback());
-        if !(url.scheme() == "https" || loopback_http)
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
-            anyhow::bail!(
-                "BRAIN_ENVIRONMENT_BASE_URL must use HTTPS or literal loopback HTTP and cannot contain credentials, query, or fragment"
-            );
-        }
+        validate_environment_endpoint(&config.environment_base_url)?;
     }
     if config.max_model_calls_per_turn == 0 || config.max_model_calls_per_turn > 1_024 {
         anyhow::bail!("BRAIN_MAX_MODEL_CALLS must be in 1..=1024");
@@ -197,6 +202,30 @@ fn validate(config: &ServerConfig) -> anyhow::Result<()> {
         .any(|name| name != "scratch" && name != "workspace")
     {
         anyhow::bail!("BRAIN_WASM_FILESYSTEM_ALLOW accepts only scratch and workspace");
+    }
+    Ok(())
+}
+
+fn validate_environment_endpoint(endpoint: &str) -> anyhow::Result<()> {
+    let url = reqwest::Url::parse(endpoint)?;
+    let loopback_http = url.scheme() == "http"
+        && url
+            .host_str()
+            .and_then(|host| {
+                host.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+            })
+            .is_some_and(|ip| ip.is_loopback());
+    if !(url.scheme() == "https" || loopback_http)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        anyhow::bail!(
+            "BRAIN_ENVIRONMENT_BASE_URL must use HTTPS or literal loopback HTTP and cannot contain credentials, query, or fragment"
+        );
     }
     Ok(())
 }
