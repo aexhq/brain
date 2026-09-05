@@ -28,6 +28,10 @@ npm run package-smoke
 CI additionally runs real loop worker and HTTP lifecycle integration tests and an image smoke
 test. Performance probes are optional diagnostics during pre-launch iteration. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
+[SDK user journeys](tests/journeys/README.md) run against real Linux servers and workers with four
+isolated suites in parallel. They cover the public SDK lifecycle, tools, placement, events, and
+recovery on every pull request. Run them with `npm run test:journeys` after the documented builds.
+
 ## The Rust types are the source of the contracts
 
 The wire is defined once, as the types in [`crates/brain-protocol`](crates/brain-protocol) and the
