@@ -40,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
+    let sessions_dir = brain_server::data_layout::prepare(&config.data_dir)?;
     let (telemetry, worker) = telemetry_channel();
     tokio::spawn(worker.run(Arc::new(LogSink)));
     let loops = Arc::new(
@@ -59,8 +60,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         .ready()
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
-    // The server's one-off record of each session: the credential it calls a model
-    // with. Appended, never fsynced.
+    // Credentials are durable before the session's creation record is committed.
     let metadata = Arc::new(brain_server::metadata::ServerMetadata::open(
         &brain_server::metadata::metadata_directory(&config.data_dir),
     )?);
@@ -107,10 +107,10 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     ));
     // Every session's directory, rebuilt from disk. A session that was mid-turn when the
     // last process stopped is failed with code `interrupted` before anything is served.
-    let sessions_dir = brain_server::data_layout::prepare(&config.data_dir)?;
     let writer = Writer::spawn();
     let feed = Arc::new(Feed::new(telemetry.clone()));
-    let resident_hosts = ResidentHosts::default();
+    let resident_hosts =
+        ResidentHosts::open(&config.data_dir.join("resident-hosts").join("hosts.log"))?;
     let session_runtime = Arc::new(SessionRuntime {
         max_model_calls_per_turn: config.max_model_calls_per_turn,
         max_turn_ms: config.max_turn_secs.saturating_mul(1_000),
@@ -131,7 +131,10 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         feed,
         session_runtime,
         session_idle_ttl: Duration::from_secs(config.session_idle_ttl_secs),
-        idempotency: IdempotencyStore::new(brain_server::idempotency::DEFAULT_RETENTION),
+        idempotency: IdempotencyStore::open(
+            &config.data_dir.join("requests").join("requests.log"),
+            brain_server::idempotency::DEFAULT_RETENTION,
+        )?,
         loops,
         environments,
         resident_hosts,

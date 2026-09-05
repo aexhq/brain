@@ -68,7 +68,7 @@
           "$ref": "#/$defs/EnvironmentRequest"
         },
         "sequence": {
-          "description": "The sequence of the journal record that started this operation. With\n`session_id` it names the operation: a redelivery carries the same pair, so a\nreceiver that already answered it can say so. An operation on the environment\nitself rather than on a session's behalf carries the environment's own id here.",
+          "description": "The sequence of the journal record that started this operation. With\n`session_id` it names the operation: a redelivery carries the same pair, so a\nreceiver that already answered it can say so. Setup and teardown belong to the\nowning session's journal too.",
           "format": "uint64",
           "minimum": 1,
           "type": "integer"

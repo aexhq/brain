@@ -13,6 +13,8 @@ pub mod event {
     pub const SESSION_CREATION_STARTED: &str = "session_creation_started";
     pub const SESSION_CREATION_ENDED: &str = "session_creation_ended";
     pub const SESSION_CREATION_FAILED: &str = "session_creation_failed";
+    pub const SESSION_END_STARTED: &str = "session_end_started";
+    pub const SESSION_END_FAILED: &str = "session_end_failed";
     pub const SESSION_ENDED: &str = "session_ended";
     pub const SESSION_SUSPENDED: &str = "session_suspended";
     pub const SESSION_RESUMED: &str = "session_resumed";
@@ -68,6 +70,8 @@ pub mod event {
         SESSION_CREATION_STARTED,
         SESSION_CREATION_ENDED,
         SESSION_CREATION_FAILED,
+        SESSION_END_STARTED,
+        SESSION_END_FAILED,
         SESSION_ENDED,
         SESSION_SUSPENDED,
         SESSION_RESUMED,

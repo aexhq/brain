@@ -140,7 +140,7 @@ impl LocalSessionStore {
                 }
                 state.row.through_sequence = frame.sequence;
                 state.last_recorded_at_ms = frame.recorded_at_ms;
-                if journal_kind(frame.kind) {
+                if JournalEntry::is_kind(frame.kind) {
                     let entry = frame.decode::<JournalEntry>()?;
                     let visible = transcript_replaced(&mut state.transcript_len, &entry);
                     state.events.push(visible.then_some(location));
@@ -205,33 +205,86 @@ impl LocalSessionStore {
         Ok(stores)
     }
 
-    /// Closes a turn the previous process did not finish.
-    ///
-    /// A session still `Running` after its log has been read was mid-turn when that
-    /// process stopped. Whether the model call or the tool call actually happened is not
-    /// knowable from here, so Brain says exactly that and returns the session to Idle
-    /// rather than deciding on the client's behalf. Returns whether a turn was closed.
+    /// Records unknown outcomes for interrupted effects and closes unfinished creation,
+    /// turns, or ending without replaying their effects. Returns whether records were added.
     pub fn interrupt_unfinished_turn(&self) -> Result<bool, Error> {
-        {
-            let state = self.lock()?;
-            if !matches!(state.row.status, SessionStatus::Running) {
-                return Ok(false);
+        let status = self.lock()?.row.status.clone();
+        let mut pending = BTreeMap::new();
+        let mut after = 0;
+        loop {
+            let records = self.records_after(after, 1000)?;
+            if records.is_empty() {
+                break;
+            }
+            for record in records {
+                after = record.sequence;
+                if let Some(kind) = record.kind.strip_suffix("_started") {
+                    if matches!(
+                        kind,
+                        "model_call"
+                            | "tool_call"
+                            | "tool_cancel"
+                            | "environment_setup"
+                            | "environment_attach"
+                            | "environment_call"
+                            | "environment_detach"
+                            | "environment_teardown"
+                    ) {
+                        pending.insert(record.sequence, kind.to_owned());
+                    }
+                } else if (record.kind.ends_with("_ended") || record.kind.ends_with("_failed"))
+                    && let Some(sequence) = record
+                        .payload
+                        .get("sequence")
+                        .and_then(serde_json::Value::as_u64)
+                {
+                    pending.remove(&sequence);
+                }
             }
         }
+        let failure = serde_json::to_value(codes::Failure::new(codes::failure::INTERRUPTED,
+            "Brain restarted before the outcome was recorded; this operation will not be replayed").ambiguous(true)).map_err(json_error)?;
+        let mut records = pending
+            .into_iter()
+            .map(|(sequence, kind)| {
+                let mut payload = failure.clone();
+                payload["sequence"] = serde_json::json!(sequence);
+                AppendRecord::new(format!("{kind}_failed"), payload)
+            })
+            .collect::<Vec<_>>();
+        let next = match status {
+            SessionStatus::Creating => {
+                records.push(AppendRecord::new(
+                    codes::event::SESSION_CREATION_FAILED,
+                    failure,
+                ));
+                Some(SessionStatus::Failed)
+            }
+            SessionStatus::Running => {
+                records.push(AppendRecord::new(
+                    codes::event::ACTIVATION_FAILED,
+                    failure.clone(),
+                ));
+                records.push(AppendRecord::new(codes::event::TURN_FAILED, failure));
+                Some(SessionStatus::Idle)
+            }
+            SessionStatus::Ending => {
+                records.push(AppendRecord::new(codes::event::SESSION_END_FAILED, failure));
+                records.push(AppendRecord::new(
+                    codes::event::SESSION_ENDED,
+                    serde_json::json!({}),
+                ));
+                Some(SessionStatus::Ended)
+            }
+            _ => None,
+        };
+        if records.is_empty() {
+            return Ok(false);
+        }
         self.append_sync(
-            &[AppendRecord::new(
-                codes::event::TURN_FAILED,
-                serde_json::to_value(
-                    codes::Failure::new(
-                        codes::failure::INTERRUPTED,
-                        "Brain restarted while this turn was in flight; whether its effects reached the model or a tool is not recorded",
-                    )
-                    .ambiguous(true),
-                )
-                .map_err(json_error)?,
-            )],
+            &records,
             SessionUpdate {
-                status: Some(SessionStatus::Idle),
+                status: next,
                 configuration: None,
             },
         )?;
@@ -514,6 +567,9 @@ fn lifecycle_of(frame: &Frame<'_>) -> Result<Option<Lifecycle>, Error> {
         kind if kind == codes::event::SESSION_ENDED => {
             Some(Lifecycle::Status(SessionStatus::Ended))
         }
+        kind if kind == codes::event::SESSION_END_STARTED => {
+            Some(Lifecycle::Status(SessionStatus::Ending))
+        }
         _ => None,
     })
 }
@@ -533,10 +589,6 @@ fn apply_lifecycle(row: &mut SessionRow, lifecycle: Lifecycle) {
         }
         Lifecycle::Status(status) => row.status = status,
     }
-}
-
-fn journal_kind(kind: &str) -> bool {
-    matches!(kind, "transcript_delta" | "state_set")
 }
 
 impl SessionStore for LocalSessionStore {

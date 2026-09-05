@@ -1,9 +1,12 @@
 .git
 .github
+.worktrees
+.claude
 brain-data
-node_modules
-packages/*/dist
-target
+**/node_modules
+**/dist
+tests/release/built
+**/target
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal

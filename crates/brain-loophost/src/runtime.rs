@@ -4,7 +4,7 @@ use brain_protocol::{AgentloopIdentity, ToolIdentity, TurnError, TurnInput, Turn
 use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
-use wasmtime::{Cache, Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap};
+use wasmtime::{Cache, Config, Engine, ResourceLimiter, Store, Trap};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wasmtime_wasi_http::{
     Error as HttpError, RequestOptions, WasiBody, WasiHttpCtx, WasiHttpCtxView, WasiHttpHooks,
@@ -170,7 +170,7 @@ impl AdmissionEngine {
 
 /// The store's data: the memory limiter, bridge, and explicitly granted capabilities.
 pub struct HostState {
-    limits: StoreLimits,
+    limits: StoreBudget,
     bridge: Option<Arc<dyn GuestHost>>,
     table: ResourceTable,
     wasi: WasiCtx,
@@ -182,7 +182,7 @@ pub struct HostState {
 
 impl HostState {
     fn new(
-        limits: StoreLimits,
+        limits: StoreBudget,
         bridge: Arc<dyn GuestHost>,
         environment: NativeEnvironment,
     ) -> Result<Self, TurnError> {
@@ -387,6 +387,84 @@ fn wit_error(error: TurnError) -> wit::TurnError {
 /// for its imports.
 const MAX_CORE_INSTANCES: usize = 8;
 
+struct StoreBudget {
+    limit: usize,
+    memory: usize,
+    memory_growth: usize,
+    elements: usize,
+    table_growth: usize,
+}
+
+impl StoreBudget {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            memory: 0,
+            memory_growth: 0,
+            elements: 0,
+            table_growth: 0,
+        }
+    }
+}
+
+impl ResourceLimiter for StoreBudget {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let growth = desired.saturating_sub(current);
+        if maximum.is_some_and(|max| desired > max)
+            || growth > self.limit.saturating_sub(self.memory)
+        {
+            return Ok(false);
+        }
+        self.memory += growth;
+        self.memory_growth = growth;
+        Ok(true)
+    }
+
+    fn memory_grow_failed(&mut self, _error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.memory -= self.memory_growth;
+        self.memory_growth = 0;
+        Ok(())
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let growth = desired.saturating_sub(current);
+        if maximum.is_some_and(|max| desired > max)
+            || growth > 1_000_000_usize.saturating_sub(self.elements)
+        {
+            return Ok(false);
+        }
+        self.elements += growth;
+        self.table_growth = growth;
+        Ok(true)
+    }
+
+    fn table_grow_failed(&mut self, _error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.elements -= self.table_growth;
+        self.table_growth = 0;
+        Ok(())
+    }
+
+    fn instances(&self) -> usize {
+        MAX_CORE_INSTANCES
+    }
+    fn memories(&self) -> usize {
+        MAX_CORE_INSTANCES
+    }
+    fn tables(&self) -> usize {
+        MAX_CORE_INSTANCES
+    }
+}
+
 impl AdmittedAgentloop {
     /// Runs one turn in a fresh Store and Component instance. Only compiled code is
     /// retained between invocations.
@@ -398,10 +476,7 @@ impl AdmittedAgentloop {
         input: TurnInput,
         bridge: Arc<dyn GuestHost>,
     ) -> Result<TurnOutput, TurnError> {
-        let store_limits = StoreLimitsBuilder::new()
-            .memory_size(limits.linear_memory_bytes)
-            .instances(MAX_CORE_INSTANCES)
-            .build();
+        let store_limits = StoreBudget::new(limits.linear_memory_bytes);
         let state = HostState::new(store_limits, bridge, environment)?;
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
@@ -448,10 +523,7 @@ impl AdmittedTool {
         input: NativeToolInput,
         bridge: Arc<dyn GuestHost>,
     ) -> Result<serde_json::Value, TurnError> {
-        let store_limits = StoreLimitsBuilder::new()
-            .memory_size(limits.linear_memory_bytes)
-            .instances(MAX_CORE_INSTANCES)
-            .build();
+        let store_limits = StoreBudget::new(limits.linear_memory_bytes);
         let state = HostState::new(store_limits, bridge, environment)?;
         let mut store = Store::new(engine, state);
         store.limiter(|state| &mut state.limits);
@@ -599,6 +671,24 @@ mod tests {
     const CEILING: Duration = Duration::from_secs(10);
     const HOST_WAIT: Duration = Duration::from_millis(250);
 
+    #[test]
+    fn memory_budget_is_aggregate_across_memories_and_failed_growth_releases_budget() {
+        let engine = wasmtime::Engine::default();
+        let mut store = Store::new(&engine, StoreBudget::new(2 * 65536));
+        store.limiter(|budget| budget);
+        let first = wasmtime::Memory::new(&mut store, wasmtime::MemoryType::new(1, None)).unwrap();
+        let _second =
+            wasmtime::Memory::new(&mut store, wasmtime::MemoryType::new(1, None)).unwrap();
+        assert!(first.grow(&mut store, 1).is_err());
+        assert!(wasmtime::Memory::new(&mut store, wasmtime::MemoryType::new(1, None)).is_err());
+        let mut budget = StoreBudget::new(65536);
+        assert!(budget.memory_growing(0, 65536, None).unwrap());
+        budget
+            .memory_grow_failed(wasmtime::Error::msg("allocation failed"))
+            .unwrap();
+        assert!(budget.memory_growing(0, 65536, None).unwrap());
+    }
+
     struct SlowHost;
 
     #[async_trait::async_trait]
@@ -706,7 +796,7 @@ mod tests {
         let admission = AdmissionEngine::new(LoopLimits::default(), Vec::new()).unwrap();
         let engine = admission.engine();
         let state = HostState::new(
-            StoreLimitsBuilder::new().build(),
+            StoreBudget::new(128 * 1024 * 1024),
             Arc::new(SlowHost),
             empty_environment(),
         )

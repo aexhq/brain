@@ -288,3 +288,67 @@ async fn a_cancelled_turn_ends_at_its_next_host_call() {
         .to_string();
     assert!(error.contains("cancelled"), "{error}");
 }
+
+#[tokio::test]
+async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
+    use brain_loophost::{NativeEnvironment, WorkerClient, WorkerRequest, WorkerResponse};
+
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("worker.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let worker = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        assert!(matches!(
+            brain_loophost::worker_read(&mut stream).await.unwrap(),
+            WorkerRequest::Turn { .. }
+        ));
+        assert!(matches!(
+            brain_loophost::worker_read(&mut stream).await.unwrap(),
+            WorkerRequest::Cancel
+        ));
+        brain_loophost::worker_write(
+            &mut stream,
+            &WorkerResponse::HostCall {
+                id: 1,
+                call: HostCall::Emit {
+                    kind: "note".into(),
+                    payload_json: "{}".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        brain_loophost::worker_write(
+            &mut stream,
+            &WorkerResponse::TurnFailed {
+                error: TurnError::new(brain_protocol::codes::failure::CANCELLED, "cancelled"),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(brain_loophost::worker_read(&mut stream).await.is_err());
+    });
+    let bridge = RecordingBridge {
+        calls: Mutex::new(Vec::new()),
+        cancelled: AtomicBool::new(true),
+    };
+    let error = WorkerClient::new(socket)
+        .turn(
+            brain_protocol::AgentloopIdentity::new("diagnostic"),
+            NativeEnvironment {
+                scratch: false,
+                workspace: None,
+                network_allow: Vec::new(),
+                secrets: Default::default(),
+            },
+            input("hello"),
+            brain_loophost::MAX_TURN_INPUT_BYTES,
+            &bridge,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("cancelled"), "{error}");
+    assert!(bridge.calls.lock().unwrap().is_empty());
+    worker.await.unwrap();
+}

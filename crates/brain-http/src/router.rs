@@ -571,11 +571,7 @@ async fn events<A: BrainApi>(
             let empty = page.events.is_empty();
             for event in page.events {
                 sent_through = event.sequence;
-                let terminal = is_last(&event);
                 yield sse(event);
-                if terminal {
-                    return;
-                }
             }
             if empty {
                 let terminal = match api.get_session(session_id.clone()).await {

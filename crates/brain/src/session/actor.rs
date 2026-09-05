@@ -176,27 +176,34 @@ impl SessionActor {
             .find(|environment| environment.environment_id == self.config.agentloop_environment_id)
             .map(|environment| environment.configuration.clone())
             .ok_or_else(|| Error::InvalidState("Agentloop Environment is missing".into()))?;
-        let running = self.runtime.loop_executor.turn(
-            &self.row.session_id,
-            &self.config.agentloop_identity,
-            agentloop_environment,
-            input,
-            host.clone(),
-        );
-        let outcome = if self.runtime.max_turn_ms == 0 {
-            running.await
-        } else {
-            match tokio::time::timeout(Duration::from_millis(self.runtime.max_turn_ms), running)
+        let outcome = {
+            let running = self.runtime.loop_executor.turn(
+                &self.row.session_id,
+                &self.config.agentloop_identity,
+                agentloop_environment,
+                input,
+                host.clone(),
+            );
+            tokio::pin!(running);
+            if self.runtime.max_turn_ms == 0 {
+                running.await
+            } else {
+                match tokio::time::timeout(
+                    Duration::from_millis(self.runtime.max_turn_ms),
+                    &mut running,
+                )
                 .await
-            {
-                Ok(outcome) => outcome,
-                Err(_) => {
-                    // The loop is told through its next host call; whatever it was
-                    // doing in between is bounded by the executor's own guest budget.
-                    self.cancel_requested.store(true, Ordering::Release);
-                    Err(Error::Cancelled(
-                        "turn exceeded its wall-time budget".into(),
-                    ))
+                {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        self.cancel_requested.store(true, Ordering::Release);
+                        // Keep mediated calls alive through their terminal commit and bounded
+                        // cancellation. Dropping the executor here would abandon those records.
+                        let _ = running.await;
+                        Err(Error::Cancelled(
+                            "turn exceeded its wall-time budget".into(),
+                        ))
+                    }
                 }
             }
         };
@@ -339,10 +346,12 @@ impl SessionActor {
     /// A record for something the host did to the session between turns. Refused while
     /// a turn is running: the turn owns the sequence until it ends.
     async fn append_between_turns(&mut self, record: AppendRecord) -> Result<u64, Error> {
-        if !matches!(self.row.status, SessionStatus::Idle) {
+        if !matches!(self.row.status, SessionStatus::Idle | SessionStatus::Ending) {
             return Err(Error::InvalidState("session is not idle".into()));
         }
-        self.commit(vec![record], None).await?;
+        let status =
+            (record.kind == codes::event::SESSION_END_STARTED).then_some(SessionStatus::Ending);
+        self.commit(vec![record], status).await?;
         Ok(self.row.through_sequence)
     }
 
@@ -555,7 +564,7 @@ impl TurnServices for TurnHost {
         };
         let result = tokio::select! {
             result = call => result,
-            () = cancelled => Err(Error::Cancelled("turn cancelled during a model call".into())),
+            () = cancelled => Err(Error::Ambiguous("turn cancelled during a model call".into())),
         };
         let mut cursor = self.cursor.lock().await;
         match result {
@@ -672,43 +681,33 @@ impl TurnServices for TurnHost {
                             message: "Tool cancellation was requested after the call was sent".into(),
                         }, true)),
                     };
-                    (index, sequence, call_id, result)
+                    let dropped = matches!(&result, Ok((_, true)));
+                    let result = match result {
+                        Ok((outcome, _)) => ToolResult::from_outcome(call_id, outcome),
+                        Err(Error::Ambiguous(message)) => ToolResult::from_outcome(call_id, Outcome::Unknown { message }),
+                        Err(error) => ToolResult {
+                            call_id,
+                            output: serde_json::to_value(Failure::new(codes::failure::TOOL_ERROR, error.to_string())).map_err(json_error)?,
+                            is_error: true,
+                        },
+                    };
+                    let mut cursor = self.cursor.lock().await;
+                    self.append(&mut cursor, vec![AppendRecord::new(
+                        codes::event::TOOL_CALL_ENDED,
+                        serde_json::json!({"sequence": sequence, "result": result}),
+                    )]).await?;
+                    Ok::<_, Error>((index, result, dropped))
                 }
             });
         let completed = join_all(futures).await;
-        let mut terminal = Vec::with_capacity(completed.len());
         let mut results = Vec::with_capacity(completed.len());
         let mut abandoned = Vec::new();
-        for (index, sequence, call_id, result) in completed {
-            let result = match result {
-                Ok((outcome, dropped)) => {
-                    if dropped {
-                        abandoned.push(dispatches[index].clone());
-                    }
-                    ToolResult::from_outcome(call_id, outcome)
-                }
-                Err(Error::Ambiguous(message)) => {
-                    ToolResult::from_outcome(call_id, Outcome::Unknown { message })
-                }
-                Err(error) => ToolResult {
-                    call_id,
-                    output: serde_json::to_value(Failure::new(
-                        codes::failure::TOOL_ERROR,
-                        error.to_string(),
-                    ))
-                    .map_err(json_error)?,
-                    is_error: true,
-                },
-            };
-            terminal.push(AppendRecord::new(
-                codes::event::TOOL_CALL_ENDED,
-                serde_json::json!({"sequence": sequence, "result": result}),
-            ));
+        for completed in completed {
+            let (index, result, dropped) = completed?;
+            if dropped {
+                abandoned.push(dispatches[index].clone());
+            }
             results.push(result);
-        }
-        {
-            let mut cursor = self.cursor.lock().await;
-            self.append(&mut cursor, terminal).await?;
         }
         // A call abandoned locally is told to stop where it runs, best effort like every
         // cancellation.
@@ -724,6 +723,7 @@ impl TurnServices for TurnHost {
     async fn emit(&self, kind: String, payload: serde_json::Value) -> Result<u64, Error> {
         self.check_cancelled()?;
         if !valid_kind(&kind)
+            || JournalEntry::is_kind(&kind)
             || (codes::event::ALL.contains(&kind.as_str()) && kind != codes::event::OUTPUT_EMITTED)
         {
             return Err(Error::InvalidState(format!(
@@ -790,7 +790,7 @@ impl TurnHost {
     }
 
     async fn cancel_tools(&self, dispatches: &[ToolDispatch]) -> Result<(), Error> {
-        let (cancellations, sequences) = {
+        let cancellations = {
             let mut cursor = self.cursor.lock().await;
             let mut cancellations = Vec::with_capacity(dispatches.len());
             let mut started = Vec::with_capacity(dispatches.len());
@@ -814,53 +814,37 @@ impl TurnHost {
             for (cancellation, record) in cancellations.iter_mut().zip(saved) {
                 cancellation.sequence = record.sequence;
             }
-            let sequences: Vec<u64> = cancellations.iter().map(|c| c.sequence).collect();
-            (cancellations, sequences)
+            cancellations
         };
-        let futures = cancellations.into_iter().map(|cancellation| {
-            let executor = self.runtime.tool_executor.clone();
-            async move {
-                let sequence = cancellation.sequence;
-                let result = executor.cancel(cancellation).await;
-                (sequence, result)
-            }
+        let futures = cancellations.into_iter().map(|cancellation| async move {
+            let sequence = cancellation.sequence;
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                self.runtime.tool_executor.cancel(cancellation),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(Error::Ambiguous(
+                    "Environment cancellation deadline exceeded".into(),
+                ))
+            });
+            let record = match result {
+                Ok(()) => AppendRecord::new(
+                    codes::event::TOOL_CANCEL_ENDED,
+                    serde_json::json!({"sequence": sequence}),
+                ),
+                Err(error) => AppendRecord::new(
+                    codes::event::TOOL_CANCEL_FAILED,
+                    failure_payload(Some(sequence), &failure_of(&error))?,
+                ),
+            };
+            let mut cursor = self.cursor.lock().await;
+            self.append(&mut cursor, vec![record]).await?;
+            Ok::<_, Error>(())
         });
-        let results = tokio::time::timeout(Duration::from_secs(5), join_all(futures)).await;
-        let records = match results {
-            Ok(results) => results
-                .into_iter()
-                .map(|(sequence, result)| match result {
-                    Ok(()) => Ok(AppendRecord::new(
-                        codes::event::TOOL_CANCEL_ENDED,
-                        serde_json::json!({"sequence": sequence}),
-                    )),
-                    Err(error) => Ok(AppendRecord::new(
-                        codes::event::TOOL_CANCEL_FAILED,
-                        failure_payload(Some(sequence), &failure_of(&error).ambiguous(false))?,
-                    )),
-                })
-                .collect::<Result<Vec<_>, Error>>()?,
-            // Nothing answered in time: whether the environment stopped the work is not
-            // known, and the record says so.
-            Err(_) => sequences
-                .into_iter()
-                .map(|sequence| {
-                    Ok(AppendRecord::new(
-                        codes::event::TOOL_CANCEL_FAILED,
-                        failure_payload(
-                            Some(sequence),
-                            &Failure::new(
-                                codes::failure::TIMEOUT,
-                                "Environment cancellation deadline exceeded",
-                            )
-                            .ambiguous(true),
-                        )?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, Error>>()?,
-        };
-        let mut cursor = self.cursor.lock().await;
-        self.append(&mut cursor, records).await?;
+        for result in join_all(futures).await {
+            result?;
+        }
         Ok(())
     }
 }

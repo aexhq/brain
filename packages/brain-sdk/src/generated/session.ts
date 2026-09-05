@@ -149,7 +149,7 @@ export type Identity = string;
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "SessionStatus".
  */
-export type SessionStatus = "creating" | "idle" | "running" | "ended" | "failed";
+export type SessionStatus = "creating" | "idle" | "running" | "ending" | "ended" | "failed";
 /**
  * This interface was referenced by `BrainSessionAPIV1`'s JSON-Schema
  * via the `definition` "ToolIdentity".

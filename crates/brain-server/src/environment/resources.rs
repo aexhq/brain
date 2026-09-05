@@ -14,11 +14,12 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use brain_protocol::{EnvironmentId, EnvironmentStatus, Resources};
+use brain_protocol::{EnvironmentId, EnvironmentStatus, Resources, SessionId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentRecord {
+    pub session_id: SessionId,
     pub environment_id: EnvironmentId,
     pub configuration: serde_json::Value,
     pub managed: bool,
@@ -27,10 +28,6 @@ pub struct EnvironmentRecord {
     pub created_at_ms: u64,
     #[serde(default)]
     pub resources: Resources,
-    /// Operations issued on the environment's own behalf (setup, teardown): the
-    /// sequence its wire envelope carries, since no session's counter applies.
-    #[serde(default)]
-    pub operations: u64,
 }
 
 struct Row {
@@ -51,6 +48,9 @@ impl EnvironmentResources {
     /// with a warning: one damaged row must not stop a process starting.
     pub fn open(directory: &Path) -> Result<Self, brain::Error> {
         fs::create_dir_all(directory).map_err(io)?;
+        if let Some(parent) = directory.parent() {
+            crate::persistence::sync_directory(parent)?;
+        }
         let mut rows = HashMap::new();
         for entry in fs::read_dir(directory).map_err(io)?.flatten() {
             let path = entry.path();
@@ -138,16 +138,11 @@ impl EnvironmentResources {
         let row = rows.get_mut(environment_id).ok_or_else(|| {
             brain::Error::NotFound(format!("Environment `{environment_id}` does not exist"))
         })?;
-        change(&mut row.record);
-        self.write(&row.record)?;
+        let mut updated = row.record.clone();
+        change(&mut updated);
+        self.write(&updated)?;
+        row.record = updated;
         Ok(row.record.clone())
-    }
-
-    /// The next sequence for an operation on the environment's own behalf.
-    pub fn next_operation(&self, environment_id: &EnvironmentId) -> Result<u64, brain::Error> {
-        Ok(self
-            .update(environment_id, |record| record.operations += 1)?
-            .operations)
     }
 
     pub fn set_status(
@@ -180,22 +175,23 @@ impl EnvironmentResources {
 
     pub fn remove(&self, environment_id: &EnvironmentId) -> Result<(), brain::Error> {
         let mut rows = self.lock()?;
-        rows.remove(environment_id);
         match fs::remove_file(self.path(environment_id)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(()) => {
+                crate::persistence::sync_directory(&self.directory)?;
+                rows.remove(environment_id);
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                rows.remove(environment_id);
+                Ok(())
+            }
             Err(error) => Err(io(error)),
         }
     }
 
     fn write(&self, record: &EnvironmentRecord) -> Result<(), brain::Error> {
-        let bytes = serde_json::to_vec_pretty(record).map_err(json)?;
         let target = self.path(&record.environment_id);
-        let temporary = self
-            .directory
-            .join(format!(".{}.json.tmp", record.environment_id.as_str()));
-        fs::write(&temporary, bytes).map_err(io)?;
-        fs::rename(&temporary, &target).map_err(io)
+        crate::persistence::write_json(&target, record)
     }
 
     fn path(&self, environment_id: &EnvironmentId) -> PathBuf {
@@ -239,13 +235,13 @@ mod tests {
 
     fn record(id: &str) -> EnvironmentRecord {
         EnvironmentRecord {
+            session_id: SessionId::new("ses_owner"),
             environment_id: EnvironmentId::new(id),
             configuration: serde_json::json!({"image": "ubuntu"}),
             managed: true,
             idle_ttl_ms: Some(1_000),
             created_at_ms: 1,
             resources: Default::default(),
-            operations: 0,
         }
     }
 
@@ -263,17 +259,11 @@ mod tests {
                 record.configuration = serde_json::json!({"image": "debian"});
             })
             .unwrap();
-        assert_eq!(
-            resources
-                .next_operation(&EnvironmentId::new("env_a"))
-                .unwrap(),
-            1
-        );
         drop(resources);
         let reopened = EnvironmentResources::open(&directory).unwrap();
         let found = reopened.get(&EnvironmentId::new("env_a")).unwrap().unwrap();
         assert_eq!(found.configuration["image"], "debian");
-        assert_eq!(found.operations, 1);
+        assert_eq!(found.session_id.as_str(), "ses_owner");
         reopened.remove(&EnvironmentId::new("env_a")).unwrap();
         assert!(
             reopened

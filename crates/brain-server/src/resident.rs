@@ -1,5 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    fs::File,
+    path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -15,23 +17,42 @@ const COMMAND_CAPACITY: usize = 128;
 const MAX_HOSTS: usize = 4_096;
 const UNCONNECTED_TTL: Duration = Duration::from_secs(60);
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ResidentHosts {
     inner: Arc<Mutex<State>>,
 }
 
-#[derive(Default)]
 struct State {
+    log: File,
     hosts: HashMap<HostId, Host>,
 }
 
 struct Host {
+    sessions: HashSet<SessionId>,
     token: [u8; 32],
     disconnected_at: Instant,
     connection: u64,
     commands: Option<mpsc::Sender<HostCommand>>,
     disconnect: Option<oneshot::Sender<()>>,
     pending: HashMap<(SessionId, u64), PendingCall>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RegistrationRecord {
+    host_id: HostId,
+    token: Option<[u8; 32]>,
+}
+
+fn registered(token: [u8; 32]) -> Host {
+    Host {
+        token,
+        sessions: HashSet::new(),
+        disconnected_at: Instant::now(),
+        connection: 0,
+        commands: None,
+        disconnect: None,
+        pending: HashMap::new(),
+    }
 }
 
 struct PendingCall {
@@ -46,27 +67,91 @@ struct PendingEvent {
 }
 
 impl ResidentHosts {
+    pub fn open(path: &Path) -> Result<Self, brain::Error> {
+        let (log, records) = crate::persistence::open_log::<RegistrationRecord>(path)?;
+        let mut hosts = HashMap::new();
+        for record in records {
+            if let Some(token) = record.token {
+                hosts.insert(record.host_id, registered(token));
+            } else {
+                hosts.remove(&record.host_id);
+            }
+        }
+        Ok(Self {
+            inner: Arc::new(Mutex::new(State { log, hosts })),
+        })
+    }
+
+    pub fn bind_session(
+        &self,
+        session_id: &SessionId,
+        host_ids: &[HostId],
+    ) -> Result<(), ApiError> {
+        let mut state = self.lock()?;
+        for id in host_ids {
+            if !state.hosts.contains_key(id) {
+                return Err(ApiError::invalid_request(
+                    "resident host registration is missing",
+                ));
+            }
+        }
+        for id in host_ids {
+            state
+                .hosts
+                .get_mut(id)
+                .expect("registration checked")
+                .sessions
+                .insert(session_id.clone());
+        }
+        Ok(())
+    }
+
+    pub fn release_session(&self, session_id: &SessionId) -> Result<(), ApiError> {
+        for host in self.lock()?.hosts.values_mut() {
+            host.sessions.remove(session_id);
+        }
+        Ok(())
+    }
+
     pub fn register(&self) -> Result<HostRegistration, ApiError> {
         let host_id = HostId::new(brain::random_id("host"));
         let token = brain::random_id("bht");
         let mut state = self.lock()?;
-        state.hosts.retain(|_, host| {
-            host.commands.is_some() || host.disconnected_at.elapsed() < UNCONNECTED_TTL
-        });
+        let expired = state
+            .hosts
+            .iter()
+            .filter(|(_, host)| {
+                host.sessions.is_empty()
+                    && host.commands.is_none()
+                    && host.disconnected_at.elapsed() >= UNCONNECTED_TTL
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in expired {
+            crate::persistence::append(
+                &mut state.log,
+                &RegistrationRecord {
+                    host_id: id.clone(),
+                    token: None,
+                },
+            )
+            .map_err(|error| ApiError::internal(error.to_string()))?;
+            state.hosts.remove(&id);
+        }
         if state.hosts.len() >= MAX_HOSTS {
             return Err(ApiError::overloaded("resident host table is full"));
         }
-        state.hosts.insert(
-            host_id.clone(),
-            Host {
-                token: digest(&token),
-                disconnected_at: Instant::now(),
-                connection: 0,
-                commands: None,
-                disconnect: None,
-                pending: HashMap::new(),
+        crate::persistence::append(
+            &mut state.log,
+            &RegistrationRecord {
+                host_id: host_id.clone(),
+                token: Some(digest(&token)),
             },
-        );
+        )
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+        state
+            .hosts
+            .insert(host_id.clone(), registered(digest(&token)));
         Ok(HostRegistration { host_id, token })
     }
 
@@ -350,6 +435,63 @@ fn wall_clock_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_hosts() -> ResidentHosts {
+        ResidentHosts::open(
+            &std::env::temp_dir()
+                .join(format!("brain-hosts-{}", rand::random::<u64>()))
+                .join("hosts.log"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn registration_survives_restart_and_session_references_prevent_expiry() {
+        let path = std::env::temp_dir()
+            .join(format!("brain-hosts-{}", rand::random::<u64>()))
+            .join("hosts.log");
+        let hosts = ResidentHosts::open(&path).unwrap();
+        let registration = hosts.register().unwrap();
+        drop(hosts);
+        let hosts = ResidentHosts::open(&path).unwrap();
+        assert!(
+            hosts
+                .connect(&registration.host_id, &registration.token)
+                .is_ok()
+        );
+        assert!(hosts.connect(&registration.host_id, "wrong token").is_err());
+        let session = SessionId::new("ses_pinned");
+        hosts
+            .bind_session(&session, std::slice::from_ref(&registration.host_id))
+            .unwrap();
+        hosts
+            .lock()
+            .unwrap()
+            .hosts
+            .get_mut(&registration.host_id)
+            .unwrap()
+            .disconnected_at = Instant::now() - UNCONNECTED_TTL;
+        hosts.register().unwrap();
+        assert!(
+            hosts
+                .connect(&registration.host_id, &registration.token)
+                .is_ok()
+        );
+        hosts.release_session(&session).unwrap();
+        hosts
+            .lock()
+            .unwrap()
+            .hosts
+            .get_mut(&registration.host_id)
+            .unwrap()
+            .disconnected_at = Instant::now() - UNCONNECTED_TTL;
+        hosts.register().unwrap();
+        assert!(
+            hosts
+                .connect(&registration.host_id, &registration.token)
+                .is_err()
+        );
+    }
     use brain_protocol::{ToolBinding, ToolHosting, ToolInvocation};
 
     struct NoEvents;
@@ -389,7 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_resident_command_is_sent_once_and_resolved_by_session_sequence() {
-        let hosts = ResidentHosts::default();
+        let hosts = test_hosts();
         let registration = hosts.register().unwrap();
         let mut connection = hosts
             .connect(&registration.host_id, &registration.token)
@@ -425,7 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_without_a_connected_host_fails_before_send() {
-        let hosts = ResidentHosts::default();
+        let hosts = test_hosts();
         let registration = hosts.register().unwrap();
         let error = hosts
             .execute(dispatch(registration.host_id), &NoEvents)
@@ -436,7 +578,7 @@ mod tests {
 
     #[test]
     fn closing_a_connection_keeps_its_registration_reconnectable() {
-        let hosts = ResidentHosts::default();
+        let hosts = test_hosts();
         let registration = hosts.register().unwrap();
         let connection = hosts
             .connect(&registration.host_id, &registration.token)
@@ -453,7 +595,7 @@ mod tests {
 
     #[tokio::test]
     async fn replacing_a_host_connection_makes_an_inflight_outcome_unknown() {
-        let hosts = ResidentHosts::default();
+        let hosts = test_hosts();
         let registration = hosts.register().unwrap();
         let mut first = hosts
             .connect(&registration.host_id, &registration.token)

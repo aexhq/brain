@@ -9,6 +9,32 @@ import { Brain, agentloop, brainWasm, component, tool } from "../dist/index.js";
 const sessionId = "ses_12345678901234567890";
 const sse = (data) => `event: command\ndata: ${JSON.stringify(data)}\n\n`;
 
+test("saved host credentials reattach handlers to an existing session", async () => {
+  const credentials = { hostId: "host_12345678901234567890", token: "saved-token" };
+  let controller;
+  let finish;
+  const result = new Promise((resolve) => { finish = resolve; });
+  const client = new Brain({ baseUrl: "https://brain.example", residentHost: credentials, fetch: async (input, init) => {
+    const request = new Request(input, init);
+    const path = new URL(request.url).pathname;
+    if (path.endsWith("/commands")) {
+      assert.equal(request.headers.get("authorization"), "Bearer saved-token");
+      return new Response(new ReadableStream({ start(value) { controller = value; } }), { headers: { "content-type": "text/event-stream" } });
+    }
+    if (path.endsWith("/results")) { finish(await request.json()); return new Response(null, { status: 204 }); }
+    if (path.endsWith("/events")) return Response.json({ events: [{ event_id: "evt_creation", sequence: 1, recorded_at_ms: 0, event_type: "session_creation_ended", data: { configuration: { tool_bindings: [{ name: "lookup", host_id: credentials.hostId }] } } }], next_cursor: 1 });
+    if (path.endsWith("/end")) return Response.json({ session_id: sessionId, status: "ended", last_sequence: 4 });
+    if (path === `/v1/sessions/${sessionId}`) return Response.json({ session_id: sessionId, status: "idle", last_sequence: 1 });
+    throw new Error(`unexpected request ${path}`);
+  } });
+  const lookup = tool({ name: "lookup", description: "Lookup.", input: z.object({}), run: async () => "restored" });
+  const session = await client.sessions.get(sessionId, { tools: [lookup()] });
+  assert.deepEqual(await client.residentHostCredentials(), credentials);
+  controller.enqueue(new TextEncoder().encode(sse({ session_id: sessionId, sequence: 2, deadline_at_ms: Date.now() + 5000, operation: { type: "invoke_tool", invocation: { call_id: "call_restored", name: "lookup", input: {} } } })));
+  assert.deepEqual((await result).outcome, { status: "ok", value: "restored" });
+  await session.end();
+});
+
 test("one resident host runs app Tools and commits ctx.emit before its result", async () => {
   const requests = [];
   let releaseStream;
@@ -143,7 +169,7 @@ test("a resident host reconnects without replaying old commands", async () => {
   await pump.closed;
 });
 
-test("a new resident session never reuses the stopped host of the previous session", async () => {
+test("a new resident session reconnects the durable host after its previous stream stopped", async () => {
   let hosts = 0;
   let sessions = 0;
   const bindings = [];
@@ -193,6 +219,6 @@ test("a new resident session never reuses the stopped host of the previous sessi
   const second = await client.sessions.create(options);
   await second.end();
 
-  assert.equal(hosts, 2);
-  assert.deepEqual(bindings, ["host_1", "host_2"]);
+  assert.equal(hosts, 1);
+  assert.deepEqual(bindings, ["host_1", "host_1"]);
 });
