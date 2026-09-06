@@ -12,6 +12,10 @@ autobins = false
 name = "brain"
 path = "src/main.rs"
 
+[[bin]]
+name = "contract"
+path = "src/bin/contract.rs"
+
 [dependencies]
 brain = { workspace = true }
 brain-http = { workspace = true }

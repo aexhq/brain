@@ -3,7 +3,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use brain_http::{BrainApi, HostConnection, router, router_with_bearer};
+use brain_http::{BrainApi, HostConnection, HttpLimits, router, router_with_bearer};
 use brain_protocol::{
     AdmissionStatus, AgentloopAdmission, AgentloopId, ApiError, CreateSessionRequest,
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName, Event, EventPage, HostCommand,
@@ -321,7 +321,10 @@ async fn exposes_every_v1_route_with_its_contract_status() {
         request("GET", "/health/ready", None, None),
     ];
     for request in cases {
-        let response = router(Api::default()).oneshot(request).await.unwrap();
+        let response = router(Api::default(), &HttpLimits::default())
+            .oneshot(request)
+            .await
+            .unwrap();
         assert!(response.status().is_success(), "{}", response.status());
     }
 }
@@ -333,7 +336,10 @@ async fn mutating_routes_fail_fast_without_an_idempotency_key() {
         .uri("/v1/agentloops")
         .body(Body::from(vec![1]))
         .unwrap();
-    let response = router(Api::default()).oneshot(request).await.unwrap();
+    let response = router(Api::default(), &HttpLimits::default())
+        .oneshot(request)
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -360,7 +366,7 @@ async fn request_bodies_reject_unknown_fields() {
             "driver": "brain"
         }]
     });
-    let response = router(Api::default())
+    let response = router(Api::default(), &HttpLimits::default())
         .oneshot(request(
             "POST",
             "/v1/sessions",
@@ -374,13 +380,13 @@ async fn request_bodies_reject_unknown_fields() {
 
 #[tokio::test]
 async fn bearer_auth_protects_api_routes_but_not_health() {
-    let unauthorized = router_with_bearer(Api::default(), "secret".into())
+    let unauthorized = router_with_bearer(Api::default(), "secret".into(), &HttpLimits::default())
         .oneshot(request("GET", "/v1/sessions", None, None))
         .await
         .unwrap();
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
-    let authorized = router_with_bearer(Api::default(), "secret".into())
+    let authorized = router_with_bearer(Api::default(), "secret".into(), &HttpLimits::default())
         .oneshot(
             Request::builder()
                 .uri("/v1/sessions")
@@ -392,7 +398,7 @@ async fn bearer_auth_protects_api_routes_but_not_health() {
         .unwrap();
     assert_eq!(authorized.status(), StatusCode::OK);
 
-    let health = router_with_bearer(Api::default(), "secret".into())
+    let health = router_with_bearer(Api::default(), "secret".into(), &HttpLimits::default())
         .oneshot(request("GET", "/health/ready", None, None))
         .await
         .unwrap();
@@ -404,7 +410,7 @@ async fn bearer_auth_protects_api_routes_but_not_health() {
 /// connection held open forever.
 #[tokio::test]
 async fn the_event_stream_starts_with_the_page_the_cursor_names() {
-    let response = router(Api::default())
+    let response = router(Api::default(), &HttpLimits::default())
         .oneshot(
             Request::builder()
                 .uri("/v1/sessions/ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/events?after=7")
@@ -436,12 +442,15 @@ async fn the_event_stream_drains_every_history_page_before_following_live() {
         })
         .collect();
     journal.last_mut().unwrap().event_type = brain_protocol::codes::event::SESSION_ENDED.into();
-    let response = router(Api {
-        journal: Some(journal),
-        page_size: Some(1_000),
-        status: Some(SessionStatus::Ended),
-        ..Api::default()
-    })
+    let response = router(
+        Api {
+            journal: Some(journal),
+            page_size: Some(1_000),
+            status: Some(SessionStatus::Ended),
+            ..Api::default()
+        },
+        &HttpLimits::default(),
+    )
     .oneshot(
         Request::builder()
             .uri("/v1/sessions/ses_test/events")
@@ -477,15 +486,18 @@ async fn a_terminal_cursor_and_a_failed_creation_close_the_event_stream() {
             event_type: event_type.into(),
             data: serde_json::json!({}),
         }];
-        let response = router(Api {
-            journal: Some(journal),
-            status: Some(if after == 1 {
-                SessionStatus::Ended
-            } else {
-                SessionStatus::Failed
-            }),
-            ..Api::default()
-        })
+        let response = router(
+            Api {
+                journal: Some(journal),
+                status: Some(if after == 1 {
+                    SessionStatus::Ended
+                } else {
+                    SessionStatus::Failed
+                }),
+                ..Api::default()
+            },
+            &HttpLimits::default(),
+        )
         .oneshot(
             Request::builder()
                 .uri(format!("/v1/sessions/ses_test/events?after={after}"))
@@ -550,7 +562,7 @@ fn session() -> SessionSummary {
 
 #[tokio::test]
 async fn the_host_token_opens_exactly_the_host_surface() {
-    let build = || router_with_bearer(Api::default(), "secret".into());
+    let build = || router_with_bearer(Api::default(), "secret".into(), &HttpLimits::default());
     let authed = |uri: &str, method: &str, bearer: &str, body: Option<&str>| {
         let mut builder = Request::builder()
             .method(method)
@@ -614,7 +626,7 @@ async fn the_host_token_opens_exactly_the_host_surface() {
 /// API bearer, not another turn's token.
 #[tokio::test]
 async fn the_turn_token_opens_exactly_that_turns_routes() {
-    let build = || router_with_bearer(Api::default(), "secret".into());
+    let build = || router_with_bearer(Api::default(), "secret".into(), &HttpLimits::default());
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let emit = |sequence: u64, bearer: &str| {
         Request::builder()
@@ -647,7 +659,7 @@ async fn the_turn_token_opens_exactly_that_turns_routes() {
 
 #[tokio::test]
 async fn the_host_stream_carries_typed_commands() {
-    let response = router(Api::default())
+    let response = router(Api::default(), &HttpLimits::default())
         .oneshot(
             Request::builder()
                 .uri("/v1/hosts/host_12345678901234567890/commands")
@@ -682,7 +694,7 @@ async fn the_host_stream_carries_typed_commands() {
 
 #[tokio::test]
 async fn the_api_bearer_does_not_replace_a_host_token() {
-    let response = router_with_bearer(Api::default(), "secret".into())
+    let response = router_with_bearer(Api::default(), "secret".into(), &HttpLimits::default())
         .oneshot(request(
             "GET",
             "/v1/hosts/host_12345678901234567890/commands",
@@ -713,7 +725,10 @@ async fn the_event_stream_carries_records_appended_after_it_opened() {
         .header("accept", "text/event-stream")
         .body(Body::empty())
         .unwrap();
-    let response = router(api).oneshot(request).await.unwrap();
+    let response = router(api, &HttpLimits::default())
+        .oneshot(request)
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
     // Appended after the page was served, the way a turn appends while a client streams.
@@ -782,7 +797,10 @@ async fn the_event_stream_carries_model_output_before_the_turn_finishes() {
         .header("accept", "text/event-stream")
         .body(Body::empty())
         .unwrap();
-    let response = router(api).oneshot(request).await.unwrap();
+    let response = router(api, &HttpLimits::default())
+        .oneshot(request)
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
     live.send((

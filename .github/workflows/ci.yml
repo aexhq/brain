@@ -30,7 +30,7 @@ jobs:
       # those. A diff means a type changed without its contract being regenerated, or a
       # generated file was edited by hand.
       - run: npm run gen
-      - run: git diff --exit-code -- crates/brain-protocol/generated crates/brain-http/generated crates/brain/generated catalog crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts
+      - run: git diff --exit-code -- crates/brain-protocol/generated crates/brain-http/generated crates/brain/generated catalog crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts docs/reference/configuration.mdx
       - run: npm test
       - run: npm run package-smoke
 

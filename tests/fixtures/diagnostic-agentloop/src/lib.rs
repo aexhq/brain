@@ -8,14 +8,14 @@ struct Diagnostic;
 impl Guest for Diagnostic {
     fn turn(input: TurnInput) -> Result<TurnOutput, TurnError> {
         brain::agentloop::host::events(0)?;
-        let mut slots: serde_json::Value = serde_json::from_str(&input.slots_json).map_err(error)?;
-        let turns = slots
+        let mut kv: serde_json::Value = serde_json::from_str(&input.kv_json).map_err(error)?;
+        let turns = kv
             .get("memory")
             .and_then(|value| value.get("turns"))
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0)
             + 1;
-        slots["memory"] = serde_json::json!({"turns": turns});
+        kv["memory"] = serde_json::json!({"turns": turns});
         brain::agentloop::host::emit("note", &serde_json::json!({"turns": turns}).to_string())?;
         let message = serde_json::from_str::<serde_json::Value>(&input.input_json)
             .map_err(error)?
@@ -25,7 +25,7 @@ impl Guest for Diagnostic {
             .to_owned();
         Ok(TurnOutput {
             transcript_json: input.transcript_json,
-            slots_json: slots.to_string(),
+            kv_json: kv.to_string(),
             result_json: Some(serde_json::json!({"turns": turns, "message": message}).to_string()),
         })
     }

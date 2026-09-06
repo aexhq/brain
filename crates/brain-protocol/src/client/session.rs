@@ -2,8 +2,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopId, Environment, EnvironmentName, MAX_TRANSCRIPT_ITEMS, Message, ModelBinding,
-    ModelSelection, SessionId, Tool, ToolDefinition,
+    AgentloopId, Environment, EnvironmentName, Message, ModelBinding, ModelSelection, SessionId,
+    Tool, ToolDefinition,
 };
 
 /// The contract identifier of the session API.
@@ -32,24 +32,20 @@ pub struct CreateSessionRequest {
     /// The system prompt the agent loop starts from. The loop may send a different one
     /// on any model call.
     #[serde(default)]
-    #[schemars(length(max = 131072))]
     pub system: String,
     /// The provider's structured-output request, applied to every model call unless the
     /// loop sends its own. Optional, and rejected at create for a provider that cannot
     /// carry it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<serde_json::Value>,
-    #[schemars(length(max = 128))]
     pub tools: Vec<Tool>,
     /// The Environments of this session, set up as part of this create. Every Tool and
     /// the Agentloop name one of them.
-    #[schemars(length(max = 128))]
     pub environments: Vec<Environment>,
     /// A transcript to carry forward, if the caller has one: the messages the new
     /// session's first model call should already see. Brain journals them as the session's
     /// opening transcript. Empty is an ordinary new session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(length(max = MAX_TRANSCRIPT_ITEMS))]
     pub transcript: Vec<Message>,
     /// How long the session may sit idle before Brain suspends it: its task and memory
     /// are released and rebuilt from disk on the next request. Absent means the server's

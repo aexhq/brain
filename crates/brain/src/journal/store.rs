@@ -74,7 +74,7 @@ impl CommitHandle {
     }
 }
 
-/// A compact session-state mutation stored in the same journal as public Events.
+/// A transcript or kv mutation stored in the same journal as public Events.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JournalEntry {
@@ -82,24 +82,24 @@ pub enum JournalEntry {
         keep: u64,
         append: Vec<Message>,
     },
-    StateSet {
-        name: String,
+    KvSet {
+        key: String,
         value: serde_json::Value,
     },
 }
 
 impl JournalEntry {
     pub(crate) fn is_kind(kind: &str) -> bool {
-        matches!(kind, "transcript_delta" | "state_set")
+        matches!(kind, "transcript_delta" | "kv_set")
     }
 }
 
-/// What folding a session's journal yields: its transcript, its slots, and the sequence
+/// What folding a session's journal yields: its transcript, its kv, and the sequence
 /// the journal is current to.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct Folded {
     pub transcript: Vec<Message>,
-    pub slots: BTreeMap<String, serde_json::Value>,
+    pub kv: BTreeMap<String, serde_json::Value>,
     pub through_sequence: u64,
 }
 
@@ -110,8 +110,8 @@ impl Folded {
                 self.transcript.truncate(keep as usize);
                 self.transcript.extend(append);
             }
-            JournalEntry::StateSet { name, value } => {
-                self.slots.insert(name, value);
+            JournalEntry::KvSet { key, value } => {
+                self.kv.insert(key, value);
             }
         }
     }
@@ -128,9 +128,9 @@ pub trait SessionStore: Send + Sync + 'static {
     ) -> Result<Vec<SessionRecord>, Error>;
     /// Admits background records. The writer assigns their sequence only when selected.
     fn append_async(&self, records: Vec<AppendRecord>) -> Result<CommitHandle, Error>;
-    /// Appends transcript and Agentloop-state mutations and waits for durable commit.
+    /// Appends transcript and Agentloop kv mutations and waits for durable commit.
     fn append_journal_sync(&self, entries: &[JournalEntry]) -> Result<u64, Error>;
-    /// The transcript and Agentloop state folded from the journal.
+    /// The transcript and Agentloop kv folded from the journal.
     fn fold(&self) -> Result<Folded, Error>;
     /// The whole row, including configuration and context. Only rehydrating a session
     /// actor needs this; everything else wants a summary.

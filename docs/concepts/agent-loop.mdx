@@ -37,7 +37,7 @@ The source of truth is [`crates/brain-loophost/wit/agentloop/agentloop.wit`](htt
 The Component exports one `turn` function. Its input contains:
 
 - the user input;
-- the current transcript and extension-owned slots;
+- the current transcript and the loop's kv (a key-value map it keeps between activations);
 - committed events since its previous activation;
 - its configuration, system prompt, Tool definitions, and deterministic runtime envelope.
 
@@ -45,7 +45,7 @@ During the activation it may call Brain's `events`, `model`, `dispatch`, `emit`,
 `model`, `dispatch`, and `emit` cross the Brain boundary. Brain commits an external-effect intent
 before dispatch, sends it once, and commits its terminal or unknown outcome before returning it.
 
-The Component returns the transcript and slots to keep. Brain journals their changes; every turn
+The Component returns the transcript and kv to keep. Brain journals their changes; every turn
 uses a fresh Wasm instance, while compiled and prelinked code is reused.
 
 ## Where it runs
@@ -59,6 +59,6 @@ is sealed into the session instead of inferred; Brain does not fall back to anot
 
 ## State and failures
 
-The transcript and returned slots are the Agentloop's durable state. Host memory, open connections,
+The transcript and returned kv are all that survives an activation. Host memory, open connections,
 and files are not. An activation interrupted by restart is recorded as failed and is not replayed.
 The next turn rebuilds its inputs from the canonical journal.

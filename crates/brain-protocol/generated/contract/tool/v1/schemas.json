@@ -9,7 +9,6 @@
       "description": "One Tool as a session declares it: what the model is told, the Environment of the\nsession that runs it, what it needs there, and the implementation that Environment\ninterprets. Brain reads the name and the Environment and carries the rest.",
       "properties": {
         "description": {
-          "maxLength": 8192,
           "type": "string"
         },
         "environment": {

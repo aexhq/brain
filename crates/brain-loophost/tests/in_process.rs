@@ -32,11 +32,11 @@ impl GuestHost for Answering {
     }
 }
 
-fn input(message: &str, slots: std::collections::BTreeMap<String, serde_json::Value>) -> TurnInput {
+fn input(message: &str, kv: std::collections::BTreeMap<String, serde_json::Value>) -> TurnInput {
     TurnInput {
         input: message.into(),
         transcript: Vec::new(),
-        slots,
+        kv,
         events: Vec::new(),
         configuration: serde_json::json!({}),
         system: String::new(),
@@ -79,7 +79,7 @@ async fn the_diagnostic_component_takes_two_turns_in_fresh_stores() {
         )
         .await
         .unwrap();
-    assert_eq!(first.slots["memory"]["turns"], 1);
+    assert_eq!(first.kv["memory"]["turns"], 1);
     assert_eq!(
         first.result,
         Some(serde_json::json!({"turns": 1, "message": "hello"}))
@@ -90,12 +90,12 @@ async fn the_diagnostic_component_takes_two_turns_in_fresh_stores() {
             engine.engine(),
             &limits,
             environment(),
-            input("again", first.slots),
+            input("again", first.kv),
             Arc::new(Answering),
         )
         .await
         .unwrap();
-    assert_eq!(second.slots["memory"]["turns"], 2);
+    assert_eq!(second.kv["memory"]["turns"], 2);
 }
 
 #[tokio::test]

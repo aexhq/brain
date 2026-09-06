@@ -87,7 +87,6 @@ impl PartialSchema for Package {
         ObjectBuilder::new()
             .schema_type(SchemaType::Type(Type::String))
             .format(Some(SchemaFormat::KnownFormat(KnownFormat::Binary)))
-            .max_length(Some(crate::router::MAX_REQUEST_BYTES))
             .into()
     }
 }

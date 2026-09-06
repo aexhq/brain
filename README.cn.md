@@ -43,7 +43,7 @@
 
 ## 持久化规则
 
-每个会话只有一份规范日志。会话状态、公共事件、对话记录和 Agentloop slots 都是它的投影。
+每个会话只有一份规范日志。会话状态、公共事件、对话记录和 Agentloop kv 都是它的投影。
 Brain 在发送外部副作用之前先把意图持久化提交，只发送一次，绝不自动重试。已知结果、已知失败或
 未知结果都会在返回 Agentloop 之前提交。替换现有对话尾部的规范记录同时投影为
 `transcript_replaced` 事件；纯追加不产生重复事件。
@@ -65,7 +65,7 @@ flowchart LR
 
   subgraph Brain["Brain 运行时"]
     Server["HTTP / SSE 服务器<br/>会话协调"]
-    Journal[("本地日志<br/>对话、slots 和事件")]
+    Journal[("本地日志<br/>对话、kv 和事件")]
     subgraph BrainEnv["brain env · Wasmtime worker"]
       Loop["Agentloop Component"]
       Native["工具 Component"]

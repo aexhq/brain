@@ -151,7 +151,6 @@
       "description": "What the model may be told about a Tool.",
       "properties": {
         "description": {
-          "maxLength": 8192,
           "type": "string"
         },
         "input_schema": {
@@ -188,17 +187,16 @@
         "input": {
           "$ref": "#/$defs/UserInput"
         },
+        "kv": {
+          "additionalProperties": true,
+          "description": "The loop's kv (a key-value map it keeps between turns), as it last returned it.",
+          "type": "object"
+        },
         "runtime": {
           "$ref": "#/$defs/RuntimeEnvelope"
         },
-        "slots": {
-          "additionalProperties": true,
-          "description": "The loop's slots by name, as it last returned them.",
-          "type": "object"
-        },
         "system": {
           "description": "The system prompt the session was created with. Used on every model call unless\nthe loop sends its own.",
-          "maxLength": 131072,
           "type": "string"
         },
         "tools": {
@@ -206,7 +204,6 @@
           "items": {
             "$ref": "#/$defs/ToolDefinition"
           },
-          "maxItems": 128,
           "type": "array"
         },
         "transcript": {
@@ -214,14 +211,13 @@
           "items": {
             "$ref": "#/$defs/Message"
           },
-          "maxItems": 4096,
           "type": "array"
         }
       },
       "required": [
         "input",
         "transcript",
-        "slots",
+        "kv",
         "events",
         "configuration",
         "system",
@@ -233,18 +229,17 @@
     "TurnOutput": {
       "description": "What the loop hands back when the turn is done.",
       "properties": {
-        "result": true,
-        "slots": {
+        "kv": {
           "additionalProperties": true,
           "default": {},
-          "description": "Slots to keep. A name the loop leaves out keeps its previous value.",
+          "description": "Kv to keep. A key the loop leaves out keeps its previous value.",
           "type": "object"
         },
+        "result": true,
         "transcript": {
           "items": {
             "$ref": "#/$defs/Message"
           },
-          "maxItems": 4096,
           "type": "array"
         }
       },

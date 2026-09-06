@@ -3,8 +3,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 use crate::{
-    MAX_QUEUE_BYTES, MAX_QUEUE_RECORDS, TelemetryMetrics, TelemetryRecord, TelemetryWorker,
-    queue::BoundedQueue,
+    TelemetryLimits, TelemetryMetrics, TelemetryRecord, TelemetryWorker, queue::BoundedQueue,
 };
 
 #[derive(Clone)]
@@ -14,10 +13,15 @@ pub struct TelemetryPublisher {
     metrics: TelemetryMetrics,
 }
 
+/// A channel under the default limits.
 pub fn telemetry_channel() -> (TelemetryPublisher, TelemetryWorker) {
+    telemetry_channel_with(&TelemetryLimits::default())
+}
+
+pub fn telemetry_channel_with(limits: &TelemetryLimits) -> (TelemetryPublisher, TelemetryWorker) {
     let queue = Arc::new(Mutex::new(BoundedQueue::new(
-        MAX_QUEUE_RECORDS,
-        MAX_QUEUE_BYTES,
+        limits.max_telemetry_records,
+        limits.max_telemetry_bytes,
     )));
     let notify = Arc::new(Notify::new());
     let metrics = TelemetryMetrics::default();
@@ -27,7 +31,7 @@ pub fn telemetry_channel() -> (TelemetryPublisher, TelemetryWorker) {
             notify: notify.clone(),
             metrics: metrics.clone(),
         },
-        TelemetryWorker::new(queue, notify, metrics),
+        TelemetryWorker::new(queue, notify, metrics, limits.retry_age()),
     )
 }
 
@@ -73,13 +77,17 @@ mod tests {
 
     #[test]
     fn rejects_records_without_exceeding_byte_or_count_bounds() {
-        let (publisher, _worker) = telemetry_channel();
-        assert!(!publisher.try_publish(record(MAX_QUEUE_BYTES)));
-        for _ in 0..MAX_QUEUE_RECORDS {
+        let limits = TelemetryLimits::default();
+        let (publisher, _worker) = telemetry_channel_with(&limits);
+        assert!(!publisher.try_publish(record(limits.max_telemetry_bytes)));
+        for _ in 0..limits.max_telemetry_records {
             assert!(publisher.try_publish(record(0)));
         }
         assert!(!publisher.try_publish(record(0)));
-        assert_eq!(publisher.metrics().queued_records(), MAX_QUEUE_RECORDS);
+        assert_eq!(
+            publisher.metrics().queued_records(),
+            limits.max_telemetry_records
+        );
         assert_eq!(publisher.metrics().dropped_records(), 2);
     }
 }

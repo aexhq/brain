@@ -538,7 +538,7 @@ impl LocalSessionStore {
             .map(|entry| {
                 let kind = match entry {
                     JournalEntry::TranscriptDelta { .. } => "transcript_delta",
-                    JournalEntry::StateSet { .. } => "state_set",
+                    JournalEntry::KvSet { .. } => "kv_set",
                 };
                 let payload = serde_json::to_value(entry).map_err(json_error)?;
                 encode_unsequenced(kind, &payload)
@@ -746,10 +746,10 @@ impl SessionStore for LocalSessionStore {
                 return Ok(Vec::new());
             };
             while wanted.len() < limit {
-                let Some(slot) = state.events.get(sequence as usize - 1) else {
+                let Some(kv) = state.events.get(sequence as usize - 1) else {
                     break;
                 };
-                if let Some(location) = slot {
+                if let Some(location) = kv {
                     let next = bytes.saturating_add(u64::from(location.length));
                     if !wanted.is_empty() && next > MAX_EVENT_PAGE_BYTES {
                         break;

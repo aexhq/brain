@@ -16,7 +16,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 use crate::{
     AdmissionEngine, AdmittedAgentloop, AdmittedTool, ComponentKind, GuestHost, HostCall,
     LoopLimits, NativeEnvironment, NativeToolInput, WorkerRequest, WorkerResponse,
-    wire::{MAX_RESPONSE_FRAME_BYTES, read_frame, write_frame},
+    wire::{read_frame, write_frame},
 };
 
 pub struct WorkerService {
@@ -59,8 +59,8 @@ fn cancelled() -> TurnError {
 
 impl WorkerService {
     pub fn new(limits: LoopLimits, allowed_imports: Vec<String>) -> Result<Self, String> {
-        let running = Semaphore::new(limits.concurrent_turns_per_worker.max(1));
-        let running_tools = Semaphore::new(limits.concurrent_turns_per_worker.max(1));
+        let running = Semaphore::new(permits(limits.max_concurrent_turns));
+        let running_tools = Semaphore::new(permits(limits.max_concurrent_turns));
         Ok(Self {
             engine: Arc::new(AdmissionEngine::new(limits, allowed_imports)?),
             agentloops: RwLock::new(HashMap::new()),
@@ -74,23 +74,25 @@ impl WorkerService {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
-        let request = match crate::worker_read(stream).await {
+        let limits = self.engine.limits().clone();
+        let request = match crate::worker_read(stream, &limits).await {
             Ok(request) => request,
             Err(message) => {
-                let _ = crate::worker_write(stream, &failed("invalid_frame", message)).await;
+                let _ =
+                    crate::worker_write(stream, &failed("invalid_frame", message), &limits).await;
                 return;
             }
         };
         match request {
             WorkerRequest::Ping => {
-                let _ = crate::worker_write(stream, &WorkerResponse::Pong).await;
+                let _ = crate::worker_write(stream, &WorkerResponse::Pong, &limits).await;
             }
             WorkerRequest::Admit {
                 kind,
                 component_base64,
             } => {
                 let response = self.admit(kind, component_base64).await;
-                let _ = crate::worker_write(stream, &response).await;
+                let _ = crate::worker_write(stream, &response, &limits).await;
             }
             WorkerRequest::Turn {
                 digest,
@@ -126,6 +128,7 @@ impl WorkerService {
                         "invalid_frame",
                         "an invocation has not been opened on this connection".into(),
                     ),
+                    &limits,
                 )
                 .await;
             }
@@ -201,14 +204,16 @@ impl WorkerService {
                     "not_admitted",
                     "Agentloop digest is not admitted in this worker".into(),
                 ),
+                self.engine.limits(),
             )
             .await;
             return;
         };
-        let Ok(_slot) = self.running.acquire().await else {
+        let Ok(_permit) = self.running.acquire().await else {
             let _ = crate::worker_write(
                 stream,
                 &failed("turn_failed", "the worker is shutting down".into()),
+                self.engine.limits(),
             )
             .await;
             return;
@@ -247,14 +252,16 @@ impl WorkerService {
                     "not_admitted",
                     "Tool digest is not admitted in this worker".into(),
                 ),
+                self.engine.limits(),
             )
             .await;
             return;
         };
-        let Ok(_slot) = self.running_tools.acquire().await else {
+        let Ok(_permit) = self.running_tools.acquire().await else {
             let _ = crate::worker_write(
                 stream,
                 &failed("tool_failed", "the worker is shutting down".into()),
+                self.engine.limits(),
             )
             .await;
             return;
@@ -288,11 +295,12 @@ impl WorkerService {
         let pending: Mutex<HashMap<u64, oneshot::Sender<Result<String, TurnError>>>> =
             Mutex::new(HashMap::new());
         let mut next_id = 0_u64;
+        let limits = self.engine.limits().clone();
         let (mut reader, mut writer) = tokio::io::split(&mut *stream);
         let response = 'invocation: loop {
             let mut next_frame = std::pin::pin!(read_frame::<_, WorkerRequest>(
                 &mut reader,
-                crate::MAX_TURN_INPUT_BYTES + 1_024,
+                limits.max_turn_frame_bytes(),
             ));
             loop {
                 tokio::select! {
@@ -301,7 +309,7 @@ impl WorkerService {
                         if let (Some(reply), Ok(mut pending)) = (reply, pending.lock()) {
                             pending.insert(next_id, reply);
                         }
-                        if write_frame(&mut writer, &WorkerResponse::HostCall { id: next_id, call }, MAX_RESPONSE_FRAME_BYTES).await.is_err() {
+                        if write_frame(&mut writer, &WorkerResponse::HostCall { id: next_id, call }, limits.max_response_frame_bytes()).await.is_err() {
                             cancelled.store(true, Ordering::Release);
                             fail_pending(&pending);
                             return;
@@ -338,7 +346,16 @@ impl WorkerService {
         drop(running);
         drop(reader);
         drop(writer);
-        let _ = crate::worker_write(stream, &response).await;
+        let _ = crate::worker_write(stream, &response, &limits).await;
+    }
+}
+
+/// Permits for a concurrency ceiling: zero means as many as the semaphore allows.
+fn permits(limit: usize) -> usize {
+    if limit == 0 {
+        Semaphore::MAX_PERMITS
+    } else {
+        limit
     }
 }
 
@@ -375,7 +392,7 @@ mod tests {
         TurnInput {
             input: "hello".into(),
             transcript: Vec::new(),
-            slots: Default::default(),
+            kv: Default::default(),
             events: Vec::new(),
             configuration: serde_json::json!({}),
             system: String::new(),
@@ -402,7 +419,7 @@ mod tests {
                 environment: NativeEnvironment::default(),
                 input: Box::new(input()),
             },
-            MAX_RESPONSE_FRAME_BYTES,
+            LoopLimits::default().max_response_frame_bytes(),
         )
         .await
         .unwrap();
@@ -414,13 +431,19 @@ mod tests {
         write_frame(&mut ping_client, &WorkerRequest::Ping, 1024)
             .await
             .unwrap();
-        let pong: WorkerResponse = read_frame(&mut ping_client, MAX_RESPONSE_FRAME_BYTES)
-            .await
-            .unwrap();
+        let pong: WorkerResponse = read_frame(
+            &mut ping_client,
+            LoopLimits::default().max_response_frame_bytes(),
+        )
+        .await
+        .unwrap();
         assert!(matches!(pong, WorkerResponse::Pong));
         let refused: WorkerResponse = tokio::time::timeout(
             Duration::from_secs(5),
-            read_frame(&mut client, MAX_RESPONSE_FRAME_BYTES),
+            read_frame(
+                &mut client,
+                LoopLimits::default().max_response_frame_bytes(),
+            ),
         )
         .await
         .unwrap()
@@ -475,7 +498,10 @@ mod tests {
             .unwrap();
         let response: WorkerResponse = tokio::time::timeout(
             Duration::from_secs(5),
-            read_frame(&mut client, MAX_RESPONSE_FRAME_BYTES),
+            read_frame(
+                &mut client,
+                LoopLimits::default().max_response_frame_bytes(),
+            ),
         )
         .await
         .unwrap()

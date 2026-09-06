@@ -22,13 +22,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::{EnvironmentAdapter, Services, adapter::unsupported};
 
-const COMMAND_CAPACITY: usize = 128;
-const MAX_HOSTS: usize = 4_096;
-const UNCONNECTED_TTL: Duration = Duration::from_secs(60);
-
 #[derive(Clone)]
 pub struct HostEnvironment {
     inner: Arc<Mutex<State>>,
+    limits: crate::ServerLimits,
 }
 
 struct State {
@@ -90,7 +87,7 @@ struct PendingEvent {
 }
 
 impl HostEnvironment {
-    pub fn open(path: &Path) -> Result<Self, brain::Error> {
+    pub fn open(path: &Path, limits: &crate::ServerLimits) -> Result<Self, brain::Error> {
         let (log, records) = crate::persistence::open_log::<RegistrationRecord>(path)?;
         let mut hosts = HashMap::new();
         for record in records {
@@ -124,6 +121,7 @@ impl HostEnvironment {
         }
         Ok(Self {
             inner: Arc::new(Mutex::new(State { log, hosts })),
+            limits: limits.clone(),
         })
     }
 
@@ -182,7 +180,7 @@ impl HostEnvironment {
             .filter(|(_, host)| {
                 host.sessions.is_empty()
                     && host.commands.is_none()
-                    && host.disconnected_at.elapsed() >= UNCONNECTED_TTL
+                    && host.disconnected_at.elapsed() >= self.limits.host_unconnected()
             })
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
@@ -196,7 +194,7 @@ impl HostEnvironment {
             .map_err(|error| ApiError::internal(error.to_string()))?;
             state.hosts.remove(&id);
         }
-        if state.hosts.len() >= MAX_HOSTS {
+        if state.hosts.len() >= crate::limits::ceiling(self.limits.max_hosts) {
             return Err(ApiError::overloaded("host table is full"));
         }
         crate::persistence::append(
@@ -228,7 +226,7 @@ impl HostEnvironment {
     ) -> Result<brain_http::HostConnection, ApiError> {
         let mut state = self.lock()?;
         let host = authorized(&mut state, host_id, token)?;
-        let (sender, receiver) = mpsc::channel(COMMAND_CAPACITY);
+        let (sender, receiver) = mpsc::channel(self.limits.max_host_commands.max(1));
         let (disconnect, displaced) = oneshot::channel();
         if let Some(previous) = host.disconnect.replace(disconnect) {
             let _ = previous.send(());
@@ -554,6 +552,7 @@ mod tests {
             &std::env::temp_dir()
                 .join(format!("brain-hosts-{}", rand::random::<u64>()))
                 .join("hosts.log"),
+            &Default::default(),
         )
         .unwrap()
     }
@@ -601,10 +600,10 @@ mod tests {
         let path = std::env::temp_dir()
             .join(format!("brain-hosts-{}", rand::random::<u64>()))
             .join("hosts.log");
-        let hosts = HostEnvironment::open(&path).unwrap();
+        let hosts = HostEnvironment::open(&path, &Default::default()).unwrap();
         let registration = hosts.register().unwrap();
         drop(hosts);
-        let hosts = HostEnvironment::open(&path).unwrap();
+        let hosts = HostEnvironment::open(&path, &Default::default()).unwrap();
         let connection = hosts
             .connect(&registration.host_id, &registration.token)
             .unwrap();
@@ -623,14 +622,14 @@ mod tests {
             .unwrap();
         drop(connection);
         drop(hosts);
-        let hosts = HostEnvironment::open(&path).unwrap();
+        let hosts = HostEnvironment::open(&path, &Default::default()).unwrap();
         hosts
             .lock()
             .unwrap()
             .hosts
             .get_mut(&registration.host_id)
             .unwrap()
-            .disconnected_at = Instant::now() - UNCONNECTED_TTL;
+            .disconnected_at = Instant::now() - crate::ServerLimits::default().host_unconnected();
         hosts.register().unwrap();
         assert!(
             hosts
@@ -655,7 +654,7 @@ mod tests {
             .hosts
             .get_mut(&registration.host_id)
             .unwrap()
-            .disconnected_at = Instant::now() - UNCONNECTED_TTL;
+            .disconnected_at = Instant::now() - crate::ServerLimits::default().host_unconnected();
         hosts.register().unwrap();
         assert!(
             hosts

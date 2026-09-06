@@ -200,8 +200,6 @@ export interface CreateSessionRequest {
   /**
    * The Environments of this session, set up as part of this create. Every Tool and
    * the Agentloop name one of them.
-   *
-   * @maxItems 128
    */
   environments: Environment[];
   /**
@@ -224,16 +222,11 @@ export interface CreateSessionRequest {
    * on any model call.
    */
   system?: string;
-  /**
-   * @maxItems 128
-   */
   tools: Tool[];
   /**
    * A transcript to carry forward, if the caller has one: the messages the new
    * session's first model call should already see. Brain journals them as the session's
    * opening transcript. Empty is an ordinary new session.
-   *
-   * @maxItems 4096
    */
   transcript?: Message[];
 }
@@ -527,9 +520,6 @@ export interface ToolResult {
  * via the `definition` "TurnDispatchRequest".
  */
 export interface TurnDispatchRequest {
-  /**
-   * @maxItems 128
-   */
   calls: ToolInvocation[];
 }
 /**

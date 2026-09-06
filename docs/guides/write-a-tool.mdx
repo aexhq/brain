@@ -146,5 +146,5 @@ the platform of its Environment.
 `ctx.emit` in a `run` Tool and the Component Tool's `emit` import both wait for the same thing: a
 committed extension Event in the session journal. Brain commits a Tool intent before dispatch,
 sends it once, and commits `ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop
-sees the result. The Agentloop and all Tools share a turn limit of 128 emitted Events and 1 MiB
-across serialized Event kinds and payloads. There is no automatic retry.
+sees the result. The Agentloop and all Tools share one turn budget for emitted Event bytes,
+`BRAIN_MAX_EMITTED_BYTES`. There is no automatic retry.

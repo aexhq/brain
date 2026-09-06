@@ -35,7 +35,7 @@ Brain commits every external-effect intent to the session journal before dispatc
 once. It never automatically retries an effect. A known result, a known failure, or an unknown
 outcome is committed before the Agentloop observes it.
 
-The public event feed, session status, transcript, and Agentloop slots are projections of the same
+The public event feed, session status, transcript, and Agentloop kv are projections of the same
 journal. SSE is a live notification path; reconnecting clients resume from a committed sequence.
 
 ## Where to go next

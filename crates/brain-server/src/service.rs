@@ -58,14 +58,14 @@ pub struct ServerResources {
 pub struct ServerApi {
     resources: Arc<ServerResources>,
     /// Only sessions whose execution is currently retained.
-    sessions: Arc<StdMutex<HashMap<SessionId, Slot>>>,
+    sessions: Arc<StdMutex<HashMap<SessionId, Entry>>>,
     stores: Arc<StdMutex<HashMap<SessionId, Weak<LocalSessionStore>>>>,
     store_locks: Arc<KeyedLocks<SessionId>>,
     idempotency_locks: Arc<KeyedLocks<String>>,
     session_locks: Arc<KeyedLocks<SessionId>>,
 }
 
-struct Slot {
+struct Entry {
     store: Arc<LocalSessionStore>,
     /// The running task, or `None` while the session is suspended.
     session: Option<Session>,
@@ -163,11 +163,11 @@ impl ServerApi {
         let due: Vec<SessionId> = match self.sessions.lock() {
             Ok(sessions) => sessions
                 .iter()
-                .filter(|(_, slot)| {
-                    slot.session.is_some()
-                        && slot
+                .filter(|(_, entry)| {
+                    entry.session.is_some()
+                        && entry
                             .idle_ttl
-                            .is_none_or(|ttl| !ttl.is_zero() && slot.last_touch.elapsed() >= ttl)
+                            .is_none_or(|ttl| !ttl.is_zero() && entry.last_touch.elapsed() >= ttl)
                 })
                 .map(|(id, _)| id.clone())
                 .collect(),
@@ -190,19 +190,19 @@ impl ServerApi {
                 .sessions
                 .lock()
                 .map_err(|_| internal("session table is poisoned"))?;
-            let Some(slot) = sessions.get(session_id) else {
+            let Some(entry) = sessions.get(session_id) else {
                 return Ok(());
             };
-            let Some(session) = slot.session.clone() else {
+            let Some(session) = entry.session.clone() else {
                 return Ok(());
             };
-            if slot
+            if entry
                 .idle_ttl
-                .is_some_and(|ttl| ttl.is_zero() || slot.last_touch.elapsed() < ttl)
+                .is_some_and(|ttl| ttl.is_zero() || entry.last_touch.elapsed() < ttl)
             {
                 return Ok(());
             }
-            (session, slot.store.clone())
+            (session, entry.store.clone())
         };
         let summary = store.session_summary().map_err(api_error)?;
         if !matches!(summary.status, brain_protocol::SessionStatus::Idle) {
@@ -224,7 +224,7 @@ impl ServerApi {
         Ok(())
     }
 
-    fn insert_slot(
+    fn insert_entry(
         &self,
         store: Arc<LocalSessionStore>,
         session: Option<Session>,
@@ -243,7 +243,7 @@ impl ServerApi {
             .map_err(|_| internal("session table is poisoned"))?
             .insert(
                 store.session_id().clone(),
-                Slot {
+                Entry {
                     store,
                     session,
                     last_touch: Instant::now(),
@@ -302,9 +302,9 @@ impl ServerApi {
             .lock()
             .map_err(|_| internal("session table is poisoned"))?
             .get_mut(session_id)
-            .and_then(|slot| {
-                slot.last_touch = Instant::now();
-                slot.session.clone()
+            .and_then(|entry| {
+                entry.last_touch = Instant::now();
+                entry.session.clone()
             })
         {
             return Ok(session);
@@ -322,7 +322,7 @@ impl ServerApi {
             .await
             .map_err(|error| internal(error.to_string()))?
             .map_err(api_error)?;
-        self.insert_slot(store, Some(session.clone()))?;
+        self.insert_entry(store, Some(session.clone()))?;
         session
             .record(codes::event::SESSION_RESUMED, serde_json::json!({}))
             .await
@@ -331,7 +331,7 @@ impl ServerApi {
     }
 
     fn remember(&self, store: Arc<LocalSessionStore>, session: Session) -> Result<(), ApiError> {
-        self.insert_slot(store, Some(session))
+        self.insert_entry(store, Some(session))
     }
 
     async fn passivate(&self, session_id: &SessionId) -> Result<(), ApiError> {
@@ -640,7 +640,7 @@ impl BrainApi for ServerApi {
                         &error.to_string(),
                     )
                     .map_err(api_error)?;
-                self.insert_slot(store.clone(), None)?;
+                self.insert_entry(store.clone(), None)?;
                 forget();
                 self.cleanup_environments(&ready, &*store).await;
                 return Err(api_error(error));
@@ -650,7 +650,7 @@ impl BrainApi for ServerApi {
         let session = match creation.complete(config) {
             Ok(session) => session,
             Err(error) => {
-                self.insert_slot(store.clone(), None)?;
+                self.insert_entry(store.clone(), None)?;
                 forget();
                 self.cleanup_environments(&ready, &*store).await;
                 return Err(api_error(error));
@@ -663,7 +663,7 @@ impl BrainApi for ServerApi {
             .lock()
             .map_err(|_| internal("session table is poisoned"))?
             .get(&session_id)
-            .is_some_and(|slot| slot.idle_ttl.is_none());
+            .is_some_and(|entry| entry.idle_ttl.is_none());
         if release {
             self.passivate(&session_id).await?;
         }
@@ -758,7 +758,7 @@ impl BrainApi for ServerApi {
             .lock()
             .map_err(|_| internal("session table is poisoned"))?
             .get(&session_id)
-            .is_some_and(|slot| slot.idle_ttl.is_none());
+            .is_some_and(|entry| entry.idle_ttl.is_none());
         if release {
             self.passivate(&session_id).await?;
         }
@@ -864,7 +864,7 @@ impl BrainApi for ServerApi {
             .lock()
             .map_err(|_| internal("session table is poisoned"))?
             .get(&session_id)
-            .and_then(|slot| slot.session.clone());
+            .and_then(|entry| entry.session.clone());
         if let Some(session) = session {
             session.cancel().await.map_err(api_error)?;
         } else {

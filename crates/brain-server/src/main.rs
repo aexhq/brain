@@ -2,13 +2,13 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use brain::{Feed, SessionRuntime, Writer};
-use brain_loophost::{LoopLimits, WorkerPool};
+use brain_loophost::WorkerPool;
 use brain_server::{
     BrainEnvironment, EnvironmentLoopExecutor, EnvironmentRegistry, HostEnvironment,
     HttpEnvironmentAdapter, IdempotencyStore, NativePolicy, ServerApi, ServerConfig,
     ServerModelExecutor, ServerResources, ServerToolExecutor, Turns,
 };
-use brain_telemetry::{TelemetryRecord, TelemetrySink, telemetry_channel};
+use brain_telemetry::{TelemetryRecord, TelemetrySink, telemetry_channel_with};
 use clap::Parser;
 
 #[tokio::main]
@@ -26,12 +26,12 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, "Brain is ready");
     let router = match config.api_token {
-        Some(token) => brain_http::router_with_bearer(api, token),
+        Some(token) => brain_http::router_with_bearer(api, token, &config.http_limits),
         None => {
             tracing::warn!(
                 "BRAIN_API_TOKEN is not set: the API is reachable without authentication"
             );
-            brain_http::router(api)
+            brain_http::router(api, &config.http_limits)
         }
     };
     axum::serve(listener, router)
@@ -42,13 +42,13 @@ async fn main() -> anyhow::Result<()> {
 
 async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let sessions_dir = brain_server::data_layout::prepare(&config.data_dir)?;
-    let (telemetry, worker) = telemetry_channel();
+    let (telemetry, worker) = telemetry_channel_with(&config.telemetry_limits);
     tokio::spawn(worker.run(Arc::new(LogSink)));
     let loops = Arc::new(WorkerPool::new(
         &config.loop_worker,
         config.data_dir.join("run"),
         config.data_dir.join("agentloops"),
-        LoopLimits::default(),
+        config.loop_limits.clone(),
     ));
     loops
         .ready()
@@ -79,15 +79,18 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let model = Arc::new(ServerModelExecutor::new(
         credentials.clone(),
         &providers,
-        Duration::from_secs(120),
+        &config.limits,
     )?);
-    let http = reqwest::Client::builder()
+    let mut http = reqwest::Client::builder()
         .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(120))
-        .build()?;
-    let max_turn_ms = config.max_turn_secs.saturating_mul(1_000);
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(connect) = config.server_limits.max_environment_connect() {
+        http = http.connect_timeout(connect);
+    }
+    if let Some(timeout) = config.server_limits.max_environment() {
+        http = http.timeout(timeout);
+    }
+    let http = http.build()?;
     let environments = Arc::new(EnvironmentRegistry::new(
         Arc::new(BrainEnvironment::new(
             loops.clone(),
@@ -98,22 +101,24 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
             },
             config.data_dir.join("native-workspaces"),
         )),
-        HostEnvironment::open(&config.data_dir.join("hosts").join("hosts.log"))?,
+        HostEnvironment::open(
+            &config.data_dir.join("hosts").join("hosts.log"),
+            &config.server_limits,
+        )?,
         Arc::new(HttpEnvironmentAdapter::new(
             http,
             credentials.clone(),
-            max_turn_ms,
+            &config.limits,
+            &config.server_limits,
         )),
     ));
     let turns = Arc::new(Turns::default());
     // Every session's directory, rebuilt from disk. A session that was mid-turn when the
     // last process stopped is failed with code `interrupted` before anything is served.
-    let writer = Writer::spawn();
-    let feed = Arc::new(Feed::new(telemetry.clone()));
+    let writer = Writer::spawn_with(&config.limits);
+    let feed = Arc::new(Feed::with_limits(telemetry.clone(), &config.limits));
     let session_runtime = Arc::new(SessionRuntime {
-        max_model_calls_per_turn: config.max_model_calls_per_turn,
-        max_turn_ms,
-        tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
+        limits: config.limits.clone(),
         loop_executor: Arc::new(EnvironmentLoopExecutor {
             environments: environments.clone(),
             turns: turns.clone(),
@@ -135,7 +140,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         session_idle_ttl: config.session_idle_ttl_secs.map(Duration::from_secs),
         idempotency: IdempotencyStore::open(
             &config.data_dir.join("requests").join("requests.log"),
-            brain_server::idempotency::DEFAULT_RETENTION,
+            config.server_limits.request_retention(),
         )?,
         loops,
         environments,
@@ -158,9 +163,15 @@ fn validate(config: &ServerConfig) -> anyhow::Result<()> {
     if !config.listen.ip().is_loopback() && config.api_token.is_none() {
         anyhow::bail!("BRAIN_API_TOKEN is required when Brain listens beyond loopback");
     }
-    if config.max_model_calls_per_turn == 0 || config.max_model_calls_per_turn > 1_024 {
-        anyhow::bail!("BRAIN_MAX_MODEL_CALLS must be in 1..=1024");
-    }
+    config.limits.validate().map_err(anyhow::Error::msg)?;
+    config
+        .telemetry_limits
+        .validate()
+        .map_err(anyhow::Error::msg)?;
+    config
+        .server_limits
+        .validate()
+        .map_err(anyhow::Error::msg)?;
     if let Some(url) = &config.public_url {
         let parsed = reqwest::Url::parse(url)?;
         if !matches!(parsed.scheme(), "http" | "https")

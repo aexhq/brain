@@ -7,21 +7,19 @@
 #[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    use std::{path::PathBuf, sync::Arc};
+    use std::sync::Arc;
 
-    use brain_loophost::{CAPABILITY_IMPORTS, LoopLimits, RUNTIME_SHIM_IMPORTS, WorkerService};
+    use brain_loophost::{CAPABILITY_IMPORTS, RUNTIME_SHIM_IMPORTS, WorkerArgs, WorkerService};
+    use clap::Parser as _;
     use tokio::net::UnixListener;
 
-    let socket = std::env::args_os()
-        .nth(1)
-        .map(PathBuf::from)
-        .ok_or_else(|| "usage: brain-loop-worker <socket>".to_owned())?;
+    let WorkerArgs { socket, limits } = WorkerArgs::parse();
     if socket.exists() {
         std::fs::remove_file(&socket).map_err(|error| error.to_string())?;
     }
     let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
     let service = Arc::new(WorkerService::new(
-        LoopLimits::default(),
+        limits,
         RUNTIME_SHIM_IMPORTS
             .iter()
             .chain(CAPABILITY_IMPORTS)

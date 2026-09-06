@@ -1,15 +1,22 @@
 #[cfg(unix)]
 use std::process::Stdio;
-use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput};
 use tokio::sync::{Mutex, Semaphore};
 
-use crate::{LoopLimits, NativeEnvironment, NativeToolInput, TurnBridge, WorkerClient};
+use crate::{
+    LoopLimits, NativeEnvironment, NativeToolInput, TurnBridge, WorkerClient, limits::ceiling,
+};
 
-/// How long the worker may go without a frame. It covers one bounded native HTTP wait;
-/// runaway guest compute is stopped independently by Wasmtime fuel.
-const WORKER_BACKSTOP: Duration = Duration::from_secs(125);
+/// Permits for a concurrency ceiling: zero means as many as the semaphore allows.
+fn permits(limit: usize) -> usize {
+    if limit == 0 {
+        Semaphore::MAX_PERMITS
+    } else {
+        limit
+    }
+}
 
 /// Why the pool could not run something, or why a turn it ran did not finish.
 /// `Overloaded` is transient and the request was never started; `Turn` is the loop's
@@ -75,17 +82,17 @@ impl WorkerPool {
             worker_binary: worker_binary.into(),
             socket: run_dir.join("brain-loop-worker.sock"),
             packages: packages.into(),
-            // Match the worker's execution slots exactly: an accepted connection must
-            // never wait silently behind a worker-side slot and trip the liveness bound.
-            permits: Arc::new(Semaphore::new(limits.concurrent_turns_per_worker.max(1))),
-            tool_permits: Arc::new(Semaphore::new(limits.concurrent_turns_per_worker.max(1))),
+            // Match the worker's concurrent-turn limit exactly: an accepted connection must
+            // never wait silently behind the worker's own limit and trip the liveness bound.
+            permits: Arc::new(Semaphore::new(permits(limits.max_concurrent_turns))),
+            tool_permits: Arc::new(Semaphore::new(permits(limits.max_concurrent_turns))),
             limits,
             state: Mutex::new(WorkerState::default()),
         }
     }
 
     pub async fn admit(&self, package: Vec<u8>) -> Result<AgentloopId, LoopError> {
-        if package.len() > self.limits.package_bytes {
+        if package.len() > ceiling(self.limits.max_package_bytes) {
             return Err("Agentloop package exceeds the configured admission limit".into());
         }
         let _permit = self
@@ -95,14 +102,16 @@ impl WorkerPool {
             .map_err(|_| LoopError::Overloaded)?;
         let mut state = self.state.lock().await;
         self.ensure_worker(&mut state).await?;
-        let digest = WorkerClient::new(&self.socket).admit(&package).await?;
+        let digest = WorkerClient::new(&self.socket, &self.limits)
+            .admit(&package)
+            .await?;
         persist_component(&self.packages, "agentloop", digest.as_str(), &package).await?;
         state.agentloops.insert(digest.clone());
         Ok(digest)
     }
 
     pub async fn admit_tool(&self, component: Vec<u8>) -> Result<ToolId, LoopError> {
-        if component.len() > self.limits.package_bytes {
+        if component.len() > ceiling(self.limits.max_package_bytes) {
             return Err("Tool Component exceeds the configured admission limit".into());
         }
         let _permit = self
@@ -112,7 +121,7 @@ impl WorkerPool {
             .map_err(|_| LoopError::Overloaded)?;
         let mut state = self.state.lock().await;
         self.ensure_worker(&mut state).await?;
-        let digest = WorkerClient::new(&self.socket)
+        let digest = WorkerClient::new(&self.socket, &self.limits)
             .admit_tool(&component)
             .await?;
         persist_component(&self.packages, "tool", digest.as_str(), &component).await?;
@@ -135,7 +144,7 @@ impl WorkerPool {
     pub async fn ready(&self) -> Result<(), LoopError> {
         let mut state = self.state.lock().await;
         self.ensure_worker(&mut state).await?;
-        Ok(WorkerClient::new(&self.socket).ping().await?)
+        Ok(WorkerClient::new(&self.socket, &self.limits).ping().await?)
     }
 
     /// Runs one turn with exactly the grants in `environment`. The bridge answers the
@@ -164,29 +173,22 @@ impl WorkerPool {
                     tokio::fs::read(component_path(&self.packages, "agentloop", digest.as_str()))
                         .await
                         .map_err(|_| "Agentloop digest is not admitted".to_owned())?;
-                let admitted = WorkerClient::new(&self.socket).admit(&package).await?;
+                let admitted = WorkerClient::new(&self.socket, &self.limits)
+                    .admit(&package)
+                    .await?;
                 if admitted != digest {
                     return Err("persisted Agentloop package changed digest".into());
                 }
                 state.agentloops.insert(digest.clone());
             }
         }
-        let client = WorkerClient::new(&self.socket);
-        let outcome = client
-            .turn(
-                digest,
-                environment,
-                input,
-                self.limits.turn_input_bytes,
-                bridge,
-                WORKER_BACKSTOP,
-            )
-            .await;
+        let client = WorkerClient::new(&self.socket, &self.limits);
+        let outcome = client.turn(digest, environment, input, bridge).await;
         match outcome {
             Ok(output) => {
                 let output_bytes =
                     serde_json::to_vec(&output).map_err(|error| error.to_string())?;
-                if output_bytes.len() > self.limits.turn_output_bytes {
+                if output_bytes.len() > ceiling(self.limits.max_turn_output_bytes) {
                     return Err("Agentloop turn output exceeds the configured limit".into());
                 }
                 Ok(output)
@@ -223,7 +225,7 @@ impl WorkerPool {
                     tokio::fs::read(component_path(&self.packages, "tool", digest.as_str()))
                         .await
                         .map_err(|_| "Tool digest is not admitted".to_owned())?;
-                let admitted = WorkerClient::new(&self.socket)
+                let admitted = WorkerClient::new(&self.socket, &self.limits)
                     .admit_tool(&component)
                     .await?;
                 if admitted != digest {
@@ -232,8 +234,8 @@ impl WorkerPool {
                 state.tools.insert(digest.clone());
             }
         }
-        let outcome = WorkerClient::new(&self.socket)
-            .tool(digest, environment, input, bridge, WORKER_BACKSTOP)
+        let outcome = WorkerClient::new(&self.socket, &self.limits)
+            .tool(digest, environment, input, bridge)
             .await;
         match outcome {
             Err(LoopError::Failed(message)) if message == "brain-loop-worker stopped answering" => {
@@ -265,6 +267,7 @@ impl WorkerPool {
             let _ = tokio::fs::remove_file(&self.socket).await;
             let child = tokio::process::Command::new(&self.worker_binary)
                 .arg(&self.socket)
+                .args(self.limits.args())
                 .env_clear()
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -275,7 +278,7 @@ impl WorkerPool {
             state.child = Some(child);
             state.agentloops.clear();
             state.tools.clear();
-            let client = WorkerClient::new(&self.socket);
+            let client = WorkerClient::new(&self.socket, &self.limits);
             let ready = async {
                 loop {
                     if client.ping().await.is_ok() {

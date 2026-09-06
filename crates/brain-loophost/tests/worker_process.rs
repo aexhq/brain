@@ -71,7 +71,7 @@ fn input(message: &str) -> TurnInput {
     TurnInput {
         input: message.into(),
         transcript: Vec::new(),
-        slots: Default::default(),
+        kv: Default::default(),
         events: Vec::new(),
         configuration: serde_json::json!({}),
         system: String::new(),
@@ -160,7 +160,7 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
         .await
         .unwrap();
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(output.slots["observed_sequence"], 3);
+    assert_eq!(output.kv["observed_sequence"], 3);
     assert_eq!(output.transcript.len(), 5);
 }
 
@@ -220,7 +220,7 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
     }
     let directory = tempfile::tempdir().unwrap();
     let limits = LoopLimits::default();
-    let count = limits.concurrent_turns_per_worker;
+    let count = limits.max_concurrent_turns;
     let pool = Arc::new(WorkerPool::new(
         env!("CARGO_BIN_EXE_brain-loop-worker"),
         directory.path().join("run"),
@@ -291,7 +291,7 @@ async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_loop() {
         .turn(digest, environment(), input("hello"), &bridge)
         .await
         .unwrap();
-    assert_eq!(output.slots["memory"]["turns"], 1);
+    assert_eq!(output.kv["memory"]["turns"], 1);
     assert_eq!(
         output.result,
         Some(serde_json::json!({"turns": 1, "message": "hello"}))
@@ -398,7 +398,7 @@ async fn concurrent_turns_all_reach_the_agentloop() {
     for turn in turns {
         match turn.await.unwrap() {
             Ok(output) => {
-                assert_eq!(output.slots["memory"]["turns"], 1);
+                assert_eq!(output.kv["memory"]["turns"], 1);
                 reached += 1;
             }
             Err(error) => refused.push(error.to_string()),
@@ -443,13 +443,18 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
     let socket = directory.path().join("worker.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     let worker = tokio::spawn(async move {
+        let limits = LoopLimits::default();
         let (mut stream, _) = listener.accept().await.unwrap();
         assert!(matches!(
-            brain_loophost::worker_read(&mut stream).await.unwrap(),
+            brain_loophost::worker_read(&mut stream, &limits)
+                .await
+                .unwrap(),
             WorkerRequest::Turn { .. }
         ));
         assert!(matches!(
-            brain_loophost::worker_read(&mut stream).await.unwrap(),
+            brain_loophost::worker_read(&mut stream, &limits)
+                .await
+                .unwrap(),
             WorkerRequest::Cancel
         ));
         brain_loophost::worker_write(
@@ -461,6 +466,7 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
                     payload_json: "{}".into(),
                 },
             },
+            &limits,
         )
         .await
         .unwrap();
@@ -469,23 +475,26 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
             &WorkerResponse::TurnFailed {
                 error: TurnError::new(brain_protocol::codes::failure::CANCELLED, "cancelled"),
             },
+            &limits,
         )
         .await
         .unwrap();
-        assert!(brain_loophost::worker_read(&mut stream).await.is_err());
+        assert!(
+            brain_loophost::worker_read(&mut stream, &limits)
+                .await
+                .is_err()
+        );
     });
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
         cancelled: AtomicBool::new(true),
     };
-    let error = WorkerClient::new(socket)
+    let error = WorkerClient::new(socket, &LoopLimits::default())
         .turn(
             brain_protocol::AgentloopId::new("diagnostic"),
             NativeEnvironment::default(),
             input("hello"),
-            brain_loophost::MAX_TURN_INPUT_BYTES,
             &bridge,
-            std::time::Duration::from_secs(5),
         )
         .await
         .unwrap_err();

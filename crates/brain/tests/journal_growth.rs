@@ -50,7 +50,7 @@ fn growing_loop(calls: usize) -> Arc<common::ScriptedLoop> {
         }
         Ok(TurnOutput {
             transcript,
-            slots: Default::default(),
+            kv: Default::default(),
             result: Some(serde_json::json!({"ok": true})),
         })
     })
@@ -62,7 +62,7 @@ fn runtime(data_dir: &std::path::Path, calls: usize) -> Runtime {
         data_dir,
         publisher,
         calls.max(1),
-        brain::DEFAULT_TOOL_DEADLINE_MS,
+        120,
         growing_loop(calls),
         Arc::new(ScriptedModel),
         Arc::new(NoTools),
@@ -122,7 +122,7 @@ async fn the_journal_folds_to_the_final_transcript_after_the_turn() {
         CALLS * 2,
         "every filler message and every answer folds back out of the journal"
     );
-    assert!(folded.slots.contains_key(brain::LAST_ACTIVATION_SLOT));
+    assert!(folded.kv.contains_key(brain::LAST_ACTIVATION_KEY));
     drop(store);
     let _ = fs::remove_dir_all(data_dir);
 }
@@ -272,7 +272,7 @@ async fn a_rewritten_transcript_is_journalled_from_where_it_differs() {
         &data_dir,
         publisher,
         4,
-        brain::DEFAULT_TOOL_DEADLINE_MS,
+        120,
         scripted(|input, _services| async move {
             let mut transcript = input.transcript;
             if transcript.len() >= 3 {
@@ -282,7 +282,7 @@ async fn a_rewritten_transcript_is_journalled_from_where_it_differs() {
             transcript.push(Message::user_text(input.input.message));
             Ok::<_, Error>(TurnOutput {
                 transcript,
-                slots: Default::default(),
+                kv: Default::default(),
                 result: None,
             })
         }),

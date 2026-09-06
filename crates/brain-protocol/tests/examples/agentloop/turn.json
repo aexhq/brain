@@ -3,7 +3,7 @@
   "input": {
     "input": { "message": "hello" },
     "transcript": [],
-    "slots": {},
+    "kv": {},
     "events": [],
     "configuration": {},
     "system": "",
@@ -17,7 +17,7 @@
     "transcript": [
       { "role": "user", "content": [{ "type": "text", "text": "hello" }] }
     ],
-    "slots": { "memory": { "turns": 1 } },
+    "kv": { "memory": { "turns": 1 } },
     "result": { "ok": true }
   }
 }

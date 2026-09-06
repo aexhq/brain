@@ -357,3 +357,26 @@ Local source: `~/.codex/sessions/2026/09/05/rollout-2026-09-05T07-59-18-01a0705d
 - 2026-09-05T14:17:10.872Z, user message, JSONL line 3453: User moves roadmap content to ROADMAP.md and selects the current product headline.
 
 Used by: [ADR-030: Replace pre-1.0 contracts and development data in place](2026-09-04-08-clean-break.md); [ADR-032: Use one canonical journal and commit before exposing records or effects](2026-09-05-01-canonical-journal.md); [ADR-035: Send each effect once and expose failures to the Agentloop](2026-09-05-04-send-once.md); [ADR-036: Preserve request claims and effect uncertainty across interruption](2026-09-05-05-interruption.md); [ADR-037: Release execution at turn boundaries and prepare artifacts before creation](2026-09-05-06-ephemeral.md); [ADR-038: Defer dynamic placement, workflow durability, and advanced tenancy policy](2026-09-05-07-roadmap-boundary.md); [ADR-039: Keep performance claims historical until representative baselines are rebuilt](2026-09-05-08-benchmark-policy.md).
+
+<a id="session-9bed54a9-c1f9-48eb-aba8-de8bcbcbe55f"></a>
+
+### Claude `9bed54a9-c1f9-48eb-aba8-de8bcbcbe55f`
+
+Local source: `~/.claude/projects/C--Users-luowe-workspace-aex-workspace/9bed54a9-c1f9-48eb-aba8-de8bcbcbe55f.jsonl`.
+
+- 2026-09-06T11:36:25.433Z, user message, JSONL line 223: User asks whether the 128-key kv cap is arbitrary.
+- 2026-09-06T11:42:37.985Z, user message, JSONL line 245: User deletes the cap because Brain does not know the machine hosting it and should not set such limits.
+- 2026-09-06T11:46:06.394Z, user message, JSONL line 277: User asks for a complete review of similar limits; the assistant's sweep is the inventory ADR-043 starts from.
+
+Used by: [ADR-043: Make every limit a deployment default injected at server start](2026-09-06-02-deployment-limits.md).
+
+<a id="session-18c350ff-58c3-400d-b851-0877627b8a8d"></a>
+
+### Claude `18c350ff-58c3-400d-b851-0877627b8a8d`
+
+Local source: `~/.claude/projects/C--Users-luowe-workspace-aex-workspace/18c350ff-58c3-400d-b851-0877627b8a8d.jsonl`.
+
+- 2026-09-06, user message, JSONL line 1: User asks that every limit be injected at the brain server level as a default overridable by environment variable, and requests an ADR.
+- 2026-09-06, user message: User confirms all four open positions, adding one shared environment-reading component and that model limits are not Brain's to configure.
+
+Used by: [ADR-043: Make every limit a deployment default injected at server start](2026-09-06-02-deployment-limits.md).

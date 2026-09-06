@@ -1,10 +1,10 @@
 package brain:agentloop@0.1.0;
 
 // An agentloop runs one whole turn. Brain calls `turn` once per user message with the
-// transcript as it stands, the loop's slots, and every event recorded since the loop
+// transcript as it stands, the loop's kv, and every event recorded since the loop
 // last ran; inside the call the loop asks Brain to call the model, dispatch tools,
 // emit events and publish telemetry as often as it likes, and returns the transcript
-// and slots it wants kept. Brain journals what changed and what every service did.
+// and kv it wants kept. Brain journals what changed and what every service did.
 //
 // Every payload is JSON in a string, in the shapes `contracts/session/v1` defines:
 // the transcript is a list of neutral messages, a model request is a ModelRequest,
@@ -21,8 +21,8 @@ interface types {
     input-json: string,
     // JSON array of the neutral messages the transcript holds now.
     transcript-json: string,
-    // JSON object of the loop's slots by name.
-    slots-json: string,
+    // JSON object: the loop's kv, one JSON value per key.
+    kv-json: string,
     // JSON array of the events recorded since the loop's last activation, oldest first.
     events-json: string,
     configuration-json: string,
@@ -36,8 +36,8 @@ interface types {
   record turn-output {
     // The transcript as the loop wants it kept: what the next model call would see.
     transcript-json: string,
-    // The slots as the loop wants them kept. Absent names are left as they were.
-    slots-json: string,
+    // The kv as the loop wants it kept. A key it leaves out keeps its previous value.
+    kv-json: string,
     // What `turn_ended` carries, if anything.
     result-json: option<string>,
   }

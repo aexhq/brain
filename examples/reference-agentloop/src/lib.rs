@@ -10,8 +10,8 @@ struct Reference;
 impl Guest for Reference {
     fn turn(input: TurnInput) -> Result<TurnOutput, TurnError> {
         let mut transcript: Vec<Message> = decode(&input.transcript_json)?;
-        let mut slots: BTreeMap<String, serde_json::Value> = decode(&input.slots_json)?;
-        let mut after = slots
+        let mut kv: BTreeMap<String, serde_json::Value> = decode(&input.kv_json)?;
+        let mut after = kv
             .get("observed_sequence")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
@@ -35,7 +35,7 @@ impl Guest for Reference {
             }
             after = page.next_cursor;
         }
-        slots.insert("observed_sequence".into(), after.into());
+        kv.insert("observed_sequence".into(), after.into());
         let input: brain_protocol::UserInput = decode(&input.input_json)?;
         transcript.push(Message::user_text(input.message));
         loop {
@@ -75,7 +75,7 @@ impl Guest for Reference {
         }
         Ok(TurnOutput {
             transcript_json: encode(&transcript)?,
-            slots_json: encode(&slots)?,
+            kv_json: encode(&kv)?,
             result_json: None,
         })
     }

@@ -6,7 +6,7 @@ use std::{
 use tokio::sync::Notify;
 
 use crate::{
-    DELIVERY_DROPPED_NAME, MAX_RETRY_AGE, TelemetryMetrics, TelemetrySink,
+    DELIVERY_DROPPED_NAME, TelemetryMetrics, TelemetrySink,
     queue::{BoundedQueue, QueuedRecord},
     retry::retry_delay,
 };
@@ -15,6 +15,7 @@ pub struct TelemetryWorker {
     queue: Arc<Mutex<BoundedQueue>>,
     notify: Arc<Notify>,
     metrics: TelemetryMetrics,
+    retry_age: Duration,
 }
 
 impl TelemetryWorker {
@@ -22,11 +23,13 @@ impl TelemetryWorker {
         queue: Arc<Mutex<BoundedQueue>>,
         notify: Arc<Notify>,
         metrics: TelemetryMetrics,
+        retry_age: Duration,
     ) -> Self {
         Self {
             queue,
             notify,
             metrics,
+            retry_age,
         }
     }
 
@@ -44,7 +47,7 @@ impl TelemetryWorker {
             }
             self.metrics
                 .removed(queued.len(), queued.iter().map(|record| record.bytes).sum());
-            self.deliver(&sink, queued, MAX_RETRY_AGE).await;
+            self.deliver(&sink, queued, self.retry_age).await;
         }
     }
 

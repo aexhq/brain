@@ -163,7 +163,6 @@
           "items": {
             "$ref": "#/$defs/Environment"
           },
-          "maxItems": 128,
           "type": "array"
         },
         "idle_ttl_ms": {
@@ -181,14 +180,12 @@
         "system": {
           "default": "",
           "description": "The system prompt the agent loop starts from. The loop may send a different one\non any model call.",
-          "maxLength": 131072,
           "type": "string"
         },
         "tools": {
           "items": {
             "$ref": "#/$defs/Tool"
           },
-          "maxItems": 128,
           "type": "array"
         },
         "transcript": {
@@ -196,7 +193,6 @@
           "items": {
             "$ref": "#/$defs/Message"
           },
-          "maxItems": 4096,
           "type": "array"
         }
       },
@@ -595,8 +591,7 @@
           "type": "string"
         },
         "name": {
-          "maxLength": 256,
-          "pattern": "^\\S{1,256}$",
+          "pattern": "^\\S+$",
           "type": "string"
         },
         "provider": {
@@ -809,7 +804,6 @@
       "description": "One Tool as a session declares it: what the model is told, the Environment of the\nsession that runs it, what it needs there, and the implementation that Environment\ninterprets. Brain reads the name and the Environment and carries the rest.",
       "properties": {
         "description": {
-          "maxLength": 8192,
           "type": "string"
         },
         "environment": {
@@ -921,7 +915,6 @@
           "items": {
             "$ref": "#/$defs/ToolInvocation"
           },
-          "maxItems": 128,
           "type": "array"
         }
       },

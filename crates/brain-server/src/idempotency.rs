@@ -10,9 +10,6 @@ use std::{
 
 use crate::digest::Sha256;
 
-/// Completed answers expire; unresolved claims remain to prevent duplicate effects.
-pub const DEFAULT_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
-
 /// Below this an eviction sweep costs more than the entries it would find.
 const MIN_SWEEP: usize = 64;
 
@@ -251,7 +248,9 @@ mod tests {
         let path = std::env::temp_dir()
             .join(format!("brain-requests-{}", rand::random::<u64>()))
             .join("requests.log");
-        let store = IdempotencyStore::open(&path, DEFAULT_RETENTION).unwrap();
+        let store =
+            IdempotencyStore::open(&path, crate::ServerLimits::default().request_retention())
+                .unwrap();
         assert_eq!(
             store.replay_or_claim("create", "done", &"body").unwrap(),
             None
@@ -269,7 +268,9 @@ mod tests {
             None
         );
         drop(store);
-        let store = IdempotencyStore::open(&path, DEFAULT_RETENTION).unwrap();
+        let store =
+            IdempotencyStore::open(&path, crate::ServerLimits::default().request_retention())
+                .unwrap();
         assert_eq!(
             store.replay_or_claim("create", "done", &"body").unwrap(),
             Some(serde_json::json!({"id": "ses_1"}))

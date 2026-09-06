@@ -11,10 +11,6 @@ use std::{
 
 use crate::Error;
 
-pub const OWNER_QUEUE_BYTES: u64 = 8 * 1024 * 1024;
-pub const MAX_QUEUED_BYTES: u64 = 64 * 1024 * 1024;
-
-const OPEN_FILES: usize = 256;
 const MAX_BATCH_REQUESTS: usize = 128;
 
 pub(crate) struct Frame {
@@ -66,24 +62,40 @@ impl Ticket {
 
 pub struct Writer {
     shared: Shared,
+    queue_bytes: u64,
+    owner_bytes: u64,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Writer {
+    /// A writer under the default limits.
     pub fn spawn() -> Arc<Self> {
-        Self::spawn_inner(None)
+        Self::spawn_with(&crate::Limits::default())
+    }
+
+    pub fn spawn_with(limits: &crate::Limits) -> Arc<Self> {
+        Self::spawn_inner(limits, None)
     }
 
     #[cfg(test)]
     pub(crate) fn spawn_held(release: Arc<std::sync::atomic::AtomicBool>) -> Arc<Self> {
-        Self::spawn_inner(Some(release))
+        Self::spawn_inner(&crate::Limits::default(), Some(release))
     }
 
-    fn spawn_inner(hold: Option<Arc<std::sync::atomic::AtomicBool>>) -> Arc<Self> {
+    fn spawn_inner(
+        limits: &crate::Limits,
+        hold: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Arc<Self> {
         let shared: Shared = Arc::default();
-        let handle = run(shared.clone(), hold);
+        let handle = run(
+            shared.clone(),
+            crate::limits::ceiling(limits.max_journal_open_files),
+            hold,
+        );
         Arc::new(Self {
             shared,
+            queue_bytes: crate::limits::ceiling_u64(limits.max_journal_queue_bytes),
+            owner_bytes: crate::limits::ceiling_u64(limits.max_session_queue_bytes),
             handle: Mutex::new(Some(handle)),
         })
     }
@@ -149,8 +161,9 @@ impl Writer {
                 return Err(Error::Journal("journal writer is shut down".into()));
             }
             let owned = queue.per_owner.get(owner).copied().unwrap_or(0);
-            let owner_fits = owned == 0 || owned + bytes <= OWNER_QUEUE_BYTES;
-            let total_fits = queue.total == 0 || queue.total + bytes <= MAX_QUEUED_BYTES;
+            let owner_fits = owned == 0 || owned.saturating_add(bytes) <= self.owner_bytes;
+            let total_fits =
+                queue.total == 0 || queue.total.saturating_add(bytes) <= self.queue_bytes;
             if owner_fits && total_fits {
                 queue.total += bytes;
                 *queue.per_owner.entry(owner.clone()).or_default() += bytes;
@@ -197,7 +210,11 @@ struct Open {
     last_batch: u64,
 }
 
-fn run(shared: Shared, hold: Option<Arc<std::sync::atomic::AtomicBool>>) -> JoinHandle<()> {
+fn run(
+    shared: Shared,
+    open_files: usize,
+    hold: Option<Arc<std::sync::atomic::AtomicBool>>,
+) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut held = hold;
         let mut open: HashMap<PathBuf, Open> = HashMap::new();
@@ -217,7 +234,7 @@ fn run(shared: Shared, hold: Option<Arc<std::sync::atomic::AtomicBool>>) -> Join
                 }
             }
             batch_number += 1;
-            let result = write_batch(&mut requests, &mut open, batch_number);
+            let result = write_batch(&mut requests, &mut open, open_files, batch_number);
             finish_batch(&shared, requests, result.as_ref().err().cloned());
             if let Err(error) = result {
                 fail_pending(&shared, error);
@@ -254,6 +271,7 @@ fn take_batch(shared: &Shared) -> Result<Option<Vec<Request>>, ()> {
 fn write_batch(
     requests: &mut [Request],
     open: &mut HashMap<PathBuf, Open>,
+    open_files: usize,
     batch: u64,
 ) -> Result<(), String> {
     let mut prepared = Vec::new();
@@ -271,7 +289,7 @@ fn write_batch(
     for item in &prepared {
         for frame in &item.frames {
             if !open.contains_key(&frame.path) {
-                if open.len() >= OPEN_FILES {
+                if open.len() >= open_files {
                     evict_oldest(open)?;
                 }
                 let created = !frame.path.exists();

@@ -17,7 +17,7 @@ pub struct ModelBinding {
 pub struct ModelSelection {
     #[schemars(schema_with = "crate::schema::identifier")]
     pub provider: String,
-    #[schemars(regex(pattern = r"^\S{1,256}$"), length(max = 256))]
+    #[schemars(regex(pattern = r"^\S+$"))]
     pub name: String,
     #[schemars(length(min = 1, max = 16384))]
     pub api_key: String,

@@ -9,20 +9,16 @@ use brain_protocol::{ContentBlock, Message, ModelStreamEvent, StopReason, Usage}
 
 use crate::Error;
 
-pub const MAX_PROVIDER_ASSISTANT_BYTES: usize = 192 * 1024;
-pub const MAX_PROVIDER_DELTA_BYTES: usize = 64 * 1024;
-pub const MAX_PROVIDER_CONTENT_BLOCKS: usize = 64;
-pub const MAX_PROVIDER_TOOL_CALLS: usize = 32;
-
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Accumulator {
+    max_output_bytes: usize,
+    max_delta_bytes: usize,
     blocks: Vec<PartialBlock>,
     stop_reason: StopReason,
     usage: Usage,
     saw_terminal: bool,
     saw_refusal: bool,
     total_bytes: usize,
-    tool_calls: usize,
 }
 
 #[derive(Debug)]
@@ -41,8 +37,17 @@ enum PartialBlock {
 }
 
 impl Accumulator {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(limits: &crate::Limits) -> Self {
+        Self {
+            max_output_bytes: crate::limits::ceiling(limits.max_model_output_bytes),
+            max_delta_bytes: crate::limits::ceiling(limits.max_model_delta_bytes),
+            blocks: Vec::new(),
+            stop_reason: StopReason::default(),
+            usage: Usage::default(),
+            saw_terminal: false,
+            saw_refusal: false,
+            total_bytes: 0,
+        }
     }
 
     pub fn saw_terminal(&self) -> bool {
@@ -56,42 +61,25 @@ impl Accumulator {
                     .into(),
             ));
         }
-        let (index, added_bytes, starts_tool) = match &ev {
-            ModelStreamEvent::TextDelta { index, text }
-            | ModelStreamEvent::RefusalDelta { index, text } => (*index, text.len(), false),
-            ModelStreamEvent::ToolUseStart { index, id, name } => {
-                (*index, id.len().saturating_add(name.len()), true)
-            }
-            ModelStreamEvent::ToolInputDelta {
-                index,
-                partial_json,
-            } => (*index, partial_json.len(), false),
-            ModelStreamEvent::BlockDone { index } => (*index, 0, false),
-            ModelStreamEvent::Usage { .. } | ModelStreamEvent::MessageDone { .. } => (0, 0, false),
+        let added_bytes = match &ev {
+            ModelStreamEvent::TextDelta { text, .. }
+            | ModelStreamEvent::RefusalDelta { text, .. } => text.len(),
+            ModelStreamEvent::ToolUseStart { id, name, .. } => id.len().saturating_add(name.len()),
+            ModelStreamEvent::ToolInputDelta { partial_json, .. } => partial_json.len(),
+            ModelStreamEvent::BlockDone { .. }
+            | ModelStreamEvent::Usage { .. }
+            | ModelStreamEvent::MessageDone { .. } => 0,
         };
-        if !matches!(
-            ev,
-            ModelStreamEvent::Usage { .. } | ModelStreamEvent::MessageDone { .. }
-        ) && index >= MAX_PROVIDER_CONTENT_BLOCKS
-        {
+        if added_bytes > self.max_delta_bytes {
             return Err(protocol(format!(
-                "provider content block index {index} exceeds {}",
-                MAX_PROVIDER_CONTENT_BLOCKS - 1
+                "provider delta exceeds {} bytes",
+                self.max_delta_bytes
             )));
         }
-        if added_bytes > MAX_PROVIDER_DELTA_BYTES {
+        if self.total_bytes.saturating_add(added_bytes) > self.max_output_bytes {
             return Err(protocol(format!(
-                "provider delta exceeds {MAX_PROVIDER_DELTA_BYTES} bytes"
-            )));
-        }
-        if self.total_bytes.saturating_add(added_bytes) > MAX_PROVIDER_ASSISTANT_BYTES {
-            return Err(protocol(format!(
-                "provider assistant content exceeds {MAX_PROVIDER_ASSISTANT_BYTES} bytes"
-            )));
-        }
-        if starts_tool && self.tool_calls >= MAX_PROVIDER_TOOL_CALLS {
-            return Err(protocol(format!(
-                "provider returned more than {MAX_PROVIDER_TOOL_CALLS} tool calls"
+                "provider assistant content exceeds {} bytes",
+                self.max_output_bytes
             )));
         }
         match ev {
@@ -166,7 +154,6 @@ impl Accumulator {
             }
         }
         self.total_bytes = self.total_bytes.saturating_add(added_bytes);
-        self.tool_calls += usize::from(starts_tool);
         Ok(())
     }
 
@@ -263,7 +250,7 @@ mod tests {
 
     #[test]
     fn rejects_broken_tool_json_instead_of_coercing() {
-        let mut a = Accumulator::new();
+        let mut a = Accumulator::new(&crate::Limits::default());
         a.push(ModelStreamEvent::ToolUseStart {
             index: 0,
             id: "t1".into(),
@@ -289,7 +276,7 @@ mod tests {
 
     #[test]
     fn joins_split_json_deltas_and_absent_usage_stays_absent() {
-        let mut a = Accumulator::new();
+        let mut a = Accumulator::new(&crate::Limits::default());
         a.push(ModelStreamEvent::ToolUseStart {
             index: 0,
             id: "t1".into(),
@@ -323,7 +310,7 @@ mod tests {
 
     #[test]
     fn rejects_usage_overflow_without_wrapping() {
-        let mut a = Accumulator::new();
+        let mut a = Accumulator::new(&crate::Limits::default());
         a.push(ModelStreamEvent::Usage {
             usage: Usage {
                 input_tokens: Some(u64::MAX),
@@ -345,7 +332,7 @@ mod tests {
 
     #[test]
     fn rejects_conflicting_provider_costs() {
-        let mut a = Accumulator::new();
+        let mut a = Accumulator::new(&crate::Limits::default());
         a.push(ModelStreamEvent::Usage {
             usage: Usage {
                 provider_cost_usd: Some("0.1".into()),
@@ -367,7 +354,7 @@ mod tests {
 
     #[test]
     fn refusal_survives_an_ordinary_stop_reason() {
-        let mut a = Accumulator::new();
+        let mut a = Accumulator::new(&crate::Limits::default());
         a.push(ModelStreamEvent::RefusalDelta {
             index: 0,
             text: "I cannot help with that.".into(),
@@ -388,7 +375,7 @@ mod tests {
 
     #[test]
     fn rejects_type_changes_duplicates_and_post_terminal_deltas() {
-        let mut type_change = Accumulator::new();
+        let mut type_change = Accumulator::new(&crate::Limits::default());
         type_change
             .push(ModelStreamEvent::TextDelta {
                 index: 0,
@@ -404,7 +391,7 @@ mod tests {
                 .is_err()
         );
 
-        let mut duplicate = Accumulator::new();
+        let mut duplicate = Accumulator::new(&crate::Limits::default());
         let start = || ModelStreamEvent::ToolUseStart {
             index: 1,
             id: "call_1".into(),
@@ -413,7 +400,7 @@ mod tests {
         duplicate.push(start()).unwrap();
         assert!(duplicate.push(start()).is_err());
 
-        let mut completed = Accumulator::new();
+        let mut completed = Accumulator::new(&crate::Limits::default());
         completed
             .push(ModelStreamEvent::TextDelta {
                 index: 0,
@@ -432,7 +419,7 @@ mod tests {
                 .is_err()
         );
 
-        let mut terminal = Accumulator::new();
+        let mut terminal = Accumulator::new(&crate::Limits::default());
         terminal
             .push(ModelStreamEvent::MessageDone {
                 stop_reason: StopReason::EndTurn,

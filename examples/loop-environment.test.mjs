@@ -18,12 +18,12 @@ test("a turn outside Brain calls back through its token and returns what the loo
     type: "turn",
     id: "a".repeat(64),
     needs: [],
-    input: { input: { message: "hello" }, transcript: [], slots: {}, events: [], configuration: {}, system: "", tools: [], runtime: { logical_time_ms: 3, deterministic_seed: [] } },
+    input: { input: { message: "hello" }, transcript: [], kv: {}, events: [], configuration: {}, system: "", tools: [], runtime: { logical_time_ms: 3, deterministic_seed: [] } },
     callback: { url: "http://brain.example/v1/sessions/ses_one/turns/3", token: "turn-token" },
   });
   assert.equal(turned.receipt.type, "turned");
   assert.equal(turned.receipt.output.transcript.length, 2);
-  assert.deepEqual(turned.receipt.output.slots, { turns: 1 });
+  assert.deepEqual(turned.receipt.output.kv, { turns: 1 });
   assert.deepEqual(calls.map(({ url }) => url), [
     "http://brain.example/v1/sessions/ses_one/turns/3/emit",
     "http://brain.example/v1/sessions/ses_one/turns/3/model",

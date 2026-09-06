@@ -69,7 +69,7 @@ Brain's turn routes for this turn and the bearer token that opens them. While th
 `GET {url}/events?after=` are the same five services an in-process loop has, journaled the same
 way; they answer nothing once the turn ends, and a cancellation makes every call after it fail
 with `cancelled`, which is how the loop learns to stop. Answer with `turned { output }` carrying
-the transcript, slots, and result the loop keeps, or a `failure` with the loop's own code.
+the transcript, kv, and result the loop keeps, or a `failure` with the loop's own code.
 [`examples/loop-environment.mjs`](https://github.com/aexhq/brain/blob/main/examples/loop-environment.mjs)
 is the smallest such Environment.
 

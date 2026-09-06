@@ -14,4 +14,4 @@ pub use feed::Feed;
 pub use record::{AppendRecord, SessionRecord};
 pub use session_store::LocalSessionStore;
 pub use store::{CommitHandle, Folded, JournalEntry, SessionRow, SessionStore, SessionUpdate};
-pub use writer::{OWNER_QUEUE_BYTES, Writer};
+pub use writer::Writer;

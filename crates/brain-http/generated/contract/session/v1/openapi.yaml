@@ -125,7 +125,6 @@ components:
             the Agentloop name one of them.
           items:
             $ref: '#/components/schemas/Environment'
-          maxItems: 128
           type: array
         idle_ttl_ms:
           description: |-
@@ -147,12 +146,10 @@ components:
           description: |-
             The system prompt the agent loop starts from. The loop may send a different one
             on any model call.
-          maxLength: 131072
           type: string
         tools:
           items:
             $ref: '#/components/schemas/Tool'
-          maxItems: 128
           type: array
         transcript:
           description: |-
@@ -161,7 +158,6 @@ components:
             opening transcript. Empty is an ordinary new session.
           items:
             $ref: '#/components/schemas/Message'
-          maxItems: 4096
           type: array
       required:
       - agentloop
@@ -457,8 +453,7 @@ components:
           minLength: 1
           type: string
         name:
-          maxLength: 256
-          pattern: ^\S{1,256}$
+          pattern: ^\S+$
           type: string
         provider:
           pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
@@ -615,7 +610,6 @@ components:
         interprets. Brain reads the name and the Environment and carries the rest.
       properties:
         description:
-          maxLength: 8192
           type: string
         environment:
           $ref: '#/components/schemas/EnvironmentName'
@@ -703,7 +697,6 @@ components:
         calls:
           items:
             $ref: '#/components/schemas/ToolInvocation'
-          maxItems: 128
           type: array
       required:
       - calls
@@ -845,7 +838,6 @@ paths:
           application/octet-stream:
             schema:
               format: binary
-              maxLength: 33554432
               type: string
         required: true
       responses:
@@ -1446,7 +1438,6 @@ paths:
           application/octet-stream:
             schema:
               format: binary
-              maxLength: 33554432
               type: string
         required: true
       responses:

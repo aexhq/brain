@@ -21,7 +21,7 @@ impl LoopExecutor for Echo {
         transcript.push(Message::user_text(input.input.message));
         Ok(TurnOutput {
             transcript,
-            slots: input.slots,
+            kv: input.kv,
             result: None,
         })
     }
@@ -71,9 +71,12 @@ fn api(root: &std::path::Path) -> ServerApi {
         writer: Writer::spawn(),
         feed: feed.clone(),
         session_runtime: Arc::new(SessionRuntime {
-            max_model_calls_per_turn: 4,
-            max_turn_ms: 1000,
-            tool_deadline_ms: 1000,
+            limits: brain::Limits {
+                max_model_calls: 4,
+                max_turn_secs: 1,
+                max_tool_secs: 1,
+                ..Default::default()
+            },
             loop_executor: Arc::new(Echo),
             model_executor: Arc::new(Echo),
             tool_executor: Arc::new(Echo),
@@ -91,11 +94,15 @@ fn api(root: &std::path::Path) -> ServerApi {
                 Default::default(),
                 root.join("native-workspaces"),
             )),
-            crate::HostEnvironment::open(&root.join("hosts/log")).unwrap(),
+            crate::HostEnvironment::open(&root.join("hosts/log"), &Default::default()).unwrap(),
             Arc::new(crate::HttpEnvironmentAdapter::new(
                 reqwest::Client::new(),
                 credentials.clone(),
-                0,
+                &brain::Limits {
+                    max_turn_secs: 0,
+                    ..Default::default()
+                },
+                &Default::default(),
             )),
         )),
         credentials,

@@ -11,6 +11,7 @@ publish = false
 brain-protocol = { workspace = true }
 brain-telemetry = { workspace = true }
 async-trait = { workspace = true }
+clap = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
