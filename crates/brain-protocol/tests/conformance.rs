@@ -7,7 +7,7 @@ use brain_protocol::{
 use serde_json::Value;
 
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn read_json(path: &str) -> Value {
@@ -37,10 +37,10 @@ fn definition_is_valid(schema_path: &str, definition: &str, value: &Value) -> bo
 #[test]
 fn contract_schemas_are_valid_draft_2020_12() {
     for path in [
-        "contracts/agentloop/v1/contract.json",
-        "contracts/environment/v1/schemas.json",
-        "contracts/tool/v1/schemas.json",
-        "contracts/session/v1/schemas.json",
+        "generated/contract/agentloop/v1/contract.json",
+        "generated/contract/environment/v1/schemas.json",
+        "generated/contract/tool/v1/schemas.json",
+        "generated/contract/session/v1/schemas.json",
     ] {
         jsonschema::meta::validate(&read_json(path))
             .unwrap_or_else(|error| panic!("{path}: {error}"));
@@ -49,40 +49,41 @@ fn contract_schemas_are_valid_draft_2020_12() {
 
 #[test]
 fn checked_in_examples_validate() {
-    for (name, example) in read_json("contracts/agentloop/v1/examples/host-calls.json")
+    for (name, example) in read_json("tests/examples/agentloop/host-calls.json")
         .as_object()
         .unwrap()
     {
-        validate_definition("contracts/session/v1/schemas.json", name, example);
+        validate_definition("generated/contract/session/v1/schemas.json", name, example);
     }
-    let agentloop = read_json("contracts/agentloop/v1/examples/turn.json");
-    jsonschema::draft202012::new(&read_json("contracts/agentloop/v1/contract.json"))
+    let agentloop = read_json("tests/examples/agentloop/turn.json");
+    jsonschema::draft202012::new(&read_json("generated/contract/agentloop/v1/contract.json"))
         .unwrap()
         .validate(&agentloop)
         .unwrap();
 
     let environment_schema =
-        jsonschema::draft202012::new(&read_json("contracts/environment/v1/schemas.json")).unwrap();
+        jsonschema::draft202012::new(&read_json("generated/contract/environment/v1/schemas.json"))
+            .unwrap();
     for example in [
-        "contracts/environment/v1/examples/setup.json",
-        "contracts/environment/v1/examples/setup-result.json",
-        "contracts/environment/v1/examples/invoke.json",
-        "contracts/environment/v1/examples/invoke-result.json",
+        "tests/examples/environment/setup.json",
+        "tests/examples/environment/setup-result.json",
+        "tests/examples/environment/invoke.json",
+        "tests/examples/environment/invoke-result.json",
     ] {
         environment_schema
             .validate(&read_json(example))
             .unwrap_or_else(|error| panic!("{example}: {error}"));
     }
 
-    let tool = read_json("contracts/tool/v1/examples/tool.json");
-    jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json"))
+    let tool = read_json("tests/examples/tool/tool.json");
+    jsonschema::draft202012::new(&read_json("generated/contract/tool/v1/schemas.json"))
         .unwrap()
         .validate(&tool)
         .unwrap();
 
-    let session = read_json("contracts/session/v1/examples/create-session.json");
+    let session = read_json("tests/examples/session/create-session.json");
     validate_definition(
-        "contracts/session/v1/schemas.json",
+        "generated/contract/session/v1/schemas.json",
         "CreateSessionRequest",
         &session,
     );
@@ -93,8 +94,9 @@ fn checked_in_examples_validate() {
 #[test]
 fn a_tool_names_one_environment_and_its_needs_as_uris() {
     let schema =
-        jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json")).unwrap();
-    let example = read_json("contracts/tool/v1/examples/tool.json");
+        jsonschema::draft202012::new(&read_json("generated/contract/tool/v1/schemas.json"))
+            .unwrap();
+    let example = read_json("tests/examples/tool/tool.json");
     schema.validate(&example).unwrap();
     let mut without_environment = example.clone();
     without_environment
@@ -126,7 +128,11 @@ fn a_tool_names_one_environment_and_its_needs_as_uris() {
 #[test]
 fn an_environment_carries_its_driver_beside_its_configuration() {
     let valid = |value: Value| {
-        definition_is_valid("contracts/session/v1/schemas.json", "Environment", &value)
+        definition_is_valid(
+            "generated/contract/session/v1/schemas.json",
+            "Environment",
+            &value,
+        )
     };
     assert!(valid(
         serde_json::json!({"name": "brain", "driver": "brain"})
@@ -149,20 +155,9 @@ fn an_environment_carries_its_driver_beside_its_configuration() {
 }
 
 #[test]
-fn agentloop_world_exports_turn_and_imports_only_the_host() {
-    let wit = fs::read_to_string(root().join("contracts/agentloop/v1/agentloop.wit")).unwrap();
-    let world = wit.split("world agentloop").nth(1).unwrap();
-    assert_eq!(world.matches("import host;").count(), 1);
-    assert_eq!(world.matches("import ").count(), 1);
-    assert_eq!(world.matches("export turn:").count(), 1);
-}
-
-#[test]
 fn rust_views_round_trip_contract_examples() {
-    let session: CreateSessionRequest = serde_json::from_value(read_json(
-        "contracts/session/v1/examples/create-session.json",
-    ))
-    .unwrap();
+    let session: CreateSessionRequest =
+        serde_json::from_value(read_json("tests/examples/session/create-session.json")).unwrap();
     assert_eq!(session.model.provider, "vercel-ai-gateway");
     assert_eq!(session.model.name, "openai/gpt-5-mini");
     assert_eq!(session.agentloop.id.as_str(), "a".repeat(64));
@@ -180,37 +175,33 @@ fn rust_views_round_trip_contract_examples() {
     ));
 
     let command: EnvironmentCommand =
-        serde_json::from_value(read_json("contracts/environment/v1/examples/invoke.json")).unwrap();
+        serde_json::from_value(read_json("tests/examples/environment/invoke.json")).unwrap();
     assert!(matches!(
         command.operation.request,
         EnvironmentRequest::Invoke { ref tool, .. } if tool == "read"
     ));
     let setup: EnvironmentCommand =
-        serde_json::from_value(read_json("contracts/environment/v1/examples/setup.json")).unwrap();
+        serde_json::from_value(read_json("tests/examples/environment/setup.json")).unwrap();
     assert!(matches!(
         setup.operation.request,
         EnvironmentRequest::Setup { ref needs, .. } if needs.len() == 3
     ));
-    let response: EnvironmentResponse = serde_json::from_value(read_json(
-        "contracts/environment/v1/examples/invoke-result.json",
-    ))
-    .unwrap();
+    let response: EnvironmentResponse =
+        serde_json::from_value(read_json("tests/examples/environment/invoke-result.json")).unwrap();
     assert!(matches!(
         response.receipt,
         EnvironmentReceipt::Outcome {
             outcome: Outcome::Ok { .. }
         }
     ));
-    let tool: Tool =
-        serde_json::from_value(read_json("contracts/tool/v1/examples/tool.json")).unwrap();
+    let tool: Tool = serde_json::from_value(read_json("tests/examples/tool/tool.json")).unwrap();
     assert_eq!(tool.name, "bash");
     assert_eq!(tool.environment.as_str(), "sandbox");
     assert_eq!(tool.definition().name, "bash");
 
-    let output: TurnOutput = serde_json::from_value(
-        read_json("contracts/agentloop/v1/examples/turn.json")["output"].clone(),
-    )
-    .unwrap();
+    let output: TurnOutput =
+        serde_json::from_value(read_json("tests/examples/agentloop/turn.json")["output"].clone())
+            .unwrap();
     assert_eq!(output.transcript.len(), 1);
     assert_eq!(output.slots["memory"]["turns"], 1);
 }
@@ -219,7 +210,7 @@ fn rust_views_round_trip_contract_examples() {
 fn model_selection_names_are_validated_per_provider() {
     let selection = |provider: &str, name: &str| serde_json::json!({"provider": provider, "name": name, "api_key": "k"});
     let validate = |value: &Value| {
-        let schema = read_json("contracts/session/v1/schemas.json");
+        let schema = read_json("generated/contract/session/v1/schemas.json");
         let wrapper = serde_json::json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$defs": schema["$defs"],

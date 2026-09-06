@@ -25,7 +25,7 @@ This is a historical selection based on the versions and experiments discussed o
 ## Sources
 
 - Brain implementation/history: [6081ebb](https://github.com/aexhq/brain/commit/6081ebbf94f4dd38a7dfbd97c641c18f58efb187), [6d20d59](https://github.com/aexhq/brain/commit/6d20d59421f1ba137eeea6c471f44afffc758ceb), [a21ae6e](https://github.com/aexhq/brain/commit/a21ae6e5c46ea2bffd9fe96aebb45471f6f1ac45).
-- Current reference: [contracts/agentloop/v1/agentloop.wit](../../contracts/agentloop/v1/agentloop.wit).
+- Current reference: [crates/brain-loophost/wit/agentloop/agentloop.wit](../../crates/brain-loophost/wit/agentloop/agentloop.wit).
 - Current reference: [crates/brain-loophost/Cargo.toml](../../crates/brain-loophost/Cargo.toml).
 - [Codex session `01a03dd3-4217-7cc3-973c-8336841a6a26`](SOURCES.md#session-01a03dd3-4217-7cc3-973c-8336841a6a26), 2026-08-26T19:33:16.940Z: Assistant reports the initial Wasmer Component/bridge spike and its limits.
 - [Codex session `01a03dd3-4217-7cc3-973c-8336841a6a26`](SOURCES.md#session-01a03dd3-4217-7cc3-973c-8336841a6a26), 2026-08-26T21:10:28.715Z: Assistant corrects the conclusion after the successful canonical-core Linux bakeoff.

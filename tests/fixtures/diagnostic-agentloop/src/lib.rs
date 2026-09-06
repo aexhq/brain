@@ -1,5 +1,5 @@
 wit_bindgen::generate!({
-    path: "../../../contracts/agentloop/v1",
+    path: "../../../crates/brain-loophost/wit/agentloop",
     world: "agentloop",
 });
 

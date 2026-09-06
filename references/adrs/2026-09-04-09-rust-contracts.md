@@ -25,7 +25,7 @@ Change the defining type or annotation, run npm run gen, and commit generated ou
 - Brain implementation/history: [3437a0a](https://github.com/aexhq/brain/commit/3437a0a6b4da6f755ab769b940ffdfad65792af0), [09bb382](https://github.com/aexhq/brain/commit/09bb3822289d95f6f81aa97a14c9c2350c3c1412).
 - Current reference: [AGENTS.md](../../AGENTS.md).
 - Current reference: [CONTRIBUTING.md](../../CONTRIBUTING.md).
-- Current reference: [crates/brain-contracts/src/main.rs](../../crates/brain-contracts/src/main.rs).
+- Current reference: [crates/brain-protocol/src/bin/contract.rs](../../crates/brain-protocol/src/bin/contract.rs).
 - Original decision: “2026-09-04: The Rust types are the source of the contracts” in [DECISIONS.md at compilation baseline](https://github.com/aexhq/brain/blob/c3c0dc5c7bf57e44c99dfe9a4e2d1e9f05020170/DECISIONS.md).
 - [Claude session `754faa6b-5689-4155-a619-39f11a52bf6e`](SOURCES.md#session-754faa6b-5689-4155-a619-39f11a52bf6e), 2026-09-04T12:17:22.335Z: User asks why handwritten protocol duplicates and unused digests exist.
 - [Claude session `754faa6b-5689-4155-a619-39f11a52bf6e`](SOURCES.md#session-754faa6b-5689-4155-a619-39f11a52bf6e), 2026-09-04T12:36:50.480Z: User explicitly chooses Rust-first generation and concise AGENTS.md guidance.

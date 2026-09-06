@@ -24,7 +24,7 @@ Adding a compatible endpoint is configuration; a new wire dialect still requires
 
 - Brain implementation/history: [a19e4bc](https://github.com/aexhq/brain/commit/a19e4bca8c0ed923f8b92f7a9105eadbd458689e).
 - Current reference: [docs/concepts/model.mdx](../../docs/concepts/model.mdx).
-- Current reference: [tools/generate-providers.py](../../tools/generate-providers.py).
+- Current reference: [crates/brain/src/bin/contract.rs](../../crates/brain/src/bin/contract.rs).
 - Current reference: [tools/fetch-models-dev.mjs](../../tools/fetch-models-dev.mjs).
 - [Claude session `b4871cce-1706-4bb3-8140-531592e60799`](SOURCES.md#session-b4871cce-1706-4bb3-8140-531592e60799), 2026-08-30T20:24:52.580Z: User asks for unified provider support primarily through configuration.
 

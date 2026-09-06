@@ -47,7 +47,7 @@ reads. The factory result is immutable and is passed to Tool and Agentloop facto
 
 ## The protocol
 
-The generated schemas under `contracts/environment/v1` are the source of truth. Brain posts an
+The generated schemas under `crates/brain-protocol/generated/contract/environment/v1` are the source of truth. Brain posts an
 `EnvironmentCommand` to `{url}/v1/operations` containing the contract version and one operation:
 
 - the session id, the Environment name, and the committed journal sequence that started it, which

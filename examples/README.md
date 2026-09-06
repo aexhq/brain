@@ -30,7 +30,7 @@ BRAIN_LOOP_WORKER="$PWD/target/release/brain-loop-worker" \
 ./target/release/brain --listen 127.0.0.1:8080
 ```
 
-An Agentloop is a WebAssembly Component implementing `contracts/agentloop/v1/agentloop.wit`. Brain
+An Agentloop is a WebAssembly Component implementing `crates/brain-loophost/wit/agentloop/agentloop.wit`. Brain
 accepts the compiled Component as raw Wasm; it does not build extension source. Compile one with its
 own language toolchain, or build the reference loop in this directory:
 

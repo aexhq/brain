@@ -16,7 +16,7 @@ use crate::MAX_TURN_OUTPUT_BYTES;
 use crate::{MAX_PACKAGE_BYTES, MAX_TURN_INPUT_BYTES};
 
 /// What the guest asks Brain to do. Every payload is JSON in the shapes the
-/// `contracts/session/v1` types define.
+/// `brain-protocol` session contract types define.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostCall {

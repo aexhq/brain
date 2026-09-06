@@ -1,7 +1,8 @@
 //! The OpenAPI document of the session API, rendered from the route annotations in
 //! `router.rs` and the schemas in `brain-protocol`.
 //!
-//! `brain-contracts` writes [`openapi`] to `contracts/session/v1/openapi.yaml`. The
+//! `cargo run -p brain-http --bin contract` writes [`openapi`] to this crate's
+//! `generated/contract/session/v1/openapi.yaml`. The
 //! router is built from the same annotations, and [`crate::router`] refuses to start if
 //! the two disagree, so a route cannot exist without appearing in the document.
 
@@ -98,7 +99,7 @@ impl ToSchema for Package {}
 pub fn openapi() -> Value {
     let mut document =
         serde_json::to_value(ApiDoc::openapi()).expect("the OpenAPI document serializes");
-    let mut schemas = brain_protocol::contracts::session()["$defs"].take();
+    let mut schemas = brain_protocol::contract::session()["$defs"].take();
     rewrite_references(&mut schemas);
     document["components"]["schemas"] = schemas;
     strip_empty_tags(&mut document);

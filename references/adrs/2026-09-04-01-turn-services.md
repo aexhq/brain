@@ -26,7 +26,7 @@ Remove step observations/decisions, resident-context placeholders, decision caps
 
 - Brain implementation/history: [6d20d59](https://github.com/aexhq/brain/commit/6d20d59421f1ba137eeea6c471f44afffc758ceb), [bb7fb18](https://github.com/aexhq/brain/commit/bb7fb181ca5e977c0a06f2a9e9da64e2ab5108a9), [e853046](https://github.com/aexhq/brain/commit/e853046e7b4a63f9fddafe3069f7e08140a4509f), [a21ae6e](https://github.com/aexhq/brain/commit/a21ae6e5c46ea2bffd9fe96aebb45471f6f1ac45), [682ce03](https://github.com/aexhq/brain/commit/682ce03104991f5815de0655165509510f07dbb6).
 - Current reference: [docs/concepts/agent-loop.mdx](../../docs/concepts/agent-loop.mdx).
-- Current reference: [contracts/agentloop/v1/agentloop.wit](../../contracts/agentloop/v1/agentloop.wit).
+- Current reference: [crates/brain-loophost/wit/agentloop/agentloop.wit](../../crates/brain-loophost/wit/agentloop/agentloop.wit).
 - Original decision: “2026-09-04: The agent loop drives the turn; Brain provides services” in [DECISIONS.md at compilation baseline](https://github.com/aexhq/brain/blob/c3c0dc5c7bf57e44c99dfe9a4e2d1e9f05020170/DECISIONS.md).
 - [Claude session `0fc0a00c-3776-4a6c-9383-c5a8fe9bd556`](SOURCES.md#session-0fc0a00c-3776-4a6c-9383-c5a8fe9bd556), 2026-09-03T16:40:17.639Z: User requests that the loop control dispatch and compaction while Brain provides services and records changes.
 - [Claude session `0fc0a00c-3776-4a6c-9383-c5a8fe9bd556`](SOURCES.md#session-0fc0a00c-3776-4a6c-9383-c5a8fe9bd556), 2026-09-03T23:13:37.844Z: User accepts trying asynchronous imports and retains a Brain-understood transcript format.

@@ -1,5 +1,5 @@
 wit_bindgen::generate!({
-    path: "../../../contracts/tool/v1",
+    path: "../../../crates/brain-loophost/wit/tool",
     world: "tool",
 });
 

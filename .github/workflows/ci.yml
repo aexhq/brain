@@ -26,11 +26,11 @@ jobs:
           node-version: "22.23.2"
           cache: npm
       - run: npm ci
-      # Renders contracts/ from the Rust types, then the SDK from contracts/. A diff means
-      # a type changed without its contract being regenerated, or a contract file was
-      # edited by hand.
+      # Renders each crate's generated/contract/ from its Rust types, then the SDK from
+      # those. A diff means a type changed without its contract being regenerated, or a
+      # generated file was edited by hand.
       - run: npm run gen
-      - run: git diff --exit-code -- contracts catalog crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts
+      - run: git diff --exit-code -- crates/brain-protocol/generated crates/brain-http/generated crates/brain/generated catalog crates/brain/src/model/generated packages/brain-sdk/src/generated packages/brain-sdk/contracts
       - run: npm test
       - run: npm run package-smoke
 

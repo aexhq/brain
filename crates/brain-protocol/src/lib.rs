@@ -1,11 +1,12 @@
 //! Types crossing Brain process, transport, or durable-storage boundaries.
 //!
-//! These types are the source of the published contracts: [`contracts`] renders them to
-//! JSON Schema, and `brain-contracts` writes the result under `contracts/`.
+//! These types are the source of the published contracts: [`contract`] renders them to
+//! JSON Schema, and `cargo run -p brain-protocol --bin contract` writes the result under
+//! this crate's `generated/contract/`.
 
 pub mod agentloop;
 pub mod codes;
-pub mod contracts;
+pub mod contract;
 pub mod environment;
 pub mod error;
 pub mod execution;

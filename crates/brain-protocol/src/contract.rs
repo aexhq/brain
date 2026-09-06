@@ -1,8 +1,8 @@
 //! The published contracts, rendered from the Rust types in this crate.
 //!
-//! `brain-contracts` writes these documents under `contracts/`; CI regenerates them and
-//! fails on a diff, so the files there are output. To change a contract, change the
-//! type it is rendered from.
+//! `cargo run -p brain-protocol --bin contract` writes these documents under this crate's
+//! `generated/contract/`; CI regenerates them and fails on a diff, so the files there are
+//! output. To change a contract, change the type it is rendered from.
 
 use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
@@ -17,7 +17,8 @@ use crate::{
 };
 
 /// Where the contracts are published; each document's `$id` is its path under here.
-pub const CONTRACT_BASE_URL: &str = "https://github.com/aexhq/brain/contracts";
+pub const CONTRACT_BASE_URL: &str =
+    "https://github.com/aexhq/brain/crates/brain-protocol/generated/contract";
 
 /// The session API: what the HTTP surface accepts and answers.
 pub fn session() -> Value {

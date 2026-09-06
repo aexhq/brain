@@ -101,7 +101,7 @@ const placed = inspect({ env: brainEnv({ name: "brain" }), depth: 2 });
 ```
 
 The Component implements
-[`contracts/tool/v1/tool.wit`](https://github.com/aexhq/brain/blob/main/contracts/tool/v1/tool.wit).
+[`crates/brain-loophost/wit/tool/tool.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-loophost/wit/tool/tool.wit).
 Brain admits the raw bytes and names them by their SHA-256. Each invocation contains the Tool
 input, parsed configuration, and deadline. The Component may call its `emit` host import to append
 an extension Event, or its fire-and-forget `telemetry` import for best-effort operational

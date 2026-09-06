@@ -1,7 +1,7 @@
 //! Subject manifests: what a thing is, what it can answer, and what it needs to run.
 //!
 //! JSON rather than TOML so the runner needs no parser the workspace does not already
-//! carry, and so a manifest sits next to `contracts/` in the same format.
+//! carry, and so a manifest sits next to the crates' contracts in the same format.
 
 use std::collections::BTreeMap;
 use std::path::Path;
