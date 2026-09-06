@@ -19,14 +19,15 @@ and there is no upgrade path from earlier builds.
 
 | Part | You supply | Brain does |
 | --- | --- | --- |
-| [Agentloop](/brain/docs/concepts/agent-loop) | A raw WebAssembly Component and an Environment | Activates it and performs its model and Tool requests |
-| [Model](/brain/docs/concepts/model) | A provider, model name, and credential | Seals the binding for the session and makes calls |
-| [Tool](/brain/docs/concepts/tool) | A typed contract plus resident code or a placed implementation | Commits the call before dispatch and records its outcome |
-| [Environment](/brain/docs/concepts/environment) | An immutable placement and authority specification | Creates, attaches, invokes, cancels, detaches, and closes it |
+| [Agentloop](/brain/docs/concepts/agent-loop) | A raw WebAssembly Component placed in an Environment | Activates it there and performs its model and Tool requests |
+| [Model](/brain/docs/concepts/model) | A provider, model name, and credential | Seals the credential for the session and makes calls |
+| [Tool](/brain/docs/concepts/tool) | A typed contract, what it needs, and where it runs | Commits the call before dispatch and records its outcome |
+| [Environment](/brain/docs/concepts/environment) | A named place that runs Tools and the loop | Sets it up, invokes, cancels, detaches, and tears it down |
 
 Application code composes these values explicitly. `component(...)` wraps already-built Wasm,
-`brainWasm(...)` selects Brain's built-in Wasmtime Environment, and placed factories take
-`{ env, ...options }`.
+`brainEnv({ name })` is Brain's own Environment, `hostEnv({ name })` is your own process, an
+`environment(...)` extension is anything reached over HTTP, and every Tool and Agentloop factory
+takes `{ env, ...options }`.
 
 ## The durable rule
 
@@ -37,14 +38,11 @@ outcome is committed before the Agentloop observes it.
 The public event feed, session status, transcript, and Agentloop slots are projections of the same
 journal. SSE is a live notification path; reconnecting clients resume from a committed sequence.
 
-Resident Tools are the deliberate exception to placed isolation: their code remains in the
-application process. The SDK registers one resident host, receives Tool commands over SSE, and
-posts results and `ctx.emit` events through scoped host endpoints.
-
 ## Where to go next
 
 - [Quickstart](/brain/docs/quickstart) — run a server and create a first session.
 - [Sessions](/brain/docs/concepts/sessions) — journal, turns, suspension, and recovery.
 - [Agentloop](/brain/docs/concepts/agent-loop) — raw Components and explicit placement.
-- [Tools](/brain/docs/concepts/tool) — resident and placed implementations.
+- [Tools](/brain/docs/concepts/tool) — one Tool form, placed where it runs.
+- [Environments](/brain/docs/concepts/environment) — the brain env, the host env, and yours.
 - [API reference](/brain/docs/reference/api) — generated from the protocol types.

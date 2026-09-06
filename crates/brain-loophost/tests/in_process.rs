@@ -46,12 +46,7 @@ fn input(message: &str, slots: std::collections::BTreeMap<String, serde_json::Va
 }
 
 fn environment() -> NativeEnvironment {
-    NativeEnvironment {
-        scratch: false,
-        workspace: None,
-        network_allow: Vec::new(),
-        secrets: Default::default(),
-    }
+    NativeEnvironment::default()
 }
 
 /// A component with host imports is several core instances. Each turn gets a fresh
@@ -119,7 +114,6 @@ async fn a_tool_component_runs_in_a_fresh_store() {
             &limits,
             environment(),
             NativeToolInput {
-                call_id: "call_1".into(),
                 input: serde_json::json!({"value": 7}),
                 configuration: serde_json::json!({}),
                 deadline_at_ms: 1_000,

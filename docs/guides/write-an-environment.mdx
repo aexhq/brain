@@ -1,14 +1,16 @@
 ---
 title: Write an Environment
-description: Define a typed placement factory and implement the remote Environment protocol.
+description: Define how each instance is reached and implement the Environment protocol.
 ---
 
 An Environment extension has two halves:
 
-- a small application-side factory that produces immutable configuration and binding values;
-- a driver that implements Brain's `environment/v1` operations and executes placed implementations.
+- a small application-side factory that says how each instance is reached and what its
+  configuration is;
+- a server that implements Brain's `environment/v1` operations and executes what is placed there.
 
-Use `brainWasm(...)` instead when Wasmtime with Brain's built-in capability policy is sufficient.
+Use `brainEnv(...)` instead when Wasmtime with Brain's built-in grants is sufficient, and
+`hostEnv(...)` for functions your own process holds.
 
 ## Application-side factory
 
@@ -17,74 +19,86 @@ import { environment } from "@aexhq/brain";
 import { z } from "zod";
 
 export const sandbox = environment({
-  driver: "acme_sandbox",
   options: z.object({
-    image: z.string(),
+    url: z.url(),
     token: z.string(),
+    image: z.string(),
     idleMs: z.number().int().positive(),
   }),
+  url: ({ url }) => url,
+  credential: ({ token }) => token,
   configure: ({ image, idleMs }) => ({ image, idle_ms: idleMs }),
-  bindings: ({ token }) => ({ API_TOKEN: token }),
 });
 
-const env = sandbox({ image: "node:22", token: process.env.API_TOKEN, idleMs: 300_000 });
+const env = sandbox({
+  name: "sandbox",
+  url: "https://sandbox.example",
+  token: process.env.SANDBOX_TOKEN,
+  image: "node:22",
+  idleMs: 300_000,
+});
 ```
 
-`driver` is the adapter name. `configure` returns the non-secret configuration stored with the
-Environment. `bindings` returns named plaintext values that exist only through attachment; Brain
-does not copy their values into the session journal. The factory result is immutable and is passed
-to placed Tool factories as `env`. The current server requires `brainWasm(...)` for Agentloop
-placement.
+Every instance is named; the name is unique within the session and is how every record refers to
+the Environment. `url` is where Brain posts operations, HTTPS or loopback HTTP. `credential` is sent
+as a bearer token; the server seals it beside the model key and never journals it. `configure`
+returns the Environment's own configuration, which Brain records and sends with setup and never
+reads. The factory result is immutable and is passed to Tool and Agentloop factories as `env`.
 
-## Driver protocol
+## The protocol
 
-The generated schemas under `contracts/environment/v1` are the source of truth. Brain sends an
-`EnvironmentCommand` containing:
+The generated schemas under `contracts/environment/v1` are the source of truth. Brain posts an
+`EnvironmentCommand` to `{url}/v1/operations` containing the contract version and one operation:
 
-- contract version and resolved Environment binding;
-- session ID and committed journal sequence;
-- Environment and attachment identities;
-- one request: setup, attach, call, invoke, cancel, detach, or teardown.
+- the session id, the Environment name, and the committed journal sequence that started it, which
+  together name the operation;
+- one request: `setup`, `invoke`, `call`, `cancel`, `detach`, `teardown`, or `turn`.
 
-The driver returns the same contract and sequence with one receipt: accepted, progress, result,
-outcome, failure, or unknown.
+The Environment answers with the same contract and sequence and one receipt: `accepted`,
+`progress`, `result`, `outcome`, `turned`, `failure`, or `unknown`. An operation it does not carry
+is answered with an `unsupported` failure.
 
-Setup declares resource policies. Attach receives the placed Tool manifests and binding values.
-Each manifest contains its schemas, `needs`, binding names, and an opaque `implementation`. A
-`brain_component` implementation names raw Component bytes already admitted to Brain; another
-descriptor belongs entirely to the driver.
+`setup` carries the configuration and one flat list of `needs`: every URI every Tool and the
+Agentloop placed here declared. Provision what this session uses; refuse what you cannot honour
+with a failure that names the URI, which fails the create. `invoke` carries the Tool's name, its
+opaque `implementation`, its own needs, the input, and the deadline. A `brain_component`
+implementation names Component bytes admitted to Brain; any other descriptor belongs to you.
+`turn` carries the Agentloop's id, needs, and turn input; an Environment reached over HTTP answers
+it as unsupported until Brain's turn services are reachable from another process.
 
 ## Correctness rules
 
-Brain durably commits the operation before calling the driver and sends it once. The driver must:
+Brain durably commits the operation before calling the Environment and sends it once. The
+Environment must:
 
-- treat `{session_id, sequence}` as the stable operation identity;
-- bind every invocation to the supplied Environment and attachment;
+- treat `{session_id, environment, sequence}` as the stable operation identity;
 - return `unknown` when it cannot prove whether an effect happened;
 - make cancellation best effort without calling uncertain work successfully cancelled.
 
-Brain never automatically retries a known failure or an unknown outcome. A provider may implement
-its own deduplication, but Brain does not require durable provider state or resource restoration.
+Brain never automatically retries a known failure or an unknown outcome. An Environment may
+implement its own deduplication, but Brain does not require durable Environment state or resource
+restoration.
 
-## Resources and authority
+## Needs and authority
 
-An attach succeeds only when the Environment declares every resource name a Tool needs and has
-every named binding. The driver enforces actual policy at its platform boundary: mounts and users
-for `fs` and `process`, egress rules for `net`, origin policy for `dom`, and scoped injection for
-`secrets`.
+The Environment enforces actual policy at its platform boundary: mounts and users for `file:`,
+package managers or an installer that speaks Package URLs for `pkg:`, egress rules for `https:`
+and `wss:`. Brain checks nothing about a need beyond its shape and carries nothing at run time:
+a Tool's code obtains what it needs through the platform you give it.
 
 The Environment receives no ambient Brain or product-control-plane credential. Use narrowly scoped
-provider identities and keep mutable Environment state separate from the session journal.
+identities and keep mutable Environment state separate from the session journal.
 
 ## Lifecycle
 
-Session creation performs logical setup and attach before reporting ready. Declare capabilities
-there and allocate physical resources on first invoke if useful. Serialize concurrent first invokes
-inside the provider. The provider owns TTL, including expiration while the session remains attached.
-End detaches; delete asks for teardown. A driver for an external service may only release its local
-binding. Restart means fresh resources unless the provider explicitly offers restoration.
+Session creation runs `setup` before reporting ready. Allocate physical resources on first invoke
+if useful, and serialize concurrent first invokes. The Environment owns TTL, including expiration
+while the session is suspended. End sends `detach`; delete sends `teardown`. An Environment
+wrapping an external service may only release its local binding. Restart means fresh resources
+unless the Environment explicitly offers restoration.
 
 See [`examples/lazy-environment.mjs`](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs)
-for a standalone provider, and its test for concurrent allocation, expiry, and explicit restart.
+for a standalone Environment, and its test for concurrent allocation, expiry, and explicit restart.
 Run it with `node examples/lazy-environment.mjs`. It binds loopback, executes only its reference echo
-Tool, and optionally checks `REFERENCE_ENV_TOKEN`. It is an authoring example, not a tenant sandbox.
+Tool, honours `file:` needs, and optionally checks `REFERENCE_ENV_TOKEN`. It is an authoring example,
+not a tenant sandbox.

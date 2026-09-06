@@ -5,11 +5,11 @@ use axum::{
 };
 use brain_http::{BrainApi, HostConnection, router, router_with_bearer};
 use brain_protocol::{
-    AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
-    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, Event, EventId, EventPage,
-    HostCommand, HostEvent, HostEventAck, HostId, HostOperation, HostRegistration, HostResult,
-    LiveEvent, MessageRequest, SessionId, SessionList, SessionStatus, SessionSummary,
-    StreamingEvent, ToolAdmission, ToolAdmissionStatus, ToolIdentity, ToolInvocation,
+    AdmissionStatus, AgentloopAdmission, AgentloopId, ApiError, CreateSessionRequest,
+    EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName, Event, EventPage, HostCommand,
+    HostEvent, HostEventAck, HostId, HostOperation, HostRegistration, HostResult, LiveEvent,
+    MessageRequest, SessionId, SessionList, SessionStatus, SessionSummary, StreamingEvent,
+    ToolAdmission, ToolAdmissionStatus, ToolId,
 };
 use tower::ServiceExt;
 
@@ -49,11 +49,8 @@ impl BrainApi for Api {
                 sequence: 7,
                 deadline_at_ms: 1_787_846_460_000,
                 operation: HostOperation::InvokeTool {
-                    invocation: ToolInvocation {
-                        call_id: "call_1".into(),
-                        name: "highlight_row".into(),
-                        input: serde_json::json!({"row": 4}),
-                    },
+                    name: "highlight_row".into(),
+                    input: serde_json::json!({"row": 4}),
                 },
             })
             .await
@@ -91,12 +88,12 @@ impl BrainApi for Api {
     }
     async fn admit_tool(&self, _: String, _: Vec<u8>) -> Result<ToolAdmission, ApiError> {
         Ok(ToolAdmission {
-            identity: ToolIdentity::new("b".repeat(64)),
+            id: ToolId::new("b".repeat(64)),
             status: ToolAdmissionStatus::Admitted,
             error: None,
         })
     }
-    async fn get_agentloop(&self, _: AgentloopIdentity) -> Result<AgentloopAdmission, ApiError> {
+    async fn get_agentloop(&self, _: AgentloopId) -> Result<AgentloopAdmission, ApiError> {
         Ok(admission())
     }
     async fn create_session(
@@ -139,7 +136,7 @@ impl BrainApi for Api {
     async fn call_environment(
         &self,
         _: SessionId,
-        _: EnvironmentId,
+        _: EnvironmentName,
         _: String,
         _: String,
         request: EnvironmentCallRequest,
@@ -173,7 +170,6 @@ impl BrainApi for Api {
             });
         }
         let events = matches!(after, 0 | 7).then(|| Event {
-            event_id: EventId::new("evt_test"),
             sequence: after + 1,
             recorded_at_ms: 1_787_846_400_000,
             event_type: "test_event".into(),
@@ -205,25 +201,25 @@ impl BrainApi for Api {
 async fn exposes_every_v1_route_with_its_contract_status() {
     let digest = "a".repeat(64);
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    // A create request in the execution shape: a tool declaring `needs`, `binding_names`,
-    // and its implementation, an environment carrying sealed binding values.
+    // A create request in the execution shape: a tool declaring what it needs and its
+    // implementation, placed in an environment reached over HTTP with a credential.
     let create = serde_json::json!({
-        "agentloop": {"identity": digest, "configuration": {}, "environment_id": "env_1"},
+        "agentloop": {"id": digest, "configuration": {}, "environment": "env_1"},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "tools": [{
             "name": "bash",
             "description": "Run a shell command.",
             "input_schema": {"type": "object"},
-            "needs": ["process", "fs"],
-            "binding_names": ["API_BASE"],
-            "hosting": "provisioned",
+            "needs": ["pkg:apt/bash", "file:///workspace?access=write"],
             "implementation": {"kind": "test"},
-            "environment_id": "env_1"
+            "environment": "env_1"
         }],
         "environments": [{
-            "environment_id": "env_1",
-            "configuration": {"driver": "test"},
-            "bindings": {"API_BASE": "https://api.internal"}
+            "name": "env_1",
+            "driver": "http",
+            "url": "https://sandbox.internal",
+            "credential": "sandbox-key",
+            "configuration": {"region": "eu"}
         }]
     });
     let cases = vec![
@@ -302,10 +298,10 @@ async fn mutating_routes_fail_fast_without_an_idempotency_key() {
 #[tokio::test]
 async fn request_bodies_reject_unknown_fields() {
     let digest = "a".repeat(64);
-    // `grant`, `configuration`, and `remote_tool_id` on a tool are the deleted v1
-    // fields; a client still sending them is told so instead of silently ignored.
+    // `hosting`, `binding_names`, and `host_id` on a tool are deleted fields; a client
+    // still sending them is told so instead of silently ignored.
     let create = serde_json::json!({
-        "agentloop": {"identity": digest, "configuration": {}},
+        "agentloop": {"id": digest, "configuration": {}, "environment": "env_1"},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
         "tools": [{
             "name": "bash",
@@ -313,13 +309,13 @@ async fn request_bodies_reject_unknown_fields() {
             "input_schema": {"type": "object"},
             "needs": [],
             "binding_names": [],
-            "environment_id": "env_1",
-            "remote_tool_id": "bash",
-            "configuration": {},
-            "grant": {}
+            "hosting": "resident",
+            "host_id": "host_12345678901234567890",
+            "environment": "env_1"
         }],
         "environments": [{
-            "environment_id": "env_1"
+            "name": "env_1",
+            "driver": "brain"
         }]
     });
     let response = router(Api::default())
@@ -391,7 +387,6 @@ async fn the_event_stream_starts_with_the_page_the_cursor_names() {
 async fn the_event_stream_drains_every_history_page_before_following_live() {
     let mut journal: Vec<Event> = (1..=1_002)
         .map(|sequence| Event {
-            event_id: EventId::new(format!("evt_{sequence}")),
             sequence,
             recorded_at_ms: 1_787_846_400_000 + sequence,
             event_type: "test_event".into(),
@@ -435,7 +430,6 @@ async fn a_terminal_cursor_and_a_failed_creation_close_the_event_stream() {
         (0, brain_protocol::codes::event::SESSION_CREATION_FAILED),
     ] {
         let journal = vec![Event {
-            event_id: EventId::new("evt_terminal"),
             sequence: 1,
             recorded_at_ms: 1_787_846_400_000,
             event_type: event_type.into(),
@@ -498,7 +492,7 @@ fn request(
 
 fn admission() -> AgentloopAdmission {
     AgentloopAdmission {
-        identity: AgentloopIdentity::new("a".repeat(64)),
+        id: AgentloopId::new("a".repeat(64)),
         status: AdmissionStatus::Admitted,
         error: None,
     }
@@ -513,7 +507,7 @@ fn session() -> SessionSummary {
 }
 
 #[tokio::test]
-async fn the_host_token_opens_exactly_the_resident_surface() {
+async fn the_host_token_opens_exactly_the_host_surface() {
     let build = || router_with_bearer(Api::default(), "secret".into());
     let authed = |uri: &str, method: &str, bearer: &str, body: Option<&str>| {
         let mut builder = Request::builder()
@@ -605,7 +599,7 @@ async fn the_host_stream_carries_typed_commands() {
     );
     assert!(
         !body.contains("id:"),
-        "resident commands are not replay cursors: {body}"
+        "host commands are not replay cursors: {body}"
     );
 }
 
@@ -649,7 +643,6 @@ async fn the_event_stream_carries_records_appended_after_it_opened() {
     live.send((
         SessionId::new("ses_test"),
         LiveEvent::Recorded(Event {
-            event_id: EventId::new("evt_live"),
             sequence: 2,
             recorded_at_ms: 1_787_846_400_001,
             event_type: "assistant_delta".into(),
@@ -661,7 +654,6 @@ async fn the_event_stream_carries_records_appended_after_it_opened() {
     live.send((
         SessionId::new("ses_other"),
         LiveEvent::Recorded(Event {
-            event_id: EventId::new("evt_other"),
             sequence: 3,
             recorded_at_ms: 1_787_846_400_002,
             event_type: "assistant_delta".into(),
@@ -739,7 +731,6 @@ async fn the_event_stream_carries_model_output_before_the_turn_finishes() {
     live.send((
         SessionId::new("ses_test"),
         LiveEvent::Recorded(Event {
-            event_id: EventId::new("evt_done"),
             sequence: 2,
             recorded_at_ms: 1_787_846_400_003,
             event_type: "model_call_ended".into(),

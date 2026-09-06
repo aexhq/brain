@@ -11,8 +11,8 @@ use axum::{
     routing::{MethodFilter, MethodRouter, on},
 };
 use brain_protocol::{
-    AgentloopAdmission, AgentloopIdentity, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentId, HostCommand, HostEvent, HostEventAck, HostId,
+    AgentloopAdmission, AgentloopId, CreateSessionRequest, EnvironmentCallRequest,
+    EnvironmentCallResult, EnvironmentName, HostCommand, HostEvent, HostEventAck, HostId,
     HostRegistration, HostResult, MessageRequest, SessionId, SessionList, SessionSummary,
     ToolAdmission,
 };
@@ -227,7 +227,7 @@ fn bearer(headers: &HeaderMap) -> Result<String, HttpError> {
     path = "/v1/hosts",
     operation_id = "registerHost",
     responses(
-        (status = 200, description = "Registered resident extension host", body = contract::HostRegistration),
+        (status = 200, description = "Registered host", body = contract::HostRegistration),
         (status = "default", description = "Structured error", body = contract::ApiError)
     )
 )]
@@ -243,7 +243,7 @@ async fn register_host<A: BrainApi>(
     operation_id = "hostCommands",
     params(("host_id" = contract::HostId, Path)),
     responses(
-        (status = 200, description = "Bounded send-once resident command stream", body = String, content_type = "text/event-stream"),
+        (status = 200, description = "Bounded send-once host command stream", body = String, content_type = "text/event-stream"),
         (status = "default", description = "Structured error", body = contract::ApiError)
     )
 )]
@@ -277,7 +277,7 @@ async fn host_commands<A: BrainApi>(
     params(("host_id" = contract::HostId, Path)),
     request_body = contract::HostResult,
     responses(
-        (status = 204, description = "Resident command result accepted"),
+        (status = 204, description = "Host command result accepted"),
         (status = "default", description = "Structured error", body = contract::ApiError)
     )
 )]
@@ -300,7 +300,7 @@ async fn resolve_host<A: BrainApi>(
     params(("host_id" = contract::HostId, Path)),
     request_body = contract::HostEvent,
     responses(
-        (status = 200, description = "Resident extension Event committed", body = contract::HostEventAck),
+        (status = 200, description = "Host Event committed", body = contract::HostEventAck),
         (status = "default", description = "Structured error", body = contract::ApiError)
     )
 )]
@@ -378,9 +378,9 @@ async fn admit_tool<A: BrainApi>(
 
 #[utoipa::path(
     get,
-    path = "/v1/agentloops/{identity}",
+    path = "/v1/agentloops/{id}",
     operation_id = "getAgentloop",
-    params(("identity" = contract::AgentloopIdentity, Path)),
+    params(("id" = contract::AgentloopId, Path)),
     responses(
         (status = 200, description = "Admission status", body = contract::AgentloopAdmission),
         (status = "default", description = "Structured error", body = contract::ApiError)
@@ -388,9 +388,9 @@ async fn admit_tool<A: BrainApi>(
 )]
 async fn get_agentloop<A: BrainApi>(
     State(api): State<A>,
-    Path(digest): Path<AgentloopIdentity>,
+    Path(id): Path<AgentloopId>,
 ) -> Result<Json<AgentloopAdmission>, HttpError> {
-    Ok(Json(api.get_agentloop(digest).await.map_err(HttpError)?))
+    Ok(Json(api.get_agentloop(id).await.map_err(HttpError)?))
 }
 
 fn idempotency_key(headers: &HeaderMap) -> Result<String, HttpError> {
@@ -500,11 +500,11 @@ async fn send_message<A: BrainApi>(
 
 #[utoipa::path(
     post,
-    path = "/v1/sessions/{session_id}/environments/{environment_id}/calls/{name}",
+    path = "/v1/sessions/{session_id}/environments/{environment}/calls/{name}",
     operation_id = "callEnvironment",
     params(
         ("session_id" = contract::SessionId, Path),
-        ("environment_id" = contract::EnvironmentId, Path),
+        ("environment" = contract::EnvironmentName, Path),
         ("name" = String, Path, pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"),
         ("Idempotency-Key" = String, Header, min_length = 1, max_length = 256)
     ),
@@ -516,14 +516,14 @@ async fn send_message<A: BrainApi>(
 )]
 async fn call_environment<A: BrainApi>(
     State(api): State<A>,
-    Path((session_id, environment_id, name)): Path<(SessionId, EnvironmentId, String)>,
+    Path((session_id, environment, name)): Path<(SessionId, EnvironmentName, String)>,
     headers: HeaderMap,
     Json(request): Json<EnvironmentCallRequest>,
 ) -> Result<Json<EnvironmentCallResult>, HttpError> {
     Ok(Json(
         api.call_environment(
             session_id,
-            environment_id,
+            environment,
             name,
             idempotency_key(&headers)?,
             request,

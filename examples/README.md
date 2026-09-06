@@ -10,7 +10,7 @@ These examples use the public TypeScript SDK and HTTP API against a locally runn
 | `raw-http.mjs` | Admit raw Agentloop Component bytes and run a session using only HTTP. |
 | `example-brain.mjs` | Wrap a compiled Agentloop Component in the SDK factory. |
 | `reference-agentloop/` | A Rust Agentloop Component written against Brain's public contracts alone. |
-| `lazy-environment.mjs` | A standalone Environment provider: logical setup, lazy allocation, idle expiry, explicit restart. |
+| `lazy-environment.mjs` | A standalone Environment: logical setup with needs, lazy allocation, idle expiry, explicit restart. |
 
 On Linux, from the repository root, install dependencies, build the SDK, and build the two Brain
 executables:
@@ -59,9 +59,10 @@ that is set:
 node examples/lazy-environment.mjs
 ```
 
-To route a driver name to it, start Brain with `BRAIN_ENVIRONMENT_ROUTES_FILE` naming a map like
-`environment-routes.json`. `npm test -w examples` runs its unit test for concurrent allocation,
-expiry, and explicit restart.
+A session reaches it by naming its address: an `environment({ url, credential })` factory in the
+SDK, or an entry `{ "name": "echo", "driver": "http", "url": "http://127.0.0.1:8090" }` in a raw
+create request. `npm test -w examples` runs its unit test for concurrent allocation, expiry, and
+explicit restart.
 
 `session.events(cursor)` reads the public Event projection from the canonical journal. It is not an external
 queue or an at-least-once delivery guarantee. Applications that forward events own their queue,

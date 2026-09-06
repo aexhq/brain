@@ -1,0 +1,19 @@
+{
+  "contract": "environment/v1",
+  "operation": {
+    "sequence": 3,
+    "environment": "sandbox",
+    "session_id": "ses_0123456789abcdefghij",
+    "request": {
+      "type": "setup",
+      "configuration": {
+        "region": "eu"
+      },
+      "needs": [
+        "file:///workspace?access=write",
+        "pkg:apt/ripgrep",
+        "https://api.example.com"
+      ]
+    }
+  }
+}

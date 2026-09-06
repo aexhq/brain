@@ -3,7 +3,6 @@
   "pages": [
     "write-a-loop",
     "write-a-tool",
-    "app-tools",
     "subagents",
     "write-an-environment",
     "embed"

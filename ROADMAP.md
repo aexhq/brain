@@ -1,31 +1,34 @@
 # Roadmap
 
 Brain is a standalone runtime. Applications and extensions supply product policy and infrastructure.
-The MVP keeps Tool and Environment bindings explicit and fixed at session creation.
+The MVP keeps Tool and Agentloop placements explicit and fixed at session creation.
 
 - [x] The four-part runtime: agent loop, model, tools, environment
 - [x] Raw WebAssembly Components supplied with `component(...)`
 - [x] Explicit Agentloop and Tool placement with `{ env, ...options }`
 - [x] One canonical per-session journal with disposable projections
 - [x] Effect-after-commit with no automatic retries
-- [x] Logical Environment setup/attachment; providers own lazy allocation and resource TTL
-- [x] Typed content identity
+- [x] Logical Environment setup with the needs of everything placed there; Environments own lazy allocation and resource TTL
+- [x] Content-addressed Agentloop and Tool Components
 - [x] HTTP/SSE session API and the `@aexhq/brain` SDK
 - [x] Remote Environment contract and `env-aws-microvm`
-- [x] `brainWasm` placement with deployment-granted HTTP, secrets, scratch, and workspace access
-- [x] Resident Tool host over SSE with durable `ctx.emit`
+- [x] One Environment protocol for Brain's own brain env, the host env, and Environments reached over HTTP, each instance configured by the application
+- [x] Tools and Agentloops declare what they need as URIs; the brain env grants exactly that, bounded by deployment allow-lists
+- [x] The host env over SSE with durable `ctx.emit`
 - [x] Cross-session native workspace isolation test
 - [x] Public SDK user journeys against real servers and workers, with isolated suites running in parallel
 - [ ] Native subagent support, parent and child links between sessions
-- [ ] Post-MVP official `tool-env` Tool extension: inspect the session's Tool bindings and Environment
-  status, expose failures to the Agentloop for model-directed recovery, and request binding
+- [ ] Agentloops running in an Environment reached over HTTP: Brain's turn services as session
+  routes with a per-turn token, so a loop can run on another server
+- [ ] Post-MVP official `tool-env` Tool extension: inspect the session's placements and Environment
+  status, expose failures to the Agentloop for model-directed recovery, and request placement
   changes and supported Environment lifecycle operations such as restart within explicitly
   granted session authority; journal mutations and their outcomes
-- [ ] Post-MVP mutable Tool and Environment bindings: committed changes apply to subsequent calls,
-  including within a turn; already-dispatched calls retain their original target. MVP Tools require
-  explicit execution bindings, fixed at session creation
-- [ ] Post-MVP optional Brain-selected execution placement for Tools without an explicit
-  Environment binding, within caller-granted authority; MVP placement remains explicit
+- [ ] Post-MVP mutable placements: committed changes apply to subsequent calls, including within
+  a turn; already-dispatched calls retain their original target. MVP placements are explicit and
+  fixed at session creation
+- [ ] Post-MVP optional Brain-selected placement for Tools without an explicit Environment, within
+  caller-granted authority; MVP placement remains explicit
 - [x] Official Agentloop extensions expose Tool failures, Environment status, expiry, and
   resource loss to the model; Agentloop policy decides recovery without runtime retries
 - [x] Record interrupted turns as session Events that Agentloops can read and include in their
@@ -39,7 +42,7 @@ The MVP keeps Tool and Environment bindings explicit and fixed at session creati
 - [x] Separate extension artifact admission and compilation from session creation; reuse
   compatible compiled artifacts and invocation templates
 - [x] Environment extensions can prepare resources lazily on invocation and own TTL and cleanup
-  policy; attach need not provision compute, and expired resources need not be restored
+  policy; setup need not provision compute, and expired resources need not be restored
 - [x] Per-session live subscriptions, independent of Agentloop activation
 - [ ] Post-MVP configurable resource admission, memory and compiled-code cache budgets, and
   fair scheduling for deployments running mutually untrusted extensions

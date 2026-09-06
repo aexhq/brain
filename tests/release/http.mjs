@@ -38,18 +38,14 @@ const admission = await request(
 );
 assert.equal(admission.status, "admitted");
 const session = await request("POST", "/v1/sessions", {
-  agentloop: { identity: admission.identity, configuration: {}, environment_id: "env_native" },
+  agentloop: { id: admission.id, configuration: {}, environment: "brain" },
   model: {
     provider: "vercel-ai-gateway",
     name: "openai/gpt-5-mini",
     api_key: "release-smoke-key",
   },
   tools: [],
-  environments: [{
-    environment_id: "env_native",
-    configuration: { driver: "brain_wasm", network: { allow: [] }, filesystem: { workspace: false }, secrets: [] },
-    bindings: {},
-  }],
+  environments: [{ name: "brain", driver: "brain" }],
 });
 assert.equal(session.status, "idle");
 assert.equal((await request("GET", `/v1/sessions/${session.session_id}`)).session_id, session.session_id);

@@ -103,7 +103,6 @@ impl WorkerService {
             WorkerRequest::Tool {
                 digest,
                 environment,
-                call_id,
                 input,
                 configuration,
                 deadline_at_ms,
@@ -113,7 +112,6 @@ impl WorkerService {
                     digest.as_str(),
                     environment,
                     NativeToolInput {
-                        call_id,
                         input,
                         configuration,
                         deadline_at_ms,
@@ -400,13 +398,8 @@ mod tests {
         write_frame(
             &mut client,
             &WorkerRequest::Turn {
-                digest: brain_protocol::AgentloopIdentity::new("agl_missing"),
-                environment: NativeEnvironment {
-                    scratch: false,
-                    workspace: None,
-                    network_allow: Vec::new(),
-                    secrets: Default::default(),
-                },
+                digest: brain_protocol::AgentloopId::new("agl_missing"),
+                environment: NativeEnvironment::default(),
                 input: Box::new(input()),
             },
             MAX_RESPONSE_FRAME_BYTES,

@@ -1,7 +1,7 @@
 # ADR-040: Identify records by session and sequence, and everything inside a session by name
 
 - Decision date: 2026-09-05
-- Status: Proposed
+- Status: Accepted
 - Compiled: 2026-09-05
 
 Extends: [ADR-020: Name effects by session and sequence, with one lifecycle vocabulary](2026-09-02-03-record-identity.md); [ADR-024: Use one SessionConfig and keep hashes local to their actual purpose](2026-09-04-02-simple-config.md).

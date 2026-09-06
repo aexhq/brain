@@ -1,6 +1,6 @@
 import { inspect } from "node:util";
 
-import { Brain, brainWasm } from "@aexhq/brain";
+import { Brain, brainEnv } from "@aexhq/brain";
 import { example } from "./example-brain.mjs";
 
 const apiKey = process.env.VERCEL_AI_GATEWAY_API_KEY;
@@ -17,7 +17,7 @@ const session = await brain.sessions.create({
     name: process.env.BRAIN_MODEL ?? "openai/gpt-5-mini",
     apiKey,
   },
-  agentloop: example({ env: brainWasm() }),
+  agentloop: example({ env: brainEnv({ name: "brain" }) }),
   system: "Answer briefly and directly.",
 });
 

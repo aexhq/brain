@@ -4,6 +4,8 @@
 - Status: Accepted
 - Compiled: 2026-09-05
 
+Amended by: [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md), which removes the random attachment identifiers this record kept.
+
 ## Context
 
 Requested/resolved/sealed variants duplicated nearly identical configuration types. Fingerprints and attachment digests were sent or compared without a meaningful independent consumer.

@@ -4,33 +4,32 @@ description: The placed WebAssembly Component that owns a turn's policy.
 ---
 
 An Agentloop decides how one user message becomes a completed turn. Brain owns mechanism: the
-journal, model binding, Tool catalogue, effect dispatch, deadlines, and cancellation. The
+journal, model credential, Tool catalogue, effect dispatch, deadlines, and cancellation. The
 Agentloop owns policy: prompts, context selection, compaction, Tool sequencing, and the final
 transcript and extension state.
 
-## Bind a Component
+## Place a Component
 
 Brain accepts an already-built WebAssembly Component. It does not compile TypeScript or another
 source language.
 
 ```ts
-import { agentloop, brainWasm, component } from "@aexhq/brain";
+import { agentloop, brainEnv, component } from "@aexhq/brain";
 import { z } from "zod";
 
 const assistant = agentloop({
   options: z.object({ compactAt: z.number().min(0).max(1) }),
   implementation: component(new URL("./assistant.wasm", import.meta.url)),
+  needs: ["https://models.example.com"],
 });
 
-const bound = assistant({
-  env: brainWasm({ network: { allow: ["api.example.com"] } }),
-  compactAt: 0.8,
-});
+const placed = assistant({ env: brainEnv({ name: "brain" }), compactAt: 0.8 });
 ```
 
-`component(...)` accepts a `URL` or `Uint8Array`. The client reads the raw bytes, admits them by
-content identity, and then creates the session with that identity, the parsed options, and the
-selected Environment. Every Agentloop factory is placed with `{ env, ...options }`.
+`component(...)` accepts a `URL` or `Uint8Array`. The client reads the raw bytes, admits them, and
+creates the session with the resulting id, the parsed options, and the Environment. Every Agentloop
+factory is placed with `{ env, ...options }`, and the loop declares `needs` exactly as a Tool does:
+they join the others at setup, and its id and needs arrive with every turn.
 
 ## The Component contract
 
@@ -46,25 +45,16 @@ During the activation it may call Brain's `events`, `model`, `dispatch`, `emit`,
 `model`, `dispatch`, and `emit` cross the Brain boundary. Brain commits an external-effect intent
 before dispatch, sends it once, and commits its terminal or unknown outcome before returning it.
 
-The Component returns the transcript and slots to keep. Brain journals their changes; every turn uses a fresh Wasm
-instance, while compiled and prelinked code is reused.
+The Component returns the transcript and slots to keep. Brain journals their changes; every turn
+uses a fresh Wasm instance, while compiled and prelinked code is reused.
 
-## Placement and capabilities
+## Where it runs
 
-`brainWasm(...)` is Brain's built-in Component Environment. It creates a fresh Wasmtime instance
-per activation and exposes only the capabilities selected on that Environment:
-
-```ts
-const isolated = brainWasm({
-  network: { allow: ["https://models.example.com"] },
-  filesystem: { workspace: true },
-  secrets: ["COMPACTION_KEY"],
-});
-```
-
-The current server executes Agentloops only in `brainWasm(...)`. The factory still requires an
-explicit `env` so the placement is sealed into the session instead of inferred. Brain does not
-fall back to another placement after failure.
+An Agentloop may be placed in any Environment. The brain env runs it in a fresh Wasmtime instance
+per activation with exactly the grants its `needs` name, the same way it runs a Tool. An
+Environment reached over HTTP answers a turn as unsupported until Brain's turn services are
+reachable from another process. The factory always requires an explicit `env` so the placement is
+sealed into the session instead of inferred; Brain does not fall back to another placement.
 
 ## State and failures
 

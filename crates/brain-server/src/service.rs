@@ -13,11 +13,12 @@ use brain_loophost::LoopError;
 use brain_loophost::WorkerPool;
 use brain_protocol::codes;
 use brain_protocol::{
-    AdmissionStatus, AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest,
-    EnvironmentAttachment, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentId, EventPage,
-    HostEvent, HostEventAck, HostId, HostRegistration, HostResult, MessageRequest, ModelBinding,
+    AdmissionStatus, AgentloopAdmission, AgentloopId, AgentloopRef, ApiError, CreateSessionRequest,
+    Driver, Environment, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName,
+    EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest, EventPage, HostEvent,
+    HostEventAck, HostId, HostRegistration, HostResult, MessageRequest, ModelBinding,
     SessionConfig, SessionId, SessionList, SessionStatus, SessionSummary, ToolAdmission,
-    ToolAdmissionStatus, ToolBinding, ToolDefinition, ToolHosting, ToolIdentity,
+    ToolAdmissionStatus,
 };
 use tokio::sync::Mutex;
 
@@ -25,7 +26,7 @@ use tokio::sync::Mutex;
 #[path = "session_tests.rs"]
 mod session_tests;
 
-use crate::{EnvironmentRegistry, IdempotencyStore, ModelBindingStore};
+use crate::{CredentialStore, EnvironmentRegistry, IdempotencyStore, Services};
 
 pub struct ServerResources {
     /// Where every session's directory lives.
@@ -41,15 +42,14 @@ pub struct ServerResources {
     pub session_idle_ttl: Option<Duration>,
     /// Answers already given to keyed requests, so a retry replays instead of repeats.
     pub idempotency: IdempotencyStore,
+    /// Admits Agentloop and Tool Components; the brain env runs them.
     pub loops: Arc<WorkerPool>,
     pub environments: Arc<EnvironmentRegistry>,
-    pub resident_hosts: crate::ResidentHosts,
-    pub models: Arc<dyn ModelBindingStore>,
+    /// What the server knows about a session that its records do not: the credentials
+    /// it calls its model and its Environments with.
+    pub credentials: Arc<dyn CredentialStore>,
     /// The composed provider set this deployment admits sessions against.
     pub providers: Arc<brain::model::ProviderRegistry>,
-    /// What the server knows about a session that its records do not: the credential it
-    /// calls a model with.
-    pub metadata: Arc<crate::metadata::ServerMetadata>,
 }
 
 #[derive(Clone)]
@@ -227,24 +227,8 @@ impl ServerApi {
         store: Arc<LocalSessionStore>,
         session: Option<Session>,
     ) -> Result<(), ApiError> {
-        let config = brain::session_config(&*store).ok();
-        if let Some(config) = &config
-            && !matches!(
-                store.session_summary().map_err(api_error)?.status,
-                SessionStatus::Failed
-            )
-        {
-            let hosts = config
-                .tool_bindings
-                .iter()
-                .filter_map(|tool| tool.host_id.clone())
-                .collect::<Vec<_>>();
-            self.resources
-                .resident_hosts
-                .bind_session(store.session_id(), &hosts)?;
-        }
-        let idle_ttl = config
-            .as_ref()
+        let idle_ttl = brain::session_config(&*store)
+            .ok()
             .and_then(|config| config.idle_ttl_ms)
             .map(Duration::from_millis)
             .or(self.resources.session_idle_ttl);
@@ -389,30 +373,16 @@ impl ServerApi {
         serde_json::from_value(value).map_err(|error| internal(error.to_string()))
     }
 
-    async fn cleanup_environments(
-        &self,
-        environment_ids: &[EnvironmentId],
-        store: &dyn SessionStore,
-    ) {
-        for environment_id in environment_ids.iter().rev() {
-            if self
-                .resources
-                .environments
-                .resources()
-                .get(environment_id)
-                .ok()
-                .flatten()
-                .is_some_and(|record| &record.session_id != store.session_id())
-            {
-                continue;
-            }
+    /// Tears down the Environments a failed create had already set up, last first.
+    async fn cleanup_environments(&self, environments: &[Environment], store: &dyn SessionStore) {
+        for environment in environments.iter().rev() {
             if let Err(error) = self
                 .resources
                 .environments
-                .close(environment_id, store, false)
+                .close(environment, store, false)
                 .await
             {
-                tracing::warn!(%environment_id, %error, "failed to clean up Environment after session admission");
+                tracing::warn!(environment = %environment.name, %error, "failed to clean up Environment after session admission");
             }
         }
     }
@@ -421,7 +391,7 @@ impl ServerApi {
 #[async_trait]
 impl BrainApi for ServerApi {
     async fn register_host(&self) -> Result<HostRegistration, ApiError> {
-        self.resources.resident_hosts.register()
+        self.resources.environments.hosts().register()
     }
 
     async fn connect_host(
@@ -429,7 +399,10 @@ impl BrainApi for ServerApi {
         host_id: HostId,
         token: String,
     ) -> Result<brain_http::HostConnection, ApiError> {
-        self.resources.resident_hosts.connect(&host_id, &token)
+        self.resources
+            .environments
+            .hosts()
+            .connect(&host_id, &token)
     }
 
     async fn resolve_host(
@@ -439,7 +412,8 @@ impl BrainApi for ServerApi {
         result: HostResult,
     ) -> Result<(), ApiError> {
         self.resources
-            .resident_hosts
+            .environments
+            .hosts()
             .resolve(&host_id, &token, result)
     }
 
@@ -450,7 +424,8 @@ impl BrainApi for ServerApi {
         event: HostEvent,
     ) -> Result<HostEventAck, ApiError> {
         self.resources
-            .resident_hosts
+            .environments
+            .hosts()
             .emit(&host_id, &token, event)
             .await
     }
@@ -470,14 +445,14 @@ impl BrainApi for ServerApi {
         {
             return Self::replay(saved);
         }
-        let identity = self
+        let id = self
             .resources
             .loops
             .admit(package.clone())
             .await
             .map_err(loop_error)?;
         let admission = AgentloopAdmission {
-            identity,
+            id,
             status: AdmissionStatus::Admitted,
             error: None,
         };
@@ -508,14 +483,14 @@ impl BrainApi for ServerApi {
         {
             return Self::replay(saved);
         }
-        let identity = self
+        let id = self
             .resources
             .loops
             .admit_tool(component.clone())
             .await
             .map_err(loop_error)?;
         let admission = ToolAdmission {
-            identity,
+            id,
             status: ToolAdmissionStatus::Admitted,
             error: None,
         };
@@ -531,26 +506,17 @@ impl BrainApi for ServerApi {
         Ok(admission)
     }
 
-    async fn get_agentloop(
-        &self,
-        identity: AgentloopIdentity,
-    ) -> Result<AgentloopAdmission, ApiError> {
-        if !valid_identity(identity.as_str()) {
+    async fn get_agentloop(&self, id: AgentloopId) -> Result<AgentloopAdmission, ApiError> {
+        if !valid_sha256(id.as_str()) {
             return Err(ApiError::invalid_request(
                 "an Agentloop is named by 64 lowercase hexadecimal characters",
             ));
         }
-        if !self
-            .resources
-            .loops
-            .status(&identity)
-            .await
-            .map_err(loop_error)?
-        {
+        if !self.resources.loops.status(&id).await.map_err(loop_error)? {
             return Err(not_found("Agentloop is not admitted"));
         }
         Ok(AgentloopAdmission {
-            identity,
+            id,
             status: AdmissionStatus::Admitted,
             error: None,
         })
@@ -561,40 +527,12 @@ impl BrainApi for ServerApi {
         idempotency_key: String,
         request: CreateSessionRequest,
     ) -> Result<SessionSummary, ApiError> {
-        let Some(agentloop_environment) = request
-            .environments
-            .iter()
-            .find(|environment| environment.environment_id == request.agentloop.environment_id)
-        else {
-            return Err(ApiError::invalid_request(
-                "the Agentloop must name an Environment in this session",
-            ));
-        };
-        if agentloop_environment
-            .configuration
-            .get("driver")
-            .and_then(serde_json::Value::as_str)
-            != Some("brain_wasm")
-        {
-            return Err(ApiError::invalid_request(
-                "the MVP executes Agentloops only in the brain_wasm Environment",
-            ));
-        }
+        validate_model(&request, &self.resources.providers)?;
         for environment in &request.environments {
-            if environment
-                .configuration
-                .get("driver")
-                .and_then(serde_json::Value::as_str)
-                == Some("brain_wasm")
-            {
-                self.resources
-                    .loops
-                    .validate_native_environment(&environment.configuration)
-                    .map_err(loop_error)?;
+            if let Driver::Http { url, .. } = &environment.driver {
+                crate::environment::validate_url(url).map_err(api_error)?;
             }
         }
-        validate_agentloop_identity(&request.agentloop.identity)?;
-        validate_model(&request, &self.resources.providers)?;
         let lock = self.idempotency_lock("create_session", &idempotency_key)?;
         let _guard = lock.lock().await;
         if let Some(saved) = self
@@ -605,70 +543,41 @@ impl BrainApi for ServerApi {
         {
             return Self::replay(saved);
         }
-        if !self
-            .resources
-            .loops
-            .status(&request.agentloop.identity)
-            .await
-            .map_err(loop_error)?
-        {
-            return Err(ApiError::invalid_request(
-                "session Agentloop has not been admitted",
-            ));
-        }
-        for tool in &request.tools {
-            let Some(identity) = native_tool_identity(&request, tool)? else {
-                continue;
-            };
-            if !self
-                .resources
-                .loops
-                .tool_status(&identity)
-                .await
-                .map_err(loop_error)?
-            {
-                return Err(ApiError::invalid_request(
-                    "session Tool has not been admitted",
-                ));
-            }
-        }
-        for host_id in request
-            .tools
-            .iter()
-            .filter_map(|tool| tool.host_id.as_ref())
-        {
-            if !self.resources.resident_hosts.is_connected(host_id)? {
-                return Err(ApiError::invalid_request(
-                    "a resident Tool host is not connected",
-                ));
-            }
-        }
         let session_id = SessionId::new(brain::random_id("ses"));
         let session_lock = self.session_lock(&session_id)?;
         let _session_guard = session_lock.lock().await;
         let store_lock = self.store_locks.acquire(session_id.clone())?;
         let store_guard = store_lock.lock().await;
-        let binding_id = format!("model_{session_id}");
-        self.resources
-            .models
-            .put(&binding_id, &request.model)
+        // Credentials are sealed under the session before anything is journalled, and
+        // the configuration that is journalled never holds them.
+        let credentials = &self.resources.credentials;
+        credentials
+            .put_model(&session_id, &request.model)
             .map_err(api_error)?;
-        let (tools, tool_bindings) = split_tools(&request);
-        let (environments, binding_values) = attachments_for(&request);
+        let mut environments = request.environments.clone();
+        for environment in &mut environments {
+            if let Driver::Http { credential, .. } = &mut environment.driver
+                && let Some(credential) = credential.take()
+            {
+                credentials
+                    .put_environment(&session_id, &environment.name, &credential)
+                    .map_err(api_error)?;
+            }
+        }
         let config = SessionConfig {
-            agentloop_identity: request.agentloop.identity.clone(),
-            agentloop_environment_id: request.agentloop.environment_id.clone(),
-            brain_configuration: request.agentloop.configuration.clone(),
+            agentloop: request.agentloop.clone(),
             model: ModelBinding {
-                binding_id: binding_id.clone(),
-                model: request.model.name.clone(),
+                provider: request.model.provider.clone(),
+                name: request.model.name.clone(),
             },
             system: request.system.clone(),
             response_format: request.response_format.clone(),
-            tools,
+            tools: request.tools.clone(),
             environments,
-            tool_bindings,
             idle_ttl_ms: request.idle_ttl_ms,
+        };
+        let forget = || {
+            let _ = credentials.forget(&session_id);
         };
         let store = LocalSessionStore::create(
             &self.resources.sessions_dir.join(session_id.as_str()),
@@ -678,7 +587,7 @@ impl BrainApi for ServerApi {
             self.resources.feed.clone(),
         )
         .map_err(|error| {
-            let _ = self.resources.models.delete(&binding_id);
+            forget();
             api_error(error)
         })?;
         let mut creation = match Session::begin(
@@ -692,75 +601,42 @@ impl BrainApi for ServerApi {
                 // Nothing was admitted: the directory holds at most a genesis record
                 // for a session that never existed.
                 let _ = std::fs::remove_dir_all(store.directory());
-                let _ = self.resources.models.delete(&binding_id);
+                forget();
                 return Err(api_error(error));
             }
         };
         self.cache_store(&store)?;
         drop(store_guard);
-        let host_ids = request
-            .tools
-            .iter()
-            .filter_map(|tool| tool.host_id.clone())
-            .collect::<Vec<_>>();
-        if let Err(error) = self
-            .resources
-            .resident_hosts
-            .bind_session(&session_id, &host_ids)
-        {
-            creation
-                .fail(
-                    codes::failure::ENVIRONMENT_PREPARATION_FAILED,
-                    &error.message,
-                )
-                .map_err(api_error)?;
-            self.insert_slot(store, None)?;
-            self.resources
-                .models
-                .delete(&binding_id)
-                .map_err(api_error)?;
-            return Err(error);
-        }
-        let mut created_environments = Vec::with_capacity(request.environments.len());
-        for specification in &request.environments {
-            match self
+        // Each Environment is set up with the needs of everything placed in it, in
+        // declaration order; the first refusal fails the create and tears down the rest.
+        let mut ready = Vec::with_capacity(config.environments.len());
+        for environment in &config.environments {
+            let needs = needs_for(&config, &environment.name);
+            if let Err(error) = self
                 .resources
                 .environments
-                .create_for_session(&mut creation, specification)
+                .setup(&mut creation, environment, needs)
                 .await
             {
-                Ok(record) => created_environments.push(record.environment_id),
-                Err(error) => {
-                    created_environments.push(specification.environment_id.clone());
-                    creation
-                        .fail(
-                            codes::failure::ENVIRONMENT_PREPARATION_FAILED,
-                            &error.to_string(),
-                        )
-                        .map_err(api_error)?;
-                    self.insert_slot(store.clone(), None)?;
-                    let _ = self.resources.models.delete(&binding_id);
-                    self.cleanup_environments(&created_environments, &*store)
-                        .await;
-                    return Err(api_error(error));
-                }
+                creation
+                    .fail(
+                        codes::failure::ENVIRONMENT_PREPARATION_FAILED,
+                        &error.to_string(),
+                    )
+                    .map_err(api_error)?;
+                self.insert_slot(store.clone(), None)?;
+                forget();
+                self.cleanup_environments(&ready, &*store).await;
+                return Err(api_error(error));
             }
+            ready.push(environment.clone());
         }
-        let prepared = self
-            .resources
-            .environments
-            .prepare_session(creation, config, binding_values)
-            .await;
-        let (session, _) = match prepared {
-            Ok(prepared) => prepared,
+        let session = match creation.complete(config) {
+            Ok(session) => session,
             Err(error) => {
                 self.insert_slot(store.clone(), None)?;
-                self.resources
-                    .models
-                    .delete(&binding_id)
-                    .map_err(api_error)?;
-                self.cleanup_environments(&created_environments, &*store)
-                    .await;
+                forget();
+                self.cleanup_environments(&ready, &*store).await;
                 return Err(api_error(error));
             }
         };
@@ -886,7 +762,7 @@ impl BrainApi for ServerApi {
     async fn call_environment(
         &self,
         session_id: SessionId,
-        environment_id: EnvironmentId,
+        environment: EnvironmentName,
         name: String,
         idempotency_key: String,
         request: EnvironmentCallRequest,
@@ -898,8 +774,8 @@ impl BrainApi for ServerApi {
         }
         let lock = self.session_lock(&session_id)?;
         let _guard = lock.lock().await;
-        let scope = format!("session:{session_id}:environment:{environment_id}:call:{name}");
-        let call = (environment_id.clone(), name.clone(), request.clone());
+        let scope = format!("session:{session_id}:environment:{environment}:call:{name}");
+        let call = (environment.clone(), name.clone(), request.clone());
         if let Some(saved) = self
             .resources
             .idempotency
@@ -913,7 +789,7 @@ impl BrainApi for ServerApi {
         let result = self
             .resources
             .environments
-            .call(&session, &*store, &environment_id, name, request.input)
+            .call(&session, &*store, &environment, name, request.input)
             .await
             .map_err(api_error)?;
         self.resources
@@ -1061,39 +937,22 @@ impl BrainApi for ServerApi {
         let store = self.store(&session_id).await?;
         store.ensure_deletable().map_err(api_error)?;
         let config = brain::session_config(&*store).map_err(api_error)?;
-        let binding_id = config.model.binding_id;
         for environment in config.environments.iter().rev() {
-            if self
-                .resources
-                .environments
-                .resources()
-                .get(&environment.environment_id)
-                .map_err(api_error)?
-                .is_some_and(|record| record.session_id != session_id)
-            {
-                continue;
-            }
             self.resources
                 .environments
-                .close(&environment.environment_id, &*store, true)
+                .close(environment, &*store, true)
                 .await
                 .map_err(api_error)?;
         }
-        self.resources
-            .loops
-            .remove_workspace(session_id.as_str())
-            .await
-            .map_err(|error| internal(error.to_string()))?;
         store.delete().map_err(api_error)?;
         self.resources
-            .models
-            .delete(&binding_id)
+            .credentials
+            .forget(&session_id)
             .map_err(api_error)?;
         self.sessions
             .lock()
             .map_err(|_| internal("session table is poisoned"))?
             .remove(&session_id);
-        self.resources.resident_hosts.release_session(&session_id)?;
         self.resources
             .idempotency
             .put(&scope, &idempotency_key, &request, &serde_json::json!({}))
@@ -1110,158 +969,87 @@ impl BrainApi for ServerApi {
     }
 }
 
-pub struct WorkerLoopExecutor(pub Arc<WorkerPool>);
+/// Runs each turn in the Environment the Agentloop names, through the same interface
+/// every other operation on that Environment uses.
+pub struct EnvironmentLoopExecutor(pub Arc<EnvironmentRegistry>);
 
 #[async_trait]
-impl LoopExecutor for WorkerLoopExecutor {
+impl LoopExecutor for EnvironmentLoopExecutor {
     async fn turn(
         &self,
-        session: &brain_protocol::SessionId,
-        agentloop: &AgentloopIdentity,
-        environment: serde_json::Value,
+        session: &SessionId,
+        sequence: u64,
+        agentloop: &AgentloopRef,
+        environment: &Environment,
         input: brain_protocol::TurnInput,
         services: Arc<dyn brain::TurnServices>,
     ) -> Result<brain_protocol::TurnOutput, brain::Error> {
-        let bridge = ServicesBridge(services);
-        self.0
-            .turn(
-                session.as_str().to_owned(),
-                agentloop.clone(),
-                environment,
-                input,
-                &bridge,
-            )
-            .await
-            .map_err(|error| match error {
-                LoopError::Overloaded => brain::Error::Overloaded(error.to_string()),
-                LoopError::Turn(error) if error.code == codes::failure::CANCELLED => {
-                    brain::Error::Cancelled(error.message)
-                }
-                LoopError::Turn(error) => brain::Error::Loop(error),
-                LoopError::Failed(message) => brain::Error::Executor(message),
-            })
-    }
-}
-
-/// Brain's services as the worker's guest reaches them: JSON in, JSON out, one call at a
-/// time.
-struct ServicesBridge(Arc<dyn brain::TurnServices>);
-
-#[async_trait]
-impl brain_loophost::TurnBridge for ServicesBridge {
-    async fn call(
-        &self,
-        call: brain_loophost::HostCall,
-    ) -> Result<String, brain_protocol::TurnError> {
-        use brain_loophost::HostCall;
-        let answer = match call {
-            HostCall::Events { after } => {
-                let page = self.0.events(after).await.map_err(turn_error)?;
-                serde_json::to_string(&page).map_err(|error| bridge_error("internal", error))?
-            }
-            HostCall::Model { request_json } => {
-                let request = serde_json::from_str(&request_json)
-                    .map_err(|error| bridge_error("invalid_request", error))?;
-                let result = self.0.model(request).await.map_err(turn_error)?;
-                serde_json::to_string(&result).map_err(|error| bridge_error("internal", error))?
-            }
-            HostCall::Dispatch { calls_json } => {
-                let calls = serde_json::from_str(&calls_json)
-                    .map_err(|error| bridge_error("invalid_request", error))?;
-                let results = self.0.dispatch(calls).await.map_err(turn_error)?;
-                serde_json::to_string(&results).map_err(|error| bridge_error("internal", error))?
-            }
-            HostCall::Emit { kind, payload_json } => {
-                let payload = serde_json::from_str(&payload_json)
-                    .map_err(|error| bridge_error("invalid_request", error))?;
-                self.0
-                    .emit(kind, payload)
-                    .await
-                    .map_err(turn_error)?
-                    .to_string()
-            }
-            HostCall::Telemetry { record_json } => {
-                if let Ok(record) = serde_json::from_str(&record_json) {
-                    self.0.telemetry(record);
-                }
-                String::new()
-            }
+        let operation = EnvironmentOperation {
+            sequence,
+            environment: environment.name.clone(),
+            session_id: session.clone(),
+            request: EnvironmentRequest::Turn {
+                id: agentloop.id.clone(),
+                needs: agentloop.needs.clone(),
+                input: Box::new(input),
+            },
         };
-        Ok(answer)
-    }
-
-    fn cancelled(&self) -> bool {
-        self.0.cancelled()
+        match self
+            .0
+            .execute(environment, &operation, Services::Turn(&services))
+            .await?
+        {
+            EnvironmentReceipt::Turned { output } => Ok(output),
+            EnvironmentReceipt::Failure {
+                code,
+                message,
+                retryable,
+            } => {
+                if code == codes::failure::CANCELLED {
+                    return Err(brain::Error::Cancelled(message));
+                }
+                Err(brain::Error::Loop(brain_protocol::TurnError {
+                    code,
+                    message,
+                    retryable,
+                }))
+            }
+            EnvironmentReceipt::Unknown { message } => Err(brain::Error::Ambiguous(message)),
+            _ => Err(brain::Error::Executor(
+                "Environment returned a nonterminal turn receipt".into(),
+            )),
+        }
     }
 }
 
-fn turn_error(error: brain::Error) -> brain_protocol::TurnError {
-    brain_protocol::TurnError {
-        code: error.code().to_owned(),
-        message: error.to_string(),
-        retryable: error.retryable(),
+/// Every need of everything placed in the named Environment, in declaration order,
+/// each once.
+fn needs_for(config: &SessionConfig, environment: &EnvironmentName) -> Vec<String> {
+    let mut needs = Vec::new();
+    let placed = config
+        .tools
+        .iter()
+        .filter(|tool| &tool.environment == environment)
+        .flat_map(|tool| tool.needs.iter())
+        .chain(
+            (&config.agentloop.environment == environment)
+                .then_some(config.agentloop.needs.iter())
+                .into_iter()
+                .flatten(),
+        );
+    for need in placed {
+        if !needs.contains(need) {
+            needs.push(need.clone());
+        }
     }
+    needs
 }
 
-fn bridge_error(code: &str, error: impl std::fmt::Display) -> brain_protocol::TurnError {
-    brain_protocol::TurnError::new(code, error.to_string())
-}
-
-fn valid_identity(value: &str) -> bool {
+fn valid_sha256(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn validate_agentloop_identity(identity: &AgentloopIdentity) -> Result<(), ApiError> {
-    if !valid_identity(identity.as_str()) {
-        return Err(ApiError::invalid_request(
-            "session Agentloop identity must be 64 lowercase hexadecimal characters",
-        ));
-    }
-    Ok(())
-}
-
-fn native_tool_identity(
-    request: &CreateSessionRequest,
-    tool: &brain_protocol::BoundTool,
-) -> Result<Option<ToolIdentity>, ApiError> {
-    if tool.hosting != ToolHosting::Provisioned {
-        return Ok(None);
-    }
-    let Some(environment_id) = tool.environment_id.as_ref() else {
-        return Ok(None);
-    };
-    let native = request.environments.iter().any(|environment| {
-        &environment.environment_id == environment_id
-            && environment
-                .configuration
-                .get("driver")
-                .and_then(serde_json::Value::as_str)
-                == Some("brain_wasm")
-    });
-    if !native {
-        return Ok(None);
-    }
-    let identity = tool
-        .implementation
-        .as_ref()
-        .filter(|implementation| {
-            implementation
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                == Some("brain_component")
-        })
-        .and_then(|implementation| implementation.get("identity"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|identity| valid_identity(identity))
-        .ok_or_else(|| {
-            ApiError::invalid_request(
-                "a Tool in the brain_wasm Environment requires a brain_component implementation with a 64-character lowercase hexadecimal identity",
-            )
-        })?;
-    Ok(Some(ToolIdentity::new(identity)))
 }
 
 fn valid_identifier(value: &str) -> bool {
@@ -1270,61 +1058,6 @@ fn valid_identifier(value: &str) -> bool {
         && value.bytes().enumerate().all(|(index, byte)| {
             byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
         })
-}
-
-/// Splits each wire tool back into its two internal halves: what the model may be told
-/// (`ToolDefinition`) and where the call goes (`ToolBinding`). The session still
-/// validates the split result against the session contract.
-fn split_tools(request: &CreateSessionRequest) -> (Vec<ToolDefinition>, Vec<ToolBinding>) {
-    let mut definitions = Vec::with_capacity(request.tools.len());
-    let mut bindings = Vec::with_capacity(request.tools.len());
-    for tool in &request.tools {
-        definitions.push(ToolDefinition {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            input_schema: tool.input_schema.clone(),
-            output_schema: tool.output_schema.clone(),
-        });
-        bindings.push(ToolBinding {
-            name: tool.name.clone(),
-            environment_id: tool.environment_id.clone(),
-            environment: None,
-            attachment_id: None,
-            host_id: tool.host_id.clone(),
-            needs: tool.needs.clone(),
-            binding_names: tool.binding_names.clone(),
-            hosting: tool.hosting,
-            implementation: tool.implementation.clone(),
-        });
-    }
-    (definitions, bindings)
-}
-
-/// The environments a create names, before any is attached, and their binding values.
-/// The values travel beside the create for exactly as long as attach needs them and never
-/// enter the configuration the session journals.
-fn attachments_for(
-    request: &CreateSessionRequest,
-) -> (Vec<EnvironmentAttachment>, crate::SessionBindingValues) {
-    let mut environments = Vec::with_capacity(request.environments.len());
-    let mut values = crate::SessionBindingValues::new();
-    for requirement in &request.environments {
-        environments.push(EnvironmentAttachment {
-            environment_id: requirement.environment_id.clone(),
-            configuration: requirement.configuration.clone(),
-
-            binding: None,
-            attachment_id: None,
-            resources: Default::default(),
-        });
-        if !requirement.bindings.is_empty() {
-            values.insert(
-                requirement.environment_id.clone(),
-                requirement.bindings.clone(),
-            );
-        }
-    }
-    (environments, values)
 }
 
 fn validate_model(
@@ -1373,85 +1106,7 @@ fn internal(message: impl Into<String>) -> ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyedLocks, native_tool_identity, validate_agentloop_identity};
-
-    fn raw_create(
-        agentloop_identity: &str,
-        driver: &str,
-        implementation: serde_json::Value,
-    ) -> brain_protocol::CreateSessionRequest {
-        serde_json::from_value(serde_json::json!({
-            "agentloop": {
-                "identity": agentloop_identity,
-                "configuration": {},
-                "environment_id": "env_test",
-            },
-            "model": { "provider": "openai", "name": "gpt-5-mini", "api_key": "k" },
-            "tools": [{
-                "name": "lookup",
-                "description": "Look something up.",
-                "input_schema": {"type": "object"},
-                "needs": [],
-                "binding_names": [],
-                "hosting": "provisioned",
-                "implementation": implementation,
-                "environment_id": "env_test",
-            }],
-            "environments": [{
-                "environment_id": "env_test",
-                "configuration": {"driver": driver},
-            }],
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn raw_create_rejects_traversal_shaped_component_identities() {
-        let traversal = format!("{}a", "../".repeat(21));
-        assert_eq!(traversal.len(), 64);
-        let request = raw_create(
-            &traversal,
-            "brain_wasm",
-            serde_json::json!({"type": "brain_component", "identity": traversal}),
-        );
-        assert!(validate_agentloop_identity(&request.agentloop.identity).is_err());
-        assert!(native_tool_identity(&request, &request.tools[0]).is_err());
-    }
-
-    #[test]
-    fn native_tool_requires_a_component_identity_at_create() {
-        let identity = "b".repeat(64);
-        let request = raw_create(
-            &"a".repeat(64),
-            "brain_wasm",
-            serde_json::json!({"type": "brain_component", "identity": identity}),
-        );
-        assert_eq!(
-            native_tool_identity(&request, &request.tools[0])
-                .unwrap()
-                .unwrap()
-                .as_str(),
-            identity
-        );
-
-        let wrong_type = raw_create(
-            &"a".repeat(64),
-            "brain_wasm",
-            serde_json::json!({"type": "remote", "identity": "b".repeat(64)}),
-        );
-        assert!(native_tool_identity(&wrong_type, &wrong_type.tools[0]).is_err());
-
-        let remote = raw_create(
-            &"a".repeat(64),
-            "custom_driver",
-            serde_json::json!({"type": "remote"}),
-        );
-        assert!(
-            native_tool_identity(&remote, &remote.tools[0])
-                .unwrap()
-                .is_none()
-        );
-    }
+    use super::{KeyedLocks, needs_for};
 
     #[test]
     fn model_selection_is_admitted_against_the_composed_registry() {
@@ -1459,14 +1114,14 @@ mod tests {
         let request = |provider: &str, name: &str, response_format: bool| {
             serde_json::from_value::<brain_protocol::CreateSessionRequest>(serde_json::json!({
                 "agentloop": {
-                    "identity": "a".repeat(64),
+                    "id": "a".repeat(64),
                     "configuration": {},
-                    "environment_id": "env_test",
+                    "environment": "brain",
                 },
                 "model": { "provider": provider, "name": name, "api_key": "k" },
                 "tools": [],
                 "response_format": if response_format { Some(serde_json::json!({"type": "json_object"})) } else { None },
-                "environments": [],
+                "environments": [{"name": "brain", "driver": "brain"}],
             }))
             .unwrap()
         };
@@ -1488,6 +1143,34 @@ mod tests {
             validate("anthropic", "claude-sonnet-4-5", true).is_err(),
             "response_format on a provider that cannot carry it is rejected at create"
         );
+    }
+
+    /// An Environment sees the needs of exactly what is placed in it, once each, so
+    /// it provisions what this session uses and nothing else.
+    #[test]
+    fn an_environment_is_set_up_with_the_needs_of_what_is_placed_in_it() {
+        let config: brain_protocol::SessionConfig = serde_json::from_value(serde_json::json!({
+            "agentloop": {"id": "a".repeat(64), "configuration": {}, "environment": "brain", "needs": ["https://api.example.com"]},
+            "model": {"provider": "openai", "name": "gpt-5-mini"},
+            "tools": [
+                {"name": "read", "description": "d", "input_schema": {}, "environment": "brain", "needs": ["file:///workspace", "https://api.example.com"], "implementation": {}},
+                {"name": "bash", "description": "d", "input_schema": {}, "environment": "sandbox", "needs": ["pkg:apt/bash"], "implementation": {}},
+                {"name": "note", "description": "d", "input_schema": {}, "environment": "sandbox", "implementation": {}}
+            ],
+            "environments": [
+                {"name": "brain", "driver": "brain"},
+                {"name": "sandbox", "driver": "http", "url": "https://sandbox.example"},
+                {"name": "app", "driver": "host", "host_id": "host_12345678901234567890"}
+            ]
+        }))
+        .unwrap();
+        let needs = |name: &str| needs_for(&config, &brain_protocol::EnvironmentName::new(name));
+        assert_eq!(
+            needs("brain"),
+            vec!["file:///workspace", "https://api.example.com"]
+        );
+        assert_eq!(needs("sandbox"), vec!["pkg:apt/bash"]);
+        assert!(needs("app").is_empty());
     }
 
     #[test]

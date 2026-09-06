@@ -3,11 +3,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::message::{Message, StopReason, Usage};
 
+/// The model a session calls. The credential is not here: the server seals it under
+/// the session id and resolves it at call time.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelBinding {
-    pub binding_id: String,
-    pub model: String,
+    pub provider: String,
+    pub name: String,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]

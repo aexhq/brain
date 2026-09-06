@@ -74,19 +74,6 @@ pub(crate) fn append<T: Serialize>(file: &mut File, record: &T) -> Result<(), br
     Ok(())
 }
 
-pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<(), brain::Error> {
-    let bytes =
-        serde_json::to_vec(value).map_err(|error| brain::Error::Journal(error.to_string()))?;
-    let temporary = path.with_extension("json.tmp");
-    let mut file = File::create(&temporary).map_err(io)?;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(io)?;
-    drop(file);
-    fs::rename(&temporary, path).map_err(io)?;
-    sync_directory(path.parent().expect("resource file has a directory"))
-}
-
 fn io(error: std::io::Error) -> brain::Error {
     brain::Error::Journal(error.to_string())
 }

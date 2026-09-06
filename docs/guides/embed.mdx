@@ -26,7 +26,7 @@ let runtime = Arc::new(brain::SessionRuntime {
 });
 
 // A new session: its own directory under `sessions/`, its genesis record, then the
-// environments you attach, then the configuration that was actually granted.
+// Environments you set up, then the configuration that was actually granted.
 let store = brain::LocalSessionStore::create(
     &sessions_dir.join(session_id.as_str()),
     session_id,
@@ -57,10 +57,12 @@ composition. One local writer is supported; cross-server ownership belongs to th
 ## You supply the ports
 
 `loop_executor`, `model_executor`, and `tool_executor` are the same seams the server fills in. Fill
-them differently and you get a different deployment without forking the runtime: your own transport,
-your own placement. The loop executor receives the session's `TurnServices` and runs the loop
-against them; the server's executor forwards to the Loophost worker over a socket, and yours could
-run a trusted loop in-process. A custom `SessionStore` can construct asynchronous append completions
+them differently and you get a different deployment without forking the runtime. The loop executor
+receives the Agentloop, the Environment entry it is placed in, and the session's `TurnServices`,
+and runs the loop against them; the server's executor resolves the entry to its Environment
+adapter, and yours could run a trusted loop in-process. The model executor receives the session id
+and resolves the credential it sealed for it; the tool executor receives the Tool and its Environment
+entry. A custom `SessionStore` can construct asynchronous append completions
 with `CommitHandle::from_completion`; returning success must mean the canonical records committed.
 
 ## What the runtime keeps

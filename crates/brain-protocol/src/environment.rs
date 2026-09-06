@@ -1,80 +1,54 @@
-use std::collections::BTreeMap;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AttachmentId, EnvironmentId, Outcome, Resources, SessionId, ToolManifest};
+use crate::{AgentloopId, EnvironmentName, HostId, Outcome, SessionId, TurnInput, TurnOutput};
 
 /// The contract identifier every command and response carries.
 pub const ENVIRONMENT_CONTRACT: &str = "environment/v1";
 
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EnvironmentStatus {
-    /// No observation has been made in this process; metadata does not restore a resource.
-    Unknown,
-    Open,
-    /// The last operation could not reach the environment. Cleared by the next one that
-    /// does.
-    Unreachable,
-}
-
-/// One immutable Environment specification in a session create. `bindings` carries
-/// plaintext values only until attach and is never copied into the session journal.
+/// How Brain reaches an Environment. Applications never write it: the SDK does, from
+/// the Environment the application chose. Where the code behind the protocol runs is
+/// the Environment's concern.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionEnvironment {
-    pub environment_id: EnvironmentId,
-    pub configuration: serde_json::Value,
-    #[serde(default)]
-    #[schemars(with = "crate::schema::BindingValues")]
-    pub bindings: BTreeMap<String, String>,
+#[serde(tag = "driver", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Driver {
+    /// Hosted inside brain-server.
+    Brain {},
+    /// The process that registered as this host, reached over the connection it holds
+    /// open: a browser tab, a Node process, a server.
+    Host { host_id: HostId },
+    /// Reached over HTTP. `credential` is sent as a bearer token; the server seals it
+    /// beside the model key and never journals it.
+    Http {
+        #[schemars(length(min = 1, max = 2048), extend("format" = "uri"))]
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(min = 1, max = 16384))]
+        credential: Option<String>,
+    },
 }
 
-/// How an environment is addressed on its wire.
+/// One Environment a session declares: a name unique within the session, how Brain
+/// reaches it, and its own configuration, which Brain carries and never reads.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-pub struct EnvironmentBinding {
-    pub environment_id: EnvironmentId,
-    #[schemars(range(min = 1))]
-    pub directory_generation: u64,
-}
-
-/// One environment a session was granted: what the create request named, and once the
-/// host has attached it, what the environment answered with.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct EnvironmentAttachment {
-    pub environment_id: EnvironmentId,
-    pub configuration: serde_json::Value,
-    /// The wire binding, present once the environment has been resolved.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub binding: Option<EnvironmentBinding>,
-    /// Present once the environment has attached this session.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attachment_id: Option<AttachmentId>,
-    /// The resources the environment declared, verbatim. Brain reads the names.
+pub struct Environment {
+    pub name: EnvironmentName,
+    #[serde(flatten)]
+    pub driver: Driver,
     #[serde(default)]
-    pub resources: Resources,
+    pub configuration: serde_json::Value,
 }
 
-impl EnvironmentAttachment {
-    /// Whether the host has attached this environment yet.
-    pub fn attached(&self) -> bool {
-        self.binding.is_some()
-    }
-}
-
+/// One operation on an Environment, named by `(session_id, environment, sequence)`.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct EnvironmentOperation {
     /// The sequence of the journal record that started this operation. With
     /// `session_id` it names the operation: a redelivery carries the same pair, so a
-    /// receiver that already answered it can say so. Setup and teardown belong to the
-    /// owning session's journal too.
+    /// receiver that already answered it can say so.
     #[schemars(range(min = 1))]
     pub sequence: u64,
-    pub environment_id: EnvironmentId,
+    pub environment: EnvironmentName,
     pub session_id: SessionId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub attachment_id: Option<AttachmentId>,
     pub request: EnvironmentRequest,
 }
 
@@ -82,7 +56,6 @@ pub struct EnvironmentOperation {
 pub struct EnvironmentCommand {
     #[schemars(schema_with = "crate::schema::environment_contract")]
     pub contract: String,
-    pub binding: EnvironmentBinding,
     pub operation: EnvironmentOperation,
 }
 
@@ -95,26 +68,19 @@ pub struct EnvironmentResponse {
     pub receipt: EnvironmentReceipt,
 }
 
-/// One placed Tool handed to an Environment at attach.
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Provision {
-    pub manifest: ToolManifest,
-}
-
+/// What Brain asks an Environment to do. An Environment provides resources and learns
+/// what runs in it only when asked to run it: setup carries its configuration and the
+/// needs of everything placed there, each invoke carries the Tool it runs, each turn
+/// the Agentloop.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentRequest {
     Setup {
         configuration: serde_json::Value,
-    },
-    Attach {
-        #[schemars(length(max = 128))]
-        provisions: Vec<Provision>,
-        /// Binding values by name, injected into hosted tools at runtime. Plaintext on
-        /// this wire only: the journal never holds the values.
-        #[schemars(with = "crate::schema::BindingValues")]
-        bindings: BTreeMap<String, String>,
+        /// Every need of every Tool and the Agentloop placed here, as URIs. The
+        /// Environment refuses at setup what it cannot honour, naming the URI.
+        #[schemars(schema_with = "crate::schema::needs")]
+        needs: Vec<String>,
     },
     Call {
         #[schemars(schema_with = "crate::schema::identifier")]
@@ -122,13 +88,23 @@ pub enum EnvironmentRequest {
         input: serde_json::Value,
     },
     Invoke {
-        #[schemars(schema_with = "crate::schema::identifier")]
-        call_id: String,
+        /// The Tool's name, as the session declared it.
         #[schemars(schema_with = "crate::schema::identifier")]
         tool: String,
+        /// The Tool's implementation as it was declared: opaque to Brain, interpreted here.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        implementation: Option<serde_json::Value>,
+        #[schemars(schema_with = "crate::schema::needs")]
+        needs: Vec<String>,
         input: serde_json::Value,
         #[schemars(range(min = 1))]
         deadline_ms: u64,
+    },
+    Turn {
+        id: AgentloopId,
+        #[schemars(schema_with = "crate::schema::needs")]
+        needs: Vec<String>,
+        input: Box<TurnInput>,
     },
     Cancel {
         #[schemars(range(min = 1))]
@@ -141,13 +117,7 @@ pub enum EnvironmentRequest {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentReceipt {
-    Accepted {
-        /// The resources this environment declares, reported on setup/attach receipts
-        /// and fed into the bind-time `needs ⊆ resources` check.
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        #[schemars(with = "crate::schema::ResourcePolicies")]
-        resources: Resources,
-    },
+    Accepted,
     Progress {
         data: serde_json::Value,
     },
@@ -156,6 +126,9 @@ pub enum EnvironmentReceipt {
     },
     Outcome {
         outcome: Outcome,
+    },
+    Turned {
+        output: TurnOutput,
     },
     Failure {
         #[schemars(schema_with = "crate::schema::identifier")]
@@ -180,4 +153,44 @@ pub struct EnvironmentCallRequest {
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentCallResult {
     pub output: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_driver_is_a_sibling_of_the_configuration() {
+        let http: Environment = serde_json::from_value(serde_json::json!({
+            "name": "sandbox",
+            "driver": "http",
+            "url": "https://sandbox.example",
+            "credential": "s3cret",
+            "configuration": {"region": "eu"}
+        }))
+        .unwrap();
+        assert!(
+            matches!(&http.driver, Driver::Http { url, credential: Some(credential) }
+            if url == "https://sandbox.example" && credential == "s3cret")
+        );
+        let brain: Environment =
+            serde_json::from_value(serde_json::json!({"name": "brain", "driver": "brain"}))
+                .unwrap();
+        assert!(matches!(brain.driver, Driver::Brain {}));
+        assert_eq!(
+            serde_json::to_value(&brain).unwrap(),
+            serde_json::json!({"name": "brain", "driver": "brain", "configuration": null})
+        );
+        for wrong in [
+            serde_json::json!({"name": "x", "driver": "brain", "url": "https://x"}),
+            serde_json::json!({"name": "x", "driver": "http"}),
+            serde_json::json!({"name": "x", "driver": "elsewhere"}),
+            serde_json::json!({"name": "x", "driver": "host"}),
+        ] {
+            assert!(
+                serde_json::from_value::<Environment>(wrong.clone()).is_err(),
+                "{wrong} must be refused"
+            );
+        }
+    }
 }

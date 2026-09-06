@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Run Brain and give a session a resident Tool from your application process.
+description: Run Brain and give a session a Tool from your own process.
 ---
 
 ## Run a server
@@ -34,14 +34,13 @@ npm install @aexhq/brain @aexhq/agentloop-pi zod
 Save this as `order.mjs`:
 
 ```js
-import { Brain, brainWasm, tool } from "@aexhq/brain";
+import { Brain, brainEnv, hostEnv, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
 const orders = { "A-1001": { status: "shipped", eta: "Thursday" } };
 
-// `run` makes this a resident Tool. Calling the factory with `()` binds its
-// implementation to this application process.
+// `run` is a function this process holds. Placing the Tool in `hostEnv` says so.
 const lookupOrder = tool({
   name: "lookup_order",
   description: "Look up an order's status by id.",
@@ -56,15 +55,14 @@ const brain = new Brain({
   baseUrl: "http://127.0.0.1:8080",
   token: "quickstart",
 });
-const wasm = brainWasm();
 const session = await brain.sessions.create({
   model: {
     provider: "openai",
     name: "gpt-5-mini",
     apiKey: process.env.OPENAI_API_KEY,
   },
-  agentloop: pi({ env: wasm }),
-  tools: [lookupOrder()],
+  agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+  tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
 });
 
 await session.send("Where is order A-1001?");
@@ -77,20 +75,20 @@ await session.delete();
 process.exit(0);
 ```
 
-The SDK registers one resident application host and keeps its command SSE connection open. Brain
-commits `tool_call_started` before sending the command. `ctx.emit` appends an extension event to the
-same journal before its promise resolves, and the Tool result is committed before the Agentloop
-receives it. Brain sends each effect once; it does not retry a Tool when the outcome is uncertain.
+The SDK registers this process as a host and keeps its command connection open. Brain commits
+`tool_call_started` before sending the command. `ctx.emit` appends an extension event to the same
+journal before its promise resolves, and the Tool result is committed before the Agentloop receives
+it. Brain sends each effect once; it does not retry a Tool when the outcome is uncertain.
 
 For a custom Agentloop, wrap already-built Component bytes and place the factory explicitly:
 
 ```js
-import { agentloop, brainWasm, component } from "@aexhq/brain";
+import { agentloop, brainEnv, component } from "@aexhq/brain";
 
 const custom = agentloop({
   implementation: component(new URL("./agentloop.wasm", import.meta.url)),
 });
-const bound = custom({ env: brainWasm() });
+const placed = custom({ env: brainEnv({ name: "brain" }) });
 ```
 
 Brain admits the raw Component. Compilation and source-language tooling stay outside Brain.
@@ -98,8 +96,8 @@ Brain admits the raw Component. Compilation and source-language tooling stay out
 ## Build without an extension package
 
 The repository includes a small Rust [reference Agentloop](https://github.com/aexhq/brain/tree/main/examples/reference-agentloop)
-and a [lazy Environment provider](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs).
+and a [lazy Environment](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs).
 They depend only on Brain's public contracts. Build the loop with
 `cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release`,
 then explicitly admit the Component before creating sessions. See [Write an Agentloop](./guides/write-a-loop)
-and [Write an Environment](./guides/write-an-environment) for the host calls and provider protocol.
+and [Write an Environment](./guides/write-an-environment) for the host calls and the Environment protocol.

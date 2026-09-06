@@ -124,9 +124,9 @@ impl RemoteModelClient {
     ) -> Result<Value, Error> {
         match self.dialect {
             Dialect::OpenAiChat => {
-                openai::body(&binding.model, tools, request, self.max_tokens_field)
+                openai::body(&binding.name, tools, request, self.max_tokens_field)
             }
-            Dialect::AnthropicMessages => anthropic::body(&binding.model, tools, request),
+            Dialect::AnthropicMessages => anthropic::body(&binding.name, tools, request),
         }
     }
 
@@ -161,6 +161,7 @@ impl RemoteModelClient {
 impl ModelExecutor for RemoteModelClient {
     async fn execute(
         &self,
+        _: &brain_protocol::SessionId,
         binding: &ModelBinding,
         request: ModelRequest,
         tools: &[ToolDefinition],
@@ -242,10 +243,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::oneshot;
 
+    fn session() -> brain_protocol::SessionId {
+        brain_protocol::SessionId::new("ses_test")
+    }
+
     fn binding() -> ModelBinding {
         ModelBinding {
-            binding_id: "gateway".into(),
-            model: "test/model".into(),
+            provider: "vercel-ai-gateway".into(),
+            name: "test/model".into(),
         }
     }
 
@@ -291,6 +296,7 @@ mod tests {
         let mut events = Vec::new();
         let result = client
             .execute(
+                &session(),
                 &binding(),
                 ModelRequest {
                     system: Some("system".into()),
@@ -374,9 +380,10 @@ mod tests {
         .unwrap();
         let result = client
             .execute(
+                &session(),
                 &ModelBinding {
-                    binding_id: "direct".into(),
-                    model: "claude-test".into(),
+                    provider: "anthropic".into(),
+                    name: "claude-test".into(),
                 },
                 ModelRequest {
                     system: Some("system".into()),
@@ -437,7 +444,7 @@ mod tests {
             max_output_tokens: None,
         };
         let error = client
-            .execute(&binding(), request.clone(), &[], &mut |_| {})
+            .execute(&session(), &binding(), request.clone(), &[], &mut |_| {})
             .await
             .unwrap_err();
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
@@ -473,7 +480,7 @@ mod tests {
         })
         .unwrap();
         let error = client
-            .execute(&binding(), request, &[], &mut |_| {})
+            .execute(&session(), &binding(), request, &[], &mut |_| {})
             .await
             .unwrap_err();
         assert!(
@@ -504,6 +511,7 @@ mod tests {
         .unwrap();
         let error = client
             .execute(
+                &session(),
                 &binding(),
                 ModelRequest {
                     system: None,

@@ -3,27 +3,25 @@ import test from "node:test";
 
 import { z } from "zod";
 import {
-  agentloop, brainWasm, component, environment, inspectAgentloop, inspectEnvironment,
-  inspectPlacedTool, inspectResidentTool, tool,
+  agentloop, brainEnv, component, environment, hostEnv, inspectAgentloop, inspectEnvironment,
+  inspectTool, tool,
 } from "../dist/index.js";
 
 test("extensions are immutable factories with explicit placement", () => {
   const wasm = component(new Uint8Array([0, 97, 115, 109]));
-  const native = brainWasm({
-    network: { allow: ["api.example.com", "https://models.example.com/"] },
-    filesystem: { scratch: true, workspace: false },
-    secrets: ["MODEL_TOKEN"],
+  const native = brainEnv({ name: "brain", secrets: ["MODEL_TOKEN"] });
+  assert.deepEqual(inspectEnvironment(native), {
+    kind: "environment",
+    name: "brain",
+    driver: { driver: "brain" },
+    configuration: { secrets: ["MODEL_TOKEN"] },
   });
-  assert.deepEqual(inspectEnvironment(native).configuration, {
-    driver: "brain_wasm",
-    network: { allow: ["api.example.com", "https://models.example.com"] },
-    filesystem: { scratch: true, workspace: false },
-    secrets: ["MODEL_TOKEN"],
-  });
+  assert.deepEqual(inspectEnvironment(hostEnv({ name: "app" })).driver, { driver: "host" });
 
-  const pi = agentloop({ options: z.object({ compactAt: z.number() }), implementation: wasm });
+  const pi = agentloop({ options: z.object({ compactAt: z.number() }), implementation: wasm, needs: ["https://*.example.com"] });
   const loop = pi({ env: native, compactAt: 0.8 });
   assert.deepEqual(inspectAgentloop(loop).configuration, { compactAt: 0.8 });
+  assert.deepEqual(inspectAgentloop(loop).needs, ["https://*.example.com"]);
   assert.equal(inspectAgentloop(loop).environment, native);
   assert.equal("use" in loop, false);
 
@@ -32,15 +30,16 @@ test("extensions are immutable factories with explicit placement", () => {
     description: "Read a file.",
     input: z.object({ path: z.string() }),
     implementation: wasm,
-    needs: ["fs"],
+    needs: ["file:///workspace"],
   });
   const placed = read({ env: native });
-  assert.equal(inspectPlacedTool(placed).implementation, wasm);
-  assert.deepEqual(inspectPlacedTool(placed).needs, ["fs"]);
+  assert.equal(inspectTool(placed).implementation, wasm);
+  assert.deepEqual(inspectTool(placed).needs, ["file:///workspace"]);
+  assert.equal(inspectTool(placed).handler, undefined);
   assert.equal(Object.isFrozen(placed), true);
 });
 
-test("resident Tools stay in the declaring process and receive options", async () => {
+test("a Tool with run stays in the declaring process and receives options", async () => {
   const seen = [];
   const lookup = tool({
     name: "lookup",
@@ -49,39 +48,52 @@ test("resident Tools stay in the declaring process and receive options", async (
     output: z.object({ value: z.string() }),
     options: z.object({ prefix: z.string() }),
     run: async ({ id }, ctx) => {
-      seen.push([ctx.options.prefix, id]);
+      seen.push([ctx.options.prefix, id, ctx.sequence]);
       return { value: `${ctx.options.prefix}${id}` };
     },
   });
-  const bound = lookup({ prefix: ">" });
-  const resident = inspectResidentTool(bound);
-  assert.ok(resident);
-  assert.deepEqual(await resident.handler({ id: "1" }, {
-    callId: "call_1",
+  const placed = lookup({ env: hostEnv({ name: "app" }), prefix: ">" });
+  const source = inspectTool(placed);
+  assert.equal(source.implementation, undefined);
+  assert.deepEqual(await source.handler({ id: "1" }, {
+    sequence: 7,
     deadline: new Date(),
     signal: new AbortController().signal,
     emit: async () => 1,
   }), { value: ">1" });
-  assert.deepEqual(seen, [[">", "1"]]);
+  assert.deepEqual(seen, [[">", "1", 7]]);
 });
 
-test("environment factories serialize only configuration and bindings", () => {
+test("an environment extension configures each instance and says how it is reached", () => {
   const remote = environment({
-    driver: "remote_service",
-    options: z.object({ url: z.url(), token: z.string() }),
-    configure: ({ url }) => ({ url }),
-    bindings: ({ token }) => ({ API_TOKEN: token }),
+    options: z.object({ url: z.url(), region: z.string(), token: z.string().optional() }),
+    url: ({ url }) => url,
+    credential: ({ token }) => token,
+    configure: ({ region }) => ({ region }),
   });
-  const value = remote({ url: "https://tool.example", token: "secret" });
+  const value = remote({ name: "sandbox", url: "https://tool.example", region: "eu", token: "secret" });
   const source = inspectEnvironment(value);
-  assert.deepEqual(source.configuration, { driver: "remote_service", url: "https://tool.example" });
-  assert.deepEqual(source.bindings, { API_TOKEN: "secret" });
+  assert.equal(source.name, "sandbox");
+  assert.deepEqual(source.driver, { driver: "http", url: "https://tool.example", credential: "secret" });
+  assert.deepEqual(source.configuration, { region: "eu" });
+  const anonymous = remote({ name: "other", url: "https://tool.example", region: "us" });
+  assert.deepEqual(inspectEnvironment(anonymous).driver, { driver: "http", url: "https://tool.example" });
+  assert.throws(() => remote({ url: "https://tool.example", region: "eu" }), /requires \{ name \}/u);
+  assert.throws(() => remote({ name: "bad name", url: "https://tool.example", region: "eu" }), /identifier/u);
+  assert.throws(() => environment({ url: () => "ftp://tool.example" })({ name: "x" }), /HTTP\(S\)/u);
+  assert.throws(() => environment({ url: () => "https://user:pw@tool.example" })({ name: "x" }), /credentials/u);
 });
 
-test("invalid native capabilities fail at declaration", () => {
-  assert.throws(() => brainWasm({ network: { allow: ["ftp://example.com"] } }), /HTTP\(S\)/u);
-  assert.throws(() => brainWasm({ network: { allow: ["https://example.com/path"] } }), /origin or authority/u);
-  assert.throws(() => brainWasm({ secrets: ["bad/name"] }), /identifiers/u);
-  assert.throws(() => brainWasm({ filesystem: { scratch: "yes" } }), /boolean scratch/u);
-  assert.throws(() => brainWasm({ filesystem: { root: true } }), /boolean scratch/u);
+test("needs are URIs and the built-in Environments take only their own options", () => {
+  const wasm = component(new Uint8Array([1]));
+  assert.throws(() => tool({ name: "t", description: "d", input: z.object({}), implementation: wasm, needs: ["fs"] }), /not a URI/u);
+  assert.throws(() => tool({ name: "t", description: "d", input: z.object({}), implementation: wasm, needs: ["https://a b"] }), /not a URI/u);
+  assert.throws(() => tool({ name: "t", description: "d", input: z.object({}), implementation: wasm, needs: ["pkg:apt/x", "pkg:apt/x"] }), /duplicate/u);
+  assert.throws(() => agentloop({ implementation: wasm, needs: ["../fs"] }), /not a URI/u);
+  assert.throws(() => tool({ name: "t", description: "d", input: z.object({}) }), /exactly one of run or implementation/u);
+  assert.throws(() => tool({ name: "t", description: "d", input: z.object({}), implementation: wasm, run: async () => null }), /exactly one of run or implementation/u);
+  assert.throws(() => brainEnv({ name: "brain", secrets: ["bad/name"] }), /invalid name/u);
+  assert.throws(() => brainEnv({ name: "brain", network: { allow: [] } }), /does not accept network/u);
+  assert.throws(() => brainEnv({}), /identifier/u);
+  assert.throws(() => hostEnv({ name: "../x" }), /identifier/u);
 });

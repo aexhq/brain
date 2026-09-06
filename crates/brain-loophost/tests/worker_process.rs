@@ -6,7 +6,10 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
-use brain_loophost::{HostCall, LoopLimits, NativePolicy, NativeToolInput, TurnBridge, WorkerPool};
+use brain_loophost::{
+    Access, HostCall, LoopLimits, NativeEnvironment, NativeToolInput, TurnBridge, WorkerPool,
+    Workspace,
+};
 use brain_protocol::{RuntimeEnvelope, TurnError, TurnInput};
 
 /// A bridge that answers every model call with a fixed assistant message and records
@@ -97,7 +100,7 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
         async fn call(&self, call: HostCall) -> Result<String, TurnError> {
             let answer = match call {
                 HostCall::Events { after: 0 } => {
-                    serde_json::json!({"events": [{"event_id": "ses_ref:3", "sequence": 3, "recorded_at_ms": 1, "event_type": "turn_failed", "data": {"code": "interrupted"}}], "next_cursor": 3})
+                    serde_json::json!({"events": [{"sequence": 3, "recorded_at_ms": 1, "event_type": "turn_failed", "data": {"code": "interrupted"}}], "next_cursor": 3})
                 }
                 HostCall::Events { after } => {
                     serde_json::json!({"events": [], "next_cursor": after})
@@ -153,13 +156,7 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
         calls: std::sync::atomic::AtomicUsize::new(0),
     };
     let output = pool
-        .turn(
-            "ses_ref".into(),
-            digest,
-            environment(),
-            input("continue"),
-            &model,
-        )
+        .turn(digest, environment(), input("continue"), &model)
         .await
         .unwrap();
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
@@ -167,20 +164,15 @@ async fn reference_loop_reads_interruptions_and_hands_tool_failures_to_the_model
     assert_eq!(output.transcript.len(), 5);
 }
 
-fn environment() -> serde_json::Value {
-    serde_json::json!({
-        "driver": "brain_wasm",
-        "network": {"allow": []},
-        "filesystem": {"workspace": false},
-        "secrets": []
-    })
+fn environment() -> NativeEnvironment {
+    NativeEnvironment::default()
 }
 
 #[tokio::test]
 async fn saturated_parent_turns_can_all_invoke_native_tools() {
     struct Nested {
         pool: Arc<WorkerPool>,
-        tool: brain_protocol::ToolIdentity,
+        tool: brain_protocol::ToolId,
         parents: tokio::sync::Barrier,
     }
     #[async_trait]
@@ -199,11 +191,9 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
                     let answer = self
                         .pool
                         .tool(
-                            "ses_nested".into(),
                             self.tool.clone(),
                             environment(),
                             NativeToolInput {
-                                call_id: "nested".into(),
                                 input: serde_json::json!({"nested": true}),
                                 configuration: serde_json::json!({}),
                                 deadline_at_ms: u64::MAX,
@@ -254,14 +244,9 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
     for index in 0..count {
         let (pool, agentloop, bridge) = (pool.clone(), agentloop.clone(), bridge.clone());
         tasks.spawn(async move {
-            pool.turn(
-                format!("ses_parent_{index}"),
-                agentloop,
-                environment(),
-                input("nested"),
-                &*bridge,
-            )
-            .await
+            let _ = index;
+            pool.turn(agentloop, environment(), input("nested"), &*bridge)
+                .await
         });
     }
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -273,13 +258,18 @@ async fn saturated_parent_turns_can_all_invoke_native_tools() {
     .expect("nested tools must not wait behind their parents");
 }
 
-fn workspace_environment() -> serde_json::Value {
-    serde_json::json!({
-        "driver": "brain_wasm",
-        "network": {"allow": []},
-        "filesystem": {"workspace": true},
-        "secrets": []
-    })
+/// The grants a Tool needing `file:///workspace?access=write` receives: the session's
+/// directory, writable.
+fn workspace_environment(root: &std::path::Path, session: &str) -> NativeEnvironment {
+    let path = root.join("native-workspaces").join(session);
+    std::fs::create_dir_all(&path).unwrap();
+    NativeEnvironment {
+        workspace: Some(Workspace {
+            path: path.to_string_lossy().into_owned(),
+            access: Access::Write,
+        }),
+        ..NativeEnvironment::default()
+    }
 }
 
 #[tokio::test]
@@ -298,13 +288,7 @@ async fn real_worker_admits_and_runs_a_turn_of_the_diagnostic_loop() {
         cancelled: AtomicBool::new(false),
     };
     let output = pool
-        .turn(
-            "ses_worker_test".into(),
-            digest,
-            environment(),
-            input("hello"),
-            &bridge,
-        )
+        .turn(digest, environment(), input("hello"), &bridge)
         .await
         .unwrap();
     assert_eq!(output.slots["memory"]["turns"], 1);
@@ -329,18 +313,13 @@ async fn tool_workspaces_are_shared_within_a_session_and_isolated_between_sessio
         directory.path().join("run"),
         directory.path().join("packages"),
         LoopLimits::default(),
-    )
-    .with_native_policy(NativePolicy {
-        filesystem: std::collections::HashSet::from(["workspace".into()]),
-        ..NativePolicy::default()
-    });
+    );
     let digest = pool.admit_tool(component).await.unwrap();
     let bridge = RecordingBridge {
         calls: Mutex::new(Vec::new()),
         cancelled: AtomicBool::new(false),
     };
-    let invoke = |call_id: &str, input: serde_json::Value| NativeToolInput {
-        call_id: call_id.into(),
+    let invoke = |input: serde_json::Value| NativeToolInput {
         input,
         configuration: serde_json::json!({}),
         deadline_at_ms: 1_000,
@@ -348,13 +327,9 @@ async fn tool_workspaces_are_shared_within_a_session_and_isolated_between_sessio
 
     let written = pool
         .tool(
-            "ses_a".into(),
             digest.clone(),
-            workspace_environment(),
-            invoke(
-                "write",
-                serde_json::json!({"workspace": true, "write": "private"}),
-            ),
+            workspace_environment(directory.path(), "ses_a"),
+            invoke(serde_json::json!({"workspace": true, "write": "private"})),
             &bridge,
         )
         .await
@@ -363,10 +338,9 @@ async fn tool_workspaces_are_shared_within_a_session_and_isolated_between_sessio
 
     let same_session = pool
         .tool(
-            "ses_a".into(),
             digest.clone(),
-            workspace_environment(),
-            invoke("read_a", serde_json::json!({"workspace": true})),
+            workspace_environment(directory.path(), "ses_a"),
+            invoke(serde_json::json!({"workspace": true})),
             &bridge,
         )
         .await
@@ -375,10 +349,9 @@ async fn tool_workspaces_are_shared_within_a_session_and_isolated_between_sessio
 
     let other_session = pool
         .tool(
-            "ses_b".into(),
             digest,
-            workspace_environment(),
-            invoke("read_b", serde_json::json!({"workspace": true})),
+            workspace_environment(directory.path(), "ses_b"),
+            invoke(serde_json::json!({"workspace": true})),
             &bridge,
         )
         .await
@@ -411,7 +384,6 @@ async fn concurrent_turns_all_reach_the_agentloop() {
                 cancelled: AtomicBool::new(false),
             };
             pool.turn(
-                format!("ses_{index}"),
                 digest,
                 environment(),
                 input(&format!("turn {index}")),
@@ -456,13 +428,7 @@ async fn a_cancelled_turn_ends_at_its_next_host_call() {
         cancelled: AtomicBool::new(true),
     };
     let error = pool
-        .turn(
-            "ses_cancel".into(),
-            digest,
-            environment(),
-            input("hello"),
-            &bridge,
-        )
+        .turn(digest, environment(), input("hello"), &bridge)
         .await
         .unwrap_err()
         .to_string();
@@ -471,7 +437,7 @@ async fn a_cancelled_turn_ends_at_its_next_host_call() {
 
 #[tokio::test]
 async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
-    use brain_loophost::{NativeEnvironment, WorkerClient, WorkerRequest, WorkerResponse};
+    use brain_loophost::{WorkerClient, WorkerRequest, WorkerResponse};
 
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("worker.sock");
@@ -514,13 +480,8 @@ async fn host_calls_queued_before_cancel_are_not_answered_after_cancel() {
     };
     let error = WorkerClient::new(socket)
         .turn(
-            brain_protocol::AgentloopIdentity::new("diagnostic"),
-            NativeEnvironment {
-                scratch: false,
-                workspace: None,
-                network_allow: Vec::new(),
-                secrets: Default::default(),
-            },
+            brain_protocol::AgentloopId::new("diagnostic"),
+            NativeEnvironment::default(),
             input("hello"),
             brain_loophost::MAX_TURN_INPUT_BYTES,
             &bridge,

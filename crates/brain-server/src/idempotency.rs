@@ -8,7 +8,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use brain_protocol::Identity;
+use crate::digest::Sha256;
 
 /// Completed answers expire; unresolved claims remain to prevent duplicate effects.
 pub const DEFAULT_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
@@ -33,7 +33,7 @@ struct State {
 struct Stored {
     /// The request the answer was given to, compared on every hit: the same key with a
     /// different request is a different request wearing that key's name, and an error.
-    request: Identity,
+    request: Sha256,
     response: Option<serde_json::Value>,
     expires_at_ms: u64,
 }
@@ -41,7 +41,7 @@ struct Stored {
 impl Stored {
     fn replay(
         &self,
-        request: &Identity,
+        request: &Sha256,
         now: u64,
     ) -> Result<Option<serde_json::Value>, brain::Error> {
         if self.response.is_some() && self.expires_at_ms <= now {
@@ -121,7 +121,7 @@ impl IdempotencyStore {
         &self,
         state: &mut State,
         entry: (String, String),
-        request: Identity,
+        request: Sha256,
     ) -> Result<Option<serde_json::Value>, brain::Error> {
         let stored = Stored {
             request,
@@ -191,8 +191,8 @@ impl IdempotencyStore {
     }
 }
 
-fn digest<T: serde::Serialize>(request: &T) -> Result<Identity, brain::Error> {
-    crate::digest::identity_of(request)
+fn digest<T: serde::Serialize>(request: &T) -> Result<Sha256, brain::Error> {
+    Sha256::of(request)
 }
 
 fn wall_clock_ms() -> Result<u64, brain::Error> {

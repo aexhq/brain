@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { z } from "zod";
-import { agentloop, brainWasm, component, inspectAgentloop, inspectComponent, inspectEnvironment } from "@aexhq/brain";
+import { agentloop, brainEnv, component, inspectAgentloop, inspectComponent, inspectEnvironment } from "@aexhq/brain";
 import { fixture, collect } from "./support.mjs";
 
 const f = fixture();
@@ -10,20 +10,20 @@ const f = fixture();
 test("file, bytes, and URL admission identify the same executable", { timeout: 30_000 }, async () => {
   const bytes = component(new Uint8Array(await readFile(process.env.BRAIN_TEST_REFERENCE_AGENTLOOP)));
   const remote = component(new URL("/artifact.wasm", f.upstreamUrl));
-  const identities = await Promise.all([f.brain.admitAgentloop(f.reference), f.brain.admitAgentloop(bytes), f.brain.admitAgentloop(remote)]);
-  assert.equal(new Set(identities).size, 1);
-  assert.match(identities[0], /^[a-f0-9]{64}$/u);
+  const ids = await Promise.all([f.brain.admitAgentloop(f.reference), f.brain.admitAgentloop(bytes), f.brain.admitAgentloop(remote)]);
+  assert.equal(new Set(ids).size, 1);
+  assert.match(ids[0], /^[a-f0-9]{64}$/u);
   assert.ok(inspectComponent(bytes).artifact instanceof Uint8Array);
 });
 
-test("prepare a binding once and create multiple ready-to-use sessions", { timeout: 30_000 }, async (t) => {
-  const env = brainWasm();
-  const binding = agentloop({ implementation: f.reference })({ env });
-  const identity = await f.brain.admit(binding);
-  assert.equal(await f.brain.admitAgentloop(f.reference), identity);
-  assert.equal(inspectAgentloop(binding).environment, env);
-  assert.equal(inspectEnvironment(env).configuration.driver, "brain_wasm");
-  const sessions = await Promise.all([f.create(t, { agentloop: binding }), f.create(t, { agentloop: binding })]);
+test("prepare a placement once and create multiple ready-to-use sessions", { timeout: 30_000 }, async (t) => {
+  const env = brainEnv({ name: "brain" });
+  const placed = agentloop({ implementation: f.reference })({ env });
+  const id = await f.brain.admit(placed);
+  assert.equal(await f.brain.admitAgentloop(f.reference), id);
+  assert.equal(inspectAgentloop(placed).environment, env);
+  assert.deepEqual(inspectEnvironment(env).driver, { driver: "brain" });
+  const sessions = await Promise.all([f.create(t, { agentloop: placed }), f.create(t, { agentloop: placed })]);
   await Promise.all(sessions.map((session) => session.send("prepared")));
   assert.ok(sessions.every(({ state }) => state.status === "idle"));
 });
@@ -49,9 +49,9 @@ test("simultaneous preparation coalesces one artifact upload", { timeout: 30_000
 
 test("configured agentloops retain explicit slots across fresh activations", { timeout: 30_000 }, async (t) => {
   const loop = agentloop({ implementation: f.diagnostic, options: z.object({ label: z.string().default("configured") }) });
-  const binding = loop({ env: brainWasm() });
-  assert.deepEqual(inspectAgentloop(binding).configuration, { label: "configured" });
-  const session = await f.create(t, { agentloop: binding });
+  const placed = loop({ env: brainEnv({ name: "brain" }) });
+  assert.deepEqual(inspectAgentloop(placed).configuration, { label: "configured" });
+  const session = await f.create(t, { agentloop: placed });
   await session.send("one");
   await session.send("two");
   assert.deepEqual((await collect(session.events())).filter(({ type }) => type === "turn_ended").map(({ data }) => data.result), [

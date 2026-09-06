@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { Brain, agentloop, brainWasm, component } from "@aexhq/brain";
+import { Brain, agentloop, brainEnv, component } from "@aexhq/brain";
 
 const baseUrl = process.env.BRAIN_BASE_URL;
 const token = process.env.BRAIN_API_TOKEN;
@@ -17,7 +17,7 @@ const session = await brain.sessions.create({
     name: "openai/gpt-5-mini",
     apiKey: "release-smoke-key",
   },
-  agentloop: diagnostic({ env: brainWasm({ filesystem: { workspace: false } }) }),
+  agentloop: diagnostic({ env: brainEnv({ name: "brain" }) }),
 });
 await session.send("first turn");
 await session.send("second turn");
@@ -39,7 +39,7 @@ assert.equal(suffix.at(-1)?.sequence, session.state.lastSequence);
 
 const streamed = [];
 for await (const event of session.events(cursor)) streamed.push(event);
-assert.deepEqual(streamed.map(({ id }) => id), suffix.map(({ id }) => id));
+assert.deepEqual(streamed.map(({ sequence }) => sequence), suffix.map(({ sequence }) => sequence));
 
 await session.end();
 await session.delete();

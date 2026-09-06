@@ -1,4 +1,4 @@
-use brain_protocol::{Event, LiveEvent, SessionId};
+use brain_protocol::{LiveEvent, SessionId};
 use brain_telemetry::{TelemetryKind, TelemetryPublisher, TelemetryRecord};
 use std::{collections::HashMap, sync::Mutex};
 use tokio::sync::broadcast;
@@ -55,13 +55,7 @@ impl Feed {
         // or not anyone is listening, and drops for a receiver that has fallen behind.
         self.send((
             record.session_id.clone(),
-            LiveEvent::Recorded(Event {
-                event_id: record.event_id(),
-                sequence: record.sequence,
-                recorded_at_ms: record.recorded_at_ms,
-                event_type: record.kind.clone(),
-                data: record.payload.clone(),
-            }),
+            LiveEvent::Recorded(record.clone().into_event()),
         ));
         let _ = self.telemetry.try_publish(TelemetryRecord {
             kind: TelemetryKind::Event,
@@ -69,7 +63,7 @@ impl Feed {
             payload: serde_json::to_vec(&record.payload)
                 .expect("journal payload is valid telemetry JSON"),
             session_id: Some(record.session_id.clone()),
-            event_id: Some(record.event_id()),
+            sequence: Some(record.sequence),
         });
     }
 }

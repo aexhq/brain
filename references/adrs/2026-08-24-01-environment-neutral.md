@@ -4,6 +4,8 @@
 - Status: Accepted
 - Compiled: 2026-09-05
 
+Amended by: [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md), which places Tools held by the application in the host env rather than treating them as a second execution path.
+
 ## Context
 
 Tools were coupled to a default Hand/sandbox and the core carried product-specific tools and inventory. Browsers, remote services, and other execution providers did not fit that assumption.

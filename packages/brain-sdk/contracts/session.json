@@ -12,40 +12,52 @@
         "error": {
           "$ref": "#/$defs/ApiError"
         },
-        "identity": {
-          "$ref": "#/$defs/AgentloopIdentity"
+        "id": {
+          "$ref": "#/$defs/AgentloopId"
         },
         "status": {
           "$ref": "#/$defs/AdmissionStatus"
         }
       },
       "required": [
-        "identity",
+        "id",
         "status"
       ],
       "type": "object"
     },
-    "AgentloopIdentity": {
+    "AgentloopId": {
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
     },
     "AgentloopRef": {
       "additionalProperties": false,
-      "description": "The admitted loop package a session runs: which one, and how it is configured.",
+      "description": "The admitted Agentloop a session runs: which one, how it is configured, which\nEnvironment of the session runs it, and what it needs there.",
       "properties": {
         "configuration": true,
-        "environment_id": {
-          "$ref": "#/$defs/EnvironmentId",
-          "description": "The Environment that executes this Agentloop. The MVP supports Brain's native\nWasmtime Environment; the binding stays explicit for later drivers."
+        "environment": {
+          "$ref": "#/$defs/EnvironmentName"
         },
-        "identity": {
-          "$ref": "#/$defs/AgentloopIdentity"
+        "id": {
+          "$ref": "#/$defs/AgentloopId"
+        },
+        "needs": {
+          "default": [],
+          "description": "What the Agentloop needs from its Environment, as URIs. Brain hands them to the\nEnvironment at setup and with every turn, and reads none of them.",
+          "items": {
+            "format": "uri",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
         }
       },
       "required": [
-        "identity",
+        "id",
         "configuration",
-        "environment_id"
+        "environment"
       ],
       "type": "object"
     },
@@ -69,151 +81,6 @@
         "code",
         "message",
         "retryable"
-      ],
-      "type": "object"
-    },
-    "BindingValues": {
-      "additionalProperties": {
-        "maxLength": 32768,
-        "type": "string"
-      },
-      "propertyNames": {
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-        "type": "string"
-      },
-      "type": "object"
-    },
-    "BoundTool": {
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "hosting": {
-                "const": "resident"
-              }
-            },
-            "required": [
-              "hosting"
-            ]
-          },
-          "then": {
-            "allOf": [
-              {
-                "required": [
-                  "host_id"
-                ]
-              },
-              {
-                "not": {
-                  "required": [
-                    "implementation"
-                  ]
-                }
-              },
-              {
-                "not": {
-                  "required": [
-                    "environment_id"
-                  ]
-                }
-              },
-              {
-                "properties": {
-                  "needs": {
-                    "maxItems": 0
-                  }
-                }
-              }
-            ]
-          }
-        },
-        {
-          "if": {
-            "not": {
-              "properties": {
-                "hosting": {
-                  "const": "resident"
-                }
-              },
-              "required": [
-                "hosting"
-              ]
-            }
-          },
-          "then": {
-            "allOf": [
-              {
-                "required": [
-                  "environment_id",
-                  "implementation"
-                ]
-              },
-              {
-                "not": {
-                  "required": [
-                    "host_id"
-                  ]
-                }
-              }
-            ]
-          }
-        }
-      ],
-      "description": "One tool as the SDK hands it over: its manifest fields plus the environment it\nbinds to. Brain splits the model-facing and dispatch-facing halves internally.",
-      "properties": {
-        "binding_names": {
-          "items": {
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-            "type": "string"
-          },
-          "maxItems": 64,
-          "type": "array",
-          "uniqueItems": true
-        },
-        "description": {
-          "maxLength": 8192,
-          "type": "string"
-        },
-        "environment_id": {
-          "$ref": "#/$defs/EnvironmentId",
-          "description": "Required for a provisioned tool; a resident tool binds no Environment."
-        },
-        "host_id": {
-          "$ref": "#/$defs/HostId",
-          "description": "Required for a resident tool and absent for a provisioned tool."
-        },
-        "hosting": {
-          "$ref": "#/$defs/ToolHosting",
-          "default": "provisioned"
-        },
-        "implementation": true,
-        "input_schema": {
-          "type": "object"
-        },
-        "name": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-          "type": "string"
-        },
-        "needs": {
-          "default": [],
-          "items": {
-            "pattern": "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$",
-            "type": "string"
-          },
-          "maxItems": 64,
-          "type": "array",
-          "uniqueItems": true
-        },
-        "output_schema": {
-          "type": "object"
-        }
-      },
-      "required": [
-        "name",
-        "description",
-        "input_schema",
-        "binding_names"
       ],
       "type": "object"
     },
@@ -292,9 +159,9 @@
           "$ref": "#/$defs/AgentloopRef"
         },
         "environments": {
-          "description": "Immutable Environment specifications opened and attached as part of this create.",
+          "description": "The Environments of this session, set up as part of this create. Every Tool and\nthe Agentloop name one of them.",
           "items": {
-            "$ref": "#/$defs/SessionEnvironment"
+            "$ref": "#/$defs/Environment"
           },
           "maxItems": 128,
           "type": "array"
@@ -319,7 +186,7 @@
         },
         "tools": {
           "items": {
-            "$ref": "#/$defs/BoundTool"
+            "$ref": "#/$defs/Tool"
           },
           "maxItems": 128,
           "type": "array"
@@ -338,6 +205,78 @@
         "model",
         "tools",
         "environments"
+      ],
+      "type": "object"
+    },
+    "Environment": {
+      "description": "One Environment a session declares: a name unique within the session, how Brain\nreaches it, and its own configuration, which Brain carries and never reads.",
+      "oneOf": [
+        {
+          "description": "Hosted inside brain-server.",
+          "properties": {
+            "driver": {
+              "const": "brain",
+              "type": "string"
+            }
+          },
+          "required": [
+            "driver"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The process that registered as this host, reached over the connection it holds\nopen: a browser tab, a Node process, a server.",
+          "properties": {
+            "driver": {
+              "const": "host",
+              "type": "string"
+            },
+            "host_id": {
+              "$ref": "#/$defs/HostId"
+            }
+          },
+          "required": [
+            "driver",
+            "host_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Reached over HTTP. `credential` is sent as a bearer token; the server seals it\nbeside the model key and never journals it.",
+          "properties": {
+            "credential": {
+              "maxLength": 16384,
+              "minLength": 1,
+              "type": "string"
+            },
+            "driver": {
+              "const": "http",
+              "type": "string"
+            },
+            "url": {
+              "format": "uri",
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "driver",
+            "url"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "configuration": {
+          "default": null
+        },
+        "name": {
+          "$ref": "#/$defs/EnvironmentName"
+        }
+      },
+      "required": [
+        "name"
       ],
       "type": "object"
     },
@@ -361,16 +300,14 @@
       ],
       "type": "object"
     },
-    "EnvironmentId": {
+    "EnvironmentName": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "type": "string"
     },
     "Event": {
+      "description": "One journal record as a client reads it. `(session_id, sequence)` names it; there\nis no other identifier.",
       "properties": {
         "data": true,
-        "event_id": {
-          "$ref": "#/$defs/EventId"
-        },
         "event_type": {
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
           "type": "string"
@@ -387,17 +324,12 @@
         }
       },
       "required": [
-        "event_id",
         "sequence",
         "recorded_at_ms",
         "event_type",
         "data"
       ],
       "type": "object"
-    },
-    "EventId": {
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-      "type": "string"
     },
     "EventPage": {
       "properties": {
@@ -456,7 +388,7 @@
           "type": "string"
         },
         "sequence": {
-          "description": "The resident command this Event belongs to.",
+          "description": "The command this Event belongs to.",
           "format": "uint64",
           "minimum": 1,
           "type": "integer"
@@ -492,11 +424,14 @@
       "type": "string"
     },
     "HostOperation": {
+      "description": "What a host is asked to do for a session placed in it. A call is named by the\ncommand's `(session_id, sequence)`; the Tool's own call id never leaves Brain.",
       "oneOf": [
         {
           "properties": {
-            "invocation": {
-              "$ref": "#/$defs/ToolInvocation"
+            "input": true,
+            "name": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
             },
             "type": {
               "const": "invoke_tool",
@@ -505,7 +440,8 @@
           },
           "required": [
             "type",
-            "invocation"
+            "name",
+            "input"
           ],
           "type": "object"
         },
@@ -565,10 +501,6 @@
         "outcome"
       ],
       "type": "object"
-    },
-    "Identity": {
-      "pattern": "^[0-9a-f]{64}$",
-      "type": "string"
     },
     "Message": {
       "additionalProperties": false,
@@ -780,25 +712,6 @@
       ],
       "type": "string"
     },
-    "SessionEnvironment": {
-      "additionalProperties": false,
-      "description": "One immutable Environment specification in a session create. `bindings` carries\nplaintext values only until attach and is never copied into the session journal.",
-      "properties": {
-        "bindings": {
-          "$ref": "#/$defs/BindingValues",
-          "default": {}
-        },
-        "configuration": true,
-        "environment_id": {
-          "$ref": "#/$defs/EnvironmentId"
-        }
-      },
-      "required": [
-        "environment_id",
-        "configuration"
-      ],
-      "type": "object"
-    },
     "SessionId": {
       "pattern": "^ses_[A-Za-z0-9]{20,32}$",
       "type": "string"
@@ -891,20 +804,66 @@
         }
       ]
     },
+    "Tool": {
+      "additionalProperties": false,
+      "description": "One Tool as a session declares it: what the model is told, the Environment of the\nsession that runs it, what it needs there, and the implementation that Environment\ninterprets. Brain reads the name and the Environment and carries the rest.",
+      "properties": {
+        "description": {
+          "maxLength": 8192,
+          "type": "string"
+        },
+        "environment": {
+          "$ref": "#/$defs/EnvironmentName"
+        },
+        "implementation": {
+          "description": "Opaque to Brain; interpreted by the Environment. Absent when the Environment\nholds the implementation itself, as the host env does."
+        },
+        "input_schema": {
+          "type": "object"
+        },
+        "name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "needs": {
+          "default": [],
+          "description": "What the Tool needs from its Environment, as URIs: `pkg:` for software,\n`https:` or `wss:` for a network destination, `file:` for a filesystem location.\nBrain hands them to the Environment and reads none of them.",
+          "items": {
+            "format": "uri",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "output_schema": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema",
+        "environment"
+      ],
+      "type": "object"
+    },
     "ToolAdmission": {
       "properties": {
         "error": {
           "$ref": "#/$defs/TurnError"
         },
-        "identity": {
-          "$ref": "#/$defs/ToolIdentity"
+        "id": {
+          "$ref": "#/$defs/ToolId"
         },
         "status": {
           "$ref": "#/$defs/ToolAdmissionStatus"
         }
       },
       "required": [
-        "identity",
+        "id",
         "status"
       ],
       "type": "object"
@@ -916,34 +875,9 @@
       ],
       "type": "string"
     },
-    "ToolHosting": {
-      "description": "Where a tool's implementation executes: a placed implementation in an Environment,\nor a function held by a registered application host.",
-      "enum": [
-        "provisioned",
-        "resident"
-      ],
-      "type": "string"
-    },
-    "ToolIdentity": {
+    "ToolId": {
       "pattern": "^[0-9a-f]{64}$",
       "type": "string"
-    },
-    "ToolInvocation": {
-      "properties": {
-        "call_id": {
-          "type": "string"
-        },
-        "input": true,
-        "name": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "call_id",
-        "name",
-        "input"
-      ],
-      "type": "object"
     },
     "ToolResult": {
       "properties": {

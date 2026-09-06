@@ -1,18 +1,18 @@
 {
   "contract": "environment/v1",
-  "binding": {
-    "environment_id": "env_shared",
-    "directory_generation": 1
-  },
   "operation": {
     "sequence": 7,
-    "environment_id": "env_shared",
+    "environment": "sandbox",
     "session_id": "ses_0123456789abcdefghij",
-    "attachment_id": "att_example",
     "request": {
       "type": "invoke",
-      "call_id": "call_example",
       "tool": "read",
+      "implementation": {
+        "artifact_id": "artifact_read_v1"
+      },
+      "needs": [
+        "file:///workspace?access=write"
+      ],
       "input": {
         "path": "README.md"
       },

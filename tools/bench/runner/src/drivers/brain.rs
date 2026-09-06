@@ -22,8 +22,9 @@ pub struct BrainDriver {
     token: Option<String>,
     /// The prebuilt Agentloop Component. Admitted once in `prepare`.
     agentloop_package: PathBuf,
-    /// `identity`, not `digest`: the wire renamed it, and reading the old name silently
-    /// produced `None` and failed admission with a message that blamed the server.
+    /// `id`, the content address the wire names an admitted Agentloop by. Reading any
+    /// other name silently produced `None` and failed admission with a message that
+    /// blamed the server.
     agentloop_identity: Option<String>,
     /// The message sent for every timed turn. Fixed, because input length is an input to
     /// turn cost and must be identical across subjects.
@@ -125,7 +126,7 @@ impl Driver for BrainDriver {
             .json()
             .await?;
         self.agentloop_identity = admission
-            .get("identity")
+            .get("id")
             .and_then(Value::as_str)
             .map(str::to_owned);
         anyhow::ensure!(
@@ -141,7 +142,7 @@ impl Driver for BrainDriver {
             .as_ref()
             .context("prepare() must run before create()")?;
         let body = json!({
-            "agentloop": { "identity": identity, "configuration": {}, "environment_id": "brain-native" },
+            "agentloop": { "id": identity, "configuration": {}, "environment": "brain" },
             "model": {
                 "provider": "vercel-ai-gateway",
                 // The contract requires a provider-qualified name, so this must carry a
@@ -160,22 +161,17 @@ impl Driver for BrainDriver {
                 "description": "Returns its input unchanged.",
                 "input_schema": {"type": "object", "properties": {}},
                 "needs": [],
-                "binding_names": [],
-                "environment_id": "bench",
+                "implementation": {"type": "echo"},
+                "environment": "bench",
             }],
             "environments": [{
-                "environment_id": "bench",
+                "name": "bench",
+                "driver": "http",
+                "url": self.environment.base_url,
                 "configuration": {},
-                "bindings": {},
             }, {
-                "environment_id": "brain-native",
-                "configuration": {
-                    "driver": "brain_wasm",
-                    "network": {"allow": []},
-                    "filesystem": {"workspace": false},
-                    "secrets": [],
-                },
-                "bindings": {},
+                "name": "brain",
+                "driver": "brain",
             }],
         });
         let session = self

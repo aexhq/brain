@@ -1,7 +1,7 @@
 use super::*;
 use brain_protocol::{
-    AgentloopIdentity, Message, ModelBinding, ModelRequest, ModelResult, ModelStreamEvent, Outcome,
-    ToolCancellation, ToolDispatch, TurnInput, TurnOutput,
+    Message, ModelRequest, ModelResult, ModelStreamEvent, Outcome, ToolCancellation, ToolDispatch,
+    TurnInput, TurnOutput,
 };
 
 struct Echo;
@@ -11,8 +11,9 @@ impl LoopExecutor for Echo {
     async fn turn(
         &self,
         _: &SessionId,
-        _: &AgentloopIdentity,
-        _: serde_json::Value,
+        _: u64,
+        _: &AgentloopRef,
+        _: &Environment,
         input: TurnInput,
         _: Arc<dyn brain::TurnServices>,
     ) -> Result<TurnOutput, brain::Error> {
@@ -30,9 +31,10 @@ impl LoopExecutor for Echo {
 impl brain::ModelExecutor for Echo {
     async fn execute(
         &self,
+        _: &SessionId,
         _: &ModelBinding,
         _: ModelRequest,
-        _: &[ToolDefinition],
+        _: &[brain_protocol::ToolDefinition],
         _: &mut (dyn FnMut(ModelStreamEvent) + Send),
     ) -> Result<ModelResult, brain::Error> {
         panic!("echo does not call a model")
@@ -56,7 +58,14 @@ impl brain::ToolExecutor for Echo {
 fn api(root: &std::path::Path) -> ServerApi {
     let (telemetry, _) = brain_telemetry::telemetry_channel();
     let feed = Arc::new(Feed::new(telemetry.clone()));
-    let metadata = Arc::new(crate::metadata::ServerMetadata::open(&root.join("metadata")).unwrap());
+    let credentials =
+        Arc::new(crate::metadata::ServerMetadata::open(&root.join("metadata")).unwrap());
+    let loops = Arc::new(WorkerPool::new(
+        "unused",
+        root.join("run"),
+        root.join("components"),
+        Default::default(),
+    ));
     ServerApi::new(ServerResources {
         sessions_dir: root.join("sessions"),
         writer: Writer::spawn(),
@@ -74,23 +83,20 @@ fn api(root: &std::path::Path) -> ServerApi {
         session_idle_ttl: None,
         idempotency: IdempotencyStore::open(&root.join("requests/log"), Duration::from_secs(60))
             .unwrap(),
-        loops: Arc::new(WorkerPool::new(
-            "unused",
-            root.join("run"),
-            root.join("components"),
-            Default::default(),
-        )),
+        loops: loops.clone(),
         environments: Arc::new(EnvironmentRegistry::new(
-            Arc::new(crate::EnvironmentResources::open(&root.join("envs")).unwrap()),
-            "",
+            Arc::new(crate::BrainEnvironment::new(
+                loops,
+                Default::default(),
+                root.join("native-workspaces"),
+            )),
+            crate::HostEnvironment::open(&root.join("hosts/log")).unwrap(),
             Arc::new(crate::HttpEnvironmentAdapter::new(
                 reqwest::Client::new(),
-                None,
+                credentials.clone(),
             )),
         )),
-        resident_hosts: crate::ResidentHosts::open(&root.join("hosts/log")).unwrap(),
-        models: metadata.clone(),
-        metadata,
+        credentials,
         providers: Arc::new(brain::model::ProviderRegistry::default_set()),
     })
     .unwrap()
@@ -98,10 +104,11 @@ fn api(root: &std::path::Path) -> ServerApi {
 
 fn seed(api: &ServerApi, id: &str) -> Arc<LocalSessionStore> {
     let config: SessionConfig = serde_json::from_value(serde_json::json!({
-        "agentloop_identity": "a".repeat(64), "agentloop_environment_id": "native", "brain_configuration": {},
-        "model": {"binding_id": "model", "model": "test"}, "system": "test", "tools": [], "tool_bindings": [],
-        "environments": [{"environment_id": "native", "configuration": {"driver": "brain_wasm"}, "binding": {"environment_id": "native", "directory_generation": 1}, "resources": {}}]
-    })).unwrap();
+        "agentloop": {"id": "a".repeat(64), "configuration": {}, "environment": "brain"},
+        "model": {"provider": "openai", "name": "test"}, "system": "test", "tools": [],
+        "environments": [{"name": "brain", "driver": "brain"}]
+    }))
+    .unwrap();
     let store = LocalSessionStore::create(
         &api.resources.sessions_dir.join(id),
         SessionId::new(id),
@@ -274,6 +281,94 @@ async fn unsuccessful_artifact_preparation_does_not_claim_an_agent_effect() {
         api.resources
             .idempotency
             .replay("admit_agentloop", "prepare", &vec![1_u8])
+            .unwrap()
+            .is_none()
+    );
+    drop(api);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A session is created through the whole path: credentials sealed, the brain env set
+/// up with what is placed in it, the configuration admitted without a credential in it,
+/// and everything forgotten again at delete.
+#[tokio::test]
+async fn a_session_is_created_set_up_and_deleted_through_its_environments() {
+    let root = root("create");
+    let api = api(&root);
+    let request: CreateSessionRequest = serde_json::from_value(serde_json::json!({
+        "agentloop": {"id": "a".repeat(64), "configuration": {}, "environment": "brain"},
+        "model": {"provider": "openai", "name": "gpt-5-mini", "api_key": "model-key"},
+        "tools": [],
+        "environments": [
+            {"name": "brain", "driver": "brain"},
+            {"name": "sandbox", "driver": "http", "url": "http://127.0.0.1:1", "credential": "sandbox-key"}
+        ]
+    }))
+    .unwrap();
+    // The sandbox is unreachable, so its setup fails and the create with it: the brain
+    // env set up before it is torn down, and nothing of the session's credentials stays.
+    let error = api
+        .create_session("first".into(), request.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "ambiguous", "{}", error.message);
+    let failed = api.list_sessions().await.unwrap().sessions;
+    assert_eq!(failed.len(), 1);
+    assert!(matches!(failed[0].status, SessionStatus::Failed));
+    assert!(
+        api.resources
+            .credentials
+            .model(&failed[0].session_id)
+            .unwrap()
+            .is_none()
+    );
+    let events = api
+        .events(failed[0].session_id.clone(), None)
+        .await
+        .unwrap()
+        .events;
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    assert!(kinds.contains(&"environment_setup_ended"), "{kinds:?}");
+    assert!(kinds.contains(&"environment_setup_failed"), "{kinds:?}");
+    assert!(kinds.contains(&"environment_teardown_ended"), "{kinds:?}");
+    assert_eq!(kinds.last(), Some(&"environment_closed"));
+    assert!(
+        !serde_json::to_string(&events)
+            .unwrap()
+            .contains("sandbox-key"),
+        "a credential never enters the journal"
+    );
+
+    let mut only_brain = request.clone();
+    only_brain.environments.truncate(1);
+    let created = api
+        .create_session("second".into(), only_brain)
+        .await
+        .unwrap();
+    assert!(matches!(created.status, SessionStatus::Idle));
+    assert_eq!(
+        api.resources
+            .credentials
+            .model(&created.session_id)
+            .unwrap()
+            .unwrap()
+            .api_key
+            .as_str(),
+        "model-key"
+    );
+    api.end_session(created.session_id.clone(), "end".into())
+        .await
+        .unwrap();
+    api.delete_session(created.session_id.clone(), "delete".into())
+        .await
+        .unwrap();
+    assert!(
+        api.resources
+            .credentials
+            .model(&created.session_id)
             .unwrap()
             .is_none()
     );

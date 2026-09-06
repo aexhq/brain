@@ -1,8 +1,8 @@
 use std::{fs, path::PathBuf};
 
 use brain_protocol::{
-    CreateSessionRequest, EnvironmentCommand, EnvironmentReceipt, EnvironmentRequest,
-    EnvironmentResponse, Outcome, ToolManifest, TurnOutput,
+    CreateSessionRequest, Driver, EnvironmentCommand, EnvironmentReceipt, EnvironmentRequest,
+    EnvironmentResponse, Outcome, Tool, TurnOutput,
 };
 use serde_json::Value;
 
@@ -64,20 +64,20 @@ fn checked_in_examples_validate() {
     let environment_schema =
         jsonschema::draft202012::new(&read_json("contracts/environment/v1/schemas.json")).unwrap();
     for example in [
+        "contracts/environment/v1/examples/setup.json",
+        "contracts/environment/v1/examples/setup-result.json",
         "contracts/environment/v1/examples/invoke.json",
         "contracts/environment/v1/examples/invoke-result.json",
-        "contracts/environment/v1/examples/attach.json",
-        "contracts/environment/v1/examples/attach-result.json",
     ] {
         environment_schema
             .validate(&read_json(example))
             .unwrap_or_else(|error| panic!("{example}: {error}"));
     }
 
-    let manifest = read_json("contracts/tool/v1/examples/manifest.json");
+    let tool = read_json("contracts/tool/v1/examples/tool.json");
     jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json"))
         .unwrap()
-        .validate(&manifest)
+        .validate(&tool)
         .unwrap();
 
     let session = read_json("contracts/session/v1/examples/create-session.json");
@@ -88,22 +88,64 @@ fn checked_in_examples_validate() {
     );
 }
 
-/// A manifest always describes a provisioned implementation: a hosting axis is not a
-/// manifest field, and a manifest without an implementation is rejected outright.
+/// A Tool names its Environment and what it needs there as a bounded list of distinct
+/// URIs; the fields of the two Tool forms that used to exist are refused outright.
 #[test]
-fn a_manifest_without_an_implementation_is_rejected() {
+fn a_tool_names_one_environment_and_its_needs_as_uris() {
     let schema =
         jsonschema::draft202012::new(&read_json("contracts/tool/v1/schemas.json")).unwrap();
-    let mut manifest = read_json("contracts/tool/v1/examples/manifest.json");
-    manifest["hosting"] = serde_json::json!("resident");
-    assert!(schema.validate(&manifest).is_err());
-    manifest.as_object_mut().unwrap().remove("hosting");
-    schema.validate(&manifest).unwrap();
-    manifest.as_object_mut().unwrap().remove("implementation");
-    assert!(schema.validate(&manifest).is_err());
-    let mut needs = read_json("contracts/tool/v1/examples/manifest.json");
-    needs["needs"] = serde_json::json!(["../fs"]);
-    assert!(schema.validate(&needs).is_err());
+    let example = read_json("contracts/tool/v1/examples/tool.json");
+    schema.validate(&example).unwrap();
+    let mut without_environment = example.clone();
+    without_environment
+        .as_object_mut()
+        .unwrap()
+        .remove("environment");
+    assert!(schema.validate(&without_environment).is_err());
+    for deleted in ["hosting", "host_id", "binding_names", "environment_id"] {
+        let mut old = example.clone();
+        old[deleted] = serde_json::json!("x");
+        assert!(schema.validate(&old).is_err(), "{deleted} must be refused");
+    }
+    let mut repeated = example.clone();
+    repeated["needs"] = serde_json::json!(["pkg:apt/bash", "pkg:apt/bash"]);
+    assert!(schema.validate(&repeated).is_err());
+    let mut too_many = example.clone();
+    too_many["needs"] =
+        serde_json::json!((0..65).map(|i| format!("pkg:apt/p{i}")).collect::<Vec<_>>());
+    assert!(schema.validate(&too_many).is_err());
+    let mut host_tool = example;
+    host_tool.as_object_mut().unwrap().remove("implementation");
+    schema
+        .validate(&host_tool)
+        .expect("a Tool the host env holds itself carries no implementation");
+}
+
+/// An Environment entry says how Brain reaches it beside its own configuration: the
+/// driver decides which siblings are required, and the configuration is anything.
+#[test]
+fn an_environment_carries_its_driver_beside_its_configuration() {
+    let valid = |value: Value| {
+        definition_is_valid("contracts/session/v1/schemas.json", "Environment", &value)
+    };
+    assert!(valid(
+        serde_json::json!({"name": "brain", "driver": "brain"})
+    ));
+    assert!(valid(serde_json::json!({
+        "name": "app", "driver": "host", "host_id": "host_12345678901234567890", "configuration": {}
+    })));
+    assert!(valid(serde_json::json!({
+        "name": "sandbox", "driver": "http", "url": "https://sandbox.example",
+        "credential": "k", "configuration": {"region": "eu"}
+    })));
+    assert!(!valid(
+        serde_json::json!({"name": "sandbox", "driver": "http"})
+    ));
+    assert!(!valid(serde_json::json!({"name": "app", "driver": "host"})));
+    assert!(!valid(
+        serde_json::json!({"name": "x", "driver": "elsewhere"})
+    ));
+    assert!(!valid(serde_json::json!({"driver": "brain"})));
 }
 
 #[test]
@@ -123,28 +165,31 @@ fn rust_views_round_trip_contract_examples() {
     .unwrap();
     assert_eq!(session.model.provider, "vercel-ai-gateway");
     assert_eq!(session.model.name, "openai/gpt-5-mini");
-    assert_eq!(session.agentloop.identity.as_str(), "a".repeat(64));
+    assert_eq!(session.agentloop.id.as_str(), "a".repeat(64));
+    assert_eq!(session.agentloop.environment.as_str(), "brain");
     assert_eq!(session.system, "Be useful.");
     assert_eq!(session.tools.len(), 1);
     assert_eq!(session.tools[0].name, "read");
-    assert_eq!(
-        session.tools[0].environment_id.as_ref(),
-        Some(&session.environments[0].environment_id)
-    );
-    assert_eq!(session.tools[0].needs, vec!["fs"]);
+    assert_eq!(session.tools[0].environment, session.environments[1].name);
+    assert_eq!(session.tools[0].needs, vec!["file:///workspace"]);
     assert!(session.tools[0].implementation.is_some());
+    assert!(matches!(session.environments[0].driver, Driver::Brain {}));
+    assert!(matches!(
+        &session.environments[1].driver,
+        Driver::Http { url, credential: Some(_) } if url == "https://sandbox.example"
+    ));
 
     let command: EnvironmentCommand =
         serde_json::from_value(read_json("contracts/environment/v1/examples/invoke.json")).unwrap();
     assert!(matches!(
         command.operation.request,
-        EnvironmentRequest::Invoke { .. }
+        EnvironmentRequest::Invoke { ref tool, .. } if tool == "read"
     ));
-    let attach: EnvironmentCommand =
-        serde_json::from_value(read_json("contracts/environment/v1/examples/attach.json")).unwrap();
+    let setup: EnvironmentCommand =
+        serde_json::from_value(read_json("contracts/environment/v1/examples/setup.json")).unwrap();
     assert!(matches!(
-        attach.operation.request,
-        EnvironmentRequest::Attach { .. }
+        setup.operation.request,
+        EnvironmentRequest::Setup { ref needs, .. } if needs.len() == 3
     ));
     let response: EnvironmentResponse = serde_json::from_value(read_json(
         "contracts/environment/v1/examples/invoke-result.json",
@@ -156,10 +201,11 @@ fn rust_views_round_trip_contract_examples() {
             outcome: Outcome::Ok { .. }
         }
     ));
-    let manifest: ToolManifest =
-        serde_json::from_value(read_json("contracts/tool/v1/examples/manifest.json")).unwrap();
-    assert_eq!(manifest.name, "bash");
-    assert_eq!(manifest.binding_names, vec!["API_BASE"]);
+    let tool: Tool =
+        serde_json::from_value(read_json("contracts/tool/v1/examples/tool.json")).unwrap();
+    assert_eq!(tool.name, "bash");
+    assert_eq!(tool.environment.as_str(), "sandbox");
+    assert_eq!(tool.definition().name, "bash");
 
     let output: TurnOutput = serde_json::from_value(
         read_json("contracts/agentloop/v1/examples/turn.json")["output"].clone(),
@@ -200,42 +246,4 @@ fn model_selection_names_are_validated_per_provider() {
     assert!(!validate(&selection("anthropic", "claude sonnet")));
     assert!(!validate(&selection("not a provider", "model")));
     assert!(!validate(&selection("", "model")));
-}
-
-/// A resident Tool is answered by its registered application host. It carries no
-/// implementation, needs no Environment resources, and names the host instead.
-#[test]
-fn a_resident_tool_binds_a_host_and_no_environment() {
-    let session = read_json("contracts/session/v1/examples/create-session.json");
-    let mut tool = session["tools"][0].clone();
-    tool["hosting"] = serde_json::json!("resident");
-    tool["host_id"] = serde_json::json!("host_12345678901234567890");
-    tool["needs"] = serde_json::json!([]);
-    tool.as_object_mut().unwrap().remove("implementation");
-    let mut request = session.clone();
-    // A resident Tool still naming an Environment is contradictory.
-    request["tools"][0] = tool.clone();
-    assert!(!definition_is_valid(
-        "contracts/session/v1/schemas.json",
-        "CreateSessionRequest",
-        &request
-    ));
-    tool.as_object_mut().unwrap().remove("environment_id");
-    request["tools"][0] = tool;
-    validate_definition(
-        "contracts/session/v1/schemas.json",
-        "CreateSessionRequest",
-        &request,
-    );
-    // And a provisioned Tool without an Environment stays rejected.
-    let mut bare = session.clone();
-    bare["tools"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("environment_id");
-    assert!(!definition_is_valid(
-        "contracts/session/v1/schemas.json",
-        "CreateSessionRequest",
-        &bare
-    ));
 }

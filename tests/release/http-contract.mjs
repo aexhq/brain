@@ -66,18 +66,14 @@ const admitted = await call("POST", "/v1/agentloops", {
 });
 assert.equal(admitted.response.status, 200);
 assert.equal(admitted.result.status, "admitted");
-const admission = await call("GET", `/v1/agentloops/${admitted.result.identity}`);
+const admission = await call("GET", `/v1/agentloops/${admitted.result.id}`);
 assert.deepEqual(admission.result, admitted.result);
 
 const createBody = {
-  agentloop: { identity: admitted.result.identity, configuration: {}, environment_id: "env_native" },
+  agentloop: { id: admitted.result.id, configuration: {}, environment: "brain" },
   model: { provider: "vercel-ai-gateway", name: "openai/gpt-5-mini", api_key: "release-smoke-key" },
   tools: [],
-  environments: [{
-    environment_id: "env_native",
-    configuration: { driver: "brain_wasm", network: { allow: [] }, filesystem: { workspace: false }, secrets: [] },
-    bindings: {},
-  }],
+  environments: [{ name: "brain", driver: "brain" }],
 };
 const created = await call("POST", "/v1/sessions", { body: createBody, key: "http-contract-create" });
 assert.equal(created.response.status, 200);

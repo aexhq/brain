@@ -4,6 +4,8 @@
 - Status: Accepted
 - Compiled: 2026-09-05
 
+Amended by: [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md) and [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md): model credentials are sealed under the session id rather than a binding identity, and host token hashes belong to the host env.
+
 ## Context
 
 Restart could lose HTTP claims or resident-host identity, and cancellation/ending could race remote effects or teardown. Reissuing a claimed request or forgetting a started effect would break send-once semantics.

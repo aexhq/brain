@@ -17,10 +17,10 @@ use std::{
 };
 
 use brain_protocol::{
-    Event, EventId, LiveEvent, Message, MessageRequest, ModelRequest, ModelResult,
-    ModelStreamEvent, Outcome, RuntimeEnvelope, SessionConfig, SessionStatus, SessionSummary,
-    StreamingEvent, ToolCancellation, ToolDefinition, ToolDispatch, ToolInvocation, ToolResult,
-    TurnInput, TurnOutput,
+    LiveEvent, Message, MessageRequest, ModelRequest, ModelResult, ModelStreamEvent, Outcome,
+    RuntimeEnvelope, SessionConfig, SessionStatus, SessionSummary, StreamingEvent, Tool,
+    ToolCancellation, ToolDefinition, ToolDispatch, ToolInvocation, ToolResult, TurnInput,
+    TurnOutput,
     codes::{self, Failure},
 };
 use futures_util::future::join_all;
@@ -136,25 +136,30 @@ impl SessionActor {
             .unwrap_or(0);
         let event_records = self.store.records_after(since, EVENTS_PER_TURN)?;
         let events_through = event_records.last().map_or(since, |record| record.sequence);
-        let events = event_records.into_iter().map(event_of).collect();
+        let events = event_records
+            .into_iter()
+            .map(SessionRecord::into_event)
+            .collect();
         let input = TurnInput {
             input: request.input,
             transcript: self.folded.transcript.clone(),
             slots: self.folded.slots.clone(),
             events,
-            configuration: self.config.brain_configuration.clone(),
+            configuration: self.config.agentloop.configuration.clone(),
             system: self.config.system.clone(),
-            tools: self.config.tools.clone(),
+            tools: self.config.definitions(),
             runtime: RuntimeEnvelope::at(&self.row.session_id, self.row.through_sequence),
         };
-        self.commit(
-            vec![AppendRecord::new(
-                codes::event::ACTIVATION_STARTED,
-                serde_json::json!({"since": since}),
-            )],
-            None,
-        )
-        .await?;
+        let activation = self
+            .commit(
+                vec![AppendRecord::new(
+                    codes::event::ACTIVATION_STARTED,
+                    serde_json::json!({"since": since}),
+                )],
+                None,
+            )
+            .await?[0]
+            .sequence;
         let host = Arc::new(TurnHost {
             session_id: self.row.session_id.clone(),
             store: self.store.clone(),
@@ -171,16 +176,15 @@ impl SessionActor {
         });
         let agentloop_environment = self
             .config
-            .environments
-            .iter()
-            .find(|environment| environment.environment_id == self.config.agentloop_environment_id)
-            .map(|environment| environment.configuration.clone())
+            .environment(&self.config.agentloop.environment)
+            .cloned()
             .ok_or_else(|| Error::InvalidState("Agentloop Environment is missing".into()))?;
         let outcome = {
             let running = self.runtime.loop_executor.turn(
                 &self.row.session_id,
-                &self.config.agentloop_identity,
-                agentloop_environment,
+                activation,
+                &self.config.agentloop,
+                &agentloop_environment,
                 input,
                 host.clone(),
             );
@@ -433,7 +437,7 @@ impl TurnHost {
     /// name would offer the model the same tool twice. Both fail the call.
     fn offered_tools(&self, request: &ModelRequest) -> Result<Vec<ToolDefinition>, Error> {
         let Some(names) = &request.tools else {
-            return Ok(self.config.tools.clone());
+            return Ok(self.config.definitions());
         };
         let mut seen = HashSet::with_capacity(names.len());
         names
@@ -444,16 +448,11 @@ impl TurnHost {
                         "model request offers Tool `{name}` twice"
                     )));
                 }
-                self.config
-                    .tools
-                    .iter()
-                    .find(|tool| &tool.name == name)
-                    .cloned()
-                    .ok_or_else(|| {
-                        Error::InvalidState(format!(
-                            "model request offers Tool `{name}`, which the session was not created with"
-                        ))
-                    })
+                self.config.tool(name).map(Tool::definition).ok_or_else(|| {
+                    Error::InvalidState(format!(
+                        "model request offers Tool `{name}`, which the session was not created with"
+                    ))
+                })
             })
             .collect()
     }
@@ -561,10 +560,13 @@ impl TurnServices for TurnHost {
                 live.send((live_session.clone(), LiveEvent::Streaming(streaming)));
             }
         };
-        let call =
-            self.runtime
-                .model_executor
-                .execute(&self.config.model, request, &tools, &mut on_event);
+        let call = self.runtime.model_executor.execute(
+            &self.session_id,
+            &self.config.model,
+            request,
+            &tools,
+            &mut on_event,
+        );
         // A cancellation ends the wait, not the provider's work: the stream is dropped and
         // the record says the outcome is unknown.
         let cancelled = async {
@@ -627,26 +629,36 @@ impl TurnServices for TurnHost {
             let mut dispatches = Vec::with_capacity(calls.len());
             let mut started = Vec::with_capacity(calls.len());
             for invocation in calls {
-                let binding = self
+                let tool = self.config.tool(&invocation.name).cloned().ok_or_else(|| {
+                    Error::InvalidState(format!(
+                        "Tool `{}` is not one the session was created with",
+                        invocation.name
+                    ))
+                })?;
+                let environment = self
                     .config
-                    .tool_bindings
-                    .iter()
-                    .find(|binding| binding.name == invocation.name)
+                    .environment(&tool.environment)
                     .cloned()
                     .ok_or_else(|| {
-                        Error::InvalidState(format!("unbound Tool `{}`", invocation.name))
+                        Error::InvalidState(format!(
+                            "Tool `{}` names Environment `{}`, which this session does not have",
+                            tool.name, tool.environment
+                        ))
                     })?;
                 let dispatch = ToolDispatch {
                     sequence: 0,
                     session_id: self.session_id.clone(),
-                    binding,
+                    tool,
+                    environment,
                     invocation,
                     deadline_ms: self.runtime.tool_deadline_ms,
                 };
+                // A reference, not a copy: the Tool and its Environment live once, in
+                // the configuration recorded at creation.
                 started.push(AppendRecord::new(
                     codes::event::TOOL_CALL_STARTED,
                     serde_json::json!({
-                        "binding": &dispatch.binding,
+                        "tool": &dispatch.tool.name,
                         "invocation": &dispatch.invocation,
                         "deadline_ms": dispatch.deadline_ms,
                     }),
@@ -668,7 +680,7 @@ impl TurnServices for TurnHost {
                 let cancel = self.cancel_requested.clone();
                 async move {
                     let sequence = dispatch.sequence;
-                    let environment_id = dispatch.binding.environment_id.clone();
+                    let environment = dispatch.environment.name.clone();
                     let call_id = dispatch.invocation.call_id.clone();
                     let deadline = Duration::from_millis(dispatch.deadline_ms);
                     // The deadline is enforced here, on the calling side: the remote
@@ -706,9 +718,9 @@ impl TurnServices for TurnHost {
                     let mut cursor = self.cursor.lock().await;
                     let mut records = vec![AppendRecord::new(codes::event::TOOL_CALL_ENDED,
                         serde_json::json!({"sequence": sequence, "result": result}))];
-                    if unreachable && let Some(environment_id) = environment_id {
+                    if unreachable {
                         records.push(AppendRecord::new(codes::event::ENVIRONMENT_UNREACHABLE,
-                            serde_json::json!({"environment_id": environment_id, "sequence": sequence})));
+                            serde_json::json!({"environment": environment, "sequence": sequence})));
                     }
                     self.append(&mut cursor, records).await?;
                     Ok::<_, Error>((index, result, dropped))
@@ -800,7 +812,7 @@ impl TurnHost {
                 name: name.into(),
                 payload,
                 session_id: Some(self.session_id.clone()),
-                event_id: None,
+                sequence: None,
             });
     }
 
@@ -814,13 +826,13 @@ impl TurnHost {
                     sequence: 0,
                     target_sequence: dispatch.sequence,
                     session_id: dispatch.session_id.clone(),
-                    binding: dispatch.binding.clone(),
+                    environment: dispatch.environment.clone(),
                 };
                 started.push(AppendRecord::new(
                     codes::event::TOOL_CANCEL_STARTED,
                     serde_json::json!({
                         "target_sequence": cancellation.target_sequence,
-                        "binding": &cancellation.binding,
+                        "tool": &dispatch.tool.name,
                     }),
                 ));
                 cancellations.push(cancellation);
@@ -907,16 +919,6 @@ pub(crate) fn delta(recorded: &[Message], wanted: &[Message]) -> Option<JournalE
         keep: keep as u64,
         append: wanted[keep..].to_vec(),
     })
-}
-
-fn event_of(record: SessionRecord) -> Event {
-    Event {
-        event_id: EventId::new(format!("evt_{}_{}", record.session_id, record.sequence)),
-        sequence: record.sequence,
-        recorded_at_ms: record.recorded_at_ms,
-        event_type: record.kind,
-        data: record.payload,
-    }
 }
 
 fn valid_kind(kind: &str) -> bool {

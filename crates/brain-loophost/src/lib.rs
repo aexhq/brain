@@ -11,8 +11,11 @@ pub use client::{TurnBridge, WorkerClient};
 pub use limits::LoopLimits;
 pub use runtime::{AdmissionEngine, AdmittedAgentloop, AdmittedTool, GuestHost, NativeToolInput};
 pub use service::WorkerService;
-pub use supervisor::{LoopError, NativePolicy, WorkerPool};
-pub use wire::{ComponentKind, HostCall, NativeEnvironment, WorkerRequest, WorkerResponse};
+pub use supervisor::{LoopError, WorkerPool};
+pub use wire::{
+    Access, ComponentKind, HostCall, NativeEnvironment, WorkerRequest, WorkerResponse, Workspace,
+    network_covers,
+};
 
 pub const MAX_PACKAGE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_TURN_INPUT_BYTES: usize = 32 * 1024 * 1024;

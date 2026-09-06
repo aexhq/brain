@@ -1,13 +1,8 @@
 #[cfg(unix)]
 use std::process::Stdio;
-use std::{
-    collections::{BTreeMap, HashSet},
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
-use brain_protocol::{AgentloopIdentity, ToolIdentity, TurnError, TurnInput, TurnOutput};
+use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput};
 use tokio::sync::{Mutex, Semaphore};
 
 use crate::{LoopLimits, NativeEnvironment, NativeToolInput, TurnBridge, WorkerClient};
@@ -55,23 +50,15 @@ pub struct WorkerPool {
     socket: PathBuf,
     packages: PathBuf,
     limits: LoopLimits,
-    native_policy: NativePolicy,
     permits: Arc<Semaphore>,
     tool_permits: Arc<Semaphore>,
     state: Mutex<WorkerState>,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct NativePolicy {
-    pub network: HashSet<String>,
-    pub secrets: HashSet<String>,
-    pub filesystem: HashSet<String>,
-}
-
 #[derive(Default)]
 struct WorkerState {
-    agentloops: HashSet<AgentloopIdentity>,
-    tools: HashSet<ToolIdentity>,
+    agentloops: HashSet<AgentloopId>,
+    tools: HashSet<ToolId>,
     #[cfg(unix)]
     child: Option<tokio::process::Child>,
 }
@@ -93,115 +80,11 @@ impl WorkerPool {
             permits: Arc::new(Semaphore::new(limits.concurrent_turns_per_worker.max(1))),
             tool_permits: Arc::new(Semaphore::new(limits.concurrent_turns_per_worker.max(1))),
             limits,
-            native_policy: NativePolicy::default(),
             state: Mutex::new(WorkerState::default()),
         }
     }
 
-    pub fn with_native_policy(mut self, native_policy: NativePolicy) -> Self {
-        self.native_policy = native_policy;
-        self
-    }
-
-    pub fn validate_native_environment(
-        &self,
-        configuration: &serde_json::Value,
-    ) -> Result<(), LoopError> {
-        let object = configuration
-            .as_object()
-            .ok_or("Brain Wasm Environment configuration must be an object")?;
-        if object.get("driver").and_then(serde_json::Value::as_str) != Some("brain_wasm") {
-            return Err("native execution requires a brain_wasm Environment".into());
-        }
-        for target in object
-            .get("network")
-            .and_then(serde_json::Value::as_object)
-            .and_then(|network| network.get("allow"))
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let target = target
-                .as_str()
-                .ok_or("Brain Wasm network allow entries must be strings")?;
-            if !self.native_policy.network.iter().any(|grant| {
-                grant
-                    .trim_end_matches('/')
-                    .eq_ignore_ascii_case(target.trim_end_matches('/'))
-            }) {
-                return Err(format!(
-                    "Brain Wasm network target `{target}` is not granted by this server"
-                )
-                .into());
-            }
-        }
-        for name in object
-            .get("secrets")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let name = name
-                .as_str()
-                .ok_or("Brain Wasm secret names must be strings")?;
-            if !self.native_policy.secrets.contains(name) {
-                return Err(
-                    format!("Brain Wasm secret `{name}` is not granted by this server").into(),
-                );
-            }
-            std::env::var(name)
-                .map_err(|_| format!("Brain Wasm secret `{name}` is not configured"))?;
-        }
-        let filesystem = object
-            .get("filesystem")
-            .map(|value| {
-                value
-                    .as_object()
-                    .ok_or("Brain Wasm filesystem must be an object")
-            })
-            .transpose()?;
-        if filesystem.is_some_and(|value| {
-            value
-                .keys()
-                .any(|name| name != "scratch" && name != "workspace")
-        }) {
-            return Err("Brain Wasm filesystem has an unknown field".into());
-        }
-        for name in ["scratch", "workspace"] {
-            let requested = filesystem
-                .and_then(|value| value.get(name))
-                .map(|value| {
-                    value
-                        .as_bool()
-                        .ok_or("Brain Wasm filesystem grants must be boolean")
-                })
-                .transpose()?
-                .unwrap_or(false);
-            if requested && !self.native_policy.filesystem.contains(name) {
-                return Err(format!(
-                    "Brain Wasm filesystem `{name}` is not granted by this server"
-                )
-                .into());
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn remove_workspace(&self, session: &str) -> Result<(), LoopError> {
-        let path = self
-            .packages
-            .parent()
-            .unwrap_or(&self.packages)
-            .join("native-workspaces")
-            .join(session);
-        match tokio::fs::remove_dir_all(path).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(LoopError::Failed(error.to_string())),
-        }
-    }
-
-    pub async fn admit(&self, package: Vec<u8>) -> Result<AgentloopIdentity, LoopError> {
+    pub async fn admit(&self, package: Vec<u8>) -> Result<AgentloopId, LoopError> {
         if package.len() > self.limits.package_bytes {
             return Err("Agentloop package exceeds the configured admission limit".into());
         }
@@ -218,7 +101,7 @@ impl WorkerPool {
         Ok(digest)
     }
 
-    pub async fn admit_tool(&self, component: Vec<u8>) -> Result<ToolIdentity, LoopError> {
+    pub async fn admit_tool(&self, component: Vec<u8>) -> Result<ToolId, LoopError> {
         if component.len() > self.limits.package_bytes {
             return Err("Tool Component exceeds the configured admission limit".into());
         }
@@ -237,13 +120,13 @@ impl WorkerPool {
         Ok(digest)
     }
 
-    pub async fn status(&self, digest: &AgentloopIdentity) -> Result<bool, LoopError> {
+    pub async fn status(&self, digest: &AgentloopId) -> Result<bool, LoopError> {
         tokio::fs::try_exists(component_path(&self.packages, "agentloop", digest.as_str()))
             .await
             .map_err(|error| LoopError::Failed(error.to_string()))
     }
 
-    pub async fn tool_status(&self, digest: &ToolIdentity) -> Result<bool, LoopError> {
+    pub async fn tool_status(&self, digest: &ToolId) -> Result<bool, LoopError> {
         tokio::fs::try_exists(component_path(&self.packages, "tool", digest.as_str()))
             .await
             .map_err(|error| LoopError::Failed(error.to_string()))
@@ -255,13 +138,13 @@ impl WorkerPool {
         Ok(WorkerClient::new(&self.socket).ping().await?)
     }
 
-    /// Runs one turn. The bridge answers the guest's host calls for as long as the turn
-    /// runs; a worker that stops answering between them is restarted.
+    /// Runs one turn with exactly the grants in `environment`. The bridge answers the
+    /// guest's host calls for as long as the turn runs; a worker that stops answering
+    /// between them is restarted.
     pub async fn turn(
         &self,
-        session: String,
-        digest: AgentloopIdentity,
-        environment: serde_json::Value,
+        digest: AgentloopId,
+        environment: NativeEnvironment,
         input: TurnInput,
         bridge: &dyn TurnBridge,
     ) -> Result<TurnOutput, LoopError> {
@@ -270,7 +153,6 @@ impl WorkerPool {
             .clone()
             .try_acquire_owned()
             .map_err(|_| LoopError::Overloaded)?;
-        let environment = self.native_environment(&session, environment).await?;
         // Everything that needs the worker's identity happens under the lock; the turn
         // itself does not. Holding it across the call would serialise every session in
         // the process onto one turn at a time, whatever the permits allowed.
@@ -323,9 +205,8 @@ impl WorkerPool {
 
     pub async fn tool(
         &self,
-        session: String,
-        digest: ToolIdentity,
-        environment: serde_json::Value,
+        digest: ToolId,
+        environment: NativeEnvironment,
         input: NativeToolInput,
         bridge: &dyn TurnBridge,
     ) -> Result<serde_json::Value, LoopError> {
@@ -334,7 +215,6 @@ impl WorkerPool {
             .clone()
             .try_acquire_owned()
             .map_err(|_| LoopError::Overloaded)?;
-        let environment = self.native_environment(&session, environment).await?;
         {
             let mut state = self.state.lock().await;
             self.ensure_worker(&mut state).await?;
@@ -420,82 +300,6 @@ impl WorkerPool {
         Ok(())
     }
 
-    async fn native_environment(
-        &self,
-        session: &str,
-        configuration: serde_json::Value,
-    ) -> Result<NativeEnvironment, LoopError> {
-        self.validate_native_environment(&configuration)?;
-        let object = configuration
-            .as_object()
-            .ok_or("Brain Wasm Environment configuration must be an object")?;
-        if object.get("driver").and_then(serde_json::Value::as_str) != Some("brain_wasm") {
-            return Err("native execution requires a brain_wasm Environment".into());
-        }
-        let network_allow = object
-            .get("network")
-            .and_then(serde_json::Value::as_object)
-            .and_then(|network| network.get("allow"))
-            .and_then(serde_json::Value::as_array)
-            .map(|allow| {
-                allow
-                    .iter()
-                    .map(|entry| {
-                        entry
-                            .as_str()
-                            .map(str::to_owned)
-                            .ok_or("Brain Wasm network allow entries must be strings")
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
-        let mut secrets = BTreeMap::new();
-        for name in object
-            .get("secrets")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let name = name
-                .as_str()
-                .ok_or("Brain Wasm secret names must be strings")?;
-            let value = std::env::var(name)
-                .map_err(|_| format!("Brain Wasm secret `{name}` is not configured"))?;
-            secrets.insert(name.to_owned(), value);
-        }
-        let scratch = object
-            .get("filesystem")
-            .and_then(serde_json::Value::as_object)
-            .and_then(|filesystem| filesystem.get("scratch"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let workspace = object
-            .get("filesystem")
-            .and_then(serde_json::Value::as_object)
-            .and_then(|filesystem| filesystem.get("workspace"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-            .then(|| {
-                self.packages
-                    .parent()
-                    .unwrap_or(&self.packages)
-                    .join("native-workspaces")
-                    .join(session)
-            });
-        if let Some(workspace) = &workspace {
-            tokio::fs::create_dir_all(workspace)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(NativeEnvironment {
-            scratch,
-            workspace: workspace.map(|path| path.to_string_lossy().into_owned()),
-            network_allow,
-            secrets,
-        })
-    }
-
     #[cfg(not(unix))]
     async fn ensure_worker(&self, _state: &mut WorkerState) -> Result<(), String> {
         let _ = &self.worker_binary;
@@ -572,17 +376,6 @@ fn component_path(directory: &std::path::Path, kind: &str, digest: &str) -> Path
 mod tests {
     use super::*;
 
-    fn pool(policy: NativePolicy) -> WorkerPool {
-        let root = PathBuf::from("unused-native-policy-test");
-        WorkerPool::new(
-            "worker",
-            root.join("run"),
-            root.join("components"),
-            LoopLimits::default(),
-        )
-        .with_native_policy(policy)
-    }
-
     #[tokio::test]
     async fn tool_status_reads_the_admitted_component_store() {
         let suffix = std::time::SystemTime::now()
@@ -595,7 +388,7 @@ mod tests {
         ));
         let components = root.join("components");
         tokio::fs::create_dir_all(&components).await.unwrap();
-        let admitted = ToolIdentity::new("b".repeat(64));
+        let admitted = ToolId::new("b".repeat(64));
         tokio::fs::write(
             component_path(&components, "tool", admitted.as_str()),
             b"component",
@@ -611,89 +404,10 @@ mod tests {
         assert!(pool.tool_status(&admitted).await.unwrap());
         assert!(
             !pool
-                .tool_status(&ToolIdentity::new("c".repeat(64)))
+                .tool_status(&ToolId::new("c".repeat(64)))
                 .await
                 .unwrap()
         );
         tokio::fs::remove_dir_all(&root).await.unwrap();
-    }
-
-    #[test]
-    fn caller_network_and_secret_names_do_not_grant_themselves() {
-        let pool = pool(NativePolicy::default());
-        let network = serde_json::json!({
-            "driver": "brain_wasm",
-            "network": {"allow": ["https://internal.example"]},
-            "secrets": []
-        });
-        assert!(pool.validate_native_environment(&network).is_err());
-        let secret = serde_json::json!({
-            "driver": "brain_wasm",
-            "network": {"allow": []},
-            "secrets": ["BRAIN_API_TOKEN"]
-        });
-        assert!(pool.validate_native_environment(&secret).is_err());
-    }
-
-    #[test]
-    fn deployment_network_grants_are_exact() {
-        let pool = pool(NativePolicy {
-            network: HashSet::from(["https://api.example.com".into()]),
-            secrets: HashSet::new(),
-            filesystem: HashSet::new(),
-        });
-        let granted = serde_json::json!({
-            "driver": "brain_wasm",
-            "network": {"allow": ["https://api.example.com"]},
-            "secrets": []
-        });
-        assert!(pool.validate_native_environment(&granted).is_ok());
-        let different = serde_json::json!({
-            "driver": "brain_wasm",
-            "network": {"allow": ["api.example.com"]},
-            "secrets": []
-        });
-        assert!(pool.validate_native_environment(&different).is_err());
-    }
-
-    #[test]
-    fn caller_filesystem_requests_do_not_grant_themselves() {
-        let requested = serde_json::json!({
-            "driver": "brain_wasm",
-            "filesystem": {"scratch": true, "workspace": false}
-        });
-        assert!(
-            pool(NativePolicy::default())
-                .validate_native_environment(&requested)
-                .is_err()
-        );
-        assert!(
-            pool(NativePolicy {
-                filesystem: HashSet::from(["scratch".into()]),
-                ..NativePolicy::default()
-            })
-            .validate_native_environment(&requested)
-            .is_ok()
-        );
-    }
-
-    #[tokio::test]
-    async fn removing_a_session_removes_its_native_workspace() {
-        let root = tempfile::tempdir().unwrap();
-        let components = root.path().join("components");
-        let workspace = root.path().join("native-workspaces").join("ses_test");
-        tokio::fs::create_dir_all(&workspace).await.unwrap();
-        tokio::fs::write(workspace.join("file"), b"data")
-            .await
-            .unwrap();
-        let pool = WorkerPool::new(
-            "worker",
-            root.path().join("run"),
-            components,
-            LoopLimits::default(),
-        );
-        pool.remove_workspace("ses_test").await.unwrap();
-        assert!(!workspace.exists());
-        pool.remove_workspace("ses_test").await.unwrap();
     }
 }

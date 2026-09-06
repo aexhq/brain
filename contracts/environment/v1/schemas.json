@@ -1,43 +1,79 @@
 {
   "$defs": {
-    "AttachmentId": {
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    "AgentloopId": {
+      "pattern": "^[0-9a-f]{64}$",
       "type": "string"
     },
-    "BindingValues": {
-      "additionalProperties": {
-        "maxLength": 32768,
-        "type": "string"
-      },
-      "propertyNames": {
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-        "type": "string"
-      },
-      "type": "object"
-    },
-    "EnvironmentBinding": {
-      "description": "How an environment is addressed on its wire.",
-      "properties": {
-        "directory_generation": {
-          "format": "uint64",
-          "minimum": 1,
-          "type": "integer"
+    "ContentBlock": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
         },
-        "environment_id": {
-          "$ref": "#/$defs/EnvironmentId"
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "input": true,
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_use",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "content": true,
+            "is_error": {
+              "description": "ALWAYS set on a failed tool. Omitting the flag on a failure lets the\nmodel read that failure as a success.",
+              "type": "boolean"
+            },
+            "tool_use_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tool_use_id",
+            "content",
+            "is_error"
+          ],
+          "type": "object"
         }
-      },
-      "required": [
-        "environment_id",
-        "directory_generation"
-      ],
-      "type": "object"
+      ]
     },
     "EnvironmentCommand": {
       "properties": {
-        "binding": {
-          "$ref": "#/$defs/EnvironmentBinding"
-        },
         "contract": {
           "const": "environment/v1"
         },
@@ -47,28 +83,25 @@
       },
       "required": [
         "contract",
-        "binding",
         "operation"
       ],
       "type": "object"
     },
-    "EnvironmentId": {
+    "EnvironmentName": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "type": "string"
     },
     "EnvironmentOperation": {
+      "description": "One operation on an Environment, named by `(session_id, environment, sequence)`.",
       "properties": {
-        "attachment_id": {
-          "$ref": "#/$defs/AttachmentId"
-        },
-        "environment_id": {
-          "$ref": "#/$defs/EnvironmentId"
+        "environment": {
+          "$ref": "#/$defs/EnvironmentName"
         },
         "request": {
           "$ref": "#/$defs/EnvironmentRequest"
         },
         "sequence": {
-          "description": "The sequence of the journal record that started this operation. With\n`session_id` it names the operation: a redelivery carries the same pair, so a\nreceiver that already answered it can say so. Setup and teardown belong to the\nowning session's journal too.",
+          "description": "The sequence of the journal record that started this operation. With\n`session_id` it names the operation: a redelivery carries the same pair, so a\nreceiver that already answered it can say so.",
           "format": "uint64",
           "minimum": 1,
           "type": "integer"
@@ -79,7 +112,7 @@
       },
       "required": [
         "sequence",
-        "environment_id",
+        "environment",
         "session_id",
         "request"
       ],
@@ -89,10 +122,6 @@
       "oneOf": [
         {
           "properties": {
-            "resources": {
-              "$ref": "#/$defs/Resources",
-              "description": "The resources this environment declares, reported on setup/attach receipts\nand fed into the bind-time `needs ⊆ resources` check."
-            },
             "type": {
               "const": "accepted",
               "type": "string"
@@ -149,6 +178,22 @@
         },
         {
           "properties": {
+            "output": {
+              "$ref": "#/$defs/TurnOutput"
+            },
+            "type": {
+              "const": "turned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "output"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
             "code": {
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
               "type": "string"
@@ -193,10 +238,23 @@
       ]
     },
     "EnvironmentRequest": {
+      "description": "What Brain asks an Environment to do. An Environment provides resources and learns\nwhat runs in it only when asked to run it: setup carries its configuration and the\nneeds of everything placed there, each invoke carries the Tool it runs, each turn\nthe Agentloop.",
       "oneOf": [
         {
           "properties": {
             "configuration": true,
+            "needs": {
+              "description": "Every need of every Tool and the Agentloop placed here, as URIs. The\nEnvironment refuses at setup what it cannot honour, naming the URI.",
+              "items": {
+                "format": "uri",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "type": "array",
+              "uniqueItems": true
+            },
             "type": {
               "const": "setup",
               "type": "string"
@@ -204,32 +262,8 @@
           },
           "required": [
             "type",
-            "configuration"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "bindings": {
-              "$ref": "#/$defs/BindingValues",
-              "description": "Binding values by name, injected into hosted tools at runtime. Plaintext on\nthis wire only: the journal never holds the values."
-            },
-            "provisions": {
-              "items": {
-                "$ref": "#/$defs/Provision"
-              },
-              "maxItems": 128,
-              "type": "array"
-            },
-            "type": {
-              "const": "attach",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "provisions",
-            "bindings"
+            "configuration",
+            "needs"
           ],
           "type": "object"
         },
@@ -254,17 +288,28 @@
         },
         {
           "properties": {
-            "call_id": {
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-              "type": "string"
-            },
             "deadline_ms": {
               "format": "uint64",
               "minimum": 1,
               "type": "integer"
             },
+            "implementation": {
+              "description": "The Tool's implementation as it was declared: opaque to Brain, interpreted here."
+            },
             "input": true,
+            "needs": {
+              "items": {
+                "format": "uri",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "type": "array",
+              "uniqueItems": true
+            },
             "tool": {
+              "description": "The Tool's name, as the session declared it.",
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
               "type": "string"
             },
@@ -275,10 +320,42 @@
           },
           "required": [
             "type",
-            "call_id",
             "tool",
+            "needs",
             "input",
             "deadline_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/AgentloopId"
+            },
+            "input": {
+              "$ref": "#/$defs/TurnInput"
+            },
+            "needs": {
+              "items": {
+                "format": "uri",
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maxItems": 64,
+              "type": "array",
+              "uniqueItems": true
+            },
+            "type": {
+              "const": "turn",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "needs",
+            "input"
           ],
           "type": "object"
         },
@@ -344,6 +421,52 @@
         "contract",
         "sequence",
         "receipt"
+      ],
+      "type": "object"
+    },
+    "Event": {
+      "description": "One journal record as a client reads it. `(session_id, sequence)` names it; there\nis no other identifier.",
+      "properties": {
+        "data": true,
+        "event_type": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "recorded_at_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sequence",
+        "recorded_at_ms",
+        "event_type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "Message": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/ContentBlock"
+          },
+          "type": "array"
+        },
+        "role": {
+          "$ref": "#/$defs/Role"
+        }
+      },
+      "required": [
+        "role",
+        "content"
       ],
       "type": "object"
     },
@@ -441,122 +564,49 @@
       ],
       "type": "object"
     },
-    "Provision": {
-      "additionalProperties": false,
-      "description": "One placed Tool handed to an Environment at attach.",
+    "Role": {
+      "enum": [
+        "user",
+        "assistant"
+      ],
+      "type": "string"
+    },
+    "RuntimeEnvelope": {
       "properties": {
-        "manifest": {
-          "$ref": "#/$defs/ToolManifest"
+        "deterministic_seed": {
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "logical_time_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
-        "manifest"
+        "logical_time_ms",
+        "deterministic_seed"
       ],
-      "type": "object"
-    },
-    "Resources": {
-      "additionalProperties": false,
-      "patternProperties": {
-        "^[a-z][a-z0-9_]{0,63}:[A-Za-z0-9._-]{1,64}$": {
-          "type": "object"
-        }
-      },
-      "properties": {
-        "dom": {
-          "additionalProperties": false,
-          "properties": {},
-          "type": "object"
-        },
-        "fs": {
-          "additionalProperties": false,
-          "properties": {
-            "root": {
-              "maxLength": 4096,
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "required": [
-            "root"
-          ],
-          "type": "object"
-        },
-        "net": {
-          "additionalProperties": false,
-          "properties": {
-            "allow": {
-              "items": {
-                "maxLength": 256,
-                "minLength": 1,
-                "type": "string"
-              },
-              "maxItems": 256,
-              "type": "array"
-            }
-          },
-          "required": [
-            "allow"
-          ],
-          "type": "object"
-        },
-        "process": {
-          "additionalProperties": false,
-          "properties": {
-            "output_bytes_max": {
-              "minimum": 1,
-              "type": "integer"
-            },
-            "timeout_ms_max": {
-              "minimum": 1,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
-        "secrets": {
-          "additionalProperties": false,
-          "properties": {
-            "names": {
-              "items": {
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-                "type": "string"
-              },
-              "maxItems": 64,
-              "type": "array",
-              "uniqueItems": true
-            }
-          },
-          "required": [
-            "names"
-          ],
-          "type": "object"
-        }
-      },
       "type": "object"
     },
     "SessionId": {
       "pattern": "^ses_[A-Za-z0-9]{20,32}$",
       "type": "string"
     },
-    "ToolManifest": {
+    "ToolDefinition": {
       "additionalProperties": false,
-      "description": "The `contracts/tool/v1` manifest: the only thing Brain and environments read about\na tool. Binding *values* are never here — the manifest declares names, the\nenvironment injects values at runtime.",
+      "description": "What the model may be told about a Tool.",
       "properties": {
-        "binding_names": {
-          "items": {
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-            "type": "string"
-          },
-          "maxItems": 64,
-          "type": "array",
-          "uniqueItems": true
-        },
         "description": {
           "maxLength": 8192,
           "type": "string"
-        },
-        "implementation": {
-          "description": "Opaque to Brain; interpreted by the Environment driver this Tool is placed in."
         },
         "input_schema": {
           "type": "object"
@@ -564,16 +614,6 @@
         "name": {
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
           "type": "string"
-        },
-        "needs": {
-          "description": "Resource names the program operates on; checked against the environment's\ndeclared resources at session create.",
-          "items": {
-            "pattern": "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$",
-            "type": "string"
-          },
-          "maxItems": 64,
-          "type": "array",
-          "uniqueItems": true
         },
         "output_schema": {
           "type": "object"
@@ -583,9 +623,101 @@
         "name",
         "description",
         "input_schema",
-        "needs",
-        "binding_names",
-        "implementation"
+        "output_schema"
+      ],
+      "type": "object"
+    },
+    "TurnInput": {
+      "description": "What Brain hands the loop for one turn.",
+      "properties": {
+        "configuration": true,
+        "events": {
+          "description": "Every record on the session's feed since the loop last ran, oldest first, so a\nloop sees what happened to its environments and tools between turns.",
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "maxItems": 1000,
+          "type": "array"
+        },
+        "input": {
+          "$ref": "#/$defs/UserInput"
+        },
+        "runtime": {
+          "$ref": "#/$defs/RuntimeEnvelope"
+        },
+        "slots": {
+          "additionalProperties": true,
+          "description": "The loop's slots by name, as it last returned them.",
+          "type": "object"
+        },
+        "system": {
+          "description": "The system prompt the session was created with. Used on every model call unless\nthe loop sends its own.",
+          "maxLength": 131072,
+          "type": "string"
+        },
+        "tools": {
+          "description": "The tools the session was created with: offered whole on every model call unless\nthe loop names a subset. Brain admitted and provisioned exactly these.",
+          "items": {
+            "$ref": "#/$defs/ToolDefinition"
+          },
+          "maxItems": 128,
+          "type": "array"
+        },
+        "transcript": {
+          "description": "The transcript as it stands: what the next model call would see.",
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        }
+      },
+      "required": [
+        "input",
+        "transcript",
+        "slots",
+        "events",
+        "configuration",
+        "system",
+        "tools",
+        "runtime"
+      ],
+      "type": "object"
+    },
+    "TurnOutput": {
+      "description": "What the loop hands back when the turn is done.",
+      "properties": {
+        "result": true,
+        "slots": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Slots to keep. A name the loop leaves out keeps its previous value.",
+          "type": "object"
+        },
+        "transcript": {
+          "items": {
+            "$ref": "#/$defs/Message"
+          },
+          "maxItems": 4096,
+          "type": "array"
+        }
+      },
+      "required": [
+        "transcript"
+      ],
+      "type": "object"
+    },
+    "UserInput": {
+      "additionalProperties": false,
+      "description": "What an application hands a session on `send`. The shape is closed on purpose:\nBrain owes every agentloop the same observation shape regardless of who wrote\nthe client, so free-form content is not accepted. Multimodal parts will extend\nthis record when they land — see the roadmap.",
+      "properties": {
+        "message": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
       ],
       "type": "object"
     }

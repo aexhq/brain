@@ -2,63 +2,26 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopIdentity, EnvironmentAttachment, EnvironmentId, EventId, HostId, IDENTIFIER_PATTERN,
-    MAX_TRANSCRIPT_ITEMS, Message, ModelBinding, ModelSelection, RESOURCE_NAME_PATTERN,
-    SessionEnvironment, SessionId, ToolBinding, ToolDefinition, ToolHosting,
+    AgentloopId, Environment, EnvironmentName, MAX_TRANSCRIPT_ITEMS, Message, ModelBinding,
+    ModelSelection, SessionId, Tool, ToolDefinition,
 };
 
 /// The contract identifier of the session API.
 pub const SESSION_CONTRACT: &str = "session/v1";
 
-/// The admitted loop package a session runs: which one, and how it is configured.
+/// The admitted Agentloop a session runs: which one, how it is configured, which
+/// Environment of the session runs it, and what it needs there.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentloopRef {
-    pub identity: AgentloopIdentity,
+    pub id: AgentloopId,
     pub configuration: serde_json::Value,
-    /// The Environment that executes this Agentloop. The MVP supports Brain's native
-    /// Wasmtime Environment; the binding stays explicit for later drivers.
-    pub environment_id: EnvironmentId,
-}
-
-/// One tool as the SDK hands it over: its manifest fields plus the environment it
-/// binds to. Brain splits the model-facing and dispatch-facing halves internally.
-#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-#[schemars(transform = crate::schema::bound_tool_rules)]
-pub struct BoundTool {
-    #[schemars(schema_with = "crate::schema::identifier")]
-    pub name: String,
-    #[schemars(length(max = 8192))]
-    pub description: String,
-    #[schemars(schema_with = "crate::schema::json_object")]
-    pub input_schema: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "crate::schema::json_object")]
-    pub output_schema: Option<serde_json::Value>,
+    pub environment: EnvironmentName,
+    /// What the Agentloop needs from its Environment, as URIs. Brain hands them to the
+    /// Environment at setup and with every turn, and reads none of them.
     #[serde(default)]
-    #[schemars(
-        length(max = 64),
-        inner(regex(pattern = RESOURCE_NAME_PATTERN)),
-        extend("uniqueItems" = true)
-    )]
+    #[schemars(schema_with = "crate::schema::needs")]
     pub needs: Vec<String>,
-    #[schemars(
-        length(max = 64),
-        inner(regex(pattern = IDENTIFIER_PATTERN)),
-        extend("uniqueItems" = true)
-    )]
-    pub binding_names: Vec<String>,
-    #[serde(default)]
-    pub hosting: ToolHosting,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub implementation: Option<serde_json::Value>,
-    /// Required for a provisioned tool; a resident tool binds no Environment.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment_id: Option<EnvironmentId>,
-    /// Required for a resident tool and absent for a provisioned tool.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_id: Option<HostId>,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, Serialize)]
@@ -77,10 +40,11 @@ pub struct CreateSessionRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<serde_json::Value>,
     #[schemars(length(max = 128))]
-    pub tools: Vec<BoundTool>,
-    /// Immutable Environment specifications opened and attached as part of this create.
+    pub tools: Vec<Tool>,
+    /// The Environments of this session, set up as part of this create. Every Tool and
+    /// the Agentloop name one of them.
     #[schemars(length(max = 128))]
-    pub environments: Vec<SessionEnvironment>,
+    pub environments: Vec<Environment>,
     /// A transcript to carry forward, if the caller has one: the messages the new
     /// session's first model call should already see. Brain journals them as the session's
     /// opening transcript. Empty is an ordinary new session.
@@ -95,25 +59,37 @@ pub struct CreateSessionRequest {
 }
 
 /// What a session was admitted with. Written at create and never changed afterwards: a
-/// session can only ever do what it was granted. The environments and tool bindings are
-/// filled in as the host attaches them, before the session is admitted.
+/// session can only ever do what it was granted. Credentials never enter it: the model
+/// key and an Environment's credential are sealed by the server beside the session.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionConfig {
-    pub agentloop_identity: AgentloopIdentity,
-    pub agentloop_environment_id: EnvironmentId,
-    pub brain_configuration: serde_json::Value,
+    pub agentloop: AgentloopRef,
     pub model: ModelBinding,
     #[serde(default)]
     pub system: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_format: Option<serde_json::Value>,
-    /// What the model may be told about each tool. Offered whole unless the agentloop
-    /// names a subset on a model call; the bindings say where a call goes.
-    pub tools: Vec<ToolDefinition>,
-    pub environments: Vec<EnvironmentAttachment>,
-    pub tool_bindings: Vec<ToolBinding>,
+    pub tools: Vec<Tool>,
+    pub environments: Vec<Environment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_ttl_ms: Option<u64>,
+}
+
+impl SessionConfig {
+    pub fn environment(&self, name: &EnvironmentName) -> Option<&Environment> {
+        self.environments
+            .iter()
+            .find(|environment| &environment.name == name)
+    }
+
+    pub fn tool(&self, name: &str) -> Option<&Tool> {
+        self.tools.iter().find(|tool| tool.name == name)
+    }
+
+    /// What the model may be told about each Tool, in declaration order.
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
+        self.tools.iter().map(Tool::definition).collect()
+    }
 }
 
 /// What an application hands a session on `send`. The shape is closed on purpose:
@@ -169,9 +145,10 @@ pub struct SessionTranscript {
     pub through_sequence: u64,
 }
 
+/// One journal record as a client reads it. `(session_id, sequence)` names it; there
+/// is no other identifier.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct Event {
-    pub event_id: EventId,
     #[schemars(range(min = 1))]
     pub sequence: u64,
     pub recorded_at_ms: u64,
@@ -230,7 +207,7 @@ pub enum AdmissionStatus {
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct AgentloopAdmission {
-    pub identity: AgentloopIdentity,
+    pub id: AgentloopId,
     pub status: AdmissionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<crate::ApiError>,

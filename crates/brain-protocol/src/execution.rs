@@ -1,49 +1,13 @@
 //! The vocabulary between a Tool and the Environment that executes it.
 //!
 //! An environment is a place that executes Tools and offers resources. A tool
-//! declares its implementation and the resource names it needs. Brain checks the tool's
-//! needs against the environment's declaration at session create, journals every
-//! call, and never wraps the platform: inside the environment a program reaches
-//! its resources through the platform's own APIs, and policy is enforced at the
-//! platform boundary, not by Brain.
-
-use std::collections::BTreeMap;
+//! declares its implementation and what it needs, as URIs; the environment honours or
+//! refuses them. Brain journals every call and never wraps the platform: inside the
+//! environment a program reaches its resources through the platform's own APIs, and
+//! policy is enforced at the platform boundary, not by Brain.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-/// The resources an environment declares, keyed by name. The contract fixes the
-/// policy shape of the named resources (`fs`, `process`, `net`, `dom`, `secrets`);
-/// vendor resources are namespaced (`aws:iam`) and opaque. Brain compares names
-/// only and never interprets the policy blocks.
-pub type Resources = BTreeMap<String, serde_json::Value>;
-
-/// The shape [`resource_name_valid`] admits, as the contract states it.
-pub const RESOURCE_NAME_PATTERN: &str = "^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$";
-
-/// Whether `value` is a resource name the contract admits: a lowercase word,
-/// optionally namespaced with one colon (`fs`, `bin:ffmpeg`).
-pub fn resource_name_valid(value: &str) -> bool {
-    let (head, tail) = match value.split_once(':') {
-        Some((head, tail)) => (head, Some(tail)),
-        None => (value, None),
-    };
-    let head_valid = !head.is_empty()
-        && head.len() <= 64
-        && head.bytes().enumerate().all(|(index, byte)| {
-            (index == 0 && byte.is_ascii_lowercase())
-                || (index > 0
-                    && (byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'))
-        });
-    let tail_valid = tail.is_none_or(|tail| {
-        !tail.is_empty()
-            && tail.len() <= 64
-            && tail
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    });
-    head_valid && tail_valid
-}
 
 /// The one envelope every tool invocation resolves to.
 ///
@@ -85,26 +49,5 @@ mod tests {
         let timeout: Outcome =
             serde_json::from_value(serde_json::json!({"status":"timeout"})).unwrap();
         assert_eq!(timeout, Outcome::Timeout);
-    }
-
-    #[test]
-    fn resource_names_are_words_with_one_optional_namespace() {
-        for valid in [
-            "fs",
-            "process",
-            "net",
-            "dom",
-            "secrets",
-            "bin:ffmpeg",
-            "aws:iam",
-            "chrome:cdp-1.3",
-        ] {
-            assert!(resource_name_valid(valid), "{valid}");
-        }
-        for invalid in [
-            "", "Fs", "fs:", ":x", "a:b:c", "../fs", "fs bin", "1fs", "-fs",
-        ] {
-            assert!(!resource_name_valid(invalid), "{invalid}");
-        }
     }
 }

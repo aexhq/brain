@@ -6,8 +6,10 @@ use brain::{
     model::{Dialect, MaxTokensField, ModelTransport, ProviderRegistry, RemoteModelClient},
 };
 use brain_protocol::{
-    ModelBinding, ModelRequest, ModelResult, ModelSelection, ModelStreamEvent, ToolDefinition,
+    EnvironmentName, ModelBinding, ModelRequest, ModelResult, ModelSelection, ModelStreamEvent,
+    SessionId, ToolDefinition,
 };
+use zeroize::Zeroizing;
 
 pub use crate::metadata::ModelCredential;
 
@@ -32,28 +34,66 @@ pub fn load_providers_file(
     Ok(file.providers)
 }
 
-pub trait ModelBindingStore: Send + Sync + 'static {
-    fn put(&self, binding_id: &str, selection: &ModelSelection) -> Result<(), brain::Error>;
-    fn get(&self, binding_id: &str) -> Result<Option<ModelCredential>, brain::Error>;
-    fn delete(&self, binding_id: &str) -> Result<(), brain::Error>;
+/// The custody of a session's credentials: its model key and the credential of each
+/// Environment it reaches over HTTP, sealed under the session id and forgotten together.
+pub trait CredentialStore: Send + Sync + 'static {
+    fn put_model(
+        &self,
+        session_id: &SessionId,
+        selection: &ModelSelection,
+    ) -> Result<(), brain::Error>;
+    fn model(&self, session_id: &SessionId) -> Result<Option<ModelCredential>, brain::Error>;
+    fn put_environment(
+        &self,
+        session_id: &SessionId,
+        environment: &EnvironmentName,
+        credential: &str,
+    ) -> Result<(), brain::Error>;
+    fn environment(
+        &self,
+        session_id: &SessionId,
+        environment: &EnvironmentName,
+    ) -> Result<Option<Zeroizing<String>>, brain::Error>;
+    fn forget(&self, session_id: &SessionId) -> Result<(), brain::Error>;
 }
 
-impl ModelBindingStore for crate::metadata::ServerMetadata {
-    fn put(&self, binding_id: &str, selection: &ModelSelection) -> Result<(), brain::Error> {
-        self.put_binding(binding_id, selection)
+impl CredentialStore for crate::metadata::ServerMetadata {
+    fn put_model(
+        &self,
+        session_id: &SessionId,
+        selection: &ModelSelection,
+    ) -> Result<(), brain::Error> {
+        self.put_model(session_id, selection)
     }
 
-    fn get(&self, binding_id: &str) -> Result<Option<ModelCredential>, brain::Error> {
-        self.binding(binding_id)
+    fn model(&self, session_id: &SessionId) -> Result<Option<ModelCredential>, brain::Error> {
+        self.model(session_id)
     }
 
-    fn delete(&self, binding_id: &str) -> Result<(), brain::Error> {
-        self.forget_binding(binding_id)
+    fn put_environment(
+        &self,
+        session_id: &SessionId,
+        environment: &EnvironmentName,
+        credential: &str,
+    ) -> Result<(), brain::Error> {
+        self.put_environment(session_id, environment, credential)
+    }
+
+    fn environment(
+        &self,
+        session_id: &SessionId,
+        environment: &EnvironmentName,
+    ) -> Result<Option<Zeroizing<String>>, brain::Error> {
+        self.environment(session_id, environment)
+    }
+
+    fn forget(&self, session_id: &SessionId) -> Result<(), brain::Error> {
+        self.forget(session_id)
     }
 }
 
 pub struct ServerModelExecutor {
-    bindings: Arc<dyn ModelBindingStore>,
+    credentials: Arc<dyn CredentialStore>,
     /// One connection pool per provider for the process. The credential is the only
     /// part of a model call that varies by session, and a credential is a header,
     /// not a client. `reqwest` pools connect lazily, so building one per registered
@@ -68,7 +108,7 @@ impl ServerModelExecutor {
     /// when the registry composed, so what fails here is third-party catalog data,
     /// and third-party data must not brick the server.
     pub fn new(
-        bindings: Arc<dyn ModelBindingStore>,
+        credentials: Arc<dyn CredentialStore>,
         providers: &ProviderRegistry,
         timeout: Duration,
     ) -> Result<Self, brain::Error> {
@@ -92,7 +132,7 @@ impl ServerModelExecutor {
             ));
         }
         Ok(Self {
-            bindings,
+            credentials,
             transports,
         })
     }
@@ -107,15 +147,16 @@ impl ServerModelExecutor {
 impl ModelExecutor for ServerModelExecutor {
     async fn execute(
         &self,
+        session: &SessionId,
         binding: &ModelBinding,
         request: ModelRequest,
         tools: &[ToolDefinition],
         on_event: &mut (dyn FnMut(ModelStreamEvent) + Send),
     ) -> Result<ModelResult, brain::Error> {
         let credential = self
-            .bindings
-            .get(&binding.binding_id)?
-            .ok_or_else(|| brain::Error::Executor("model binding is unavailable".into()))?;
+            .credentials
+            .model(session)?
+            .ok_or_else(|| brain::Error::Executor("model credential is unavailable".into()))?;
         let Some((dialect, max_tokens_field, transport)) =
             self.transports.get(credential.provider.as_str())
         else {
@@ -129,7 +170,9 @@ impl ModelExecutor for ServerModelExecutor {
             *dialect,
             *max_tokens_field,
         )?;
-        client.execute(binding, request, tools, on_event).await
+        client
+            .execute(session, binding, request, tools, on_event)
+            .await
     }
 }
 
@@ -143,7 +186,7 @@ mod tests {
         // timestamp, and two tests in one directory share a metadata log.
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
-            "brain-bindings-{}-{}",
+            "brain-credentials-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
@@ -153,6 +196,10 @@ mod tests {
 
     fn store(directory: &std::path::Path) -> ServerMetadata {
         ServerMetadata::open(directory).unwrap()
+    }
+
+    fn session(id: &str) -> SessionId {
+        SessionId::new(id)
     }
 
     fn selection(api_key: &str) -> ModelSelection {
@@ -233,8 +280,8 @@ mod tests {
 
         let store = Arc::new(store(&directory));
         store
-            .put(
-                "model_local",
+            .put_model(
+                &session("ses_local"),
                 &ModelSelection {
                     provider: "local-llm".into(),
                     name: "test-model".into(),
@@ -245,9 +292,10 @@ mod tests {
         let executor = ServerModelExecutor::new(store, &registry, Duration::from_secs(2)).unwrap();
         let result = executor
             .execute(
+                &session("ses_local"),
                 &ModelBinding {
-                    binding_id: "model_local".into(),
-                    model: "test-model".into(),
+                    provider: "local-llm".into(),
+                    name: "test-model".into(),
                 },
                 ModelRequest {
                     system: None,
@@ -274,68 +322,124 @@ mod tests {
         let _ = std::fs::remove_dir_all(directory);
     }
 
-    /// A binding is sealed at creation. The same credential again is the idempotent retry
-    /// of a create the client did not hear the answer to; a different one under the same
-    /// identity is a different request wearing that identity's name.
+    /// A credential is sealed at creation. The same credential again is the idempotent
+    /// retry of a create the client did not hear the answer to; a different one under the
+    /// same session is a different request wearing that session's name.
     #[test]
-    fn binding_identity_rejects_different_credentials() {
+    fn a_session_rejects_different_credentials_once_sealed() {
         let directory = temporary();
         let store = store(&directory);
-        store.put("model_a", &selection("first")).unwrap();
-        store.put("model_a", &selection("first")).unwrap();
+        store
+            .put_model(&session("ses_a"), &selection("first"))
+            .unwrap();
+        store
+            .put_model(&session("ses_a"), &selection("first"))
+            .unwrap();
         let error = store
-            .put("model_a", &selection("second"))
-            .expect_err("a sealed identity must not accept another credential");
+            .put_model(&session("ses_a"), &selection("second"))
+            .expect_err("a sealed session must not accept another credential");
         assert!(
             error.to_string().contains("already sealed"),
             "the refusal must say why: {error}"
         );
+        let sandbox = EnvironmentName::new("sandbox");
+        store
+            .put_environment(&session("ses_a"), &sandbox, "token")
+            .unwrap();
+        store
+            .put_environment(&session("ses_a"), &sandbox, "token")
+            .unwrap();
+        assert!(
+            store
+                .put_environment(&session("ses_a"), &sandbox, "other")
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]
-    fn a_credential_is_readable_until_it_is_deleted() {
+    fn a_sessions_credentials_are_readable_until_the_session_is_forgotten() {
         let directory = temporary();
         let store = store(&directory);
-        store.put("model_a", &selection("secret")).unwrap();
-        store.put("model_b", &selection("secret")).unwrap();
-        let credential = store.get("model_a").unwrap().expect("the binding is there");
+        let sandbox = EnvironmentName::new("sandbox");
+        store
+            .put_model(&session("ses_a"), &selection("secret"))
+            .unwrap();
+        store
+            .put_environment(&session("ses_a"), &sandbox, "sandbox-token")
+            .unwrap();
+        store
+            .put_model(&session("ses_b"), &selection("secret"))
+            .unwrap();
+        let credential = store
+            .model(&session("ses_a"))
+            .unwrap()
+            .expect("the credential is there");
         assert_eq!(credential.api_key.as_str(), "secret");
+        assert_eq!(
+            store
+                .environment(&session("ses_a"), &sandbox)
+                .unwrap()
+                .unwrap()
+                .as_str(),
+            "sandbox-token"
+        );
 
-        store.delete("model_a").unwrap();
-        assert!(store.get("model_a").unwrap().is_none());
-        assert!(store.get("model_b").unwrap().is_some());
+        store.forget(&session("ses_a")).unwrap();
+        assert!(store.model(&session("ses_a")).unwrap().is_none());
+        assert!(
+            store
+                .environment(&session("ses_a"), &sandbox)
+                .unwrap()
+                .is_none()
+        );
+        assert!(store.model(&session("ses_b")).unwrap().is_some());
         let _ = std::fs::remove_dir_all(directory);
     }
 
-    /// A session's credential survives restart without appearing in plaintext on disk.
+    /// A session's credentials survive restart without appearing in plaintext on disk.
     #[test]
-    fn a_credential_survives_a_restart_without_plaintext_on_disk() {
+    fn credentials_survive_a_restart_without_plaintext_on_disk() {
         let directory = temporary();
+        let sandbox = EnvironmentName::new("sandbox");
         {
             let store = store(&directory);
-            store.put("model_a", &selection("provider-secret")).unwrap();
+            store
+                .put_model(&session("ses_a"), &selection("provider-secret"))
+                .unwrap();
+            store
+                .put_environment(&session("ses_a"), &sandbox, "sandbox-secret")
+                .unwrap();
         }
 
         let log = std::fs::read(directory.join("metadata.log")).unwrap();
+        let text = String::from_utf8_lossy(&log);
         assert!(
-            !String::from_utf8_lossy(&log).contains("provider-secret"),
-            "the credential must not be readable in the file it is written to"
+            !text.contains("provider-secret") && !text.contains("sandbox-secret"),
+            "a credential must not be readable in the file it is written to"
         );
 
         let reopened = store(&directory);
         let credential = reopened
-            .get("model_a")
+            .model(&session("ses_a"))
             .unwrap()
             .expect("a credential written before a restart must be there after it");
         assert_eq!(credential.api_key.as_str(), "provider-secret");
+        assert_eq!(
+            reopened
+                .environment(&session("ses_a"), &sandbox)
+                .unwrap()
+                .unwrap()
+                .as_str(),
+            "sandbox-secret"
+        );
 
-        reopened.delete("model_a").unwrap();
+        reopened.forget(&session("ses_a")).unwrap();
         drop(reopened);
         let again = store(&directory);
         assert!(
-            again.get("model_a").unwrap().is_none(),
-            "a binding deleted before a restart must not come back after it"
+            again.model(&session("ses_a")).unwrap().is_none(),
+            "a credential forgotten before a restart must not come back after it"
         );
         let _ = std::fs::remove_dir_all(directory);
     }

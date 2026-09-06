@@ -2,11 +2,11 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use brain::{Feed, SessionRuntime, Writer};
-use brain_loophost::{LoopLimits, NativePolicy, WorkerPool};
+use brain_loophost::{LoopLimits, WorkerPool};
 use brain_server::{
-    EnvironmentRegistry, EnvironmentResources, HttpEnvironmentAdapter, IdempotencyStore,
-    ResidentHosts, ServerApi, ServerConfig, ServerModelExecutor, ServerResources,
-    ServerToolExecutor, WorkerLoopExecutor,
+    BrainEnvironment, EnvironmentLoopExecutor, EnvironmentRegistry, HostEnvironment,
+    HttpEnvironmentAdapter, IdempotencyStore, NativePolicy, ServerApi, ServerConfig,
+    ServerModelExecutor, ServerResources, ServerToolExecutor,
 };
 use brain_telemetry::{TelemetryRecord, TelemetrySink, telemetry_channel};
 use clap::Parser;
@@ -44,28 +44,20 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let sessions_dir = brain_server::data_layout::prepare(&config.data_dir)?;
     let (telemetry, worker) = telemetry_channel();
     tokio::spawn(worker.run(Arc::new(LogSink)));
-    let loops = Arc::new(
-        WorkerPool::new(
-            &config.loop_worker,
-            config.data_dir.join("run"),
-            config.data_dir.join("agentloops"),
-            LoopLimits::default(),
-        )
-        .with_native_policy(NativePolicy {
-            network: config.wasm_network_allow.iter().cloned().collect(),
-            secrets: config.wasm_secret_allow.iter().cloned().collect(),
-            filesystem: config.wasm_filesystem_allow.iter().cloned().collect(),
-        }),
-    );
+    let loops = Arc::new(WorkerPool::new(
+        &config.loop_worker,
+        config.data_dir.join("run"),
+        config.data_dir.join("agentloops"),
+        LoopLimits::default(),
+    ));
     loops
         .ready()
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
     // Credentials are durable before the session's creation record is committed.
-    let metadata = Arc::new(brain_server::metadata::ServerMetadata::open(
+    let credentials = Arc::new(brain_server::metadata::ServerMetadata::open(
         &brain_server::metadata::metadata_directory(&config.data_dir),
     )?);
-    let models = Arc::clone(&metadata);
     let mut base_url_overrides = vec![(
         "vercel-ai-gateway".to_owned(),
         config.model_base_url.clone(),
@@ -85,7 +77,7 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         &base_url_overrides,
     )?);
     let model = Arc::new(ServerModelExecutor::new(
-        models.clone(),
+        credentials.clone(),
         &providers,
         Duration::from_secs(120),
     )?);
@@ -95,59 +87,30 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(120))
         .build()?;
-    let mut environments = EnvironmentRegistry::new(
-        Arc::new(EnvironmentResources::open(
-            &config.data_dir.join("environments"),
-        )?),
-        &config.environment_base_url,
-        Arc::new(HttpEnvironmentAdapter::new(
-            http.clone(),
-            config.environment_api_key.clone(),
+    let environments = Arc::new(EnvironmentRegistry::new(
+        Arc::new(BrainEnvironment::new(
+            loops.clone(),
+            NativePolicy {
+                network: config.env_network_allow.iter().cloned().collect(),
+                secrets: config.env_secret_allow.iter().cloned().collect(),
+                filesystem: config.env_filesystem_allow.iter().cloned().collect(),
+            },
+            config.data_dir.join("native-workspaces"),
         )),
-    );
-    if let Some(path) = &config.environment_routes_file {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Route {
-            endpoint: String,
-            api_key: Option<String>,
-        }
-        let routes: std::collections::BTreeMap<String, Route> =
-            serde_json::from_slice(&std::fs::read(path)?)?;
-        for (driver, route) in routes {
-            validate_environment_endpoint(&route.endpoint)?;
-            if route
-                .api_key
-                .as_deref()
-                .is_some_and(|key| key.trim().is_empty())
-            {
-                anyhow::bail!("Environment route credentials cannot be empty");
-            }
-            environments = environments.with_route(
-                driver,
-                route.endpoint,
-                Arc::new(HttpEnvironmentAdapter::new(http.clone(), route.api_key)),
-            )?;
-        }
-    }
-    let environments = Arc::new(environments);
+        HostEnvironment::open(&config.data_dir.join("hosts").join("hosts.log"))?,
+        Arc::new(HttpEnvironmentAdapter::new(http, credentials.clone())),
+    ));
     // Every session's directory, rebuilt from disk. A session that was mid-turn when the
     // last process stopped is failed with code `interrupted` before anything is served.
     let writer = Writer::spawn();
     let feed = Arc::new(Feed::new(telemetry.clone()));
-    let resident_hosts =
-        ResidentHosts::open(&config.data_dir.join("resident-hosts").join("hosts.log"))?;
     let session_runtime = Arc::new(SessionRuntime {
         max_model_calls_per_turn: config.max_model_calls_per_turn,
         max_turn_ms: config.max_turn_secs.saturating_mul(1_000),
         tool_deadline_ms: brain::DEFAULT_TOOL_DEADLINE_MS,
-        loop_executor: Arc::new(WorkerLoopExecutor(loops.clone())),
+        loop_executor: Arc::new(EnvironmentLoopExecutor(environments.clone())),
         model_executor: model,
-        tool_executor: Arc::new(ServerToolExecutor::new(
-            environments.clone(),
-            resident_hosts.clone(),
-            loops.clone(),
-        )),
+        tool_executor: Arc::new(ServerToolExecutor::new(environments.clone())),
         live: feed.clone(),
         telemetry: telemetry.clone(),
     });
@@ -163,10 +126,8 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         )?,
         loops,
         environments,
-        resident_hosts,
-        models,
+        credentials,
         providers,
-        metadata,
     })?;
     api.spawn_idle_sweeper();
     Ok(api)
@@ -183,49 +144,15 @@ fn validate(config: &ServerConfig) -> anyhow::Result<()> {
     if !config.listen.ip().is_loopback() && config.api_token.is_none() {
         anyhow::bail!("BRAIN_API_TOKEN is required when Brain listens beyond loopback");
     }
-    if config
-        .environment_api_key
-        .as_deref()
-        .is_some_and(|token| token.trim().is_empty())
-    {
-        anyhow::bail!("BRAIN_ENVIRONMENT_API_KEY cannot be empty when set");
-    }
-    if !config.environment_base_url.is_empty() {
-        validate_environment_endpoint(&config.environment_base_url)?;
-    }
     if config.max_model_calls_per_turn == 0 || config.max_model_calls_per_turn > 1_024 {
         anyhow::bail!("BRAIN_MAX_MODEL_CALLS must be in 1..=1024");
     }
     if config
-        .wasm_filesystem_allow
+        .env_filesystem_allow
         .iter()
         .any(|name| name != "scratch" && name != "workspace")
     {
-        anyhow::bail!("BRAIN_WASM_FILESYSTEM_ALLOW accepts only scratch and workspace");
-    }
-    Ok(())
-}
-
-fn validate_environment_endpoint(endpoint: &str) -> anyhow::Result<()> {
-    let url = reqwest::Url::parse(endpoint)?;
-    let loopback_http = url.scheme() == "http"
-        && url
-            .host_str()
-            .and_then(|host| {
-                host.trim_matches(['[', ']'])
-                    .parse::<std::net::IpAddr>()
-                    .ok()
-            })
-            .is_some_and(|ip| ip.is_loopback());
-    if !(url.scheme() == "https" || loopback_http)
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        anyhow::bail!(
-            "BRAIN_ENVIRONMENT_BASE_URL must use HTTPS or literal loopback HTTP and cannot contain credentials, query, or fragment"
-        );
+        anyhow::bail!("BRAIN_ENV_FILESYSTEM_ALLOW accepts only scratch and workspace");
     }
     Ok(())
 }
@@ -264,7 +191,7 @@ impl TelemetrySink for LogSink {
                 telemetry_kind = ?record.kind,
                 telemetry_name = %record.name,
                 session_id = record.session_id.as_ref().map(ToString::to_string),
-                event_id = record.event_id.as_ref().map(ToString::to_string),
+                sequence = record.sequence,
                 payload_bytes = record.payload.len(),
                 "Brain telemetry"
             );

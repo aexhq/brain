@@ -38,9 +38,6 @@ pub mod event {
     pub const ENVIRONMENT_SETUP_STARTED: &str = "environment_setup_started";
     pub const ENVIRONMENT_SETUP_ENDED: &str = "environment_setup_ended";
     pub const ENVIRONMENT_SETUP_FAILED: &str = "environment_setup_failed";
-    pub const ENVIRONMENT_ATTACH_STARTED: &str = "environment_attach_started";
-    pub const ENVIRONMENT_ATTACH_ENDED: &str = "environment_attach_ended";
-    pub const ENVIRONMENT_ATTACH_FAILED: &str = "environment_attach_failed";
     pub const ENVIRONMENT_CALL_STARTED: &str = "environment_call_started";
     pub const ENVIRONMENT_CALL_ENDED: &str = "environment_call_ended";
     pub const ENVIRONMENT_CALL_FAILED: &str = "environment_call_failed";
@@ -60,7 +57,6 @@ pub mod event {
         pub const TOOL_CALL: &str = "tool_call";
         pub const TOOL_CANCEL: &str = "tool_cancel";
         pub const ENVIRONMENT_SETUP: &str = "environment_setup";
-        pub const ENVIRONMENT_ATTACH: &str = "environment_attach";
         pub const ENVIRONMENT_CALL: &str = "environment_call";
         pub const ENVIRONMENT_DETACH: &str = "environment_detach";
         pub const ENVIRONMENT_TEARDOWN: &str = "environment_teardown";
@@ -95,9 +91,6 @@ pub mod event {
         ENVIRONMENT_SETUP_STARTED,
         ENVIRONMENT_SETUP_ENDED,
         ENVIRONMENT_SETUP_FAILED,
-        ENVIRONMENT_ATTACH_STARTED,
-        ENVIRONMENT_ATTACH_ENDED,
-        ENVIRONMENT_ATTACH_FAILED,
         ENVIRONMENT_CALL_STARTED,
         ENVIRONMENT_CALL_ENDED,
         ENVIRONMENT_CALL_FAILED,

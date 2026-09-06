@@ -1,8 +1,9 @@
 package brain:tool@0.1.0;
 
 interface types {
+  // One call. The call is named by the session id and sequence Brain records for
+  // it; a Tool that wants an identifier for its own logging reads them from Brain.
   record invocation {
-    call-id: string,
     input-json: string,
     configuration-json: string,
     deadline-at-ms: u64,

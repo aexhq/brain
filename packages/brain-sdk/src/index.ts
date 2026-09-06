@@ -1,36 +1,34 @@
 export { BrainClient as Brain, BrainClient, SessionHandle, Sessions } from "./client.js";
-export type { BrainOptions, ResidentHostCredentials } from "./client.js";
+export type { BrainOptions, HostCredentials } from "./client.js";
 export {
   agentloop,
-  brainWasm,
+  brainEnv,
   component,
   environment,
+  hostEnv,
   inspectAgentloop,
   inspectComponent,
   inspectEnvironment,
-  inspectPlacedTool,
-  inspectResidentTool,
+  inspectTool,
   tool,
 } from "./extensions.js";
 export type {
   AgentloopContract,
-  BrainWasmOptions,
+  BrainEnvOptions,
   EnvironmentContract,
-  PlacedToolContract,
-  ResidentToolContract,
+  EnvironmentDriver,
+  ToolContract,
   ToolRunContext,
 } from "./extensions.js";
+export type { HostToolCall } from "./host.js";
 export { BrainError } from "./errors.js";
 export type { EventPage, ModelRequest, ModelResult, SessionTranscript, ToolResult } from "./generated/session.js";
 export type {
   AgentloopAdmission,
-  AgentloopBinding,
   Component,
   CreateSessionOptions,
   CustomProviderModel,
-  DomResource,
   Environment,
-  FsResource,
   KnownProviderId,
   KnownProviderModel,
   ModelContentBlock,
@@ -39,21 +37,17 @@ export type {
   ModelSelection,
   ModelStopReason,
   ModelUsage,
-  NetResource,
   OperationOptions,
   Outcome,
-  ProcessResource,
-  ResourceName,
-  Resources,
+  PlacedAgentloop,
+  PlacedTool,
   Schema,
   SchemaInput,
   SchemaOutput,
-  SecretsResource,
   SessionEvent,
   SessionState,
   SessionStreamEvent,
   SessionTool,
-  ToolBinding,
   ToolDefinition,
   VercelAiGatewayModel,
 } from "./types.js";

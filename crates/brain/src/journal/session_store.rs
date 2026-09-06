@@ -115,7 +115,6 @@ impl State {
                     | "tool_call"
                     | "tool_cancel"
                     | "environment_setup"
-                    | "environment_attach"
                     | "environment_call"
                     | "environment_detach"
                     | "environment_teardown"

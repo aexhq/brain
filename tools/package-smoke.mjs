@@ -40,8 +40,8 @@ try {
   );
   writeFileSync(
     join(directory, "extension.mjs"),
-    `import { agentloop, brainWasm, component } from "@aexhq/brain";\n` +
-      `export const runtime = brainWasm({ filesystem: { workspace: false } });\n` +
+    `import { agentloop, brainEnv, component } from "@aexhq/brain";\n` +
+      `export const runtime = brainEnv({ name: "brain" });\n` +
       `export const simple = agentloop({ implementation: component(new Uint8Array([1])) });\n`,
   );
   run(["install", "--no-audit", "--no-fund"], directory);

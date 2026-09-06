@@ -172,8 +172,7 @@ The `launch` block tells the runner how to start it. Every string in it may inte
   "env": {
     "BRAIN_LISTEN": "127.0.0.1:{port}",
     "BRAIN_DATA_DIR": "{data_dir}",
-    "BRAIN_MODEL_BASE_URL": "{model_base_url}",
-    "BRAIN_ENVIRONMENT_BASE_URL": "{environment_base_url}"
+    "BRAIN_MODEL_BASE_URL": "{model_base_url}"
   },
   "base_url": "http://127.0.0.1:{port}",
   "ready_url": "http://127.0.0.1:{port}/health/ready"

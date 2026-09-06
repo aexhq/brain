@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before, beforeEach, after } from "node:test";
 import { pathToFileURL } from "node:url";
-import { Brain, BrainError, agentloop, brainWasm, component, inspectResidentTool } from "@aexhq/brain";
+import { Brain, BrainError, agentloop, brainEnv, component, environment, inspectTool } from "@aexhq/brain";
+import { z } from "zod";
 
 export const collect = async (events) => { const result = []; for await (const event of events) result.push(event); return result; };
 export const deferred = () => Promise.withResolvers();
@@ -56,11 +57,11 @@ export function fixture({ providers = {} } = {}) {
         const chunks = [];
         for await (const chunk of request) chunks.push(chunk);
         const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-        const driver = request.url.split("/")[1];
-        if (providers[driver]) {
-          assert.equal(request.headers.authorization, `Bearer ${driver}-token`);
+        const provider = request.url.split("/")[1];
+        if (providers[provider]) {
+          assert.equal(request.headers.authorization, `Bearer ${provider}-token`);
           response.setHeader("content-type", "application/json");
-          response.end(JSON.stringify(await providers[driver](body)));
+          response.end(JSON.stringify(await providers[provider](body)));
         } else {
           assert.equal(request.headers.authorization, "Bearer journey-model-token");
           f.modelRequests.push(body);
@@ -73,10 +74,13 @@ export function fixture({ providers = {} } = {}) {
     upstream.listen(0, "127.0.0.1");
     await once(upstream, "listening");
     f.upstreamUrl = `http://127.0.0.1:${upstream.address().port}`;
-    const routes = Object.fromEntries(Object.keys(providers).map((driver) => [driver, {
-      endpoint: `${f.upstreamUrl}/${driver}`, api_key: `${driver}-token`,
-    }]));
-    await writeFile(join(directory, "routes.json"), JSON.stringify(routes));
+    // Each provider is an Environment extension: the application configures every
+    // instance with the address it is reached at and the credential it expects.
+    f.provider = (name, options = {}) => environment({
+      options: z.object({ idle_ms: z.number().optional() }),
+      url: () => `${f.upstreamUrl}/${name}`,
+      credential: () => `${name}-token`,
+    })({ name, ...options });
     const reservation = createServer();
     reservation.listen(0, "127.0.0.1");
     await once(reservation, "listening");
@@ -86,7 +90,7 @@ export function fixture({ providers = {} } = {}) {
     f.brain = f.client();
     f.options = (extra = {}) => ({
       model: { provider: "vercel-ai-gateway", name: "test/journey", apiKey: "journey-model-token" },
-      agentloop: agentloop({ implementation: f.reference })({ env: brainWasm() }),
+      agentloop: agentloop({ implementation: f.reference })({ env: brainEnv({ name: "brain" }) }),
       ...extra,
     });
   }, { timeout: 60_000 });
@@ -96,8 +100,8 @@ export function fixture({ providers = {} } = {}) {
       ...process.env,
       BRAIN_LISTEN: new URL(f.baseUrl).host, BRAIN_DATA_DIR: join(directory, "data"),
       BRAIN_API_TOKEN: f.token, BRAIN_LOOP_WORKER: process.env.BRAIN_TEST_WORKER,
-      BRAIN_MODEL_BASE_URL: `${f.upstreamUrl}/v1`, BRAIN_ENVIRONMENT_ROUTES_FILE: join(directory, "routes.json"),
-      BRAIN_WASM_FILESYSTEM_ALLOW: "scratch,workspace",
+      BRAIN_MODEL_BASE_URL: `${f.upstreamUrl}/v1`,
+      BRAIN_ENV_FILESYSTEM_ALLOW: "scratch,workspace",
     }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.on("data", (chunk) => { logs += chunk; });
     child.stderr.on("data", (chunk) => { logs += chunk; });
@@ -117,7 +121,7 @@ export function fixture({ providers = {} } = {}) {
   };
   f.create = async (t, extra = {}, client = f.brain, operation) => {
     const session = await client.sessions.create(f.options(extra), operation);
-    if (extra.tools?.some(inspectResidentTool)) pumps.add((await client.residentHost()).pump);
+    if (extra.tools?.some((tool) => inspectTool(tool).handler !== undefined)) pumps.add((await client.register()).pump);
     t.after(async () => {
       try { await session.end(); await session.delete(); } catch (error) { if (!failure(404)(error)) throw error; }
     }, { timeout: 10_000 });

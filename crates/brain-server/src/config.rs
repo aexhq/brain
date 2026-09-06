@@ -11,15 +11,16 @@ pub struct ServerConfig {
     pub data_dir: PathBuf,
     #[arg(long, env = "BRAIN_LOOP_WORKER", default_value = "brain-loop-worker")]
     pub loop_worker: PathBuf,
-    /// HTTP origins or authorities that sessions may grant Brain Wasm Components.
-    #[arg(long, env = "BRAIN_WASM_NETWORK_ALLOW", value_delimiter = ',')]
-    pub wasm_network_allow: Vec<String>,
-    /// Process environment variable names that sessions may grant Brain Wasm Components.
-    #[arg(long, env = "BRAIN_WASM_SECRET_ALLOW", value_delimiter = ',')]
-    pub wasm_secret_allow: Vec<String>,
-    /// Writable filesystem roots that sessions may grant: `scratch` or `workspace`.
-    #[arg(long, env = "BRAIN_WASM_FILESYSTEM_ALLOW", value_delimiter = ',')]
-    pub wasm_filesystem_allow: Vec<String>,
+    /// Origins the brain env may grant a Component that needs them: exact, or
+    /// `https://*.example.com` for a family of hosts.
+    #[arg(long, env = "BRAIN_ENV_NETWORK_ALLOW", value_delimiter = ',')]
+    pub env_network_allow: Vec<String>,
+    /// Process environment variable names the brain env may mount under `/secrets`.
+    #[arg(long, env = "BRAIN_ENV_SECRET_ALLOW", value_delimiter = ',')]
+    pub env_secret_allow: Vec<String>,
+    /// Filesystem roots the brain env may grant: `scratch` or `workspace`.
+    #[arg(long, env = "BRAIN_ENV_FILESYSTEM_ALLOW", value_delimiter = ',')]
+    pub env_filesystem_allow: Vec<String>,
     /// Endpoint for the `vercel-ai-gateway` provider. Kept under its historic
     /// name because deploys and tests already set it.
     #[arg(
@@ -43,13 +44,6 @@ pub struct ServerConfig {
     pub providers_file: Option<PathBuf>,
     #[arg(long, env = "BRAIN_API_TOKEN", hide_env_values = true)]
     pub api_token: Option<String>,
-    #[arg(long, env = "BRAIN_ENVIRONMENT_BASE_URL", default_value = "")]
-    pub environment_base_url: String,
-    #[arg(long, env = "BRAIN_ENVIRONMENT_API_KEY", hide_env_values = true)]
-    pub environment_api_key: Option<String>,
-    /// JSON map from driver name to { endpoint, api_key? }. Credentials stay in the server.
-    #[arg(long, env = "BRAIN_ENVIRONMENT_ROUTES_FILE")]
-    pub environment_routes_file: Option<PathBuf>,
     /// Model calls one turn may make before Brain refuses the next.
     #[arg(long, env = "BRAIN_MAX_MODEL_CALLS", default_value_t = 128)]
     pub max_model_calls_per_turn: usize,

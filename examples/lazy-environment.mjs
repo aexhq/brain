@@ -1,13 +1,19 @@
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 
-const accepted = () => ({ type: "accepted", resources: {} });
+const accepted = () => ({ type: "accepted" });
 const failure = (code, message) => ({ type: "failure", code, message, retryable: false });
 const identifier = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
 
-// The example resource is an ephemeral key/value workspace. Allocation may be asynchronous.
+// A standalone Environment: it answers the Environment protocol at `POST /v1/operations`
+// and provides one resource, an ephemeral key/value workspace, allocated on the first
+// invoke rather than at setup. Setup receives the Environment's own configuration and
+// the needs of everything placed in it; each invoke carries the Tool's implementation
+// and needs. This example accepts `file:` needs, since a workspace is what it offers,
+// and refuses any other scheme at setup, naming the URI.
 export function lazyEnvironment({ allocate = async () => new Map(), now = () => performance.now() } = {}) {
   const environments = new Map();
+  const key = (op) => `${op.session_id}/${op.environment}`;
   function expire() {
     for (const env of environments.values()) {
       if (env.resource && env.active === 0 && now() - env.used >= env.ttl) {
@@ -19,49 +25,39 @@ export function lazyEnvironment({ allocate = async () => new Map(), now = () => 
   async function handle(command) {
     const op = command?.operation;
     if (command?.contract !== "environment/v1" || !op || !Number.isSafeInteger(op.sequence) || op.sequence < 1
-      || !identifier(op.session_id) || !identifier(op.environment_id) || command.binding?.environment_id !== op.environment_id) {
+      || !identifier(op.session_id) || !identifier(op.environment)) {
       throw new TypeError("invalid Environment command");
     }
     expire();
     const request = op.request;
-    let env = environments.get(op.environment_id);
+    let env = environments.get(key(op));
     let receipt;
     if (request?.type === "setup") {
       const ttl = request.configuration?.idle_ms ?? 30_000;
+      const unmet = (request.needs ?? []).find((need) => !need.startsWith("file:"));
       if (!Number.isSafeInteger(ttl) || ttl <= 0) receipt = failure("invalid_ttl", "idle_ms must be a positive integer");
+      else if (unmet !== undefined) receipt = failure("unmet_need", `this Environment offers a workspace only; it cannot honour ${unmet}`);
       else if (env) receipt = failure("already_exists", "Environment already exists");
       else {
-        environments.set(op.environment_id, { session: op.session_id, ttl, used: now(), active: 0, tools: new Map(), expired: false });
+        environments.set(key(op), { ttl, used: now(), active: 0, expired: false });
         receipt = accepted();
       }
-    } else if (!env || env.session !== op.session_id) {
+    } else if (!env) {
       receipt = failure("unavailable", "Environment is absent; metadata does not restore its resource");
-    } else if (request?.type === "attach") {
-      if (!identifier(op.attachment_id) || !Array.isArray(request.provisions)
-        || request.provisions.some(({ manifest }) => !identifier(manifest?.name) || manifest.implementation?.type !== "reference_echo")) {
-        receipt = failure("unsupported", "This example accepts only reference_echo Tools");
-      } else {
-        env.attachment = op.attachment_id;
-        env.tools = new Map(request.provisions.map(({ manifest }) => [manifest.name, manifest]));
-        receipt = accepted();
-      }
     } else if (request?.type === "teardown") {
-      environments.delete(op.environment_id);
+      environments.delete(key(op));
       receipt = accepted();
-    } else if (op.attachment_id !== env.attachment || !env.attachment) {
-      receipt = failure("not_attached", "Operation does not name the active attachment");
     } else if (request?.type === "detach") {
-      env.attachment = undefined;
       receipt = accepted();
     } else if (request?.type === "invoke") {
-      if (!env.tools.has(request.tool)) receipt = failure("unbound_tool", "Tool is not attached");
+      if (request.implementation?.type !== "reference_echo") receipt = failure("unsupported", "This example runs only reference_echo Tools");
       else if (env.expired) receipt = failure("expired", "Resource expired; restart is explicit and loses prior contents");
       else {
         env.active += 1;
         try {
           env.resource ??= Promise.resolve().then(allocate);
           const resource = await env.resource;
-          resource.set(request.call_id, request.input);
+          resource.set(op.sequence, request.input);
           receipt = { type: "outcome", outcome: { status: "ok", value: { echo: request.input, entries: resource.size } } };
         } catch (error) {
           receipt = failure("allocation_failed", String(error.message ?? error));

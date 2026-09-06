@@ -35,6 +35,8 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 - [ADR-031: Generate public contracts from Rust types and route annotations](2026-09-04-09-rust-contracts.md)
 - [ADR-038: Defer dynamic placement, workflow durability, and advanced tenancy policy](2026-09-05-07-roadmap-boundary.md)
 - [ADR-039: Keep performance claims historical until representative baselines are rebuilt](2026-09-05-08-benchmark-policy.md)
+- [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md)
+- [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md)
 
 ## Chronological index
 
@@ -79,10 +81,14 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 | 2026-09-05 | [ADR-037: Release execution at turn boundaries and prepare artifacts before creation](2026-09-05-06-ephemeral.md) | Accepted |
 | 2026-09-05 | [ADR-038: Defer dynamic placement, workflow durability, and advanced tenancy policy](2026-09-05-07-roadmap-boundary.md) | Accepted |
 | 2026-09-05 | [ADR-039: Keep performance claims historical until representative baselines are rebuilt](2026-09-05-08-benchmark-policy.md) | Accepted |
-| 2026-09-05 | [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md) | Proposed |
-| 2026-09-05 | [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md) | Proposed |
+| 2026-09-05 | [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md) | Accepted |
+| 2026-09-05 | [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md) | Accepted |
 
 ## Important reversals
+
+- [ADR-022: Let Environments execute implementations using their own platform APIs](2026-09-02-05-resources.md), its create-time check of Tool needs against declared resources → [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md)
+- [ADR-033: Distinguish resident Tools from explicitly placed extensions](2026-09-05-02-placement.md), its two Tool forms → [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md)
+- [ADR-024: Use one SessionConfig and keep hashes local to their actual purpose](2026-09-04-02-simple-config.md), its random attachment identifiers → [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md)
 
 - [ADR-009: Replace SQLite with a write-behind segment journal](2026-08-28-01-write-behind.md) → [ADR-032: Use one canonical journal and commit before exposing records or effects](2026-09-05-01-canonical-journal.md)
 - [ADR-025: Store transcript state and public Events in two per-session logs](2026-09-04-03-two-logs.md) → [ADR-032: Use one canonical journal and commit before exposing records or effects](2026-09-05-01-canonical-journal.md)

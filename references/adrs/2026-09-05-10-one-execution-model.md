@@ -1,7 +1,7 @@
 # ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own
 
 - Decision date: 2026-09-05
-- Status: Proposed
+- Status: Accepted
 - Compiled: 2026-09-05
 
 Extends: [ADR-022: Let Environments execute implementations using their own platform APIs](2026-09-02-05-resources.md), whose create-time check of Tool needs against declared resources this record removes; [ADR-033: Distinguish resident Tools from explicitly placed extensions](2026-09-05-02-placement.md); [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md).
