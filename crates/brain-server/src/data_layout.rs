@@ -4,9 +4,11 @@
 //! {data_dir}/format             "brain-data/1"
 //! {data_dir}/sessions/{id}/     one directory per session (see brain::LocalSessionStore)
 //! {data_dir}/agentloops         admitted Agentloop and Tool Components
-//! {data_dir}/native-workspaces  session workspaces for Brain Wasm Environments
+//! {data_dir}/native-workspaces  session workspaces of the brain env
+//! {data_dir}/hosts              host registrations
+//! {data_dir}/requests           idempotency claims and answers
 //! {data_dir}/run                worker sockets
-//! {data_dir}/server-metadata    model credentials
+//! {data_dir}/server-metadata    sealed model and Environment credentials
 //! ```
 
 use std::path::{Path, PathBuf};

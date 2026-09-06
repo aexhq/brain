@@ -34,7 +34,10 @@ emit at most 1 MiB across the serialized Event kinds and payloads.
 Public system codes and private journal record names are reserved; extensions cannot emit them.
 
 This makes `{session_id, sequence}` the stable name of an operation throughout the journal and its
-execution path.
+execution path. There is no other identifier: a record carries references, not copies.
+`tool_call_started` names the Tool, the invocation, and the deadline; where the call goes is the
+configuration's answer for that name, recorded once at creation. Environment records name the
+Environment and carry the request.
 
 ## Transcript and Agentloop state
 
@@ -65,8 +68,8 @@ that may have continued is reported as unknown, not as a successful cancellation
 ## Suspension and recovery
 
 By default, create and turn completion release the actor and its history indexes. Transcript and
-Event reads do not activate it. A message explicitly opens a new activation; attached Environments
-remain attached. `idleTtlMs` can retain execution for a chosen interval; explicit zero retains it
+Event reads do not activate it. A message explicitly opens a new activation; the session's
+Environments stay set up. `idleTtlMs` can retain execution for a chosen interval; explicit zero retains it
 indefinitely. The server-wide TTL is optional and has the same zero convention.
 
 Journal commits used as effect fences are durable before dispatch. If the process stops during a
@@ -82,8 +85,8 @@ with a new idempotency key can request another attempt.
 
 HTTP idempotency claims survive restart. Completed answers are retained for 24 hours. If a claimed
 request has no recorded answer, reusing its key returns an ambiguous error and never executes the
-request again. Inspect the session before choosing a new operation key. The SDK derives Environment
-identities from the create key so repeating the same create sends the same body.
+request again. Inspect the session before choosing a new operation key. A create body contains only
+names, so repeating the same create sends the same body.
 
 You can also seed a new session with `transcript`; Brain records those messages as its opening
 conversation.
@@ -131,5 +134,5 @@ deduplication.
 ## Lifecycle
 
 `cancel` requests cancellation of work in flight. `end` refuses new messages and detaches the
-session's Environments while preserving history. `delete` removes the session directory, its
-native workspace, and its session-owned Environments.
+session's Environments while preserving history. `delete` removes the session directory, tears
+down its Environments, and forgets its credentials.

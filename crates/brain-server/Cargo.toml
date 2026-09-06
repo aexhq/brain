@@ -35,3 +35,6 @@ url = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

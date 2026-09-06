@@ -1,10 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    AttachmentId, EnvironmentBinding, EnvironmentId, HostId, IDENTIFIER_PATTERN, Outcome,
-    RESOURCE_NAME_PATTERN, SessionId, ToolIdentity, TurnError,
-};
+use crate::{Environment, EnvironmentName, Outcome, SessionId, ToolId, TurnError};
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,12 +12,13 @@ pub enum ToolAdmissionStatus {
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct ToolAdmission {
-    pub identity: ToolIdentity,
+    pub id: ToolId,
     pub status: ToolAdmissionStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<TurnError>,
 }
 
+/// What the model may be told about a Tool.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolDefinition {
@@ -35,22 +33,12 @@ pub struct ToolDefinition {
     pub output_schema: Option<serde_json::Value>,
 }
 
-/// Where a tool's implementation executes: a placed implementation in an Environment,
-/// or a function held by a registered application host.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolHosting {
-    #[default]
-    Provisioned,
-    Resident,
-}
-
-/// The `contracts/tool/v1` manifest: the only thing Brain and environments read about
-/// a tool. Binding *values* are never here — the manifest declares names, the
-/// environment injects values at runtime.
+/// One Tool as a session declares it: what the model is told, the Environment of the
+/// session that runs it, what it needs there, and the implementation that Environment
+/// interprets. Brain reads the name and the Environment and carries the rest.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ToolManifest {
+pub struct Tool {
     #[schemars(schema_with = "crate::schema::identifier")]
     pub name: String,
     #[schemars(length(max = 8192))]
@@ -60,49 +48,32 @@ pub struct ToolManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "crate::schema::json_object")]
     pub output_schema: Option<serde_json::Value>,
-    /// Resource names the program operates on; checked against the environment's
-    /// declared resources at session create.
-    #[schemars(
-        length(max = 64),
-        inner(regex(pattern = RESOURCE_NAME_PATTERN)),
-        extend("uniqueItems" = true)
-    )]
-    pub needs: Vec<String>,
-    #[schemars(
-        length(max = 64),
-        inner(regex(pattern = IDENTIFIER_PATTERN)),
-        extend("uniqueItems" = true)
-    )]
-    pub binding_names: Vec<String>,
-    /// Opaque to Brain; interpreted by the Environment driver this Tool is placed in.
-    pub implementation: serde_json::Value,
-}
-
-/// Where a tool call goes. `environment_id` is what the create request named; `environment`
-/// and `attachment_id` are filled in once the host has attached that environment.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ToolBinding {
-    pub name: String,
-    /// Absent for resident tools: no Environment is on their execution path.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment_id: Option<EnvironmentId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment: Option<EnvironmentBinding>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attachment_id: Option<AttachmentId>,
-    /// Present only for resident tools.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_id: Option<HostId>,
+    pub environment: EnvironmentName,
+    /// What the Tool needs from its Environment, as URIs: `pkg:` for software,
+    /// `https:` or `wss:` for a network destination, `file:` for a filesystem location.
+    /// Brain hands them to the Environment and reads none of them.
     #[serde(default)]
+    #[schemars(schema_with = "crate::schema::needs")]
     pub needs: Vec<String>,
-    pub binding_names: Vec<String>,
-    #[serde(default)]
-    pub hosting: ToolHosting,
-    /// Present only for a provisioned Tool and interpreted by its Environment.
+    /// Opaque to Brain; interpreted by the Environment. Absent when the Environment
+    /// holds the implementation itself, as the host env does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub implementation: Option<serde_json::Value>,
 }
 
+impl Tool {
+    pub fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            input_schema: self.input_schema.clone(),
+            output_schema: self.output_schema.clone(),
+        }
+    }
+}
+
+/// One call as the Agentloop makes it. `call_id` is the loop's own correlation, echoed
+/// in the result; on every Environment wire the call is named by its sequence.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct ToolInvocation {
     pub call_id: String,
@@ -113,11 +84,12 @@ pub struct ToolInvocation {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ToolDispatch {
     /// The sequence of the `tool_call_started` record. With `session_id`, the name of
-    /// this call everywhere: on the environment wire, in the finished record, and on
-    /// the endpoint a resident host answers through.
+    /// this call everywhere: on the Environment wire and in the finished record.
     pub sequence: u64,
     pub session_id: SessionId,
-    pub binding: ToolBinding,
+    pub tool: Tool,
+    /// The Environment the Tool names, as the session declared it.
+    pub environment: Environment,
     pub invocation: ToolInvocation,
     /// Caller-owned: Brain kills the call when this expires, because the remote cannot
     /// be trusted to.
@@ -131,7 +103,7 @@ pub struct ToolCancellation {
     /// The sequence of the `tool_call_started` record being cancelled.
     pub target_sequence: u64,
     pub session_id: SessionId,
-    pub binding: ToolBinding,
+    pub environment: Environment,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]

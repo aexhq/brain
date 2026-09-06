@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use brain_protocol::{ModelBinding, ModelRequest, ModelResult, ModelStreamEvent, ToolDefinition};
+use brain_protocol::{
+    ModelBinding, ModelRequest, ModelResult, ModelStreamEvent, SessionId, ToolDefinition,
+};
 
 mod accumulator;
 mod anthropic;
@@ -24,10 +26,12 @@ use crate::Error;
 
 #[async_trait]
 pub trait ModelExecutor: Send + Sync + 'static {
-    /// Makes one model call. `tools` are the definitions of the tools the request names,
-    /// resolved by the session from what it was created with, in the request's order.
+    /// Makes one model call for `session`, whose credential the executor holds. `tools`
+    /// are the definitions of the tools the request names, resolved by the session from
+    /// what it was created with, in the request's order.
     async fn execute(
         &self,
+        session: &SessionId,
         binding: &ModelBinding,
         request: ModelRequest,
         tools: &[ToolDefinition],

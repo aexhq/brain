@@ -28,21 +28,19 @@ It returns the transcript, updated slots, and optional result.
 Brain commits model, Tool, and emitted Event records. An Agentloop must not depend on the Wasm heap
 surviving between activations; only returned transcript and slots are durable.
 
-## Bind the Component
+## Place the Component
 
 ```ts
-import { agentloop, brainWasm, component } from "@aexhq/brain";
+import { agentloop, brainEnv, component } from "@aexhq/brain";
 import { z } from "zod";
 
 export const assistant = agentloop({
   options: z.object({ compactAt: z.number().min(0).max(1) }),
   implementation: component(new URL("./assistant.wasm", import.meta.url)),
+  needs: ["https://models.example.com"],
 });
 
-const loop = assistant({
-  env: brainWasm({ filesystem: { workspace: false } }),
-  compactAt: 0.8,
-});
+const loop = assistant({ env: brainEnv({ name: "brain" }), compactAt: 0.8 });
 ```
 
 `component(...)` also accepts `Uint8Array`, which is useful when bytes come from an object store or
@@ -56,9 +54,10 @@ const assistant = agentloop({ implementation: component(bytes) });
 ```
 
 The client sends the raw bytes to `POST /v1/agentloops`; Brain validates the Component contract and
-returns its content identity. Admission is cached for that `Component` object. Session creation
-seals the identity, parsed options, and selected Environment. The current server accepts only
-`brainWasm(...)` for Agentloop placement.
+returns its id, the SHA-256 of the bytes. Admission is cached for that `Component` object. Session
+creation seals the id, parsed options, `needs`, and the Environment. The brain env runs the loop
+with exactly the grants its needs name; an Environment reached over HTTP runs it however it
+likes and reaches the same services through the turn routes it is handed with each turn.
 
 ## Effect semantics
 
@@ -86,7 +85,7 @@ keep an observation cursor in your own slot when consuming additional pages. Col
 before producing new effects so a loop does not chase its own Events indefinitely. Suspension
 leaves external history reads available; it does not run guest callbacks.
 
-Admission is explicit when desired: call `await brain.admit(loopBinding)` and
-`await brain.admitTool(toolComponent)` before creation. Reuse those Component objects when binding
+Admission is explicit when desired: call `await brain.admit(placedLoop)` and
+`await brain.admitTool(toolComponent)` before creation. Reuse those Component objects when placing
 extensions; they cache successful admission. Brain retains compiled and prelinked templates,
 never one session's credentials or heap.

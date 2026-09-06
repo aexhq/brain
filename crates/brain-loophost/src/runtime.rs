@@ -1,6 +1,6 @@
 use std::{future::Future, sync::Arc, time::Duration};
 
-use brain_protocol::{AgentloopIdentity, ToolIdentity, TurnError, TurnInput, TurnOutput, codes};
+use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput, codes};
 use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
@@ -11,7 +11,7 @@ use wasmtime_wasi_http::{
     WasiHttpView,
 };
 
-use crate::{HostCall, LoopLimits, NativeEnvironment};
+use crate::{Access, HostCall, LoopLimits, NativeEnvironment};
 
 /// A long-running invocation yields to Tokio at this interval while retaining its fixed
 /// total fuel budget.
@@ -50,17 +50,16 @@ pub struct AdmissionEngine {
 }
 
 pub struct AdmittedAgentloop {
-    pub digest: AgentloopIdentity,
+    pub digest: AgentloopId,
     pre: bindings::AgentloopPre<HostState>,
 }
 
 pub struct AdmittedTool {
-    pub digest: ToolIdentity,
+    pub digest: ToolId,
     pre: tool_bindings::ToolPre<HostState>,
 }
 
 pub struct NativeToolInput {
-    pub call_id: String,
     pub input: serde_json::Value,
     pub configuration: serde_json::Value,
     pub deadline_at_ms: u64,
@@ -86,7 +85,7 @@ impl AdmissionEngine {
         if package_bytes.len() > self.limits.package_bytes {
             return Err("Agentloop package exceeds the configured admission limit".into());
         }
-        let actual = AgentloopIdentity::new(hex_digest(package_bytes));
+        let actual = AgentloopId::new(hex_digest(package_bytes));
         let component = Component::new(&self.engine, package_bytes)
             .map_err(|error| format!("Agentloop component is invalid: {error}"))?;
         for (name, _) in component.component_type().imports(&self.engine) {
@@ -125,7 +124,7 @@ impl AdmissionEngine {
         if component_bytes.len() > self.limits.package_bytes {
             return Err("Tool Component exceeds the configured admission limit".into());
         }
-        let digest = ToolIdentity::new(hex_digest(component_bytes));
+        let digest = ToolId::new(hex_digest(component_bytes));
         let component = Component::new(&self.engine, component_bytes)
             .map_err(|error| format!("Tool Component is invalid: {error}"))?;
         for (name, _) in component.component_type().imports(&self.engine) {
@@ -197,14 +196,14 @@ impl HostState {
             std::fs::write(secrets.path().join(name), value).map_err(host_failure)?;
         }
         let mut wasi = WasiCtxBuilder::new();
-        if environment.scratch {
-            wasi.preopened_dir(scratch.path(), "/scratch", FsPerms::ReadWrite)
+        if let Some(access) = environment.scratch {
+            wasi.preopened_dir(scratch.path(), "/scratch", perms(access))
                 .map_err(host_failure)?;
         }
         wasi.preopened_dir(secrets.path(), "/secrets", FsPerms::ReadOnly)
             .map_err(host_failure)?;
         if let Some(workspace) = &environment.workspace {
-            wasi.preopened_dir(workspace, "/workspace", FsPerms::ReadWrite)
+            wasi.preopened_dir(&workspace.path, "/workspace", perms(workspace.access))
                 .map_err(host_failure)?;
         }
         let mut http = WasiHttpCtx::new();
@@ -292,15 +291,21 @@ impl WasiHttpHooks for NetworkHooks {
     }
 }
 
+fn perms(access: Access) -> FsPerms {
+    match access {
+        Access::Read => FsPerms::ReadOnly,
+        Access::Write => FsPerms::ReadWrite,
+    }
+}
+
 fn network_allowed(allow: &[String], uri: &http::Uri) -> bool {
     uri.scheme_str()
         .zip(uri.authority().map(|value| value.as_str()))
         .is_some_and(|(scheme, authority)| {
             let origin = format!("{scheme}://{authority}");
-            allow.iter().any(|entry| {
-                entry.eq_ignore_ascii_case(authority)
-                    || entry.trim_end_matches('/').eq_ignore_ascii_case(&origin)
-            })
+            allow
+                .iter()
+                .any(|entry| crate::network_covers(entry, &origin))
         })
 }
 
@@ -531,7 +536,6 @@ impl AdmittedTool {
             .await
             .map_err(host_failure)?;
         let input = tool_bindings::brain::tool::types::Invocation {
-            call_id: input.call_id,
             input_json: serde_json::to_string(&input.input).map_err(host_failure)?,
             configuration_json: serde_json::to_string(&input.configuration)
                 .map_err(host_failure)?,
@@ -690,25 +694,36 @@ mod tests {
         }
     }
 
-    fn empty_environment() -> NativeEnvironment {
-        NativeEnvironment {
-            scratch: false,
-            workspace: None,
-            network_allow: Vec::new(),
-            secrets: Default::default(),
-        }
-    }
-
     #[test]
-    fn native_network_is_default_deny_and_matches_only_an_authority_or_origin() {
+    fn native_network_is_default_deny_and_matches_an_origin_or_a_family_of_hosts() {
         let https = "https://api.example.com/path".parse().unwrap();
         let http = "http://api.example.com/path".parse().unwrap();
         assert!(!network_allowed(&[], &https));
-        assert!(network_allowed(&["api.example.com".into()], &https));
-        assert!(network_allowed(&["api.example.com".into()], &http));
+        assert!(!network_allowed(&["api.example.com".into()], &https));
         assert!(network_allowed(&["https://api.example.com".into()], &https));
+        assert!(network_allowed(
+            &["https://API.example.com/".into()],
+            &https
+        ));
         assert!(!network_allowed(&["https://api.example.com".into()], &http));
-        assert!(!network_allowed(&["example.com".into()], &https));
+        assert!(!network_allowed(&["https://example.com".into()], &https));
+        assert!(network_allowed(&["https://*.example.com".into()], &https));
+        assert!(!network_allowed(
+            &["https://*.example.com".into()],
+            &"https://example.com/".parse().unwrap()
+        ));
+        assert!(!network_allowed(
+            &["https://*.example.com".into()],
+            &"https://notexample.com/".parse().unwrap()
+        ));
+        assert!(crate::network_covers(
+            "https://*.example.com",
+            "https://*.api.example.com"
+        ));
+        assert!(!crate::network_covers(
+            "https://*.api.example.com",
+            "https://*.example.com"
+        ));
     }
 
     /// `(func (export "spin") (loop (br 0)))` - a backedge and nothing else, so the only
@@ -789,7 +804,7 @@ mod tests {
         let state = HostState::new(
             StoreBudget::new(128 * 1024 * 1024),
             Arc::new(SlowHost),
-            empty_environment(),
+            NativeEnvironment::default(),
         )
         .unwrap();
         let mut store = Store::new(engine, state);

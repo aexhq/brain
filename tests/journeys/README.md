@@ -1,10 +1,11 @@
 # SDK user journeys
 
 These tests import the public `@aexhq/brain` package and exercise a real Brain server, Wasmtime
-worker, and local journal. The model speaks scripted OpenAI SSE; Environment providers run over
-HTTP. No model account, cloud deployment, SDK transport stub, or internal SDK import is needed.
+worker, and local journal. The model speaks scripted OpenAI SSE; Environments reached over HTTP run
+in the test process. No model account, cloud deployment, SDK transport stub, or internal SDK import
+is needed.
 
-`npm run test:journeys` runs four files concurrently using Node's built-in test runner. Each file
+`npm run test:journeys` runs the files concurrently using Node's built-in test runner. Each file
 owns its server, worker process group, random ports, credentials, and temporary data directory.
 Tests within a file run in order. CI builds the binaries and Components once in the existing
 Linux worker job, then runs all journeys as a required part of `build-test`.
@@ -12,14 +13,15 @@ Linux worker job, then runs all journeys as a required part of `build-test`.
 | Public functionality | Journey coverage |
 | --- | --- |
 | `Brain` / `BrainClient`, `withToken`, custom `fetch`, `request`, `BrainError` | Authenticated and unauthenticated clients, isolated derived credentials, real request tracing, missing sessions, invalid options |
-| `component`, `agentloop`, `admit`, `admitAgentloop`, `admitTool`, inspection | File/bytes/HTTP artifacts, identity reuse, parallel preparation, rejected artifacts, prepared session creation, native Tool execution |
-| `sessions.create/get/list`, initial transcript, system, response format, idle policy | Full conversation lifecycle, seeded context, reopen through another client, idempotent creation with and without resident Tools, conflicting keys, parallel conversations |
+| `component`, `agentloop`, `admit`, `admitAgentloop`, `admitTool`, inspection | File/bytes/HTTP artifacts, id reuse, parallel preparation, rejected artifacts, prepared session creation, native Tool execution |
+| `sessions.create/get/list`, initial transcript, system, response format, idle policy | Full conversation lifecycle, seeded context, reopen through another client, idempotent creation with and without host Tools, conflicting keys, parallel conversations |
 | `send`, `state`, `id`, `transcript` | String/structured input, multiple suspended turns, idempotent sends, invalid input, cold reads, committed input after interruption |
-| `cancel`, `end`, `delete` | Running and idle cancellation, model and resident Tool cancellation, repeated keyed operations, ended-session reads, invalid deletion, independent sessions |
+| `cancel`, `end`, `delete` | Running and idle cancellation, model and host Tool cancellation, repeated keyed operations, ended-session reads, invalid deletion, independent sessions |
 | `events`, `stream`, client `stream` | Durable cursors, a full page boundary, replay-to-live delivery, reconnect, abort, authentication, session isolation |
-| `tool` resident handlers, options, schemas, context | Progress ordering, input/output errors, handler errors, deadlines/signals, concurrent sessions, protected Event rejection |
-| `residentHost`, `residentHostCredentials`, reattachment | Save credentials, close the host connection, reject mismatched bindings, restore matching handlers, preserve active-call cancellation on creation replay |
-| `environment`, `brainWasm`, placed Tools and inspection | Independent authenticated providers, option/binding configuration, lazy allocation, expiry without retry, native workspace persistence/isolation, missing grants |
+| `tool` with `run` in `hostEnv`, options, schemas, context | Progress ordering, input/output errors, handler errors, deadlines/signals, the call's sequence, concurrent sessions, protected Event rejection |
+| `register`, `credentials`, reattachment | Save credentials, close the host connection, reject mismatched placements, restore matching handlers, preserve active-call cancellation on creation replay |
+| `environment`, `brainEnv`, placed Tools, `needs` | Independent authenticated Environments per instance, lazy allocation, expiry without retry, needs at setup, a refused need failing the create, native workspace persistence/isolation, a need the brain env cannot grant |
+| An Agentloop placed in an Environment reached over HTTP | The turn's model call, emit, and dispatch through Brain's turn routes, a dispatched Tool running in the host env, and the routes closing with the turn |
 | `timeoutMs` | Explicit client timeout leaves the server's execution observable and does not retry the model call |
 
 The pagination case emits fewer than the permitted Events per turn across enough turns to cross

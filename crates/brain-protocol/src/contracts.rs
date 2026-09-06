@@ -8,12 +8,12 @@ use schemars::{JsonSchema, SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    AGENTLOOP_CONTRACT_VERSION, AgentloopAdmission, AgentloopIdentity, ApiError, BoundTool,
-    CreateSessionRequest, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentCommand,
-    EnvironmentId, EnvironmentResponse, EventPage, HostCommand, HostEvent, HostEventAck, HostId,
-    HostRegistration, HostResult, Identity, Message, MessageRequest, Outcome, SESSION_CONTRACT,
-    SessionEnvironment, SessionId, SessionList, SessionSummary, ToolAdmission, ToolIdentity,
-    ToolManifest, TurnInput, TurnOutput,
+    AGENTLOOP_CONTRACT_VERSION, AgentloopAdmission, AgentloopId, ApiError, CreateSessionRequest,
+    Environment, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentCommand,
+    EnvironmentName, EnvironmentResponse, EventPage, HostCommand, HostEvent, HostEventAck, HostId,
+    HostRegistration, HostResult, Message, MessageRequest, Outcome, SESSION_CONTRACT, SessionId,
+    SessionList, SessionSummary, Tool, ToolAdmission, ToolId, TurnDispatchRequest,
+    TurnDispatchResult, TurnEmitAck, TurnEmitRequest, TurnInput, TurnOutput, TurnTelemetry,
 };
 
 /// Where the contracts are published; each document's `$id` is its path under here.
@@ -26,14 +26,13 @@ pub fn session() -> Value {
         "Brain Session API v1",
         |generator| {
             define::<AgentloopAdmission>(generator);
-            define::<AgentloopIdentity>(generator);
+            define::<AgentloopId>(generator);
             define::<ApiError>(generator);
-            define::<BoundTool>(generator);
             define::<CreateSessionRequest>(generator);
-            define::<SessionEnvironment>(generator);
+            define::<Environment>(generator);
             define::<EnvironmentCallRequest>(generator);
             define::<EnvironmentCallResult>(generator);
-            define::<EnvironmentId>(generator);
+            define::<EnvironmentName>(generator);
             define::<EventPage>(generator);
             define::<HostCommand>(generator);
             define::<HostEvent>(generator);
@@ -41,19 +40,24 @@ pub fn session() -> Value {
             define::<HostId>(generator);
             define::<HostRegistration>(generator);
             define::<HostResult>(generator);
-            define::<Identity>(generator);
             define::<Message>(generator);
             define::<MessageRequest>(generator);
             define::<crate::ModelRequest>(generator);
             define::<crate::ModelResult>(generator);
             define::<crate::ToolResult>(generator);
             define::<Outcome>(generator);
+            define::<Tool>(generator);
             define::<ToolAdmission>(generator);
-            define::<ToolIdentity>(generator);
+            define::<ToolId>(generator);
             define::<SessionId>(generator);
             define::<SessionList>(generator);
             define::<SessionSummary>(generator);
             define::<crate::SessionTranscript>(generator);
+            define::<TurnDispatchRequest>(generator);
+            define::<TurnDispatchResult>(generator);
+            define::<TurnEmitAck>(generator);
+            define::<TurnEmitRequest>(generator);
+            define::<TurnTelemetry>(generator);
             marker(SESSION_CONTRACT)
         },
     )
@@ -72,10 +76,10 @@ pub fn environment() -> Value {
     )
 }
 
-/// The tool manifest: the only thing Brain and environments read about a tool.
+/// One Tool as a session declares it, and as its Environment receives it at invoke.
 pub fn tool() -> Value {
     document("tool/v1/schemas.json", "Brain Tool v1", |generator| {
-        root(reference::<ToolManifest>(generator))
+        root(reference::<Tool>(generator))
     })
 }
 

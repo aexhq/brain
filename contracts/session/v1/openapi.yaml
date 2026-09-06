@@ -9,33 +9,45 @@ components:
       properties:
         error:
           $ref: '#/components/schemas/ApiError'
-        identity:
-          $ref: '#/components/schemas/AgentloopIdentity'
+        id:
+          $ref: '#/components/schemas/AgentloopId'
         status:
           $ref: '#/components/schemas/AdmissionStatus'
       required:
-      - identity
+      - id
       - status
       type: object
-    AgentloopIdentity:
+    AgentloopId:
       pattern: ^[0-9a-f]{64}$
       type: string
     AgentloopRef:
       additionalProperties: false
-      description: 'The admitted loop package a session runs: which one, and how it is configured.'
+      description: |-
+        The admitted Agentloop a session runs: which one, how it is configured, which
+        Environment of the session runs it, and what it needs there.
       properties:
         configuration: true
-        environment_id:
-          $ref: '#/components/schemas/EnvironmentId'
+        environment:
+          $ref: '#/components/schemas/EnvironmentName'
+        id:
+          $ref: '#/components/schemas/AgentloopId'
+        needs:
+          default: []
           description: |-
-            The Environment that executes this Agentloop. The MVP supports Brain's native
-            Wasmtime Environment; the binding stays explicit for later drivers.
-        identity:
-          $ref: '#/components/schemas/AgentloopIdentity'
+            What the Agentloop needs from its Environment, as URIs. Brain hands them to the
+            Environment at setup and with every turn, and reads none of them.
+          items:
+            format: uri
+            maxLength: 2048
+            minLength: 1
+            type: string
+          maxItems: 64
+          type: array
+          uniqueItems: true
       required:
-      - identity
+      - id
       - configuration
-      - environment_id
+      - environment
       type: object
     ApiError:
       properties:
@@ -53,96 +65,6 @@ components:
       - code
       - message
       - retryable
-      type: object
-    BindingValues:
-      additionalProperties:
-        maxLength: 32768
-        type: string
-      propertyNames:
-        pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
-        type: string
-      type: object
-    BoundTool:
-      additionalProperties: false
-      allOf:
-      - if:
-          properties:
-            hosting:
-              const: resident
-          required:
-          - hosting
-        then:
-          allOf:
-          - required:
-            - host_id
-          - not:
-              required:
-              - implementation
-          - not:
-              required:
-              - environment_id
-          - properties:
-              needs:
-                maxItems: 0
-      - if:
-          not:
-            properties:
-              hosting:
-                const: resident
-            required:
-            - hosting
-        then:
-          allOf:
-          - required:
-            - environment_id
-            - implementation
-          - not:
-              required:
-              - host_id
-      description: |-
-        One tool as the SDK hands it over: its manifest fields plus the environment it
-        binds to. Brain splits the model-facing and dispatch-facing halves internally.
-      properties:
-        binding_names:
-          items:
-            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
-            type: string
-          maxItems: 64
-          type: array
-          uniqueItems: true
-        description:
-          maxLength: 8192
-          type: string
-        environment_id:
-          $ref: '#/components/schemas/EnvironmentId'
-          description: Required for a provisioned tool; a resident tool binds no Environment.
-        host_id:
-          $ref: '#/components/schemas/HostId'
-          description: Required for a resident tool and absent for a provisioned tool.
-        hosting:
-          $ref: '#/components/schemas/ToolHosting'
-          default: provisioned
-        implementation: true
-        input_schema:
-          type: object
-        name:
-          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
-          type: string
-        needs:
-          default: []
-          items:
-            pattern: ^[a-z][a-z0-9_]{0,63}(:[A-Za-z0-9._-]{1,64})?$
-            type: string
-          maxItems: 64
-          type: array
-          uniqueItems: true
-        output_schema:
-          type: object
-      required:
-      - name
-      - description
-      - input_schema
-      - binding_names
       type: object
     ContentBlock:
       oneOf:
@@ -198,9 +120,11 @@ components:
         agentloop:
           $ref: '#/components/schemas/AgentloopRef'
         environments:
-          description: Immutable Environment specifications opened and attached as part of this create.
+          description: |-
+            The Environments of this session, set up as part of this create. Every Tool and
+            the Agentloop name one of them.
           items:
-            $ref: '#/components/schemas/SessionEnvironment'
+            $ref: '#/components/schemas/Environment'
           maxItems: 128
           type: array
         idle_ttl_ms:
@@ -227,7 +151,7 @@ components:
           type: string
         tools:
           items:
-            $ref: '#/components/schemas/BoundTool'
+            $ref: '#/components/schemas/Tool'
           maxItems: 128
           type: array
         transcript:
@@ -245,6 +169,60 @@ components:
       - tools
       - environments
       type: object
+    Environment:
+      description: |-
+        One Environment a session declares: a name unique within the session, how Brain
+        reaches it, and its own configuration, which Brain carries and never reads.
+      oneOf:
+      - description: Hosted inside brain-server.
+        properties:
+          driver:
+            const: brain
+            type: string
+        required:
+        - driver
+        type: object
+      - description: |-
+          The process that registered as this host, reached over the connection it holds
+          open: a browser tab, a Node process, a server.
+        properties:
+          driver:
+            const: host
+            type: string
+          host_id:
+            $ref: '#/components/schemas/HostId'
+        required:
+        - driver
+        - host_id
+        type: object
+      - description: |-
+          Reached over HTTP. `credential` is sent as a bearer token; the server seals it
+          beside the model key and never journals it.
+        properties:
+          credential:
+            maxLength: 16384
+            minLength: 1
+            type: string
+          driver:
+            const: http
+            type: string
+          url:
+            format: uri
+            maxLength: 2048
+            minLength: 1
+            type: string
+        required:
+        - driver
+        - url
+        type: object
+      properties:
+        configuration:
+          default: null
+        name:
+          $ref: '#/components/schemas/EnvironmentName'
+      required:
+      - name
+      type: object
     EnvironmentCallRequest:
       additionalProperties: false
       properties:
@@ -259,14 +237,15 @@ components:
       required:
       - output
       type: object
-    EnvironmentId:
+    EnvironmentName:
       pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
       type: string
     Event:
+      description: |-
+        One journal record as a client reads it. `(session_id, sequence)` names it; there
+        is no other identifier.
       properties:
         data: true
-        event_id:
-          $ref: '#/components/schemas/EventId'
         event_type:
           pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
           type: string
@@ -279,15 +258,11 @@ components:
           minimum: 1
           type: integer
       required:
-      - event_id
       - sequence
       - recorded_at_ms
       - event_type
       - data
       type: object
-    EventId:
-      pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
-      type: string
     EventPage:
       properties:
         events:
@@ -331,7 +306,7 @@ components:
           pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
           type: string
         sequence:
-          description: The resident command this Event belongs to.
+          description: The command this Event belongs to.
           format: uint64
           minimum: 1
           type: integer
@@ -357,16 +332,22 @@ components:
       pattern: ^host_[A-Za-z0-9]{20,32}$
       type: string
     HostOperation:
+      description: |-
+        What a host is asked to do for a session placed in it. A call is named by the
+        command's `(session_id, sequence)`; the Tool's own call id never leaves Brain.
       oneOf:
       - properties:
-          invocation:
-            $ref: '#/components/schemas/ToolInvocation'
+          input: true
+          name:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+            type: string
           type:
             const: invoke_tool
             type: string
         required:
         - type
-        - invocation
+        - name
+        - input
         type: object
       - properties:
           target_sequence:
@@ -406,9 +387,6 @@ components:
       - sequence
       - outcome
       type: object
-    Identity:
-      pattern: ^[0-9a-f]{64}$
-      type: string
     Message:
       additionalProperties: false
       properties:
@@ -560,22 +538,6 @@ components:
       - user
       - assistant
       type: string
-    SessionEnvironment:
-      additionalProperties: false
-      description: |-
-        One immutable Environment specification in a session create. `bindings` carries
-        plaintext values only until attach and is never copied into the session journal.
-      properties:
-        bindings:
-          $ref: '#/components/schemas/BindingValues'
-          default: {}
-        configuration: true
-        environment_id:
-          $ref: '#/components/schemas/EnvironmentId'
-      required:
-      - environment_id
-      - configuration
-      type: object
     SessionId:
       pattern: ^ses_[A-Za-z0-9]{20,32}$
       type: string
@@ -645,16 +607,59 @@ components:
           The provider ended the stream without a terminal reason. Distinct from
           EndTurn on purpose: absent is never zero.
         type: string
+    Tool:
+      additionalProperties: false
+      description: |-
+        One Tool as a session declares it: what the model is told, the Environment of the
+        session that runs it, what it needs there, and the implementation that Environment
+        interprets. Brain reads the name and the Environment and carries the rest.
+      properties:
+        description:
+          maxLength: 8192
+          type: string
+        environment:
+          $ref: '#/components/schemas/EnvironmentName'
+        implementation:
+          description: |-
+            Opaque to Brain; interpreted by the Environment. Absent when the Environment
+            holds the implementation itself, as the host env does.
+        input_schema:
+          type: object
+        name:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+        needs:
+          default: []
+          description: |-
+            What the Tool needs from its Environment, as URIs: `pkg:` for software,
+            `https:` or `wss:` for a network destination, `file:` for a filesystem location.
+            Brain hands them to the Environment and reads none of them.
+          items:
+            format: uri
+            maxLength: 2048
+            minLength: 1
+            type: string
+          maxItems: 64
+          type: array
+          uniqueItems: true
+        output_schema:
+          type: object
+      required:
+      - name
+      - description
+      - input_schema
+      - environment
+      type: object
     ToolAdmission:
       properties:
         error:
           $ref: '#/components/schemas/TurnError'
-        identity:
-          $ref: '#/components/schemas/ToolIdentity'
+        id:
+          $ref: '#/components/schemas/ToolId'
         status:
           $ref: '#/components/schemas/ToolAdmissionStatus'
       required:
-      - identity
+      - id
       - status
       type: object
     ToolAdmissionStatus:
@@ -662,18 +667,13 @@ components:
       - admitted
       - rejected
       type: string
-    ToolHosting:
-      description: |-
-        Where a tool's implementation executes: a placed implementation in an Environment,
-        or a function held by a registered application host.
-      enum:
-      - provisioned
-      - resident
-      type: string
-    ToolIdentity:
+    ToolId:
       pattern: ^[0-9a-f]{64}$
       type: string
     ToolInvocation:
+      description: |-
+        One call as the Agentloop makes it. `call_id` is the loop's own correlation, echoed
+        in the result; on every Environment wire the call is named by its sequence.
       properties:
         call_id:
           type: string
@@ -697,6 +697,47 @@ components:
       - output
       - is_error
       type: object
+    TurnDispatchRequest:
+      additionalProperties: false
+      properties:
+        calls:
+          items:
+            $ref: '#/components/schemas/ToolInvocation'
+          maxItems: 128
+          type: array
+      required:
+      - calls
+      type: object
+    TurnDispatchResult:
+      properties:
+        results:
+          items:
+            $ref: '#/components/schemas/ToolResult'
+          type: array
+      required:
+      - results
+      type: object
+    TurnEmitAck:
+      properties:
+        sequence:
+          description: The sequence Brain assigned to the committed Event.
+          format: uint64
+          minimum: 1
+          type: integer
+      required:
+      - sequence
+      type: object
+    TurnEmitRequest:
+      additionalProperties: false
+      properties:
+        data: true
+        event_type:
+          pattern: ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
+          type: string
+      required:
+      - event_type
+      - data
+      type: object
     TurnError:
       description: Why a turn, or one of the host calls inside it, failed.
       properties:
@@ -714,6 +755,13 @@ components:
       required:
       - code
       - message
+      type: object
+    TurnTelemetry:
+      additionalProperties: false
+      properties:
+        record: true
+      required:
+      - record
       type: object
     Usage:
       description: |-
@@ -813,15 +861,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
-  /v1/agentloops/{identity}:
+  /v1/agentloops/{id}:
     get:
       operationId: getAgentloop
       parameters:
       - in: path
-        name: identity
+        name: id
         required: true
         schema:
-          $ref: '#/components/schemas/AgentloopIdentity'
+          $ref: '#/components/schemas/AgentloopId'
       responses:
         '200':
           content:
@@ -844,7 +892,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HostRegistration'
-          description: Registered resident extension host
+          description: Registered host
         default:
           content:
             application/json:
@@ -866,7 +914,7 @@ paths:
             text/event-stream:
               schema:
                 type: string
-          description: Bounded send-once resident command stream
+          description: Bounded send-once host command stream
         default:
           content:
             application/json:
@@ -894,7 +942,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HostEventAck'
-          description: Resident extension Event committed
+          description: Host Event committed
         default:
           content:
             application/json:
@@ -918,7 +966,7 @@ paths:
         required: true
       responses:
         '204':
-          description: Resident command result accepted
+          description: Host command result accepted
         default:
           content:
             application/json:
@@ -1070,7 +1118,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
           description: Structured error
-  /v1/sessions/{session_id}/environments/{environment_id}/calls/{name}:
+  /v1/sessions/{session_id}/environments/{environment}/calls/{name}:
     post:
       operationId: callEnvironment
       parameters:
@@ -1080,10 +1128,10 @@ paths:
         schema:
           $ref: '#/components/schemas/SessionId'
       - in: path
-        name: environment_id
+        name: environment
         required: true
         schema:
-          $ref: '#/components/schemas/EnvironmentId'
+          $ref: '#/components/schemas/EnvironmentName'
       - in: path
         name: name
         required: true
@@ -1200,6 +1248,182 @@ paths:
               schema:
                 $ref: '#/components/schemas/SessionTranscript'
           description: Committed transcript, including suspended sessions
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/turns/{sequence}/dispatch:
+    post:
+      operationId: turnDispatch
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TurnDispatchRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnDispatchResult'
+          description: The Tool results, in the calls' order
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/turns/{sequence}/emit:
+    post:
+      operationId: turnEmit
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TurnEmitRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnEmitAck'
+          description: The loop's Event committed
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/turns/{sequence}/events:
+    get:
+      operationId: turnEvents
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      - in: query
+        name: after
+        required: false
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPage'
+          description: A finite event page
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+      summary: |-
+        The turn routes: Brain's five turn services, for the Environment running a turn
+        outside this process. Each answers only while that activation is open and only
+        with its token.
+  /v1/sessions/{session_id}/turns/{sequence}/model:
+    post:
+      operationId: turnModel
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelResult'
+          description: The model's answer, journaled
+        default:
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Structured error
+  /v1/sessions/{session_id}/turns/{sequence}/telemetry:
+    post:
+      operationId: turnTelemetry
+      parameters:
+      - in: path
+        name: session_id
+        required: true
+        schema:
+          $ref: '#/components/schemas/SessionId'
+      - in: path
+        name: sequence
+        required: true
+        schema:
+          format: int64
+          minimum: 0
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TurnTelemetry'
+        required: true
+      responses:
+        '204':
+          description: Accepted, best effort
         default:
           content:
             application/json:

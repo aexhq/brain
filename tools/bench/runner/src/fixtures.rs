@@ -480,7 +480,7 @@ async fn operations(
     state.arrival.notify_one();
     let operation = body.get("operation").cloned().unwrap_or(Value::Null);
     // The receipt has to answer the *kind* of operation that arrived. A tool dispatch
-    // wants an `outcome`; a lifecycle operation — setup, attach, detach, teardown —
+    // wants an `outcome`; a lifecycle operation — setup, detach, teardown —
     // only accepts `accepted` or `result`, and answering one of those with a tool receipt
     // fails the session with "Environment returned a nonterminal lifecycle receipt".
     let receipt = match operation
@@ -493,19 +493,15 @@ async fn operations(
             "outcome": {"status": "ok", "value": {"content": "echo"}},
         }),
         "call" => json!({ "type": "result", "output": {"content": "echo"} }),
-        // setup, attach, detach, teardown, cancel: nothing to return but that it is done.
+        // setup, detach, teardown, cancel: nothing to return but that it is done.
         _ => json!({ "type": "accepted" }),
     };
     Json(json!({
         "contract": "environment/v1",
-        "operation_id": operation.get("operation_id").cloned().unwrap_or(json!("op_unknown")),
-        // Echoed back, not invented: Brain checks the receipt names the request it sent,
-        // and a receipt that carries the wrong field fails the whole session with
-        // "operation outcome is ambiguous" rather than anything about this fixture.
-        "request_identity": operation
-            .get("request_identity")
-            .cloned()
-            .unwrap_or(json!("")),
+        // Echoed back, not invented: Brain checks the receipt names the operation it
+        // sent, and a receipt that carries the wrong sequence fails the whole session
+        // with "correlation does not match" rather than anything about this fixture.
+        "sequence": operation.get("sequence").cloned().unwrap_or(json!(0)),
         "receipt": receipt,
     }))
 }

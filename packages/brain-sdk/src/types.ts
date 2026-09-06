@@ -11,36 +11,21 @@ export type SchemaOutput<Value extends Schema> = z.output<Value>;
 
 /** Prebuilt WebAssembly Component bytes. Brain never compiles application source. */
 export interface Component { readonly [componentBrand]: true }
-/** An opaque immutable placement specification. */
+/** One named Environment of a session: the brain env, the host env, or one reached over HTTP. */
 export interface Environment { readonly [environmentBrand]: true }
-/** An Agentloop implementation bound to its execution Environment. */
-export interface AgentloopBinding { readonly [agentloopBrand]: true }
-/** A Tool implementation bound either to this application host or an Environment. */
-export interface ToolBinding<Input = unknown, Output = unknown> {
+/** An Agentloop placed in the Environment that runs it. */
+export interface PlacedAgentloop { readonly [agentloopBrand]: true }
+/** A Tool placed in the Environment that runs it. */
+export interface PlacedTool<Input = unknown, Output = unknown> {
   readonly [toolBrand]: { readonly input: Input; readonly output: Output };
 }
-export type SessionTool = ToolBinding;
+export type SessionTool = PlacedTool;
 
 export interface ToolDefinition {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly outputSchema?: Readonly<Record<string, unknown>>;
-}
-
-export type ResourceName = string;
-export interface FsResource { readonly root: string }
-export interface ProcessResource { readonly timeout_ms_max?: number; readonly output_bytes_max?: number }
-export interface NetResource { readonly allow: readonly string[] }
-export type DomResource = Record<never, never>;
-export interface SecretsResource { readonly names: readonly string[] }
-export interface Resources {
-  readonly fs?: FsResource;
-  readonly process?: ProcessResource;
-  readonly net?: NetResource;
-  readonly dom?: DomResource;
-  readonly secrets?: SecretsResource;
-  readonly [vendor: `${string}:${string}`]: Readonly<Record<string, unknown>> | undefined;
 }
 
 export type Outcome<Value = unknown> =
@@ -97,7 +82,7 @@ export interface UserInput { readonly message: string }
 
 export interface CreateSessionOptions {
   readonly model: ModelSelection;
-  readonly agentloop: AgentloopBinding;
+  readonly agentloop: PlacedAgentloop;
   readonly tools?: readonly SessionTool[];
   readonly system?: string;
   readonly responseFormat?: unknown;
@@ -112,8 +97,8 @@ export interface SessionState {
   readonly lastSequence: number;
 }
 
+/** One journal record. `(session id, sequence)` names it. */
 export interface SessionEvent<Data = unknown> {
-  readonly id: string;
   readonly sequence: number;
   readonly recordedAt: Date;
   readonly type: string;
@@ -127,7 +112,7 @@ export interface SessionStreamEvent<Data = unknown> {
 }
 
 export interface AgentloopAdmission {
-  readonly identity: string;
+  readonly id: string;
   readonly status: "admitted" | "rejected";
   readonly error?: { readonly code: string; readonly message: string; readonly retryable: boolean; readonly details?: unknown };
 }

@@ -6,7 +6,7 @@
 //! turn's output or its error. The server may send a cancel at any point; the worker
 //! fails every pending host call with it and the guest's next call sees it.
 
-use brain_protocol::{AgentloopIdentity, ToolIdentity, TurnError, TurnInput, TurnOutput};
+use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -36,14 +36,13 @@ pub enum WorkerRequest {
         component_base64: String,
     },
     Turn {
-        digest: AgentloopIdentity,
+        digest: AgentloopId,
         environment: NativeEnvironment,
         input: Box<TurnInput>,
     },
     Tool {
-        digest: ToolIdentity,
+        digest: ToolId,
         environment: NativeEnvironment,
-        call_id: String,
         input: serde_json::Value,
         configuration: serde_json::Value,
         deadline_at_ms: u64,
@@ -58,12 +57,64 @@ pub enum WorkerRequest {
     Cancel,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+/// What one invocation is granted: computed from what it declared it needs, bounded
+/// by the deployment's allow-lists, and nothing else.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct NativeEnvironment {
-    pub scratch: bool,
-    pub workspace: Option<String>,
+    /// A directory that lives for this invocation, at `/scratch`.
+    pub scratch: Option<Access>,
+    /// The session's directory, at `/workspace`.
+    pub workspace: Option<Workspace>,
+    /// Origins the guest may reach over `wasi:http`, exact or `scheme://*.domain`.
     pub network_allow: Vec<String>,
+    /// Files under `/secrets`, by name.
     pub secrets: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Access {
+    Read,
+    Write,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Workspace {
+    pub path: String,
+    pub access: Access,
+}
+
+/// Whether `grant` covers `target`, both `scheme://authority`. An exact grant covers
+/// that origin; `scheme://*.domain` covers every host below `domain`, as a Content
+/// Security Policy source does, and so covers a narrower family too.
+pub fn network_covers(grant: &str, target: &str) -> bool {
+    let (Some((grant_scheme, grant_authority)), Some((target_scheme, target_authority))) =
+        (split_origin(grant), split_origin(target))
+    else {
+        return false;
+    };
+    if !grant_scheme.eq_ignore_ascii_case(target_scheme) {
+        return false;
+    }
+    let grant_authority = grant_authority.to_ascii_lowercase();
+    let target_authority = target_authority.to_ascii_lowercase();
+    match grant_authority.strip_prefix("*.") {
+        None => grant_authority == target_authority,
+        Some(domain) => {
+            let below = format!(".{domain}");
+            match target_authority.strip_prefix("*.") {
+                Some(target_domain) => target_domain == domain || target_domain.ends_with(&below),
+                None => target_authority.ends_with(&below),
+            }
+        }
+    }
+}
+
+fn split_origin(origin: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = origin.split_once("://")?;
+    let authority = rest.trim_end_matches('/');
+    (!scheme.is_empty() && !authority.is_empty() && !authority.contains('/'))
+        .then_some((scheme, authority))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]

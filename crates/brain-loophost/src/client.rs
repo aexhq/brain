@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use brain_protocol::{AgentloopIdentity, ToolIdentity, TurnError, TurnInput, TurnOutput};
+use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput};
 
 #[cfg(unix)]
 use crate::wire::{MAX_RESPONSE_FRAME_BYTES, max_request_bytes, read_frame, write_frame};
@@ -43,16 +43,16 @@ impl WorkerClient {
         }
     }
 
-    pub async fn admit(&self, package: &[u8]) -> Result<AgentloopIdentity, String> {
+    pub async fn admit(&self, package: &[u8]) -> Result<AgentloopId, String> {
         self.admit_as(package, ComponentKind::Agentloop)
             .await
-            .map(AgentloopIdentity::new)
+            .map(AgentloopId::new)
     }
 
-    pub async fn admit_tool(&self, component: &[u8]) -> Result<ToolIdentity, String> {
+    pub async fn admit_tool(&self, component: &[u8]) -> Result<ToolId, String> {
         self.admit_as(component, ComponentKind::Tool)
             .await
-            .map(ToolIdentity::new)
+            .map(ToolId::new)
     }
 
     async fn admit_as(&self, package: &[u8], kind: ComponentKind) -> Result<String, String> {
@@ -74,7 +74,7 @@ impl WorkerClient {
     #[cfg(unix)]
     pub async fn tool(
         &self,
-        digest: ToolIdentity,
+        digest: ToolId,
         environment: NativeEnvironment,
         input: NativeToolInput,
         bridge: &dyn TurnBridge,
@@ -88,7 +88,6 @@ impl WorkerClient {
             &WorkerRequest::Tool {
                 digest,
                 environment,
-                call_id: input.call_id,
                 input: input.input,
                 configuration: input.configuration,
                 deadline_at_ms: input.deadline_at_ms,
@@ -127,7 +126,7 @@ impl WorkerClient {
     #[cfg(not(unix))]
     pub async fn tool(
         &self,
-        _digest: ToolIdentity,
+        _digest: ToolId,
         _environment: NativeEnvironment,
         _input: NativeToolInput,
         _bridge: &dyn TurnBridge,
@@ -143,7 +142,7 @@ impl WorkerClient {
     #[cfg(unix)]
     pub async fn turn(
         &self,
-        digest: AgentloopIdentity,
+        digest: AgentloopId,
         environment: NativeEnvironment,
         input: TurnInput,
         max_input_bytes: usize,
@@ -233,7 +232,7 @@ impl WorkerClient {
     #[cfg(not(unix))]
     pub async fn turn(
         &self,
-        _digest: AgentloopIdentity,
+        _digest: AgentloopId,
         _environment: NativeEnvironment,
         _input: TurnInput,
         _max_input_bytes: usize,

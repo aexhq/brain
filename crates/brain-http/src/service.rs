@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use brain_protocol::{
-    AgentloopAdmission, AgentloopIdentity, ApiError, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentId, EventPage, HostCommand, HostEvent, HostEventAck, HostId,
-    HostRegistration, HostResult, LiveEvent, MessageRequest, SessionId, SessionList,
-    SessionSummary, ToolAdmission,
+    AgentloopAdmission, AgentloopId, ApiError, CreateSessionRequest, EnvironmentCallRequest,
+    EnvironmentCallResult, EnvironmentName, EventPage, HostCommand, HostEvent, HostEventAck,
+    HostId, HostRegistration, HostResult, LiveEvent, MessageRequest, SessionId, SessionList,
+    SessionSummary, ToolAdmission, TurnAnswer, TurnCall,
 };
 
 pub struct HostConnection {
@@ -40,6 +40,15 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         token: String,
         event: HostEvent,
     ) -> Result<HostEventAck, ApiError>;
+    /// One call on an open turn's routes by the Environment running that turn, opened
+    /// by the token minted for it.
+    async fn turn_call(
+        &self,
+        session_id: SessionId,
+        sequence: u64,
+        token: String,
+        call: TurnCall,
+    ) -> Result<TurnAnswer, ApiError>;
     async fn admit_agentloop(
         &self,
         idempotency_key: String,
@@ -50,10 +59,7 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
         idempotency_key: String,
         component: Vec<u8>,
     ) -> Result<ToolAdmission, ApiError>;
-    async fn get_agentloop(
-        &self,
-        digest: AgentloopIdentity,
-    ) -> Result<AgentloopAdmission, ApiError>;
+    async fn get_agentloop(&self, id: AgentloopId) -> Result<AgentloopAdmission, ApiError>;
     async fn create_session(
         &self,
         idempotency_key: String,
@@ -74,7 +80,7 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
     async fn call_environment(
         &self,
         session_id: SessionId,
-        environment_id: EnvironmentId,
+        environment: EnvironmentName,
         name: String,
         idempotency_key: String,
         request: EnvironmentCallRequest,

@@ -3,10 +3,11 @@ use std::{fmt, str::FromStr};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// The shape of every name a caller mints: a tool, an environment, a binding, a code.
+/// The shape of every name a caller mints: a tool, an environment, a code.
 pub const IDENTIFIER_PATTERN: &str = "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$";
-/// The shape of a content address: 64 lowercase hexadecimal characters.
-pub const IDENTITY_PATTERN: &str = "^[0-9a-f]{64}$";
+/// The shape of a content address: the SHA-256 of the bytes, as 64 lowercase
+/// hexadecimal characters. A caller with the same bytes computes the same id.
+pub const SHA256_PATTERN: &str = "^[0-9a-f]{64}$";
 
 macro_rules! id_type {
     ($name:ident, $pattern:expr) => {
@@ -41,9 +42,9 @@ macro_rules! id_type {
 }
 
 id_type!(SessionId, "^ses_[A-Za-z0-9]{20,32}$");
-id_type!(EventId, IDENTIFIER_PATTERN);
-id_type!(EnvironmentId, IDENTIFIER_PATTERN);
-id_type!(AttachmentId, IDENTIFIER_PATTERN);
+// A caller-chosen name, unique within its session.
+id_type!(EnvironmentName, IDENTIFIER_PATTERN);
+// The one server-minted identity outside a session: a registered host.
 id_type!(HostId, "^host_[A-Za-z0-9]{20,32}$");
-id_type!(AgentloopIdentity, IDENTITY_PATTERN);
-id_type!(ToolIdentity, IDENTITY_PATTERN);
+id_type!(AgentloopId, SHA256_PATTERN);
+id_type!(ToolId, SHA256_PATTERN);

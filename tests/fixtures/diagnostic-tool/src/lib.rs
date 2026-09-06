@@ -7,7 +7,7 @@ struct Diagnostic;
 
 impl Guest for Diagnostic {
     fn run(input: Invocation) -> Result<String, ToolError> {
-        brain::tool::host::emit("tool_progress", &serde_json::json!({"call_id": input.call_id}).to_string())?;
+        brain::tool::host::emit("tool_progress", &serde_json::json!({"phase": "started"}).to_string())?;
         let value: serde_json::Value = serde_json::from_str(&input.input_json).map_err(|error| ToolError {
             code: "invalid_input".into(),
             message: error.to_string(),

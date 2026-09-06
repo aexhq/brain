@@ -16,10 +16,9 @@ use std::{
 use async_trait::async_trait;
 use brain::{Error, SessionStore, ToolExecutor};
 use brain_protocol::{
-    AttachmentId, ContentBlock, EnvironmentAttachment, EnvironmentBinding, EnvironmentId, HostId,
-    LiveEvent, Message, MessageRequest, ModelRequest, Outcome, OutcomeError, SessionConfig,
-    ToolBinding, ToolCancellation, ToolDefinition, ToolDispatch, ToolHosting, ToolInvocation,
-    TurnOutput,
+    ContentBlock, Driver, Environment, EnvironmentName, HostId, LiveEvent, Message, MessageRequest,
+    ModelRequest, Outcome, OutcomeError, SessionConfig, Tool, ToolCancellation, ToolDefinition,
+    ToolDispatch, ToolInvocation, TurnOutput,
 };
 use brain_telemetry::telemetry_channel;
 use common::{
@@ -57,63 +56,39 @@ fn invocation(name: &str, call_id: &str) -> ToolInvocation {
     }
 }
 
-/// A configuration binding one tool with the given `needs` to one environment declaring
-/// the given resources.
-fn tool_config(tool_name: &str, needs: Vec<&str>, declares: Vec<&str>) -> SessionConfig {
-    let environment = EnvironmentBinding {
-        environment_id: EnvironmentId::new("workspace"),
-        directory_generation: 1,
-    };
+/// A configuration placing one Tool with the given `needs` in the Agentloop's Environment.
+fn tool_config(tool_name: &str, needs: Vec<&str>) -> SessionConfig {
     let mut config = config();
-    config.tools = vec![ToolDefinition {
+    config.tools = vec![Tool {
         name: tool_name.into(),
         description: "a tool".into(),
         input_schema: serde_json::json!({"type":"object"}),
         output_schema: None,
-    }];
-    config.environments = vec![EnvironmentAttachment {
-        environment_id: EnvironmentId::new("workspace"),
-        configuration: serde_json::json!({}),
-
-        binding: Some(environment.clone()),
-        attachment_id: Some(AttachmentId::new("attachment")),
-        resources: declares
-            .into_iter()
-            .map(|name| (name.to_string(), serde_json::json!({})))
-            .collect(),
-    }];
-    config.tool_bindings = vec![ToolBinding {
-        name: tool_name.into(),
-        environment_id: Some(EnvironmentId::new("workspace")),
-        environment: Some(environment),
-        attachment_id: Some(AttachmentId::new("attachment")),
-        host_id: None,
+        environment: EnvironmentName::new("workspace"),
         needs: needs.into_iter().map(String::from).collect(),
-        binding_names: Vec::new(),
-        hosting: ToolHosting::Provisioned,
         implementation: Some(serde_json::json!({"kind": "test"})),
     }];
     config
 }
 
-/// A configuration binding one resident tool to its registered application host.
-fn resident_tool_config(tool_name: &str) -> SessionConfig {
+/// A configuration placing one Tool in a host env: the process that registered as the
+/// host answers it, so it carries no implementation.
+fn host_tool_config(tool_name: &str) -> SessionConfig {
     let mut config = config();
-    config.tools = vec![ToolDefinition {
+    config.environments.push(Environment {
+        name: EnvironmentName::new("app"),
+        driver: Driver::Host {
+            host_id: HostId::new("host_12345678901234567890"),
+        },
+        configuration: serde_json::json!({}),
+    });
+    config.tools = vec![Tool {
         name: tool_name.into(),
-        description: "answered by an application host".into(),
+        description: "answered by the application".into(),
         input_schema: serde_json::json!({"type":"object"}),
         output_schema: None,
-    }];
-    config.tool_bindings = vec![ToolBinding {
-        name: tool_name.into(),
-        environment_id: None,
-        environment: None,
-        attachment_id: None,
-        host_id: Some(HostId::new("host_12345678901234567890")),
+        environment: EnvironmentName::new("app"),
         needs: Vec::new(),
-        binding_names: Vec::new(),
-        hosting: ToolHosting::Resident,
         implementation: None,
     }];
     config
@@ -202,6 +177,7 @@ struct RecordingModel {
 impl brain::ModelExecutor for RecordingModel {
     async fn execute(
         &self,
+        _session: &brain_protocol::SessionId,
         _binding: &brain_protocol::ModelBinding,
         _request: ModelRequest,
         _tools: &[ToolDefinition],
@@ -344,9 +320,7 @@ async fn cancel_forwards_inflight_tool_cancellation_to_the_environment_port() {
         tools.clone(),
         brain::DEFAULT_TOOL_DEADLINE_MS,
     );
-    let handle = runtime
-        .create(&tool_config("slow", vec![], vec![]), &[])
-        .unwrap();
+    let handle = runtime.create(&tool_config("slow", vec![]), &[]).unwrap();
     let turning = {
         let handle = handle.clone();
         tokio::spawn(async move { handle.message(MessageRequest { input: "go".into() }).await })
@@ -402,9 +376,7 @@ async fn wall_deadline_keeps_completed_tool_results_and_records_unknown_cancella
     });
     let mut runtime = runtime(&data_dir, executor, Arc::new(NoModels), Arc::new(Tools));
     Arc::get_mut(&mut runtime.config).unwrap().max_turn_ms = 1500;
-    let session = runtime
-        .create(&tool_config("lookup", vec![], vec![]), &[])
-        .unwrap();
+    let session = runtime.create(&tool_config("lookup", vec![]), &[]).unwrap();
     let turning = tokio::spawn({
         let session = session.clone();
         async move { session.message(MessageRequest { input: "go".into() }).await }
@@ -632,37 +604,12 @@ async fn the_journal_is_the_only_thing_written() {
     assert!(!found.iter().any(|name| name.contains("/events/")));
 }
 
-/// The bind check: a tool whose `needs` is not covered by its environment's declared
-/// resources is rejected at create, and the error names the resource, the tool, and
-/// the environment.
+/// What a Tool needs is the Environment's business: Brain admits the declaration and
+/// hands it over unread, so a need it could never satisfy itself is not a reason to
+/// refuse the session.
 #[tokio::test]
-async fn needs_beyond_declared_resources_rejects_create_naming_all_three_parties() {
-    let data_dir = temporary_directory("bind-check");
-    let runtime = runtime(
-        &data_dir,
-        echo_loop(),
-        Arc::new(NoModels),
-        Arc::new(NoTools),
-    );
-    let error = match runtime.create(&tool_config("bash", vec!["process"], vec!["dom"]), &[]) {
-        Ok(_) => {
-            panic!("a tool needing `process` must not bind to an environment declaring only `dom`")
-        }
-        Err(error) => error,
-    };
-    let message = error.to_string();
-    for named in ["process", "bash", "workspace"] {
-        assert!(
-            message.contains(named),
-            "the rejection must name {named:?}: {message}"
-        );
-    }
-    settle(runtime, data_dir).await;
-}
-
-#[tokio::test]
-async fn empty_needs_binds_to_any_environment() {
-    let data_dir = temporary_directory("bind-any");
+async fn needs_are_admitted_unread() {
+    let data_dir = temporary_directory("needs");
     let runtime = runtime(
         &data_dir,
         echo_loop(),
@@ -670,12 +617,67 @@ async fn empty_needs_binds_to_any_environment() {
         Arc::new(NoTools),
     );
     let handle = runtime
-        .create(&tool_config("note", vec![], vec![]), &[])
+        .create(
+            &tool_config(
+                "bash",
+                vec!["pkg:apt/ffmpeg", "file:///workspace?access=write"],
+            ),
+            &[],
+        )
         .unwrap();
     assert!(matches!(
         runtime.session(handle.id()).status,
         brain_protocol::SessionStatus::Idle
     ));
+    drop(handle);
+    settle(runtime, data_dir).await;
+}
+
+/// The started record carries a reference to the Tool, not a copy of it: the Tool and
+/// its Environment live once, in the configuration recorded at creation.
+#[tokio::test]
+async fn a_tool_call_record_names_the_tool_and_nothing_else_about_it() {
+    let data_dir = temporary_directory("tool-record");
+    let tools = Arc::new(OutcomeTools {
+        outcome: Outcome::Ok {
+            value: serde_json::json!({}),
+        },
+        delay: Duration::ZERO,
+        entered: tokio::sync::Notify::new(),
+        cancelled: Mutex::new(Vec::new()),
+    });
+    let loop_executor = scripted(|input, services| async move {
+        services
+            .dispatch(vec![invocation("bash", "call_1")])
+            .await?;
+        done(input.transcript)
+    });
+    let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5_000);
+    let handle = runtime
+        .create(&tool_config("bash", vec!["pkg:apt/ffmpeg"]), &[])
+        .unwrap();
+    handle
+        .message(MessageRequest { input: "go".into() })
+        .await
+        .unwrap();
+    let events = runtime.events(handle.id(), 0, 1_000).events;
+    let started = events
+        .iter()
+        .find(|event| event.event_type == "tool_call_started")
+        .unwrap();
+    assert_eq!(
+        started.data,
+        serde_json::json!({
+            "tool": "bash",
+            "invocation": {"call_id": "call_1", "name": "bash", "input": {}},
+            "deadline_ms": 5_000,
+        })
+    );
+    let ended = events
+        .iter()
+        .find(|event| event.event_type == "tool_call_ended")
+        .unwrap();
+    assert_eq!(ended.data["sequence"], started.sequence);
     drop(handle);
     settle(runtime, data_dir).await;
 }
@@ -724,9 +726,7 @@ async fn invoke_outcomes_map_onto_tool_results() {
             })
         };
         let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5_000);
-        let handle = runtime
-            .create(&tool_config("tool", vec![], vec![]), &[])
-            .unwrap();
+        let handle = runtime.create(&tool_config("tool", vec![]), &[]).unwrap();
         handle
             .message(MessageRequest { input: "go".into() })
             .await
@@ -774,9 +774,7 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_unknown() {
         })
     };
     let runtime = runtime_with_deadline(&data_dir, loop_executor, tools.clone(), 200);
-    let handle = runtime
-        .create(&tool_config("slow", vec![], vec![]), &[])
-        .unwrap();
+    let handle = runtime.create(&tool_config("slow", vec![]), &[]).unwrap();
     let started = std::time::Instant::now();
     handle
         .message(MessageRequest { input: "go".into() })
@@ -798,8 +796,8 @@ async fn an_overdue_invoke_is_cancelled_and_recorded_as_unknown() {
 }
 
 #[tokio::test]
-async fn a_resident_tool_uses_the_configured_executor() {
-    let data_dir = temporary_directory("resident-tool");
+async fn a_tool_in_a_host_env_uses_the_configured_executor() {
+    let data_dir = temporary_directory("host-tool");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let loop_executor = {
         let seen = seen.clone();
@@ -823,9 +821,7 @@ async fn a_resident_tool_uses_the_configured_executor() {
         cancelled: Mutex::new(Vec::new()),
     });
     let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 5_000);
-    let handle = runtime
-        .create(&resident_tool_config("pick_file"), &[])
-        .unwrap();
+    let handle = runtime.create(&host_tool_config("pick_file"), &[]).unwrap();
     handle
         .message(MessageRequest { input: "go".into() })
         .await
@@ -837,24 +833,8 @@ async fn a_resident_tool_uses_the_configured_executor() {
 }
 
 #[tokio::test]
-async fn a_resident_tool_without_a_host_is_rejected() {
-    let data_dir = temporary_directory("resident-without-host");
-    let mut config = resident_tool_config("pick_file");
-    config.tool_bindings[0].host_id = None;
-    let runtime = runtime(
-        &data_dir,
-        echo_loop(),
-        Arc::new(NoModels),
-        Arc::new(NoTools),
-    );
-    let error = runtime.create(&config, &[]).err().unwrap();
-    assert!(error.to_string().contains("registered host"));
-    settle(runtime, data_dir).await;
-}
-
-#[tokio::test]
-async fn an_unanswered_resident_call_becomes_unknown_and_journals_the_cancellation() {
-    let data_dir = temporary_directory("resident-timeout");
+async fn an_unanswered_host_call_becomes_unknown_and_journals_the_cancellation() {
+    let data_dir = temporary_directory("host-timeout");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let loop_executor = {
         let seen = seen.clone();
@@ -878,9 +858,7 @@ async fn an_unanswered_resident_call_becomes_unknown_and_journals_the_cancellati
         cancelled: Mutex::new(Vec::new()),
     });
     let runtime = runtime_with_deadline(&data_dir, loop_executor, tools, 200);
-    let handle = runtime
-        .create(&resident_tool_config("pick_file"), &[])
-        .unwrap();
+    let handle = runtime.create(&host_tool_config("pick_file"), &[]).unwrap();
     handle
         .message(MessageRequest { input: "go".into() })
         .await
@@ -1038,7 +1016,7 @@ async fn events_since_the_last_activation_reach_the_loop() {
     handle
         .record(
             "environment_closed",
-            serde_json::json!({"environment_id": "env_1"}),
+            serde_json::json!({"environment": "workspace"}),
         )
         .await
         .unwrap();

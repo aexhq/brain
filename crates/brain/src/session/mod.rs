@@ -9,8 +9,7 @@ use std::sync::{
 
 use brain_protocol::codes::{self, Failure};
 use brain_protocol::{
-    Message, MessageRequest, SessionConfig, SessionId, SessionStatus, SessionSummary, ToolHosting,
-    resource_name_valid,
+    Driver, Message, MessageRequest, SessionConfig, SessionId, SessionStatus, SessionSummary,
 };
 use rand::RngCore;
 use tokio::sync::{mpsc, oneshot};
@@ -39,9 +38,9 @@ pub struct Session {
     cancelled: Arc<AtomicBool>,
 }
 
-/// A session between its first record and its admission. The host attaches the
-/// environments the request named, journalling each step here, and then seals what was
-/// actually granted with [`CreatingSession::complete`].
+/// A session between its first record and its admission. The host sets up the
+/// Environments the request named, journalling each step here, and then admits the
+/// session with [`CreatingSession::complete`].
 pub struct CreatingSession {
     store: Arc<dyn SessionStore>,
     config: Arc<SessionRuntime>,
@@ -274,8 +273,7 @@ impl CreatingSession {
         Ok(self.row.through_sequence)
     }
 
-    /// Seals what was granted and starts the session.
-    /// Admits the session with the configuration as the host attached it.
+    /// Admits the session with what was granted and starts it.
     pub fn complete(mut self, config: SessionConfig) -> Result<Session, Error> {
         validate_session_contract(&config)?;
         let configuration = serde_json::to_value(&config).map_err(json_error)?;
@@ -332,14 +330,13 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
     if serde_json::to_vec(config).map_err(json_error)?.len() > 2 * 1024 * 1024 {
         return Err(Error::InvalidState("session request exceeds 2 MiB".into()));
     }
-    if !identity_valid(config.agentloop_identity.as_str())
-        || !identifier_valid(&config.model.binding_id)
-        || config.model.model.is_empty()
-        || config.model.model.len() > 256
+    if !sha256_valid(config.agentloop.id.as_str())
+        || !identifier_valid(&config.model.provider)
+        || config.model.name.is_empty()
+        || config.model.name.len() > 256
         || config.system.len() > 131_072
         || config.tools.len() > 128
         || config.environments.len() > 128
-        || config.tool_bindings.len() > 128
     {
         return Err(Error::InvalidState(
             "session request violates a contract size or identity bound".into(),
@@ -362,166 +359,70 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
     if config
         .environments
         .iter()
-        .any(|environment| !identifier_valid(environment.environment_id.as_str()))
-        || config.tool_bindings.iter().any(|binding| {
-            !identifier_valid(&binding.name)
-                || binding
-                    .environment_id
-                    .as_ref()
-                    .is_some_and(|id| !identifier_valid(id.as_str()))
-                || binding
-                    .binding_names
-                    .iter()
-                    .any(|name| !identifier_valid(name))
-        })
+        .any(|environment| !identifier_valid(environment.name.as_str()))
     {
         return Err(Error::InvalidState(
-            "Environment or Tool binding has an invalid identity".into(),
+            "Environment name is not an identifier".into(),
         ));
     }
-    // An attached binding names the same environment the request did: the two fields are
-    // one fact at two stages, and a disagreement is a host bug.
-    if config.tool_bindings.iter().any(|binding| {
-        binding.environment.as_ref().is_some_and(|environment| {
-            Some(&environment.environment_id) != binding.environment_id.as_ref()
-        })
-    }) || config.environments.iter().any(|attachment| {
-        attachment
-            .binding
-            .as_ref()
-            .is_some_and(|binding| binding.environment_id != attachment.environment_id)
-    }) {
-        return Err(Error::InvalidState(
-            "an attached Environment does not match the one the session named".into(),
-        ));
-    }
-    // Resource names are the bind check's vocabulary: an invalid or repeated one is
-    // rejected before it can silently match nothing.
-    for binding in &config.tool_bindings {
-        let needs = &binding.needs;
-        if needs.iter().any(|name| !resource_name_valid(name))
-            || needs
-                .iter()
-                .enumerate()
-                .any(|(index, name)| needs[..index].contains(name))
-        {
+    // Needs are handed to the Environment unread; Brain checks only that they are a
+    // bounded list of distinct URIs, so a malformed one is refused here rather than
+    // silently ignored there.
+    let declared = config
+        .tools
+        .iter()
+        .map(|tool| (tool.name.as_str(), &tool.needs))
+        .chain(std::iter::once(("agentloop", &config.agentloop.needs)));
+    for (subject, needs) in declared {
+        if !needs_valid(needs) {
             return Err(Error::InvalidState(format!(
-                "Tool `{}` names an invalid or repeated resource",
-                binding.name
+                "`{subject}` names an invalid or repeated need"
             )));
         }
     }
-    // A resident tool's code stays in its registered process; an implementation beside
-    // it would be an artifact nothing is allowed to run.
-    if config.tool_bindings.iter().any(|binding| {
-        matches!(binding.hosting, ToolHosting::Resident) && binding.implementation.is_some()
+    // The server seals an Environment credential beside the model key; a configuration
+    // still carrying one would write it into the journal.
+    if config.environments.iter().any(|environment| {
+        matches!(
+            &environment.driver,
+            Driver::Http {
+                credential: Some(_),
+                ..
+            }
+        )
     }) {
         return Err(Error::InvalidState(
-            "a resident Tool binding cannot carry an implementation".into(),
+            "an Environment credential must be sealed before the session is admitted".into(),
         ));
     }
-    // A resident tool runs in a registered application process: no Environment is on
-    // its path, so binding one (or requiring capabilities only an
-    // environment could provide) is a contradiction the caller should hear about.
-    for binding in &config.tool_bindings {
-        let resident = matches!(binding.hosting, ToolHosting::Resident);
-        if resident && binding.environment_id.is_some() {
-            return Err(Error::InvalidState(
-                "a resident Tool binding cannot name an Environment".into(),
-            ));
-        }
-        if resident && !binding.needs.is_empty() {
-            return Err(Error::InvalidState(
-                "a resident Tool binding cannot need Environment resources".into(),
-            ));
-        }
-        if resident && binding.host_id.is_none() {
-            return Err(Error::InvalidState(
-                "every resident Tool binding must name a registered host".into(),
-            ));
-        }
-        if !resident && binding.host_id.is_some() {
-            return Err(Error::InvalidState(
-                "a provisioned Tool binding cannot name a resident host".into(),
-            ));
-        }
-        if !resident && binding.environment_id.is_none() {
-            return Err(Error::InvalidState(
-                "every provisioned Tool binding must name a bound Environment".into(),
-            ));
-        }
-        if !resident && binding.implementation.is_none() {
-            return Err(Error::InvalidState(
-                "every provisioned Tool binding must carry an implementation".into(),
-            ));
-        }
+    let mut names: Vec<&str> = config.tools.iter().map(|tool| tool.name.as_str()).collect();
+    names.sort_unstable();
+    if names.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(Error::InvalidState("Tool names must be unique".into()));
     }
-    let mut definitions: Vec<&str> = config.tools.iter().map(|tool| tool.name.as_str()).collect();
-    let mut bindings: Vec<&str> = config
-        .tool_bindings
-        .iter()
-        .map(|binding| binding.name.as_str())
-        .collect();
-    definitions.sort_unstable();
-    bindings.sort_unstable();
-    if definitions.windows(2).any(|pair| pair[0] == pair[1])
-        || bindings.windows(2).any(|pair| pair[0] == pair[1])
-        || definitions != bindings
-    {
-        return Err(Error::InvalidState(
-            "every unique Tool definition must have exactly one binding".into(),
-        ));
-    }
-    let environment_ids: std::collections::HashSet<_> = config
+    let environments: std::collections::HashSet<_> = config
         .environments
         .iter()
-        .map(|attachment| &attachment.environment_id)
+        .map(|environment| &environment.name)
         .collect();
-    if environment_ids.len() != config.environments.len() {
+    if environments.len() != config.environments.len() {
         return Err(Error::InvalidState(
-            "Environment identities must be unique".into(),
+            "Environment names must be unique".into(),
         ));
     }
-    if !environment_ids.contains(&config.agentloop_environment_id) {
-        return Err(Error::InvalidState(
-            "the Agentloop must name a bound Environment".into(),
-        ));
-    }
-    if config.tool_bindings.iter().any(|binding| {
-        binding
-            .environment_id
-            .as_ref()
-            .is_some_and(|id| !environment_ids.contains(id))
-    }) {
-        return Err(Error::InvalidState(
-            "every Tool binding must name a bound Environment".into(),
-        ));
-    }
-    // The bind check: the Environment a Tool is bound to must declare every resource
-    // the Tool needs, so a mismatch is a create-time rejection naming all three
-    // parties instead of a runtime mystery. The declaration is known only
-    // once the environment has attached, so an environment that has not is skipped here
-    // and checked when the host completes the session.
-    for binding in &config.tool_bindings {
-        let Some(environment_id) = &binding.environment_id else {
-            continue;
-        };
-        let Some(attachment) = config
-            .environments
-            .iter()
-            .find(|attachment| &attachment.environment_id == environment_id)
-            .filter(|attachment| attachment.attached())
-        else {
-            continue;
-        };
-        if let Some(missing) = binding
-            .needs
-            .iter()
-            .find(|name| !attachment.resources.contains_key(name.as_str()))
-        {
+    // The one placement rule: everything that runs names an Environment of this session.
+    let placed = config
+        .tools
+        .iter()
+        .map(|tool| (tool.name.as_str(), &tool.environment))
+        .chain(std::iter::once((
+            "agentloop",
+            &config.agentloop.environment,
+        )));
+    for (subject, environment) in placed {
+        if !environments.contains(environment) {
             return Err(Error::InvalidState(format!(
-                "Tool `{}` needs resource `{missing}` that Environment `{environment_id}` does not provide",
-                binding.name,
+                "`{subject}` must name an Environment of this session; `{environment}` is not one"
             )));
         }
     }
@@ -538,11 +439,40 @@ fn identifier_valid(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
-fn identity_valid(value: &str) -> bool {
+fn sha256_valid(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// At most 64 distinct URIs, each with a scheme and no whitespace or control characters.
+fn needs_valid(needs: &[String]) -> bool {
+    needs.len() <= 64
+        && needs.iter().all(|need| uri_shaped(need))
+        && needs
+            .iter()
+            .enumerate()
+            .all(|(index, need)| !needs[..index].contains(need))
+}
+
+fn uri_shaped(value: &str) -> bool {
+    let Some((scheme, rest)) = value.split_once(':') else {
+        return false;
+    };
+    let scheme_valid = scheme
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic())
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'));
+    scheme_valid
+        && !rest.is_empty()
+        && value.len() <= 2_048
+        && !value
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
 }
 
 pub fn random_id(prefix: &str) -> String {
@@ -558,8 +488,7 @@ fn json_error(error: serde_json::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use brain_protocol::{
-        AgentloopIdentity, AttachmentId, EnvironmentAttachment, EnvironmentBinding, EnvironmentId,
-        ModelBinding, ToolBinding, ToolDefinition,
+        AgentloopId, AgentloopRef, Environment, EnvironmentName, ModelBinding, Tool,
     };
 
     use super::*;
@@ -568,73 +497,46 @@ mod tests {
         "a".repeat(64)
     }
 
-    fn tool() -> ToolDefinition {
-        ToolDefinition {
+    fn tool() -> Tool {
+        Tool {
             name: "search".into(),
             description: "search the workspace".into(),
             input_schema: serde_json::json!({"type":"object"}),
             output_schema: None,
+            environment: EnvironmentName::new("workspace"),
+            needs: Vec::new(),
+            implementation: Some(serde_json::json!({"kind": "test"})),
         }
     }
 
-    fn environment_binding() -> EnvironmentBinding {
-        EnvironmentBinding {
-            environment_id: EnvironmentId::new("workspace"),
-            directory_generation: 1,
+    fn environment(name: &str, driver: Driver) -> Environment {
+        Environment {
+            name: EnvironmentName::new(name),
+            driver,
+            configuration: serde_json::json!({}),
         }
     }
 
-    /// The configuration as it is admitted: environments named but not yet attached.
+    /// The smallest configuration with one Tool: an Agentloop and the Tool, both placed
+    /// in one Environment.
     fn config() -> SessionConfig {
         SessionConfig {
-            agentloop_identity: AgentloopIdentity::new(digest()),
-            agentloop_environment_id: EnvironmentId::new("workspace"),
-            brain_configuration: serde_json::json!({}),
+            agentloop: AgentloopRef {
+                id: AgentloopId::new(digest()),
+                configuration: serde_json::json!({}),
+                environment: EnvironmentName::new("workspace"),
+                needs: Vec::new(),
+            },
             model: ModelBinding {
-                binding_id: "gateway".into(),
-                model: "openai/test".into(),
+                provider: "vercel-ai-gateway".into(),
+                name: "openai/test".into(),
             },
             system: "test".into(),
             response_format: None,
             tools: vec![tool()],
-            environments: vec![EnvironmentAttachment {
-                environment_id: EnvironmentId::new("workspace"),
-                configuration: serde_json::json!({}),
-
-                binding: None,
-                attachment_id: None,
-                resources: Default::default(),
-            }],
-            tool_bindings: vec![ToolBinding {
-                name: "search".into(),
-                environment_id: Some(EnvironmentId::new("workspace")),
-                environment: None,
-                attachment_id: None,
-                host_id: None,
-                needs: Vec::new(),
-                binding_names: Vec::new(),
-                hosting: ToolHosting::Provisioned,
-                implementation: Some(serde_json::json!({"kind": "test"})),
-            }],
+            environments: vec![environment("workspace", Driver::Brain {})],
             idle_ttl_ms: None,
         }
-    }
-
-    /// The same configuration once the host has attached the environment.
-    fn attached() -> SessionConfig {
-        let mut config = config();
-        config.environments[0].binding = Some(environment_binding());
-        config.environments[0].attachment_id = Some(AttachmentId::new("attachment"));
-        config.environments[0].resources = [
-            ("process".to_string(), serde_json::json!({})),
-            ("fs".to_string(), serde_json::json!({"root": "/workspace"})),
-        ]
-        .into_iter()
-        .collect();
-        config.tool_bindings[0].environment = Some(environment_binding());
-        config.tool_bindings[0].attachment_id = Some(AttachmentId::new("attachment"));
-        config.tool_bindings[0].needs = vec!["process".into()];
-        config
     }
 
     /// A rejection case: the name of the breach, the smallest edit that commits it, and
@@ -643,63 +545,77 @@ mod tests {
 
     /// Each case names the bound it breaches, so a case that starts passing for some
     /// other reason fails rather than quietly stops testing what it was written for.
-    fn assert_rejected(subject: &str, case: &str, config: &SessionConfig, bound: &str) {
+    fn assert_rejected(case: &str, config: &SessionConfig, bound: &str) {
         let error = validate_session_contract(config)
-            .expect_err(&format!("{subject} with {case} must be rejected"));
+            .expect_err(&format!("a configuration with {case} must be rejected"));
         let message = error.to_string();
         assert!(
             message.contains(bound),
-            "{subject} with {case} must be rejected by the {bound:?} bound, not by {message:?}"
+            "a configuration with {case} must be rejected by the {bound:?} bound, not by {message:?}"
         );
     }
 
     #[test]
     fn a_configuration_within_every_bound_is_admitted() {
         validate_session_contract(&config()).unwrap();
-        validate_session_contract(&attached()).unwrap();
+        let mut placed_elsewhere = config();
+        placed_elsewhere.environments.push(environment(
+            "sandbox",
+            Driver::Http {
+                url: "https://sandbox.example".into(),
+                credential: None,
+            },
+        ));
+        placed_elsewhere.tools[0].environment = EnvironmentName::new("sandbox");
+        placed_elsewhere.tools[0].needs = vec![
+            "file:///workspace?access=write".into(),
+            "pkg:pypi/numpy".into(),
+        ];
+        validate_session_contract(&placed_elsewhere).unwrap();
     }
 
-    /// Principle 3 fixes authority at create, so every bound below is the difference
-    /// between a session that can only do what it was granted and one that cannot be
-    /// reasoned about at all. Each case is the smallest edit that breaches one bound.
+    /// Authority is fixed at create, so every bound below is the difference between a
+    /// session that can only do what it was granted and one that cannot be reasoned
+    /// about at all. Each case is the smallest edit that breaches one bound.
     #[test]
     fn every_bound_rejects_a_configuration_that_breaches_it() {
         let cases: Vec<Breach> = vec![
             (
                 "configuration over 2 MiB",
                 |request| {
-                    request.brain_configuration = serde_json::json!("x".repeat(3 * 1024 * 1024));
+                    request.agentloop.configuration =
+                        serde_json::json!("x".repeat(3 * 1024 * 1024));
                 },
                 "exceeds 2 MiB",
             ),
             (
-                "an Agentloop digest of the wrong length",
-                |request| request.agentloop_identity = AgentloopIdentity::new("a".repeat(63)),
+                "an Agentloop id of the wrong length",
+                |request| request.agentloop.id = AgentloopId::new("a".repeat(63)),
                 "size or identity bound",
             ),
             (
-                "an Agentloop digest that is not hex",
-                |request| request.agentloop_identity = AgentloopIdentity::new("g".repeat(64)),
+                "an Agentloop id that is not hex",
+                |request| request.agentloop.id = AgentloopId::new("g".repeat(64)),
                 "size or identity bound",
             ),
             (
-                "an empty model binding",
-                |request| request.model.binding_id = String::new(),
+                "an empty model provider",
+                |request| request.model.provider = String::new(),
                 "size or identity bound",
             ),
             (
-                "a model binding holding a path traversal",
-                |request| request.model.binding_id = "gateway/../root".into(),
+                "a model provider holding a path traversal",
+                |request| request.model.provider = "gateway/../root".into(),
                 "size or identity bound",
             ),
             (
                 "an empty model name",
-                |request| request.model.model = String::new(),
+                |request| request.model.name = String::new(),
                 "size or identity bound",
             ),
             (
                 "a model name over 256 bytes",
-                |request| request.model.model = "m".repeat(257),
+                |request| request.model.name = "m".repeat(257),
                 "size or identity bound",
             ),
             (
@@ -708,19 +624,12 @@ mod tests {
                 "size or identity bound",
             ),
             (
-                "more than 128 Tool definitions",
+                "more than 128 Tools",
                 |request| {
-                    let binding = request.tool_bindings[0].clone();
                     request.tools = (0..129)
-                        .map(|index| ToolDefinition {
+                        .map(|index| Tool {
                             name: format!("tool{index}"),
                             ..tool()
-                        })
-                        .collect();
-                    request.tool_bindings = (0..129)
-                        .map(|index| ToolBinding {
-                            name: format!("tool{index}"),
-                            ..binding.clone()
                         })
                         .collect();
                 },
@@ -729,23 +638,17 @@ mod tests {
             (
                 "more than 128 Environments",
                 |request| {
-                    let environment = request.environments[0].clone();
                     request.environments = (0..129)
-                        .map(|index| EnvironmentAttachment {
-                            environment_id: EnvironmentId::new(format!("env{index}")),
-                            ..environment.clone()
-                        })
+                        .map(|index| environment(&format!("env{index}"), Driver::Brain {}))
                         .collect();
-                    request.tool_bindings[0].environment_id = Some(EnvironmentId::new("env0"));
+                    request.tools[0].environment = EnvironmentName::new("env0");
+                    request.agentloop.environment = EnvironmentName::new("env0");
                 },
                 "size or identity bound",
             ),
             (
                 "a Tool name that is not an identifier",
-                |request| {
-                    request.tools[0].name = "../escape".into();
-                    request.tool_bindings[0].name = "../escape".into();
-                },
+                |request| request.tools[0].name = "../escape".into(),
                 "Tool definition violates",
             ),
             (
@@ -764,117 +667,72 @@ mod tests {
                 "Tool definition violates",
             ),
             (
-                "an Environment identity that is not an identifier",
+                "an Environment name that is not an identifier",
                 |request| {
-                    request.environments[0].environment_id = EnvironmentId::new("../escape");
-                    request.tool_bindings[0].environment_id = Some(EnvironmentId::new("../escape"));
+                    request.environments[0].name = EnvironmentName::new("../escape");
+                    request.tools[0].environment = EnvironmentName::new("../escape");
+                    request.agentloop.environment = EnvironmentName::new("../escape");
                 },
-                "invalid identity",
+                "Environment name",
             ),
             (
-                "a binding name that is not an identifier",
-                |request| request.tool_bindings[0].binding_names = vec!["../escape".into()],
-                "invalid identity",
+                "a Tool need that is not a URI",
+                |request| request.tools[0].needs = vec!["../fs".into()],
+                "invalid or repeated need",
             ),
             (
-                "a resident Tool carrying an implementation",
+                "a Tool need repeated",
                 |request| {
-                    request.tool_bindings[0].hosting = ToolHosting::Resident;
-                    request.tool_bindings[0].environment_id = None;
-                    request.tool_bindings[0].host_id =
-                        Some(brain_protocol::HostId::new("host_12345678901234567890"));
-                    request.tool_bindings[0].needs = Vec::new();
-                    request.tool_bindings[0].implementation =
-                        Some(serde_json::json!({"kind": "test"}));
+                    request.tools[0].needs = vec!["pkg:apt/ffmpeg".into(), "pkg:apt/ffmpeg".into()];
                 },
-                "cannot carry an implementation",
+                "invalid or repeated need",
             ),
             (
-                "two Tool definitions sharing one name",
+                "an Agentloop need with whitespace",
+                |request| request.agentloop.needs = vec!["https://api.example.com /".into()],
+                "invalid or repeated need",
+            ),
+            (
+                "an Environment credential left unsealed",
                 |request| {
-                    request.tools.push(tool());
-                    let binding = request.tool_bindings[0].clone();
-                    request.tool_bindings.push(binding);
+                    request.environments.push(environment(
+                        "sandbox",
+                        Driver::Http {
+                            url: "https://sandbox.example".into(),
+                            credential: Some("s3cret".into()),
+                        },
+                    ));
                 },
-                "exactly one binding",
+                "sealed",
             ),
             (
-                "a Tool definition with no binding",
-                |request| request.tool_bindings.clear(),
-                "exactly one binding",
+                "two Tools sharing one name",
+                |request| request.tools.push(tool()),
+                "Tool names must be unique",
             ),
             (
-                "a binding with no Tool definition",
-                |request| request.tools.clear(),
-                "exactly one binding",
-            ),
-            (
-                "two Environments sharing one identity",
+                "two Environments sharing one name",
                 |request| {
                     let environment = request.environments[0].clone();
                     request.environments.push(environment);
                 },
-                "Environment identities must be unique",
+                "Environment names must be unique",
             ),
             (
-                "a binding naming an Environment that was not granted",
-                |request| {
-                    request.tool_bindings[0].environment_id = Some(EnvironmentId::new("elsewhere"));
-                },
-                "must name a bound Environment",
+                "a Tool naming an Environment the session does not have",
+                |request| request.tools[0].environment = EnvironmentName::new("elsewhere"),
+                "must name an Environment of this session",
+            ),
+            (
+                "an Agentloop naming an Environment the session does not have",
+                |request| request.agentloop.environment = EnvironmentName::new("elsewhere"),
+                "must name an Environment of this session",
             ),
         ];
         for (case, breach, bound) in cases {
             let mut request = config();
             breach(&mut request);
-            assert_rejected("a configuration", case, &request, bound);
-        }
-    }
-
-    /// The attached configuration reaches the journal through `CreatingSession::complete`,
-    /// the only other way a session is admitted. It is held to the same bounds plus the
-    /// bind check, so a session does not become more permissive by being driven from
-    /// inside a service.
-    #[test]
-    fn every_bound_rejects_an_attached_configuration_that_breaches_it() {
-        let cases: Vec<Breach> = vec![
-            (
-                "a Tool needing a resource its Environment does not declare",
-                |config| config.tool_bindings[0].needs = vec!["dom".into()],
-                "does not provide",
-            ),
-            (
-                "a Tool naming a resource that is not a resource name",
-                |config| config.tool_bindings[0].needs = vec!["../fs".into()],
-                "invalid or repeated resource",
-            ),
-            (
-                "an attached binding naming a different Environment than the request",
-                |config| {
-                    config.tool_bindings[0]
-                        .environment
-                        .as_mut()
-                        .unwrap()
-                        .environment_id = EnvironmentId::new("elsewhere");
-                },
-                "does not match",
-            ),
-            (
-                "an attachment whose binding names a different Environment",
-                |config| {
-                    config.environments[0]
-                        .binding
-                        .as_mut()
-                        .unwrap()
-                        .environment_id = EnvironmentId::new("elsewhere");
-                },
-                "does not match",
-            ),
-        ];
-        for (case, breach, bound) in cases {
-            let mut configuration = attached();
-            breach(&mut configuration);
-            assert_rejected("an attached configuration", case, &configuration, bound);
+            assert_rejected(case, &request, bound);
         }
     }
 
@@ -895,12 +753,39 @@ mod tests {
 
     #[test]
     fn a_digest_is_exactly_sixty_four_lowercase_hex_characters() {
-        assert!(identity_valid(&"a".repeat(64)));
-        assert!(identity_valid(&"0123456789abcdef".repeat(4)));
-        assert!(!identity_valid(&"a".repeat(63)));
-        assert!(!identity_valid(&"a".repeat(65)));
-        assert!(!identity_valid(&"A".repeat(64)));
-        assert!(!identity_valid(&"g".repeat(64)));
-        assert!(!identity_valid(""));
+        assert!(sha256_valid(&"a".repeat(64)));
+        assert!(sha256_valid(&"0123456789abcdef".repeat(4)));
+        assert!(!sha256_valid(&"a".repeat(63)));
+        assert!(!sha256_valid(&"a".repeat(65)));
+        assert!(!sha256_valid(&"A".repeat(64)));
+        assert!(!sha256_valid(&"g".repeat(64)));
+        assert!(!sha256_valid(""));
+    }
+
+    #[test]
+    fn a_need_is_any_uri_and_nothing_else() {
+        for valid in [
+            "pkg:apt/ffmpeg",
+            "pkg:pypi/numpy@2.1.0",
+            "https://api.example.com",
+            "https://*.example.com",
+            "wss://stream.example.com",
+            "file:///workspace?access=write",
+            "aws:iam",
+        ] {
+            assert!(uri_shaped(valid), "{valid}");
+        }
+        for invalid in [
+            "",
+            "fs",
+            "../fs",
+            "https://a b",
+            "1pkg:x",
+            "pkg:",
+            ":x",
+            "a\tb:c",
+        ] {
+            assert!(!uri_shaped(invalid), "{invalid}");
+        }
     }
 }

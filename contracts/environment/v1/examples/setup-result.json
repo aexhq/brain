@@ -1,0 +1,7 @@
+{
+  "contract": "environment/v1",
+  "sequence": 3,
+  "receipt": {
+    "type": "accepted"
+  }
+}

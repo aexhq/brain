@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{HostId, Outcome, SessionId, ToolInvocation};
+use crate::{HostId, Outcome, SessionId};
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -13,11 +13,19 @@ pub struct HostRegistration {
     pub token: String,
 }
 
+/// What a host is asked to do for a session placed in it. A call is named by the
+/// command's `(session_id, sequence)`; the Tool's own call id never leaves Brain.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostOperation {
-    InvokeTool { invocation: ToolInvocation },
-    CancelTool { target_sequence: u64 },
+    InvokeTool {
+        #[schemars(schema_with = "crate::schema::identifier")]
+        name: String,
+        input: serde_json::Value,
+    },
+    CancelTool {
+        target_sequence: u64,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -42,7 +50,7 @@ pub struct HostResult {
 #[serde(deny_unknown_fields)]
 pub struct HostEvent {
     pub session_id: SessionId,
-    /// The resident command this Event belongs to.
+    /// The command this Event belongs to.
     #[schemars(range(min = 1))]
     pub sequence: u64,
     #[schemars(schema_with = "crate::schema::identifier")]

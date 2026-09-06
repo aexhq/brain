@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { Brain, agentloop, brainWasm, component } from "@aexhq/brain";
+import { Brain, agentloop, brainEnv, component } from "@aexhq/brain";
 
 const baseUrl = process.env.BRAIN_BASE_URL;
 const token = process.env.BRAIN_API_TOKEN;
@@ -17,7 +17,7 @@ const session = await brain.sessions.create({
     name: "openai/gpt-5-mini",
     apiKey: "release-smoke-key",
   },
-  agentloop: diagnostic({ env: brainWasm({ filesystem: { workspace: false } }) }),
+  agentloop: diagnostic({ env: brainEnv({ name: "brain" }) }),
 });
 assert.equal(session.state.status, "idle");
 assert.equal((await brain.sessions.get(session.id)).id, session.id);

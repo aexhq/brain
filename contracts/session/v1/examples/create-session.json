@@ -1,8 +1,9 @@
 {
   "agentloop": {
-    "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "configuration": {},
-    "environment_id": "env_1"
+    "environment": "brain",
+    "needs": []
   },
   "model": {
     "provider": "vercel-ai-gateway",
@@ -17,23 +18,28 @@
       "input_schema": {
         "type": "object"
       },
+      "environment": "sandbox",
       "needs": [
-        "fs"
+        "file:///workspace"
       ],
-      "binding_names": [],
       "implementation": {
         "artifact_id": "artifact_read_v1"
-      },
-      "environment_id": "env_1"
+      }
     }
   ],
   "environments": [
     {
-      "environment_id": "env_1",
+      "name": "brain",
+      "driver": "brain"
+    },
+    {
+      "name": "sandbox",
+      "driver": "http",
+      "url": "https://sandbox.example",
+      "credential": "example-environment-key",
       "configuration": {
-        "driver": "brain_wasm"
-      },
-      "bindings": {}
+        "region": "eu"
+      }
     }
   ]
 }

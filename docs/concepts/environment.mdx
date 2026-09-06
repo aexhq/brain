@@ -1,104 +1,98 @@
 ---
 title: Environments
-description: Explicit placement, authority, resources, and lifecycle for Components and Tools.
+description: Where Tools and the Agentloop run, and what they are given there.
 ---
 
-An Environment is an immutable placement and authority specification. Every Agentloop and every
-placed Tool names one when its factory is called. Brain records the choice in session creation and
-does not infer, rank, or substitute another Environment. The current server executes Agentloops
-only in `brainWasm(...)`; driver-backed Environments currently host placed Tools.
+An Environment is anything that implements the Environment protocol. A session names each one
+once; every Tool and the Agentloop is placed in one of them; Brain sets them up as part of create
+and reaches them for every operation after. Where the code behind the protocol runs is the
+Environment's concern. Brain ships two, and any other is an extension.
 
-## Brain Wasm
+## The brain env
 
-`brainWasm(...)` selects Brain's built-in native Environment for WebAssembly Components:
+`brainEnv({ name })` is Brain's own Environment, hosted inside the server. A Tool placed here is a
+Component admitted through `POST /v1/tools`; the Agentloop is one admitted through
+`POST /v1/agentloops`. Each invocation runs in a fresh Wasmtime instance granted exactly what its
+`needs` name, bounded by the deployment's allow-lists:
+
+- `file:///workspace` is the session's directory, kept between turns and removed with the session;
+  `file:///scratch` lives for one invocation. Both are read-only unless the need says
+  `?access=write`. The root must appear in `BRAIN_ENV_FILESYSTEM_ALLOW`.
+- An `https:` or `http:` origin, exact or `https://*.example.com`, opens `wasi:http` to it. It must be
+  within `BRAIN_ENV_NETWORK_ALLOW`.
+- `pkg:` is refused: a Component brings its own code.
 
 ```ts
-import { brainWasm } from "@aexhq/brain";
+import { brainEnv } from "@aexhq/brain";
 
-const isolated = brainWasm({
-  network: { allow: ["api.example.com", "https://models.example.com"] },
-  filesystem: { scratch: true, workspace: true },
-  secrets: ["MODEL_TOKEN"],
-});
+const brain = brainEnv({ name: "brain", secrets: ["MODEL_TOKEN"] });
 ```
 
-Network entries are HTTP(S) origins or authorities, writable scratch and workspace access is
-explicit, and secret names are identifiers. A caller request cannot grant itself authority: every
-requested network target must also appear in `BRAIN_WASM_NETWORK_ALLOW`, every secret name in
-`BRAIN_WASM_SECRET_ALLOW`, and each writable root in `BRAIN_WASM_FILESYSTEM_ALLOW`. The defaults
-grant none. The server starts a fresh Wasmtime instance for each invocation under the resulting
-policy. Each invocation receives a fixed 10 billion Wasmtime fuel units for guest computation;
-model, Tool, HTTP, and filesystem waits consume no fuel. Fuel is a Wasmtime work allowance, not an
-exact CPU-time promise. The separate `BRAIN_MAX_TURN_SECS` limit still bounds the whole turn's wall
-time.
+`secrets` is the brain env's one option: process environment variables named in
+`BRAIN_ENV_SECRET_ALLOW`, mounted read-only under `/secrets`. Every server grant is empty by default.
+Each invocation receives a fixed 10 billion Wasmtime fuel units for guest computation; model, Tool,
+HTTP, and filesystem waits consume no fuel. `BRAIN_MAX_TURN_SECS` still bounds the whole turn.
 
-## Driver-backed Environments
+## The host env
 
-An Environment extension maps typed application options into a driver configuration and optional
-binding values:
+`hostEnv({ name })` is your own process, registered with Brain as a host: a browser tab, a Node
+process, a server. A Tool placed here has `run`, and Brain sends the call over the command stream
+the SDK holds open. See [Tools](/brain/docs/concepts/tool).
+
+## Environments reached over HTTP
+
+An `environment(...)` extension defines its options and how each instance is reached. The
+application configures every instance; Brain reads the URL and the optional credential, seals the
+credential beside the model key without journaling it, and carries the configuration unread:
 
 ```ts
 import { environment } from "@aexhq/brain";
 import { z } from "zod";
 
-const remoteService = environment({
-  driver: "remote_service",
-  options: z.object({ url: z.url(), token: z.string() }),
-  configure: ({ url }) => ({ url }),
-  bindings: ({ token }) => ({ API_TOKEN: token }),
+const sandbox = environment({
+  options: z.object({ url: z.url(), region: z.string(), token: z.string() }),
+  url: ({ url }) => url,
+  credential: ({ token }) => token,
+  configure: ({ region }) => ({ region }),
 });
 
-const env = remoteService({
-  url: "https://tools.example",
-  token: process.env.TOOL_TOKEN,
+const env = sandbox({
+  name: "sandbox",
+  url: "https://sandbox.example",
+  region: "eu",
+  token: process.env.SANDBOX_TOKEN,
 });
 ```
 
-`configure` produces the immutable configuration Brain records and sends to the driver. `bindings`
-produces plaintext values used only during attachment; the session journal records their names, not
-their values. Resource TTL and allocation policy belong to the provider configuration.
-
-The same Environment object can place several Tools in one session:
+The same Environment object places several Tools in one session:
 
 ```ts
 const session = await brain.sessions.create({
   model,
-  agentloop: loop({ env: brainWasm() }),
+  agentloop: loop({ env: brainEnv({ name: "brain" }) }),
   tools: [read({ env }), write({ env })],
 });
 ```
 
-## Resources and implementations
+## What an Environment is told
 
-At attachment the Environment declares named resources such as `fs`, `process`, `net`, `dom`,
-`secrets`, or a namespaced vendor resource. Brain verifies each placed Tool's `needs` by name before
-the session becomes ready. The policy block is enforced by the Environment's real boundary, such as
-filesystem mounts, process identity, egress rules, or IAM.
-
-The Tool's `implementation` is opaque to Brain unless it is a Component admitted by content
-identity. A driver interprets other implementation descriptors. There is no source-language or
-package-building protocol in Brain.
+Setup carries the Environment's configuration and one flat list: the `needs` of every Tool and the
+Agentloop placed in it. The Environment provisions what this session uses and refuses what it
+cannot honour, naming the URI; a refusal fails the create. Each invoke carries the Tool's name,
+implementation, needs, input, and deadline; each turn carries the Agentloop's id, needs, and input.
+An Environment learns what runs in it only when asked to run it.
 
 ## Lifecycle and delivery
 
-An Environment declaration belongs to one session; reusing the same SDK object in another session
-creates another logical Environment. Session creation performs setup and attachment before readiness;
-these operations can declare capabilities without allocating a browser or sandbox.
-Brain journals lifecycle and Tool intents before dispatch and sends each operation once. It records
-a terminal receipt or an unknown outcome; it does not retry automatically. Ending a session
-detaches it; session deletion asks the provider to tear down the logical Environment. A provider
-wrapping an externally owned URL can implement teardown as releasing only its binding. Brain does
-not acquire ownership of the external service.
+Session creation sets every Environment up before reporting ready. Brain journals each operation
+before it sends it, sends it once, and records a terminal receipt or an unknown outcome; it does not
+retry. Ending a session detaches it from its Environments; deleting the session asks each one to
+tear down. An Environment wrapping an externally owned service may implement teardown as releasing
+only its own binding.
 
-Environment files and process state follow the Environment lifecycle. They are not durable session
-state; the canonical session journal survives independently.
-
-Providers can allocate on first invocation, serialize concurrent initialization, and expire physical
-resources while sessions remain suspended. The standalone [lazy Environment example](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs)
-demonstrates that policy using the existing wire. A restart creates fresh resources; it is not file
-restoration. Reloaded metadata starts with unknown resource status until an operation observes it.
-Environment and Tool failures are committed for the Agentloop before their results return.
-
-Configure independent provider routes in `BRAIN_ENVIRONMENT_ROUTES_FILE`, or use the public registry's
-`with_route` composition method. Route names are server-granted; the session's bindings stay fixed.
-The complete `tool-env` Tool, mutable bindings, and automatic placement remain post-MVP.
+Environment files and process state follow the Environment. They are not session state; the
+canonical journal survives independently. An Environment may allocate on first invoke and expire
+resources while the session is suspended. The standalone
+[lazy Environment](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs) shows that
+policy on the existing wire. Environment and Tool failures are committed for the Agentloop before
+their results return.

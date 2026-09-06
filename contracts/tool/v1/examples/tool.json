@@ -15,11 +15,10 @@
   "output_schema": {
     "type": "object"
   },
+  "environment": "sandbox",
   "needs": [
-    "process"
-  ],
-  "binding_names": [
-    "API_BASE"
+    "pkg:apt/bash",
+    "file:///workspace?access=write"
   ],
   "implementation": {
     "artifact_id": "artifact_bash_v1"

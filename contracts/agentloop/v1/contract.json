@@ -69,11 +69,9 @@
       ]
     },
     "Event": {
+      "description": "One journal record as a client reads it. `(session_id, sequence)` names it; there\nis no other identifier.",
       "properties": {
         "data": true,
-        "event_id": {
-          "$ref": "#/$defs/EventId"
-        },
         "event_type": {
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
           "type": "string"
@@ -90,17 +88,12 @@
         }
       },
       "required": [
-        "event_id",
         "sequence",
         "recorded_at_ms",
         "event_type",
         "data"
       ],
       "type": "object"
-    },
-    "EventId": {
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-      "type": "string"
     },
     "Message": {
       "additionalProperties": false,
@@ -155,6 +148,7 @@
     },
     "ToolDefinition": {
       "additionalProperties": false,
+      "description": "What the model may be told about a Tool.",
       "properties": {
         "description": {
           "maxLength": 8192,

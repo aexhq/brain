@@ -1,11 +1,13 @@
 //! What the server knows about a session that the session's own records do not.
 //!
-//! One thing is decided once, when a session is created, and never appears in the
-//! conversation that follows: the provider credential the caller supplied. The journal is
-//! the record of what happened; this is the record of what the session calls its model
-//! with. Restoring a session after a restart needs both.
+//! Two things are decided when a session is created and never appear in the conversation
+//! that follows: the provider credential the caller supplied for its model, and the
+//! credential of each Environment it reaches over HTTP. The journal is the record of what
+//! happened; this is the record of what the session calls those with. Restoring a session
+//! after a restart needs both.
 //!
-//! Credentials and their key are durable before session admission succeeds.
+//! Credentials and their key are durable before session admission succeeds, sealed under
+//! the session id and forgotten together when the session is deleted.
 
 use std::{
     collections::HashMap,
@@ -19,7 +21,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, Payload},
 };
-use brain_protocol::ModelSelection;
+use brain_protocol::{EnvironmentName, ModelSelection, SessionId};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -33,24 +35,32 @@ pub struct ModelCredential {
     pub api_key: Zeroizing<String>,
 }
 
-/// One line of the metadata log. Folded in order; the last word about a key wins.
+/// One line of the metadata log. Folded in order; the last word about a session wins.
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 enum Entry {
-    /// A provider credential, sealed to a binding identity.
-    Binding {
-        binding_id: String,
+    /// The provider credential a session calls its model with.
+    Model {
+        session_id: SessionId,
         provider: String,
         nonce: String,
         ciphertext: String,
     },
-    /// The binding is gone. Written rather than rewriting the log, because the log only
-    /// ever grows forwards.
-    BindingForgotten { binding_id: String },
+    /// The credential a session reaches one of its Environments with.
+    Environment {
+        session_id: SessionId,
+        environment: EnvironmentName,
+        nonce: String,
+        ciphertext: String,
+    },
+    /// Every credential of the session is gone. Written rather than rewriting the log,
+    /// because the log only ever grows forwards.
+    Forgotten { session_id: SessionId },
 }
 
 pub struct ServerMetadata {
-    credentials: RwLock<HashMap<String, ModelCredential>>,
+    models: RwLock<HashMap<SessionId, ModelCredential>>,
+    environments: RwLock<HashMap<(SessionId, EnvironmentName), Zeroizing<String>>>,
     log: Mutex<File>,
     key: Zeroizing<[u8; KEY_BYTES]>,
 }
@@ -61,42 +71,43 @@ impl ServerMetadata {
         let key = load_or_create_key(&directory.join("master.key"))?;
         let path = directory.join("metadata.log");
         let (log, records) = crate::persistence::open_log(&path)?;
-        let credentials = replay(records, &key)?;
+        let (models, environments) = replay(records, &key)?;
         Ok(Self {
-            credentials: RwLock::new(credentials),
+            models: RwLock::new(models),
+            environments: RwLock::new(environments),
             log: Mutex::new(log),
             key: Zeroizing::new(key),
         })
     }
 
-    /// Seals a credential to an identity. The same credential again is the idempotent
+    /// Seals a session's model credential. The same credential again is the idempotent
     /// retry of a create the caller did not hear the answer to; a different one under the
-    /// same identity is a different request wearing that identity's name.
-    pub fn put_binding(
+    /// same session is a different request wearing that session's name.
+    pub fn put_model(
         &self,
-        binding_id: &str,
+        session_id: &SessionId,
         selection: &ModelSelection,
     ) -> Result<(), brain::Error> {
-        let mut credentials = self.credentials.write().map_err(poisoned)?;
-        if let Some(existing) = credentials.get(binding_id) {
+        let mut models = self.models.write().map_err(poisoned)?;
+        if let Some(existing) = models.get(session_id) {
             if existing.provider == selection.provider
                 && existing.api_key.as_str() == selection.api_key
             {
                 return Ok(());
             }
             return Err(brain::Error::InvalidState(
-                "model binding identity is already sealed to different credentials".into(),
+                "the session's model credential is already sealed to different credentials".into(),
             ));
         }
-        let (nonce, ciphertext) = self.seal(binding_id, selection)?;
-        self.append(&Entry::Binding {
-            binding_id: binding_id.to_owned(),
+        let (nonce, ciphertext) = self.seal(&model_aad(session_id), &selection.api_key)?;
+        self.append(&Entry::Model {
+            session_id: session_id.clone(),
             provider: selection.provider.clone(),
             nonce,
             ciphertext,
         })?;
-        credentials.insert(
-            binding_id.to_owned(),
+        models.insert(
+            session_id.clone(),
             ModelCredential {
                 provider: selection.provider.clone(),
                 api_key: Zeroizing::new(selection.api_key.clone()),
@@ -105,21 +116,67 @@ impl ServerMetadata {
         Ok(())
     }
 
-    pub fn binding(&self, binding_id: &str) -> Result<Option<ModelCredential>, brain::Error> {
+    pub fn model(&self, session_id: &SessionId) -> Result<Option<ModelCredential>, brain::Error> {
         Ok(self
-            .credentials
+            .models
             .read()
             .map_err(poisoned)?
-            .get(binding_id)
+            .get(session_id)
             .cloned())
     }
 
-    pub fn forget_binding(&self, binding_id: &str) -> Result<(), brain::Error> {
-        let mut credentials = self.credentials.write().map_err(poisoned)?;
-        self.append(&Entry::BindingForgotten {
-            binding_id: binding_id.to_owned(),
+    /// Seals the credential a session reaches one of its Environments with, under the
+    /// same rule as the model credential.
+    pub fn put_environment(
+        &self,
+        session_id: &SessionId,
+        environment: &EnvironmentName,
+        credential: &str,
+    ) -> Result<(), brain::Error> {
+        let mut environments = self.environments.write().map_err(poisoned)?;
+        let key = (session_id.clone(), environment.clone());
+        if let Some(existing) = environments.get(&key) {
+            if existing.as_str() == credential {
+                return Ok(());
+            }
+            return Err(brain::Error::InvalidState(format!(
+                "the credential of Environment `{environment}` is already sealed to a different value"
+            )));
+        }
+        let (nonce, ciphertext) =
+            self.seal(&environment_aad(session_id, environment), credential)?;
+        self.append(&Entry::Environment {
+            session_id: session_id.clone(),
+            environment: environment.clone(),
+            nonce,
+            ciphertext,
         })?;
-        credentials.remove(binding_id);
+        environments.insert(key, Zeroizing::new(credential.to_owned()));
+        Ok(())
+    }
+
+    pub fn environment(
+        &self,
+        session_id: &SessionId,
+        environment: &EnvironmentName,
+    ) -> Result<Option<Zeroizing<String>>, brain::Error> {
+        Ok(self
+            .environments
+            .read()
+            .map_err(poisoned)?
+            .get(&(session_id.clone(), environment.clone()))
+            .cloned())
+    }
+
+    /// Forgets every credential of a session.
+    pub fn forget(&self, session_id: &SessionId) -> Result<(), brain::Error> {
+        let mut models = self.models.write().map_err(poisoned)?;
+        let mut environments = self.environments.write().map_err(poisoned)?;
+        self.append(&Entry::Forgotten {
+            session_id: session_id.clone(),
+        })?;
+        models.remove(session_id);
+        environments.retain(|(session, _), _| session != session_id);
         Ok(())
     }
 
@@ -131,22 +188,18 @@ impl ServerMetadata {
         crate::persistence::append(&mut log, entry)
     }
 
-    fn seal(
-        &self,
-        binding_id: &str,
-        selection: &ModelSelection,
-    ) -> Result<(String, String), brain::Error> {
+    fn seal(&self, aad: &str, secret: &str) -> Result<(String, String), brain::Error> {
         let cipher = Aes256Gcm::new_from_slice(self.key.as_slice())
             .map_err(|error| brain::Error::Executor(error.to_string()))?;
         let nonce: [u8; NONCE_BYTES] = rand::rng().random();
-        // The binding id is authenticated but not encrypted: a credential lifted from one
-        // identity must not decrypt under another.
+        // What the credential belongs to is authenticated but not encrypted: a credential
+        // lifted from one session must not decrypt under another.
         let sealed = cipher
             .encrypt(
                 Nonce::from_slice(&nonce),
                 Payload {
-                    msg: selection.api_key.as_bytes(),
-                    aad: binding_id.as_bytes(),
+                    msg: secret.as_bytes(),
+                    aad: aad.as_bytes(),
                 },
             )
             .map_err(|error| brain::Error::Executor(error.to_string()))?;
@@ -154,44 +207,69 @@ impl ServerMetadata {
     }
 }
 
-fn replay(
-    records: Vec<Entry>,
-    key: &[u8; KEY_BYTES],
-) -> Result<HashMap<String, ModelCredential>, brain::Error> {
-    let mut credentials = HashMap::new();
+fn model_aad(session_id: &SessionId) -> String {
+    format!("model:{session_id}")
+}
+
+fn environment_aad(session_id: &SessionId, environment: &EnvironmentName) -> String {
+    format!("environment:{session_id}:{environment}")
+}
+
+type Credentials = (
+    HashMap<SessionId, ModelCredential>,
+    HashMap<(SessionId, EnvironmentName), Zeroizing<String>>,
+);
+
+fn replay(records: Vec<Entry>, key: &[u8; KEY_BYTES]) -> Result<Credentials, brain::Error> {
+    let mut models = HashMap::new();
+    let mut environments = HashMap::new();
     for entry in records {
         match entry {
-            Entry::Binding {
-                binding_id,
+            Entry::Model {
+                session_id,
                 provider,
                 nonce,
                 ciphertext,
             } => {
-                let api_key = unseal(key, &binding_id, &nonce, &ciphertext).ok_or_else(|| {
-                    brain::Error::Journal("model credential cannot be decrypted".into())
-                })?;
-                credentials.insert(
-                    binding_id,
+                let api_key = unseal(key, &model_aad(&session_id), &nonce, &ciphertext)
+                    .ok_or_else(|| {
+                        brain::Error::Journal("model credential cannot be decrypted".into())
+                    })?;
+                models.insert(
+                    session_id,
                     ModelCredential {
                         provider,
                         api_key: Zeroizing::new(api_key),
                     },
                 );
             }
-            Entry::BindingForgotten { binding_id } => {
-                credentials.remove(&binding_id);
+            Entry::Environment {
+                session_id,
+                environment,
+                nonce,
+                ciphertext,
+            } => {
+                let credential = unseal(
+                    key,
+                    &environment_aad(&session_id, &environment),
+                    &nonce,
+                    &ciphertext,
+                )
+                .ok_or_else(|| {
+                    brain::Error::Journal("Environment credential cannot be decrypted".into())
+                })?;
+                environments.insert((session_id, environment), Zeroizing::new(credential));
+            }
+            Entry::Forgotten { session_id } => {
+                models.remove(&session_id);
+                environments.retain(|(session, _), _| session != &session_id);
             }
         }
     }
-    Ok(credentials)
+    Ok((models, environments))
 }
 
-fn unseal(
-    key: &[u8; KEY_BYTES],
-    binding_id: &str,
-    nonce: &str,
-    ciphertext: &str,
-) -> Option<String> {
+fn unseal(key: &[u8; KEY_BYTES], aad: &str, nonce: &str, ciphertext: &str) -> Option<String> {
     let cipher = Aes256Gcm::new_from_slice(key).ok()?;
     let nonce: [u8; NONCE_BYTES] = hex::decode(nonce).ok()?.try_into().ok()?;
     let ciphertext = hex::decode(ciphertext).ok()?;
@@ -200,7 +278,7 @@ fn unseal(
             Nonce::from_slice(&nonce),
             Payload {
                 msg: &ciphertext,
-                aad: binding_id.as_bytes(),
+                aad: aad.as_bytes(),
             },
         )
         .ok()?;
@@ -265,7 +343,7 @@ mod tests {
         for length in [0, 1, 13] {
             let mut nonce = vec![0; length];
             rand::rng().fill(&mut nonce[..]);
-            assert!(super::unseal(&key, "binding", &hex::encode(nonce), "00").is_none());
+            assert!(super::unseal(&key, "model:ses_x", &hex::encode(nonce), "00").is_none());
         }
     }
 }

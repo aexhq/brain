@@ -1,16 +1,14 @@
-import { AppToolRegistry } from "./app.js";
-import { ResidentHostPump } from "./client-pump.js";
-import {
-  inspectAgentloop, inspectComponent, inspectEnvironment, inspectPlacedTool, inspectResidentTool,
-} from "./extensions.js";
+import { HostPump } from "./client-pump.js";
 import { BrainError } from "./errors.js";
+import { inspectAgentloop, inspectComponent, inspectEnvironment, inspectTool } from "./extensions.js";
+import { HostToolRegistry } from "./host.js";
 import type {
-  SessionTranscript, ToolAdmission, AgentloopAdmission, BoundTool as WireBoundTool, CreateSessionRequest, EventPage,
-  HostRegistration, SessionEnvironment, SessionSummary as WireSession, SessionList,
+  AgentloopAdmission, CreateSessionRequest, Environment as WireEnvironment, EventPage, HostRegistration,
+  SessionList, SessionSummary as WireSession, SessionTranscript, Tool as WireTool, ToolAdmission,
 } from "./generated/session.js";
 import type {
-  AgentloopBinding, Component, CreateSessionOptions, Environment, OperationOptions, SessionEvent,
-  SessionState, SessionStreamEvent, ToolBinding, UserInput,
+  Component, CreateSessionOptions, Environment, OperationOptions, PlacedAgentloop, PlacedTool,
+  SessionEvent, SessionState, SessionStreamEvent, UserInput,
 } from "./types.js";
 
 export interface BrainOptions {
@@ -18,10 +16,18 @@ export interface BrainOptions {
   token?: string;
   timeoutMs?: number;
   fetch?: typeof globalThis.fetch;
-  residentHost?: ResidentHostCredentials;
+  /** A host registration to resume, from `credentials()` of an earlier client. */
+  credentials?: HostCredentials;
 }
 
-export interface ResidentHostCredentials { readonly hostId: string; readonly token: string }
+/** What identifies this process as a host across clients and restarts. */
+export interface HostCredentials { readonly hostId: string; readonly token: string }
+
+interface Host {
+  readonly hostId: string;
+  readonly pump: HostPump;
+  unregister(sessionId: string): void;
+}
 
 export class BrainClient {
   readonly baseUrl: string;
@@ -32,11 +38,7 @@ export class BrainClient {
   private readonly agentloops = new WeakMap<object, Promise<string>>();
   private readonly tools = new WeakMap<object, Promise<string>>();
   private registration?: HostRegistration;
-  private resident?: Promise<{
-    readonly hostId: string;
-    readonly pump: ResidentHostPump;
-    unregister(sessionId: string): void;
-  }>;
+  private host?: Promise<Host>;
 
   constructor(options: BrainOptions) {
     let end = options.baseUrl.length;
@@ -52,9 +54,9 @@ export class BrainClient {
     this.token = options.token;
     this.timeoutMs = options.timeoutMs;
     this.transport = options.fetch ?? globalThis.fetch;
-    if (options.residentHost !== undefined) {
-      if (!options.residentHost.hostId || !options.residentHost.token) throw new TypeError("residentHost requires hostId and token");
-      this.registration = { host_id: options.residentHost.hostId, token: options.residentHost.token };
+    if (options.credentials !== undefined) {
+      if (!options.credentials.hostId || !options.credentials.token) throw new TypeError("credentials require hostId and token");
+      this.registration = { host_id: options.credentials.hostId, token: options.credentials.token };
     }
     this.sessions = new Sessions(this);
     Object.freeze(this.sessions);
@@ -128,7 +130,7 @@ export class BrainClient {
     }
   }
 
-  async admit(extension: AgentloopBinding): Promise<string> {
+  async admit(extension: PlacedAgentloop): Promise<string> {
     return this.admitAgentloop(inspectAgentloop(extension).component);
   }
 
@@ -140,42 +142,42 @@ export class BrainClient {
     return this.admitComponent(value, this.tools, "/v1/tools", "Tool");
   }
 
-  async residentHost(): Promise<{
-    readonly hostId: string;
-    readonly pump: ResidentHostPump;
-    unregister(sessionId: string): void;
-  }> {
-    if (this.resident !== undefined) return this.resident;
+  /** Registers this process as a host, or resumes the registration the client was
+   * given, and keeps its command stream open for as long as a session is placed here. */
+  async register(): Promise<Host> {
+    if (this.host !== undefined) return this.host;
     const opening = (async () => {
       const registration = this.registration ?? await this.request<HostRegistration>("POST", "/v1/hosts");
       this.registration = registration;
       const hostClient = this.withToken(registration.token);
-      const pump = new ResidentHostPump({
+      const pump = new HostPump({
         stream: (signal, onOpen) => hostClient.streamPath(`/v1/hosts/${encodeURIComponent(registration.host_id)}/commands`, signal, onOpen),
         result: (value) => hostClient.request("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/results`, value),
         emit: (value) => hostClient.request<{ sequence: number }>("POST", `/v1/hosts/${encodeURIComponent(registration.host_id)}/events`, value),
       });
       await pump.start();
       void pump.closed.then(() => {
-        if (this.resident === opening) this.resident = undefined;
+        if (this.host === opening) this.host = undefined;
       });
       return {
         hostId: registration.host_id,
         pump,
         unregister: (sessionId: string) => {
-          if (pump.unregister(sessionId) && this.resident === opening) {
-            this.resident = undefined;
+          if (pump.unregister(sessionId) && this.host === opening) {
+            this.host = undefined;
           }
         },
       };
     })();
-    this.resident = opening;
-    opening.catch(() => { if (this.resident === opening) this.resident = undefined; });
+    this.host = opening;
+    opening.catch(() => { if (this.host === opening) this.host = undefined; });
     return opening;
   }
 
-  async residentHostCredentials(): Promise<ResidentHostCredentials> {
-    await this.residentHost();
+  /** This host's registration, to hand a later client so it can resume the sessions
+   * placed here. */
+  async credentials(): Promise<HostCredentials> {
+    await this.register();
     return Object.freeze({ hostId: this.registration!.host_id, token: this.registration!.token });
   }
 
@@ -193,7 +195,7 @@ export class BrainClient {
       const idempotencyKey = `${subject.toLowerCase()}-${await sha256(bytes)}`;
       const result = await this.request<AgentloopAdmission | ToolAdmission>("POST", path, bytes, idempotencyKey, "application/octet-stream");
       if (result.status !== "admitted") throw new BrainError(400, `${subject.toLowerCase()}_rejected`, result.error?.message ?? `${subject} was rejected`, false, result.error && "details" in result.error ? result.error.details : undefined);
-      return result.identity;
+      return result.id;
     })();
     cache.set(value, admission);
     admission.catch(() => cache.delete(value));
@@ -208,59 +210,67 @@ export class Sessions {
     validateSessionOptions(options);
     const key = keyOf(operation);
     const loop = inspectAgentloop(options.agentloop);
-    const identity = await this.client.admitAgentloop(loop.component);
-    const environments = collectEnvironments(options, await sha256(new TextEncoder().encode(key)));
-    const residentTools = (options.tools ?? []).map(inspectResidentTool).filter((value) => value !== undefined);
-    const resident = residentTools.length === 0 ? undefined : await this.client.residentHost();
-    const implementations = new Map<ToolBinding, unknown>();
-    for (const selected of options.tools ?? []) {
-      if (inspectResidentTool(selected) !== undefined) continue;
-      const placed = inspectPlacedTool(selected);
-      const componentSource = placed.implementation !== null && typeof placed.implementation === "object"
-        ? (() => { try { return inspectComponent(placed.implementation as Component); } catch { return undefined; } })()
-        : undefined;
-      implementations.set(selected, componentSource === undefined
-        ? structuredClone(placed.implementation)
+    const environments = collectEnvironments(options);
+    const tools = (options.tools ?? []).map((placed) => [placed, inspectTool(placed)] as const);
+    for (const [, tool] of tools) {
+      const placedIn = inspectEnvironment(tool.environment).driver.driver === "host";
+      if (tool.handler !== undefined && !placedIn) throw new TypeError(`Tool ${tool.definition.name} has run and must be placed in a hostEnv`);
+      if (tool.handler === undefined && placedIn) throw new TypeError(`Tool ${tool.definition.name} is placed in a hostEnv and must have run`);
+    }
+    const id = await this.client.admitAgentloop(loop.component);
+    const hosted = [...environments.keys()].some((environment) => inspectEnvironment(environment).driver.driver === "host");
+    const host = hosted ? await this.client.register() : undefined;
+    const implementations = new Map<PlacedTool, unknown>();
+    for (const [placed, tool] of tools) {
+      if (tool.implementation === undefined) continue;
+      const componentSource = (() => { try { return inspectComponent(tool.implementation as Component); } catch { return undefined; } })();
+      implementations.set(placed, componentSource === undefined
+        ? structuredClone(tool.implementation)
         : {
             type: "brain_component",
-            identity: await this.client.admitTool(placed.implementation as Component),
-            configuration: structuredClone(placed.configuration),
+            id: await this.client.admitTool(tool.implementation as Component),
+            configuration: structuredClone(tool.configuration),
           });
     }
-    const compiled = compileSession(options, identity, environments, implementations, resident?.hostId);
-    const session = await this.client.request<WireSession>("POST", "/v1/sessions", compiled.request, key);
-    if (resident !== undefined) {
-      const registry = new AppToolRegistry();
-      for (const tool of residentTools) registry.register(tool.contract, tool.handler);
-      resident.pump.register(session.session_id, registry);
+    const request = compileSession(options, id, environments, implementations, host?.hostId);
+    const session = await this.client.request<WireSession>("POST", "/v1/sessions", request, key);
+    if (host !== undefined) {
+      const registry = new HostToolRegistry();
+      for (const [, tool] of tools) {
+        if (tool.handler !== undefined && tool.contract !== undefined) registry.register(tool.contract, tool.handler);
+      }
+      host.pump.register(session.session_id, registry);
     }
     return new SessionHandle(
       this.client,
       toSessionState(session),
-      resident === undefined ? undefined : () => resident.unregister(session.session_id),
+      host === undefined ? undefined : () => host.unregister(session.session_id),
     );
   }
 
-  async get(sessionId: string, options: { tools?: readonly ToolBinding[] } = {}): Promise<SessionHandle> {
+  /** Reopens a session. With `tools`, the functions this host holds are attached again:
+   * they must be exactly the Tools the session placed in this host. */
+  async get(sessionId: string, options: { tools?: readonly PlacedTool[] } = {}): Promise<SessionHandle> {
     const session = await this.client.request<WireSession>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}`);
     const handle = new SessionHandle(this.client, toSessionState(session));
     if (options.tools === undefined) return handle;
-    const tools = options.tools.map((tool) => {
-      const resident = inspectResidentTool(tool);
-      if (resident === undefined) throw new TypeError("reattachment accepts only resident Tools");
-      return resident;
+    const tools = options.tools.map((placed) => {
+      const tool = inspectTool(placed);
+      if (tool.handler === undefined || tool.contract === undefined) throw new TypeError("reattachment accepts only Tools with run");
+      return tool;
     });
-    const host = await this.client.residentHost();
+    const host = await this.client.register();
     for await (const event of handle.events()) {
       if (event.type !== "session_creation_ended") continue;
-      const configuration = (event.data as { configuration: { tool_bindings: { name: string; host_id?: string }[] } }).configuration;
-      const bound = configuration.tool_bindings.filter((binding) => binding.host_id === host.hostId).map((binding) => binding.name).sort();
+      const configuration = (event.data as { configuration: { tools: { name: string; environment: string }[]; environments: { name: string; driver: string; host_id?: string }[] } }).configuration;
+      const here = configuration.environments.filter((environment) => environment.driver === "host" && environment.host_id === host.hostId).map((environment) => environment.name);
+      const placed = configuration.tools.filter((tool) => here.includes(tool.environment)).map((tool) => tool.name).sort();
       const supplied = tools.map((tool) => tool.definition.name).sort();
-      if (bound.length === 0 || JSON.stringify(bound) !== JSON.stringify(supplied)) {
-        throw new TypeError("resident Tools must match this host's sealed session bindings");
+      if (placed.length === 0 || JSON.stringify(placed) !== JSON.stringify(supplied)) {
+        throw new TypeError("the Tools supplied must be exactly those the session placed in this host");
       }
-      const registry = new AppToolRegistry();
-      for (const tool of tools) registry.register(tool.contract, tool.handler);
+      const registry = new HostToolRegistry();
+      for (const tool of tools) registry.register(tool.contract!, tool.handler!);
       host.pump.register(sessionId, registry);
       return new SessionHandle(this.client, toSessionState(session), () => host.unregister(sessionId));
     }
@@ -277,7 +287,7 @@ export class SessionHandle {
   constructor(
     private readonly client: BrainClient,
     public state: SessionState,
-    private readonly unregisterResident?: () => void,
+    private readonly unregisterHost?: () => void,
   ) {}
   get id(): string { return this.state.id; }
 
@@ -299,7 +309,7 @@ export class SessionHandle {
       let cursor = after;
       for (;;) {
         const page = await client.request<EventPage>("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/events?after=${cursor}`);
-        for (const event of page.events) yield { id: event.event_id, sequence: event.sequence, recordedAt: new Date(event.recorded_at_ms), type: event.event_type, data: event.data };
+        for (const event of page.events) yield { sequence: event.sequence, recordedAt: new Date(event.recorded_at_ms), type: event.event_type, data: event.data };
         if (page.next_cursor === cursor) return;
         cursor = page.next_cursor;
       }
@@ -316,89 +326,95 @@ export class SessionHandle {
 
   async end(operation: OperationOptions = {}): Promise<SessionState> {
     const session = await this.client.request<WireSession>("POST", `/v1/sessions/${encodeURIComponent(this.id)}/end`, undefined, keyOf(operation));
-    this.unregisterResident?.();
+    this.unregisterHost?.();
     return (this.state = toSessionState(session));
   }
 
   async delete(operation: OperationOptions = {}): Promise<void> {
     await this.client.request("DELETE", `/v1/sessions/${encodeURIComponent(this.id)}`, undefined, keyOf(operation));
-    this.unregisterResident?.();
+    this.unregisterHost?.();
   }
 }
 
-function collectEnvironments(options: CreateSessionOptions, operationIdentity: string): ReadonlyMap<Environment, string> {
-  const result = new Map<Environment, string>();
+/** Every Environment the session places something in, each once. Two values with one
+ * name are the same declaration when they say the same thing, and a contradiction
+ * otherwise: one name for two different things is refused before any request. */
+function collectEnvironments(options: CreateSessionOptions): ReadonlySet<Environment> {
+  const result = new Set<Environment>();
+  const names = new Map<string, Environment>();
   const add = (environment: Environment) => {
-    inspectEnvironment(environment);
-    if (!result.has(environment)) result.set(environment, `env_${operationIdentity}_${result.size}`);
+    const source = inspectEnvironment(environment);
+    const known = names.get(source.name);
+    if (known !== undefined) {
+      if (JSON.stringify(inspectEnvironment(known)) !== JSON.stringify(source)) throw new TypeError(`two Environments are named ${source.name}`);
+      return;
+    }
+    names.set(source.name, environment);
+    result.add(environment);
   };
   add(inspectAgentloop(options.agentloop).environment);
-  for (const selected of options.tools ?? []) {
-    if (inspectResidentTool(selected) === undefined) add(inspectPlacedTool(selected).environment);
-  }
+  for (const selected of options.tools ?? []) add(inspectTool(selected).environment);
   return result;
 }
 
 function compileSession(
   options: CreateSessionOptions,
-  agentloopIdentity: string,
-  environmentIds: ReadonlyMap<Environment, string>,
-  implementations: ReadonlyMap<ToolBinding, unknown>,
-  residentHostId?: string,
-): { readonly request: CreateSessionRequest } {
-  const requirements: SessionEnvironment[] = [...environmentIds].map(([environment, environmentId]) => {
+  agentloopId: string,
+  environments: ReadonlySet<Environment>,
+  implementations: ReadonlyMap<PlacedTool, unknown>,
+  hostId?: string,
+): CreateSessionRequest {
+  const entries: WireEnvironment[] = [...environments].map((environment) => {
     const source = inspectEnvironment(environment);
-    return {
-      environment_id: environmentId,
-      configuration: structuredClone(source.configuration),
-      bindings: { ...source.bindings },
-    };
+    const configuration = structuredClone(source.configuration) as WireEnvironment["configuration"];
+    switch (source.driver.driver) {
+      case "brain":
+        return { name: source.name, driver: "brain", configuration };
+      case "host":
+        return { name: source.name, driver: "host", host_id: hostId!, configuration };
+      case "http":
+        return {
+          name: source.name,
+          driver: "http",
+          url: source.driver.url,
+          ...(source.driver.credential === undefined ? {} : { credential: source.driver.credential }),
+          configuration,
+        };
+    }
   });
-  const tools: WireBoundTool[] = [];
+  const tools: WireTool[] = [];
   const names = new Set<string>();
   for (const selected of options.tools ?? []) {
-    const resident = inspectResidentTool(selected);
-    const placed = resident === undefined ? inspectPlacedTool(selected) : undefined;
-    const definition = resident?.definition ?? placed!.definition;
-    if (names.has(definition.name)) throw new TypeError(`Tool name ${definition.name} is duplicated`);
-    names.add(definition.name);
+    const tool = inspectTool(selected);
+    if (names.has(tool.definition.name)) throw new TypeError(`Tool name ${tool.definition.name} is duplicated`);
+    names.add(tool.definition.name);
+    const implementation = implementations.get(selected);
     tools.push({
-      name: definition.name,
-      description: definition.description,
-      input_schema: structuredClone(definition.inputSchema),
-      ...(definition.outputSchema === undefined ? {} : { output_schema: structuredClone(definition.outputSchema) }),
-      ...(resident === undefined
-        ? {
-            needs: [...placed!.needs],
-            binding_names: [...placed!.bindingNames],
-            hosting: "provisioned" as const,
-            implementation: structuredClone(implementations.get(selected)),
-            environment_id: environmentIds.get(placed!.environment)!,
-          }
-        : {
-            needs: [],
-            binding_names: [],
-            hosting: "resident" as const,
-            host_id: residentHostId!,
-          }),
+      name: tool.definition.name,
+      description: tool.definition.description,
+      input_schema: structuredClone(tool.definition.inputSchema),
+      ...(tool.definition.outputSchema === undefined ? {} : { output_schema: structuredClone(tool.definition.outputSchema) }),
+      environment: inspectEnvironment(tool.environment).name,
+      needs: [...tool.needs],
+      ...(implementation === undefined ? {} : { implementation: structuredClone(implementation) as WireTool["implementation"] }),
     });
   }
   const loop = inspectAgentloop(options.agentloop);
-  const request = {
+  return {
     agentloop: {
-      identity: agentloopIdentity,
+      id: agentloopId,
       configuration: structuredClone(loop.configuration),
-      environment_id: environmentIds.get(loop.environment)!,
+      environment: inspectEnvironment(loop.environment).name,
+      needs: [...loop.needs],
     },
     model: { provider: options.model.provider, name: options.model.name, api_key: options.model.apiKey },
     system: options.system ?? "",
-    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) }),
+    ...(options.responseFormat === undefined ? {} : { response_format: structuredClone(options.responseFormat) as CreateSessionRequest["response_format"] }),
     tools,
-    environments: requirements,
-    ...(options.transcript === undefined ? {} : { transcript: structuredClone(options.transcript) }),
+    environments: entries,
+    ...(options.transcript === undefined ? {} : { transcript: structuredClone(options.transcript) as CreateSessionRequest["transcript"] }),
     ...(options.idleTtlMs === undefined ? {} : { idle_ttl_ms: options.idleTtlMs }),
-  } as CreateSessionRequest;
-  return { request };
+  };
 }
 
 function validateSessionOptions(options: CreateSessionOptions): void {

@@ -1,18 +1,19 @@
 ---
 title: Tools
-description: Typed capabilities implemented in the application or placed in an Environment.
+description: One typed contract, what it needs, and the Environment that runs it.
 ---
 
 A Tool is the model-visible contract for one action: a name, description, input schema, and
-optional output schema. Its implementation is either resident in the application process or
-placed in an Environment. The two forms use the same session and journal semantics.
+optional output schema. Every Tool runs in exactly one Environment of its session, named at
+placement with `{ env, ...options }`. Where that Environment is, and how Brain reaches it, is the
+Environment's concern; the Tool's declaration is the same everywhere.
 
-## Resident Tools
+## A function this process holds
 
-Use `run` when the function already lives in the application creating the session:
+Use `run` and place the Tool in `hostEnv`:
 
 ```ts
-import { tool } from "@aexhq/brain";
+import { hostEnv, tool } from "@aexhq/brain";
 import { z } from "zod";
 
 const lookup = tool({
@@ -26,26 +27,23 @@ const lookup = tool({
   },
 });
 
-const bound = lookup({ prefix: "item:" });
+const placed = lookup({ env: hostEnv({ name: "app" }), prefix: "item:" });
 ```
 
-Calling the factory binds the options. With no options schema, call it as `lookup()`.
+The SDK registers this process as a host with Brain and consumes its command stream over SSE. A
+command names the session and the committed journal sequence of the call, its deadline, the Tool,
+and the input. The host validates input and output, runs the function, and posts one outcome.
+`ctx` contains `options`, `sequence`, `deadline`, `signal`, and `emit`. Awaiting `ctx.emit(kind, data)`
+waits until Brain has committed the extension event.
 
-The SDK registers one resident host with Brain and consumes its command stream over SSE. A command
-contains the session, committed journal sequence, deadline, and Tool invocation. The host validates
-input and output, runs the function, and posts one outcome. `ctx` contains `options`, `callId`,
-`deadline`, `signal`, and `emit`. Awaiting `ctx.emit(kind, data)` waits until Brain has committed the
-extension event.
+The function keeps the ambient authority of your process; the host env inserts nothing around it.
 
-Resident code has the ambient authority of its application process. No Environment is on that
-execution path.
+## An implementation an Environment interprets
 
-## Placed Tools
-
-Use `implementation` when an Environment executes the Tool:
+Use `implementation` and place the Tool in the Environment that runs it:
 
 ```ts
-import { brainWasm, component, tool } from "@aexhq/brain";
+import { brainEnv, component, tool } from "@aexhq/brain";
 import { z } from "zod";
 
 const inspect = tool({
@@ -54,29 +52,36 @@ const inspect = tool({
   input: z.object({ path: z.string() }),
   options: z.object({ depth: z.number().int().positive() }),
   implementation: component(new URL("./inspect.wasm", import.meta.url)),
-  needs: ["fs"],
+  needs: ["file:///workspace"],
 });
 
-const bound = inspect({
-  env: brainWasm({ filesystem: { workspace: true } }),
-  depth: 2,
-});
+const placed = inspect({ env: brainEnv({ name: "brain" }), depth: 2 });
 ```
 
-The deployment must also include `workspace` in `BRAIN_WASM_FILESYSTEM_ALLOW`.
+`implementation` may be a Component, an opaque object the Environment understands, or a function of
+the parsed options that returns that object. A Component implements
+[`contracts/tool/v1/tool.wit`](https://github.com/aexhq/brain/blob/main/contracts/tool/v1/tool.wit):
+it receives JSON input, its configuration, and a deadline, and can emit committed extension events
+through its host import.
 
-Placed factories always take `{ env, ...options }`. `implementation` may be a Component, an opaque
-object understood by the selected Environment driver, or a function of parsed options that returns
-that object. `needs` lists resource names Brain checks against the Environment's attach receipt;
-`bindingNames` lists values the Environment injects without copying their plaintext into the
-session journal.
+## What a Tool needs
 
-A Component Tool implements [`contracts/tool/v1/tool.wit`](https://github.com/aexhq/brain/blob/main/contracts/tool/v1/tool.wit).
-It receives JSON input, configuration, a call identity, and a deadline, and can emit committed
-extension events through its host import.
+`needs` is a list of URIs, the same list for every kind of Environment:
+
+- `pkg:` names software as a [Package URL](https://github.com/package-url/purl-spec), for example
+  `pkg:apt/ffmpeg` or `pkg:pypi/numpy@2.1.0`;
+- `https:` or `wss:` names a network destination, with `https://*.example.com` for a family of hosts;
+- `file:` names a filesystem location, read-only unless it carries `?access=write`.
+
+Brain checks the shape and hands the list to the Environment: all of them at setup, so the
+Environment provisions what this session uses, and the Tool's own with every invoke. The
+Environment honours what it can and refuses the rest at setup, naming the URI. Brain reads none
+of them and carries nothing at run time on the Tool's behalf: the code obtains what it needs
+through the platform of its Environment.
 
 ## One execution rule
 
-For either form, Brain durably commits `tool_call_started` before dispatch and sends the operation
-once. It records `ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop sees the
-result. Brain never automatically retries a Tool call.
+Brain durably commits `tool_call_started` before dispatch and sends the operation once. The record
+names the Tool; where the call goes is the configuration's answer for that name. Brain records
+`ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop sees the result, and never
+automatically retries a Tool call.

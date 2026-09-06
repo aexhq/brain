@@ -67,7 +67,7 @@ mod tests {
             name: "test".into(),
             payload: vec![0; payload],
             session_id: None,
-            event_id: None,
+            sequence: None,
         }
     }
 

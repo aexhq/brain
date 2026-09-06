@@ -58,6 +58,10 @@ Pages live in [`docs/`](docs) and are rendered at
 [aex.dev/brain/docs](https://aex.dev/brain/docs). Change behaviour and its page in the same pull
 request.
 
+Architecture rationale lives in [`references/adrs/`](references/adrs/README.md). Record new
+decisions as `YYYY-MM-DD-NN-topic.md` with context, status, alternatives, consequences, and
+sources. Link any superseded decision instead of rewriting its history.
+
 The API reference is not written by hand. It is generated from
 [`contracts/session/v1/openapi.yaml`](contracts/session/v1/openapi.yaml) at site build time, so it
 cannot drift from the contract.

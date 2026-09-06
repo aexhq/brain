@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Brain, agentloop, brainWasm, component, environment, tool } from "@aexhq/brain";
+import { Brain, agentloop, brainEnv, component, environment, tool } from "@aexhq/brain";
 import { z } from "zod";
 import { lazyEnvironment } from "../../examples/lazy-environment.mjs";
 
@@ -41,7 +41,7 @@ async function start(baseUrl) {
   server = spawn(process.env.BRAIN_TEST_SERVER, [], { env: {
     ...process.env, BRAIN_LISTEN: new URL(baseUrl).host, BRAIN_DATA_DIR: join(root, "data"),
     BRAIN_API_TOKEN: "runtime-test", BRAIN_LOOP_WORKER: process.env.BRAIN_TEST_WORKER,
-    BRAIN_MODEL_BASE_URL: `${modelUrl}/v1`, BRAIN_ENVIRONMENT_ROUTES_FILE: join(root, "routes.json"),
+    BRAIN_MODEL_BASE_URL: `${modelUrl}/v1`,
   }, stdio: ["ignore", "inherit", "inherit"] });
   for (let i = 0; i < 1200; i++) {
     if (server.exitCode !== null) throw new Error(`server exited: ${server.exitCode}`);
@@ -53,11 +53,11 @@ async function start(baseUrl) {
 let modelUrl;
 let runtimeBaseUrl;
 try {
-  const routes = {};
-  for (const driver of ["first", "second"]) {
+  const providers = {};
+  for (const name of ["first", "second"]) {
     const provider = lazyEnvironment({ now: () => clock, allocate: async () => { allocations++; return new Map(); } });
-    routes[driver] = { api_key: driver, endpoint: await listen(async (req, res, command) => {
-      assert.equal(req.headers.authorization, `Bearer ${driver}`);
+    providers[name] = await listen(async (req, res, command) => {
+      assert.equal(req.headers.authorization, `Bearer ${name}`);
       if (command.operation.request.type === "setup" && modelCalls === 0) {
         const listed = await fetch(`${runtimeBaseUrl}/v1/sessions`, { headers: { authorization: "Bearer runtime-test" } });
         assert.equal(listed.status, 200);
@@ -65,9 +65,8 @@ try {
         assert.equal(row.status, "creating", "listing during setup must share the live creation store");
       }
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(await provider.handle(command)));
-    }) };
+    });
   }
-  await writeFile(join(root, "routes.json"), JSON.stringify(routes));
   modelUrl = await listen(async (_req, res, request) => {
     modelCalls++;
     const last = request.messages.at(-1);
@@ -88,11 +87,12 @@ try {
   const artifact = component(pathToFileURL(process.env.BRAIN_TEST_REFERENCE_AGENTLOOP));
   await brain.admitAgentloop(artifact);
   const loop = agentloop({ implementation: artifact });
-  const tools = ["first", "second"].map((driver) => tool({ name: driver, input: z.object({ value: z.string() }),
-    implementation: { type: "reference_echo" }, description: "Echo input" })({ env: environment({ driver })() }));
-  const options = { model: { provider: "vercel-ai-gateway", name: "test/scripted", apiKey: "test" }, agentloop: loop({ env: brainWasm() }), tools };
+  const provider = environment({ options: z.object({ url: z.url(), token: z.string() }), url: ({ url }) => url, credential: ({ token }) => token });
+  const tools = ["first", "second"].map((name) => tool({ name, input: z.object({ value: z.string() }),
+    implementation: { type: "reference_echo" }, description: "Echo input" })({ env: provider({ name, url: providers[name], token: name }) }));
+  const options = { model: { provider: "vercel-ai-gateway", name: "test/scripted", apiKey: "test" }, agentloop: loop({ env: brainEnv({ name: "brain" }) }), tools };
   const session = await brain.sessions.create(options);
-  assert.equal(allocations, 0, "logical setup/attach must not allocate");
+  assert.equal(allocations, 0, "logical setup must not allocate");
   await session.send("use both environments");
   assert.equal(allocations, 2);
   assert.equal((await session.transcript()).messages.length, 4);

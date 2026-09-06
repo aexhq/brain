@@ -6,19 +6,19 @@ pub mod digest;
 pub mod environment;
 pub mod idempotency;
 pub mod metadata;
-pub mod model_binding;
+pub mod model;
 mod persistence;
-pub mod resident;
 mod service;
 pub mod tool_dispatcher;
+pub mod turns;
 
 pub use config::ServerConfig;
 pub use environment::{
-    EnvironmentAdapter, EnvironmentRegistry, EnvironmentResources, HttpEnvironmentAdapter,
-    SessionBindingValues,
+    BrainEnvironment, EnvironmentAdapter, EnvironmentRegistry, HostEnvironment,
+    HttpEnvironmentAdapter, NativePolicy, Services,
 };
 pub use idempotency::IdempotencyStore;
-pub use model_binding::{ModelBindingStore, ServerModelExecutor, load_providers_file};
-pub use resident::ResidentHosts;
-pub use service::{ServerApi, ServerResources, WorkerLoopExecutor};
+pub use model::{CredentialStore, ServerModelExecutor, load_providers_file};
+pub use service::{EnvironmentLoopExecutor, ServerApi, ServerResources};
 pub use tool_dispatcher::ServerToolExecutor;
+pub use turns::Turns;

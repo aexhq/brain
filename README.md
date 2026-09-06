@@ -58,43 +58,48 @@ An environment provides the resources a tool needs to complete its tasks. [Write
 ### Official Extensions
 We provide a number of official extensions, written in the same way you would: [aexhq/extensions](https://github.com/aexhq/extensions).
 
-`brainWasm(options)` is Brain's built-in Wasmtime Environment. Network targets, secret names, and
-writable `scratch` or `workspace` roots must appear in both the session request and the server
-deployment policy; every server grant is empty by default.
-Each native invocation is bounded by 10 billion Wasmtime fuel units for guest work; suspended I/O
+Brain ships two Environments of its own. `brainEnv({ name })` runs Components in a fresh Wasmtime
+instance per invocation, granted exactly what their `needs` name and bounded by the server's
+`BRAIN_ENV_*` allow-lists, which are empty by default. `hostEnv({ name })` is your own process,
+registered with Brain as a host, for Tools that are plain functions. Anything else is an
+`environment(...)` extension reached over HTTP, configured per instance by the application.
+Each Wasm invocation is bounded by 10 billion Wasmtime fuel units for guest work; suspended I/O
 does not consume fuel, while the session's wall-time limit still bounds the complete turn.
 
 
 ## Architecture
 
-One session can use native Tools, functions in your application, and Tools in several remote
-Environments. The Agentloop controls context and decides when to call the model or dispatch Tools;
-Brain coordinates execution and records the results.
+The [architecture decision records](references/adrs/README.md) explain the design and its evolution.
+
+Every Tool and the Agentloop is placed in one of the session's named Environments, and every
+Environment is reached through one protocol: the brain env inside the server, the host env that is
+your own process, and any Environment reached over HTTP. The Agentloop controls context and
+decides when to call the model or dispatch Tools; Brain coordinates execution and records the
+results.
 
 ```mermaid
 flowchart LR
   subgraph App["Your application"]
     Client["SDK / HTTP client"]
-    Resident["Resident Tools"]
+    Host["host env<br/>Tools as functions"]
   end
 
   subgraph Brain["Brain runtime"]
     Server["HTTP / SSE server<br/>Session coordination"]
     Journal[("Local journal<br/>Transcript, slots and Events")]
-    subgraph Worker["brainWasm · Wasmtime worker"]
+    subgraph BrainEnv["brain env · Wasmtime worker"]
       Loop["Agentloop Component"]
-      Native["Native Tool Components"]
+      Native["Tool Components"]
     end
     Server <-->|"commit / read"| Journal
-    Server <-->|"activate / host calls"| Loop
-    Server <-->|"invoke / result"| Native
+    Server <-->|"Environment protocol"| BrainEnv
   end
 
   Client <-->|"HTTP / SSE"| Server
-  Resident <-->|"host SSE / results"| Server
+  Host <-->|"Environment protocol over host SSE"| Server
   Server <-->|"model calls"| Models["Model providers"]
-  Server <-->|"Environment protocol"| EnvA["Environment A<br/>Tools + resources"]
-  Server <-->|"Environment protocol"| EnvB["Environment B<br/>Tools + resources"]
+  Server <-->|"Environment protocol over HTTP"| EnvA["Environment A<br/>Tools + resources"]
+  Server <-->|"Environment protocol over HTTP"| EnvB["Environment B<br/>Tools + resources"]
 ```
 
 Brain commits each external-effect intent before dispatch and sends it once. The local journal
@@ -125,9 +130,9 @@ store for a local deployment.
 
 ## Quick start
 
-In this example the tool is a plain function in your own process. You declare it once and
-pass it to the session. The SDK registers one application host and answers commands over SSE, so
-your app needs no inbound server or open port.
+In this example the tool is a plain function in your own process, placed in the host env. You
+declare it once and pass it to the session. The SDK registers your process as a host and answers
+commands over SSE, so your app needs no inbound server or open port.
 
 Run a server:
 
@@ -144,7 +149,7 @@ npm install @aexhq/brain @aexhq/agentloop-pi zod
 Save as `order.mjs` and run with `node order.mjs`:
 
 ```js
-import { Brain, brainWasm, tool } from "@aexhq/brain";
+import { Brain, brainEnv, hostEnv, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
@@ -157,11 +162,10 @@ const lookupOrder = tool({
 });
 
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
-const wasm = brainWasm();
 const session = await brain.sessions.create({
   model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
-  agentloop: pi({ env: wasm }),
-  tools: [lookupOrder()],
+  agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+  tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
 });
 
 await session.send("Where is order A-1001?");

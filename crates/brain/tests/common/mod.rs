@@ -18,8 +18,8 @@ use brain::{
     SessionStore, ToolExecutor, TurnServices, Writer,
 };
 use brain_protocol::{
-    AgentloopIdentity, EnvironmentId, Message, ModelBinding, SessionConfig, SessionId, TurnInput,
-    TurnOutput,
+    AgentloopId, AgentloopRef, Driver, Environment, EnvironmentName, Message, ModelBinding,
+    SessionConfig, SessionId, TurnInput, TurnOutput,
 };
 use futures_util::future::BoxFuture;
 
@@ -176,28 +176,24 @@ pub fn temporary_directory(name: &str) -> PathBuf {
 /// The smallest admitted configuration: an Agentloop and its Environment, no tools.
 pub fn config() -> SessionConfig {
     SessionConfig {
-        agentloop_identity: AgentloopIdentity::new("a".repeat(64)),
-        agentloop_environment_id: EnvironmentId::new("workspace"),
-        brain_configuration: serde_json::json!({}),
+        agentloop: AgentloopRef {
+            id: AgentloopId::new("a".repeat(64)),
+            configuration: serde_json::json!({}),
+            environment: EnvironmentName::new("workspace"),
+            needs: Vec::new(),
+        },
         model: ModelBinding {
-            binding_id: "gateway".into(),
-            model: "openai/test".into(),
+            provider: "vercel-ai-gateway".into(),
+            name: "openai/test".into(),
         },
         system: "test".into(),
         response_format: None,
         tools: Vec::new(),
-        environments: vec![brain_protocol::EnvironmentAttachment {
-            environment_id: EnvironmentId::new("workspace"),
-            configuration: serde_json::json!({"driver": "brain_wasm"}),
-
-            binding: Some(brain_protocol::EnvironmentBinding {
-                environment_id: EnvironmentId::new("workspace"),
-                directory_generation: 1,
-            }),
-            attachment_id: Some(brain_protocol::AttachmentId::new("attachment")),
-            resources: Default::default(),
+        environments: vec![Environment {
+            name: EnvironmentName::new("workspace"),
+            driver: Driver::Brain {},
+            configuration: serde_json::json!({}),
         }],
-        tool_bindings: Vec::new(),
         idle_ttl_ms: None,
     }
 }
@@ -228,8 +224,9 @@ impl LoopExecutor for ScriptedLoop {
     async fn turn(
         &self,
         _session: &SessionId,
-        _agentloop: &AgentloopIdentity,
-        _environment: serde_json::Value,
+        _sequence: u64,
+        _agentloop: &AgentloopRef,
+        _environment: &Environment,
         input: TurnInput,
         services: Arc<dyn TurnServices>,
     ) -> Result<TurnOutput, Error> {
@@ -258,6 +255,7 @@ pub struct ScriptedModel;
 impl ModelExecutor for ScriptedModel {
     async fn execute(
         &self,
+        _session: &SessionId,
         _binding: &ModelBinding,
         request: brain_protocol::ModelRequest,
         _tools: &[brain_protocol::ToolDefinition],
@@ -285,6 +283,7 @@ pub struct SlowModel;
 impl ModelExecutor for SlowModel {
     async fn execute(
         &self,
+        _session: &SessionId,
         _binding: &ModelBinding,
         _request: brain_protocol::ModelRequest,
         _tools: &[brain_protocol::ToolDefinition],
@@ -302,6 +301,7 @@ pub struct NoModels;
 impl ModelExecutor for NoModels {
     async fn execute(
         &self,
+        _session: &SessionId,
         _binding: &ModelBinding,
         _request: brain_protocol::ModelRequest,
         _tools: &[brain_protocol::ToolDefinition],

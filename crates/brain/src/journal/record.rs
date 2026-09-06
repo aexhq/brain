@@ -1,4 +1,4 @@
-use brain_protocol::{EventId, SessionId};
+use brain_protocol::{Event, SessionId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -16,6 +16,7 @@ impl AppendRecord {
     }
 }
 
+/// One journal record. `(session_id, sequence)` names it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SessionRecord {
     pub session_id: SessionId,
@@ -26,7 +27,13 @@ pub struct SessionRecord {
 }
 
 impl SessionRecord {
-    pub fn event_id(&self) -> EventId {
-        EventId::new(format!("evt_{}_{}", self.session_id, self.sequence))
+    /// The record as a client reads it.
+    pub fn into_event(self) -> Event {
+        Event {
+            sequence: self.sequence,
+            recorded_at_ms: self.recorded_at_ms,
+            event_type: self.kind,
+            data: self.payload,
+        }
     }
 }

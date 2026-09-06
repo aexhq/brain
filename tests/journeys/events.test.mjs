@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { z } from "zod";
-import { tool } from "@aexhq/brain";
+import { hostEnv, tool } from "@aexhq/brain";
 import { fixture, collect, callTools, reply, failure } from "./support.mjs";
 
 const f = fixture();
@@ -17,7 +17,8 @@ test("read and resume durable events without rerunning the conversation", { time
   assert.equal(suffix.filter(({ type }) => type === "turn_ended").length, 1);
   assert.deepEqual(await collect(session.events(cursor)), suffix);
   assert.deepEqual(await collect(session.events(suffix.at(-1).sequence)), []);
-  assert.ok(first.every(({ id, recordedAt }) => typeof id === "string" && recordedAt instanceof Date && Number.isFinite(+recordedAt)));
+  assert.ok(first.every(({ sequence, recordedAt }) => Number.isSafeInteger(sequence) && recordedAt instanceof Date && Number.isFinite(+recordedAt)));
+  assert.ok(first.every((event) => !("id" in event)), "a record is named by its sequence and nothing else");
   assert.equal(f.modelRequests.length, 2);
 });
 
@@ -70,7 +71,7 @@ test("event iteration crosses a full page without omissions or duplicate progres
   } });
   f.model = (request, response) => request.messages.at(-1).role === "tool"
     ? reply(response) : callTools(response, [{ name: "progress", input: {} }]);
-  const session = await f.create(t, { tools: [progress()] });
+  const session = await f.create(t, { tools: [progress({ env: hostEnv({ name: "app" }) })] });
   for (let turn = 0; turn < 9; turn++) await session.send(`progress batch ${turn}`);
   const events = await collect(session.events());
   assert.deepEqual(events.filter(({ type }) => type === "journey_progress").map(({ data }) => data.i), Array.from({ length: 1080 }, (_, i) => i));

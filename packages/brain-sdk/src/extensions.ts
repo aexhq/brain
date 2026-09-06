@@ -1,9 +1,9 @@
 import { z } from "zod";
 
-import type { AppToolCall, AppToolContract } from "./app.js";
+import type { HostToolCall, HostToolContract } from "./host.js";
 import type {
-  AgentloopBinding, Component, Environment, ResourceName, Schema, SchemaInput, SchemaOutput,
-  ToolBinding, ToolDefinition,
+  Component, Environment, PlacedAgentloop, PlacedTool, Schema, SchemaInput, SchemaOutput,
+  ToolDefinition,
 } from "./types.js";
 
 const source = Symbol.for("@aexhq/brain/extension-source");
@@ -13,37 +13,41 @@ interface ComponentSource {
   readonly artifact: URL | Uint8Array;
 }
 
+/** How Brain reaches an Environment. Applications never write it: the factories do. */
+export type EnvironmentDriver =
+  | { readonly driver: "brain" }
+  | { readonly driver: "host" }
+  | { readonly driver: "http"; readonly url: string; readonly credential?: string };
+
 interface EnvironmentSource {
   readonly kind: "environment";
+  readonly name: string;
+  readonly driver: EnvironmentDriver;
   readonly configuration: unknown;
-  readonly bindings: Readonly<Record<string, string>>;
 }
 
 interface AgentloopSource {
   readonly kind: "agentloop";
   readonly component: Component;
   readonly configuration: unknown;
+  readonly needs: readonly string[];
   readonly environment: Environment;
 }
 
-interface ResidentToolSource {
-  readonly kind: "resident_tool";
+interface ToolSource {
+  readonly kind: "tool";
   readonly definition: ToolDefinition;
-  readonly contract: AppToolContract;
-  readonly handler: (input: unknown, call: AppToolCall) => unknown;
-}
-
-interface PlacedToolSource {
-  readonly kind: "placed_tool";
-  readonly definition: ToolDefinition;
-  readonly needs: readonly ResourceName[];
-  readonly bindingNames: readonly string[];
-  readonly implementation: unknown;
+  readonly needs: readonly string[];
+  /** What the Environment interprets: a Component to admit, a descriptor, or nothing
+   * when the Tool is a function this process holds. */
+  readonly implementation: Component | Readonly<Record<string, unknown>> | undefined;
+  readonly handler?: (input: unknown, call: HostToolCall) => unknown;
+  readonly contract?: HostToolContract;
   readonly configuration: unknown;
   readonly environment: Environment;
 }
 
-type ExtensionSource = ComponentSource | EnvironmentSource | AgentloopSource | ResidentToolSource | PlacedToolSource;
+type ExtensionSource = ComponentSource | EnvironmentSource | AgentloopSource | ToolSource;
 type Branded = object & { readonly [source]?: ExtensionSource };
 
 export function component(artifact: URL | Uint8Array): Component {
@@ -56,82 +60,82 @@ export function component(artifact: URL | Uint8Array): Component {
   return branded({ kind: "component", artifact });
 }
 
+type Options<OptionsSchema extends Schema | undefined> =
+  OptionsSchema extends Schema ? SchemaOutput<OptionsSchema> : Record<string, never>;
+
+/** An Environment reached over HTTP. The extension defines its options and how each
+ * instance is reached; Brain reads the URL and the optional credential and carries the
+ * configuration unread. */
 export interface EnvironmentContract<OptionsSchema extends Schema | undefined = undefined> {
-  readonly driver: string;
   readonly options?: OptionsSchema;
-  readonly configure?: (options: OptionsSchema extends Schema ? SchemaOutput<OptionsSchema> : Record<string, never>) => unknown;
-  readonly bindings?: (options: OptionsSchema extends Schema ? SchemaOutput<OptionsSchema> : Record<string, never>) => Readonly<Record<string, string>>;
+  readonly url: (options: Options<OptionsSchema>) => string;
+  readonly credential?: (options: Options<OptionsSchema>) => string | undefined;
+  readonly configure?: (options: Options<OptionsSchema>) => unknown;
 }
 
-type OptionalFactory<OptionsSchema extends Schema | undefined, Value> =
-  OptionsSchema extends Schema
-    ? undefined extends SchemaInput<OptionsSchema>
-      ? (options?: SchemaInput<OptionsSchema>) => Value
-      : (options: SchemaInput<OptionsSchema>) => Value
-    : (options?: undefined) => Value;
+/** Every Environment is named at instantiation: the name is unique within a session
+ * and is how records refer to it. */
+type Named<OptionsSchema extends Schema | undefined> = { readonly name: string } &
+  (OptionsSchema extends Schema ? SchemaInput<OptionsSchema> : Record<never, never>);
 
 export function environment<OptionsSchema extends Schema | undefined = undefined>(
   contract: EnvironmentContract<OptionsSchema>,
-): OptionalFactory<OptionsSchema, Environment> {
-  identifier(contract.driver, "Environment driver");
-  return ((raw?: unknown) => {
-    const options = parseOptions(contract.options, raw);
+): (instance: Named<OptionsSchema>) => Environment {
+  if (typeof contract.url !== "function") throw new TypeError("an Environment contract needs a url function");
+  return (raw: Named<OptionsSchema>) => {
+    const { name, options } = namedOptions(contract.options, raw);
+    const url = contract.url(options as never);
+    validateUrl(url);
+    const credential = contract.credential?.(options as never);
+    if (credential !== undefined && (typeof credential !== "string" || credential.length === 0)) {
+      throw new TypeError("an Environment credential must be a non-empty string");
+    }
     const configured = contract.configure?.(options as never) ?? options;
-    const configuration = clone({ driver: contract.driver, ...(isRecord(configured) ? configured : { options: configured }) });
-    const bindings = contract.bindings?.(options as never) ?? {};
-    validateBindings(bindings);
     return branded({
       kind: "environment",
-      configuration,
-      bindings: Object.freeze({ ...bindings }),
+      name,
+      driver: { driver: "http", url, ...(credential === undefined ? {} : { credential }) },
+      configuration: clone(configured),
     });
-  }) as OptionalFactory<OptionsSchema, Environment>;
+  };
 }
 
-export interface BrainWasmOptions {
-  readonly network?: { readonly allow: readonly string[] };
-  readonly filesystem?: { readonly scratch?: boolean; readonly workspace?: boolean };
+export interface BrainEnvOptions {
+  readonly name: string;
+  /** Process environment variables the server mounts under `/secrets`, by name. */
   readonly secrets?: readonly string[];
 }
 
-/** Brain's one built-in native placement: a fresh Wasmtime instance per invocation. */
-export function brainWasm(options: BrainWasmOptions = {}): Environment {
-  const rawAllow = options.network?.allow ?? [];
-  if (!Array.isArray(rawAllow) || rawAllow.some((value) => typeof value !== "string" || value.length === 0)) {
-    throw new TypeError("brainWasm network allow entries must be non-empty strings");
-  }
-  const allow = rawAllow.map(normalizeNetworkTarget);
-  const secrets = options.secrets ?? [];
-  if (!Array.isArray(secrets) || secrets.some((value) => typeof value !== "string" || !identifierPattern.test(value))) {
-    throw new TypeError("brainWasm secrets must be identifiers");
-  }
-  const filesystem = options.filesystem;
-  if (filesystem !== undefined && (
-    !isRecord(filesystem)
-    || Object.keys(filesystem).some((name) => name !== "scratch" && name !== "workspace")
-    || (filesystem.scratch !== undefined && typeof filesystem.scratch !== "boolean")
-    || (filesystem.workspace !== undefined && typeof filesystem.workspace !== "boolean")
-  )) {
-    throw new TypeError("brainWasm filesystem accepts boolean scratch and workspace options");
+/** Brain's own Environment, hosted inside brain-server: a fresh Wasmtime instance per
+ * invocation, granted exactly what the Tool or loop placed there needs. */
+export function brainEnv(options: BrainEnvOptions): Environment {
+  if (!isRecord(options)) throw new TypeError("brainEnv needs { name }");
+  identifier(options.name, "Environment name");
+  const secrets = uniqueNames(options.secrets ?? [], "brainEnv secrets", identifierPattern);
+  for (const key of Object.keys(options)) {
+    if (key !== "name" && key !== "secrets") throw new TypeError(`brainEnv does not accept ${key}`);
   }
   return branded({
     kind: "environment",
-    configuration: clone({
-      driver: "brain_wasm",
-      network: { allow: [...allow] },
-      filesystem: {
-        scratch: filesystem?.scratch ?? false,
-        workspace: filesystem?.workspace ?? false,
-      },
-      secrets: [...secrets],
-    }),
-    bindings: Object.freeze({}),
+    name: options.name,
+    driver: { driver: "brain" },
+    configuration: secrets.length === 0 ? {} : { secrets: [...secrets] },
   });
+}
+
+/** This process, registered with Brain as a host: a Tool placed here is a function this
+ * process holds, and Brain sends it the call over the connection the client keeps open. */
+export function hostEnv(options: { readonly name: string }): Environment {
+  if (!isRecord(options)) throw new TypeError("hostEnv needs { name }");
+  identifier(options.name, "Environment name");
+  return branded({ kind: "environment", name: options.name, driver: { driver: "host" }, configuration: {} });
 }
 
 export interface AgentloopContract<OptionsSchema extends Schema | undefined = undefined> {
   readonly options?: OptionsSchema;
   readonly implementation: Component;
+  /** What the loop needs from its Environment, as URIs. */
+  readonly needs?: readonly string[];
 }
 
 type Placement<OptionsSchema extends Schema | undefined> = { readonly env: Environment } &
@@ -139,94 +143,86 @@ type Placement<OptionsSchema extends Schema | undefined> = { readonly env: Envir
 
 export function agentloop<OptionsSchema extends Schema | undefined = undefined>(
   contract: AgentloopContract<OptionsSchema>,
-): (placement: Placement<OptionsSchema>) => AgentloopBinding {
+): (placement: Placement<OptionsSchema>) => PlacedAgentloop {
   inspectComponent(contract.implementation);
+  const needs = uniqueNeeds(contract.needs ?? [], "Agentloop needs");
   return ((raw: unknown) => {
     const { env, options } = placedOptions(contract.options, raw);
     return branded({
       kind: "agentloop",
       component: contract.implementation,
       configuration: clone(options),
+      needs,
       environment: env,
     });
-  }) as (placement: Placement<OptionsSchema>) => AgentloopBinding;
+  }) as (placement: Placement<OptionsSchema>) => PlacedAgentloop;
 }
 
-export interface ToolRunContext<Options> extends AppToolCall {
+export interface ToolRunContext<Options> extends HostToolCall {
   readonly options: Readonly<Options>;
   emit(kind: string, data: unknown): Promise<number>;
 }
 
-interface ToolContractBase<OptionsSchema extends Schema | undefined, InputSchema extends Schema, OutputSchema extends Schema | undefined> {
+/** One Tool: what the model is told, what it needs from its Environment, and either a
+ * function this process runs or an implementation its Environment interprets. Where it
+ * runs is decided at placement, `{ env }`. */
+export interface ToolContract<OptionsSchema extends Schema | undefined, InputSchema extends Schema, OutputSchema extends Schema | undefined> {
   readonly name: string;
   readonly description: string;
   readonly input: InputSchema;
   readonly output?: OutputSchema;
   readonly options?: OptionsSchema;
-}
-
-export interface ResidentToolContract<OptionsSchema extends Schema | undefined, InputSchema extends Schema, OutputSchema extends Schema | undefined>
-  extends ToolContractBase<OptionsSchema, InputSchema, OutputSchema> {
-  readonly run: (
+  /** URIs: `pkg:` for software, `https:` or `wss:` for a network destination, `file:`
+   * for a filesystem location. The Environment honours or refuses them. */
+  readonly needs?: readonly string[];
+  readonly run?: (
     input: SchemaOutput<InputSchema>,
-    context: ToolRunContext<OptionsSchema extends Schema ? SchemaOutput<OptionsSchema> : Record<string, never>>,
+    context: ToolRunContext<Options<OptionsSchema>>,
   ) => (OutputSchema extends Schema ? SchemaInput<OutputSchema> : unknown) | Promise<OutputSchema extends Schema ? SchemaInput<OutputSchema> : unknown>;
-  readonly implementation?: never;
-  readonly needs?: never;
-  readonly bindingNames?: never;
-}
-
-export interface PlacedToolContract<OptionsSchema extends Schema | undefined, InputSchema extends Schema, OutputSchema extends Schema | undefined>
-  extends ToolContractBase<OptionsSchema, InputSchema, OutputSchema> {
-  readonly implementation: Component | Readonly<Record<string, unknown>> | ((options: OptionsSchema extends Schema ? SchemaOutput<OptionsSchema> : Record<string, never>) => unknown);
-  readonly needs?: readonly ResourceName[];
-  readonly bindingNames?: readonly string[];
-  readonly run?: never;
+  readonly implementation?: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => unknown);
 }
 
 export function tool<OptionsSchema extends Schema | undefined = undefined, InputSchema extends Schema = Schema, OutputSchema extends Schema | undefined = undefined>(
-  contract: ResidentToolContract<OptionsSchema, InputSchema, OutputSchema>,
-): OptionalFactory<OptionsSchema, ToolBinding<SchemaInput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown>>;
-export function tool<OptionsSchema extends Schema | undefined = undefined, InputSchema extends Schema = Schema, OutputSchema extends Schema | undefined = undefined>(
-  contract: PlacedToolContract<OptionsSchema, InputSchema, OutputSchema>,
-): (placement: Placement<OptionsSchema>) => ToolBinding<SchemaInput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown>;
-export function tool(contract: ResidentToolContract<Schema | undefined, Schema, Schema | undefined> | PlacedToolContract<Schema | undefined, Schema, Schema | undefined>): Function {
+  contract: ToolContract<OptionsSchema, InputSchema, OutputSchema>,
+): (placement: Placement<OptionsSchema>) => PlacedTool<SchemaInput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown> {
   const definition = toolDefinition(contract);
-  if (typeof contract.run === "function") {
-    return (raw?: unknown) => {
-      const options = parseOptions(contract.options, raw);
-      const appContract: AppToolContract = {
+  const needs = uniqueNeeds(contract.needs ?? [], "Tool needs");
+  if ((typeof contract.run === "function") === ("implementation" in contract && contract.implementation !== undefined)) {
+    throw new TypeError("tool needs exactly one of run or implementation");
+  }
+  return ((raw: unknown) => {
+    const { env, options } = placedOptions(contract.options, raw);
+    if (typeof contract.run === "function") {
+      const run = contract.run;
+      const hostContract: HostToolContract = {
         name: definition.name,
         description: definition.description,
         input: contract.input,
         ...(contract.output === undefined ? {} : { output: contract.output }),
       };
       return branded({
-        kind: "resident_tool",
+        kind: "tool",
         definition,
-        contract: appContract,
-        handler: (input: unknown, call: AppToolCall) => contract.run(input, { ...call, options } as never),
+        needs,
+        implementation: undefined,
+        handler: (input: unknown, call: HostToolCall) => run(input as never, { ...call, options } as never),
+        contract: hostContract,
+        configuration: clone(options),
+        environment: env,
       });
-    };
-  }
-  if (!("implementation" in contract)) throw new TypeError("tool needs exactly one of run or implementation");
-  const needs = uniqueNames(contract.needs ?? [], "Tool needs", resourcePattern);
-  const bindingNames = uniqueNames(contract.bindingNames ?? [], "Tool bindingNames", identifierPattern);
-  return (raw: unknown) => {
-    const { env, options } = placedOptions(contract.options, raw);
+    }
     const implementation = typeof contract.implementation === "function"
-      ? contract.implementation(options)
+      ? contract.implementation(options as never)
       : contract.implementation;
     return branded({
-      kind: "placed_tool",
+      kind: "tool",
       definition,
       needs,
-      bindingNames,
-      implementation: isComponent(implementation) ? implementation : clone(implementation),
+      implementation: isComponent(implementation) ? implementation : clone(implementation as Readonly<Record<string, unknown>>),
       configuration: clone(options),
       environment: env,
     });
-  };
+  }) as (placement: Placement<OptionsSchema>) => PlacedTool<SchemaInput<InputSchema>, OutputSchema extends Schema ? SchemaOutput<OutputSchema> : unknown>;
 }
 
 export function inspectComponent(value: Component): ComponentSource {
@@ -237,32 +233,24 @@ export function inspectEnvironment(value: Environment): EnvironmentSource {
   return inspect(value, "environment");
 }
 
-export function inspectAgentloop(value: AgentloopBinding): AgentloopSource {
+export function inspectAgentloop(value: PlacedAgentloop): AgentloopSource {
   return inspect(value, "agentloop");
 }
 
-export function inspectResidentTool(value: unknown): ResidentToolSource | undefined {
-  return inspectOptional(value, "resident_tool");
-}
-
-export function inspectPlacedTool(value: ToolBinding): PlacedToolSource {
-  return inspect(value, "placed_tool");
+export function inspectTool(value: PlacedTool): ToolSource {
+  return inspect(value, "tool");
 }
 
 function inspect<T extends ExtensionSource["kind"]>(value: unknown, kind: T): Extract<ExtensionSource, { kind: T }> {
-  const found = inspectOptional(value, kind);
-  if (found === undefined) throw new TypeError(`expected a Brain ${kind.replaceAll("_", " ")}`);
-  return found;
-}
-
-function inspectOptional<T extends ExtensionSource["kind"]>(value: unknown, kind: T): Extract<ExtensionSource, { kind: T }> | undefined {
-  if ((typeof value !== "object" && typeof value !== "function") || value === null) return undefined;
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) throw new TypeError(`expected a Brain ${kind}`);
   const found = (value as Branded)[source];
-  return found?.kind === kind ? found as Extract<ExtensionSource, { kind: T }> : undefined;
+  if (found?.kind !== kind) throw new TypeError(`expected a Brain ${kind}`);
+  return found as Extract<ExtensionSource, { kind: T }>;
 }
 
 function isComponent(value: unknown): value is Component {
-  return inspectOptional(value, "component") !== undefined;
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+  return (value as Branded)[source]?.kind === "component";
 }
 
 function branded<T>(value: ExtensionSource): T {
@@ -287,6 +275,13 @@ function placedOptions(schema: Schema | undefined, raw: unknown): { readonly env
   return { env, options: parseOptions(schema, options) };
 }
 
+function namedOptions(schema: Schema | undefined, raw: unknown): { readonly name: string; readonly options: unknown } {
+  if (!isRecord(raw) || !("name" in raw)) throw new TypeError("an Environment requires { name }");
+  identifier(raw.name, "Environment name");
+  const { name, ...options } = raw;
+  return { name, options: parseOptions(schema, options) };
+}
+
 function toolDefinition(contract: { readonly name: string; readonly description: string; readonly input: Schema; readonly output?: Schema }): ToolDefinition {
   identifier(contract.name, "Tool name");
   if (typeof contract.description !== "string" || contract.description.length === 0 || contract.description.length > 8_192) {
@@ -303,21 +298,17 @@ function toolDefinition(contract: { readonly name: string; readonly description:
 }
 
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
-const resourcePattern = /^[a-z][a-z0-9_]{0,63}(?::[A-Za-z0-9._-]{1,64})?$/u;
 
-function normalizeNetworkTarget(value: string): string {
-  if (typeof value !== "string" || value.length === 0) throw new TypeError("brainWasm network allow entries must be non-empty strings");
-  const explicit = value.includes("://");
+function validateUrl(url: unknown): asserts url is string {
   let parsed: URL;
   try {
-    parsed = new URL(explicit ? value : `https://${value}`);
+    parsed = new URL(url as string);
   } catch {
-    throw new TypeError(`brainWasm network target ${value} is invalid`);
+    throw new TypeError(`Environment url ${String(url)} is invalid`);
   }
-  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username !== "" || parsed.password !== "" || parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") {
-    throw new TypeError(`brainWasm network target ${value} must be an HTTP(S) origin or authority`);
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username !== "" || parsed.password !== "" || parsed.search !== "" || parsed.hash !== "") {
+    throw new TypeError(`Environment url ${String(url)} must be HTTP(S) without credentials, query, or fragment`);
   }
-  return explicit ? parsed.origin : parsed.host;
 }
 
 function identifier(value: unknown, subject: string): asserts value is string {
@@ -332,15 +323,18 @@ function uniqueNames(values: readonly string[], subject: string, pattern: RegExp
   return Object.freeze([...values]);
 }
 
-function validateBindings(bindings: Readonly<Record<string, string>>): void {
-  if (!isRecord(bindings)) throw new TypeError("Environment bindings must be an object");
-  for (const [name, value] of Object.entries(bindings)) {
-    identifier(name, "Environment binding name");
-    if (typeof value !== "string" || value.length > 32_768) throw new TypeError(`Environment binding ${name} must be a bounded string`);
+/** A need is a URI: it has a scheme, and nothing Brain reads beyond that. */
+function uniqueNeeds(values: readonly string[], subject: string): readonly string[] {
+  if (!Array.isArray(values) || values.length > 64) throw new TypeError(`${subject} must be at most 64 URIs`);
+  for (const value of values) {
+    if (typeof value !== "string" || value.length === 0 || value.length > 2_048 || /[\s\p{Cc}]/u.test(value) || !/^[A-Za-z][A-Za-z0-9+.-]*:./u.test(value)) {
+      throw new TypeError(`${subject} contains ${JSON.stringify(value)}, which is not a URI`);
+    }
+    try { new URL(value); } catch { throw new TypeError(`${subject} contains ${value}, which is not a URI`); }
   }
+  if (new Set(values).size !== values.length) throw new TypeError(`${subject} contains a duplicate`);
+  return Object.freeze([...values]);
 }
-
-
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

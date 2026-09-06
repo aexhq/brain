@@ -32,14 +32,14 @@
 
 - `component(urlOrBytes)` 包装已经编译好的 WebAssembly Component。Brain 接收原始 Wasm，
   不编译应用源码。
-- `brainWasm(options)` 是 Brain 内置的 Wasmtime 环境；网络、密钥以及可写的临时目录或会话工作区
-  都必须由会话请求并由服务器部署显式授权，默认均不授权。
-- 每次原生调用最多使用一百亿个 Wasmtime fuel 单位执行 guest 代码；挂起的 I/O 不消耗 fuel，
+- 每个工具和 Agentloop 都放置在会话中一个有名字的环境里：`{ env, ...options }`。
+- `brainEnv({ name })` 是 Brain 内置的环境，在服务器内用 Wasmtime 运行 Component；每次调用只获得
+  其 `needs` 所声明的资源，并受服务器 `BRAIN_ENV_*` 允许列表约束，默认均不授权。
+- `hostEnv({ name })` 是你自己的进程，向 Brain 注册为 host；带 `run` 的工具放在这里。
+- `environment({ url, credential, configure })` 是通过 HTTP 访问的环境扩展，每个实例由应用配置。
+- 工具用 `needs` 声明所需的 URI（`pkg:`、`https:`、`file:`），由环境提供或在 setup 时拒绝，Brain 不读取。
+- 每次 Wasm 调用最多使用一百亿个 Wasmtime fuel 单位执行 guest 代码；挂起的 I/O 不消耗 fuel，
   session 的墙钟时间限制仍约束整个 turn。
-- Agentloop 用 `agentloop({ implementation })( { env, ...options } )` 声明和放置。
-- 带 `run` 的工具常驻应用进程，用 `tool({ ... , run })()` 实例化。
-- 带 `implementation` 的工具由环境执行，用 `tool({ ... , implementation })( { env, ...options } )`
-  显式放置。
 
 ## 持久化规则
 
@@ -48,38 +48,37 @@ Brain 在发送外部副作用之前先把意图持久化提交，只发送一�
 未知结果都会在返回 Agentloop 之前提交。替换现有对话尾部的规范记录同时投影为
 `transcript_replaced` 事件；纯追加不产生重复事件。
 
-常驻工具通过一条注册主机 SSE 连接接收命令。`ctx.emit(kind, data)` 把扩展事件提交到同一份日志，
+放在 host env 里的工具通过一条 host SSE 连接接收命令。`ctx.emit(kind, data)` 把扩展事件提交到同一份日志，
 Promise 在提交完成后才返回。
 
 ## 架构
 
 Agentloop 控制上下文，决定何时调用模型或工具；Brain 协调执行并记录结果。
-同一会话可以使用原生工具、应用中的函数，以及多个远程环境中的工具。
+每个环境都通过同一套协议访问：服务器内的 brain env、作为你自己进程的 host env，以及通过 HTTP 访问的任何环境。
 
 ```mermaid
 flowchart LR
   subgraph App["你的应用"]
     Client["SDK / HTTP 客户端"]
-    Resident["常驻工具"]
+    Host["host env<br/>作为函数的工具"]
   end
 
   subgraph Brain["Brain 运行时"]
     Server["HTTP / SSE 服务器<br/>会话协调"]
     Journal[("本地日志<br/>对话、slots 和事件")]
-    subgraph Worker["brainWasm · Wasmtime worker"]
+    subgraph BrainEnv["brain env · Wasmtime worker"]
       Loop["Agentloop Component"]
-      Native["原生工具 Component"]
+      Native["工具 Component"]
     end
     Server <-->|"提交 / 读取"| Journal
-    Server <-->|"激活 / host 调用"| Loop
-    Server <-->|"调用 / 结果"| Native
+    Server <-->|"环境协议"| BrainEnv
   end
 
   Client <-->|"HTTP / SSE"| Server
-  Resident <-->|"host SSE / 结果"| Server
+  Host <-->|"环境协议（host SSE）"| Server
   Server <-->|"模型调用"| Models["模型提供商"]
-  Server <-->|"环境协议"| EnvA["环境 A<br/>工具与资源"]
-  Server <-->|"环境协议"| EnvB["环境 B<br/>工具与资源"]
+  Server <-->|"环境协议（HTTP）"| EnvA["环境 A<br/>工具与资源"]
+  Server <-->|"环境协议（HTTP）"| EnvB["环境 B<br/>工具与资源"]
 ```
 
 默认每轮结束后释放执行资源，对话与已记录事件仍可读取。环境提供方独立管理资源分配、TTL 和清理，
@@ -103,7 +102,7 @@ npm install @aexhq/brain @aexhq/agentloop-pi zod
 ```
 
 ```js
-import { Brain, brainWasm, tool } from "@aexhq/brain";
+import { Brain, brainEnv, hostEnv, tool } from "@aexhq/brain";
 import { pi } from "@aexhq/agentloop-pi";
 import { z } from "zod";
 
@@ -121,8 +120,8 @@ const lookupOrder = tool({
 const brain = new Brain({ baseUrl: "http://127.0.0.1:8080", token: "quickstart" });
 const session = await brain.sessions.create({
   model: { provider: "openai", name: "gpt-5-mini", apiKey: process.env.OPENAI_API_KEY },
-  agentloop: pi({ env: brainWasm() }),
-  tools: [lookupOrder()],
+  agentloop: pi({ env: brainEnv({ name: "brain" }) }),
+  tools: [lookupOrder({ env: hostEnv({ name: "app" }) })],
 });
 
 await session.send("Where is order A-1001?");
@@ -135,12 +134,12 @@ process.exit(0);
 自定义 Agentloop 直接提供 Component：
 
 ```js
-import { agentloop, brainWasm, component } from "@aexhq/brain";
+import { agentloop, brainEnv, component } from "@aexhq/brain";
 
 const custom = agentloop({
   implementation: component(new URL("./agentloop.wasm", import.meta.url)),
 });
-const bound = custom({ env: brainWasm() });
+const placed = custom({ env: brainEnv({ name: "brain" }) });
 ```
 
 ## 性能与生命周期

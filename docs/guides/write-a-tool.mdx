@@ -1,16 +1,17 @@
 ---
 title: Write a Tool
-description: Declare a resident function or a placed implementation with one typed contract.
+description: Declare one typed contract, what it needs, and place it where it runs.
 ---
 
-Every Tool has a model-visible name, description, input schema, and optional output schema. Choose
-exactly one implementation form: `run` for code resident in the application, or `implementation`
-for code interpreted by an Environment.
+Every Tool has a model-visible name, description, input schema, and optional output schema, and is
+placed in exactly one Environment of its session with `{ env, ...options }`. Choose one
+implementation form: `run` for a function this process holds, placed in `hostEnv`; or
+`implementation` for code the Environment interprets, placed in the Environment that runs it.
 
-## Resident function
+## A function this process holds
 
 ```ts
-import { tool } from "@aexhq/brain";
+import { hostEnv, tool } from "@aexhq/brain";
 import { z } from "zod";
 
 export const lookup = tool({
@@ -25,17 +26,66 @@ export const lookup = tool({
   },
 });
 
-const bound = lookup({ prefix: "customer:" });
+const app = hostEnv({ name: "app" });
+const placed = lookup({ env: app, prefix: "customer:" });
 ```
 
-The function remains in this process. The factory parses and freezes options. The SDK serves calls
-over its resident-host SSE connection, validates input and output, and posts the outcome. With no
-options schema, instantiate it as `lookup()`.
+The function stays in this process and may close over application state; the host env inserts
+nothing around it, so the application owns its isolation and ambient authority. The factory parses
+and freezes options. With no options schema, place it as `lookup({ env: app })`.
 
-## Component implementation
+### The host
+
+The first session with a Tool in `hostEnv` makes the SDK register this process as a host. It
+authenticates with a scoped host token and keeps `GET /v1/hosts/{host_id}/commands` open as SSE.
+Several sessions and Tools in the same `Brain` client share that connection.
+
+Brain commits the Tool intent before publishing a command. The command names the session, the
+journal sequence of the call, the absolute deadline, the Tool, and the input. The SDK validates
+input, calls the registered function, validates configured output, and posts one outcome to the
+host result endpoint.
+
+### Context
+
+The second `run` argument contains:
+
+- `options`: the factory options, parsed once and frozen;
+- `sequence`: the journal sequence of the `tool_call_started` record, which with the session id
+  names this call everywhere;
+- `deadline`: the caller-owned deadline;
+- `signal`: best-effort cancellation and deadline notification;
+- `emit(kind, data)`: append a durable extension Event.
+
+Always await `ctx.emit`. Its promise resolves with the committed journal sequence, so an emitted
+progress or audit Event is ordered before the Tool result:
 
 ```ts
-import { component, tool } from "@aexhq/brain";
+run: async (input, ctx) => {
+  const sequence = await ctx.emit("import_started", { source: input.source });
+  return { eventSequence: sequence, imported: await importRows(input) };
+}
+```
+
+Brain sends each invocation once and does not retry after disconnect. If deadline or cancellation
+wins after dispatch, the host returns an unknown outcome because the function may still finish.
+The SDK cancels local in-flight work and reconnects the same registered host for future commands;
+it never replays the disconnected command. Cooperative functions should observe `ctx.signal` and
+stop promptly.
+
+### Reattaching after restart
+
+Save `await brain.credentials()` in application credential storage. After restarting the
+application, pass those credentials as `credentials` to `new Brain(...)`, then call
+`brain.sessions.get(sessionId, { tools: [lookup({ env: app })] })` with the session's `run` Tools.
+The supplied Tools must be exactly those the session placed in this host. Without `tools`, `get`
+only opens a session handle. Brain persists the host identity and token hash; a registration with
+sessions placed in it does not expire while disconnected. Restoring a host accepts future commands,
+never replays old ones, and does not restore the application state captured by its functions.
+
+## A Component
+
+```ts
+import { brainEnv, component, tool } from "@aexhq/brain";
 import { z } from "zod";
 
 export const inspect = tool({
@@ -44,20 +94,21 @@ export const inspect = tool({
   input: z.object({ path: z.string() }),
   options: z.object({ depth: z.number().int().positive() }),
   implementation: component(new URL("./inspect.wasm", import.meta.url)),
-  needs: ["fs"],
+  needs: ["file:///workspace"],
 });
 
-const bound = inspect({ env: workspace, depth: 2 });
+const placed = inspect({ env: brainEnv({ name: "brain" }), depth: 2 });
 ```
 
 The Component implements
 [`contracts/tool/v1/tool.wit`](https://github.com/aexhq/brain/blob/main/contracts/tool/v1/tool.wit).
-Brain admits the raw bytes by content identity. Each invocation contains the Tool input, parsed
-configuration, call identity, and deadline. The Component may call its `emit` host import to append
-an extension Event, or its fire-and-forget `telemetry` import for best-effort operational diagnostics
-that never enter the journal or model input.
+Brain admits the raw bytes and names them by their SHA-256. Each invocation contains the Tool
+input, parsed configuration, and deadline. The Component may call its `emit` host import to append
+an extension Event, or its fire-and-forget `telemetry` import for best-effort operational
+diagnostics that never enter the journal or model input. A Tool that wants an identifier for its
+own logging uses the session id and the sequence Brain records for the call.
 
-## Driver-defined implementation
+## A descriptor the Environment interprets
 
 An Environment may define its own immutable implementation descriptor:
 
@@ -72,21 +123,28 @@ const fetchIssue = tool({
     method: "GET",
     path: `/repos/${repository}/issues/{number}`,
   }),
-  needs: ["net"],
-  bindingNames: ["API_TOKEN"],
+  needs: ["https://api.github.com"],
 });
 
-const bound = fetchIssue({ env: github, repository: "aexhq/brain" });
+const placed = fetchIssue({ env: github, repository: "aexhq/brain" });
 ```
 
-Brain treats this descriptor as opaque. The selected Environment validates and executes it.
-`needs` are checked against resource names declared at attachment, and `bindingNames` select values
-the Environment factory supplies outside the journal.
+Brain treats the descriptor as opaque and hands it to the Environment with every invoke.
+
+## What a Tool needs
+
+`needs` is a list of URIs the Environment receives and Brain never reads: `pkg:` for software as a
+Package URL, `https:` or `wss:` for a network destination with `https://*.example.com` for a family
+of hosts, and `file:` for a filesystem location, read-only unless it says `?access=write`. Brain
+hands every placed Tool's needs to the Environment at setup, so it provisions what this session
+uses, and the Tool's own with each invoke. The Environment refuses at setup what it cannot honour,
+naming the URI, and the create fails. Anything a Tool needs beyond that, it loads itself through
+the platform of its Environment.
 
 ## Execution context
 
-Resident `ctx.emit` and the Component Tool `emit` import both wait for the same thing: a committed
-extension Event in the session journal. Brain commits a Tool intent before dispatch, sends it once,
-and commits `ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop sees the result.
-The Agentloop and all Tools share a turn limit of 128 emitted Events and 1 MiB across serialized
-Event kinds and payloads. There is no automatic retry.
+`ctx.emit` in a `run` Tool and the Component Tool's `emit` import both wait for the same thing: a
+committed extension Event in the session journal. Brain commits a Tool intent before dispatch,
+sends it once, and commits `ok`, `error`, `timeout`, `cancelled`, or `unknown` before the Agentloop
+sees the result. The Agentloop and all Tools share a turn limit of 128 emitted Events and 1 MiB
+across serialized Event kinds and payloads. There is no automatic retry.

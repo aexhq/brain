@@ -50,12 +50,12 @@ pub(crate) mod contract {
 
     referenced!(
         AgentloopAdmission,
-        AgentloopIdentity,
+        AgentloopId,
         ApiError,
         CreateSessionRequest,
         EnvironmentCallRequest,
         EnvironmentCallResult,
-        EnvironmentId,
+        EnvironmentName,
         EventPage,
         HostId,
         HostEvent,
@@ -68,6 +68,13 @@ pub(crate) mod contract {
         SessionSummary,
         SessionTranscript,
         ToolAdmission,
+        TurnDispatchRequest,
+        TurnDispatchResult,
+        TurnEmitAck,
+        TurnEmitRequest,
+        TurnTelemetry,
+        ModelRequest,
+        ModelResult,
     );
 }
 

@@ -1,3 +1,7 @@
+//! The host env: whatever process registered as a host, a browser tab, a Node process,
+//! a server, reached over the command stream it holds open. A Tool placed here is a
+//! function that process holds; Brain sends it the call and waits for the result.
+
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -6,19 +10,24 @@ use std::{
     time::{Duration, Instant},
 };
 
+use async_trait::async_trait;
+use brain::ToolServices;
 use brain_protocol::{
-    ApiError, HostCommand, HostEvent, HostEventAck, HostId, HostOperation, HostRegistration,
-    HostResult, Outcome, SessionId, ToolCancellation, ToolDispatch,
+    ApiError, Driver, Environment, EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest,
+    HostCommand, HostEvent, HostEventAck, HostId, HostOperation, HostRegistration, HostResult,
+    Outcome, SessionId,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{mpsc, oneshot};
+
+use super::{EnvironmentAdapter, Services, adapter::unsupported};
 
 const COMMAND_CAPACITY: usize = 128;
 const MAX_HOSTS: usize = 4_096;
 const UNCONNECTED_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
-pub struct ResidentHosts {
+pub struct HostEnvironment {
     inner: Arc<Mutex<State>>,
 }
 
@@ -28,6 +37,7 @@ struct State {
 }
 
 struct Host {
+    /// The sessions placed in this host. A registration with sessions never expires.
     sessions: HashSet<SessionId>,
     token: [u8; 32],
     disconnected_at: Instant,
@@ -49,7 +59,7 @@ enum RegistrationRecord {
     },
     Bound {
         session_id: SessionId,
-        host_ids: Vec<HostId>,
+        host_id: HostId,
     },
     Released {
         session_id: SessionId,
@@ -79,7 +89,7 @@ struct PendingEvent {
     reply: oneshot::Sender<Result<u64, String>>,
 }
 
-impl ResidentHosts {
+impl HostEnvironment {
     pub fn open(path: &Path) -> Result<Self, brain::Error> {
         let (log, records) = crate::persistence::open_log::<RegistrationRecord>(path)?;
         let mut hosts = HashMap::new();
@@ -93,17 +103,17 @@ impl ResidentHosts {
                 }
                 RegistrationRecord::Bound {
                     session_id,
-                    host_ids,
+                    host_id,
                 } => {
-                    for id in host_ids {
-                        hosts
-                            .get_mut(&id)
-                            .ok_or_else(|| {
-                                brain::Error::Journal("resident binding has no registration".into())
-                            })?
-                            .sessions
-                            .insert(session_id.clone());
-                    }
+                    hosts
+                        .get_mut(&host_id)
+                        .ok_or_else(|| {
+                            brain::Error::Journal(
+                                "a session is bound to a host that was never registered".into(),
+                            )
+                        })?
+                        .sessions
+                        .insert(session_id);
                 }
                 RegistrationRecord::Released { session_id } => {
                     for host in hosts.values_mut() {
@@ -117,45 +127,33 @@ impl ResidentHosts {
         })
     }
 
-    pub fn bind_session(
-        &self,
-        session_id: &SessionId,
-        host_ids: &[HostId],
-    ) -> Result<(), ApiError> {
-        let mut state = self.lock()?;
-        for id in host_ids {
-            if !state.hosts.contains_key(id) {
-                return Err(ApiError::invalid_request(
-                    "resident host registration is missing",
-                ));
-            }
+    fn bind_session(&self, session_id: &SessionId, host_id: &HostId) -> Result<(), brain::Error> {
+        let mut state = self.lock().map_err(api_error)?;
+        let host = state
+            .hosts
+            .get(host_id)
+            .ok_or_else(|| brain::Error::NotFound("host registration is missing".into()))?;
+        if host.sessions.contains(session_id) {
+            return Ok(());
         }
-        if host_ids
-            .iter()
-            .any(|id| !state.hosts[id].sessions.contains(session_id))
-        {
-            crate::persistence::append(
-                &mut state.log,
-                &RegistrationRecord::Bound {
-                    session_id: session_id.clone(),
-                    host_ids: host_ids.to_vec(),
-                },
-            )
-            .map_err(|error| ApiError::internal(error.to_string()))?;
-        }
-        for id in host_ids {
-            state
-                .hosts
-                .get_mut(id)
-                .expect("registration checked")
-                .sessions
-                .insert(session_id.clone());
-        }
+        crate::persistence::append(
+            &mut state.log,
+            &RegistrationRecord::Bound {
+                session_id: session_id.clone(),
+                host_id: host_id.clone(),
+            },
+        )?;
+        state
+            .hosts
+            .get_mut(host_id)
+            .expect("registration checked")
+            .sessions
+            .insert(session_id.clone());
         Ok(())
     }
 
-    pub fn release_session(&self, session_id: &SessionId) -> Result<(), ApiError> {
-        let mut state = self.lock()?;
+    fn release_session(&self, session_id: &SessionId) -> Result<(), brain::Error> {
+        let mut state = self.lock().map_err(api_error)?;
         if state
             .hosts
             .values()
@@ -166,8 +164,7 @@ impl ResidentHosts {
                 &RegistrationRecord::Released {
                     session_id: session_id.clone(),
                 },
-            )
-            .map_err(|error| ApiError::internal(error.to_string()))?;
+            )?;
         }
         for host in state.hosts.values_mut() {
             host.sessions.remove(session_id);
@@ -200,7 +197,7 @@ impl ResidentHosts {
             state.hosts.remove(&id);
         }
         if state.hosts.len() >= MAX_HOSTS {
-            return Err(ApiError::overloaded("resident host table is full"));
+            return Err(ApiError::overloaded("host table is full"));
         }
         crate::persistence::append(
             &mut state.log,
@@ -259,14 +256,12 @@ impl ResidentHosts {
         let mut state = self.lock()?;
         let host = authorized(&mut state, host_id, token)?;
         let Some(pending) = host.pending.remove(&(result.session_id, result.sequence)) else {
-            return Err(ApiError::conflict(
-                "the resident command is no longer pending",
-            ));
+            return Err(ApiError::conflict("the host command is no longer pending"));
         };
         pending
             .outcome
             .send(result.outcome)
-            .map_err(|_| ApiError::conflict("the resident command is no longer pending"))
+            .map_err(|_| ApiError::conflict("the host command is no longer pending"))
     }
 
     pub async fn emit(
@@ -281,7 +276,7 @@ impl ResidentHosts {
             host.pending
                 .get(&(event.session_id, event.sequence))
                 .map(|pending| pending.events.clone())
-                .ok_or_else(|| ApiError::conflict("the resident command is no longer pending"))?
+                .ok_or_else(|| ApiError::conflict("the host command is no longer pending"))?
         };
         let (reply, answer) = oneshot::channel();
         events
@@ -292,51 +287,53 @@ impl ResidentHosts {
             })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => {
-                    ApiError::overloaded("resident Event queue is full")
+                    ApiError::overloaded("host Event queue is full")
                 }
                 mpsc::error::TrySendError::Closed(_) => {
-                    ApiError::conflict("the resident command is no longer pending")
+                    ApiError::conflict("the host command is no longer pending")
                 }
             })?;
         match answer.await {
             Ok(Ok(sequence)) => Ok(HostEventAck { sequence }),
             Ok(Err(message)) => Err(ApiError::invalid_request(message)),
-            Err(_) => Err(ApiError::conflict(
-                "the resident command is no longer pending",
-            )),
+            Err(_) => Err(ApiError::conflict("the host command is no longer pending")),
         }
     }
 
-    pub async fn execute(
+    async fn invoke(
         &self,
-        dispatch: ToolDispatch,
-        services: &dyn brain::ToolServices,
+        host_id: &HostId,
+        operation: &EnvironmentOperation,
+        name: &str,
+        input: &serde_json::Value,
+        deadline_ms: u64,
+        services: &dyn ToolServices,
     ) -> Result<Outcome, brain::Error> {
-        let host_id = dispatch.binding.host_id.clone().ok_or_else(|| {
-            brain::Error::InvalidState("resident Tool has no registered host".into())
-        })?;
-        let key = (dispatch.session_id.clone(), dispatch.sequence);
+        let key = (operation.session_id.clone(), operation.sequence);
         let (result_sender, mut result_receiver) = oneshot::channel();
         let (event_sender, mut event_receiver) = mpsc::channel(8);
         let command = HostCommand {
-            session_id: dispatch.session_id,
-            sequence: dispatch.sequence,
-            deadline_at_ms: wall_clock_ms().saturating_add(dispatch.deadline_ms),
+            session_id: operation.session_id.clone(),
+            sequence: operation.sequence,
+            deadline_at_ms: wall_clock_ms().saturating_add(deadline_ms),
             operation: HostOperation::InvokeTool {
-                invocation: dispatch.invocation,
+                name: name.to_owned(),
+                input: input.clone(),
             },
         };
         let command_sender = {
             let mut state = self
                 .inner
                 .lock()
-                .map_err(|_| brain::Error::Executor("resident host table is poisoned".into()))?;
-            let host = state.hosts.get_mut(&host_id).ok_or_else(|| {
-                brain::Error::Executor("resident Tool host does not exist".into())
-            })?;
-            let sender = host.commands.clone().ok_or_else(|| {
-                brain::Error::Executor("resident Tool host is not connected".into())
-            })?;
+                .map_err(|_| brain::Error::Executor("host table is poisoned".into()))?;
+            let host = state
+                .hosts
+                .get_mut(host_id)
+                .ok_or_else(|| brain::Error::Executor("the host does not exist".into()))?;
+            let sender = host
+                .commands
+                .clone()
+                .ok_or_else(|| brain::Error::Executor("the host is not connected".into()))?;
             host.pending.insert(
                 key.clone(),
                 PendingCall {
@@ -348,32 +345,32 @@ impl ResidentHosts {
         };
         let mut pending = Pending {
             hosts: self.clone(),
-            host_id,
+            host_id: host_id.clone(),
             key,
         };
         command_sender
             .try_send(command)
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => {
-                    brain::Error::Overloaded("resident host command queue is full".into())
+                    brain::Error::Overloaded("host command queue is full".into())
                 }
                 mpsc::error::TrySendError::Closed(_) => {
-                    brain::Error::Executor("resident Tool host is not connected".into())
+                    brain::Error::Executor("the host is not connected".into())
                 }
             })?;
-        let deadline = tokio::time::sleep(std::time::Duration::from_millis(dispatch.deadline_ms));
+        let deadline = tokio::time::sleep(Duration::from_millis(deadline_ms));
         tokio::pin!(deadline);
         let result = loop {
             tokio::select! {
                 biased;
                 result = &mut result_receiver => break result.map_err(|_| {
-                    brain::Error::Ambiguous("resident Tool result was lost after dispatch".into())
+                    brain::Error::Ambiguous("the host's result was lost after dispatch".into())
                 }),
                 () = command_sender.closed() => break Err(brain::Error::Ambiguous(
-                    "resident Tool host disconnected after dispatch".into(),
+                    "the host disconnected after dispatch".into(),
                 )),
                 () = &mut deadline => break Err(brain::Error::Ambiguous(
-                    "resident Tool deadline elapsed after dispatch".into(),
+                    "the Tool deadline elapsed after dispatch".into(),
                 )),
                 Some(event) = event_receiver.recv() => {
                     let answer = services.emit(event.kind, event.data).await.map_err(|error| error.to_string());
@@ -385,37 +382,35 @@ impl ResidentHosts {
         result
     }
 
-    pub async fn cancel(&self, cancellation: ToolCancellation) -> Result<(), brain::Error> {
-        let host_id = cancellation.binding.host_id.ok_or_else(|| {
-            brain::Error::InvalidState("resident Tool has no registered host".into())
-        })?;
+    fn cancel(
+        &self,
+        host_id: &HostId,
+        operation: &EnvironmentOperation,
+        target_sequence: u64,
+    ) -> Result<(), brain::Error> {
         let sender = {
             let state = self
                 .inner
                 .lock()
-                .map_err(|_| brain::Error::Executor("resident host table is poisoned".into()))?;
+                .map_err(|_| brain::Error::Executor("host table is poisoned".into()))?;
             state
                 .hosts
-                .get(&host_id)
+                .get(host_id)
                 .and_then(|host| host.commands.clone())
-                .ok_or_else(|| {
-                    brain::Error::Executor("resident Tool host is not connected".into())
-                })?
+                .ok_or_else(|| brain::Error::Executor("the host is not connected".into()))?
         };
         let command = HostCommand {
-            session_id: cancellation.session_id,
-            sequence: cancellation.sequence,
+            session_id: operation.session_id.clone(),
+            sequence: operation.sequence,
             deadline_at_ms: wall_clock_ms().saturating_add(5_000),
-            operation: HostOperation::CancelTool {
-                target_sequence: cancellation.target_sequence,
-            },
+            operation: HostOperation::CancelTool { target_sequence },
         };
         sender.try_send(command).map_err(|error| match error {
             mpsc::error::TrySendError::Full(_) => {
-                brain::Error::Overloaded("resident host command queue is full".into())
+                brain::Error::Overloaded("host command queue is full".into())
             }
             mpsc::error::TrySendError::Closed(_) => {
-                brain::Error::Executor("resident Tool host is not connected".into())
+                brain::Error::Executor("the host is not connected".into())
             }
         })
     }
@@ -442,12 +437,64 @@ impl ResidentHosts {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>, ApiError> {
         self.inner
             .lock()
-            .map_err(|_| ApiError::internal("resident host table is poisoned"))
+            .map_err(|_| ApiError::internal("host table is poisoned"))
+    }
+}
+
+#[async_trait]
+impl EnvironmentAdapter for HostEnvironment {
+    async fn execute(
+        &self,
+        environment: &Environment,
+        operation: &EnvironmentOperation,
+        services: Services<'_>,
+    ) -> Result<EnvironmentReceipt, brain::Error> {
+        let Driver::Host { host_id } = &environment.driver else {
+            return Err(brain::Error::InvalidState(
+                "the host env was handed an Environment it does not reach".into(),
+            ));
+        };
+        match (&operation.request, services) {
+            (EnvironmentRequest::Setup { .. }, _) => {
+                if !self.is_connected(host_id).map_err(api_error)? {
+                    return Err(brain::Error::Executor("the host is not connected".into()));
+                }
+                self.bind_session(&operation.session_id, host_id)?;
+                Ok(EnvironmentReceipt::Accepted)
+            }
+            (
+                EnvironmentRequest::Invoke {
+                    tool,
+                    input,
+                    deadline_ms,
+                    ..
+                },
+                Services::Tool(services),
+            ) => {
+                let outcome = self
+                    .invoke(host_id, operation, tool, input, *deadline_ms, services)
+                    .await?;
+                Ok(EnvironmentReceipt::Outcome { outcome })
+            }
+            (EnvironmentRequest::Invoke { .. }, _) => Err(brain::Error::InvalidState(
+                "the host env needs the call's services to run it".into(),
+            )),
+            (EnvironmentRequest::Cancel { target_sequence }, _) => {
+                self.cancel(host_id, operation, *target_sequence)?;
+                Ok(EnvironmentReceipt::Accepted)
+            }
+            (EnvironmentRequest::Detach | EnvironmentRequest::Teardown, _) => {
+                self.release_session(&operation.session_id)?;
+                Ok(EnvironmentReceipt::Accepted)
+            }
+            (EnvironmentRequest::Call { .. }, _) => Ok(unsupported("answer calls")),
+            (EnvironmentRequest::Turn { .. }, _) => Ok(unsupported("run an Agentloop")),
+        }
     }
 }
 
 struct Pending {
-    hosts: ResidentHosts,
+    hosts: HostEnvironment,
     host_id: HostId,
     key: (SessionId, u64),
 }
@@ -475,11 +522,15 @@ fn authorized<'a>(
     let host = state
         .hosts
         .get_mut(host_id)
-        .ok_or_else(|| ApiError::not_found("resident host does not exist"))?;
+        .ok_or_else(|| ApiError::not_found("the host does not exist"))?;
     if host.token != digest(token) {
-        return Err(ApiError::unauthorized("the resident host token is invalid"));
+        return Err(ApiError::unauthorized("the host token is invalid"));
     }
     Ok(host)
+}
+
+fn api_error(error: ApiError) -> brain::Error {
+    brain::Error::Executor(error.message)
 }
 
 fn digest(value: &str) -> [u8; 32] {
@@ -496,9 +547,10 @@ fn wall_clock_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brain_protocol::EnvironmentName;
 
-    fn test_hosts() -> ResidentHosts {
-        ResidentHosts::open(
+    fn test_hosts() -> HostEnvironment {
+        HostEnvironment::open(
             &std::env::temp_dir()
                 .join(format!("brain-hosts-{}", rand::random::<u64>()))
                 .join("hosts.log"),
@@ -506,27 +558,72 @@ mod tests {
         .unwrap()
     }
 
-    #[test]
-    fn registration_survives_restart_and_session_references_prevent_expiry() {
+    fn entry(host_id: HostId) -> Environment {
+        Environment {
+            name: EnvironmentName::new("app"),
+            driver: Driver::Host { host_id },
+            configuration: serde_json::json!({}),
+        }
+    }
+
+    fn operation(request: EnvironmentRequest) -> EnvironmentOperation {
+        EnvironmentOperation {
+            sequence: 7,
+            environment: EnvironmentName::new("app"),
+            session_id: SessionId::new("ses_12345678901234567890"),
+            request,
+        }
+    }
+
+    fn invoke() -> EnvironmentOperation {
+        operation(EnvironmentRequest::Invoke {
+            tool: "read_dom".into(),
+            implementation: None,
+            needs: Vec::new(),
+            input: serde_json::json!({}),
+            deadline_ms: 5_000,
+        })
+    }
+
+    struct NoEvents;
+
+    #[async_trait::async_trait]
+    impl brain::ToolServices for NoEvents {
+        async fn emit(&self, _: String, _: serde_json::Value) -> Result<u64, brain::Error> {
+            Ok(8)
+        }
+
+        fn telemetry(&self, _: serde_json::Value) {}
+    }
+
+    #[tokio::test]
+    async fn registration_survives_restart_and_placed_sessions_prevent_expiry() {
         let path = std::env::temp_dir()
             .join(format!("brain-hosts-{}", rand::random::<u64>()))
             .join("hosts.log");
-        let hosts = ResidentHosts::open(&path).unwrap();
+        let hosts = HostEnvironment::open(&path).unwrap();
         let registration = hosts.register().unwrap();
         drop(hosts);
-        let hosts = ResidentHosts::open(&path).unwrap();
-        assert!(
-            hosts
-                .connect(&registration.host_id, &registration.token)
-                .is_ok()
-        );
+        let hosts = HostEnvironment::open(&path).unwrap();
+        let connection = hosts
+            .connect(&registration.host_id, &registration.token)
+            .unwrap();
         assert!(hosts.connect(&registration.host_id, "wrong token").is_err());
         let session = SessionId::new("ses_pinned");
+        let setup = EnvironmentOperation {
+            session_id: session.clone(),
+            ..operation(EnvironmentRequest::Setup {
+                configuration: serde_json::json!({}),
+                needs: Vec::new(),
+            })
+        };
         hosts
-            .bind_session(&session, std::slice::from_ref(&registration.host_id))
+            .execute(&entry(registration.host_id.clone()), &setup, Services::None)
+            .await
             .unwrap();
+        drop(connection);
         drop(hosts);
-        let hosts = ResidentHosts::open(&path).unwrap();
+        let hosts = HostEnvironment::open(&path).unwrap();
         hosts
             .lock()
             .unwrap()
@@ -540,7 +637,18 @@ mod tests {
                 .connect(&registration.host_id, &registration.token)
                 .is_ok()
         );
-        hosts.release_session(&session).unwrap();
+        let detach = EnvironmentOperation {
+            session_id: session,
+            ..operation(EnvironmentRequest::Detach)
+        };
+        hosts
+            .execute(
+                &entry(registration.host_id.clone()),
+                &detach,
+                Services::None,
+            )
+            .await
+            .unwrap();
         hosts
             .lock()
             .unwrap()
@@ -555,45 +663,32 @@ mod tests {
                 .is_err()
         );
     }
-    use brain_protocol::{ToolBinding, ToolHosting, ToolInvocation};
 
-    struct NoEvents;
-
-    #[async_trait::async_trait]
-    impl brain::ToolServices for NoEvents {
-        async fn emit(&self, _: String, _: serde_json::Value) -> Result<u64, brain::Error> {
-            Ok(8)
-        }
-
-        fn telemetry(&self, _: serde_json::Value) {}
-    }
-
-    fn dispatch(host_id: HostId) -> ToolDispatch {
-        ToolDispatch {
-            sequence: 7,
-            session_id: SessionId::new("ses_12345678901234567890"),
-            binding: ToolBinding {
-                name: "read_dom".into(),
-                environment_id: None,
-                environment: None,
-                attachment_id: None,
-                host_id: Some(host_id),
-                needs: Vec::new(),
-                binding_names: Vec::new(),
-                hosting: ToolHosting::Resident,
-                implementation: None,
-            },
-            invocation: ToolInvocation {
-                call_id: "call_1".into(),
-                name: "read_dom".into(),
-                input: serde_json::json!({}),
-            },
-            deadline_ms: 5_000,
-        }
+    #[tokio::test]
+    async fn setup_needs_a_connected_host() {
+        let hosts = test_hosts();
+        let registration = hosts.register().unwrap();
+        let setup = operation(EnvironmentRequest::Setup {
+            configuration: serde_json::json!({}),
+            needs: Vec::new(),
+        });
+        assert!(
+            hosts
+                .execute(&entry(registration.host_id.clone()), &setup, Services::None)
+                .await
+                .is_err()
+        );
+        let _connection = hosts
+            .connect(&registration.host_id, &registration.token)
+            .unwrap();
+        hosts
+            .execute(&entry(registration.host_id), &setup, Services::None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
-    async fn a_resident_command_is_sent_once_and_resolved_by_session_sequence() {
+    async fn a_host_command_is_sent_once_and_resolved_by_session_sequence() {
         let hosts = test_hosts();
         let registration = hosts.register().unwrap();
         let mut connection = hosts
@@ -601,11 +696,19 @@ mod tests {
             .unwrap();
         let executing = tokio::spawn({
             let hosts = hosts.clone();
-            let dispatch = dispatch(registration.host_id.clone());
-            async move { hosts.execute(dispatch, &NoEvents).await }
+            let entry = entry(registration.host_id.clone());
+            async move {
+                hosts
+                    .execute(&entry, &invoke(), Services::Tool(&NoEvents))
+                    .await
+            }
         });
         let command = connection.commands.recv().await.unwrap();
         assert_eq!(command.sequence, 7);
+        assert!(matches!(
+            &command.operation,
+            HostOperation::InvokeTool { name, .. } if name == "read_dom"
+        ));
         assert!(connection.commands.try_recv().is_err());
         hosts
             .resolve(
@@ -620,12 +723,12 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(
+        assert!(matches!(
             executing.await.unwrap().unwrap(),
-            Outcome::Ok {
-                value: serde_json::json!({"ok": true})
-            }
-        );
+            EnvironmentReceipt::Outcome {
+                outcome: Outcome::Ok { value }
+            } if value == serde_json::json!({"ok": true})
+        ));
     }
 
     #[tokio::test]
@@ -633,7 +736,11 @@ mod tests {
         let hosts = test_hosts();
         let registration = hosts.register().unwrap();
         let error = hosts
-            .execute(dispatch(registration.host_id), &NoEvents)
+            .execute(
+                &entry(registration.host_id),
+                &invoke(),
+                Services::Tool(&NoEvents),
+            )
             .await
             .unwrap_err();
         assert!(matches!(error, brain::Error::Executor(_)));
@@ -665,8 +772,12 @@ mod tests {
             .unwrap();
         let executing = tokio::spawn({
             let hosts = hosts.clone();
-            let dispatch = dispatch(registration.host_id.clone());
-            async move { hosts.execute(dispatch, &NoEvents).await }
+            let entry = entry(registration.host_id.clone());
+            async move {
+                hosts
+                    .execute(&entry, &invoke(), Services::Tool(&NoEvents))
+                    .await
+            }
         });
         first.commands.recv().await.unwrap();
         let _replacement = hosts
