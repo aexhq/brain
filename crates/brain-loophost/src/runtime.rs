@@ -19,7 +19,7 @@ const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
 
 mod bindings {
     wasmtime::component::bindgen!({
-        path: "../../contracts/agentloop/v1",
+        path: "wit/agentloop",
         world: "agentloop",
         imports: { default: async },
         exports: { default: async },
@@ -28,7 +28,7 @@ mod bindings {
 
 mod tool_bindings {
     wasmtime::component::bindgen!({
-        path: "../../contracts/tool/v1",
+        path: "wit/tool",
         world: "tool",
         imports: { default: async },
         exports: { default: async },

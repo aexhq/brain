@@ -3,7 +3,7 @@
 //! Three closed sets: the kinds a journal record can have, the codes a failed turn or a
 //! failed effect can carry, and the codes an API error can carry. Every producer names its
 //! code from here so that a client, an agentloop, or a test can match on a string that is
-//! declared exactly once. `contracts/session/v1/codes.json` mirrors this module for the SDK
+//! declared exactly once. `generated/contract/session/v1/codes.json` mirrors this module for the SDK
 //! and the documentation; a conformance test keeps the two identical.
 
 use serde::{Deserialize, Serialize};

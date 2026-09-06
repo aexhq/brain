@@ -1,11 +1,13 @@
 # Working in this repository
 
-- The Rust types in `crates/brain-protocol` and the `#[utoipa::path]` annotations in
-  `crates/brain-http` are the only source of the session, Environment, and Agentloop contracts.
-  `contracts/` is rendered from them by `cargo run -p brain-contracts` (only `agentloop.wit` and
-  `examples/` are written by hand), and the SDK's `src/generated` from `contracts/` by
-  `npm run gen`. Never edit a rendered file; CI regenerates and diffs them. To change a
-  contract, change the type or the annotation and run `npm run gen`.
+- The Rust types in `crates/brain-protocol`, the `#[utoipa::path]` annotations in
+  `crates/brain-http`, and the vendored snapshot under `catalog/` are the only source of the
+  session, Environment, Agentloop, and provider contracts. Each crate renders its own
+  `generated/contract/` with `cargo run -p <crate> --bin contract`, and the SDK's
+  `src/generated` is rendered from those by `npm run gen`. The WIT under
+  `crates/brain-loophost/wit/` is written by hand. Never edit a file under `generated/`; CI
+  regenerates and diffs them. To change a contract, change the type or the annotation and run
+  `npm run gen`.
 - `hands` and downstream products consume immutable Brain tags or revisions. Brain must not depend
   on a Hands implementation crate or product-specific runtime.
 - Journal every effect before it happens. The local store must durably commit the intent before
@@ -20,6 +22,7 @@
   in CI. Hosted directory, placement, and cloud infrastructure gates belong downstream.
 - Fail fast, keep comments self-contained, and use plain English.
 - Documentation lives in `docs/` and ships to aex.dev/brain/docs. Change behaviour and its page in
-  the same pull request. The API reference is generated from `contracts/session/v1/openapi.yaml`;
+  the same pull request. The API reference is generated from
+  `crates/brain-http/generated/contract/session/v1/openapi.yaml`;
   never write it by hand. Setup and verification commands live in `CONTRIBUTING.md`.
 - Commit style: `area: imperative summary`.

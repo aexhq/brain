@@ -35,11 +35,12 @@ recovery on every pull request. Run them with `npm run test:journeys` after the 
 ## The Rust types are the source of the contracts
 
 The wire is defined once, as the types in [`crates/brain-protocol`](crates/brain-protocol) and the
-`#[utoipa::path]` annotations on the handlers in [`crates/brain-http`](crates/brain-http).
-[`contracts/`](contracts) is rendered from them: the JSON Schemas by `schemars`, the OpenAPI
-document by `utoipa`, the code catalogue from `brain_protocol::codes`. Only `agentloop.wit` and
-the `examples/` directories are written by hand. The SDK's `src/generated` is rendered from
-`contracts/` in turn.
+`#[utoipa::path]` annotations on the handlers in [`crates/brain-http`](crates/brain-http). Each
+crate renders its own `generated/contract/` directory: brain-protocol the JSON Schemas by
+`schemars` and the code catalogue from `brain_protocol::codes`, brain-http the OpenAPI document by
+`utoipa`, brain the provider list from the vendored `catalog/` snapshot. The WIT the loop host
+implements is written by hand under [`crates/brain-loophost/wit`](crates/brain-loophost/wit). The
+SDK's `src/generated` is rendered from the crates' contracts in turn.
 
 Change a type and rerun the renderers in the same commit:
 
@@ -47,8 +48,8 @@ Change a type and rerun the renderers in the same commit:
 npm run gen
 ```
 
-`npm run gen` runs `cargo run -p brain-contracts`, regenerates the provider catalog, and rebuilds
-the SDK's TypeScript types. CI runs the same command and fails on a diff, so a rendered file
+`npm run gen` runs `cargo run -p <crate> --bin contract` for each crate and rebuilds the SDK's
+TypeScript types. CI runs the same command and fails on a diff, so a rendered file
 cannot be edited by hand and a type cannot change without its contract following. The conformance
 tests validate the checked-in examples against the rendered schemas.
 
@@ -63,7 +64,8 @@ decisions as `YYYY-MM-DD-NN-topic.md` with context, status, alternatives, conseq
 sources. Link any superseded decision instead of rewriting its history.
 
 The API reference is not written by hand. It is generated from
-[`contracts/session/v1/openapi.yaml`](contracts/session/v1/openapi.yaml) at site build time, so it
+[`crates/brain-http/generated/contract/session/v1/openapi.yaml`](crates/brain-http/generated/contract/session/v1/openapi.yaml)
+at site build time, so it
 cannot drift from the contract.
 
 Code in the documentation comes from real files in [`examples/`](examples), which `npm test` checks.

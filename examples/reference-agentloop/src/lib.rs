@@ -3,7 +3,7 @@ use brain_protocol::{
 };
 use std::collections::BTreeMap;
 
-wit_bindgen::generate!({ path: "../../contracts/agentloop/v1", world: "agentloop" });
+wit_bindgen::generate!({ path: "../../crates/brain-loophost/wit/agentloop", world: "agentloop" });
 
 struct Reference;
 

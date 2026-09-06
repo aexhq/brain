@@ -10,7 +10,7 @@ give the resulting bytes to `component(...)`.
 ## Contract
 
 The source of truth is
-[`contracts/agentloop/v1/agentloop.wit`](https://github.com/aexhq/brain/blob/main/contracts/agentloop/v1/agentloop.wit).
+[`crates/brain-loophost/wit/agentloop/agentloop.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-loophost/wit/agentloop/agentloop.wit).
 The Component exports `turn` and imports five Brain services:
 
 - `events(after)` reads a finite `EventPage`; continue from `next_cursor` for more history;

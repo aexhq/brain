@@ -37,6 +37,7 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 - [ADR-039: Keep performance claims historical until representative baselines are rebuilt](2026-09-05-08-benchmark-policy.md)
 - [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md)
 - [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md)
+- [ADR-042: Each crate renders its own contract into its own generated directory](2026-09-06-01-per-crate-contracts.md)
 
 ## Chronological index
 
@@ -83,9 +84,11 @@ remain in [the contracts](../../contracts), [user docs](../../docs), and
 | 2026-09-05 | [ADR-039: Keep performance claims historical until representative baselines are rebuilt](2026-09-05-08-benchmark-policy.md) | Accepted |
 | 2026-09-05 | [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md) | Accepted |
 | 2026-09-05 | [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md) | Accepted |
+| 2026-09-06 | [ADR-042: Each crate renders its own contract into its own generated directory](2026-09-06-01-per-crate-contracts.md) | Accepted |
 
 ## Important reversals
 
+- [ADR-031: Generate public contracts from Rust types and route annotations](2026-09-04-09-rust-contracts.md), its central brain-contracts renderer and top-level contracts/ → [ADR-042: Each crate renders its own contract into its own generated directory](2026-09-06-01-per-crate-contracts.md)
 - [ADR-022: Let Environments execute implementations using their own platform APIs](2026-09-02-05-resources.md), its create-time check of Tool needs against declared resources → [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md)
 - [ADR-033: Distinguish resident Tools from explicitly placed extensions](2026-09-05-02-placement.md), its two Tool forms → [ADR-041: Run every Tool in an Environment that implements one protocol, including Brain's own](2026-09-05-10-one-execution-model.md)
 - [ADR-024: Use one SessionConfig and keep hashes local to their actual purpose](2026-09-04-02-simple-config.md), its random attachment identifiers → [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md)

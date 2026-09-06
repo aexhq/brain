@@ -24,7 +24,7 @@ A model binding remains fixed for a session, while presentation is loop policy u
 
 - Brain implementation/history: [e4664ef](https://github.com/aexhq/brain/commit/e4664ef0ed90112723dcbb18007feb7a914fb98a).
 - Current reference: [docs/concepts/model.mdx](../../docs/concepts/model.mdx).
-- Current reference: [crates/brain-protocol/src/model.rs](../../crates/brain-protocol/src/model.rs).
+- Current reference: [crates/brain-protocol/src/model/call.rs](../../crates/brain-protocol/src/model/call.rs).
 - [Claude session `7074c005-e236-4d1a-8671-1ddfbeb1a27c`](SOURCES.md#session-7074c005-e236-4d1a-8671-1ddfbeb1a27c), 2026-08-28T15:48:12.216Z: User requests provider normalization after comparing Brain with ZeroClaw.
 
 [Index](README.md) · [Source coverage and dating](SOURCES.md)

@@ -60,7 +60,7 @@ const placed = inspect({ env: brainEnv({ name: "brain" }), depth: 2 });
 
 `implementation` may be a Component, an opaque object the Environment understands, or a function of
 the parsed options that returns that object. A Component implements
-[`contracts/tool/v1/tool.wit`](https://github.com/aexhq/brain/blob/main/contracts/tool/v1/tool.wit):
+[`crates/brain-loophost/wit/tool/tool.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-loophost/wit/tool/tool.wit):
 it receives JSON input, its configuration, and a deadline, and can emit committed extension events
 through its host import.
 

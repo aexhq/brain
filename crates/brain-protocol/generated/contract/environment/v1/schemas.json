@@ -749,7 +749,7 @@
       "type": "object"
     }
   },
-  "$id": "https://github.com/aexhq/brain/contracts/environment/v1/schemas.json",
+  "$id": "https://github.com/aexhq/brain/crates/brain-protocol/generated/contract/environment/v1/schemas.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "oneOf": [
     {
