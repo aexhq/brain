@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::time::Duration;
 
 use async_trait::async_trait;
 use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput};
