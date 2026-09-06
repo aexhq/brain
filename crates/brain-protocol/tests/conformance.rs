@@ -206,7 +206,8 @@ fn rust_views_round_trip_contract_examples() {
         EnvironmentRequest::Setup { ref needs, .. } if needs.len() == 3
     ));
     let response: EnvironmentResponse =
-        serde_json::from_value(read_json("tests/examples/environment/execute-result.json")).unwrap();
+        serde_json::from_value(read_json("tests/examples/environment/execute-result.json"))
+            .unwrap();
     assert!(matches!(
         response.receipt,
         EnvironmentReceipt::Result { .. }
