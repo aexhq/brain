@@ -2,8 +2,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentloopId, Environment, EnvironmentName, Message, ModelBinding, ModelSelection, SessionId,
-    Tool, ToolDefinition,
+    Environment, EnvironmentName, Message, ModelBinding, ModelSelection, SessionId, Tool,
+    ToolDefinition,
 };
 
 /// The contract identifier of the session API.
@@ -14,7 +14,7 @@ pub const SESSION_CONTRACT: &str = "session/v1";
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentloopRef {
-    pub id: AgentloopId,
+    pub implementation: serde_json::Value,
     pub configuration: serde_json::Value,
     pub environment: EnvironmentName,
     /// What the Agentloop needs from its Environment, as URIs. Brain hands them to the
@@ -203,7 +203,7 @@ pub enum AdmissionStatus {
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct AgentloopAdmission {
-    pub id: AgentloopId,
+    pub id: crate::AgentloopId,
     pub status: AdmissionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<crate::ApiError>,

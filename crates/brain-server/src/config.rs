@@ -15,8 +15,11 @@ pub struct ServerConfig {
     #[arg(long, env = "BRAIN_DATA_DIR", default_value = "brain-data")]
     pub data_dir: PathBuf,
     /// Path to the loop worker executable.
-    #[arg(long, env = "BRAIN_LOOP_WORKER", default_value = "brain-loop-worker")]
-    pub loop_worker: PathBuf,
+    #[arg(long, env = "BRAIN_ENV_WORKER", default_value = "brain-env-worker")]
+    pub env_worker: PathBuf,
+    /// OS worker processes in the built-in Environment pool.
+    #[arg(long, env = "BRAIN_ENV_WORKERS", default_value = "2")]
+    pub env_workers: std::num::NonZeroUsize,
     /// Origins the brain env may grant a Component that needs them: exact, or
     /// `https://*.example.com` for a family of hosts.
     #[arg(long, env = "BRAIN_ENV_NETWORK_ALLOW", value_delimiter = ',')]
@@ -63,7 +66,7 @@ pub struct ServerConfig {
     #[command(flatten)]
     pub limits: brain::Limits,
     #[command(flatten)]
-    pub loop_limits: brain_loophost::LoopLimits,
+    pub env_limits: brain_env::EnvLimits,
     #[command(flatten)]
     pub telemetry_limits: brain_telemetry::TelemetryLimits,
     #[command(flatten)]

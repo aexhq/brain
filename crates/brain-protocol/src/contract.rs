@@ -1,6 +1,6 @@
 //! The published contracts, rendered from the Rust types in this crate.
 //!
-//! `cargo run -p brain-protocol --bin contract` writes these documents under this crate's
+//! `cargo run -p brain-protocol --bin brain-protocol-contract` writes these documents under this crate's
 //! `generated/contract/`; CI regenerates them and fails on a diff, so the files there are
 //! output. To change a contract, change the type it is rendered from.
 
@@ -12,8 +12,8 @@ use crate::{
     Environment, EnvironmentCallRequest, EnvironmentCallResult, EnvironmentCommand,
     EnvironmentName, EnvironmentResponse, EventPage, HostCommand, HostEvent, HostEventAck, HostId,
     HostRegistration, HostResult, Message, MessageRequest, Outcome, SESSION_CONTRACT, SessionId,
-    SessionList, SessionSummary, Tool, ToolAdmission, ToolId, TurnDispatchRequest,
-    TurnDispatchResult, TurnEmitAck, TurnEmitRequest, TurnInput, TurnOutput, TurnTelemetry,
+    SessionList, SessionSummary, Tool, ToolAdmission, ToolId, TurnEmitRequest, TurnInput,
+    TurnOutput,
 };
 
 /// Where the contracts are published; each document's `$id` is its path under here.
@@ -35,6 +35,8 @@ pub fn session() -> Value {
             define::<EnvironmentCallResult>(generator);
             define::<EnvironmentName>(generator);
             define::<EventPage>(generator);
+            define::<crate::ExecutionCall>(generator);
+            define::<crate::ExecutionCallback>(generator);
             define::<HostCommand>(generator);
             define::<HostEvent>(generator);
             define::<HostEventAck>(generator);
@@ -54,11 +56,7 @@ pub fn session() -> Value {
             define::<SessionList>(generator);
             define::<SessionSummary>(generator);
             define::<crate::SessionTranscript>(generator);
-            define::<TurnDispatchRequest>(generator);
-            define::<TurnDispatchResult>(generator);
-            define::<TurnEmitAck>(generator);
             define::<TurnEmitRequest>(generator);
-            define::<TurnTelemetry>(generator);
             marker(SESSION_CONTRACT)
         },
     )

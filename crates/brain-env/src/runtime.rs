@@ -1,0 +1,838 @@
+use std::{future::Future, sync::Arc};
+
+use brain_protocol::{AgentloopId, ToolId, TurnError, TurnInput, TurnOutput, codes};
+use http_body_util::BodyExt as _;
+use sha2::{Digest as _, Sha256};
+use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
+use wasmtime::{Cache, Config, Engine, ResourceLimiter, Store, Trap};
+use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use wasmtime_wasi_http::{
+    Error as HttpError, RequestOptions, WasiBody, WasiHttpCtx, WasiHttpCtxView, WasiHttpHooks,
+    WasiHttpView,
+};
+
+use crate::{Access, EnvLimits, HostCall, NativeEnvironment, limits::ceiling};
+
+/// A long-running invocation yields to Tokio at this interval while retaining its fixed
+/// total fuel budget.
+const FUEL_YIELD_INTERVAL: u64 = 10_000_000;
+
+mod bindings {
+    wasmtime::component::bindgen!({
+        path: "wit/agentloop",
+        world: "agentloop",
+        imports: { default: async },
+        exports: { default: async },
+    });
+}
+
+mod tool_bindings {
+    wasmtime::component::bindgen!({
+        path: "wit/tool",
+        world: "tool",
+        imports: { default: async },
+        exports: { default: async },
+    });
+}
+
+use bindings::brain::agentloop::types as wit;
+
+/// What answers the guest's host calls while a turn runs.
+#[async_trait::async_trait]
+pub trait GuestHost: Send + Sync {
+    async fn call(&self, call: HostCall) -> Result<String, TurnError>;
+}
+
+pub struct AdmissionEngine {
+    engine: Engine,
+    limits: EnvLimits,
+    allowed_imports: Vec<String>,
+}
+
+pub struct AdmittedAgentloop {
+    pub digest: AgentloopId,
+    pre: bindings::AgentloopPre<HostState>,
+}
+
+pub struct AdmittedTool {
+    pub digest: ToolId,
+    pre: tool_bindings::ToolPre<HostState>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct NativeToolInput {
+    pub input: serde_json::Value,
+    pub configuration: serde_json::Value,
+    pub deadline_at_ms: u64,
+}
+
+impl AdmissionEngine {
+    pub fn new(limits: EnvLimits, allowed_imports: Vec<String>) -> Result<Self, String> {
+        let mut config = Config::new();
+        config.wasm_component_model(true).consume_fuel(true);
+        let cache = Cache::from_file(None).map_err(|error| {
+            format!("failed to configure the Wasmtime compilation cache: {error}")
+        })?;
+        config.cache(Some(cache));
+        let engine = Engine::new(&config).map_err(|error| error.to_string())?;
+        Ok(Self {
+            engine,
+            limits,
+            allowed_imports,
+        })
+    }
+
+    pub fn admit(&self, package_bytes: &[u8]) -> Result<AdmittedAgentloop, String> {
+        if package_bytes.len() > ceiling(self.limits.max_package_bytes) {
+            return Err("Agentloop package exceeds the configured admission limit".into());
+        }
+        let actual = AgentloopId::new(hex_digest(package_bytes));
+        let component = Component::new(&self.engine, package_bytes)
+            .map_err(|error| format!("Agentloop component is invalid: {error}"))?;
+        for (name, _) in component.component_type().imports(&self.engine) {
+            if !self.allowed_imports.iter().any(|allowed| name == allowed) {
+                return Err(format!("Agentloop import {name:?} is not allowed"));
+            }
+        }
+        if component
+            .component_type()
+            .get_export(&self.engine, "turn")
+            .is_none()
+        {
+            return Err("Agentloop component does not export turn".into());
+        }
+        let mut linker = Linker::<HostState>::new(&self.engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|error| error.to_string())?;
+        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)
+            .map_err(|error| error.to_string())?;
+        bindings::brain::agentloop::host::add_to_linker::<_, HasSelf<HostState>>(
+            &mut linker,
+            |state| state,
+        )
+        .map_err(|error| error.to_string())?;
+        let instance = linker
+            .instantiate_pre(&component)
+            .map_err(|error| format!("Agentloop imports do not match its world: {error}"))?;
+        let pre = bindings::AgentloopPre::new(instance)
+            .map_err(|error| format!("Agentloop exports do not match its world: {error}"))?;
+        Ok(AdmittedAgentloop {
+            digest: actual,
+            pre,
+        })
+    }
+
+    pub fn admit_tool(&self, component_bytes: &[u8]) -> Result<AdmittedTool, String> {
+        if component_bytes.len() > ceiling(self.limits.max_package_bytes) {
+            return Err("Tool Component exceeds the configured admission limit".into());
+        }
+        let digest = ToolId::new(hex_digest(component_bytes));
+        let component = Component::new(&self.engine, component_bytes)
+            .map_err(|error| format!("Tool Component is invalid: {error}"))?;
+        for (name, _) in component.component_type().imports(&self.engine) {
+            if !crate::TOOL_IMPORTS.contains(&name) && !crate::CAPABILITY_IMPORTS.contains(&name) {
+                return Err(format!("Tool import {name:?} is not allowed"));
+            }
+        }
+        if component
+            .component_type()
+            .get_export(&self.engine, "run")
+            .is_none()
+        {
+            return Err("Tool Component does not export run".into());
+        }
+        let mut linker = Linker::<HostState>::new(&self.engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|error| error.to_string())?;
+        wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)
+            .map_err(|error| error.to_string())?;
+        tool_bindings::brain::tool::host::add_to_linker::<_, HasSelf<HostState>>(
+            &mut linker,
+            |state| state,
+        )
+        .map_err(|error| error.to_string())?;
+        let instance = linker
+            .instantiate_pre(&component)
+            .map_err(|error| format!("Tool imports do not match its world: {error}"))?;
+        let pre = tool_bindings::ToolPre::new(instance)
+            .map_err(|error| format!("Tool exports do not match its world: {error}"))?;
+        Ok(AdmittedTool { digest, pre })
+    }
+
+    pub fn engine(&self) -> &Engine {
+        &self.engine
+    }
+    pub fn limits(&self) -> &EnvLimits {
+        &self.limits
+    }
+}
+
+/// The store's data: the memory limiter, bridge, and explicitly granted capabilities.
+pub struct HostState {
+    limits: StoreBudget,
+    bridge: Option<Arc<dyn GuestHost>>,
+    table: ResourceTable,
+    wasi: WasiCtx,
+    http: WasiHttpCtx,
+    network: NetworkHooks,
+    _scratch: tempfile::TempDir,
+    _secrets: tempfile::TempDir,
+}
+
+impl HostState {
+    fn new(
+        limits: &EnvLimits,
+        bridge: Arc<dyn GuestHost>,
+        environment: NativeEnvironment,
+    ) -> Result<Self, TurnError> {
+        let scratch = tempfile::tempdir().map_err(host_failure)?;
+        let secrets = tempfile::tempdir().map_err(host_failure)?;
+        for (name, value) in &environment.secrets {
+            if name.is_empty()
+                || name.contains('/')
+                || name.contains('\\')
+                || name == "."
+                || name == ".."
+            {
+                return Err(host_failure(format!("invalid secret name {name:?}")));
+            }
+            std::fs::write(secrets.path().join(name), value).map_err(host_failure)?;
+        }
+        let mut wasi = WasiCtxBuilder::new();
+        if let Some(access) = environment.scratch {
+            wasi.preopened_dir(scratch.path(), "/scratch", perms(access))
+                .map_err(host_failure)?;
+        }
+        wasi.preopened_dir(secrets.path(), "/secrets", FsPerms::ReadOnly)
+            .map_err(host_failure)?;
+        if let Some(workspace) = &environment.workspace {
+            wasi.preopened_dir(&workspace.path, "/workspace", perms(workspace.access))
+                .map_err(host_failure)?;
+        }
+        let mut http = WasiHttpCtx::new();
+        http.set_field_size_limit(64 * 1024);
+        Ok(Self {
+            limits: store_budget(limits),
+            bridge: Some(bridge),
+            table: ResourceTable::new(),
+            wasi: wasi.build(),
+            http,
+            network: NetworkHooks {
+                allow: environment.network_allow,
+                limits: limits.clone(),
+            },
+            _scratch: scratch,
+            _secrets: secrets,
+        })
+    }
+
+    async fn call(&mut self, call: HostCall) -> Result<String, TurnError> {
+        let Some(bridge) = &self.bridge else {
+            return Err(TurnError::new(
+                "no_turn",
+                "the guest called the host outside a turn",
+            ));
+        };
+        bridge.call(call).await
+    }
+}
+
+impl WasiView for HostState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WasiHttpView for HostState {
+    fn http(&mut self) -> WasiHttpCtxView<'_> {
+        WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: &mut self.network,
+        }
+    }
+}
+
+struct NetworkHooks {
+    allow: Vec<String>,
+    limits: EnvLimits,
+}
+
+impl WasiHttpHooks for NetworkHooks {
+    fn send_request(
+        &mut self,
+        request: http::Request<WasiBody>,
+        options: Option<RequestOptions>,
+        _io: Box<dyn Future<Output = Result<(), HttpError>> + Send>,
+    ) -> Box<
+        dyn Future<
+                Output = Result<
+                    (
+                        http::Response<WasiBody>,
+                        Box<dyn Future<Output = Result<(), HttpError>> + Send>,
+                    ),
+                    HttpError,
+                >,
+            > + Send,
+    > {
+        let allowed = network_allowed(&self.allow, request.uri());
+        let limits = self.limits.clone();
+        Box::new(async move {
+            if !allowed {
+                return Err(HttpError::HttpRequestDenied);
+            }
+            let (response, io) = wasmtime_wasi_http::default_send_request(
+                request,
+                Some(bounded_http_options(options, &limits)),
+            )
+            .await?;
+            Ok((
+                response.map(|body| body.boxed_unsync()),
+                Box::new(io) as Box<dyn Future<Output = Result<(), HttpError>> + Send>,
+            ))
+        })
+    }
+}
+
+fn perms(access: Access) -> FsPerms {
+    match access {
+        Access::Read => FsPerms::ReadOnly,
+        Access::Write => FsPerms::ReadWrite,
+    }
+}
+
+fn network_allowed(allow: &[String], uri: &http::Uri) -> bool {
+    uri.scheme_str()
+        .zip(uri.authority().map(|value| value.as_str()))
+        .is_some_and(|(scheme, authority)| {
+            let origin = format!("{scheme}://{authority}");
+            allow
+                .iter()
+                .any(|entry| crate::network_covers(entry, &origin))
+        })
+}
+
+fn bounded_http_options(options: Option<RequestOptions>, limits: &EnvLimits) -> RequestOptions {
+    let options = options.unwrap_or_default();
+    let Some(max) = limits.max_native_http() else {
+        return options;
+    };
+    RequestOptions {
+        connect_timeout: Some(options.connect_timeout.unwrap_or(max).min(max)),
+        first_byte_timeout: Some(options.first_byte_timeout.unwrap_or(max).min(max)),
+        between_bytes_timeout: Some(options.between_bytes_timeout.unwrap_or(max).min(max)),
+    }
+}
+
+impl bindings::brain::agentloop::host::Host for HostState {
+    async fn events(&mut self, after: u64) -> Result<String, wit::TurnError> {
+        self.call(HostCall::Events { after })
+            .await
+            .map_err(wit_error)
+    }
+
+    async fn model(&mut self, request_json: String) -> Result<String, wit::TurnError> {
+        self.call(HostCall::Model { request_json })
+            .await
+            .map_err(wit_error)
+    }
+
+    async fn dispatch(&mut self, calls_json: String) -> Result<String, wit::TurnError> {
+        self.call(HostCall::Dispatch { calls_json })
+            .await
+            .map_err(wit_error)
+    }
+
+    async fn emit(&mut self, kind: String, payload_json: String) -> Result<u64, wit::TurnError> {
+        let answer = self
+            .call(HostCall::Emit { kind, payload_json })
+            .await
+            .map_err(wit_error)?;
+        answer.trim().parse().map_err(|_| {
+            wit_error(TurnError::new(
+                "internal",
+                "emit answered without a sequence",
+            ))
+        })
+    }
+
+    async fn telemetry(&mut self, record_json: String) {
+        let _ = self.call(HostCall::Telemetry { record_json }).await;
+    }
+}
+
+impl tool_bindings::brain::tool::host::Host for HostState {
+    async fn emit(
+        &mut self,
+        kind: String,
+        payload_json: String,
+    ) -> Result<u64, tool_bindings::brain::tool::types::ToolError> {
+        let answer = self
+            .call(HostCall::Emit { kind, payload_json })
+            .await
+            .map_err(|error| tool_bindings::brain::tool::types::ToolError {
+                code: error.code,
+                message: error.message,
+            })?;
+        answer
+            .trim()
+            .parse()
+            .map_err(|_| tool_bindings::brain::tool::types::ToolError {
+                code: "internal".into(),
+                message: "emit answered without a sequence".into(),
+            })
+    }
+
+    async fn telemetry(&mut self, record_json: String) {
+        let _ = self.call(HostCall::Telemetry { record_json }).await;
+    }
+}
+
+fn wit_error(error: TurnError) -> wit::TurnError {
+    wit::TurnError {
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+    }
+}
+
+struct StoreBudget {
+    limit: usize,
+    instances: usize,
+    memory: usize,
+    memory_growth: usize,
+    elements: usize,
+    table_growth: usize,
+}
+
+impl StoreBudget {
+    fn new(limit: usize, instances: usize) -> Self {
+        Self {
+            limit,
+            instances,
+            memory: 0,
+            memory_growth: 0,
+            elements: 0,
+            table_growth: 0,
+        }
+    }
+}
+
+impl ResourceLimiter for StoreBudget {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let growth = desired.saturating_sub(current);
+        if maximum.is_some_and(|max| desired > max)
+            || growth > self.limit.saturating_sub(self.memory)
+        {
+            return Ok(false);
+        }
+        self.memory += growth;
+        self.memory_growth = growth;
+        Ok(true)
+    }
+
+    fn memory_grow_failed(&mut self, _error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.memory -= self.memory_growth;
+        self.memory_growth = 0;
+        Ok(())
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        let growth = desired.saturating_sub(current);
+        if maximum.is_some_and(|max| desired > max)
+            || growth > 1_000_000_usize.saturating_sub(self.elements)
+        {
+            return Ok(false);
+        }
+        self.elements += growth;
+        self.table_growth = growth;
+        Ok(true)
+    }
+
+    fn table_grow_failed(&mut self, _error: wasmtime::Error) -> wasmtime::Result<()> {
+        self.elements -= self.table_growth;
+        self.table_growth = 0;
+        Ok(())
+    }
+
+    fn instances(&self) -> usize {
+        self.instances
+    }
+    fn memories(&self) -> usize {
+        self.instances
+    }
+    fn tables(&self) -> usize {
+        self.instances
+    }
+}
+
+impl AdmittedAgentloop {
+    /// Runs one turn in a fresh Store and Component instance. Only compiled code is
+    /// retained between invocations.
+    pub async fn turn(
+        &self,
+        engine: &Engine,
+        limits: &EnvLimits,
+        environment: NativeEnvironment,
+        input: TurnInput,
+        bridge: Arc<dyn GuestHost>,
+    ) -> Result<TurnOutput, TurnError> {
+        let state = HostState::new(limits, bridge, environment)?;
+        let mut store = Store::new(engine, state);
+        store.limiter(|state| &mut state.limits);
+        configure_fuel(&mut store, limits)?;
+        let bindings = self
+            .pre
+            .instantiate_async(&mut store)
+            .await
+            .map_err(host_failure)?;
+        let input = to_wit_input(input).map_err(host_failure)?;
+        let called = bindings.call_turn(&mut store, &input).await;
+        let output = match called {
+            Ok(Ok(output)) => output,
+            // The loop's own failure, with the code it chose.
+            Ok(Err(error)) => {
+                return Err(TurnError {
+                    code: error.code,
+                    message: error.message,
+                    retryable: error.retryable,
+                });
+            }
+            // A trapped guest's heap is not a state anyone can vouch for: the entry is
+            // dropped rather than kept.
+            Err(error) => return Err(host_failure(turn_error(error))),
+        };
+        let output = from_wit_output(output).map_err(host_failure)?;
+        validate_output(&output).map_err(host_failure)?;
+        Ok(output)
+    }
+}
+
+impl AdmittedTool {
+    pub async fn run(
+        &self,
+        engine: &Engine,
+        limits: &EnvLimits,
+        environment: NativeEnvironment,
+        input: NativeToolInput,
+        bridge: Arc<dyn GuestHost>,
+    ) -> Result<serde_json::Value, TurnError> {
+        let state = HostState::new(limits, bridge, environment)?;
+        let mut store = Store::new(engine, state);
+        store.limiter(|state| &mut state.limits);
+        configure_fuel(&mut store, limits)?;
+        let bindings = self
+            .pre
+            .instantiate_async(&mut store)
+            .await
+            .map_err(host_failure)?;
+        let input = tool_bindings::brain::tool::types::Invocation {
+            input_json: serde_json::to_string(&input.input).map_err(host_failure)?,
+            configuration_json: serde_json::to_string(&input.configuration)
+                .map_err(host_failure)?,
+            deadline_at_ms: input.deadline_at_ms,
+        };
+        match bindings.call_run(&mut store, &input).await {
+            Ok(Ok(output)) => serde_json::from_str(&output)
+                .map_err(|error| host_failure(format!("Tool output is invalid JSON: {error}"))),
+            Ok(Err(error)) => Err(TurnError::new(error.code, error.message)),
+            Err(error) => Err(host_failure(turn_error(error))),
+        }
+    }
+}
+
+const COMPUTE_BUDGET_EXCEEDED: &str = "native invocation exceeded its compute budget";
+
+fn configure_fuel(store: &mut Store<HostState>, limits: &EnvLimits) -> Result<(), TurnError> {
+    let fuel = if limits.max_fuel == 0 {
+        u64::MAX
+    } else {
+        limits.max_fuel
+    };
+    store.set_fuel(fuel).map_err(host_failure)?;
+    store
+        .fuel_async_yield_interval(Some(FUEL_YIELD_INTERVAL.min(fuel).max(1)))
+        .map_err(host_failure)
+}
+
+fn store_budget(limits: &EnvLimits) -> StoreBudget {
+    StoreBudget::new(
+        ceiling(limits.max_linear_memory_bytes),
+        ceiling(limits.max_core_instances),
+    )
+}
+
+/// A turn that failed on this side of the guest: a trap, a budget, an output the
+/// contract refuses. The loop did not choose a code, so it gets the one that says so.
+fn host_failure(message: impl std::fmt::Display) -> TurnError {
+    TurnError::new(codes::failure::AGENTLOOP_FAILED, message.to_string())
+}
+
+/// A guest stopped by fuel exhaustion reports the budget it exceeded, not Wasmtime's trap.
+fn turn_error(error: wasmtime::Error) -> String {
+    if error.downcast_ref::<Trap>() == Some(&Trap::OutOfFuel) {
+        return COMPUTE_BUDGET_EXCEEDED.into();
+    }
+    error.to_string()
+}
+
+fn to_wit_input(input: TurnInput) -> Result<wit::TurnInput, String> {
+    let json = |value: &dyn erased_serialize::Serialize| -> Result<String, String> {
+        value.to_json().map_err(|error| error.to_string())
+    };
+    Ok(wit::TurnInput {
+        input_json: json(&input.input)?,
+        transcript_json: json(&input.transcript)?,
+        kv_json: json(&input.kv)?,
+        events_json: json(&input.events)?,
+        configuration_json: json(&input.configuration)?,
+        system: input.system,
+        tools_json: json(&input.tools)?,
+        runtime: wit::RuntimeEnvelope {
+            logical_time_ms: input.runtime.logical_time_ms,
+            deterministic_seed: input.runtime.deterministic_seed,
+        },
+    })
+}
+
+/// A tiny shim so `to_wit_input` can serialise fields of different types through one
+/// closure without a generic bound per call.
+mod erased_serialize {
+    pub trait Serialize {
+        fn to_json(&self) -> Result<String, serde_json::Error>;
+    }
+    impl<T: serde::Serialize> Serialize for T {
+        fn to_json(&self) -> Result<String, serde_json::Error> {
+            serde_json::to_string(self)
+        }
+    }
+}
+
+fn from_wit_output(output: wit::TurnOutput) -> Result<TurnOutput, String> {
+    Ok(TurnOutput {
+        transcript: serde_json::from_str(&output.transcript_json)
+            .map_err(|error| format!("Agentloop transcript is invalid JSON: {error}"))?,
+        kv: serde_json::from_str(&output.kv_json)
+            .map_err(|error| format!("Agentloop kv is invalid JSON: {error}"))?,
+        result: output
+            .result_json
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(|error| format!("Agentloop result is invalid JSON: {error}"))?,
+    })
+}
+
+fn validate_output(output: &TurnOutput) -> Result<(), String> {
+    if output.kv.keys().any(|key| !valid_identifier(key)) {
+        return Err("Agentloop kv keys must be identifiers".into());
+    }
+    Ok(())
+}
+
+fn valid_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+        })
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use wasm_encoder::{
+        BlockType, CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction,
+        Module, TypeSection, ValType,
+    };
+    use wasmtime::{Instance, Module as CoreModule, Store, Trap};
+
+    use super::*;
+
+    const TEST_FUEL: u64 = 10_000;
+    const CEILING: Duration = Duration::from_secs(10);
+    const HOST_WAIT: Duration = Duration::from_millis(250);
+
+    #[test]
+    fn memory_budget_is_aggregate_across_memories_and_failed_growth_releases_budget() {
+        let engine = wasmtime::Engine::default();
+        let mut store = Store::new(&engine, StoreBudget::new(2 * 65536, 8));
+        store.limiter(|budget| budget);
+        let first = wasmtime::Memory::new(&mut store, wasmtime::MemoryType::new(1, None)).unwrap();
+        let _second =
+            wasmtime::Memory::new(&mut store, wasmtime::MemoryType::new(1, None)).unwrap();
+        assert!(first.grow(&mut store, 1).is_err());
+        assert!(wasmtime::Memory::new(&mut store, wasmtime::MemoryType::new(1, None)).is_err());
+        let mut budget = StoreBudget::new(65536, 8);
+        assert!(budget.memory_growing(0, 65536, None).unwrap());
+        budget
+            .memory_grow_failed(wasmtime::Error::msg("allocation failed"))
+            .unwrap();
+        assert!(budget.memory_growing(0, 65536, None).unwrap());
+    }
+
+    struct SlowHost;
+
+    #[async_trait::async_trait]
+    impl GuestHost for SlowHost {
+        async fn call(&self, _call: HostCall) -> Result<String, TurnError> {
+            tokio::time::sleep(HOST_WAIT).await;
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn native_network_is_default_deny_and_matches_an_origin_or_a_family_of_hosts() {
+        let https = "https://api.example.com/path".parse().unwrap();
+        let http = "http://api.example.com/path".parse().unwrap();
+        assert!(!network_allowed(&[], &https));
+        assert!(!network_allowed(&["api.example.com".into()], &https));
+        assert!(network_allowed(&["https://api.example.com".into()], &https));
+        assert!(network_allowed(
+            &["https://API.example.com/".into()],
+            &https
+        ));
+        assert!(!network_allowed(&["https://api.example.com".into()], &http));
+        assert!(!network_allowed(&["https://example.com".into()], &https));
+        assert!(network_allowed(&["https://*.example.com".into()], &https));
+        assert!(!network_allowed(
+            &["https://*.example.com".into()],
+            &"https://example.com/".parse().unwrap()
+        ));
+        assert!(!network_allowed(
+            &["https://*.example.com".into()],
+            &"https://notexample.com/".parse().unwrap()
+        ));
+        assert!(crate::network_covers(
+            "https://*.example.com",
+            "https://*.api.example.com"
+        ));
+        assert!(!crate::network_covers(
+            "https://*.api.example.com",
+            "https://*.example.com"
+        ));
+    }
+
+    /// `(func (export "spin") (loop (br 0)))` - a backedge and nothing else, so the only
+    /// way out is a trap at the loop's interruption check.
+    fn spinning_module() -> Vec<u8> {
+        let mut module = Module::new();
+
+        let mut types = TypeSection::new();
+        types
+            .ty()
+            .function(Vec::<ValType>::new(), Vec::<ValType>::new());
+        module.section(&types);
+
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        module.section(&functions);
+
+        let mut exports = ExportSection::new();
+        exports.export("spin", ExportKind::Func, 0);
+        module.section(&exports);
+
+        let mut code = CodeSection::new();
+        let mut spin = Function::new([]);
+        spin.instruction(&Instruction::Loop(BlockType::Empty));
+        spin.instruction(&Instruction::Br(0));
+        spin.instruction(&Instruction::End);
+        spin.instruction(&Instruction::End);
+        code.function(&spin);
+        module.section(&code);
+
+        module.finish()
+    }
+
+    /// The smallest module that never returns consumes its fixed work allowance.
+    #[tokio::test]
+    async fn a_guest_that_never_returns_is_trapped_within_its_budget() {
+        let limits = EnvLimits::default();
+        let fuel = limits.max_fuel;
+        let admission = AdmissionEngine::new(limits, Vec::new()).unwrap();
+        let engine = admission.engine();
+
+        let module = CoreModule::new(engine, spinning_module()).unwrap();
+        let mut store = Store::new(engine, ());
+        store.set_fuel(fuel).unwrap();
+        store
+            .fuel_async_yield_interval(Some(FUEL_YIELD_INTERVAL))
+            .unwrap();
+        let instance = Instance::new_async(&mut store, &module, &[]).await.unwrap();
+        let spin = instance
+            .get_typed_func::<(), ()>(&mut store, "spin")
+            .unwrap();
+
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(CEILING, spin.call_async(&mut store, ()))
+            .await
+            .unwrap_or_else(|_| {
+                panic!("the guest was still running after {CEILING:?} on its fuel budget")
+            });
+        let elapsed = started.elapsed();
+
+        let error = outcome.expect_err("a guest that never returns must not return");
+        assert_eq!(
+            error.downcast_ref::<Trap>(),
+            Some(&Trap::OutOfFuel),
+            "the guest must be stopped by fuel exhaustion, not by anything else: {error}"
+        );
+        assert_eq!(turn_error(error), COMPUTE_BUDGET_EXCEEDED);
+        assert!(
+            elapsed < CEILING,
+            "the guest ran for {elapsed:?} after exhausting its fuel"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_slow_async_host_wait_consumes_no_guest_fuel() {
+        let admission = AdmissionEngine::new(EnvLimits::default(), Vec::new()).unwrap();
+        let engine = admission.engine();
+        let state = HostState::new(
+            &EnvLimits::default(),
+            Arc::new(SlowHost),
+            NativeEnvironment::default(),
+        )
+        .unwrap();
+        let mut store = Store::new(engine, state);
+        configure_fuel(
+            &mut store,
+            &EnvLimits {
+                max_fuel: TEST_FUEL,
+                ..EnvLimits::default()
+            },
+        )
+        .unwrap();
+        let started = Instant::now();
+        store
+            .data_mut()
+            .call(HostCall::Telemetry {
+                record_json: "{}".into(),
+            })
+            .await
+            .unwrap();
+        assert!(started.elapsed() >= HOST_WAIT);
+        assert_eq!(store.get_fuel().unwrap(), TEST_FUEL);
+    }
+}

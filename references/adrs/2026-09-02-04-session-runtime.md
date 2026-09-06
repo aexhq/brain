@@ -4,6 +4,9 @@
 - Status: Accepted
 - Compiled: 2026-09-05
 
+Amended by [ADR-044](2026-09-06-03-sessions-and-brain-env.md): extract multi-session
+coordination into brain-sessions; brain-server composes it with the built-in Environment.
+
 ## Context
 
 The old Kernel combined a session registry, local journal construction, HTTP retry metadata, and per-session turn execution. That made embedding carry server-wide policy and state.

@@ -1,77 +1,5 @@
 {
   "$defs": {
-    "AgentloopId": {
-      "pattern": "^[0-9a-f]{64}$",
-      "type": "string"
-    },
-    "ContentBlock": {
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "properties": {
-            "text": {
-              "type": "string"
-            },
-            "type": {
-              "const": "text",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "text"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "input": true,
-            "name": {
-              "type": "string"
-            },
-            "type": {
-              "const": "tool_use",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id",
-            "name",
-            "input"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "content": true,
-            "is_error": {
-              "description": "ALWAYS set on a failed tool. Omitting the flag on a failure lets the\nmodel read that failure as a success.",
-              "type": "boolean"
-            },
-            "tool_use_id": {
-              "type": "string"
-            },
-            "type": {
-              "const": "tool_result",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "tool_use_id",
-            "content",
-            "is_error"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "EnvironmentCommand": {
       "properties": {
         "contract": {
@@ -162,38 +90,6 @@
         },
         {
           "properties": {
-            "outcome": {
-              "$ref": "#/$defs/Outcome"
-            },
-            "type": {
-              "const": "outcome",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "outcome"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "output": {
-              "$ref": "#/$defs/TurnOutput"
-            },
-            "type": {
-              "const": "turned",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "output"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
             "code": {
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
               "type": "string"
@@ -238,7 +134,7 @@
       ]
     },
     "EnvironmentRequest": {
-      "description": "What Brain asks an Environment to do. An Environment provides resources and learns\nwhat runs in it only when asked to run it: setup carries its configuration and the\nneeds of everything placed there, each invoke carries the Tool it runs, each turn\nthe Agentloop.",
+      "description": "What Brain asks an Environment to do. An Environment provides resources and learns\nwhat runs in it only when asked to run it: setup carries its configuration and the\nneeds of everything placed there; execute carries an opaque implementation and input.",
       "oneOf": [
         {
           "properties": {
@@ -288,13 +184,17 @@
         },
         {
           "properties": {
+            "callback": {
+              "$ref": "#/$defs/ExecutionCallback",
+              "description": "Sent only during execution, never journaled."
+            },
             "deadline_ms": {
               "format": "uint64",
               "minimum": 1,
               "type": "integer"
             },
             "implementation": {
-              "description": "The Tool's implementation as it was declared: opaque to Brain, interpreted here."
+              "description": "Interpreted only by the Environment; fixes the runtime entrypoint and configuration."
             },
             "input": true,
             "needs": {
@@ -308,58 +208,17 @@
               "type": "array",
               "uniqueItems": true
             },
-            "tool": {
-              "description": "The Tool's name, as the session declared it.",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-              "type": "string"
-            },
             "type": {
-              "const": "invoke",
+              "const": "execute",
               "type": "string"
             }
           },
           "required": [
             "type",
-            "tool",
+            "implementation",
             "needs",
             "input",
             "deadline_ms"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "callback": {
-              "$ref": "#/$defs/TurnCallback",
-              "description": "Where this turn reaches Brain's services. Absent for an Environment inside\nBrain's own process, which has them directly."
-            },
-            "id": {
-              "$ref": "#/$defs/AgentloopId"
-            },
-            "input": {
-              "$ref": "#/$defs/TurnInput"
-            },
-            "needs": {
-              "items": {
-                "format": "uri",
-                "maxLength": 2048,
-                "minLength": 1,
-                "type": "string"
-              },
-              "maxItems": 64,
-              "type": "array",
-              "uniqueItems": true
-            },
-            "type": {
-              "const": "turn",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id",
-            "needs",
-            "input"
           ],
           "type": "object"
         },
@@ -428,219 +287,22 @@
       ],
       "type": "object"
     },
-    "Event": {
-      "description": "One journal record as a client reads it. `(session_id, sequence)` names it; there\nis no other identifier.",
-      "properties": {
-        "data": true,
-        "event_type": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-          "type": "string"
-        },
-        "recorded_at_ms": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "sequence": {
-          "format": "uint64",
-          "minimum": 1,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "sequence",
-        "recorded_at_ms",
-        "event_type",
-        "data"
-      ],
-      "type": "object"
-    },
-    "Message": {
+    "ExecutionCallback": {
       "additionalProperties": false,
+      "description": "Where a remote invocation reaches only its caller-granted services.",
       "properties": {
-        "content": {
+        "methods": {
           "items": {
-            "$ref": "#/$defs/ContentBlock"
+            "type": "string"
           },
           "type": "array"
         },
-        "role": {
-          "$ref": "#/$defs/Role"
-        }
-      },
-      "required": [
-        "role",
-        "content"
-      ],
-      "type": "object"
-    },
-    "Outcome": {
-      "description": "The one envelope every tool invocation resolves to.\n\n`timeout` is distinguished from `error` because the deadline is caller-owned: no\nbackend family can be trusted to enforce one remotely, so the caller kills and says\nexactly what happened rather than encoding it as an exit code.",
-      "oneOf": [
-        {
-          "properties": {
-            "status": {
-              "const": "ok",
-              "type": "string"
-            },
-            "value": true
-          },
-          "required": [
-            "status",
-            "value"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "error": {
-              "$ref": "#/$defs/OutcomeError"
-            },
-            "status": {
-              "const": "error",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status",
-            "error"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "status": {
-              "const": "timeout",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "status": {
-              "const": "cancelled",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "message": {
-              "type": "string"
-            },
-            "status": {
-              "const": "unknown",
-              "type": "string"
-            }
-          },
-          "required": [
-            "status",
-            "message"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "OutcomeError": {
-      "additionalProperties": false,
-      "properties": {
-        "code": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-          "type": "string"
-        },
-        "details": true,
-        "message": {
-          "maxLength": 4096,
-          "type": "string"
-        }
-      },
-      "required": [
-        "code",
-        "message"
-      ],
-      "type": "object"
-    },
-    "Role": {
-      "enum": [
-        "user",
-        "assistant"
-      ],
-      "type": "string"
-    },
-    "RuntimeEnvelope": {
-      "properties": {
-        "deterministic_seed": {
-          "items": {
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "maxItems": 32,
-          "minItems": 32,
-          "type": "array"
-        },
-        "logical_time_ms": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "logical_time_ms",
-        "deterministic_seed"
-      ],
-      "type": "object"
-    },
-    "SessionId": {
-      "pattern": "^ses_[A-Za-z0-9]{20,32}$",
-      "type": "string"
-    },
-    "ToolDefinition": {
-      "additionalProperties": false,
-      "description": "What the model may be told about a Tool.",
-      "properties": {
-        "description": {
-          "type": "string"
-        },
-        "input_schema": {
-          "type": "object"
-        },
-        "name": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-          "type": "string"
-        },
-        "output_schema": {
-          "type": "object"
-        }
-      },
-      "required": [
-        "name",
-        "description",
-        "input_schema",
-        "output_schema"
-      ],
-      "type": "object"
-    },
-    "TurnCallback": {
-      "additionalProperties": false,
-      "description": "Where an Environment reaches Brain's turn services for one turn, and the bearer\ntoken that opens them. Sent with the turn, never journaled, dead when the turn ends.",
-      "properties": {
         "token": {
           "maxLength": 256,
           "minLength": 1,
           "type": "string"
         },
         "url": {
-          "description": "`{public url}/v1/sessions/{session_id}/turns/{sequence}`.",
           "format": "uri",
           "maxLength": 2048,
           "minLength": 1,
@@ -649,99 +311,14 @@
       },
       "required": [
         "url",
-        "token"
+        "token",
+        "methods"
       ],
       "type": "object"
     },
-    "TurnInput": {
-      "description": "What Brain hands the loop for one turn.",
-      "properties": {
-        "configuration": true,
-        "events": {
-          "description": "Every record on the session's feed since the loop last ran, oldest first, so a\nloop sees what happened to its environments and tools between turns.",
-          "items": {
-            "$ref": "#/$defs/Event"
-          },
-          "maxItems": 1000,
-          "type": "array"
-        },
-        "input": {
-          "$ref": "#/$defs/UserInput"
-        },
-        "kv": {
-          "additionalProperties": true,
-          "description": "The loop's kv (a key-value map it keeps between turns), as it last returned it.",
-          "type": "object"
-        },
-        "runtime": {
-          "$ref": "#/$defs/RuntimeEnvelope"
-        },
-        "system": {
-          "description": "The system prompt the session was created with. Used on every model call unless\nthe loop sends its own.",
-          "type": "string"
-        },
-        "tools": {
-          "description": "The tools the session was created with: offered whole on every model call unless\nthe loop names a subset. Brain admitted and provisioned exactly these.",
-          "items": {
-            "$ref": "#/$defs/ToolDefinition"
-          },
-          "type": "array"
-        },
-        "transcript": {
-          "description": "The transcript as it stands: what the next model call would see.",
-          "items": {
-            "$ref": "#/$defs/Message"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "input",
-        "transcript",
-        "kv",
-        "events",
-        "configuration",
-        "system",
-        "tools",
-        "runtime"
-      ],
-      "type": "object"
-    },
-    "TurnOutput": {
-      "description": "What the loop hands back when the turn is done.",
-      "properties": {
-        "kv": {
-          "additionalProperties": true,
-          "default": {},
-          "description": "Kv to keep. A key the loop leaves out keeps its previous value.",
-          "type": "object"
-        },
-        "result": true,
-        "transcript": {
-          "items": {
-            "$ref": "#/$defs/Message"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "transcript"
-      ],
-      "type": "object"
-    },
-    "UserInput": {
-      "additionalProperties": false,
-      "description": "What an application hands a session on `send`. The shape is closed on purpose:\nBrain owes every agentloop the same observation shape regardless of who wrote\nthe client, so free-form content is not accepted. Multimodal parts will extend\nthis record when they land — see the roadmap.",
-      "properties": {
-        "message": {
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "message"
-      ],
-      "type": "object"
+    "SessionId": {
+      "pattern": "^ses_[A-Za-z0-9]{20,32}$",
+      "type": "string"
     }
   },
   "$id": "https://github.com/aexhq/brain/crates/brain-protocol/generated/contract/environment/v1/schemas.json",

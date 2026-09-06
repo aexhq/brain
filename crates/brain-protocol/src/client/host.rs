@@ -30,6 +30,7 @@ pub enum HostOperation {
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct HostCommand {
+    pub environment: crate::EnvironmentName,
     pub session_id: SessionId,
     #[schemars(range(min = 1))]
     pub sequence: u64,

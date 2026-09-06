@@ -33,12 +33,12 @@ tests synchronize with actual model/Tool entry rather than guessing execution pr
 After `npm ci && npm run build`:
 
 ```sh
-cargo build -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
+cargo build -p brain-server --bin brain -p brain-env --bin brain-env-worker
 cargo build --manifest-path tests/fixtures/diagnostic-agentloop/Cargo.toml --target wasm32-wasip2 --release
 cargo build --manifest-path tests/fixtures/diagnostic-tool/Cargo.toml --target wasm32-wasip2 --release
 cargo build --manifest-path examples/reference-agentloop/Cargo.toml --target wasm32-wasip2 --release
 export BRAIN_TEST_SERVER="$PWD/target/debug/brain"
-export BRAIN_TEST_WORKER="$PWD/target/debug/brain-loop-worker"
+export BRAIN_TEST_WORKER="$PWD/target/debug/brain-env-worker"
 export BRAIN_TEST_AGENTLOOP_PACKAGE="$PWD/tests/fixtures/diagnostic-agentloop/target/wasm32-wasip2/release/diagnostic_agentloop.wasm"
 export BRAIN_TEST_TOOL_COMPONENT="$PWD/tests/fixtures/diagnostic-tool/target/wasm32-wasip2/release/diagnostic_tool.wasm"
 export BRAIN_TEST_REFERENCE_AGENTLOOP="$PWD/examples/reference-agentloop/target/wasm32-wasip2/release/reference_agentloop.wasm"

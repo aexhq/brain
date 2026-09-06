@@ -4,18 +4,18 @@ description: Where Tools and the Agentloop run, and what they are given there.
 ---
 
 An Environment is anything that implements the Environment protocol. A session names each one
-once; every Tool and the Agentloop is placed in one of them; Brain sets them up as part of create
+once; Tool placements and the Agentloop refer to those names; Brain sets them up as part of create
 and reaches them for every operation after. Where the code behind the protocol runs is the
 Environment's concern. Brain ships two, and any other is an extension.
 
 ## The brain env
 
-`brainEnv({ name })` is Brain's own Environment, hosted inside the server. A Tool placed here is a
+`brainEnv({ name })` is Brain's own Environment, managed by the server in a separate pool of OS worker processes. A Tool placed here is a
 Component admitted through `POST /v1/tools`; the Agentloop is one admitted through
 `POST /v1/agentloops`. Each invocation runs in a fresh Wasmtime instance granted exactly what its
 `needs` name, bounded by the deployment's allow-lists:
 
-- `file:///workspace` is the session's directory, kept between turns and removed with the session;
+- `file:///workspace` is the directory for this session and Environment name, retained until teardown;
   `file:///scratch` lives for one invocation. Both are read-only unless the need says
   `?access=write`. The root must appear in `BRAIN_ENV_FILESYSTEM_ALLOW`.
 - An `https:` or `http:` origin, exact or `https://*.example.com`, opens `wasi:http` to it. It must be
@@ -30,7 +30,7 @@ const brain = brainEnv({ name: "brain", secrets: ["MODEL_TOKEN"] });
 
 `secrets` is the brain env's one option: process environment variables named in
 `BRAIN_ENV_SECRET_ALLOW`, mounted read-only under `/secrets`. Every server grant is empty by default.
-Each invocation receives a fixed 10 billion Wasmtime fuel units for guest computation; model, Tool,
+By default each invocation receives 10 billion Wasmtime fuel units for guest computation; model, Tool,
 HTTP, and filesystem waits consume no fuel. `BRAIN_MAX_TURN_SECS` still bounds the whole turn.
 
 ## The host env
@@ -78,8 +78,8 @@ const session = await brain.sessions.create({
 
 Setup carries the Environment's configuration and one flat list: the `needs` of every Tool and the
 Agentloop placed in it. The Environment provisions what this session uses and refuses what it
-cannot honour, naming the URI; a refusal fails the create. Each invoke carries the Tool's name,
-implementation, needs, input, and deadline; each turn carries the Agentloop's id, needs, and input.
+cannot honour, naming the URI; a refusal fails the create. Every execution carries an opaque
+implementation descriptor, needs, input, deadline, and optional invocation-scoped service grants.
 An Environment learns what runs in it only when asked to run it.
 
 ## Lifecycle and delivery
@@ -91,8 +91,22 @@ tear down. An Environment wrapping an externally owned service may implement tea
 only its own binding.
 
 Environment files and process state follow the Environment. They are not session state; the
-canonical journal survives independently. An Environment may allocate on first invoke and expire
-resources while the session is suspended. The standalone
+canonical journal survives independently. The caller owns lifecycle policy; the Environment
+implements its mechanisms and has no idle-expiry timer. Resources may be allocated on first
+execution and are retained until caller-requested teardown. The standalone
 [lazy Environment](https://github.com/aexhq/brain/blob/main/examples/lazy-environment.mjs) shows that
-policy on the existing wire. Environment and Tool failures are committed for the Agentloop before
+mechanism on the execution wire. Environment and Tool failures are committed for the Agentloop before
 their results return.
+
+
+## Worker pool
+
+`BRAIN_ENV_WORKERS` selects a positive worker count (default two). Every worker can execute both
+Agentloop and Tool Components in fresh Stores. Compiled code is cached per process; guest heaps
+are not retained. Calls that may dispatch nested work use separate capacity from leaf executions,
+so a pool full of Agentloops can still run their Tools. Saturation fails explicitly.
+
+A failed worker affects its own invocations. Brain reports uncertain outcomes, restarts that worker
+for later requests, and never replays the interrupted work. Shutdown stops and reaps every worker.
+The deployment controls instance, memory, fuel, and concurrency ceilings; multiplying workers also
+multiplies their potential memory use. See the [configuration reference](/brain/docs/reference/configuration).

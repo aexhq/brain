@@ -4,6 +4,10 @@
 - Status: Accepted
 - Compiled: 2026-09-05
 
+Amended by [ADR-044](2026-09-06-03-sessions-and-brain-env.md): generic Environment execution
+replaces the Agentloop-specific turn operation; a Tool can have multiple authorized placements,
+and callers own lifecycle policy. The built-in implementation moves into brain-env.
+
 Extends: [ADR-022: Let Environments execute implementations using their own platform APIs](2026-09-02-05-resources.md), whose create-time check of Tool needs against declared resources this record removes; [ADR-033: Distinguish resident Tools from explicitly placed extensions](2026-09-05-02-placement.md); [ADR-040: Identify records by session and sequence, and everything inside a session by name](2026-09-05-09-session-names.md).
 
 ## Context

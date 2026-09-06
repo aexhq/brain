@@ -5,7 +5,7 @@ public surface. It links no brain crate: Brain's numbers are produced the same w
 competitor's are, because that is the only way the comparison means anything.
 
 ```sh
-cargo build --release -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
+cargo build --release -p brain-server --bin brain -p brain-env --bin brain-env-worker
 cargo build --release --manifest-path tools/bench/runner/Cargo.toml
 
 cargo run --release --manifest-path tools/bench/runner/Cargo.toml -- list          # subjects, probes, what is blocking each

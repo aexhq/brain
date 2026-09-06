@@ -77,7 +77,7 @@ export function fixture({ providers = {} } = {}) {
     // Each provider is an Environment extension: the application configures every
     // instance with the address it is reached at and the credential it expects.
     f.provider = (name, options = {}) => environment({
-      options: z.object({ idle_ms: z.number().optional() }),
+      options: z.object({ label: z.string().optional() }),
       url: () => `${f.upstreamUrl}/${name}`,
       credential: () => `${name}-token`,
     })({ name, ...options });
@@ -99,7 +99,7 @@ export function fixture({ providers = {} } = {}) {
     child = spawn(process.env.BRAIN_TEST_SERVER, [], { env: {
       ...process.env,
       BRAIN_LISTEN: new URL(f.baseUrl).host, BRAIN_DATA_DIR: join(directory, "data"),
-      BRAIN_API_TOKEN: f.token, BRAIN_LOOP_WORKER: process.env.BRAIN_TEST_WORKER,
+      BRAIN_API_TOKEN: f.token, BRAIN_ENV_WORKER: process.env.BRAIN_TEST_WORKER,
       BRAIN_MODEL_BASE_URL: `${f.upstreamUrl}/v1`,
       BRAIN_ENV_FILESYSTEM_ALLOW: "scratch,workspace",
     }, detached: true, stdio: ["ignore", "pipe", "pipe"] });

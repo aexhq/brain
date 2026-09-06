@@ -13,10 +13,9 @@ import { lazyEnvironment } from "../../examples/lazy-environment.mjs";
 const root = await mkdtemp(join(tmpdir(), "brain-runtime-e2e-"));
 const listeners = [];
 let server;
-let clock = 0;
 let allocations = 0;
 let modelCalls = 0;
-let sawExpired = false;
+let sawUnavailable = false;
 async function listen(handler) {
   const listener = createServer(async (req, res) => {
     try {
@@ -40,7 +39,7 @@ async function stop() {
 async function start(baseUrl) {
   server = spawn(process.env.BRAIN_TEST_SERVER, [], { env: {
     ...process.env, BRAIN_LISTEN: new URL(baseUrl).host, BRAIN_DATA_DIR: join(root, "data"),
-    BRAIN_API_TOKEN: "runtime-test", BRAIN_LOOP_WORKER: process.env.BRAIN_TEST_WORKER,
+    BRAIN_API_TOKEN: "runtime-test", BRAIN_ENV_WORKER: process.env.BRAIN_TEST_WORKER,
     BRAIN_MODEL_BASE_URL: `${modelUrl}/v1`,
   }, stdio: ["ignore", "inherit", "inherit"] });
   for (let i = 0; i < 1200; i++) {
@@ -54,8 +53,10 @@ let modelUrl;
 let runtimeBaseUrl;
 try {
   const providers = {};
+  const control = {};
   for (const name of ["first", "second"]) {
-    const provider = lazyEnvironment({ now: () => clock, allocate: async () => { allocations++; return new Map(); } });
+    const provider = lazyEnvironment({ allocate: async () => { allocations++; return new Map(); } });
+    control[name] = provider;
     providers[name] = await listen(async (req, res, command) => {
       assert.equal(req.headers.authorization, `Bearer ${name}`);
       if (command.operation.request.type === "setup" && modelCalls === 0) {
@@ -71,7 +72,7 @@ try {
     modelCalls++;
     const last = request.messages.at(-1);
     const done = last.role === "tool";
-    if (done && request.messages.slice(-2).some((m) => JSON.stringify(m).includes("expired"))) sawExpired = true;
+    if (done && request.messages.slice(-2).some((m) => JSON.stringify(m).includes("unavailable"))) sawUnavailable = true;
     const delta = done ? { content: "done" } : { tool_calls: ["first", "second"].map((name, index) => ({
       index, id: `${name}-${modelCalls}`, type: "function", function: { name, arguments: JSON.stringify({ value: "hello" }) },
     })) };
@@ -96,10 +97,13 @@ try {
   await session.send("use both environments");
   assert.equal(allocations, 2);
   assert.equal((await session.transcript()).messages.length, 4);
-  clock = 60_000;
+  // The caller ends the provider resource; elapsed time is not Environment policy.
+  for (const [environment, provider] of Object.entries(control)) {
+    await provider.handle({ contract: "environment/v1", operation: { session_id: session.id, environment, sequence: 999, request: { type: "teardown" } } });
+  }
   await session.send("use both again");
-  assert.equal(allocations, 2, "expiration must not trigger allocation or retry");
-  assert.ok(sawExpired, "environment failure must reach the model");
+  assert.equal(allocations, 2, "resource loss must not trigger allocation or retry");
+  assert.ok(sawUnavailable, "environment failure must reach the model");
   const calls = modelCalls;
   const before = await session.transcript();
   await stop();
@@ -113,7 +117,7 @@ try {
     histories.push(retained);
   }
   for (const retained of histories) assert.equal((await retained.transcript()).messages.length, 8);
-  console.log("lazy providers, expiry, restart, and suspended transcripts passed");
+  console.log("lazy providers, caller teardown, restart, and suspended transcripts passed");
 } finally {
   await stop();
   await Promise.all(listeners.map((listener) => new Promise((resolve) => listener.close(resolve))));

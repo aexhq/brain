@@ -316,8 +316,7 @@ fn stopped() -> Error {
 }
 
 fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
-    if !sha256_valid(config.agentloop.id.as_str())
-        || !identifier_valid(&config.model.provider)
+    if !identifier_valid(&config.model.provider)
         || config.model.name.is_empty()
         || config.model.name.chars().any(char::is_whitespace)
     {
@@ -326,15 +325,10 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
         ));
     }
     for tool in &config.tools {
-        if !identifier_valid(&tool.name)
-            || !tool.input_schema.is_object()
-            || tool
-                .output_schema
-                .as_ref()
-                .is_some_and(|value| !value.is_object())
-        {
+        validate_tool_definition(&tool.definition())?;
+        if tool.placements.is_empty() {
             return Err(Error::InvalidState(
-                "Tool definition violates the session contract".into(),
+                "a Tool must have at least one placement".into(),
             ));
         }
     }
@@ -353,7 +347,11 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
     let declared = config
         .tools
         .iter()
-        .map(|tool| (tool.name.as_str(), &tool.needs))
+        .flat_map(|tool| {
+            tool.placements
+                .values()
+                .map(|placement| (tool.name.as_str(), &placement.needs))
+        })
         .chain(std::iter::once(("agentloop", &config.agentloop.needs)));
     for (subject, needs) in declared {
         if !needs_valid(needs) {
@@ -396,7 +394,11 @@ fn validate_session_contract(config: &SessionConfig) -> Result<(), Error> {
     let placed = config
         .tools
         .iter()
-        .map(|tool| (tool.name.as_str(), &tool.environment))
+        .flat_map(|tool| {
+            tool.placements
+                .keys()
+                .map(|environment| (tool.name.as_str(), environment))
+        })
         .chain(std::iter::once((
             "agentloop",
             &config.agentloop.environment,
@@ -419,13 +421,6 @@ fn identifier_valid(value: &str) -> bool {
         && bytes[1..]
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
-}
-
-fn sha256_valid(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// At most 64 distinct URIs, each with a scheme and no whitespace or control characters.
@@ -467,6 +462,25 @@ fn json_error(error: serde_json::Error) -> Error {
     Error::InvalidState(error.to_string())
 }
 
+fn validate_tool_definition(tool: &brain_protocol::ToolDefinition) -> Result<(), Error> {
+    if !identifier_valid(&tool.name)
+        || !tool.input_schema.is_object()
+        || tool
+            .output_schema
+            .as_ref()
+            .is_some_and(|schema| !schema.is_object())
+    {
+        return Err(Error::InvalidState(
+            "Tool definition violates the session contract".into(),
+        ));
+    }
+    for schema in std::iter::once(&tool.input_schema).chain(tool.output_schema.as_ref()) {
+        jsonschema::validator_for(schema)
+            .map_err(|e| Error::InvalidState(format!("Tool `{}` schema: {e}", tool.name)))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use brain_protocol::{
@@ -485,9 +499,13 @@ mod tests {
             description: "search the workspace".into(),
             input_schema: serde_json::json!({"type":"object"}),
             output_schema: None,
-            environment: EnvironmentName::new("workspace"),
-            needs: Vec::new(),
-            implementation: Some(serde_json::json!({"kind": "test"})),
+            placements: std::collections::BTreeMap::from([(
+                EnvironmentName::new("workspace"),
+                brain_protocol::ToolPlacement {
+                    needs: Vec::new(),
+                    implementation: serde_json::json!({"kind": "test"}),
+                },
+            )]),
         }
     }
 
@@ -504,10 +522,10 @@ mod tests {
     fn config() -> SessionConfig {
         SessionConfig {
             agentloop: AgentloopRef {
-                id: AgentloopId::new(digest()),
                 configuration: serde_json::json!({}),
                 environment: EnvironmentName::new("workspace"),
                 needs: Vec::new(),
+                implementation: serde_json::json!({"type": "brain_component", "entrypoint": "turn", "id": AgentloopId::new(digest())}),
             },
             model: ModelBinding {
                 provider: "vercel-ai-gateway".into(),
@@ -548,8 +566,19 @@ mod tests {
                 credential: None,
             },
         ));
-        placed_elsewhere.tools[0].environment = EnvironmentName::new("sandbox");
-        placed_elsewhere.tools[0].needs = vec![
+        let placement = placed_elsewhere.tools[0]
+            .placements
+            .remove(&EnvironmentName::new("workspace"))
+            .unwrap();
+        placed_elsewhere.tools[0]
+            .placements
+            .insert(EnvironmentName::new("sandbox"), placement);
+        placed_elsewhere.tools[0]
+            .placements
+            .values_mut()
+            .next()
+            .unwrap()
+            .needs = vec![
             "file:///workspace?access=write".into(),
             "pkg:pypi/numpy".into(),
         ];
@@ -563,14 +592,16 @@ mod tests {
     fn every_bound_rejects_a_configuration_that_breaches_it() {
         let cases: Vec<Breach> = vec![
             (
-                "an Agentloop id of the wrong length",
-                |request| request.agentloop.id = AgentloopId::new("a".repeat(63)),
-                "identity rule",
+                "a Tool without placements",
+                |request| request.tools[0].placements.clear(),
+                "at least one placement",
             ),
             (
-                "an Agentloop id that is not hex",
-                |request| request.agentloop.id = AgentloopId::new("g".repeat(64)),
-                "identity rule",
+                "an invalid Tool JSON Schema",
+                |request| {
+                    request.tools[0].input_schema = serde_json::json!({"type": "not-a-json-type"})
+                },
+                "schema",
             ),
             (
                 "an empty model provider",
@@ -611,20 +642,35 @@ mod tests {
                 "an Environment name that is not an identifier",
                 |request| {
                     request.environments[0].name = EnvironmentName::new("../escape");
-                    request.tools[0].environment = EnvironmentName::new("../escape");
+                    request.tools[0].placements = std::collections::BTreeMap::from([(
+                        EnvironmentName::new("../escape"),
+                        request.tools[0].placements.values().next().unwrap().clone(),
+                    )]);
                     request.agentloop.environment = EnvironmentName::new("../escape");
                 },
                 "Environment name",
             ),
             (
                 "a Tool need that is not a URI",
-                |request| request.tools[0].needs = vec!["../fs".into()],
+                |request| {
+                    request.tools[0]
+                        .placements
+                        .values_mut()
+                        .next()
+                        .unwrap()
+                        .needs = vec!["../fs".into()]
+                },
                 "invalid or repeated need",
             ),
             (
                 "a Tool need repeated",
                 |request| {
-                    request.tools[0].needs = vec!["pkg:apt/ffmpeg".into(), "pkg:apt/ffmpeg".into()];
+                    request.tools[0]
+                        .placements
+                        .values_mut()
+                        .next()
+                        .unwrap()
+                        .needs = vec!["pkg:apt/ffmpeg".into(), "pkg:apt/ffmpeg".into()];
                 },
                 "invalid or repeated need",
             ),
@@ -661,7 +707,12 @@ mod tests {
             ),
             (
                 "a Tool naming an Environment the session does not have",
-                |request| request.tools[0].environment = EnvironmentName::new("elsewhere"),
+                |request| {
+                    request.tools[0].placements = std::collections::BTreeMap::from([(
+                        EnvironmentName::new("elsewhere"),
+                        request.tools[0].placements.values().next().unwrap().clone(),
+                    )])
+                },
                 "must name an Environment of this session",
             ),
             (
@@ -690,17 +741,6 @@ mod tests {
         assert!(!identifier_valid("has/slash"));
         assert!(!identifier_valid("../escape"));
         assert!(!identifier_valid("na\u{ef}ve"));
-    }
-
-    #[test]
-    fn a_digest_is_exactly_sixty_four_lowercase_hex_characters() {
-        assert!(sha256_valid(&"a".repeat(64)));
-        assert!(sha256_valid(&"0123456789abcdef".repeat(4)));
-        assert!(!sha256_valid(&"a".repeat(63)));
-        assert!(!sha256_valid(&"a".repeat(65)));
-        assert!(!sha256_valid(&"A".repeat(64)));
-        assert!(!sha256_valid(&"g".repeat(64)));
-        assert!(!sha256_valid(""));
     }
 
     #[test]

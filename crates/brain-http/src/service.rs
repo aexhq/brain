@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use brain_protocol::{
     AgentloopAdmission, AgentloopId, ApiError, CreateSessionRequest, EnvironmentCallRequest,
-    EnvironmentCallResult, EnvironmentName, EventPage, HostCommand, HostEvent, HostEventAck,
-    HostId, HostRegistration, HostResult, LiveEvent, MessageRequest, SessionId, SessionList,
-    SessionSummary, ToolAdmission, TurnAnswer, TurnCall,
+    EnvironmentCallResult, EnvironmentName, EventPage, ExecutionCall, HostCommand, HostEvent,
+    HostEventAck, HostId, HostRegistration, HostResult, LiveEvent, MessageRequest, SessionId,
+    SessionList, SessionSummary, ToolAdmission,
 };
 
 pub struct HostConnection {
@@ -42,13 +42,13 @@ pub trait BrainApi: Clone + Send + Sync + 'static {
     ) -> Result<HostEventAck, ApiError>;
     /// One call on an open turn's routes by the Environment running that turn, opened
     /// by the token minted for it.
-    async fn turn_call(
+    async fn execution_call(
         &self,
         session_id: SessionId,
         sequence: u64,
         token: String,
-        call: TurnCall,
-    ) -> Result<TurnAnswer, ApiError>;
+        call: ExecutionCall,
+    ) -> Result<serde_json::Value, ApiError>;
     async fn admit_agentloop(
         &self,
         idempotency_key: String,

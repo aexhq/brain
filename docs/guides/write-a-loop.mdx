@@ -10,7 +10,7 @@ give the resulting bytes to `component(...)`.
 ## Contract
 
 The source of truth is
-[`crates/brain-loophost/wit/agentloop/agentloop.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-loophost/wit/agentloop/agentloop.wit).
+[`crates/brain-env/wit/agentloop/agentloop.wit`](https://github.com/aexhq/brain/blob/main/crates/brain-env/wit/agentloop/agentloop.wit).
 The Component exports `turn` and imports five Brain services:
 
 - `events(after)` reads a finite `EventPage`; continue from `next_cursor` for more history;
@@ -22,7 +22,7 @@ The Component exports `turn` and imports five Brain services:
 JSON strings on the WIT boundary use the generated session contract, also packaged as
 `@aexhq/brain/contracts/session.json`. It includes `ModelRequest`, `ModelResult`, `ToolResult`, and `EventPage`. A turn receives
 the current transcript, Agentloop kv, committed Events since its previous activation,
-configuration, system prompt, Tool definitions, and a deterministic logical-time/seed envelope.
+configuration, system prompt, Tool definitions with authorized Environment names, and a deterministic logical-time/seed envelope.
 It returns the transcript, updated kv, and optional result.
 
 Brain commits model, Tool, and emitted Event records. An Agentloop must not depend on the Wasm heap
@@ -53,11 +53,17 @@ const bytes = new Uint8Array(await readFile("assistant.wasm"));
 const assistant = agentloop({ implementation: component(bytes) });
 ```
 
-The client sends the raw bytes to `POST /v1/agentloops`; Brain validates the Component contract and
-returns its id, the SHA-256 of the bytes. Admission is cached for that `Component` object. Session
-creation seals the id, parsed options, `needs`, and the Environment. The brain env runs the loop
-with exactly the grants its needs name; an Environment reached over HTTP runs it however it
-likes and reaches the same services through the turn routes it is handed with each turn.
+For `brainEnv`, the client admits raw bytes through `POST /v1/agentloops` and constructs
+`{ type: "brain_component", entrypoint: "turn", id }`. Admission is cached for that Component
+object. An HTTP Environment instead takes its own opaque implementation descriptor, such as
+`agentloop({ implementation: { type: "reference_agentloop" } })`. It requires no local admission
+and receives invocation-scoped callback grants when executed. See
+[Write an Environment](/brain/docs/guides/write-an-environment).
+
+`ModelRequest.tools` contains full model-facing definitions. It does not grant execution authority.
+Dispatch always names both the canonical Tool and an authorized Environment. When multiple
+placements exist, implement an explicit selection policy or show the model a selector and unwrap
+its arguments before dispatch. The reference loop requires a single placement per Tool.
 
 ## Effect semantics
 
@@ -70,7 +76,7 @@ outcome. Brain never makes that choice automatically.
 ## Test it
 
 Test policy outside Brain with fake host imports, then run the compiled Component through the real
-Loophost. Include cases for parallel Tool calls, unknown outcomes, cancellation, invalid JSON,
+brain-env worker pool. Include cases for parallel Tool calls, unknown outcomes, cancellation, invalid JSON,
 restart between turns, and a fresh Wasm instance on every activation.
 
 ## Standalone reference
@@ -89,3 +95,17 @@ Admission is explicit when desired: call `await brain.admit(placedLoop)` and
 `await brain.admitTool(toolComponent)` before creation. Reuse those Component objects when placing
 extensions; they cache successful admission. Brain retains compiled and prelinked templates,
 never one session's credentials or heap.
+
+
+## Packaged Python
+
+`tools/build-python-fixtures.sh <output-directory>` uses pinned `componentize-py` to build the
+Python Agentloop and Tool in `tests/fixtures/python`. They run in the same worker pool as Rust
+Components and call Brain host services. Set `BRAIN_MAX_CORE_INSTANCES=1024` for these fixtures;
+the default eight instances cannot hold their interpreter and generated adapters.
+
+These small examples use `--stub-wasi`: they demonstrate Python computation and Brain callbacks,
+and do not provide Python filesystem or network APIs. A package that needs WASI must link only
+the worker's supported interfaces and declare the corresponding needs. Brain does not install
+Python or pip packages at runtime. Every execution has a fresh interpreter; persist Agentloop
+state through returned kv and retain files only in an explicitly granted Environment workspace.

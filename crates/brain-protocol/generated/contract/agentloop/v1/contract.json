@@ -1,5 +1,37 @@
 {
   "$defs": {
+    "ActivationTool": {
+      "description": "Definitions and logical choices made available to an Agentloop, without executable descriptors.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "environments": {
+          "items": {
+            "$ref": "#/$defs/EnvironmentName"
+          },
+          "type": "array"
+        },
+        "input_schema": {
+          "type": "object"
+        },
+        "name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "output_schema": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "input_schema",
+        "output_schema",
+        "environments"
+      ],
+      "type": "object"
+    },
     "ContentBlock": {
       "oneOf": [
         {
@@ -67,6 +99,10 @@
           "type": "object"
         }
       ]
+    },
+    "EnvironmentName": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "type": "string"
     },
     "Event": {
       "description": "One journal record as a client reads it. `(session_id, sequence)` names it; there\nis no other identifier.",
@@ -146,32 +182,6 @@
       ],
       "type": "object"
     },
-    "ToolDefinition": {
-      "additionalProperties": false,
-      "description": "What the model may be told about a Tool.",
-      "properties": {
-        "description": {
-          "type": "string"
-        },
-        "input_schema": {
-          "type": "object"
-        },
-        "name": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-          "type": "string"
-        },
-        "output_schema": {
-          "type": "object"
-        }
-      },
-      "required": [
-        "name",
-        "description",
-        "input_schema",
-        "output_schema"
-      ],
-      "type": "object"
-    },
     "TurnInput": {
       "description": "What Brain hands the loop for one turn.",
       "properties": {
@@ -202,7 +212,7 @@
         "tools": {
           "description": "The tools the session was created with: offered whole on every model call unless\nthe loop names a subset. Brain admitted and provisioned exactly these.",
           "items": {
-            "$ref": "#/$defs/ToolDefinition"
+            "$ref": "#/$defs/ActivationTool"
           },
           "type": "array"
         },

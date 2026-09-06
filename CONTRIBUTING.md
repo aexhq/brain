@@ -39,7 +39,7 @@ The wire is defined once, as the types in [`crates/brain-protocol`](crates/brain
 crate renders its own `generated/contract/` directory: brain-protocol the JSON Schemas by
 `schemars` and the code catalogue from `brain_protocol::codes`, brain-http the OpenAPI document by
 `utoipa`, brain the provider list from the vendored `catalog/` snapshot. The WIT the loop host
-implements is written by hand under [`crates/brain-loophost/wit`](crates/brain-loophost/wit). The
+implements is written by hand under [`crates/brain-env/wit`](crates/brain-env/wit). The
 SDK's `src/generated` is rendered from the crates' contracts in turn.
 
 Change a type and rerun the renderers in the same commit:
@@ -48,7 +48,7 @@ Change a type and rerun the renderers in the same commit:
 npm run gen
 ```
 
-`npm run gen` runs `cargo run -p <crate> --bin contract` for each crate and rebuilds the SDK's
+`npm run gen` runs `cargo run -p <crate> --bin <crate>-contract` for each crate and rebuilds the SDK's
 TypeScript types. CI runs the same command and fails on a diff, so a rendered file
 cannot be edited by hand and a type cannot change without its contract following. The conformance
 tests validate the checked-in examples against the rendered schemas.

@@ -2,6 +2,7 @@
 //! them after a restart belongs to the host; `brain-server` is one.
 
 pub mod agentloop;
+pub mod environment;
 pub mod error;
 pub mod journal;
 pub mod limits;

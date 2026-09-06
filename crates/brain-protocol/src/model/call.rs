@@ -33,7 +33,7 @@ pub struct ModelRequest {
     /// The tools to offer on this call, by name. Absent means every tool the session was
     /// created with; each name given must be one of them. Filled in like `system`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<String>>,
+    pub tools: Option<Vec<crate::ToolDefinition>>,
     pub messages: Vec<Message>,
     /// Absent means the one the session was created with, if any. Filled in like `system`.
     #[serde(skip_serializing_if = "Option::is_none")]

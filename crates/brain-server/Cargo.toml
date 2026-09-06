@@ -13,13 +13,14 @@ name = "brain"
 path = "src/main.rs"
 
 [[bin]]
-name = "contract"
-path = "src/bin/contract.rs"
+name = "brain-server-contract"
+path = "src/bin/brain-server-contract.rs"
 
 [dependencies]
+brain-sessions = { workspace = true }
 brain = { workspace = true }
 brain-http = { workspace = true }
-brain-loophost = { workspace = true }
+brain-env = { workspace = true }
 brain-protocol = { workspace = true }
 brain-telemetry = { workspace = true }
 anyhow = { workspace = true }

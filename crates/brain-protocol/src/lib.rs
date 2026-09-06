@@ -6,7 +6,7 @@
 //! sits at the root: identifiers, Tools, and the closed code sets.
 //!
 //! These types are the source of the published contracts: [`contract`] renders them to
-//! JSON Schema, and `cargo run -p brain-protocol --bin contract` writes the result under
+//! JSON Schema, and `cargo run -p brain-protocol --bin brain-protocol-contract` writes the result under
 //! this crate's `generated/contract/`.
 
 pub mod agentloop;

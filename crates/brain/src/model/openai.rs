@@ -309,7 +309,7 @@ mod tests {
     fn the_output_token_cap_lands_in_the_field_the_provider_speaks() {
         let request = ModelRequest {
             system: Some("sys".into()),
-            tools: Some(vec!["read".into()]),
+            tools: Some(tools()),
             messages: vec![Message::user_text("hi")],
             response_format: None,
             max_output_tokens: Some(64),
@@ -347,7 +347,7 @@ mod tests {
     fn tool_results_become_tool_role_messages_and_keep_the_error_signal() {
         let request = ModelRequest {
             system: Some("sys".into()),
-            tools: Some(vec!["read".into()]),
+            tools: Some(tools()),
             messages: vec![
                 Message::user_text("go"),
                 Message::assistant(vec![ContentBlock::ToolUse {
@@ -386,7 +386,7 @@ mod tests {
     fn structured_tool_result_content_is_stringified() {
         let request = ModelRequest {
             system: Some("sys".into()),
-            tools: Some(vec!["read".into()]),
+            tools: Some(tools()),
             messages: vec![Message::tool_results(vec![ContentBlock::ToolResult {
                 tool_use_id: "c1".into(),
                 content: serde_json::json!({"stdout": ""}),

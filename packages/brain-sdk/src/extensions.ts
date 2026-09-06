@@ -28,7 +28,7 @@ interface EnvironmentSource {
 
 interface AgentloopSource {
   readonly kind: "agentloop";
-  readonly component: Component;
+  readonly implementation: Component | Readonly<Record<string, unknown>>;
   readonly configuration: unknown;
   readonly needs: readonly string[];
   readonly environment: Environment;
@@ -133,7 +133,7 @@ export function hostEnv(options: { readonly name: string }): Environment {
 
 export interface AgentloopContract<OptionsSchema extends Schema | undefined = undefined> {
   readonly options?: OptionsSchema;
-  readonly implementation: Component;
+  readonly implementation: Component | Readonly<Record<string, unknown>> | ((options: Options<OptionsSchema>) => Readonly<Record<string, unknown>>);
   /** What the loop needs from its Environment, as URIs. */
   readonly needs?: readonly string[];
 }
@@ -144,13 +144,12 @@ type Placement<OptionsSchema extends Schema | undefined> = { readonly env: Envir
 export function agentloop<OptionsSchema extends Schema | undefined = undefined>(
   contract: AgentloopContract<OptionsSchema>,
 ): (placement: Placement<OptionsSchema>) => PlacedAgentloop {
-  inspectComponent(contract.implementation);
   const needs = uniqueNeeds(contract.needs ?? [], "Agentloop needs");
   return ((raw: unknown) => {
     const { env, options } = placedOptions(contract.options, raw);
     return branded({
       kind: "agentloop",
-      component: contract.implementation,
+      implementation: typeof contract.implementation === "function" ? clone(contract.implementation(options as never)) : isComponent(contract.implementation) ? contract.implementation : clone(contract.implementation),
       configuration: clone(options),
       needs,
       environment: env,
@@ -248,7 +247,7 @@ function inspect<T extends ExtensionSource["kind"]>(value: unknown, kind: T): Ex
   return found as Extract<ExtensionSource, { kind: T }>;
 }
 
-function isComponent(value: unknown): value is Component {
+export function isComponent(value: unknown): value is Component {
   if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
   return (value as Branded)[source]?.kind === "component";
 }

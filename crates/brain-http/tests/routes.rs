@@ -9,7 +9,7 @@ use brain_protocol::{
     EnvironmentCallRequest, EnvironmentCallResult, EnvironmentName, Event, EventPage, HostCommand,
     HostEvent, HostEventAck, HostId, HostOperation, HostRegistration, HostResult, LiveEvent,
     MessageRequest, SessionId, SessionList, SessionStatus, SessionSummary, StreamingEvent,
-    ToolAdmission, ToolAdmissionStatus, ToolId, TurnAnswer, TurnCall, TurnEmitAck,
+    ToolAdmission, ToolAdmissionStatus, ToolId,
 };
 use tower::ServiceExt;
 
@@ -52,6 +52,7 @@ impl BrainApi for Api {
                     name: "highlight_row".into(),
                     input: serde_json::json!({"row": 4}),
                 },
+                environment: brain_protocol::EnvironmentName::new("app"),
             })
             .await
             .unwrap();
@@ -83,27 +84,24 @@ impl BrainApi for Api {
         }
         Ok(HostEventAck { sequence: 8 })
     }
-    async fn turn_call(
+    async fn execution_call(
         &self,
         _: SessionId,
         sequence: u64,
         token: String,
-        call: TurnCall,
-    ) -> Result<TurnAnswer, ApiError> {
-        if sequence != 4 || token != "turn-token" {
-            return Err(ApiError::not_found("no such open turn"));
+        call: brain_protocol::ExecutionCall,
+    ) -> Result<serde_json::Value, ApiError> {
+        if sequence != 4 || token != "execution-token" {
+            return Err(ApiError::not_found("no such open execution"));
         }
-        Ok(match call {
-            TurnCall::Events { after } => TurnAnswer::Events(EventPage {
-                events: Vec::new(),
-                next_cursor: after,
-            }),
-            TurnCall::Emit(request) => {
-                assert_eq!(request.event_type, "remote_note");
-                TurnAnswer::Emit(TurnEmitAck { sequence: 5 })
+        Ok(match call.method.as_str() {
+            "events" => serde_json::json!({"events": [], "next_cursor": call.input}),
+            "emit" => {
+                assert_eq!(call.input["event_type"], "remote_note");
+                serde_json::json!(5)
             }
-            TurnCall::Telemetry(_) => TurnAnswer::Telemetry,
-            other => panic!("unexpected turn call {other:?}"),
+            "telemetry" => serde_json::Value::Null,
+            other => panic!("unexpected service {other}"),
         })
     }
     async fn admit_agentloop(&self, _: String, _: Vec<u8>) -> Result<AgentloopAdmission, ApiError> {
@@ -227,16 +225,9 @@ async fn exposes_every_v1_route_with_its_contract_status() {
     // A create request in the execution shape: a tool declaring what it needs and its
     // implementation, placed in an environment reached over HTTP with a credential.
     let create = serde_json::json!({
-        "agentloop": {"id": digest, "configuration": {}, "environment": "env_1"},
+        "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": digest}, "configuration": {}, "environment": "env_1"},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
-        "tools": [{
-            "name": "bash",
-            "description": "Run a shell command.",
-            "input_schema": {"type": "object"},
-            "needs": ["pkg:apt/bash", "file:///workspace?access=write"],
-            "implementation": {"kind": "test"},
-            "environment": "env_1"
-        }],
+        "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "placements": {"env_1": {"needs": ["pkg:apt/bash", "file:///workspace?access=write"], "implementation": {"kind": "test"}}}}],
         "environments": [{
             "name": "env_1",
             "driver": "http",
@@ -299,23 +290,25 @@ async fn exposes_every_v1_route_with_its_contract_status() {
         request("POST", &format!("/v1/sessions/{id}/end"), None, None),
         request("DELETE", &format!("/v1/sessions/{id}"), None, None),
         Request::builder()
-            .uri(format!("/v1/sessions/{id}/turns/4/events?after=2"))
-            .header("authorization", "Bearer turn-token")
-            .body(Body::empty())
+            .method("POST")
+            .uri(format!("/v1/sessions/{id}/executions/4/call"))
+            .header("authorization", "Bearer execution-token")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"method":"events","input":2}"#))
             .unwrap(),
         Request::builder()
             .method("POST")
-            .uri(format!("/v1/sessions/{id}/turns/4/emit"))
-            .header("authorization", "Bearer turn-token")
+            .uri(format!("/v1/sessions/{id}/executions/4/call"))
+            .header("authorization", "Bearer execution-token")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"event_type":"remote_note","data":{"ok":true}}"#))
+            .body(Body::from(r#"{"method":"emit","input":{"event_type":"remote_note","data":{"ok":true}}}"#))
             .unwrap(),
         Request::builder()
             .method("POST")
-            .uri(format!("/v1/sessions/{id}/turns/4/telemetry"))
-            .header("authorization", "Bearer turn-token")
+            .uri(format!("/v1/sessions/{id}/executions/4/call"))
+            .header("authorization", "Bearer execution-token")
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"record":{"ok":true}}"#))
+            .body(Body::from(r#"{"method":"telemetry","input":{"ok":true}}"#))
             .unwrap(),
         request("GET", "/health/live", None, None),
         request("GET", "/health/ready", None, None),
@@ -349,18 +342,9 @@ async fn request_bodies_reject_unknown_fields() {
     // `hosting`, `binding_names`, and `host_id` on a tool are deleted fields; a client
     // still sending them is told so instead of silently ignored.
     let create = serde_json::json!({
-        "agentloop": {"id": digest, "configuration": {}, "environment": "env_1"},
+        "agentloop": {"implementation": {"type": "brain_component", "entrypoint": "turn", "id": digest}, "configuration": {}, "environment": "env_1"},
         "model": {"provider":"vercel-ai-gateway","name":"test/model","api_key":"test-key"},
-        "tools": [{
-            "name": "bash",
-            "description": "Run a shell command.",
-            "input_schema": {"type": "object"},
-            "needs": [],
-            "binding_names": [],
-            "hosting": "resident",
-            "host_id": "host_12345678901234567890",
-            "environment": "env_1"
-        }],
+        "tools": [{"name": "bash", "description": "Run a shell command.", "input_schema": {"type": "object"}, "binding_names": [], "hosting": "resident", "host_id": "host_12345678901234567890", "placements": {"env_1": {"needs": [], "implementation": {"type": "host_function", "name": "bash"}}}}],
         "environments": [{
             "name": "env_1",
             "driver": "brain"
@@ -625,31 +609,35 @@ async fn the_host_token_opens_exactly_the_host_surface() {
 /// A turn's routes open with the token minted for that turn and nothing else: not the
 /// API bearer, not another turn's token.
 #[tokio::test]
-async fn the_turn_token_opens_exactly_that_turns_routes() {
+async fn the_execution_token_opens_exactly_that_invocations_routes() {
     let build = || router_with_bearer(Api::default(), "secret".into(), &HttpLimits::default());
     let id = "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let emit = |sequence: u64, bearer: &str| {
         Request::builder()
             .method("POST")
-            .uri(format!("/v1/sessions/{id}/turns/{sequence}/emit"))
+            .uri(format!("/v1/sessions/{id}/executions/{sequence}/call"))
             .header("authorization", format!("Bearer {bearer}"))
             .header("content-type", "application/json")
-            .body(Body::from(r#"{"event_type":"remote_note","data":{}}"#))
+            .body(Body::from(
+                r#"{"method":"emit","input":{"event_type":"remote_note","data":{}}}"#,
+            ))
             .unwrap()
     };
-    let opened = build().oneshot(emit(4, "turn-token")).await.unwrap();
+    let opened = build().oneshot(emit(4, "execution-token")).await.unwrap();
     assert_eq!(opened.status(), StatusCode::OK);
     let api_bearer = build().oneshot(emit(4, "secret")).await.unwrap();
     assert_eq!(api_bearer.status(), StatusCode::NOT_FOUND);
-    let other_turn = build().oneshot(emit(5, "turn-token")).await.unwrap();
+    let other_turn = build().oneshot(emit(5, "execution-token")).await.unwrap();
     assert_eq!(other_turn.status(), StatusCode::NOT_FOUND);
     let no_token = build()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/sessions/{id}/turns/4/emit"))
+                .uri(format!("/v1/sessions/{id}/executions/4/call"))
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"event_type":"remote_note","data":{}}"#))
+                .body(Body::from(
+                    r#"{"method":"emit","input":{"event_type":"remote_note","data":{}}}"#,
+                ))
                 .unwrap(),
         )
         .await

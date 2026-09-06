@@ -4,6 +4,10 @@
 - Status: Accepted
 - Compiled: 2026-09-05
 
+Amended by [ADR-044](2026-09-06-03-sessions-and-brain-env.md): explicit selection among
+create-time authorized Tool placements is included. New grants and mutable placement
+definitions remain outside that decision.
+
 ## Context
 
 The user’s north star includes more capable agent-directed recovery and future hosted platforms, but shipping every policy in the runtime would undermine the minimal MVP.

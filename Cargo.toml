@@ -2,10 +2,11 @@
 members = [
   "crates/brain-protocol",
   "crates/brain-telemetry",
-  "crates/brain-loophost",
+  "crates/brain-env",
   "crates/brain",
   "crates/brain-http",
   "crates/brain-server",
+  "crates/brain-sessions",
 ]
 resolver = "2"
 
@@ -20,8 +21,9 @@ brain-protocol = { path = "crates/brain-protocol" }
 brain-telemetry = { path = "crates/brain-telemetry" }
 brain = { path = "crates/brain" }
 brain-http = { path = "crates/brain-http" }
+brain-sessions = { path = "crates/brain-sessions" }
 brain-server = { path = "crates/brain-server" }
-brain-loophost = { path = "crates/brain-loophost" }
+brain-env = { path = "crates/brain-env" }
 
 anyhow = "1"
 async-trait = "0.1"

@@ -19,18 +19,18 @@ executables:
 ```sh
 npm ci
 npm run build
-cargo build --release -p brain-server --bin brain -p brain-loophost --bin brain-loop-worker
+cargo build --release -p brain-server --bin brain -p brain-env --bin brain-env-worker
 ```
 
 Start Brain in one terminal:
 
 ```sh
 BRAIN_DATA_DIR="$PWD/brain-data" \
-BRAIN_LOOP_WORKER="$PWD/target/release/brain-loop-worker" \
+BRAIN_ENV_WORKER="$PWD/target/release/brain-env-worker" \
 ./target/release/brain --listen 127.0.0.1:8080
 ```
 
-An Agentloop is a WebAssembly Component implementing `crates/brain-loophost/wit/agentloop/agentloop.wit`. Brain
+An Agentloop is a WebAssembly Component implementing `crates/brain-env/wit/agentloop/agentloop.wit`. Brain
 accepts the compiled Component as raw Wasm; it does not build extension source. Compile one with its
 own language toolchain, or build the reference loop in this directory:
 

@@ -11,16 +11,16 @@ use std::{
 };
 
 use async_trait::async_trait;
-use brain::ToolServices;
+use brain::environment::ExecutionServices;
 use brain_protocol::{
-    ApiError, Driver, Environment, EnvironmentOperation, EnvironmentReceipt, EnvironmentRequest,
-    HostCommand, HostEvent, HostEventAck, HostId, HostOperation, HostRegistration, HostResult,
-    Outcome, SessionId,
+    ApiError, Driver, Environment, EnvironmentName, EnvironmentOperation, EnvironmentReceipt,
+    EnvironmentRequest, HostCommand, HostEvent, HostEventAck, HostId, HostOperation,
+    HostRegistration, HostResult, Outcome, SessionId,
 };
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{mpsc, oneshot};
 
-use super::{EnvironmentAdapter, Services, adapter::unsupported};
+use brain::environment::{EnvironmentAdapter, Services, unsupported};
 
 #[derive(Clone)]
 pub struct HostEnvironment {
@@ -35,7 +35,7 @@ struct State {
 
 struct Host {
     /// The sessions placed in this host. A registration with sessions never expires.
-    sessions: HashSet<SessionId>,
+    sessions: HashSet<(SessionId, EnvironmentName)>,
     token: [u8; 32],
     disconnected_at: Instant,
     connection: u64,
@@ -55,10 +55,12 @@ enum RegistrationRecord {
         host_id: HostId,
     },
     Bound {
+        environment: EnvironmentName,
         session_id: SessionId,
         host_id: HostId,
     },
     Released {
+        environment: EnvironmentName,
         session_id: SessionId,
     },
 }
@@ -100,6 +102,7 @@ impl HostEnvironment {
                 }
                 RegistrationRecord::Bound {
                     session_id,
+                    environment,
                     host_id,
                 } => {
                     hosts
@@ -110,11 +113,15 @@ impl HostEnvironment {
                             )
                         })?
                         .sessions
-                        .insert(session_id);
+                        .insert((session_id, environment));
                 }
-                RegistrationRecord::Released { session_id } => {
+                RegistrationRecord::Released {
+                    session_id,
+                    environment,
+                } => {
                     for host in hosts.values_mut() {
-                        host.sessions.remove(&session_id);
+                        host.sessions
+                            .remove(&(session_id.clone(), environment.clone()));
                     }
                 }
             }
@@ -125,18 +132,27 @@ impl HostEnvironment {
         })
     }
 
-    fn bind_session(&self, session_id: &SessionId, host_id: &HostId) -> Result<(), brain::Error> {
+    fn bind_session(
+        &self,
+        session_id: &SessionId,
+        environment: &EnvironmentName,
+        host_id: &HostId,
+    ) -> Result<(), brain::Error> {
         let mut state = self.lock().map_err(api_error)?;
         let host = state
             .hosts
             .get(host_id)
             .ok_or_else(|| brain::Error::NotFound("host registration is missing".into()))?;
-        if host.sessions.contains(session_id) {
+        if host
+            .sessions
+            .contains(&(session_id.clone(), environment.clone()))
+        {
             return Ok(());
         }
         crate::persistence::append(
             &mut state.log,
             &RegistrationRecord::Bound {
+                environment: environment.clone(),
                 session_id: session_id.clone(),
                 host_id: host_id.clone(),
             },
@@ -146,26 +162,31 @@ impl HostEnvironment {
             .get_mut(host_id)
             .expect("registration checked")
             .sessions
-            .insert(session_id.clone());
+            .insert((session_id.clone(), environment.clone()));
         Ok(())
     }
 
-    fn release_session(&self, session_id: &SessionId) -> Result<(), brain::Error> {
+    fn release_session(
+        &self,
+        session_id: &SessionId,
+        environment: &EnvironmentName,
+    ) -> Result<(), brain::Error> {
         let mut state = self.lock().map_err(api_error)?;
-        if state
-            .hosts
-            .values()
-            .any(|host| host.sessions.contains(session_id))
-        {
+        if state.hosts.values().any(|host| {
+            host.sessions
+                .contains(&(session_id.clone(), environment.clone()))
+        }) {
             crate::persistence::append(
                 &mut state.log,
                 &RegistrationRecord::Released {
+                    environment: environment.clone(),
                     session_id: session_id.clone(),
                 },
             )?;
         }
         for host in state.hosts.values_mut() {
-            host.sessions.remove(session_id);
+            host.sessions
+                .remove(&(session_id.clone(), environment.clone()));
         }
         Ok(())
     }
@@ -305,12 +326,13 @@ impl HostEnvironment {
         name: &str,
         input: &serde_json::Value,
         deadline_ms: u64,
-        services: &dyn ToolServices,
+        services: &dyn ExecutionServices,
     ) -> Result<Outcome, brain::Error> {
         let key = (operation.session_id.clone(), operation.sequence);
         let (result_sender, mut result_receiver) = oneshot::channel();
         let (event_sender, mut event_receiver) = mpsc::channel(8);
         let command = HostCommand {
+            environment: operation.environment.clone(),
             session_id: operation.session_id.clone(),
             sequence: operation.sequence,
             deadline_at_ms: wall_clock_ms().saturating_add(deadline_ms),
@@ -371,7 +393,7 @@ impl HostEnvironment {
                     "the Tool deadline elapsed after dispatch".into(),
                 )),
                 Some(event) = event_receiver.recv() => {
-                    let answer = services.emit(event.kind, event.data).await.map_err(|error| error.to_string());
+                    let answer = services.call("emit", serde_json::json!({"event_type": event.kind, "data": event.data})).await.and_then(|value| serde_json::from_value(value).map_err(|error| brain::Error::Executor(error.to_string()))).map_err(|error| error.to_string());
                     let _ = event.reply.send(answer);
                 }
             }
@@ -398,6 +420,7 @@ impl HostEnvironment {
                 .ok_or_else(|| brain::Error::Executor("the host is not connected".into()))?
         };
         let command = HostCommand {
+            environment: operation.environment.clone(),
             session_id: operation.session_id.clone(),
             sequence: operation.sequence,
             deadline_at_ms: wall_clock_ms().saturating_add(5_000),
@@ -445,7 +468,7 @@ impl EnvironmentAdapter for HostEnvironment {
         &self,
         environment: &Environment,
         operation: &EnvironmentOperation,
-        services: Services<'_>,
+        services: Services,
     ) -> Result<EnvironmentReceipt, brain::Error> {
         let Driver::Host { host_id } = &environment.driver else {
             return Err(brain::Error::InvalidState(
@@ -457,36 +480,64 @@ impl EnvironmentAdapter for HostEnvironment {
                 if !self.is_connected(host_id).map_err(api_error)? {
                     return Err(brain::Error::Executor("the host is not connected".into()));
                 }
-                self.bind_session(&operation.session_id, host_id)?;
+                self.bind_session(&operation.session_id, &operation.environment, host_id)?;
                 Ok(EnvironmentReceipt::Accepted)
             }
             (
-                EnvironmentRequest::Invoke {
-                    tool,
+                EnvironmentRequest::Execute {
+                    implementation,
                     input,
                     deadline_ms,
                     ..
                 },
-                Services::Tool(services),
+                Some(services),
             ) => {
+                #[derive(serde::Deserialize)]
+                #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+                enum Implementation {
+                    HostFunction { name: String },
+                }
+                let implementation: Implementation =
+                    match serde_json::from_value(implementation.clone()) {
+                        Ok(implementation) => implementation,
+                        Err(_) => return Ok(unsupported("run this implementation")),
+                    };
+                let Implementation::HostFunction { name } = implementation;
                 let outcome = self
-                    .invoke(host_id, operation, tool, input, *deadline_ms, services)
+                    .invoke(host_id, operation, &name, input, *deadline_ms, &*services)
                     .await?;
-                Ok(EnvironmentReceipt::Outcome { outcome })
+                Ok(match outcome {
+                    Outcome::Ok { value } => EnvironmentReceipt::Result { output: value },
+                    Outcome::Error { error } => EnvironmentReceipt::Failure {
+                        code: error.code,
+                        message: error.message,
+                        retryable: false,
+                    },
+                    Outcome::Unknown { message } => EnvironmentReceipt::Unknown { message },
+                    Outcome::Timeout => EnvironmentReceipt::Failure {
+                        code: "timeout".into(),
+                        message: "host invocation timed out".into(),
+                        retryable: false,
+                    },
+                    Outcome::Cancelled => EnvironmentReceipt::Failure {
+                        code: "cancelled".into(),
+                        message: "host invocation cancelled".into(),
+                        retryable: false,
+                    },
+                })
             }
-            (EnvironmentRequest::Invoke { .. }, _) => Err(brain::Error::InvalidState(
-                "the host env needs the call's services to run it".into(),
+            (EnvironmentRequest::Execute { .. }, None) => Err(brain::Error::InvalidState(
+                "the host env needs invocation services".into(),
             )),
             (EnvironmentRequest::Cancel { target_sequence }, _) => {
                 self.cancel(host_id, operation, *target_sequence)?;
                 Ok(EnvironmentReceipt::Accepted)
             }
             (EnvironmentRequest::Detach | EnvironmentRequest::Teardown, _) => {
-                self.release_session(&operation.session_id)?;
+                self.release_session(&operation.session_id, &operation.environment)?;
                 Ok(EnvironmentReceipt::Accepted)
             }
             (EnvironmentRequest::Call { .. }, _) => Ok(unsupported("answer calls")),
-            (EnvironmentRequest::Turn { .. }, _) => Ok(unsupported("run an Agentloop")),
         }
     }
 }
@@ -575,9 +626,9 @@ mod tests {
     }
 
     fn invoke() -> EnvironmentOperation {
-        operation(EnvironmentRequest::Invoke {
-            tool: "read_dom".into(),
-            implementation: None,
+        operation(EnvironmentRequest::Execute {
+            implementation: serde_json::json!({"type": "host_function", "name": "read_dom"}),
+            callback: None,
             needs: Vec::new(),
             input: serde_json::json!({}),
             deadline_ms: 5_000,
@@ -617,7 +668,7 @@ mod tests {
             })
         };
         hosts
-            .execute(&entry(registration.host_id.clone()), &setup, Services::None)
+            .execute(&entry(registration.host_id.clone()), &setup, None)
             .await
             .unwrap();
         drop(connection);
@@ -641,11 +692,7 @@ mod tests {
             ..operation(EnvironmentRequest::Detach)
         };
         hosts
-            .execute(
-                &entry(registration.host_id.clone()),
-                &detach,
-                Services::None,
-            )
+            .execute(&entry(registration.host_id.clone()), &detach, None)
             .await
             .unwrap();
         hosts
@@ -673,7 +720,7 @@ mod tests {
         });
         assert!(
             hosts
-                .execute(&entry(registration.host_id.clone()), &setup, Services::None)
+                .execute(&entry(registration.host_id.clone()), &setup, None)
                 .await
                 .is_err()
         );
@@ -681,7 +728,7 @@ mod tests {
             .connect(&registration.host_id, &registration.token)
             .unwrap();
         hosts
-            .execute(&entry(registration.host_id), &setup, Services::None)
+            .execute(&entry(registration.host_id), &setup, None)
             .await
             .unwrap();
     }
@@ -698,7 +745,13 @@ mod tests {
             let entry = entry(registration.host_id.clone());
             async move {
                 hosts
-                    .execute(&entry, &invoke(), Services::Tool(&NoEvents))
+                    .execute(
+                        &entry,
+                        &invoke(),
+                        Some(Arc::new(brain_sessions::SessionServices::Tool(Arc::new(
+                            NoEvents,
+                        )))),
+                    )
                     .await
             }
         });
@@ -724,9 +777,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             executing.await.unwrap().unwrap(),
-            EnvironmentReceipt::Outcome {
-                outcome: Outcome::Ok { value }
-            } if value == serde_json::json!({"ok": true})
+            EnvironmentReceipt::Result { output: value } if value == serde_json::json!({"ok": true})
         ));
     }
 
@@ -738,7 +789,9 @@ mod tests {
             .execute(
                 &entry(registration.host_id),
                 &invoke(),
-                Services::Tool(&NoEvents),
+                Some(Arc::new(brain_sessions::SessionServices::Tool(Arc::new(
+                    NoEvents,
+                )))),
             )
             .await
             .unwrap_err();
@@ -762,6 +815,26 @@ mod tests {
         drop(replacement);
     }
 
+    #[test]
+    fn releasing_one_environment_preserves_its_sibling_host_binding() {
+        let hosts = test_hosts();
+        let registration = hosts.register().unwrap();
+        let session = SessionId::new("ses_shared");
+        let first = EnvironmentName::new("first");
+        let second = EnvironmentName::new("second");
+        hosts
+            .bind_session(&session, &first, &registration.host_id)
+            .unwrap();
+        hosts
+            .bind_session(&session, &second, &registration.host_id)
+            .unwrap();
+        hosts.release_session(&session, &first).unwrap();
+        let state = hosts.lock().unwrap();
+        let bindings = &state.hosts[&registration.host_id].sessions;
+        assert!(!bindings.contains(&(session.clone(), first)));
+        assert!(bindings.contains(&(session, second)));
+    }
+
     #[tokio::test]
     async fn replacing_a_host_connection_makes_an_inflight_outcome_unknown() {
         let hosts = test_hosts();
@@ -774,7 +847,13 @@ mod tests {
             let entry = entry(registration.host_id.clone());
             async move {
                 hosts
-                    .execute(&entry, &invoke(), Services::Tool(&NoEvents))
+                    .execute(
+                        &entry,
+                        &invoke(),
+                        Some(Arc::new(brain_sessions::SessionServices::Tool(Arc::new(
+                            NoEvents,
+                        )))),
+                    )
                     .await
             }
         });

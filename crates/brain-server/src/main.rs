@@ -2,11 +2,11 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use brain::{Feed, SessionRuntime, Writer};
-use brain_loophost::WorkerPool;
+use brain_env::WorkerPool;
 use brain_server::{
-    BrainEnvironment, EnvironmentLoopExecutor, EnvironmentRegistry, HostEnvironment,
+    BrainEnvironment, EnvironmentLoopExecutor, EnvironmentRegistry, Executions, HostEnvironment,
     HttpEnvironmentAdapter, IdempotencyStore, NativePolicy, ServerApi, ServerConfig,
-    ServerModelExecutor, ServerResources, ServerToolExecutor, Turns,
+    ServerModelExecutor, ServerResources, SessionToolExecutor,
 };
 use brain_telemetry::{TelemetryRecord, TelemetrySink, telemetry_channel_with};
 use clap::Parser;
@@ -25,6 +25,7 @@ async fn main() -> anyhow::Result<()> {
     let api = compose(&config).await?;
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, "Brain is ready");
+    let shutdown_api = api.clone();
     let router = match config.api_token {
         Some(token) => brain_http::router_with_bearer(api, token, &config.http_limits),
         None => {
@@ -37,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown())
         .await?;
+    shutdown_api.shutdown().await;
     Ok(())
 }
 
@@ -45,13 +47,14 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     let (telemetry, worker) = telemetry_channel_with(&config.telemetry_limits);
     tokio::spawn(worker.run(Arc::new(LogSink)));
     let loops = Arc::new(WorkerPool::new(
-        &config.loop_worker,
+        &config.env_worker,
         config.data_dir.join("run"),
         config.data_dir.join("agentloops"),
-        config.loop_limits.clone(),
+        config.env_limits.clone(),
+        config.env_workers,
     ));
     loops
-        .ready()
+        .start()
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
     // Credentials are durable before the session's creation record is committed.
@@ -87,32 +90,36 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
     if let Some(connect) = config.server_limits.max_environment_connect() {
         http = http.connect_timeout(connect);
     }
-    if let Some(timeout) = config.server_limits.max_environment() {
-        http = http.timeout(timeout);
-    }
     let http = http.build()?;
-    let environments = Arc::new(EnvironmentRegistry::new(
-        Arc::new(BrainEnvironment::new(
-            loops.clone(),
-            NativePolicy {
-                network: config.env_network_allow.iter().cloned().collect(),
-                secrets: config.env_secret_allow.iter().cloned().collect(),
-                filesystem: config.env_filesystem_allow.iter().cloned().collect(),
-            },
-            config.data_dir.join("native-workspaces"),
-        )),
-        HostEnvironment::open(
-            &config.data_dir.join("hosts").join("hosts.log"),
-            &config.server_limits,
-        )?,
-        Arc::new(HttpEnvironmentAdapter::new(
-            http,
-            credentials.clone(),
-            &config.limits,
-            &config.server_limits,
-        )),
-    ));
-    let turns = Arc::new(Turns::default());
+    let executions = Arc::new(Executions::default());
+    let hosts = HostEnvironment::open(
+        &config.data_dir.join("hosts").join("hosts.log"),
+        &config.server_limits,
+    )?;
+    let environments = Arc::new(EnvironmentRegistry::new(Arc::new(
+        brain_server::environment::EnvironmentRouter {
+            brain: Arc::new(BrainEnvironment::new(
+                loops.clone(),
+                NativePolicy {
+                    network: config.env_network_allow.iter().cloned().collect(),
+                    secrets: config.env_secret_allow.iter().cloned().collect(),
+                    filesystem: config.env_filesystem_allow.iter().cloned().collect(),
+                },
+                config.data_dir.join("native-workspaces"),
+            )),
+            hosts: hosts.clone(),
+            http: Arc::new(HttpEnvironmentAdapter::new(
+                http,
+                credentials.clone(),
+                &config.server_limits,
+                executions.clone(),
+                config
+                    .public_url
+                    .clone()
+                    .unwrap_or_else(|| format!("http://{}", config.listen)),
+            )),
+        },
+    )));
     // Every session's directory, rebuilt from disk. A session that was mid-turn when the
     // last process stopped is failed with code `interrupted` before anything is served.
     let writer = Writer::spawn_with(&config.limits);
@@ -121,14 +128,14 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         limits: config.limits.clone(),
         loop_executor: Arc::new(EnvironmentLoopExecutor {
             environments: environments.clone(),
-            turns: turns.clone(),
-            public_url: config
-                .public_url
-                .clone()
-                .unwrap_or_else(|| format!("http://{}", config.listen)),
+            deadline_ms: config
+                .limits
+                .max_turn()
+                .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+                .unwrap_or(u64::MAX),
         }),
         model_executor: model,
-        tool_executor: Arc::new(ServerToolExecutor::new(environments.clone())),
+        tool_executor: Arc::new(SessionToolExecutor::new(environments.clone())),
         live: feed.clone(),
         telemetry: telemetry.clone(),
     });
@@ -144,7 +151,8 @@ async fn compose(config: &ServerConfig) -> anyhow::Result<ServerApi> {
         )?,
         loops,
         environments,
-        turns,
+        hosts,
+        executions,
         credentials,
         providers,
     })?;

@@ -1,9 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    AgentloopId, EnvironmentName, HostId, Outcome, SessionId, TurnCallback, TurnInput, TurnOutput,
-};
+use crate::{EnvironmentName, HostId, SessionId};
 
 /// The contract identifier every command and response carries.
 pub const ENVIRONMENT_CONTRACT: &str = "environment/v1";
@@ -14,7 +12,7 @@ pub const ENVIRONMENT_CONTRACT: &str = "environment/v1";
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(tag = "driver", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Driver {
-    /// Hosted inside brain-server.
+    /// Managed by brain-server in its native Environment worker pool.
     Brain {},
     /// The process that registered as this host, reached over the connection it holds
     /// open: a browser tab, a Node process, a server.
@@ -72,8 +70,7 @@ pub struct EnvironmentResponse {
 
 /// What Brain asks an Environment to do. An Environment provides resources and learns
 /// what runs in it only when asked to run it: setup carries its configuration and the
-/// needs of everything placed there, each invoke carries the Tool it runs, each turn
-/// the Agentloop.
+/// needs of everything placed there; execute carries an opaque implementation and input.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentRequest {
@@ -89,28 +86,17 @@ pub enum EnvironmentRequest {
         name: String,
         input: serde_json::Value,
     },
-    Invoke {
-        /// The Tool's name, as the session declared it.
-        #[schemars(schema_with = "crate::schema::identifier")]
-        tool: String,
-        /// The Tool's implementation as it was declared: opaque to Brain, interpreted here.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        implementation: Option<serde_json::Value>,
+    Execute {
+        /// Interpreted only by the Environment; fixes the runtime entrypoint and configuration.
+        implementation: serde_json::Value,
         #[schemars(schema_with = "crate::schema::needs")]
         needs: Vec<String>,
         input: serde_json::Value,
         #[schemars(range(min = 1))]
         deadline_ms: u64,
-    },
-    Turn {
-        id: AgentloopId,
-        #[schemars(schema_with = "crate::schema::needs")]
-        needs: Vec<String>,
-        input: Box<TurnInput>,
-        /// Where this turn reaches Brain's services. Absent for an Environment inside
-        /// Brain's own process, which has them directly.
+        /// Sent only during execution, never journaled.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        callback: Option<TurnCallback>,
+        callback: Option<ExecutionCallback>,
     },
     Cancel {
         #[schemars(range(min = 1))]
@@ -129,12 +115,6 @@ pub enum EnvironmentReceipt {
     },
     Result {
         output: serde_json::Value,
-    },
-    Outcome {
-        outcome: Outcome,
-    },
-    Turned {
-        output: TurnOutput,
     },
     Failure {
         #[schemars(schema_with = "crate::schema::identifier")]
@@ -159,6 +139,25 @@ pub struct EnvironmentCallRequest {
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentCallResult {
     pub output: serde_json::Value,
+}
+
+/// Where a remote invocation reaches only its caller-granted services.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionCallback {
+    #[schemars(length(min = 1, max = 2048), extend("format" = "uri"))]
+    pub url: String,
+    #[schemars(length(min = 1, max = 256))]
+    pub token: String,
+    pub methods: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionCall {
+    #[schemars(schema_with = "crate::schema::identifier")]
+    pub method: String,
+    pub input: serde_json::Value,
 }
 
 #[cfg(test)]

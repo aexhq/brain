@@ -8,7 +8,7 @@ The MVP keeps Tool and Agentloop placements explicit and fixed at session creati
 - [x] Explicit Agentloop and Tool placement with `{ env, ...options }`
 - [x] One canonical per-session journal with disposable projections
 - [x] Effect-after-commit with no automatic retries
-- [x] Logical Environment setup with the needs of everything placed there; Environments own lazy allocation and resource TTL
+- [x] Logical Environment setup with declared needs, lazy allocation, and caller-owned lifecycle policy
 - [x] Content-addressed Agentloop and Tool Components
 - [x] HTTP/SSE session API and the `@aexhq/brain` SDK
 - [x] Remote Environment contract and `env-aws-microvm`
@@ -41,7 +41,7 @@ The MVP keeps Tool and Agentloop placements explicit and fixed at session creati
   extension authoring interface simple and measuring continuation costs before adopting it
 - [x] Separate extension artifact admission and compilation from session creation; reuse
   compatible compiled artifacts and invocation templates
-- [x] Environment extensions can prepare resources lazily on invocation and own TTL and cleanup
+- [x] Environment extensions implement lazy allocation, detach, and teardown; callers decide lifetime
   policy; setup need not provision compute, and expired resources need not be restored
 - [x] Per-session live subscriptions, independent of Agentloop activation
 - [ ] Post-MVP configurable resource admission, memory and compiled-code cache budgets, and

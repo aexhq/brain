@@ -122,6 +122,7 @@ export class HostPump {
     const key = `${command.session_id}:${command.sequence}`;
     this.inFlight.set(key, command.sequence);
     const outcome = await registry.run({
+      environment: command.environment,
       sequence: command.sequence,
       name: command.operation.name,
       arguments: command.operation.input,

@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::{Event, Message, SessionId, ToolDefinition, UserInput};
+use crate::{ActivationTool, Event, Message, SessionId, UserInput};
 
 pub const AGENTLOOP_CONTRACT_VERSION: &str = "agentloop/v1";
 
@@ -49,7 +49,7 @@ pub struct TurnInput {
     pub system: String,
     /// The tools the session was created with: offered whole on every model call unless
     /// the loop names a subset. Brain admitted and provisioned exactly these.
-    pub tools: Vec<ToolDefinition>,
+    pub tools: Vec<ActivationTool>,
     pub runtime: RuntimeEnvelope,
 }
 
