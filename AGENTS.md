@@ -15,7 +15,7 @@
   usage counters as absent, and record `*_ended` or `*_failed` results before the loop sees the
   result. A record is named by session id and sequence and nothing else. Brain sends an effect once,
   never retries it automatically, and records an unknown outcome when a remote result is uncertain.
-  `DECISIONS.md` records why.
+  The ADRs in [references/adrs](references/adrs/README.md) record why.
 - Keep the `brain` core independent of cloud SDKs. Put storage, custody, and runtime behaviour behind
   public adapters, and do not weaken production invariants for local development.
 - Real Linux Loophost, image, HTTP, journal recovery, remote-model, and remote-Environment gates run
