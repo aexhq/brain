@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::message::{Message, StopReason, Usage};
+use crate::{Message, StopReason, Usage};
 
 /// The model a session calls. The credential is not here: the server seals it under
 /// the session id and resolves it at call time.
